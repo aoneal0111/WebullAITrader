@@ -1,6 +1,34 @@
-﻿.venv/
-.pytest_tmp/
-.pytest_cache/
+﻿# Python
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment files
 .env
+.env.local
+
+# Pytest
+.pytest_tmp/
+.pytest-temp/
+.pytest_cache/
+
+# Logs
+*.log
+*.log.*
+
+# Runtime data
+.webull-token/
+conf/token.txt
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
