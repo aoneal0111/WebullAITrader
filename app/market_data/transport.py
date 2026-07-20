@@ -1,0 +1,9 @@
+from __future__ import annotations
+from typing import Protocol
+from app.market_data.models import MarketEvent
+
+
+class MarketDataTransport(Protocol):
+    def connect(self) -> None: ...
+    def disconnect(self) -> None: ...
+    def read_event(self) -> MarketEvent | None: ...

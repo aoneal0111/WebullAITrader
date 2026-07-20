@@ -1,0 +1,4 @@
+mcp>=1.9,<2
+python-dotenv>=1.1,<2
+structlog>=25.1,<26
+pytest>=8.3,<10

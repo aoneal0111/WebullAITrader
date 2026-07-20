@@ -1,0 +1,14 @@
+services:
+  trader:
+    build: .
+    restart: unless-stopped
+    env_file: .env.production
+    volumes:
+      - trader-data:/var/lib/webull-trader
+      - trader-backups:/var/backups/webull-trader
+    stop_grace_period: 30s
+    mem_limit: 512m
+    cpus: 1.0
+volumes:
+  trader-data:
+  trader-backups:
