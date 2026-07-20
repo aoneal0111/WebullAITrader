@@ -34,3 +34,9 @@ Thumbs.db
 .DS_Store
 .env.*
 !.env.example
+
+# Local runtime files
+data/
+docker-compose.yml.backup
+operational_dependencies.txt
+
