@@ -32,3 +32,5 @@ conf/token.txt
 # OS
 Thumbs.db
 .DS_Store
+.env.*
+!.env.example
