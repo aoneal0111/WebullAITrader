@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 from app.webull.trading_sessions import resolve_webull_trading_session
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -74,64 +74,134 @@ def parse_order(
         if not isinstance(value, dict):
             raise TypeError("order response must be an object")
 
-        if request is None:
-            raise ValueError("original order request is required")
+        request_client_order_id = (
+            request.client_order_id if request is not None else None
+        )
+        request_symbol = request.symbol if request is not None else None
+        request_side = request.side.value if request is not None else None
+        request_order_type = (
+            request.order_type.value if request is not None else None
+        )
+        request_quantity = request.quantity if request is not None else None
+        request_limit_price = (
+            request.limit_price if request is not None else None
+        )
+        request_stop_price = (
+            request.stop_price if request is not None else None
+        )
+        request_time_in_force = (
+            request.time_in_force.value if request is not None else None
+        )
+
+        raw_status = str(
+            value.get("status")
+            or value.get("order_status")
+            or "ACKNOWLEDGED"
+        ).upper()
+
+        status_aliases = {
+            "PENDING": "SUBMITTED",
+            "PENDING_NEW": "SUBMITTED",
+            "PLACED": "SUBMITTED",
+            "WORKING": "ACKNOWLEDGED",
+            "OPEN": "ACKNOWLEDGED",
+            "ACTIVE": "ACKNOWLEDGED",
+            "PARTIAL_FILLED": "PARTIALLY_FILLED",
+            "PARTIALLYFILLED": "PARTIALLY_FILLED",
+            "CANCELED": "CANCELLED",
+        }
 
         status = LiveOrderStatus(
-            str(value.get("status", "ACKNOWLEDGED")).upper()
+            status_aliases.get(raw_status, raw_status)
         )
 
         broker_order_id = (
             value.get("order_id")
             or value.get("broker_order_id")
             or value.get("orderId")
-            or request.client_order_id
+            or request_client_order_id
         )
+
+        client_order_id = (
+            value.get("client_order_id")
+            or value.get("clientOrderId")
+            or request_client_order_id
+            or broker_order_id
+        )
+
+        symbol = (
+            value.get("symbol")
+            or value.get("ticker")
+            or request_symbol
+        )
+        side = value.get("side") or value.get("action") or request_side
+        order_type = (
+            value.get("order_type")
+            or value.get("orderType")
+            or request_order_type
+        )
+        quantity = (
+            value.get("quantity")
+            if value.get("quantity") is not None
+            else value.get("total_quantity")
+        )
+        if quantity is None:
+            quantity = request_quantity
+
+        time_in_force = (
+            value.get("time_in_force")
+            or value.get("timeInForce")
+            or request_time_in_force
+        )
+
+        required = {
+            "broker_order_id": broker_order_id,
+            "client_order_id": client_order_id,
+            "symbol": symbol,
+            "side": side,
+            "order_type": order_type,
+            "quantity": quantity,
+            "time_in_force": time_in_force,
+        }
+        missing = [name for name, item in required.items() if item is None]
+        if missing:
+            raise ValueError(
+                "missing required order fields: " + ", ".join(missing)
+            )
 
         return BrokerOrder(
             str(broker_order_id),
-            str(
-                value.get("client_order_id")
-                or value.get("clientOrderId")
-                or request.client_order_id
-            ),
-            str(value.get("symbol") or request.symbol).upper(),
-            LiveSide(
-                str(value.get("side") or request.side.value).upper()
-            ),
-            LiveOrderType(
-                str(
-                    value.get("order_type")
-                    or request.order_type.value
-                ).upper()
-            ),
+            str(client_order_id),
+            str(symbol).upper(),
+            LiveSide(str(side).upper()),
+            LiveOrderType(str(order_type).upper()),
+            _d(quantity),
             _d(
-                value.get("quantity")
-                if value.get("quantity") is not None
-                else request.quantity
+                value.get("filled_quantity")
+                if value.get("filled_quantity") is not None
+                else value.get("filled_qty", "0")
             ),
-            _d(value.get("filled_quantity", "0")),
             _optional(
                 value.get("limit_price")
                 if "limit_price" in value
-                else request.limit_price
+                else value.get("limitPrice", request_limit_price)
             ),
             _optional(
                 value.get("stop_price")
                 if "stop_price" in value
-                else request.stop_price
+                else value.get("stopPrice", request_stop_price)
             ),
-            TimeInForce(
-                str(
-                    value.get("time_in_force")
-                    or request.time_in_force.value
-                ).upper()
-            ),
+            TimeInForce(str(time_in_force).upper()),
             status,
             _dt(
                 value.get("updated_timestamp")
                 or value.get("update_time")
-            ),
+                or value.get("place_time_at")
+            ) if (
+                value.get("updated_timestamp")
+                or value.get("update_time")
+                or value.get("place_time_at")
+            ) else datetime.now(timezone.utc),
         )
 
     except Exception as exc:
@@ -250,5 +320,3 @@ def _dt(value):
     result = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     if result.tzinfo is None: raise SerializationError("broker timestamp is naive")
     return result
-
-
