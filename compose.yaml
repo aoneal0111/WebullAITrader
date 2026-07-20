@@ -1,0 +1,15 @@
+﻿services:
+  webull-ai-trader:
+    image: webull-ai-trader:latest
+    build:
+      context: .
+    env_file:
+      - .env.sandbox
+    volumes:
+      - webull-ai-trader-data:/app/data
+    restart: "no"
+
+volumes:
+  webull-ai-trader-data:
+    external: true
+    name: webull-ai-trader-data
