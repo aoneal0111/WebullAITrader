@@ -1,98 +1,111 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread
 
-from app.gui.models import DashboardSnapshot, RuntimeState
+from app.operations_core import (
+    OperationsBus,
+    RuntimeCycleCompleted,
+    RuntimeFailed,
+    RuntimeStarted,
+    RuntimeStarting,
+    RuntimeStopped,
+    RuntimeStopping,
+)
 
 
 class RuntimeWorker(QThread):
     """
-    Temporary GUI runtime worker.
+    Temporary paper-runtime simulator connected to the Operations Bus.
 
-    This worker simulates paper-runtime activity. It performs no broker
-    mutations and submits no orders. It will later be replaced by an adapter
-    around the existing paper runtime.
+    It performs no broker mutations and submits no orders. A later milestone
+    will replace its simulated loop with an adapter around the existing paper
+    operations engine.
     """
 
-    snapshot_changed = Signal(object)
-    runtime_failed = Signal(str)
-
-    def __init__(self, parent=None) -> None:
+    def __init__(
+        self,
+        bus: OperationsBus,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
+
+        self._bus = bus
         self._cycle_count = 0
+        self._stopping_event_published = False
+
+    @property
+    def cycle_count(self) -> int:
+        return self._cycle_count
+
+    def request_stop(
+        self,
+        reason: str = "Operator requested shutdown",
+    ) -> None:
+        if not self._stopping_event_published:
+            self._stopping_event_published = True
+            self._bus.publish(
+                RuntimeStopping(
+                    source="desktop-runtime",
+                    reason=reason,
+                )
+            )
+
+        self.requestInterruption()
 
     def run(self) -> None:
         try:
-            self.snapshot_changed.emit(
-                DashboardSnapshot(
+            self._bus.publish(
+                RuntimeStarting(
+                    source="desktop-runtime",
                     environment="PAPER",
-                    runtime_state=RuntimeState.STARTING,
-                    broker_status="Connecting",
-                    market_feed_status="Starting",
-                    inference_status="Loading",
-                    emergency_stop_enabled=True,
-                    active_model="Loading",
-                    cycle_count=self._cycle_count,
-                    status_message="Starting paper runtime...",
                 )
             )
 
             if self._sleep_interruptibly(0.8):
+                self._publish_stopped()
                 return
 
-            self.snapshot_changed.emit(
-                DashboardSnapshot(
+            self._bus.publish(
+                RuntimeStarted(
+                    source="desktop-runtime",
                     environment="PAPER",
-                    runtime_state=RuntimeState.RUNNING,
-                    broker_status="Connected",
-                    market_feed_status="Healthy",
-                    inference_status="Healthy",
-                    emergency_stop_enabled=True,
                     active_model="Promoted model",
-                    cycle_count=self._cycle_count,
-                    status_message="Paper runtime is running.",
                 )
             )
 
             while not self.isInterruptionRequested():
                 self._cycle_count += 1
 
-                self.snapshot_changed.emit(
-                    DashboardSnapshot(
-                        environment="PAPER",
-                        runtime_state=RuntimeState.RUNNING,
-                        broker_status="Connected",
-                        market_feed_status="Healthy",
-                        inference_status="Healthy",
-                        emergency_stop_enabled=True,
-                        active_model="Promoted model",
+                self._bus.publish(
+                    RuntimeCycleCompleted(
+                        source="desktop-runtime",
                         cycle_count=self._cycle_count,
-                        status_message=(
-                            f"Paper runtime cycle {self._cycle_count} completed."
-                        ),
                     )
                 )
 
                 if self._sleep_interruptibly(1.0):
                     break
 
-            self.snapshot_changed.emit(
-                DashboardSnapshot(
-                    environment="PAPER",
-                    runtime_state=RuntimeState.STOPPED,
-                    broker_status="Disconnected",
-                    market_feed_status="Idle",
-                    inference_status="Ready",
-                    emergency_stop_enabled=True,
-                    active_model="Promoted model",
-                    cycle_count=self._cycle_count,
-                    status_message="Paper runtime stopped cleanly.",
+            self._publish_stopped()
+
+        except Exception as exc:
+            self._bus.publish(
+                RuntimeFailed(
+                    source="desktop-runtime",
+                    error_message=str(exc),
                 )
             )
-        except Exception as exc:
-            self.runtime_failed.emit(str(exc))
+
+    def _publish_stopped(self) -> None:
+        self._bus.publish(
+            RuntimeStopped(
+                source="desktop-runtime",
+                reason="Paper runtime stopped cleanly.",
+                cycles_completed=self._cycle_count,
+            )
+        )
 
     def _sleep_interruptibly(self, seconds: float) -> bool:
         remaining = max(0.0, seconds)

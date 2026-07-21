@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent
@@ -14,8 +14,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.gui.models import DashboardSnapshot, RuntimeState
 from app.gui.runtime_worker import RuntimeWorker
+from app.gui.state_bridge import QtStateBridge
+from app.operations_core import (
+    ApplicationState,
+    ApplicationStateStore,
+    OperationsBus,
+    RuntimePhase,
+)
 
 
 class StatusCard(QFrame):
@@ -24,15 +30,15 @@ class StatusCard(QFrame):
 
         self.setObjectName("statusCard")
 
-        self._title = QLabel(title)
-        self._title.setObjectName("cardTitle")
+        title_label = QLabel(title)
+        title_label.setObjectName("cardTitle")
 
         self._value = QLabel(value)
         self._value.setObjectName("cardValue")
         self._value.setWordWrap(True)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(self._title)
+        layout.addWidget(title_label)
         layout.addWidget(self._value)
         layout.addStretch()
 
@@ -41,18 +47,27 @@ class StatusCard(QFrame):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        bus: OperationsBus,
+        state_store: ApplicationStateStore,
+    ) -> None:
         super().__init__()
 
+        self._bus = bus
+        self._state_store = state_store
         self._worker: RuntimeWorker | None = None
-        self._snapshot = DashboardSnapshot.initial()
+        self._state = state_store.snapshot()
+
+        self._state_bridge = QtStateBridge(state_store, self)
+        self._state_bridge.state_changed.connect(self._render_state)
 
         self.setWindowTitle("Webull AI Trader — Operations Center")
-        self.setMinimumSize(1050, 680)
+        self.setMinimumSize(1050, 720)
 
         self._build_interface()
         self._apply_theme()
-        self._render_snapshot(self._snapshot)
+        self._render_state(self._state)
 
     def _build_interface(self) -> None:
         root = QWidget()
@@ -61,7 +76,6 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(18)
 
         header_layout = QHBoxLayout()
-
         title_column = QVBoxLayout()
 
         title = QLabel("WEBULL AI TRADER")
@@ -129,10 +143,10 @@ class MainWindow(QMainWindow):
 
         activity_layout = QVBoxLayout(activity_panel)
 
-        activity_title = QLabel("SESSION ACTIVITY")
+        activity_title = QLabel("MISSION TIMELINE")
         activity_title.setObjectName("sectionTitle")
 
-        self._activity_label = QLabel("Ready to start.")
+        self._activity_label = QLabel("No operations events recorded.")
         self._activity_label.setObjectName("activityText")
         self._activity_label.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._activity_label.setWordWrap(True)
@@ -143,8 +157,13 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(activity_panel, 1)
 
+        self._status_bar_label = QLabel()
+        self._status_bar_label.setObjectName("operationsStatusBar")
+        self._status_bar_label.setWordWrap(True)
+        root_layout.addWidget(self._status_bar_label)
+
         safety_notice = QLabel(
-            "READ-ONLY GUI MILESTONE — no live orders, cancellations, "
+            "READ-ONLY OPERATIONS CENTER — no live orders, cancellations, "
             "replacements, or broker mutations are available."
         )
         safety_notice.setObjectName("safetyNotice")
@@ -158,104 +177,102 @@ class MainWindow(QMainWindow):
         if self._worker is not None and self._worker.isRunning():
             return
 
-        self._worker = RuntimeWorker(self)
-        self._worker.snapshot_changed.connect(self._render_snapshot)
-        self._worker.runtime_failed.connect(self._handle_runtime_failure)
+        self._worker = RuntimeWorker(self._bus, self)
         self._worker.finished.connect(self._handle_worker_finished)
         self._worker.start()
-
-        self._start_button.setEnabled(False)
-        self._stop_button.setEnabled(True)
 
     def _stop_runtime(self) -> None:
         if self._worker is None or not self._worker.isRunning():
             return
 
-        self._snapshot = DashboardSnapshot(
-            environment=self._snapshot.environment,
-            runtime_state=RuntimeState.STOPPING,
-            broker_status=self._snapshot.broker_status,
-            market_feed_status=self._snapshot.market_feed_status,
-            inference_status=self._snapshot.inference_status,
-            emergency_stop_enabled=self._snapshot.emergency_stop_enabled,
-            active_model=self._snapshot.active_model,
-            cycle_count=self._snapshot.cycle_count,
-            status_message="Stopping paper runtime safely...",
-        )
-        self._render_snapshot(self._snapshot)
+        self._worker.request_stop()
 
-        self._stop_button.setEnabled(False)
-        self._worker.requestInterruption()
+    def _render_state(self, state: ApplicationState) -> None:
+        self._state = state
+        runtime = state.runtime
 
-    def _render_snapshot(self, snapshot: DashboardSnapshot) -> None:
-        self._snapshot = snapshot
+        self._runtime_card.set_value(runtime.phase.value.title())
+        self._broker_card.set_value(runtime.broker_status)
+        self._market_card.set_value(runtime.market_feed_status)
+        self._model_card.set_value(runtime.active_model)
+        self._inference_card.set_value(runtime.inference_status)
+        self._emergency_card.set_value("Active")
+        self._cycle_card.set_value(str(runtime.cycles_completed))
+        self._environment_card.set_value(runtime.environment)
+        self._mode_badge.setText(runtime.environment)
 
-        self._runtime_card.set_value(snapshot.runtime_state.value.title())
-        self._broker_card.set_value(snapshot.broker_status)
-        self._market_card.set_value(snapshot.market_feed_status)
-        self._model_card.set_value(snapshot.active_model)
-        self._inference_card.set_value(snapshot.inference_status)
-        self._emergency_card.set_value(
-            "Active" if snapshot.emergency_stop_enabled else "Inactive"
-        )
-        self._cycle_card.set_value(str(snapshot.cycle_count))
-        self._environment_card.set_value(snapshot.environment)
-        self._activity_label.setText(snapshot.status_message)
-        self._mode_badge.setText(snapshot.environment)
+        if state.timeline:
+            recent_entries = state.timeline[-8:]
+            timeline_text = "\n".join(
+                (
+                    f"{entry.occurred_at.astimezone():%H:%M:%S}  "
+                    f"{entry.message}"
+                )
+                for entry in recent_entries
+            )
+        else:
+            timeline_text = "No operations events recorded."
 
-        running = snapshot.runtime_state in {
-            RuntimeState.STARTING,
-            RuntimeState.RUNNING,
-            RuntimeState.STOPPING,
+        self._activity_label.setText(timeline_text)
+
+        running = runtime.phase in {
+            RuntimePhase.STARTING,
+            RuntimePhase.RUNNING,
+            RuntimePhase.STOPPING,
         }
 
         self._start_button.setEnabled(not running)
         self._stop_button.setEnabled(
-            snapshot.runtime_state in {
-                RuntimeState.STARTING,
-                RuntimeState.RUNNING,
+            runtime.phase in {
+                RuntimePhase.STARTING,
+                RuntimePhase.RUNNING,
             }
         )
 
-    def _handle_runtime_failure(self, message: str) -> None:
-        self._render_snapshot(
-            DashboardSnapshot(
-                environment=self._snapshot.environment,
-                runtime_state=RuntimeState.ERROR,
-                broker_status="Disconnected",
-                market_feed_status="Error",
-                inference_status="Error",
-                emergency_stop_enabled=True,
-                active_model=self._snapshot.active_model,
-                cycle_count=self._snapshot.cycle_count,
-                status_message=f"Runtime error: {message}",
-            )
+        health = (
+            "ERROR"
+            if runtime.phase is RuntimePhase.FAILED
+            else "HEALTHY"
         )
 
-        QMessageBox.critical(self, "Runtime Error", message)
+        self._status_bar_label.setText(
+            f"{runtime.environment}  │  "
+            f"Runtime: {runtime.phase.value}  │  "
+            f"Market Feed: {runtime.market_feed_status}  │  "
+            f"Model: {runtime.active_model}  │  "
+            f"Cycles: {runtime.cycles_completed}  │  "
+            f"Health: {health}"
+        )
+
+        if runtime.phase is RuntimePhase.FAILED and runtime.last_error:
+            QMessageBox.critical(
+                self,
+                "Runtime Error",
+                runtime.last_error,
+            )
 
     def _handle_worker_finished(self) -> None:
         if self._worker is not None:
             self._worker.deleteLater()
             self._worker = None
 
-        self._start_button.setEnabled(True)
-        self._stop_button.setEnabled(False)
-
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._worker is not None and self._worker.isRunning():
-            self._worker.requestInterruption()
+            self._worker.request_stop(
+                "Application shutdown requested."
+            )
 
             if not self._worker.wait(5_000):
                 QMessageBox.warning(
                     self,
                     "Runtime Still Stopping",
-                    "The runtime has not stopped yet. Please use Stop Runtime "
-                    "and wait for shutdown before closing.",
+                    "The runtime has not stopped yet. Use Stop Runtime and "
+                    "wait for shutdown before closing.",
                 )
                 event.ignore()
                 return
 
+        self._state_bridge.close()
         event.accept()
 
     def _apply_theme(self) -> None:
@@ -348,6 +365,16 @@ class MainWindow(QMainWindow):
                 color: #c7cdd8;
                 font-family: "Consolas";
                 padding-top: 12px;
+            }
+
+            #operationsStatusBar {
+                background: #151a20;
+                border: 1px solid #2b323d;
+                border-radius: 6px;
+                color: #aab3c2;
+                font-family: "Consolas";
+                font-size: 12px;
+                padding: 8px 12px;
             }
 
             #safetyNotice {

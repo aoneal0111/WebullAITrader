@@ -5,6 +5,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from app.gui.main_window import MainWindow
+from app.operations_core import ApplicationStateStore, OperationsBus
 
 
 def main() -> int:
@@ -12,10 +13,16 @@ def main() -> int:
     application.setApplicationName("Webull AI Trader")
     application.setOrganizationName("Webull AI Trader")
 
-    window = MainWindow()
+    bus = OperationsBus()
+    state_store = ApplicationStateStore(bus)
+
+    window = MainWindow(bus, state_store)
     window.show()
 
-    return application.exec()
+    exit_code = application.exec()
+
+    state_store.close()
+    return exit_code
 
 
 if __name__ == "__main__":

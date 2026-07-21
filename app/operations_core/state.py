@@ -9,6 +9,7 @@ from threading import RLock
 from app.operations_core.bus import OperationsBus, Subscription
 from app.operations_core.events import (
     OperationsEvent,
+    RuntimeCycleCompleted,
     RuntimeFailed,
     RuntimeStarted,
     RuntimeStarting,
@@ -113,10 +114,12 @@ class ApplicationStateStore:
     def _handle_event(self, event: OperationsEvent) -> None:
         with self._lock:
             runtime = self._reduce_runtime(self._state.runtime, event)
-            timeline = self._state.timeline + (
-                self._timeline_entry(event),
-            )
-            timeline = timeline[-self._timeline_limit :]
+
+            timeline = self._state.timeline
+
+            if not isinstance(event, RuntimeCycleCompleted):
+                timeline = timeline + (self._timeline_entry(event),)
+                timeline = timeline[-self._timeline_limit :]
 
             self._state = ApplicationState(
                 runtime=runtime,
@@ -143,6 +146,7 @@ class ApplicationStateStore:
                 broker_status="Connecting",
                 market_feed_status="Starting",
                 inference_status="Loading",
+                cycles_completed=0,
                 last_error=None,
             )
 
@@ -156,6 +160,12 @@ class ApplicationStateStore:
                 inference_status="Healthy",
                 active_model=event.active_model,
                 last_error=None,
+            )
+
+        if isinstance(event, RuntimeCycleCompleted):
+            return replace(
+                current,
+                cycles_completed=event.cycle_count,
             )
 
         if isinstance(event, RuntimeStopping):

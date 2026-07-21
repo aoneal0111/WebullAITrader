@@ -156,3 +156,31 @@ def test_event_defaults_to_aware_utc_timestamp() -> None:
     event = RuntimeStarting()
 
     assert event.occurred_at.tzinfo is timezone.utc
+
+
+def test_runtime_cycle_event_updates_state_without_flooding_timeline() -> None:
+    from app.operations_core import RuntimeCycleCompleted
+
+    bus = OperationsBus()
+    store = ApplicationStateStore(bus)
+
+    bus.publish(RuntimeStarting())
+    bus.publish(RuntimeStarted(active_model="model-v1"))
+
+    timeline_length = len(store.snapshot().timeline)
+
+    bus.publish(RuntimeCycleCompleted(cycle_count=1))
+    bus.publish(RuntimeCycleCompleted(cycle_count=2))
+    bus.publish(RuntimeCycleCompleted(cycle_count=3))
+
+    snapshot = store.snapshot()
+
+    assert snapshot.runtime.cycles_completed == 3
+    assert len(snapshot.timeline) == timeline_length
+
+
+def test_runtime_cycle_event_rejects_negative_count() -> None:
+    from app.operations_core import RuntimeCycleCompleted
+
+    with pytest.raises(ValueError, match="nonnegative"):
+        RuntimeCycleCompleted(cycle_count=-1)

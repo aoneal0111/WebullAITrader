@@ -39,6 +39,17 @@ class RuntimeStarted(OperationsEvent):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class RuntimeCycleCompleted(OperationsEvent):
+    cycle_count: int
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+
+        if self.cycle_count < 0:
+            raise ValueError("cycle_count must be nonnegative")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class RuntimeStopping(OperationsEvent):
     reason: str = "Operator requested shutdown"
 
