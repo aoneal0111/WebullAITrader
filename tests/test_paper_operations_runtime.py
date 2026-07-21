@@ -1,0 +1,296 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+import pytest
+
+from app.execution_coordinator import (
+    CoordinationRequest,
+    CoordinationStage,
+    CoordinationStatus,
+    CoordinationTrace,
+    ExecutionCoordinationResult,
+)
+from app.operations import (
+    AtomicPaperRuntimeCheckpoint,
+    PaperOperationsEngine,
+    PaperRuntimeStatus,
+)
+from app.order_compliance.models import OrderSide, OrderType, TradingSession
+from app.paper_session import PaperSessionStatus
+from app.strategy_engine import (
+    StrategyDecision,
+    StrategyDecisionAction,
+    StrategyOrderIntent,
+)
+
+NOW = datetime(2026, 7, 20, 14, 0, tzinfo=UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class Snapshot:
+    symbol: str
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.value = NOW
+
+    def __call__(self) -> datetime:
+        value = self.value
+        self.value += timedelta(minutes=1)
+        return value
+
+
+class StubStrategy:
+    def __init__(self, action=StrategyDecisionAction.HOLD) -> None:
+        self.action = action
+        self.calls = []
+
+    def evaluate(self, snapshot, position, *, timestamp):
+        self.calls.append((snapshot.symbol, position.quantity, timestamp))
+        return StrategyDecision(
+            symbol=snapshot.symbol,
+            action=self.action,
+            confidence=80,
+            score=Decimal("0.8"),
+            timestamp=timestamp,
+            reasons=("test",),
+            source_action=(
+                "BUY"
+                if self.action is StrategyDecisionAction.ENTER_LONG
+                else "HOLD"
+            ),
+            position_quantity=position.quantity,
+        )
+
+
+class StubCoordinator:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def coordinate(self, decision, request=None):
+        self.calls.append((decision, request))
+        return ExecutionCoordinationResult(
+            status=(
+                CoordinationStatus.REJECTED
+                if decision.creates_order_intent
+                else CoordinationStatus.SKIPPED
+            ),
+            final_stage=(
+                CoordinationStage.RISK
+                if decision.creates_order_intent
+                else CoordinationStage.STRATEGY
+            ),
+            strategy_decision=decision,
+            order_intent=(request.order_intent if request else None),
+            proposal=(object() if request else None),
+            risk_decision=(object() if request else None),
+            compliance_decision=None,
+            execution_result=None,
+            trace=(
+                CoordinationTrace(
+                    CoordinationStage.STRATEGY,
+                    decision.creates_order_intent,
+                    "test trace",
+                ),
+            ),
+        )
+
+
+def request_builder(decision, snapshot, session, cycle, index):
+    intent = StrategyOrderIntent(
+        timestamp=decision.timestamp,
+        request_id=f"{session.session_id}-{cycle}-{index}",
+        symbol=decision.symbol,
+        side=OrderSide.BUY,
+        quantity=Decimal("1"),
+        order_type=OrderType.MARKET,
+        requested_session=TradingSession.REGULAR,
+    )
+    return CoordinationRequest(
+        order_intent=intent,
+        advisory_response=object(),
+        snapshot=snapshot,
+        risk_limits=object(),
+        account_state=object(),
+        market_state=object(),
+        gfv_decision=object(),
+        compliance_limits=object(),
+        kill_switch=object(),
+        portfolio=session.portfolio,
+        market_quote=object(),
+        execution_config=object(),
+        journal=session.journal,
+        equity_curve=session.equity_curve,
+    )
+
+
+def make_engine(*, snapshots=(Snapshot("AAPL"),), action=StrategyDecisionAction.HOLD, checkpoint=None, events=None):
+    return PaperOperationsEngine(
+        session_id="paper-1",
+        initial_cash=Decimal("10000"),
+        snapshot_source=lambda timestamp: snapshots,
+        strategy_engine=StubStrategy(action),
+        coordinator=StubCoordinator(),
+        request_builder=request_builder,
+        clock=Clock(),
+        checkpoint_sink=checkpoint,
+        event_sink=(events.append if events is not None else None),
+    )
+
+
+def test_start_creates_active_session() -> None:
+    engine = make_engine()
+    state = engine.start()
+    assert state.status is PaperRuntimeStatus.RUNNING
+    assert engine.session.status is PaperSessionStatus.ACTIVE
+    assert engine.session.portfolio.cash == Decimal("10000")
+
+
+def test_start_can_only_happen_once() -> None:
+    engine = make_engine()
+    engine.start()
+    with pytest.raises(RuntimeError, match="only be started once"):
+        engine.start()
+
+
+def test_cycle_processes_snapshots_in_symbol_order() -> None:
+    engine = make_engine(snapshots=(Snapshot("MSFT"), Snapshot("AAPL")))
+    engine.start()
+    engine.run_cycle()
+    assert [call[0] for call in engine._strategy_engine.calls] == ["AAPL", "MSFT"]
+    assert engine.state.cycles_completed == 1
+    assert engine.state.decisions_processed == 2
+
+
+def test_non_executable_decision_does_not_build_request() -> None:
+    def fail_builder(*args):
+        raise AssertionError("request builder should not be called")
+
+    engine = PaperOperationsEngine(
+        session_id="paper-1",
+        initial_cash=Decimal("10000"),
+        snapshot_source=lambda timestamp: (Snapshot("AAPL"),),
+        strategy_engine=StubStrategy(),
+        coordinator=StubCoordinator(),
+        request_builder=fail_builder,
+        clock=Clock(),
+    )
+    engine.start()
+    engine.run_cycle()
+    assert engine.session.statistics.decisions_skipped == 1
+
+
+def test_executable_decision_uses_explicit_request_builder() -> None:
+    engine = make_engine(action=StrategyDecisionAction.ENTER_LONG)
+    engine.start()
+    engine.run_cycle()
+    assert engine.session.processed_request_ids == ("paper-1-1-1",)
+    assert engine.session.statistics.orders_rejected == 1
+
+
+def test_pause_and_resume_control_cycles() -> None:
+    engine = make_engine()
+    engine.start()
+    engine.pause()
+    assert engine.state.status is PaperRuntimeStatus.PAUSED
+    with pytest.raises(RuntimeError, match="must be RUNNING"):
+        engine.run_cycle()
+    engine.resume()
+    engine.run_cycle()
+    assert engine.state.cycles_completed == 1
+
+
+def test_stop_closes_session() -> None:
+    engine = make_engine()
+    engine.start()
+    session = engine.stop()
+    assert engine.state.status is PaperRuntimeStatus.STOPPED
+    assert session.status is PaperSessionStatus.CLOSED
+    assert session.ended_at is not None
+
+
+def test_cycle_failure_fails_closed() -> None:
+    engine = PaperOperationsEngine(
+        session_id="paper-1",
+        initial_cash=Decimal("10000"),
+        snapshot_source=lambda timestamp: (_ for _ in ()).throw(ValueError("bad feed")),
+        strategy_engine=StubStrategy(),
+        coordinator=StubCoordinator(),
+        request_builder=request_builder,
+        clock=Clock(),
+    )
+    engine.start()
+    with pytest.raises(ValueError, match="bad feed"):
+        engine.run_cycle()
+    assert engine.state.status is PaperRuntimeStatus.FAILED
+    assert engine.state.failure == "ValueError: bad feed"
+
+
+def test_event_sink_receives_ordered_events() -> None:
+    events = []
+    engine = make_engine(events=events)
+    engine.start()
+    engine.run_cycle()
+    engine.stop()
+    assert [event.sequence for event in events] == list(range(1, len(events) + 1))
+    assert [event.event_type for event in events] == [
+        "STARTED",
+        "DECISION_PROCESSED",
+        "CYCLE_COMPLETED",
+        "STOPPED",
+    ]
+
+
+def test_checkpoint_sink_runs_after_transitions() -> None:
+    checkpoints = []
+    engine = make_engine(checkpoint=lambda state, session: checkpoints.append((state.status, session.status)))
+    engine.start()
+    engine.pause()
+    engine.resume()
+    engine.stop()
+    assert checkpoints == [
+        (PaperRuntimeStatus.RUNNING, PaperSessionStatus.ACTIVE),
+        (PaperRuntimeStatus.PAUSED, PaperSessionStatus.ACTIVE),
+        (PaperRuntimeStatus.RUNNING, PaperSessionStatus.ACTIVE),
+        (PaperRuntimeStatus.STOPPED, PaperSessionStatus.CLOSED),
+    ]
+
+
+def test_atomic_checkpoint_is_canonical(tmp_path) -> None:
+    path = tmp_path / "runtime.json"
+    engine = make_engine(checkpoint=AtomicPaperRuntimeCheckpoint(path))
+    engine.start()
+    first = path.read_text(encoding="utf-8")
+    payload = json.loads(first)
+    assert payload["schema_version"] == "1"
+    assert payload["runtime"]["status"] == "RUNNING"
+    assert payload["session"]["session_id"] == "paper-1"
+    assert ": " not in first
+    assert ", " not in first
+
+
+def test_run_respects_max_cycles() -> None:
+    engine = make_engine()
+    engine.start()
+    engine.run(interval_seconds=0, max_cycles=3, wait=lambda seconds: False)
+    assert engine.state.cycles_completed == 3
+    assert engine.state.status is PaperRuntimeStatus.RUNNING
+
+
+def test_naive_clock_is_rejected() -> None:
+    engine = PaperOperationsEngine(
+        session_id="paper-1",
+        initial_cash=Decimal("10000"),
+        snapshot_source=lambda timestamp: (),
+        strategy_engine=StubStrategy(),
+        coordinator=StubCoordinator(),
+        request_builder=request_builder,
+        clock=lambda: datetime(2026, 7, 20, 14, 0),
+    )
+    with pytest.raises(ValueError, match="timezone-aware"):
+        engine.start()
