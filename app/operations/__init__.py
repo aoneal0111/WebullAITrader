@@ -1,5 +1,13 @@
 from app.operations.checkpoint import AtomicPaperRuntimeCheckpoint
 from app.operations.journal import AtomicPaperRuntimeJournal
+from app.operations.learning_runtime import (
+    FeatureBuilder,
+    ReloadableInferenceEngine,
+    RuntimeInferenceAdapter,
+    RuntimeInferenceAudit,
+    RuntimeInferencePolicy,
+    runtime_inference_audit_payload,
+)
 from app.operations.credentials import CredentialProvider, EnvironmentCredentialProvider
 from app.operations.redaction import redact
 from app.operations.scanner_runtime import (
@@ -17,6 +25,12 @@ from app.operations.runtime import (
 __all__ = [
     "AtomicPaperRuntimeCheckpoint",
     "AtomicPaperRuntimeJournal",
+    "runtime_inference_audit_payload",
+    "RuntimeInferencePolicy",
+    "RuntimeInferenceAudit",
+    "RuntimeInferenceAdapter",
+    "ReloadableInferenceEngine",
+    "FeatureBuilder",
     "CredentialProvider",
     "EnvironmentCredentialProvider",
     "PaperOperationsEngine",
