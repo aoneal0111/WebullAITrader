@@ -26,6 +26,7 @@ from app.strategy_engine import (
     StrategyDecision,
     StrategyDecisionAction,
     StrategyOrderIntent,
+    StrategyPosition,
 )
 
 NOW = datetime(2026, 7, 20, 14, 0, tzinfo=UTC)
@@ -130,7 +131,7 @@ def request_builder(decision, snapshot, session, cycle, index):
     )
 
 
-def make_engine(*, snapshots=(Snapshot("AAPL"),), action=StrategyDecisionAction.HOLD, checkpoint=None, events=None):
+def make_engine(*, snapshots=(Snapshot("AAPL"),), action=StrategyDecisionAction.HOLD, checkpoint=None, events=None, cycle_sink=None):
     return PaperOperationsEngine(
         session_id="paper-1",
         initial_cash=Decimal("10000"),
@@ -141,6 +142,7 @@ def make_engine(*, snapshots=(Snapshot("AAPL"),), action=StrategyDecisionAction.
         clock=Clock(),
         checkpoint_sink=checkpoint,
         event_sink=(events.append if events is not None else None),
+        cycle_sink=cycle_sink,
     )
 
 
@@ -378,3 +380,107 @@ def test_recover_rejects_closed_session() -> None:
             request_builder=request_builder,
             clock=Clock(),
         )
+
+
+def test_atomic_runtime_journal_records_cycle_and_analytics(tmp_path) -> None:
+    from app.operations import AtomicPaperRuntimeJournal
+
+    path = tmp_path / "journal.json"
+    engine = make_engine(cycle_sink=AtomicPaperRuntimeJournal(path))
+    engine.start()
+    engine.run_cycle()
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "1"
+    assert payload["session_id"] == "paper-1"
+    assert payload["cycles"][0]["cycle"] == 1
+    assert payload["cycles"][0]["symbols"] == ["AAPL"]
+    assert payload["cycles"][0]["decisions"][0]["action"] == "HOLD"
+    assert payload["latest_analytics"]["as_of_cycle"] == 1
+    assert payload["latest_analytics"]["decisions_processed"] == 1
+
+
+def test_atomic_runtime_journal_appends_in_cycle_order(tmp_path) -> None:
+    from app.operations import AtomicPaperRuntimeJournal
+
+    path = tmp_path / "journal.json"
+    engine = make_engine(cycle_sink=AtomicPaperRuntimeJournal(path))
+    engine.start()
+    engine.run_cycle()
+    engine.run_cycle()
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert [item["cycle"] for item in payload["cycles"]] == [1, 2]
+    assert payload["latest_analytics"]["as_of_cycle"] == 2
+
+
+def test_atomic_runtime_journal_is_canonical(tmp_path) -> None:
+    from app.operations import AtomicPaperRuntimeJournal
+
+    path = tmp_path / "journal.json"
+    engine = make_engine(cycle_sink=AtomicPaperRuntimeJournal(path))
+    engine.start()
+    engine.run_cycle()
+
+    content = path.read_text(encoding="utf-8")
+    assert ": " not in content
+    assert ", " not in content
+    assert content == json.dumps(json.loads(content), sort_keys=True, separators=(",", ":"))
+
+
+def test_runtime_journal_failure_prevents_cycle_commit(tmp_path) -> None:
+    from app.operations import AtomicPaperRuntimeJournal
+
+    path = tmp_path / "journal.json"
+    path.write_text('{"schema_version":"999"}', encoding="utf-8")
+    engine = make_engine(cycle_sink=AtomicPaperRuntimeJournal(path))
+    engine.start()
+
+    with pytest.raises(ValueError, match="schema version"):
+        engine.run_cycle()
+
+    assert engine.state.status is PaperRuntimeStatus.FAILED
+    assert engine.state.cycles_completed == 0
+    assert engine.session.statistics.decisions_processed == 0
+
+
+def test_runtime_journal_rejects_cycle_gap(tmp_path) -> None:
+    from app.operations import AtomicPaperRuntimeJournal, PaperRuntimeCycleResult
+
+    path = tmp_path / "journal.json"
+    engine = make_engine()
+    engine.start()
+    session = engine.run_cycle()
+    result = PaperRuntimeCycleResult(
+        cycle=2,
+        timestamp=NOW + timedelta(minutes=5),
+        symbols=("AAPL",),
+        decisions=(StubStrategy().evaluate(Snapshot("AAPL"), StrategyPosition("AAPL"), timestamp=NOW),),
+        session=session,
+    )
+
+    with pytest.raises(ValueError, match="expected cycle 1"):
+        AtomicPaperRuntimeJournal(path)(result)
+
+
+def test_runtime_journal_rejects_different_session(tmp_path) -> None:
+    from app.operations import AtomicPaperRuntimeJournal
+
+    path = tmp_path / "journal.json"
+    first = make_engine(cycle_sink=AtomicPaperRuntimeJournal(path))
+    first.start()
+    first.run_cycle()
+
+    second = PaperOperationsEngine(
+        session_id="paper-2",
+        initial_cash=Decimal("10000"),
+        snapshot_source=lambda timestamp: (Snapshot("AAPL"),),
+        strategy_engine=StubStrategy(),
+        coordinator=StubCoordinator(),
+        request_builder=request_builder,
+        clock=Clock(),
+        cycle_sink=AtomicPaperRuntimeJournal(path),
+    )
+    second.start()
+    with pytest.raises(ValueError, match="session ID"):
+        second.run_cycle()
