@@ -61,19 +61,20 @@ def make_order(
 
 def quote(
     *,
+    symbol: str = "AAPL",
     bid: str = "99",
     ask: str = "101",
     volume: str = "100",
     seconds: int = 2,
 ) -> MarketQuote:
     return MarketQuote(
+        symbol=symbol,
         bid_price=D(bid),
         ask_price=D(ask),
         available_volume=D(volume),
         last_trade_price=D("100"),
         timestamp=NOW + timedelta(seconds=seconds),
     )
-
 
 def fill_ids():
     count = 0

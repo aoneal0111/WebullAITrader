@@ -108,6 +108,18 @@ class PaperOrderBook:
             if not order.is_terminal
         )
 
+    def open_orders_for_symbol(
+        self,
+        symbol: str,
+    ) -> tuple[PaperOrder, ...]:
+        normalized = self._normalize_symbol(symbol)
+
+        return tuple(
+            order
+            for order in self.open_orders()
+            if order.request.symbol.strip().upper() == normalized
+        )
+
     def terminal_orders(self) -> tuple[PaperOrder, ...]:
         return tuple(
             order
@@ -120,6 +132,15 @@ class PaperOrderBook:
 
     def __len__(self) -> int:
         return len(self._orders)
+
+    @staticmethod
+    def _normalize_symbol(symbol: str) -> str:
+        normalized = str(symbol).strip().upper()
+
+        if not normalized:
+            raise ValueError("symbol is required")
+
+        return normalized
 
     @staticmethod
     def _normalize_order_id(order_id: str) -> str:

@@ -29,13 +29,14 @@ NOW = datetime(2026, 7, 21, 15, 0, tzinfo=UTC)
 
 def accepted_order(
     *,
+    symbol: str = "AAPL",
     side: OrderSide = OrderSide.BUY,
     order_type: OrderType = OrderType.MARKET,
     quantity: Decimal = D("100"),
     limit_price: Decimal | None = None,
 ):
     request = OrderRequest(
-        symbol="AAPL",
+        symbol=symbol,
         asset_class=AssetClass.STOCK,
         side=side,
         order_type=order_type,
@@ -58,12 +59,14 @@ def accepted_order(
 
 def quote(
     *,
+    symbol: str = "AAPL",
     bid: str = "99",
     ask: str = "101",
     volume: str = "100",
     last: str | None = "100",
 ) -> MarketQuote:
     return MarketQuote(
+        symbol=symbol,
         bid_price=D(bid),
         ask_price=D(ask),
         available_volume=D(volume),
@@ -167,6 +170,7 @@ def test_partial_order_uses_remaining_quantity() -> None:
     result = match_order(
         order,
         MarketQuote(
+            symbol="AAPL",
             bid_price=D("99"),
             ask_price=D("101"),
             available_volume=D("25"),
@@ -175,8 +179,10 @@ def test_partial_order_uses_remaining_quantity() -> None:
         ),
     )
 
+    assert result.matched is True
     assert result.filled_quantity == D("25")
     assert result.remaining_quantity == D("45")
+    assert result.is_partial is True
 
 
 def test_crossed_quote_is_rejected() -> None:
@@ -185,3 +191,19 @@ def test_crossed_quote_is_rejected() -> None:
         match="ask_price cannot be below bid_price",
     ):
         quote(bid="102", ask="101")
+
+def test_match_order_rejects_symbol_mismatch() -> None:
+    order = accepted_order(
+        symbol="AAPL",
+    )
+
+    market_quote = quote(
+        symbol="MSFT",
+    )
+
+    with pytest.raises(
+        MatchingError,
+        match="order and quote symbols must match",
+    ):
+        match_order(order, market_quote)
+

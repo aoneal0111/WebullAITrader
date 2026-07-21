@@ -20,6 +20,7 @@ class MatchingError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class MarketQuote:
+    symbol: str
     bid_price: Decimal
     ask_price: Decimal
     available_volume: Decimal
@@ -27,6 +28,17 @@ class MarketQuote:
     last_trade_price: Decimal | None = None
 
     def __post_init__(self) -> None:
+        normalized_symbol = str(self.symbol).strip().upper()
+
+        if not normalized_symbol:
+            raise MatchingError("quote symbol is required")
+
+        object.__setattr__(
+            self,
+            "symbol",
+            normalized_symbol,
+        )
+
         if self.bid_price <= ZERO:
             raise MatchingError("bid_price must be positive")
 
@@ -73,6 +85,13 @@ def match_order(
     quote: MarketQuote,
 ) -> MatchResult:
     """Match one immutable order against one top-of-book quote."""
+
+    order_symbol = order.request.symbol.strip().upper()
+
+    if order_symbol != quote.symbol:
+        raise MatchingError(
+            "order and quote symbols must match"
+        )
 
     if order.status not in {
         OrderStatus.ACCEPTED,

@@ -90,17 +90,13 @@ class PaperExecutionEngine:
         self,
         quote: MarketQuote,
     ) -> tuple[ExecutionReport, ...]:
-        """Process one quote against every currently open order.
-
-        Sprint 1 MarketQuote objects do not contain a symbol. Therefore, this
-        method assumes the supplied quote is applicable to each open order
-        being processed. Symbol-aware quote routing should be added before
-        using one engine for multiple instruments.
-        """
+        """Process one quote against open orders for the quote's symbol only."""
 
         reports: list[ExecutionReport] = []
 
-        for order in self._order_book.open_orders():
+        for order in self._order_book.open_orders_for_symbol(
+            quote.symbol
+        ):
             result = match_order(order, quote)
 
             if not result.matched:
