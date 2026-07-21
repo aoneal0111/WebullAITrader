@@ -40,3 +40,24 @@ data/
 docker-compose.yml.backup
 operational_dependencies.txt
 
+# Secrets and account identifiers
+WEBULL_ACCOUNT_ID*
+.env
+.env.*
+!.env.example
+
+# Archives and backups
+*.zip
+*.bak
+
+# Local inventories and observation output
+project_inventory.txt
+project_symbols.txt
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Test/runtime artifacts
+.pytest_cache/
+.pytest-temp/
