@@ -13,3 +13,18 @@ def collect_available(transport, log: MarketEventLog) -> MarketEventLog:
         event = transport.read_event()
         if event is None: return log
         log = append_event(log, event)
+
+
+def iter_available(transport):
+    """
+    Yield currently available events one at a time.
+
+    Iteration stops when the transport returns None.
+    """
+    while True:
+        event = transport.read_event()
+
+        if event is None:
+            return
+
+        yield event
