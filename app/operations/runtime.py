@@ -36,6 +36,7 @@ RequestBuilder = Callable[
 ]
 RuntimeEventSink = Callable[["PaperRuntimeEvent"], None]
 CheckpointSink = Callable[["PaperRuntimeState", PaperTradingSession], None]
+CycleSink = Callable[["PaperRuntimeCycleResult"], None]
 Clock = Callable[[], datetime]
 WaitFunction = Callable[[float], bool]
 
@@ -64,6 +65,30 @@ class PaperRuntimeEvent:
             if not normalized:
                 raise ValueError("runtime event symbol cannot be blank")
             object.__setattr__(self, "symbol", normalized)
+
+
+@dataclass(frozen=True, slots=True)
+class PaperRuntimeCycleResult:
+    cycle: int
+    timestamp: datetime
+    symbols: tuple[str, ...]
+    decisions: tuple[StrategyDecision, ...]
+    session: PaperTradingSession
+
+    def __post_init__(self) -> None:
+        if self.cycle < 1:
+            raise ValueError("runtime cycle must be positive")
+        _require_aware(self.timestamp)
+        if len(self.symbols) != len(self.decisions):
+            raise ValueError("runtime cycle symbols and decisions must align")
+        normalized = tuple(symbol.strip().upper() for symbol in self.symbols)
+        if any(not symbol for symbol in normalized):
+            raise ValueError("runtime cycle symbols cannot be blank")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("runtime cycle symbols must be unique")
+        if tuple(decision.symbol for decision in self.decisions) != normalized:
+            raise ValueError("runtime cycle decisions do not match symbols")
+        object.__setattr__(self, "symbols", normalized)
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +146,7 @@ class PaperOperationsEngine:
         clock: Clock,
         event_sink: RuntimeEventSink | None = None,
         checkpoint_sink: CheckpointSink | None = None,
+        cycle_sink: CycleSink | None = None,
     ) -> None:
         if not session_id.strip():
             raise ValueError("session ID is required")
@@ -133,6 +159,7 @@ class PaperOperationsEngine:
         self._clock = clock
         self._event_sink = event_sink
         self._checkpoint_sink = checkpoint_sink
+        self._cycle_sink = cycle_sink
         self._session: PaperTradingSession | None = None
         self._state = PaperRuntimeState(
             status=PaperRuntimeStatus.CREATED,
@@ -145,6 +172,38 @@ class PaperOperationsEngine:
             last_cycle_at=None,
             failure=None,
         )
+
+    @classmethod
+    def recover(
+        cls,
+        *,
+        state: PaperRuntimeState,
+        session: PaperTradingSession,
+        snapshot_source: SnapshotSource,
+        strategy_engine: StrategyEngine,
+        coordinator: ExecutionCoordinator,
+        request_builder: RequestBuilder,
+        clock: Clock,
+        event_sink: RuntimeEventSink | None = None,
+        checkpoint_sink: CheckpointSink | None = None,
+        cycle_sink: CycleSink | None = None,
+    ) -> "PaperOperationsEngine":
+        _validate_recovery(state, session)
+        engine = cls(
+            session_id=state.session_id,
+            initial_cash=session.portfolio.initial_cash,
+            snapshot_source=snapshot_source,
+            strategy_engine=strategy_engine,
+            coordinator=coordinator,
+            request_builder=request_builder,
+            clock=clock,
+            event_sink=event_sink,
+            checkpoint_sink=checkpoint_sink,
+            cycle_sink=cycle_sink,
+        )
+        engine._state = state
+        engine._session = session
+        return engine
 
     @property
     def state(self) -> PaperRuntimeState:
@@ -213,6 +272,7 @@ class PaperOperationsEngine:
                 key=lambda item: _symbol(item),
             ))
             session = self.session
+            decisions: list[StrategyDecision] = []
             for index, snapshot in enumerate(snapshots, start=1):
                 symbol = _symbol(snapshot)
                 position = _strategy_position(session, symbol)
@@ -241,6 +301,7 @@ class PaperOperationsEngine:
                     strategy_decision=decision,
                     request=request,
                 )
+                decisions.append(decision)
                 self._append_event(
                     timestamp,
                     "DECISION_PROCESSED",
@@ -248,6 +309,15 @@ class PaperOperationsEngine:
                     cycle,
                     symbol,
                 )
+            result = PaperRuntimeCycleResult(
+                cycle=cycle,
+                timestamp=timestamp,
+                symbols=tuple(_symbol(snapshot) for snapshot in snapshots),
+                decisions=tuple(decisions),
+                session=session,
+            )
+            if self._cycle_sink is not None:
+                self._cycle_sink(result)
             self._session = session
             self._state = replace(
                 self._state,
@@ -375,6 +445,30 @@ class PaperOperationsEngine:
     def _checkpoint(self) -> None:
         if self._checkpoint_sink is not None and self._session is not None:
             self._checkpoint_sink(self._state, self._session)
+
+
+def _validate_recovery(
+    state: PaperRuntimeState,
+    session: PaperTradingSession,
+) -> None:
+    if state.status not in {
+        PaperRuntimeStatus.RUNNING,
+        PaperRuntimeStatus.PAUSED,
+        PaperRuntimeStatus.FAILED,
+    }:
+        raise ValueError("only active or failed runtimes can be recovered")
+    if session.status.value != "ACTIVE":
+        raise ValueError("recovered paper session must be active")
+    if state.session_id != session.session_id:
+        raise ValueError("runtime and paper session IDs do not match")
+    if state.started_at != session.started_at:
+        raise ValueError("runtime and paper session start times do not match")
+    if state.stopped_at is not None:
+        raise ValueError("recovered runtime cannot have a stop time")
+    if state.last_cycle_at is not None and state.last_cycle_at < session.started_at:
+        raise ValueError("last cycle cannot precede session start")
+    if state.decisions_processed != session.statistics.decisions_processed:
+        raise ValueError("runtime and session decision counts do not match")
 
 
 def _strategy_position(

@@ -17,6 +17,7 @@ from app.execution_coordinator import (
 from app.operations import (
     AtomicPaperRuntimeCheckpoint,
     PaperOperationsEngine,
+    PaperRuntimeCycleResult,
     PaperRuntimeStatus,
 )
 from app.order_compliance.models import OrderSide, OrderType, TradingSession
@@ -294,3 +295,86 @@ def test_naive_clock_is_rejected() -> None:
     )
     with pytest.raises(ValueError, match="timezone-aware"):
         engine.start()
+
+
+def test_cycle_sink_receives_committed_cycle_result() -> None:
+    results = []
+    engine = PaperOperationsEngine(
+        session_id="paper-1",
+        initial_cash=Decimal("10000"),
+        snapshot_source=lambda timestamp: (Snapshot("MSFT"), Snapshot("AAPL")),
+        strategy_engine=StubStrategy(),
+        coordinator=StubCoordinator(),
+        request_builder=request_builder,
+        clock=Clock(),
+        cycle_sink=results.append,
+    )
+    engine.start()
+    engine.run_cycle()
+    assert len(results) == 1
+    result = results[0]
+    assert isinstance(result, PaperRuntimeCycleResult)
+    assert result.cycle == 1
+    assert result.symbols == ("AAPL", "MSFT")
+    assert tuple(decision.symbol for decision in result.decisions) == result.symbols
+    assert result.session.statistics.decisions_processed == 2
+
+
+def test_cycle_sink_failure_fails_closed_without_committing_session() -> None:
+    def fail_cycle_sink(result):
+        raise RuntimeError("analytics unavailable")
+
+    engine = PaperOperationsEngine(
+        session_id="paper-1",
+        initial_cash=Decimal("10000"),
+        snapshot_source=lambda timestamp: (Snapshot("AAPL"),),
+        strategy_engine=StubStrategy(),
+        coordinator=StubCoordinator(),
+        request_builder=request_builder,
+        clock=Clock(),
+        cycle_sink=fail_cycle_sink,
+    )
+    engine.start()
+    original_session = engine.session
+    with pytest.raises(RuntimeError, match="analytics unavailable"):
+        engine.run_cycle()
+    assert engine.state.status is PaperRuntimeStatus.FAILED
+    assert engine.state.cycles_completed == 0
+    assert engine.session is original_session
+    assert engine.session.statistics.decisions_processed == 0
+
+
+def test_recover_continues_with_next_cycle_number() -> None:
+    engine = make_engine()
+    engine.start()
+    engine.run_cycle()
+
+    recovered = PaperOperationsEngine.recover(
+        state=engine.state,
+        session=engine.session,
+        snapshot_source=lambda timestamp: (Snapshot("MSFT"),),
+        strategy_engine=StubStrategy(),
+        coordinator=StubCoordinator(),
+        request_builder=request_builder,
+        clock=lambda: NOW + timedelta(minutes=2),
+    )
+    recovered.run_cycle()
+    assert recovered.state.cycles_completed == 2
+    assert recovered.state.decisions_processed == 2
+
+
+def test_recover_rejects_closed_session() -> None:
+    engine = make_engine()
+    engine.start()
+    state = engine.state
+    session = engine.stop()
+    with pytest.raises(ValueError, match="must be active"):
+        PaperOperationsEngine.recover(
+            state=state,
+            session=session,
+            snapshot_source=lambda timestamp: (),
+            strategy_engine=StubStrategy(),
+            coordinator=StubCoordinator(),
+            request_builder=request_builder,
+            clock=Clock(),
+        )

@@ -7,6 +7,7 @@ from app.operations.scanner_runtime import (
 )
 from app.operations.runtime import (
     PaperOperationsEngine,
+    PaperRuntimeCycleResult,
     PaperRuntimeEvent,
     PaperRuntimeState,
     PaperRuntimeStatus,
@@ -17,6 +18,7 @@ __all__ = [
     "CredentialProvider",
     "EnvironmentCredentialProvider",
     "PaperOperationsEngine",
+    "PaperRuntimeCycleResult",
     "PaperRuntimeEvent",
     "PaperRuntimeState",
     "PaperRuntimeStatus",
