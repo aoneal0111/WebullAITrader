@@ -6,6 +6,11 @@ from app.learning.engine import (
     RegisteredModel,
     TrainingDataset,
 )
+from app.learning.inference import (
+    ActiveModelInferenceEngine,
+    InferenceRequest,
+    InferenceResult,
+)
 from app.learning.training import (
     DatasetReader,
     DeterministicLinearTrainer,
@@ -38,4 +43,7 @@ __all__ = [
     "TrainingRun",
     "WalkForwardEvaluator",
     "load_linear_model",
+    "ActiveModelInferenceEngine",
+    "InferenceRequest",
+    "InferenceResult",
 ]
