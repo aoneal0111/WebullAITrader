@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent
@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.gui.runtime_worker import RuntimeWorker
+from app.services import RuntimeService
 from app.gui.state_bridge import QtStateBridge
 from app.operations_core import (
     ApplicationState,
@@ -51,18 +51,19 @@ class MainWindow(QMainWindow):
         self,
         bus: OperationsBus,
         state_store: ApplicationStateStore,
-    ) -> None:
+        runtime_service: RuntimeService,
+) -> None:
         super().__init__()
 
         self._bus = bus
         self._state_store = state_store
-        self._worker: RuntimeWorker | None = None
+        self._runtime_service = runtime_service
         self._state = state_store.snapshot()
 
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
 
-        self.setWindowTitle("Webull AI Trader — Operations Center")
+        self.setWindowTitle("Webull AI Trader   Operations Center")
         self.setMinimumSize(1050, 720)
 
         self._build_interface()
@@ -100,11 +101,11 @@ class MainWindow(QMainWindow):
 
         controls = QHBoxLayout()
 
-        self._start_button = QPushButton("▶  Start Paper Runtime")
+        self._start_button = QPushButton("?  Start Paper Runtime")
         self._start_button.setObjectName("startButton")
         self._start_button.clicked.connect(self._start_runtime)
 
-        self._stop_button = QPushButton("■  Stop Runtime")
+        self._stop_button = QPushButton("   Stop Runtime")
         self._stop_button.setObjectName("stopButton")
         self._stop_button.clicked.connect(self._stop_runtime)
 
@@ -163,7 +164,7 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self._status_bar_label)
 
         safety_notice = QLabel(
-            "READ-ONLY OPERATIONS CENTER — no live orders, cancellations, "
+            "READ-ONLY OPERATIONS CENTER   no live orders, cancellations, "
             "replacements, or broker mutations are available."
         )
         safety_notice.setObjectName("safetyNotice")
@@ -174,18 +175,10 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
     def _start_runtime(self) -> None:
-        if self._worker is not None and self._worker.isRunning():
-            return
-
-        self._worker = RuntimeWorker(self._bus, self)
-        self._worker.finished.connect(self._handle_worker_finished)
-        self._worker.start()
+        self._runtime_service.start()
 
     def _stop_runtime(self) -> None:
-        if self._worker is None or not self._worker.isRunning():
-            return
-
-        self._worker.request_stop()
+        self._runtime_service.stop()
 
     def _render_state(self, state: ApplicationState) -> None:
         self._state = state
@@ -236,11 +229,11 @@ class MainWindow(QMainWindow):
         )
 
         self._status_bar_label.setText(
-            f"{runtime.environment}  │  "
-            f"Runtime: {runtime.phase.value}  │  "
-            f"Market Feed: {runtime.market_feed_status}  │  "
-            f"Model: {runtime.active_model}  │  "
-            f"Cycles: {runtime.cycles_completed}  │  "
+            f"{runtime.environment}     "
+            f"Runtime: {runtime.phase.value}     "
+            f"Market Feed: {runtime.market_feed_status}     "
+            f"Model: {runtime.active_model}     "
+            f"Cycles: {runtime.cycles_completed}     "
             f"Health: {health}"
         )
 
@@ -251,26 +244,17 @@ class MainWindow(QMainWindow):
                 runtime.last_error,
             )
 
-    def _handle_worker_finished(self) -> None:
-        if self._worker is not None:
-            self._worker.deleteLater()
-            self._worker = None
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.request_stop(
-                "Application shutdown requested."
+        if not self._runtime_service.close(timeout_seconds=5.0):
+            QMessageBox.warning(
+                self,
+                "Runtime Still Stopping",
+                "The runtime has not stopped yet. Use Stop Runtime and "
+                "wait for shutdown before closing.",
             )
-
-            if not self._worker.wait(5_000):
-                QMessageBox.warning(
-                    self,
-                    "Runtime Still Stopping",
-                    "The runtime has not stopped yet. Use Stop Runtime and "
-                    "wait for shutdown before closing.",
-                )
-                event.ignore()
-                return
+            event.ignore()
+            return
 
         self._state_bridge.close()
         event.accept()
@@ -387,3 +371,11 @@ class MainWindow(QMainWindow):
             }
             """
         )
+
+
+
+
+
+
+
+

@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QApplication
 
 from app.gui.main_window import MainWindow
 from app.operations_core import ApplicationStateStore, OperationsBus
+from app.services import RuntimeService, SimulatedPaperRuntimeDriver
 
 
 def main() -> int:
@@ -16,12 +17,27 @@ def main() -> int:
     bus = OperationsBus()
     state_store = ApplicationStateStore(bus)
 
-    window = MainWindow(bus, state_store)
+    runtime_service = RuntimeService(
+        bus,
+        lambda: SimulatedPaperRuntimeDriver(
+            interval_seconds=1.0,
+            environment="PAPER",
+            active_model="Promoted model",
+        ),
+    )
+
+    window = MainWindow(
+        bus,
+        state_store,
+        runtime_service,
+    )
     window.show()
 
     exit_code = application.exec()
 
+    runtime_service.close()
     state_store.close()
+
     return exit_code
 
 
