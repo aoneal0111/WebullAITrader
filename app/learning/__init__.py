@@ -6,12 +6,36 @@ from app.learning.engine import (
     RegisteredModel,
     TrainingDataset,
 )
+from app.learning.training import (
+    DatasetReader,
+    DeterministicLinearTrainer,
+    ExpandingWindowSplitter,
+    LearningRecord,
+    LinearModel,
+    OfflineTrainingPipeline,
+    StressEvaluator,
+    TrainingFold,
+    TrainingRun,
+    WalkForwardEvaluator,
+    load_linear_model,
+)
 
 __all__ = [
     "AtomicModelRegistry",
+    "DatasetReader",
+    "DeterministicLinearTrainer",
+    "ExpandingWindowSplitter",
     "ImmutableJournalDatasetExporter",
+    "LearningRecord",
+    "LinearModel",
     "ModelEvaluation",
+    "OfflineTrainingPipeline",
     "PromotionPolicy",
     "RegisteredModel",
+    "StressEvaluator",
     "TrainingDataset",
+    "TrainingFold",
+    "TrainingRun",
+    "WalkForwardEvaluator",
+    "load_linear_model",
 ]
