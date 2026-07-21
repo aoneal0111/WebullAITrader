@@ -333,3 +333,88 @@ def test_partially_filled_order_can_expire() -> None:
     assert order.remaining_quantity == D("75")
     assert order.is_terminal is True
 
+
+
+def test_apply_fill_records_execution_history() -> None:
+    order = apply_fill(
+        accepted_order(),
+        D("40"),
+        D("5"),
+        at=NOW + timedelta(seconds=2),
+        commission=D("1.25"),
+        slippage=D("0.02"),
+        venue=" paper ",
+        liquidity_flag=" maker ",
+        fill_id_factory=lambda: "FILL-1",
+    )
+
+    assert len(order.fills) == 1
+    fill = order.fills[0]
+    assert fill.fill_id == "FILL-1"
+    assert fill.order_id == order.order_id
+    assert fill.quantity == D("40")
+    assert fill.price == D("5")
+    assert fill.timestamp == NOW + timedelta(seconds=2)
+    assert fill.commission == D("1.25")
+    assert fill.slippage == D("0.02")
+    assert fill.venue == "paper"
+    assert fill.liquidity_flag == "MAKER"
+    assert fill.notional == D("200")
+    assert order.total_commission == D("1.25")
+    assert order.total_slippage == D("0.02")
+
+
+def test_multiple_fills_preserve_ordered_history() -> None:
+    order = apply_fill(
+        accepted_order(),
+        D("40"),
+        D("5"),
+        at=NOW + timedelta(seconds=2),
+        fill_id_factory=lambda: "FILL-1",
+    )
+    order = apply_fill(
+        order,
+        D("20"),
+        D("8"),
+        at=NOW + timedelta(seconds=3),
+        commission=D("0.50"),
+        slippage=D("0.01"),
+        fill_id_factory=lambda: "FILL-2",
+    )
+
+    assert [fill.fill_id for fill in order.fills] == [
+        "FILL-1",
+        "FILL-2",
+    ]
+    assert order.filled_quantity == D("60")
+    assert order.average_fill_price == D("6")
+    assert order.total_commission == D("0.50")
+    assert order.total_slippage == D("0.01")
+
+
+def test_fill_rejects_negative_commission() -> None:
+    with pytest.raises(
+        OrderValidationError,
+        match="commission cannot be negative",
+    ):
+        apply_fill(
+            accepted_order(),
+            D("10"),
+            D("5"),
+            commission=D("-0.01"),
+            at=NOW + timedelta(seconds=2),
+        )
+
+
+def test_fill_id_factory_must_return_value() -> None:
+    with pytest.raises(
+        OrderValidationError,
+        match="fill ID factory returned an empty value",
+    ):
+        apply_fill(
+            accepted_order(),
+            D("10"),
+            D("5"),
+            at=NOW + timedelta(seconds=2),
+            fill_id_factory=lambda: " ",
+        )

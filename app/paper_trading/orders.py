@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Callable
 from uuid import uuid4
 
+from app.paper_trading.fill_models import Fill
 from app.paper_trading.order_models import (
     OrderRequest,
     OrderStatus,
@@ -154,6 +155,11 @@ def apply_fill(
     price: Decimal,
     *,
     at: datetime | None = None,
+    commission: Decimal = ZERO,
+    slippage: Decimal = ZERO,
+    venue: str | None = None,
+    liquidity_flag: str | None = None,
+    fill_id_factory: Callable[[], str] | None = None,
 ) -> PaperOrder:
     _require_status(
         order,
@@ -178,6 +184,36 @@ def apply_fill(
         raise OrderValidationError(
             "fill quantity exceeds remaining quantity"
         )
+
+    if commission < ZERO:
+        raise OrderValidationError(
+            "commission cannot be negative"
+        )
+
+    timestamp = _transition_time(order, at)
+    identifier_factory = (
+        fill_id_factory
+        if fill_id_factory is not None
+        else _new_fill_id
+    )
+    fill_id = str(identifier_factory()).strip()
+
+    if not fill_id:
+        raise OrderValidationError(
+            "fill ID factory returned an empty value"
+        )
+
+    fill = Fill(
+        fill_id=fill_id,
+        order_id=order.order_id,
+        quantity=quantity,
+        price=price,
+        timestamp=timestamp,
+        commission=commission,
+        slippage=slippage,
+        venue=venue,
+        liquidity_flag=liquidity_flag,
+    )
 
     previous_notional = (
         order.filled_quantity
@@ -205,9 +241,10 @@ def apply_fill(
     return replace(
         order,
         status=status,
-        updated_at=_transition_time(order, at),
+        updated_at=timestamp,
         filled_quantity=new_filled_quantity,
         average_fill_price=average_fill_price,
+        fills=order.fills + (fill,),
     )
 
 
@@ -255,6 +292,10 @@ def _validate_transition_time(
 
 def _new_order_id() -> str:
     return f"PAPER-{uuid4().hex.upper()}"
+
+
+def _new_fill_id() -> str:
+    return f"FILL-{uuid4().hex.upper()}"
 
 
 def _utc_now() -> datetime:

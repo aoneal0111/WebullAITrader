@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -6,6 +6,7 @@ from decimal import Decimal
 from enum import StrEnum
 
 from app.momentum_scanner import AssetClass
+from app.paper_trading.fill_models import Fill
 
 ZERO = Decimal("0")
 
@@ -100,6 +101,7 @@ class PaperOrder:
     filled_quantity: Decimal = ZERO
     average_fill_price: Decimal | None = None
     rejection_reason: str | None = None
+    fills: tuple[Fill, ...] = ()
 
     def __post_init__(self) -> None:
         order_id = self.order_id.strip()
@@ -143,6 +145,32 @@ class PaperOrder:
             raise ValueError(
                 "average_fill_price requires a fill"
             )
+
+        if self.fills:
+            if any(fill.order_id != order_id for fill in self.fills):
+                raise ValueError(
+                    "all fills must belong to the order"
+                )
+
+            fills_quantity = sum(
+                (fill.quantity for fill in self.fills),
+                start=ZERO,
+            )
+            fills_notional = sum(
+                (fill.notional for fill in self.fills),
+                start=ZERO,
+            )
+
+            if fills_quantity != self.filled_quantity:
+                raise ValueError(
+                    "fills quantity must equal filled_quantity"
+                )
+
+            fills_average = fills_notional / fills_quantity
+            if fills_average != self.average_fill_price:
+                raise ValueError(
+                    "fills must match average_fill_price"
+                )
 
         if (
             self.status is OrderStatus.FILLED
@@ -216,6 +244,20 @@ class PaperOrder:
     @property
     def quantity(self) -> Decimal:
         return self.request.quantity
+
+    @property
+    def total_commission(self) -> Decimal:
+        return sum(
+            (fill.commission for fill in self.fills),
+            start=ZERO,
+        )
+
+    @property
+    def total_slippage(self) -> Decimal:
+        return sum(
+            (fill.slippage for fill in self.fills),
+            start=ZERO,
+        )
 
 
 def _validate_order_prices(
