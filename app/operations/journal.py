@@ -10,6 +10,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from app.operations.learning_runtime import runtime_inference_audit_payload
 from app.operations.runtime import PaperRuntimeCycleResult
 
 
@@ -106,6 +107,10 @@ def _cycle_payload(result: PaperRuntimeCycleResult) -> dict[str, Any]:
         "timestamp": result.timestamp.isoformat(),
         "symbols": list(result.symbols),
         "decisions": [_json_safe(decision) for decision in result.decisions],
+        "inference_audits": [
+            runtime_inference_audit_payload(audit)
+            for audit in result.inference_audits
+        ],
         "session_statistics": _json_safe(result.session.statistics),
     }
 
