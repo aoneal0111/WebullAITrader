@@ -1,10 +1,12 @@
 from __future__ import annotations
 import json
+from contextlib import nullcontext
 from datetime import datetime
 from app.broker_execution import BrokerExecutionAuthorization
 from app.execution_journal.models import *
 from app.execution_journal.policies import ExecutionJournalPolicy
 from app.execution_journal.storage import JsonlStorage,JournalDuplicateError,JournalIntegrityError
+from app.execution_journal.locking import ExecutionJournalLock
 from app.paper_broker import PaperBrokerExecutionResult,PaperBrokerExecutionStatus,PaperBrokerState
 from app.trade_proposals.models import aware_timestamp
 
@@ -13,7 +15,10 @@ class JsonlExecutionJournal:
         self.policy=policy or ExecutionJournalPolicy()
         if not isinstance(self.policy,ExecutionJournalPolicy):raise ValueError("policy must be ExecutionJournalPolicy")
         self.storage=JsonlStorage(path)
+    def _locked(self):return ExecutionJournalLock(self.storage.path,self.policy) if self.policy.locking_enabled else nullcontext()
     def verify_integrity(self):
+        with self._locked():return self._verify_integrity_unlocked()
+    def _verify_integrity_unlocked(self):
         raw=self.storage.read_bytes()
         if not raw:return JournalIntegrityResult(JournalIntegrityStatus.EMPTY,0,"journal is empty")
         if not raw.endswith(b"\n"):return JournalIntegrityResult(JournalIntegrityStatus.TRUNCATED,0,"final record is not newline terminated")
@@ -33,7 +38,9 @@ class JsonlExecutionJournal:
         if len(ids)!=len(set(ids)) or len(a)!=len(set(a)) or len(e)!=len(set(e)):return JournalIntegrityResult(JournalIntegrityStatus.CORRUPTED,len(parsed),"duplicate identifiers")
         return JournalIntegrityResult(JournalIntegrityStatus.VALID,len(parsed),"journal is valid")
     def recover(self):
-        integrity=self.verify_integrity()
+        with self._locked():return self._recover_unlocked()
+    def _recover_unlocked(self):
+        integrity=self._verify_integrity_unlocked()
         if integrity.status is JournalIntegrityStatus.EMPTY:
             if not self.policy.allow_empty_journal:raise JournalIntegrityError("empty journal is not allowed")
             return JournalRecoveryState((),(),(),"",1,JournalIntegrityStatus.EMPTY,{"deterministic":True})
@@ -52,14 +59,15 @@ class JsonlExecutionJournal:
         if not isinstance(e,PaperBrokerExecutionResult):raise ValueError("execution must be PaperBrokerExecutionResult")
         return self._append(JournalRecordType.EXECUTION,e.execution_id,e.timestamp,_execution_payload(e))
     def _append(self,typ,entity,timestamp,payload):
-        state=self.recover()
-        if self.policy.reject_duplicates:
-            if typ is JournalRecordType.AUTHORIZATION and entity in state.authorization_ids:raise JournalDuplicateError(f"duplicate authorization: {entity}")
-            if typ is JournalRecordType.EXECUTION and entity in state.execution_ids:raise JournalDuplicateError(f"duplicate execution: {entity}")
-        seq=state.next_sequence_number;rid,rh=hashes(seq,typ,entity,timestamp,payload,state.last_record_hash,self.policy.version)
-        if any(x.record_id==rid for x in state.records):raise JournalDuplicateError(f"duplicate record: {rid}")
-        record=JournalRecord(seq,rid,typ,entity,timestamp,payload,state.last_record_hash,rh,self.policy.version)
-        self.storage.append(record.to_dict(),self.policy.fsync_enabled,self.policy.maximum_record_bytes);return record
+        with self._locked():
+            state=self._recover_unlocked()
+            if self.policy.reject_duplicates:
+                if typ is JournalRecordType.AUTHORIZATION and entity in state.authorization_ids:raise JournalDuplicateError(f"duplicate authorization: {entity}")
+                if typ is JournalRecordType.EXECUTION and entity in state.execution_ids:raise JournalDuplicateError(f"duplicate execution: {entity}")
+            seq=state.next_sequence_number;rid,rh=hashes(seq,typ,entity,timestamp,payload,state.last_record_hash,self.policy.version)
+            if any(x.record_id==rid for x in state.records):raise JournalDuplicateError(f"duplicate record: {rid}")
+            record=JournalRecord(seq,rid,typ,entity,timestamp,payload,state.last_record_hash,rh,self.policy.version)
+            self.storage.append(record.to_dict(),self.policy.fsync_enabled,self.policy.maximum_record_bytes);return record
 
 def _authorization_payload(a):return {k:v for k,v in a.to_dict().items() if k in ("authorization_id","request_fingerprint","proposal_id","symbol","direction","quantity","entry_price","order_notional","projected_symbol_position","mode","timestamp","decision","reason","policy_version","safety_engine_version")}
 def _execution_payload(e):return {k:v for k,v in e.to_dict().items() if k in ("execution_id","authorization_id","proposal_id","request_fingerprint","symbol","direction","quantity_requested","quantity_filled","entry_price","fill_price","filled_notional","mode","timestamp","status","rejection_reason","policy_version","adapter_version")}
