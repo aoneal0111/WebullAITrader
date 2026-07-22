@@ -1,0 +1,6 @@
+class TradeJournalBatchError(Exception): pass
+class TradeJournalBatchValidationError(TradeJournalBatchError): pass
+class TradeJournalBatchDependencyError(TradeJournalBatchError): pass
+class TradeJournalBatchFactoryError(TradeJournalBatchError): pass
+class TradeJournalBatchResultError(TradeJournalBatchError): pass
+class TradeJournalBatchSerializationError(TradeJournalBatchError): pass
