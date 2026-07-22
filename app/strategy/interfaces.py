@@ -1,0 +1,6 @@
+from typing import Protocol
+from app.strategy.models import StrategyContext,StrategyDecision,StrategyResult
+class StrategyEvaluator(Protocol):
+ def evaluate(self,context:StrategyContext)->tuple[StrategyDecision,...]:...
+class StrategyRuntime(Protocol):
+ def evaluate(self,context:StrategyContext)->StrategyResult:...
