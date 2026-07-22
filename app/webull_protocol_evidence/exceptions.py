@@ -1,0 +1,8 @@
+class WebullProtocolEvidenceError(ValueError): pass
+class WebullProtocolEvidenceDisabledError(WebullProtocolEvidenceError): pass
+class WebullProtocolEvidenceDependencyError(WebullProtocolEvidenceError): pass
+class WebullProtocolEvidenceValidationError(WebullProtocolEvidenceError): pass
+class WebullProtocolClaimError(WebullProtocolEvidenceError): pass
+class WebullProtocolEvidenceRecordError(WebullProtocolEvidenceError): pass
+class WebullProtocolEvidenceConflictError(WebullProtocolEvidenceError): pass
+class WebullProtocolEvidenceAssessmentError(WebullProtocolEvidenceError): pass
