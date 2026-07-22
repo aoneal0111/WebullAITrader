@@ -1,0 +1,6 @@
+from typing import Protocol
+from app.order_placement.models import BrokerOrderAcknowledgement,OrderPlacementRequest,OrderPlacementResult
+class BrokerOrderPlacementGateway(Protocol):
+ def place_order(self,request:OrderPlacementRequest)->BrokerOrderAcknowledgement:...
+class OrderPlacementRuntime(Protocol):
+ def place_order(self,request:OrderPlacementRequest)->OrderPlacementResult:...
