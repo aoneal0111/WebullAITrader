@@ -8,6 +8,9 @@ import pytest
 
 from app.committee import CommitteeAction, CommitteeOpinion, CommitteeVote
 from app.risk import RiskEvaluationRequest, RiskState
+from app.risk import RiskContext, RiskCriteriaResult, RiskOutcome, RiskResult, RiskRuntimeValidationError
+from app.strategy import StrategySignal
+from tests.risk.fixtures import context
 
 NOW = datetime(2026, 7, 21, 12, tzinfo=UTC)
 
@@ -66,3 +69,12 @@ def test_neutral_requires_zero_values():
     neutral=opinion(CommitteeAction.NEUTRAL)
     with pytest.raises(ValueError): RiskEvaluationRequest(neutral,state(),1,0,NOW)
     with pytest.raises(ValueError): RiskEvaluationRequest(neutral,state(),0,.1,NOW)
+
+def test_runtime_models_frozen_slotted_roundtrip():
+    item=context(); assert not hasattr(item,"__dict__") and RiskContext.from_dict(item.to_dict())==item
+    decision=item.strategy_decision; criterion=RiskCriteriaResult("quantity",True,1,2,"within limit")
+    result=RiskResult(item.context_id,decision,RiskOutcome.APPROVED,1,1,(criterion,),"v1")
+    assert RiskResult.from_dict(result.to_dict())==result
+
+def test_runtime_context_signal_quantity_validation():
+    with pytest.raises(RiskRuntimeValidationError): context(StrategySignal.HOLD,"1")

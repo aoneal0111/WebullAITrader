@@ -22,3 +22,8 @@ def test_invalid_policy_values(name,value):
 def test_fraction_boundaries_are_valid():
     assert replace(RiskPolicy(), maximum_drawdown_fraction=0).maximum_drawdown_fraction == 0
     assert replace(RiskPolicy(), maximum_drawdown_fraction=1).maximum_drawdown_fraction == 1
+
+def test_runtime_policy_capabilities_roundtrip_and_validation():
+    policy=RiskPolicy(enabled=True,max_position_value="100",max_portfolio_exposure="500",max_order_quantity="5",minimum_cash_reserve="25")
+    assert RiskPolicy.from_dict(policy.to_dict())==policy and policy.strict_validation
+    with pytest.raises(ValueError): replace(policy,max_order_quantity=-1)

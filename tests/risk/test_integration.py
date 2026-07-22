@@ -21,3 +21,9 @@ def test_analysis_only_pipeline_reaches_deterministic_risk_decision():
     assert first==second and first.symbol==snapshot.symbol==opinion.symbol
     assert first.approved_notional==Decimal("500") and opinion.to_dict()==original
     assert not hasattr(first,"quantity") and not hasattr(first,"order_type") and not hasattr(first,"side")
+from app.risk import DeterministicRiskEvaluator,DeterministicRiskRuntime,RiskOutcome
+from tests.risk.fixtures import context,enabled_policy
+
+def test_strategy_portfolio_risk_runtime_integration():
+    result=DeterministicRiskRuntime(DeterministicRiskEvaluator(),enabled_policy()).evaluate(context())
+    assert result.outcome is RiskOutcome.APPROVED and result.strategy_decision.symbol=="AAPL"

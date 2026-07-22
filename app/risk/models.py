@@ -15,6 +15,90 @@ from app.committee.models import (
     freeze_json_mapping,
     thaw_json_value,
 )
+from app.strategy.models import StrategyContext, StrategyDecision, StrategySignal
+from app.risk.exceptions import RiskRuntimeValidationError
+
+
+class RiskOutcome(StrEnum):
+    APPROVED = "APPROVED"
+    MODIFIED = "MODIFIED"
+    REJECTED = "REJECTED"
+
+
+@dataclass(frozen=True, slots=True)
+class RiskContext:
+    context_id: str
+    strategy_context: StrategyContext
+    strategy_decision: StrategyDecision
+    requested_quantity: Decimal
+    reference_price: Decimal
+    metadata: Mapping[str, JSONValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.context_id, str) or not self.context_id.strip() or self.context_id != self.context_id.strip():
+            raise RiskRuntimeValidationError("context_id must be a non-empty stripped string")
+        if not isinstance(self.strategy_context, StrategyContext) or not isinstance(self.strategy_decision, StrategyDecision):
+            raise RiskRuntimeValidationError("strategy context and decision are required")
+        quantity = _decimal("requested_quantity", self.requested_quantity)
+        price = _decimal("reference_price", self.reference_price)
+        if quantity < 0 or price <= 0: raise RiskRuntimeValidationError("quantity must be nonnegative and price positive")
+        if self.strategy_decision.signal is StrategySignal.HOLD and quantity != 0: raise RiskRuntimeValidationError("HOLD requires zero quantity")
+        if self.strategy_decision.signal is not StrategySignal.HOLD and quantity <= 0: raise RiskRuntimeValidationError("directional signals require positive quantity")
+        object.__setattr__(self, "requested_quantity", quantity); object.__setattr__(self, "reference_price", price)
+        object.__setattr__(self, "metadata", freeze_json_mapping("metadata", self.metadata))
+
+    def to_dict(self):
+        return {"context_id": self.context_id, "strategy_context": self.strategy_context.to_dict(),
+                "strategy_decision": self.strategy_decision.to_dict(), "requested_quantity": str(self.requested_quantity),
+                "reference_price": str(self.reference_price), "metadata": thaw_json_value(self.metadata)}
+
+    @classmethod
+    def from_dict(cls, value):
+        try: return cls(value["context_id"], StrategyContext.from_dict(value["strategy_context"]),
+                        StrategyDecision.from_dict(value["strategy_decision"]), value["requested_quantity"],
+                        value["reference_price"], value.get("metadata", {}))
+        except RiskRuntimeValidationError: raise
+        except (KeyError, TypeError, ValueError) as exc: raise RiskRuntimeValidationError("invalid risk context") from exc
+
+
+@dataclass(frozen=True, slots=True)
+class RiskCriteriaResult:
+    name: str; passed: bool; observed: Decimal; limit: Decimal | None; detail: str
+
+    def __post_init__(self):
+        if not isinstance(self.name, str) or not self.name.strip() or not isinstance(self.detail, str) or not self.detail.strip(): raise RiskRuntimeValidationError("criteria text is required")
+        if not isinstance(self.passed, bool): raise RiskRuntimeValidationError("criteria passed must be boolean")
+        object.__setattr__(self, "observed", _decimal("observed", self.observed))
+        if self.limit is not None: object.__setattr__(self, "limit", _decimal("limit", self.limit))
+    def to_dict(self): return {"name":self.name,"passed":self.passed,"observed":str(self.observed),"limit":str(self.limit) if self.limit is not None else None,"detail":self.detail}
+    @classmethod
+    def from_dict(cls,value): return cls(**dict(value))
+
+
+@dataclass(frozen=True, slots=True)
+class RiskResult:
+    context_id: str; strategy_decision: StrategyDecision; outcome: RiskOutcome
+    requested_quantity: Decimal; approved_quantity: Decimal
+    criteria_results: tuple[RiskCriteriaResult, ...]; policy_version: str
+    metadata: Mapping[str, JSONValue] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.context_id,str) or not self.context_id.strip() or not isinstance(self.strategy_decision,StrategyDecision): raise RiskRuntimeValidationError("result identity is invalid")
+        if not isinstance(self.outcome,RiskOutcome): raise RiskRuntimeValidationError("outcome must be RiskOutcome")
+        requested=_decimal("requested_quantity",self.requested_quantity);approved=_decimal("approved_quantity",self.approved_quantity)
+        if requested<0 or approved<0 or approved>requested: raise RiskRuntimeValidationError("result quantities are invalid")
+        if self.outcome is RiskOutcome.APPROVED and approved!=requested: raise RiskRuntimeValidationError("approved outcome requires full quantity")
+        if self.outcome is RiskOutcome.MODIFIED and not (Decimal("0")<approved<requested): raise RiskRuntimeValidationError("modified outcome requires reduced positive quantity")
+        if self.outcome is RiskOutcome.REJECTED and approved!=0: raise RiskRuntimeValidationError("rejected outcome requires zero quantity")
+        if not isinstance(self.criteria_results,tuple) or not self.criteria_results or any(not isinstance(x,RiskCriteriaResult) for x in self.criteria_results): raise RiskRuntimeValidationError("criteria_results must be non-empty immutable tuple")
+        if not isinstance(self.policy_version,str) or not self.policy_version.strip(): raise RiskRuntimeValidationError("policy_version is required")
+        object.__setattr__(self,"requested_quantity",requested);object.__setattr__(self,"approved_quantity",approved);object.__setattr__(self,"metadata",freeze_json_mapping("metadata",self.metadata))
+    def to_dict(self): return {"context_id":self.context_id,"strategy_decision":self.strategy_decision.to_dict(),"outcome":self.outcome.value,"requested_quantity":str(self.requested_quantity),"approved_quantity":str(self.approved_quantity),"criteria_results":[x.to_dict() for x in self.criteria_results],"policy_version":self.policy_version,"metadata":thaw_json_value(self.metadata)}
+    @classmethod
+    def from_dict(cls,value):
+        try:return cls(value["context_id"],StrategyDecision.from_dict(value["strategy_decision"]),RiskOutcome(value["outcome"]),value["requested_quantity"],value["approved_quantity"],tuple(RiskCriteriaResult.from_dict(x) for x in value["criteria_results"]),value["policy_version"],value.get("metadata",{}))
+        except RiskRuntimeValidationError:raise
+        except (KeyError,TypeError,ValueError) as exc:raise RiskRuntimeValidationError("invalid risk result") from exc
 
 
 class RiskDecisionAction(StrEnum):

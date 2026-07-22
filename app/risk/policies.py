@@ -21,6 +21,12 @@ class RiskPolicy:
     maximum_open_positions: int = 10
     maximum_open_orders: int = 10
     allow_modification: bool = True
+    enabled: bool = False
+    strict_validation: bool = True
+    max_position_value: Decimal = Decimal("10000")
+    max_portfolio_exposure: Decimal = Decimal("50000")
+    max_order_quantity: Decimal = Decimal("1000")
+    minimum_cash_reserve: Decimal = Decimal("0")
     metadata: Mapping[str, JSONValue] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -34,6 +40,11 @@ class RiskPolicy:
         _nonnegative_int("maximum_open_positions", self.maximum_open_positions)
         _nonnegative_int("maximum_open_orders", self.maximum_open_orders)
         if not isinstance(self.allow_modification, bool): raise ValueError("allow_modification must be a boolean")
+        if not isinstance(self.enabled, bool) or not isinstance(self.strict_validation, bool): raise ValueError("runtime policy flags must be booleans")
+        for name in ("max_position_value", "max_portfolio_exposure", "max_order_quantity", "minimum_cash_reserve"):
+            value = _decimal(name, getattr(self, name))
+            if value < 0: raise ValueError(f"{name} must be nonnegative")
+            object.__setattr__(self, name, value)
         object.__setattr__(self, "metadata", freeze_json_mapping("metadata", self.metadata))
 
     def to_dict(self) -> dict[str, Any]:
@@ -42,7 +53,13 @@ class RiskPolicy:
                     "maximum_symbol_exposure_fraction", "maximum_gross_exposure_fraction", "maximum_daily_loss_fraction",
                     "maximum_drawdown_fraction", "maximum_requested_risk_fraction", "minimum_committee_confidence", "minimum_committee_consensus")},
                 "maximum_open_positions": self.maximum_open_positions, "maximum_open_orders": self.maximum_open_orders,
-                "allow_modification": self.allow_modification, "metadata": thaw_json_value(self.metadata)}
+                "allow_modification": self.allow_modification, "enabled": self.enabled,
+                "strict_validation": self.strict_validation,
+                "max_position_value": str(self.max_position_value),
+                "max_portfolio_exposure": str(self.max_portfolio_exposure),
+                "max_order_quantity": str(self.max_order_quantity),
+                "minimum_cash_reserve": str(self.minimum_cash_reserve),
+                "metadata": thaw_json_value(self.metadata)}
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> RiskPolicy:
