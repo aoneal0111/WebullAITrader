@@ -4,8 +4,8 @@ from decimal import Decimal,InvalidOperation
 from enum import StrEnum
 from typing import Mapping
 from app.committee.models import JSONValue,freeze_json_mapping,thaw_json_value
-from app.order_placement import OrderSide,OrderType
-from app.order_status import NormalizedOrderStatus
+from app.order_placement.models import OrderSide,OrderType
+from app.order_status.models import NormalizedOrderStatus
 from app.open_orders.exceptions import OpenOrdersSnapshotError,OpenOrdersValidationError
 def _text(value,name,optional=False):
  if optional and value is None:return None

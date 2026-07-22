@@ -1,10 +1,10 @@
 from dataclasses import dataclass,field
 from enum import StrEnum
 from typing import Mapping
-from app.authentication_runtime import AuthenticationRuntimeContext
+from app.authentication_runtime.models import AuthenticationRuntimeContext
 from app.committee.models import JSONValue,freeze_json_mapping,thaw_json_value
-from app.credentials import CredentialRequest
-from app.session import SessionRequest,SessionSnapshot
+from app.credentials.models import CredentialRequest
+from app.session.models import SessionRequest,SessionSnapshot
 from app.session_bootstrap.exceptions import SessionBootstrapValidationError
 class SessionBootstrapDecision(StrEnum):SUCCESS="SUCCESS";DISABLED="DISABLED";APPROVAL_REJECTED="APPROVAL_REJECTED";AUTHENTICATION_FAILED="AUTHENTICATION_FAILED";SESSION_CREATION_FAILED="SESSION_CREATION_FAILED"
 def _s(v,n):

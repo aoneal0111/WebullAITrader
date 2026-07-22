@@ -1,9 +1,9 @@
-from app.authentication import AuthenticationRequest
+from app.authentication.models import AuthenticationRequest
 from app.authentication_runtime.exceptions import *
 from app.authentication_runtime.models import AuthenticationRuntimeResult
 from app.authentication_runtime.validation import validate_dependencies,validate_request
-from app.authentication_transport import AuthenticationTransportContext,AuthenticationTransportRequest,AuthenticationTransportResult
-from app.credentials import CredentialResponse
+from app.authentication_transport.models import AuthenticationTransportContext,AuthenticationTransportRequest,AuthenticationTransportResult
+from app.credentials.models import CredentialResponse
 class DeterministicAuthenticationRuntime:
  def __init__(self,credential_provider,connector,policy):validate_dependencies(credential_provider,connector,policy);self._provider=credential_provider;self._connector=connector;self._policy=policy
  def authenticate(self,request):

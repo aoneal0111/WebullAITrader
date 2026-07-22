@@ -1,7 +1,7 @@
 from app.open_orders.exceptions import OpenOrdersDependencyError,OpenOrdersIdentityError,OpenOrdersSnapshotError
 from app.open_orders.models import *
 from app.open_orders.validation import validate_dependencies,validate_request
-from app.session import SessionSnapshot,SessionStatus
+from app.session.models import SessionSnapshot,SessionStatus
 class DeterministicOpenOrdersRuntime:
  def __init__(self,session_manager,broker_gateway,policy):validate_dependencies(session_manager,broker_gateway,policy);self._session_manager=session_manager;self._broker_gateway=broker_gateway;self._policy=policy
  def get_open_orders(self,request):

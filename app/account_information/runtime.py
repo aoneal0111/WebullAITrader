@@ -6,7 +6,7 @@ from app.account_information.models import (
     AccountInformationResult, BrokerNeutralAccountInformation,
 )
 from app.account_information.validation import validate_dependencies, validate_request
-from app.session import SessionSnapshot, SessionStatus
+from app.session.models import SessionSnapshot, SessionStatus
 
 
 class DeterministicAccountInformationRuntime:

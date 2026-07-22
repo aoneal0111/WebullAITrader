@@ -5,7 +5,7 @@ from app.authentication.models import AuthenticationResult, AuthenticationStatus
 from app.authentication.policies import AuthenticationPolicy
 from app.authentication.state import AuthenticationState
 from app.authentication.validation import validate_authentication_request, validate_dependencies
-from app.credentials import CredentialRequest, CredentialResponse
+from app.credentials.models import CredentialRequest, CredentialResponse
 
 
 class DeterministicAuthenticationService:

@@ -1,4 +1,4 @@
-from app.authentication import AuthenticationStatus
+from app.authentication.models import AuthenticationStatus
 from app.session.exceptions import InvalidSessionStateError, SessionCreationError, SessionReplacementError
 from app.session.models import SessionStatus
 from app.session.policies import SessionPolicy

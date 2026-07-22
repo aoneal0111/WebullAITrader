@@ -1,7 +1,7 @@
 from app.order_status.exceptions import OrderStatusDependencyError,OrderStatusIdentityError
 from app.order_status.models import *
 from app.order_status.validation import validate_dependencies,validate_request
-from app.session import SessionSnapshot,SessionStatus
+from app.session.models import SessionSnapshot,SessionStatus
 class DeterministicOrderStatusRuntime:
  def __init__(self,session_manager,broker_gateway,policy):validate_dependencies(session_manager,broker_gateway,policy);self._session_manager=session_manager;self._broker_gateway=broker_gateway;self._policy=policy
  def get_order_status(self,request):

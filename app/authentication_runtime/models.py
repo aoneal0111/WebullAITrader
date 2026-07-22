@@ -1,8 +1,8 @@
 from dataclasses import dataclass,field
 from typing import Mapping
-from app.authentication_transport import AuthenticationTransportResult
+from app.authentication_transport.models import AuthenticationTransportResult
 from app.committee.models import JSONValue,freeze_json_mapping,thaw_json_value
-from app.credentials import CredentialRequest
+from app.credentials.models import CredentialRequest
 def _s(v,n):
  if not isinstance(v,str) or not v.strip() or v!=v.strip():raise ValueError(f"{n} must be a non-empty stripped string")
  return v

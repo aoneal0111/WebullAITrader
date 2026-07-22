@@ -1,7 +1,7 @@
 from app.positions.exceptions import PositionsDependencyError
 from app.positions.models import PositionsCriteriaResult,PositionsDecision,PositionsResult,PositionModel
 from app.positions.validation import validate_dependencies,validate_request
-from app.session import SessionSnapshot,SessionStatus
+from app.session.models import SessionSnapshot,SessionStatus
 
 
 class DeterministicPositionsRuntime:
