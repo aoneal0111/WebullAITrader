@@ -1,0 +1,7 @@
+class HistoricalReplayError(Exception): pass
+class HistoricalReplayValidationError(HistoricalReplayError): pass
+class HistoricalReplayDependencyError(HistoricalReplayError): pass
+class HistoricalReplayTransformationError(HistoricalReplayError): pass
+class HistoricalReplayCoordinatorError(HistoricalReplayError): pass
+class HistoricalReplayResultValidationError(HistoricalReplayError): pass
+class HistoricalReplaySerializationError(HistoricalReplayError): pass
