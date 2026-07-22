@@ -5,7 +5,10 @@ from app.learning.engine import (
     PromotionPolicy,
     RegisteredModel,
     TrainingDataset,
+    LearningEngine,
 )
+from app.learning.models import LearningCheck, LearningReport, LearningRequest
+from app.learning.policies import LearningPolicy
 from app.learning.inference import (
     ActiveModelInferenceEngine,
     InferenceRequest,
@@ -46,4 +49,9 @@ __all__ = [
     "ActiveModelInferenceEngine",
     "InferenceRequest",
     "InferenceResult",
+    "LearningCheck",
+    "LearningEngine",
+    "LearningPolicy",
+    "LearningReport",
+    "LearningRequest",
 ]

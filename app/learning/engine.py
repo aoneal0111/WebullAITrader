@@ -397,3 +397,57 @@ def _write_immutable(path: Path, content: bytes) -> None:
 def _require_aware(value: datetime) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("timestamp must be timezone-aware")
+
+
+class LearningEngine:
+    """Deterministically summarize immutable completed trade outcomes."""
+
+    name = "learning_engine_v1"
+
+    def analyze(self, request: "LearningRequest") -> "LearningReport":
+        from app.committee.models import thaw_json_value
+        from app.learning.models import LearningCheck, LearningReport, LearningRequest
+        from app.outcomes import OutcomeStatus
+
+        if not isinstance(request, LearningRequest):
+            raise ValueError("request must be a LearningRequest")
+        outcomes = request.outcomes
+        if len(outcomes) < request.policy.minimum_sample_size:
+            raise ValueError("outcome sample is smaller than minimum_sample_size")
+        closed = all(item.status is OutcomeStatus.CLOSED for item in outcomes)
+        valid_pnl = all(item.realized_pnl.is_finite() and item.realized_return.is_finite() for item in outcomes)
+        checks = (LearningCheck("sample not empty", bool(outcomes)), LearningCheck("all outcomes closed", closed),
+                  LearningCheck("valid pnl values", valid_pnl))
+        if not closed:
+            raise ValueError("all outcomes must be CLOSED")
+        if not valid_pnl:
+            raise ValueError("all outcome pnl and return values must be finite")
+        zero = Decimal("0")
+        winning = tuple(item.realized_pnl for item in outcomes if item.realized_pnl > zero)
+        losing = tuple(item.realized_pnl for item in outcomes if item.realized_pnl < zero)
+        size = len(outcomes)
+        total_profit = sum(winning, zero)
+        total_loss = sum(losing, zero)
+        net_profit = total_profit + total_loss
+        wins, losses = len(winning), len(losing)
+        average_win = total_profit / wins if wins else zero
+        average_loss = total_loss / losses if losses else zero
+        profit_factor = total_profit / abs(total_loss) if losses else Decimal("Infinity")
+        largest_win = max(winning, default=zero)
+        largest_loss = min(losing, default=zero)
+        average_return = sum((item.realized_return for item in outcomes), zero) / size
+        report_id = _learning_report_id(size, request.policy.version, net_profit, self.name)
+        metadata = dict(thaw_json_value(request.policy.metadata))
+        metadata.update(thaw_json_value(request.metadata))
+        metadata.update({"deterministic": True, "engine_version": self.name,
+                         "policy_version": request.policy.version})
+        return LearningReport(report_id, size, wins, losses, Decimal(wins) / size, average_win, average_loss,
+            total_profit, total_loss, net_profit, net_profit / size, profit_factor, largest_win, largest_loss,
+            average_return, request.policy.version, self.name, checks, metadata)
+
+
+def _learning_report_id(sample_size: int, policy_version: str, net_profit: Decimal,
+                        engine_version: str) -> str:
+    canonical = json.dumps({"sample_size": sample_size, "policy_version": policy_version,
+        "net_profit": str(net_profit), "engine_version": engine_version}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
