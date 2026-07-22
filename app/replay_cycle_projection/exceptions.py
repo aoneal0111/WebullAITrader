@@ -1,0 +1,6 @@
+class ReplayCycleProjectionError(Exception): pass
+class ReplayCycleProjectionValidationError(ReplayCycleProjectionError): pass
+class ReplayCycleProjectionDependencyError(ReplayCycleProjectionError): pass
+class ReplayCycleProjectionBuildError(ReplayCycleProjectionError): pass
+class ReplayCycleProjectionResultError(ReplayCycleProjectionError): pass
+class ReplayCycleProjectionSerializationError(ReplayCycleProjectionError): pass
