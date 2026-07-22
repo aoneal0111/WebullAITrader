@@ -1,0 +1,4 @@
+class ResearchProgramError(Exception): pass
+class ResearchProgramValidationError(ResearchProgramError): pass
+class ResearchProgramDependencyError(ResearchProgramError): pass
+class ResearchProgramSerializationError(ResearchProgramError): pass
