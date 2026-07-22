@@ -5,20 +5,20 @@ from decimal import Decimal
 from app.ai.response_models import AIResponse, ResponseAction
 from app.indicators.market_snapshot import MarketSnapshot
 from app.risk.limits import DEFAULT_RISK_LIMITS, RiskLimits
-from app.risk.models import RiskDecision
+from app.risk.models import LegacyRiskDecision
 from app.risk.sizing import calculate_max_position_percent, calculate_risk_score
 
 
 def evaluate_risk(
     response: AIResponse, snapshot: MarketSnapshot, limits: RiskLimits = DEFAULT_RISK_LIMITS
-) -> RiskDecision:
+) -> LegacyRiskDecision:
     """Validate an advisory response using only supplied, in-memory data."""
     if not isinstance(response, AIResponse) or not isinstance(snapshot, MarketSnapshot):
         return _rejected("Malformed risk input.", 100, ("Expected AIResponse and MarketSnapshot.",))
 
     if response.action is ResponseAction.HOLD:
         warnings = () if _valid_price(snapshot.close) else ("Current price is malformed or unavailable.",)
-        return RiskDecision(True, "HOLD requires no market exposure.", 0, Decimal(0), True, True, warnings)
+        return LegacyRiskDecision(True, "HOLD requires no market exposure.", 0, Decimal(0), True, True, warnings)
 
     if response.action not in (ResponseAction.BUY, ResponseAction.SELL):
         return _rejected("Unsupported action.", 100, ("Only BUY, SELL, or HOLD is allowed.",))
@@ -92,7 +92,7 @@ def evaluate_risk(
         if approved
         else "Rejected: one or more deterministic risk limits failed."
     )
-    return RiskDecision(
+    return LegacyRiskDecision(
         approved, reason, risk_score, max_position, stop_valid, target_valid, tuple(warnings)
     )
 
@@ -110,5 +110,5 @@ def _valid_decimal_price(value: object) -> bool:
     return isinstance(value, Decimal) and value.is_finite() and value > 0
 
 
-def _rejected(reason: str, risk_score: int, warnings: tuple[str, ...]) -> RiskDecision:
-    return RiskDecision(False, reason, risk_score, Decimal(0), False, False, warnings)
+def _rejected(reason: str, risk_score: int, warnings: tuple[str, ...]) -> LegacyRiskDecision:
+    return LegacyRiskDecision(False, reason, risk_score, Decimal(0), False, False, warnings)
