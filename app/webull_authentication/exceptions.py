@@ -1,0 +1,7 @@
+class WebullAuthenticationError(ValueError): pass
+class WebullAuthenticationDisabledError(WebullAuthenticationError): pass
+class WebullAuthenticationDependencyError(WebullAuthenticationError): pass
+class WebullAuthenticationProfileError(WebullAuthenticationError): pass
+class WebullAuthenticationRequestError(WebullAuthenticationError): pass
+class WebullAuthenticationResponseError(WebullAuthenticationError): pass
+class WebullAuthenticationVerificationError(WebullAuthenticationError): pass
