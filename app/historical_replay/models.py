@@ -7,6 +7,7 @@ from app.committee.models import JSONValue,freeze_json_mapping,thaw_json_value
 from app.execution_orchestrator import PaperTradingCycleResult
 from app.paper_trading import PaperTradingAccount
 from app.portfolio import PortfolioSnapshot
+from app.trading_cycle import TradingCycleMode
 from app.historical_replay.exceptions import HistoricalReplayValidationError
 def _text(v,n,optional=False):
     if optional and v is None:return None
@@ -40,20 +41,38 @@ class HistoricalReplayIdentity:
     @classmethod
     def from_dict(cls,v):return cls(**dict(v))
 @dataclass(frozen=True,slots=True)
+class HistoricalReplayCycleProvenance:
+    cycle_id:str;mode:TradingCycleMode;started_at:datetime;completed_at:datetime;portfolio_before:PortfolioSnapshot;original_account:PaperTradingAccount;metadata:Mapping[str,JSONValue]=field(default_factory=dict)
+    def __post_init__(self):
+        object.__setattr__(self,"cycle_id",_text(self.cycle_id,"cycle_id"))
+        if not isinstance(self.mode,TradingCycleMode):raise HistoricalReplayValidationError("mode must be TradingCycleMode")
+        object.__setattr__(self,"started_at",_time(self.started_at,"started_at"));object.__setattr__(self,"completed_at",_time(self.completed_at,"completed_at"))
+        if self.completed_at<self.started_at:raise HistoricalReplayValidationError("cycle completed_at cannot precede started_at")
+        if not isinstance(self.portfolio_before,PortfolioSnapshot):raise HistoricalReplayValidationError("portfolio_before must be PortfolioSnapshot")
+        if not isinstance(self.original_account,PaperTradingAccount):raise HistoricalReplayValidationError("original_account must be PaperTradingAccount")
+        if self.portfolio_before.account_id!=self.original_account.account_id:raise HistoricalReplayValidationError("cycle provenance account identity mismatch")
+        object.__setattr__(self,"metadata",freeze_json_mapping("metadata",self.metadata))
+    def to_dict(self):return {"cycle_id":self.cycle_id,"mode":self.mode.value,"started_at":self.started_at.isoformat(),"completed_at":self.completed_at.isoformat(),"portfolio_before":self.portfolio_before.to_dict(),"original_account":self.original_account.to_dict(),"metadata":thaw_json_value(self.metadata)}
+    @classmethod
+    def from_dict(cls,v):return cls(v["cycle_id"],TradingCycleMode(v["mode"]),datetime.fromisoformat(v["started_at"]),datetime.fromisoformat(v["completed_at"]),PortfolioSnapshot.from_dict(v["portfolio_before"]),PaperTradingAccount.from_dict(v["original_account"]),v.get("metadata",{}))
+@dataclass(frozen=True,slots=True)
 class HistoricalReplayEvent:
-    event_id:str;orchestrator_request_id:str;sequence:int;symbol:str;event_time:datetime;portfolio:PortfolioSnapshot;market_price:Decimal;received_time:datetime|None=None;bid_price:Decimal|None=None;ask_price:Decimal|None=None;available_quantity:Decimal|None=None;requested_quantity:Decimal|None=None;features:Mapping[str,JSONValue]=field(default_factory=dict);metadata:Mapping[str,JSONValue]=field(default_factory=dict)
+    event_id:str;orchestrator_request_id:str;sequence:int;symbol:str;event_time:datetime;portfolio:PortfolioSnapshot;cycle_provenance:HistoricalReplayCycleProvenance;market_price:Decimal;received_time:datetime|None=None;bid_price:Decimal|None=None;ask_price:Decimal|None=None;available_quantity:Decimal|None=None;requested_quantity:Decimal|None=None;features:Mapping[str,JSONValue]=field(default_factory=dict);metadata:Mapping[str,JSONValue]=field(default_factory=dict)
     def __post_init__(self):
         object.__setattr__(self,"event_id",_text(self.event_id,"event_id"));object.__setattr__(self,"orchestrator_request_id",_text(self.orchestrator_request_id,"orchestrator_request_id"))
         if isinstance(self.sequence,bool) or not isinstance(self.sequence,int) or self.sequence<0:raise HistoricalReplayValidationError("sequence must be non-negative integer")
         object.__setattr__(self,"symbol",_text(self.symbol,"symbol").upper());object.__setattr__(self,"event_time",_time(self.event_time,"event_time"));object.__setattr__(self,"received_time",_time(self.received_time,"received_time",True))
         if not isinstance(self.portfolio,PortfolioSnapshot):raise HistoricalReplayValidationError("portfolio must be PortfolioSnapshot")
+        if not isinstance(self.cycle_provenance,HistoricalReplayCycleProvenance):raise HistoricalReplayValidationError("cycle_provenance must be HistoricalReplayCycleProvenance")
         for n in ("market_price","bid_price","ask_price"):object.__setattr__(self,n,_decimal(getattr(self,n),n,True))
         for n in ("available_quantity","requested_quantity"):object.__setattr__(self,n,_decimal(getattr(self,n),n))
         object.__setattr__(self,"features",freeze_json_mapping("features",self.features));object.__setattr__(self,"metadata",freeze_json_mapping("metadata",self.metadata))
-    def to_dict(self):return {"event_id":self.event_id,"orchestrator_request_id":self.orchestrator_request_id,"sequence":self.sequence,"symbol":self.symbol,"event_time":self.event_time.isoformat(),"portfolio":self.portfolio.to_dict(),"market_price":str(self.market_price),"received_time":self.received_time.isoformat() if self.received_time else None,"bid_price":str(self.bid_price) if self.bid_price is not None else None,"ask_price":str(self.ask_price) if self.ask_price is not None else None,"available_quantity":str(self.available_quantity) if self.available_quantity is not None else None,"requested_quantity":str(self.requested_quantity) if self.requested_quantity is not None else None,"features":thaw_json_value(self.features),"metadata":thaw_json_value(self.metadata)}
+    def to_dict(self):return {"event_id":self.event_id,"orchestrator_request_id":self.orchestrator_request_id,"sequence":self.sequence,"symbol":self.symbol,"event_time":self.event_time.isoformat(),"portfolio":self.portfolio.to_dict(),"cycle_provenance":self.cycle_provenance.to_dict(),"market_price":str(self.market_price),"received_time":self.received_time.isoformat() if self.received_time else None,"bid_price":str(self.bid_price) if self.bid_price is not None else None,"ask_price":str(self.ask_price) if self.ask_price is not None else None,"available_quantity":str(self.available_quantity) if self.available_quantity is not None else None,"requested_quantity":str(self.requested_quantity) if self.requested_quantity is not None else None,"features":thaw_json_value(self.features),"metadata":thaw_json_value(self.metadata)}
     @classmethod
     def from_dict(cls,v):
-        d=dict(v);d["event_time"]=datetime.fromisoformat(d["event_time"]);d["received_time"]=datetime.fromisoformat(d["received_time"]) if d.get("received_time") else None;d["portfolio"]=PortfolioSnapshot.from_dict(d["portfolio"]);return cls(**d)
+        try:d=dict(v);d["event_time"]=datetime.fromisoformat(d["event_time"]);d["received_time"]=datetime.fromisoformat(d["received_time"]) if d.get("received_time") else None;d["portfolio"]=PortfolioSnapshot.from_dict(d["portfolio"]);d["cycle_provenance"]=HistoricalReplayCycleProvenance.from_dict(d["cycle_provenance"]);return cls(**d)
+        except HistoricalReplayValidationError:raise
+        except (KeyError,TypeError,ValueError) as exc:raise HistoricalReplayValidationError("invalid historical replay event") from exc
 @dataclass(frozen=True,slots=True)
 class HistoricalReplayRequest:
     identity:HistoricalReplayIdentity;events:tuple[HistoricalReplayEvent,...];started_at:datetime;initial_paper_account:PaperTradingAccount;completed_at:datetime|None=None;metadata:Mapping[str,JSONValue]=field(default_factory=dict)
@@ -69,11 +88,12 @@ class HistoricalReplayRequest:
     def from_dict(cls,v):return cls(HistoricalReplayIdentity.from_dict(v["identity"]),tuple(HistoricalReplayEvent.from_dict(x) for x in v["events"]),datetime.fromisoformat(v["started_at"]),PaperTradingAccount.from_dict(v["initial_paper_account"]),datetime.fromisoformat(v["completed_at"]) if v.get("completed_at") else None,v.get("metadata",{}))
 @dataclass(frozen=True,slots=True)
 class HistoricalReplayEventResult:
-    replay_id:str;event_id:str;sequence:int;symbol:str;event_time:datetime;status:HistoricalReplayEventStatus;orchestrator_request_id:str|None=None;orchestrator_result:PaperTradingCycleResult|None=None;resulting_state:PaperTradingAccount|None=None;reasons:tuple[str,...]=();warnings:tuple[str,...]=();errors:tuple[str,...]=();failed_stage:str|None=None;exception_type:str|None=None;metadata:Mapping[str,JSONValue]=field(default_factory=dict)
+    replay_id:str;event_id:str;sequence:int;symbol:str;event_time:datetime;cycle_provenance:HistoricalReplayCycleProvenance;status:HistoricalReplayEventStatus;orchestrator_request_id:str|None=None;orchestrator_result:PaperTradingCycleResult|None=None;resulting_state:PaperTradingAccount|None=None;reasons:tuple[str,...]=();warnings:tuple[str,...]=();errors:tuple[str,...]=();failed_stage:str|None=None;exception_type:str|None=None;metadata:Mapping[str,JSONValue]=field(default_factory=dict)
     def __post_init__(self):
         for n in ("replay_id","event_id"):object.__setattr__(self,n,_text(getattr(self,n),n))
         if isinstance(self.sequence,bool) or not isinstance(self.sequence,int) or self.sequence<0:raise HistoricalReplayValidationError("event result sequence invalid")
         object.__setattr__(self,"symbol",_text(self.symbol,"symbol").upper());object.__setattr__(self,"event_time",_time(self.event_time,"event_time"))
+        if not isinstance(self.cycle_provenance,HistoricalReplayCycleProvenance):raise HistoricalReplayValidationError("cycle_provenance must be HistoricalReplayCycleProvenance")
         if not isinstance(self.status,HistoricalReplayEventStatus):raise HistoricalReplayValidationError("event result status invalid")
         object.__setattr__(self,"orchestrator_request_id",_text(self.orchestrator_request_id,"orchestrator_request_id",True))
         if self.orchestrator_result is not None and not isinstance(self.orchestrator_result,PaperTradingCycleResult):raise HistoricalReplayValidationError("orchestrator_result invalid")
@@ -81,9 +101,9 @@ class HistoricalReplayEventResult:
         for n in ("reasons","warnings","errors"):object.__setattr__(self,n,_strings(getattr(self,n),n))
         for n in ("failed_stage","exception_type"):object.__setattr__(self,n,_text(getattr(self,n),n,True))
         object.__setattr__(self,"metadata",freeze_json_mapping("metadata",self.metadata))
-    def to_dict(self):return {"replay_id":self.replay_id,"event_id":self.event_id,"sequence":self.sequence,"symbol":self.symbol,"event_time":self.event_time.isoformat(),"status":self.status.value,"orchestrator_request_id":self.orchestrator_request_id,"orchestrator_result":self.orchestrator_result.to_dict() if self.orchestrator_result else None,"resulting_state":self.resulting_state.to_dict() if self.resulting_state else None,"reasons":list(self.reasons),"warnings":list(self.warnings),"errors":list(self.errors),"failed_stage":self.failed_stage,"exception_type":self.exception_type,"metadata":thaw_json_value(self.metadata)}
+    def to_dict(self):return {"replay_id":self.replay_id,"event_id":self.event_id,"sequence":self.sequence,"symbol":self.symbol,"event_time":self.event_time.isoformat(),"cycle_provenance":self.cycle_provenance.to_dict(),"status":self.status.value,"orchestrator_request_id":self.orchestrator_request_id,"orchestrator_result":self.orchestrator_result.to_dict() if self.orchestrator_result else None,"resulting_state":self.resulting_state.to_dict() if self.resulting_state else None,"reasons":list(self.reasons),"warnings":list(self.warnings),"errors":list(self.errors),"failed_stage":self.failed_stage,"exception_type":self.exception_type,"metadata":thaw_json_value(self.metadata)}
     @classmethod
-    def from_dict(cls,v):return cls(v["replay_id"],v["event_id"],v["sequence"],v["symbol"],datetime.fromisoformat(v["event_time"]),HistoricalReplayEventStatus(v["status"]),v.get("orchestrator_request_id"),PaperTradingCycleResult.from_dict(v["orchestrator_result"]) if v.get("orchestrator_result") else None,PaperTradingAccount.from_dict(v["resulting_state"]) if v.get("resulting_state") else None,tuple(v.get("reasons",())),tuple(v.get("warnings",())),tuple(v.get("errors",())),v.get("failed_stage"),v.get("exception_type"),v.get("metadata",{}))
+    def from_dict(cls,v):return cls(v["replay_id"],v["event_id"],v["sequence"],v["symbol"],datetime.fromisoformat(v["event_time"]),HistoricalReplayCycleProvenance.from_dict(v["cycle_provenance"]),HistoricalReplayEventStatus(v["status"]),v.get("orchestrator_request_id"),PaperTradingCycleResult.from_dict(v["orchestrator_result"]) if v.get("orchestrator_result") else None,PaperTradingAccount.from_dict(v["resulting_state"]) if v.get("resulting_state") else None,tuple(v.get("reasons",())),tuple(v.get("warnings",())),tuple(v.get("errors",())),v.get("failed_stage"),v.get("exception_type"),v.get("metadata",{}))
 @dataclass(frozen=True,slots=True)
 class HistoricalReplayProgress:
     total_events:int;processed_events:int;completed_events:int;rejected_events:int;skipped_events:int;failed_events:int;last_processed_sequence:int|None=None;last_processed_event_id:str|None=None

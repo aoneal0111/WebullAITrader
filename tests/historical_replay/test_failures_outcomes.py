@@ -15,6 +15,7 @@ def test_stop_on_failure_marks_remaining_skipped_and_failed_status():
     assert tuple(x.status for x in result.event_results)==(HistoricalReplayEventStatus.FAILED,HistoricalReplayEventStatus.SKIPPED)
     assert result.status is HistoricalReplayStatus.FAILED and len(c.calls)==1 and result.final_state is None
     assert result.event_results[0].exception_type=="RuntimeError" and result.event_results[0].failed_stage=="coordinator_execution"
+    assert result.event_results[0].cycle_provenance is not None and result.event_results[1].cycle_provenance is not None
 def test_stop_after_prior_success_is_partial_and_preserves_state():
     c=Coordinator(errors={"orchestrator-1":RuntimeError("boom")});result=runtime(c)[0].replay(request((event(0),event(1),event(2))))
     assert result.status is HistoricalReplayStatus.PARTIALLY_COMPLETED and result.final_state==result.event_results[0].resulting_state
@@ -23,6 +24,7 @@ def test_continue_failure_uses_last_valid_state():
     c=Coordinator(errors={"orchestrator-1":RuntimeError("boom")});result=runtime(c,failure_mode=HistoricalReplayFailureMode.CONTINUE_ON_FAILURE)[0].replay(request((event(0),event(1),event(2))))
     assert tuple(x.status for x in result.event_results)==(HistoricalReplayEventStatus.COMPLETED,HistoricalReplayEventStatus.FAILED,HistoricalReplayEventStatus.COMPLETED)
     assert c.calls[2].paper_account==result.event_results[0].resulting_state and result.final_state==result.event_results[2].resulting_state
+    assert all(item.cycle_provenance.cycle_id==f"cycle-{index}" for index,item in enumerate(result.event_results))
 def test_invalid_coordinator_result_becomes_failed_no_retry():
     c=Coordinator(callback=lambda req:object());result=runtime(c)[0].replay(request((event(),)))
     assert result.status is HistoricalReplayStatus.FAILED and len(c.calls)==1

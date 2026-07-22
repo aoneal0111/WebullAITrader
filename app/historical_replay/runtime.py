@@ -52,7 +52,7 @@ class HistoricalReplayRuntime:
         if result.risk_result and result.risk_result.requested_quantity!=event.requested_quantity:raise HistoricalReplayResultValidationError("coordinator requested quantity mismatch")
         if result.execution_plan_result and result.execution_plan_result.plan and result.execution_plan_result.plan.instructions[0].symbol!=event.symbol:raise HistoricalReplayResultValidationError("coordinator result symbol mismatch")
     @staticmethod
-    def _event(request,event,status,request_id,result,state,reasons,warnings,errors,failed_stage,exception_type):return HistoricalReplayEventResult(request.identity.replay_id,event.event_id,event.sequence,event.symbol,event.event_time,status,request_id,result,state,reasons,warnings,errors,failed_stage,exception_type,event.metadata)
+    def _event(request,event,status,request_id,result,state,reasons,warnings,errors,failed_stage,exception_type):return HistoricalReplayEventResult(request.identity.replay_id,event.event_id,event.sequence,event.symbol,event.event_time,event.cycle_provenance,status,request_id,result,state,reasons,warnings,errors,failed_stage,exception_type,event.metadata)
     def _failed(self,request,event,stage,exc):
         warnings=() if not self._policy.include_diagnostics else ();errors=() if not self._policy.include_diagnostics else (f"{stage} failed",)
         return self._event(request,event,HistoricalReplayEventStatus.FAILED,event.orchestrator_request_id,None,None,(),warnings,errors,stage,type(exc).__name__,)

@@ -26,3 +26,14 @@ def test_state_continuity_and_final_state():
 def test_identity_and_timestamp_exactly_copied():
     e=event();result=runtime()[0].replay(request((e,))).event_results[0]
     assert result.event_id==e.event_id and result.sequence==e.sequence and result.symbol==e.symbol and result.event_time is e.event_time
+    assert result.cycle_provenance is e.cycle_provenance
+def test_ordering_preserves_each_events_exact_provenance():
+    events=(event(2,event_time=NOW),event(0,event_time=NOW-timedelta(minutes=1)),event(1,event_time=NOW))
+    result=runtime(ordering=HistoricalReplayOrdering.EVENT_TIME)[0].replay(request(events))
+    expected={e.event_id:e.cycle_provenance for e in events}
+    assert all(item.cycle_provenance is expected[item.event_id] for item in result.event_results)
+def test_provenance_original_account_does_not_replace_replay_state():
+    e0=event(0);e1=event(1)
+    result=runtime()[0].replay(request((e0,e1)))
+    assert result.event_results[1].cycle_provenance.original_account is e1.cycle_provenance.original_account
+    assert result.event_results[1].resulting_state!=e1.cycle_provenance.original_account
