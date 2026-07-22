@@ -50,6 +50,11 @@ WEBULL_ACCOUNT_ID*
 *.zip
 *.bak
 
+# Python packaging artifacts
+build/
+dist/
+*.egg-info/
+
 # Local inventories and observation output
 project_inventory.txt
 project_symbols.txt
