@@ -61,3 +61,7 @@ __pycache__/
 # Test/runtime artifacts
 .pytest_cache/
 .pytest-temp/
+
+# Temporary test/verification directories
+*_full_temp/
+architecture_verification_temp_*/
