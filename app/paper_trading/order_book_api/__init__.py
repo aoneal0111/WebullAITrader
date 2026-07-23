@@ -32,6 +32,15 @@ from app.paper_trading.order_book_api.exceptions import (
     StaleOrderUpdateError,
 )
 from app.paper_trading.order_book_api.interfaces import PaperOrderBookInterface
+from app.paper_trading.order_book_api.operations import (
+    accept,
+    cancel,
+    expire,
+    expire_day_orders,
+    record_fill,
+    submit,
+    update,
+)
 from app.paper_trading.order_book_api.serializers import (
     serialize_order_book,
     serialize_order_book_fill,
@@ -74,4 +83,11 @@ __all__ = (
     "OrderNotFoundError",
     "StaleOrderUpdateError",
     "InvalidOrderTransitionError",
+    "submit",
+    "update",
+    "cancel",
+    "accept",
+    "expire",
+    "record_fill",
+    "expire_day_orders",
 )

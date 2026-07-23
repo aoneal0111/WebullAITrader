@@ -1,8 +1,8 @@
 """Deterministic application contracts around the public paper order book.
 
-This package observes and coordinates caller-owned lifecycle objects. It does
-not mutate books, execute transitions, match orders, calculate fills, or own a
-runtime.
+This package observes and coordinates caller-owned lifecycle objects. Its
+orchestrator delegates mutations and transitions exclusively to the public
+lifecycle facade; it does not match orders or calculate fills.
 """
 
 from app.paper_order_book.exceptions import (
@@ -19,6 +19,7 @@ from app.paper_order_book.models import (
     PaperOrderBookObservation,
     PaperOrderBookSummary,
 )
+from app.paper_order_book.orchestrator import PaperOrderBookOrchestrator
 from app.paper_order_book.policies import PaperOrderBookPolicy
 from app.paper_order_book.runtime import PaperOrderBookRuntime
 from app.paper_order_book.serializers import (
@@ -46,6 +47,7 @@ __all__ = (
     "PaperOrderBookSummary",
     "PaperOrderBookResult",
     "PaperOrderBookRuntime",
+    "PaperOrderBookOrchestrator",
     "serialize_identity",
     "serialize_snapshot",
     "serialize_command",

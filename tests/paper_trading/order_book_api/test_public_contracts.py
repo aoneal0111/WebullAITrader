@@ -70,6 +70,13 @@ def test_public_all_is_intentional() -> None:
         "OrderNotFoundError",
         "StaleOrderUpdateError",
         "InvalidOrderTransitionError",
+        "submit",
+        "update",
+        "cancel",
+        "accept",
+        "expire",
+        "record_fill",
+        "expire_day_orders",
     }
 
 

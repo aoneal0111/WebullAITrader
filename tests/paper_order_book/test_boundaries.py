@@ -68,6 +68,34 @@ def test_runtime_has_only_local_application_imports() -> None:
     }
 
 
+def test_orchestrator_imports_only_application_and_public_lifecycle_api() -> None:
+    path = PRODUCTION / "orchestrator.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imports = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            imports.add(node.module)
+        elif isinstance(node, ast.Import):
+            imports.update(alias.name for alias in node.names)
+    assert imports == {
+        "app.paper_trading.order_book_api",
+        "app.paper_order_book.exceptions",
+        "app.paper_order_book.models",
+        "app.paper_order_book.runtime",
+    }
+
+
+def test_orchestrator_never_accesses_private_book_state() -> None:
+    path = PRODUCTION / "orchestrator.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    private_attributes = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_")
+    }
+    assert private_attributes == {"_runtime", "_dispatch"}
+
+
 def test_no_lifecycle_dataclasses_or_enums_are_declared() -> None:
     lifecycle_names = {
         "PaperOrder",

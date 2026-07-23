@@ -59,5 +59,6 @@ def test_matching_and_execution_internals_are_not_public() -> None:
     assert all("execution" not in name.lower() for name in api.__all__)
 
 
-def test_no_separate_paper_order_book_package_exists() -> None:
-    assert not (ROOT / "app" / "paper_order_book").exists()
+def test_facade_does_not_depend_on_paper_order_book_application() -> None:
+    for path in PRODUCTION.glob("*.py"):
+        assert "app.paper_order_book" not in path.read_text(encoding="utf-8")

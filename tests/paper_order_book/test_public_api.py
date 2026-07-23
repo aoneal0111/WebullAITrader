@@ -16,6 +16,7 @@ def test_public_exports_are_complete_and_intentional() -> None:
         "PaperOrderBookSummary",
         "PaperOrderBookResult",
         "PaperOrderBookRuntime",
+        "PaperOrderBookOrchestrator",
         "serialize_identity",
         "serialize_snapshot",
         "serialize_command",
