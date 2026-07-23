@@ -8,7 +8,7 @@ from app.paper_order_book import (
     PaperOrderBookValidationError,
     validate_request,
 )
-from tests.paper_order_book.helpers import NOW, make_lifecycle_request, make_request
+from tests.paper_order_book.helpers import NOW, make_order, make_request
 
 
 def test_valid_request_is_accepted_without_mutating_book() -> None:
@@ -25,7 +25,7 @@ def test_valid_request_is_accepted_without_mutating_book() -> None:
 
 
 def test_duplicate_ids_and_timestamp_errors_are_deterministic_in_order() -> None:
-    payload = make_lifecycle_request()
+    payload = make_order("ORDER-2")
     commands = (
         PaperOrderBookCommand(
             "DUP", "submit", payload, NOW + timedelta(seconds=3)

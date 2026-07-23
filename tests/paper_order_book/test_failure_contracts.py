@@ -33,10 +33,10 @@ def build_duplicate_invalid_request():
     observation = create_observation(identity=identity, captured_at=NOW)
     commands = (
         PaperOrderBookCommand(
-            "DUP", "observe", observation.order_book, NOW
+            "DUP", "expire_day_orders", observation.order_book, NOW
         ),
         PaperOrderBookCommand(
-            "DUP", "observe", observation.order_book, NOW
+            "DUP", "expire_day_orders", observation.order_book, NOW
         ),
     )
     return create_request(

@@ -8,7 +8,7 @@ from app.paper_order_book import (
     PaperOrderBookRuntime,
     PaperOrderBookValidationError,
 )
-from tests.paper_order_book.helpers import NOW, make_lifecycle_request, make_request
+from tests.paper_order_book.helpers import NOW, make_order, make_request
 
 
 def test_evaluation_is_deterministic_and_preserves_exact_objects() -> None:
@@ -27,7 +27,7 @@ def test_evaluation_is_deterministic_and_preserves_exact_objects() -> None:
 
 
 def test_summary_counts_observed_orders_and_original_commands() -> None:
-    payload = make_lifecycle_request()
+    payload = make_order("ORDER-2")
     commands = (
         PaperOrderBookCommand(
             "C-1", "observe", payload, NOW + timedelta(seconds=1)
@@ -45,13 +45,13 @@ def test_summary_counts_observed_orders_and_original_commands() -> None:
 
 
 def test_rejected_criteria_are_returned_as_a_deterministic_result() -> None:
-    payload = make_lifecycle_request()
+    payload = make_order("ORDER-2")
     commands = (
         PaperOrderBookCommand(
-            "DUP", "observe", payload, NOW + timedelta(seconds=1)
+            "DUP", "submit", payload, NOW + timedelta(seconds=1)
         ),
         PaperOrderBookCommand(
-            "DUP", "observe", payload, NOW + timedelta(seconds=2)
+            "DUP", "submit", payload, NOW + timedelta(seconds=2)
         ),
     )
     request = make_request(

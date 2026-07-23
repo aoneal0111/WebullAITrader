@@ -12,7 +12,7 @@ from app.paper_order_book import (
     validate_request,
 )
 from app.paper_trading.order_book_api import PaperOrderBook
-from tests.paper_order_book.helpers import NOW, make_lifecycle_request
+from tests.paper_order_book.helpers import NOW, make_order
 
 
 def test_create_observation_preserves_caller_values() -> None:
@@ -40,7 +40,7 @@ def test_create_request_preserves_all_caller_owned_values() -> None:
     policy = PaperOrderBookPolicy()
     commands = (
         PaperOrderBookCommand(
-            "COMMAND-1", "observe", make_lifecycle_request(), NOW
+            "COMMAND-1", "submit", make_order("ORDER-2"), NOW
         ),
     )
     request = create_request(

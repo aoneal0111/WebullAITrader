@@ -53,7 +53,7 @@ def make_request(*, commands=None, identity=None, snapshot_identity=None):
             PaperOrderBookCommand(
                 "COMMAND-1",
                 "submit",
-                make_lifecycle_request("MSFT"),
+                make_order("ORDER-2"),
                 NOW + timedelta(seconds=1),
             ),
         )

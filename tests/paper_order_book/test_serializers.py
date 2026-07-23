@@ -25,14 +25,14 @@ def test_serialization_is_deterministic_and_preserves_command_order() -> None:
     assert first == second
     assert first["identity"] == {"order_book_id": "BOOK-1"}
     assert first["commands"][0]["command_id"] == "COMMAND-1"
-    assert first["commands"][0]["payload"]["type"] == "order_request"
+    assert first["commands"][0]["payload"]["type"] == "order"
     assert first["requested_at"] == request.requested_at.isoformat()
 
 
 def test_snapshot_and_command_delegate_to_lifecycle_serializers(monkeypatch) -> None:
     request = make_request()
     book_marker = {"delegated": "book"}
-    request_marker = {"delegated": "request"}
+    order_marker = {"delegated": "order"}
     monkeypatch.setattr(
         lifecycle_serializers,
         "serialize_order_book",
@@ -40,13 +40,13 @@ def test_snapshot_and_command_delegate_to_lifecycle_serializers(monkeypatch) -> 
     )
     monkeypatch.setattr(
         lifecycle_serializers,
-        "serialize_order_book_request",
-        lambda value: request_marker,
+        "serialize_order_book_order",
+        lambda value: order_marker,
     )
 
     assert serialize_snapshot(request.snapshot)["order_book"] is book_marker
     assert serialize_command(request.commands[0])["payload"]["value"] is (
-        request_marker
+        order_marker
     )
 
 
