@@ -2,6 +2,10 @@
 
 import app.paper_order_book.dispatcher as command_dispatcher
 
+from app.paper_order_book.execution_trace import (
+    PaperOrderBookExecutionTraceEntry,
+    trace_dispatched_command,
+)
 from app.paper_order_book.models import (
     PaperOrderBookObservation,
     PaperOrderBookRequest,
@@ -20,11 +24,15 @@ class PaperOrderBookOrchestrator:
 
             runtime = create_runtime()
         self._runtime = runtime
+        self._execution_trace: tuple[
+            PaperOrderBookExecutionTraceEntry, ...
+        ] = ()
 
     def execute(
         self,
         request: PaperOrderBookRequest,
     ) -> PaperOrderBookResult:
+        self._execution_trace = ()
         evaluated = self._runtime.evaluate(request)
         if not evaluated.criteria.accepted:
             return evaluated
@@ -32,6 +40,10 @@ class PaperOrderBookOrchestrator:
         order_book = request.snapshot.order_book
         for command in request.commands:
             command_dispatcher.dispatch_command(order_book, command)
+            self._execution_trace = (
+                *self._execution_trace,
+                trace_dispatched_command(command),
+            )
 
         observation = PaperOrderBookObservation(
             identity=request.snapshot.identity,

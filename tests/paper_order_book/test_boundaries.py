@@ -80,6 +80,7 @@ def test_orchestrator_imports_only_application_and_public_lifecycle_api() -> Non
     assert imports == {
         "app.paper_order_book.composition",
         "app.paper_order_book.dispatcher",
+        "app.paper_order_book.execution_trace",
         "app.paper_order_book.models",
         "app.paper_order_book.runtime",
     }
@@ -126,7 +127,22 @@ def test_orchestrator_never_accesses_private_book_state() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.Attribute) and node.attr.startswith("_")
     }
-    assert private_attributes == {"_runtime"}
+    assert private_attributes == {"_execution_trace", "_runtime"}
+
+
+def test_execution_trace_imports_only_stdlib_and_local_models() -> None:
+    path = PRODUCTION / "execution_trace.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imports = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert imports == {
+        "dataclasses",
+        "datetime",
+        "app.paper_order_book.models",
+    }
 
 
 def test_service_imports_only_local_application_modules() -> None:
