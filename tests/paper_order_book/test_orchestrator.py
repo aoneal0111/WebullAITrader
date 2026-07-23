@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+import app.paper_order_book.dispatcher as command_dispatcher
 import app.paper_trading.order_book_api as lifecycle_api
 
 from app.paper_order_book import (
@@ -7,6 +8,7 @@ from app.paper_order_book import (
     PaperOrderBookIdentity,
     PaperOrderBookOrchestrator,
     PaperOrderBookRuntime,
+    PaperOrderBookValidationError,
 )
 from tests.paper_order_book.helpers import NOW, make_order, make_request
 
@@ -20,6 +22,52 @@ class RecordingRuntime:
         self.events.append("evaluate")
         self.result = PaperOrderBookRuntime().evaluate(request)
         return self.result
+
+
+def test_orchestrator_delegates_each_command_to_dispatcher(monkeypatch) -> None:
+    order = make_order("ORDER-2")
+    command = PaperOrderBookCommand(
+        "SUBMIT-1", "submit", order, NOW + timedelta(seconds=1)
+    )
+    request = make_request(commands=(command,))
+    calls = []
+    original_dispatch = command_dispatcher.dispatch_command
+
+    def recording_dispatch(order_book, routed_command):
+        calls.append((order_book, routed_command))
+        return original_dispatch(order_book, routed_command)
+
+    monkeypatch.setattr(
+        command_dispatcher,
+        "dispatch_command",
+        recording_dispatch,
+    )
+
+    PaperOrderBookOrchestrator().execute(request)
+
+    assert calls == [(request.snapshot.order_book, command)]
+
+
+def test_dispatcher_preserves_unsupported_command_failure() -> None:
+    command = PaperOrderBookCommand(
+        "UNKNOWN-1",
+        "unknown",
+        make_order("ORDER-2"),
+        NOW + timedelta(seconds=1),
+    )
+    request = make_request()
+
+    try:
+        command_dispatcher.dispatch_command(
+            request.snapshot.order_book,
+            command,
+        )
+    except PaperOrderBookValidationError as error:
+        assert str(error) == (
+            "unsupported command payload for command_type: unknown"
+        )
+    else:
+        raise AssertionError("unsupported command did not fail")
 
 
 def test_runtime_is_invoked_before_lifecycle_delegation(monkeypatch) -> None:

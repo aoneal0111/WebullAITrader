@@ -78,11 +78,26 @@ def test_orchestrator_imports_only_application_and_public_lifecycle_api() -> Non
         elif isinstance(node, ast.Import):
             imports.update(alias.name for alias in node.names)
     assert imports == {
-        "app.paper_trading.order_book_api",
         "app.paper_order_book.composition",
-        "app.paper_order_book.exceptions",
+        "app.paper_order_book.dispatcher",
         "app.paper_order_book.models",
         "app.paper_order_book.runtime",
+    }
+
+
+def test_dispatcher_imports_only_models_exceptions_and_lifecycle_facade() -> None:
+    path = PRODUCTION / "dispatcher.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imports = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            imports.add(node.module)
+        elif isinstance(node, ast.Import):
+            imports.update(alias.name for alias in node.names)
+    assert imports == {
+        "app.paper_order_book.exceptions",
+        "app.paper_order_book.models",
+        "app.paper_trading.order_book_api",
     }
 
 
@@ -94,7 +109,7 @@ def test_orchestrator_never_accesses_private_book_state() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.Attribute) and node.attr.startswith("_")
     }
-    assert private_attributes == {"_runtime", "_dispatch"}
+    assert private_attributes == {"_runtime"}
 
 
 def test_service_imports_only_local_application_modules() -> None:
