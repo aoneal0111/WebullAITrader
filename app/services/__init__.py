@@ -1,14 +1,17 @@
 """Application service boundaries used by presentation clients."""
 
+from app.services.runtime_drivers import (
+    PaperRuntimeDriver,
+    SimulatedPaperRuntimeDriver,
+)
 from app.services.runtime_service import (
     RuntimeDriver,
     RuntimeService,
     RuntimeServiceStatus,
 )
 
-from app.services.runtime_drivers import SimulatedPaperRuntimeDriver
-
 __all__ = [
+    "PaperRuntimeDriver",
     "RuntimeDriver",
     "RuntimeService",
     "RuntimeServiceStatus",
