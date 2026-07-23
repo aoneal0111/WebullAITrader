@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from app.execution_coordinator import ExecutionCoordinator
@@ -37,13 +37,6 @@ class PaperRuntimeDependencies:
     clock: Clock
     strategy_engine: StrategyEngine
     inference_adapter: RuntimeInferenceAdapter | None = None
-
-
-def utc_clock() -> datetime:
-    """Return the current timezone-aware UTC timestamp."""
-
-    return datetime.now(timezone.utc)
-
 
 def create_execution_coordinator(
     *,

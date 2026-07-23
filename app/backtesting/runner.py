@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.execution_coordinator.proposal_factory import create_proposed_order
+
 import json
 from dataclasses import asdict, replace
 from datetime import date
@@ -142,8 +144,10 @@ def _run(frames, responses, intents, config, checkpoint, stop):
             journal = append_replay_event(state.replay_journal, index, timestamp, ReplayEventType.ORDER_COMPLIANCE, "REJECTED_INTENT")
             state = replace(state, replay_journal=journal, next_candle_index=index + 1, rejected=state.rejected + 1)
             continue
-        proposal = ProposedOrder(intent.request_id, intent.symbol, intent.side, intent.order_type, intent.quantity,
-                                 intent.limit_price, intent.stop_price, intent.requested_session, timestamp)
+        proposal = create_proposed_order(
+            intent,
+            created_timestamp=timestamp,
+        )
         gfv = None
         if intent.side is OrderSide.SELL and config.account_type is AccountType.CASH:
             gfv = evaluate_sell_compliance(intent.symbol, intent.quantity, config.account_type, timestamp, state.purchase_lots)
