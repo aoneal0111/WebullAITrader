@@ -96,6 +96,20 @@ def test_orchestrator_never_accesses_private_book_state() -> None:
     assert private_attributes == {"_runtime", "_dispatch"}
 
 
+def test_service_imports_only_local_application_modules() -> None:
+    path = PRODUCTION / "service.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imports = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert imports == {
+        "app.paper_order_book.models",
+        "app.paper_order_book.orchestrator",
+    }
+
+
 def test_no_lifecycle_dataclasses_or_enums_are_declared() -> None:
     lifecycle_names = {
         "PaperOrder",

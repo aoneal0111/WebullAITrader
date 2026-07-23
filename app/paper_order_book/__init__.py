@@ -22,6 +22,7 @@ from app.paper_order_book.models import (
 from app.paper_order_book.orchestrator import PaperOrderBookOrchestrator
 from app.paper_order_book.policies import PaperOrderBookPolicy
 from app.paper_order_book.runtime import PaperOrderBookRuntime
+from app.paper_order_book.service import PaperOrderBookService
 from app.paper_order_book.serializers import (
     serialize_command,
     serialize_criteria,
@@ -48,6 +49,7 @@ __all__ = (
     "PaperOrderBookResult",
     "PaperOrderBookRuntime",
     "PaperOrderBookOrchestrator",
+    "PaperOrderBookService",
     "serialize_identity",
     "serialize_snapshot",
     "serialize_command",
