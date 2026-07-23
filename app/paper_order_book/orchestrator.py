@@ -17,7 +17,11 @@ class PaperOrderBookOrchestrator:
     """Validate first, then delegate mutations to the lifecycle facade."""
 
     def __init__(self, runtime: PaperOrderBookRuntime | None = None) -> None:
-        self._runtime = runtime if runtime is not None else PaperOrderBookRuntime()
+        if runtime is None:
+            from app.paper_order_book.composition import create_runtime
+
+            runtime = create_runtime()
+        self._runtime = runtime
 
     def execute(
         self,

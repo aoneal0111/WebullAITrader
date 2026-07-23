@@ -10,6 +10,7 @@ from app.paper_order_book.exceptions import (
     PaperOrderBookSerializationError,
     PaperOrderBookValidationError,
 )
+from app.paper_order_book.composition import create_service, default_service
 from app.paper_order_book.facade import execute
 from app.paper_order_book.models import (
     PaperOrderBookCommand,
@@ -61,4 +62,6 @@ __all__ = (
     "serialize_result",
     "validate_request",
     "execute",
+    "create_service",
+    "default_service",
 )

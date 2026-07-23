@@ -14,11 +14,11 @@ class PaperOrderBookService:
         self,
         orchestrator: PaperOrderBookOrchestrator | None = None,
     ) -> None:
-        self._orchestrator = (
-            orchestrator
-            if orchestrator is not None
-            else PaperOrderBookOrchestrator()
-        )
+        if orchestrator is None:
+            from app.paper_order_book.composition import create_orchestrator
+
+            orchestrator = create_orchestrator()
+        self._orchestrator = orchestrator
 
     def execute(
         self,

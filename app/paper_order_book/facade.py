@@ -4,9 +4,9 @@ from app.paper_order_book.models import (
     PaperOrderBookRequest,
     PaperOrderBookResult,
 )
-from app.paper_order_book.service import PaperOrderBookService
+from app.paper_order_book.composition import default_service
 
-_service = PaperOrderBookService()
+_service = default_service()
 
 
 def execute(

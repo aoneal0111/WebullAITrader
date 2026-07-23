@@ -79,6 +79,7 @@ def test_orchestrator_imports_only_application_and_public_lifecycle_api() -> Non
             imports.update(alias.name for alias in node.names)
     assert imports == {
         "app.paper_trading.order_book_api",
+        "app.paper_order_book.composition",
         "app.paper_order_book.exceptions",
         "app.paper_order_book.models",
         "app.paper_order_book.runtime",
@@ -105,6 +106,7 @@ def test_service_imports_only_local_application_modules() -> None:
         if isinstance(node, ast.ImportFrom) and node.module
     }
     assert imports == {
+        "app.paper_order_book.composition",
         "app.paper_order_book.models",
         "app.paper_order_book.orchestrator",
     }
@@ -119,9 +121,46 @@ def test_facade_imports_only_models_and_service() -> None:
         if isinstance(node, ast.ImportFrom) and node.module
     }
     assert imports == {
+        "app.paper_order_book.composition",
         "app.paper_order_book.models",
+    }
+
+
+def test_composition_imports_only_functools_and_local_modules() -> None:
+    path = PRODUCTION / "composition.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imports = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert imports == {
+        "functools",
+        "app.paper_order_book.orchestrator",
+        "app.paper_order_book.runtime",
         "app.paper_order_book.service",
     }
+
+
+def test_only_composition_instantiates_application_graph_types() -> None:
+    graph_types = {
+        "PaperOrderBookRuntime",
+        "PaperOrderBookOrchestrator",
+        "PaperOrderBookService",
+    }
+    for path in PRODUCTION.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        constructions = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in graph_types
+        }
+        if path.name == "composition.py":
+            assert constructions == graph_types
+        else:
+            assert constructions == set(), path
 
 
 def test_no_lifecycle_dataclasses_or_enums_are_declared() -> None:
