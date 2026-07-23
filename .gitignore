@@ -70,3 +70,32 @@ __pycache__/
 # Temporary test/verification directories
 *_full_temp/
 architecture_verification_temp_*/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Pytest
+.pytest_tmp/
+.pytest_cache/
+
+# Build output
+build/
+dist/
+installer_output/
+
+# GUI backups
+gui_backups/
+*.backup.py
+*.before-redesign.py
+
+# Generated reports
+*_audit.txt
+desktop_composition_dependencies.txt
+project_tree_clean.txt
+
+# Accidental Windows text copies
+*.ps1.txt
+*.bat.txt
+*.py.txt
+
