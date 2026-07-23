@@ -4,7 +4,12 @@ from decimal import Decimal
 
 import app.paper_order_book as api
 import pytest
-from app.paper_order_book.execution_trace import DISPATCHED
+import app.paper_order_book.dispatcher as command_dispatcher
+from app.paper_order_book.execution_trace import (
+    COMPLETED,
+    DISPATCHED,
+    FAILED,
+)
 from tests.paper_order_book.helpers import NOW, make_request
 
 
@@ -42,8 +47,56 @@ def test_each_executed_command_produces_one_ordered_trace_entry() -> None:
         entry.stage == DISPATCHED
         for entry in orchestrator._execution_trace
     )
+    assert all(
+        entry.outcome == COMPLETED
+        for entry in orchestrator._execution_trace
+    )
     with pytest.raises(FrozenInstanceError):
         orchestrator._execution_trace[0].stage = "changed"
+
+
+def test_failed_dispatch_is_traced_before_same_exception_propagates(
+    monkeypatch,
+) -> None:
+    commands = (
+        _submit("SUBMIT-1", "ORDER-2", 1),
+        _submit("SUBMIT-2", "ORDER-3", 2),
+    )
+    orchestrator = api.PaperOrderBookOrchestrator()
+    failure = RuntimeError("lifecycle failure")
+    original_dispatch = command_dispatcher.dispatch_command
+    calls = 0
+
+    def fail_second_dispatch(order_book, command):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise failure
+        return original_dispatch(order_book, command)
+
+    monkeypatch.setattr(
+        command_dispatcher,
+        "dispatch_command",
+        fail_second_dispatch,
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        orchestrator.execute(make_request(commands=commands))
+
+    assert caught.value is failure
+    assert tuple(
+        entry.outcome for entry in orchestrator._execution_trace
+    ) == (COMPLETED, FAILED)
+    assert tuple(
+        entry.command_type for entry in orchestrator._execution_trace
+    ) == tuple(command.command_type for command in commands)
+    assert tuple(
+        entry.occurred_at for entry in orchestrator._execution_trace
+    ) == tuple(command.occurred_at for command in commands)
+    assert all(
+        entry.stage == DISPATCHED
+        for entry in orchestrator._execution_trace
+    )
 
 
 def test_trace_is_internal_immutable_and_does_not_change_results() -> None:

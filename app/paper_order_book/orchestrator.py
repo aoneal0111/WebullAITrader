@@ -3,8 +3,10 @@
 import app.paper_order_book.dispatcher as command_dispatcher
 
 from app.paper_order_book.execution_trace import (
+    COMPLETED,
+    FAILED,
     PaperOrderBookExecutionTraceEntry,
-    trace_dispatched_command,
+    trace_command_dispatch,
 )
 from app.paper_order_book.models import (
     PaperOrderBookObservation,
@@ -39,10 +41,17 @@ class PaperOrderBookOrchestrator:
 
         order_book = request.snapshot.order_book
         for command in request.commands:
-            command_dispatcher.dispatch_command(order_book, command)
+            try:
+                command_dispatcher.dispatch_command(order_book, command)
+            except Exception:
+                self._execution_trace = (
+                    *self._execution_trace,
+                    trace_command_dispatch(command, FAILED),
+                )
+                raise
             self._execution_trace = (
                 *self._execution_trace,
-                trace_dispatched_command(command),
+                trace_command_dispatch(command, COMPLETED),
             )
 
         observation = PaperOrderBookObservation(
