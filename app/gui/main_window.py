@@ -1092,6 +1092,26 @@ class MainWindow(QMainWindow):
             #signalValue { color: #68a9ff; font-size: 17px; font-weight: 800; }
             #runtimeSummary { background: #0d141d; border: 1px solid #202b3a; border-radius: 7px; color: #b9c3d1; padding: 10px; }
             QPushButton { min-height: 39px; border-radius: 7px; font-weight: 750; }
+            #ordersFilter {
+                min-height: 30px;
+                min-width: 155px;
+                padding: 0 10px;
+                background: #111a26;
+                border: 1px solid #334052;
+                border-radius: 6px;
+                color: #cbd5e3;
+                font-size: 9px;
+                font-weight: 750;
+            }
+            #ordersFilter:hover {
+                border-color: #4f8cff;
+            }
+            #ordersFilter QAbstractItemView {
+                background: #111a26;
+                border: 1px solid #334052;
+                color: #cbd5e3;
+                selection-background-color: #1d3554;
+            }
             #workspaceNavButton {
                 min-height: 30px;
                 padding: 0 14px;
