@@ -1,0 +1,27 @@
+import pytest
+from app.account_information import AccountInformationDependencyError,AccountInformationPolicy,DeterministicAccountInformationRuntime
+from app.market_data import DeterministicMarketDataRuntime,MarketDataDependencyError,MarketDataPolicy
+from app.open_orders import DeterministicOpenOrdersRuntime,OpenOrdersDependencyError,OpenOrdersPolicy
+from app.order_cancellation import DeterministicOrderCancellationRuntime,OrderCancellationDependencyError,OrderCancellationPolicy
+from app.order_placement import DeterministicOrderPlacementRuntime,OrderPlacementDependencyError,OrderPlacementPolicy
+from app.order_status import DeterministicOrderStatusRuntime,OrderStatusDependencyError,OrderStatusPolicy
+from app.positions import DeterministicPositionsRuntime,PositionsDependencyError,PositionsPolicy
+from tests.account_information.fixtures import request as account_request
+from tests.account_information.helpers import FakeGateway as AccountGateway,FakeSessionManager as AccountSession
+from tests.market_data.fixtures import request as market_request
+from tests.market_data.helpers import FakeGateway as MarketGateway,FakeSessionManager as MarketSession
+from tests.open_orders.fixtures import request as open_request
+from tests.open_orders.helpers import FakeGateway as OpenGateway,FakeSessionManager as OpenSession
+from tests.order_cancellation.fixtures import request as cancellation_request
+from tests.order_cancellation.helpers import FakeGateway as CancellationGateway,FakeSessionManager as CancellationSession
+from tests.order_placement.fixtures import request as placement_request
+from tests.order_placement.helpers import FakeGateway as PlacementGateway,FakeSessionManager as PlacementSession
+from tests.order_status.fixtures import request as status_request
+from tests.order_status.helpers import FakeGateway as StatusGateway,FakeSessionManager as StatusSession
+from tests.positions.fixtures import request as positions_request
+from tests.positions.helpers import FakeGateway as PositionsGateway,FakeSessionManager as PositionsSession
+CASES=((DeterministicAccountInformationRuntime,AccountSession,AccountGateway,AccountInformationPolicy,account_request,AccountInformationDependencyError),(DeterministicPositionsRuntime,PositionsSession,PositionsGateway,PositionsPolicy,positions_request,PositionsDependencyError),(DeterministicMarketDataRuntime,MarketSession,MarketGateway,MarketDataPolicy,market_request,MarketDataDependencyError),(DeterministicOrderPlacementRuntime,PlacementSession,PlacementGateway,OrderPlacementPolicy,placement_request,OrderPlacementDependencyError),(DeterministicOrderStatusRuntime,StatusSession,StatusGateway,OrderStatusPolicy,status_request,OrderStatusDependencyError),(DeterministicOpenOrdersRuntime,OpenSession,OpenGateway,OpenOrdersPolicy,open_request,OpenOrdersDependencyError),(DeterministicOrderCancellationRuntime,CancellationSession,CancellationGateway,OrderCancellationPolicy,cancellation_request,OrderCancellationDependencyError))
+@pytest.mark.parametrize("runtime_type,session_type,gateway_type,policy_type,request_factory,error",CASES)
+def test_raw_mapping_or_missing_fields_never_escape(runtime_type,session_type,gateway_type,policy_type,request_factory,error):
+ runtime=runtime_type(session_type(),gateway_type(response={"missing":"fields"}),policy_type(enabled=True));method=next(getattr(runtime,n) for n in dir(runtime) if not n.startswith("_") and callable(getattr(runtime,n)))
+ with pytest.raises(error):method(request_factory())

@@ -1,0 +1,6 @@
+from typing import Protocol
+from app.order_status.models import BrokerOrderStatusSnapshot,OrderStatusRequest,OrderStatusResult
+class BrokerOrderStatusGateway(Protocol):
+ def get_order_status(self,request:OrderStatusRequest)->BrokerOrderStatusSnapshot|None:...
+class OrderStatusRuntime(Protocol):
+ def get_order_status(self,request:OrderStatusRequest)->OrderStatusResult:...

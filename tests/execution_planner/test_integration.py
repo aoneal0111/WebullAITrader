@@ -1,0 +1,3 @@
+from app.execution_planner import DeterministicExecutionPlannerEvaluator,DeterministicExecutionPlannerRuntime,ExecutionPlanDecision
+from tests.execution_planner.fixtures import enabled_policy,request
+def test_risk_to_broker_neutral_instruction_without_order_runtime():assert DeterministicExecutionPlannerRuntime(DeterministicExecutionPlannerEvaluator(),enabled_policy()).plan(request()).decision is ExecutionPlanDecision.PLANNED

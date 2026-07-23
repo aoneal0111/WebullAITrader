@@ -1,0 +1,4 @@
+from typing import Protocol
+from app.webull_authentication_approval.models import WebullAuthenticationProfileApprovalRequest,WebullAuthenticationProfileApprovalResult
+class WebullAuthenticationProfileApprovalService(Protocol):
+ def approve(self,request:WebullAuthenticationProfileApprovalRequest)->WebullAuthenticationProfileApprovalResult:...

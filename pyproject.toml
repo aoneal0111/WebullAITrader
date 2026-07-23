@@ -1,21 +1,29 @@
 [build-system]
-requires = ["setuptools>=75"]
+requires = ["setuptools==80.9.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "webull-ai-trader"
 version = "0.1.0"
-description = "Read-only Webull account snapshot agent"
+description = "Deterministic, broker-neutral trading runtime and safety architecture"
+readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
-  "mcp>=1.9,<2",
-  "python-dotenv>=1.1,<2",
-  "structlog>=25.1,<26",
+  "httpx==0.28.1",
+  "mcp==1.28.1",
+  "numpy==2.5.1",
+  "pandas==3.0.3",
+  "pandas-market-calendars==5.4.0",
+  "PySide6==6.11.1",
+  "python-dateutil==2.9.0.post0",
+  "python-dotenv==1.2.2",
+  "structlog==25.5.0",
+  "ta==0.11.0",
+  "tzdata==2026.3",
 ]
 
 [project.scripts]
 webull-account-summary = "app.cli:main"
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-q"
+[tool.setuptools.packages.find]
+include = ["app*"]

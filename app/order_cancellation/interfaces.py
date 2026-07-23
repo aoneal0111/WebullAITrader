@@ -1,0 +1,6 @@
+from typing import Protocol
+from app.order_cancellation.models import BrokerOrderCancellationAcknowledgement,OrderCancellationRequest,OrderCancellationResult
+class BrokerOrderCancellationGateway(Protocol):
+ def cancel_order(self,request:OrderCancellationRequest)->BrokerOrderCancellationAcknowledgement|None:...
+class OrderCancellationRuntime(Protocol):
+ def cancel_order(self,request:OrderCancellationRequest)->OrderCancellationResult:...

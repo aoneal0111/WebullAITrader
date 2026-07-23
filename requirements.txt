@@ -1,10 +1,13 @@
-mcp>=1.9,<2
+httpx==0.28.1
+mcp==1.28.1
 numpy==2.5.1
 pandas==3.0.3
-pytest>=8.3,<10
+pytest==9.1.1
 python-dateutil==2.9.0.post0
-python-dotenv>=1.1,<2
-structlog>=25.1,<26
+python-dotenv==1.2.2
+setuptools==80.9.0
+structlog==25.5.0
 ta==0.11.0
 tzdata==2026.3
 pandas-market-calendars==5.4.0
+PySide6==6.11.1

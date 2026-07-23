@@ -8,6 +8,10 @@ from threading import Event
 from typing import Protocol
 
 from app.execution_coordinator import CoordinationRequest, ExecutionCoordinator
+from app.operations.learning_runtime import (
+    RuntimeInferenceAdapter,
+    RuntimeInferenceAudit,
+)
 from app.paper_session import (
     PaperTradingSession,
     close_paper_session,
@@ -74,6 +78,7 @@ class PaperRuntimeCycleResult:
     symbols: tuple[str, ...]
     decisions: tuple[StrategyDecision, ...]
     session: PaperTradingSession
+    inference_audits: tuple[RuntimeInferenceAudit, ...] = ()
 
     def __post_init__(self) -> None:
         if self.cycle < 1:
@@ -88,6 +93,16 @@ class PaperRuntimeCycleResult:
             raise ValueError("runtime cycle symbols must be unique")
         if tuple(decision.symbol for decision in self.decisions) != normalized:
             raise ValueError("runtime cycle decisions do not match symbols")
+        if self.inference_audits and len(self.inference_audits) != len(normalized):
+            raise ValueError(
+                "runtime cycle inference audits must align with symbols"
+            )
+        if self.inference_audits and tuple(
+            audit.symbol for audit in self.inference_audits
+        ) != normalized:
+            raise ValueError(
+                "runtime cycle inference audits do not match symbols"
+            )
         object.__setattr__(self, "symbols", normalized)
 
 
@@ -147,6 +162,7 @@ class PaperOperationsEngine:
         event_sink: RuntimeEventSink | None = None,
         checkpoint_sink: CheckpointSink | None = None,
         cycle_sink: CycleSink | None = None,
+        inference_adapter: RuntimeInferenceAdapter | None = None,
     ) -> None:
         if not session_id.strip():
             raise ValueError("session ID is required")
@@ -160,6 +176,7 @@ class PaperOperationsEngine:
         self._event_sink = event_sink
         self._checkpoint_sink = checkpoint_sink
         self._cycle_sink = cycle_sink
+        self._inference_adapter = inference_adapter
         self._session: PaperTradingSession | None = None
         self._state = PaperRuntimeState(
             status=PaperRuntimeStatus.CREATED,
@@ -187,6 +204,7 @@ class PaperOperationsEngine:
         event_sink: RuntimeEventSink | None = None,
         checkpoint_sink: CheckpointSink | None = None,
         cycle_sink: CycleSink | None = None,
+        inference_adapter: RuntimeInferenceAdapter | None = None,
     ) -> "PaperOperationsEngine":
         _validate_recovery(state, session)
         engine = cls(
@@ -200,6 +218,7 @@ class PaperOperationsEngine:
             event_sink=event_sink,
             checkpoint_sink=checkpoint_sink,
             cycle_sink=cycle_sink,
+            inference_adapter=inference_adapter,
         )
         engine._state = state
         engine._session = session
@@ -273,6 +292,11 @@ class PaperOperationsEngine:
             ))
             session = self.session
             decisions: list[StrategyDecision] = []
+            inference_audits: list[RuntimeInferenceAudit] = []
+
+            if self._inference_adapter is not None:
+                self._inference_adapter.begin_cycle(cycle)
+
             for index, snapshot in enumerate(snapshots, start=1):
                 symbol = _symbol(snapshot)
                 position = _strategy_position(session, symbol)
@@ -281,6 +305,33 @@ class PaperOperationsEngine:
                     position,
                     timestamp=timestamp,
                 )
+
+                inference_audit = None
+                if self._inference_adapter is not None:
+                    inference_audit = self._inference_adapter.evaluate(
+                        snapshot=snapshot,
+                        session=session,
+                        cycle=cycle,
+                        symbol_index=index,
+                    )
+                    inference_audits.append(inference_audit)
+
+                    if (
+                        decision.creates_order_intent
+                        and not inference_audit.allows_order_intent
+                    ):
+                        decision = _veto_to_hold(decision)
+                        self._append_event(
+                            timestamp,
+                            "INFERENCE_VETO",
+                            (
+                                "Model inference vetoed executable intent: "
+                                f"{inference_audit.reason}."
+                            ),
+                            cycle,
+                            symbol,
+                        )
+
                 request = None
                 if decision.creates_order_intent:
                     request = self._request_builder(
@@ -315,6 +366,7 @@ class PaperOperationsEngine:
                 symbols=tuple(_symbol(snapshot) for snapshot in snapshots),
                 decisions=tuple(decisions),
                 session=session,
+                inference_audits=tuple(inference_audits),
             )
             if self._cycle_sink is not None:
                 self._cycle_sink(result)
@@ -445,6 +497,33 @@ class PaperOperationsEngine:
     def _checkpoint(self) -> None:
         if self._checkpoint_sink is not None and self._session is not None:
             self._checkpoint_sink(self._state, self._session)
+
+
+def _veto_to_hold(decision: StrategyDecision) -> StrategyDecision:
+    """Return an immutable non-executable form of a strategy decision."""
+
+    action_type = type(decision.action)
+    try:
+        hold_action = action_type.HOLD
+    except AttributeError as exc:
+        raise TypeError(
+            "strategy decision action type must define HOLD"
+        ) from exc
+
+    changes = {"action": hold_action}
+
+    fields = getattr(decision, "__dataclass_fields__", {})
+    if "order_intent" in fields:
+        changes["order_intent"] = None
+    elif "intent" in fields:
+        changes["intent"] = None
+
+    vetoed = replace(decision, **changes)
+    if vetoed.creates_order_intent:
+        raise ValueError(
+            "inference-vetoed strategy decision remained executable"
+        )
+    return vetoed
 
 
 def _validate_recovery(

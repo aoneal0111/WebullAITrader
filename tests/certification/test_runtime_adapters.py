@@ -1,0 +1,30 @@
+import pytest
+from app.account_information import AccountInformationDecision,AccountInformationPolicy,DeterministicAccountInformationRuntime
+from app.market_data import DeterministicMarketDataRuntime,MarketDataDecision,MarketDataPolicy
+from app.open_orders import DeterministicOpenOrdersRuntime,OpenOrdersDecision,OpenOrdersPolicy
+from app.order_cancellation import DeterministicOrderCancellationRuntime,OrderCancellationDecision,OrderCancellationPolicy
+from app.order_placement import DeterministicOrderPlacementRuntime,OrderPlacementDecision,OrderPlacementPolicy
+from app.order_status import DeterministicOrderStatusRuntime,OrderStatusDecision,OrderStatusPolicy
+from app.positions import DeterministicPositionsRuntime,PositionsDecision,PositionsPolicy
+from tests.account_information.fixtures import request as account_request
+from tests.account_information.helpers import FakeGateway as AccountGateway,FakeSessionManager as AccountSession
+from tests.market_data.fixtures import request as market_request
+from tests.market_data.helpers import FakeGateway as MarketGateway,FakeSessionManager as MarketSession
+from tests.open_orders.fixtures import request as open_request
+from tests.open_orders.helpers import FakeGateway as OpenGateway,FakeSessionManager as OpenSession
+from tests.order_cancellation.fixtures import request as cancellation_request
+from tests.order_cancellation.helpers import FakeGateway as CancellationGateway,FakeSessionManager as CancellationSession
+from tests.order_placement.fixtures import request as placement_request
+from tests.order_placement.helpers import FakeGateway as PlacementGateway,FakeSessionManager as PlacementSession
+from tests.order_status.fixtures import request as status_request
+from tests.order_status.helpers import FakeGateway as StatusGateway,FakeSessionManager as StatusSession
+from tests.positions.fixtures import request as positions_request
+from tests.positions.helpers import FakeGateway as PositionsGateway,FakeSessionManager as PositionsSession
+CASES=((DeterministicAccountInformationRuntime,AccountSession,AccountGateway,AccountInformationPolicy,account_request,AccountInformationDecision.SUCCESS),(DeterministicPositionsRuntime,PositionsSession,PositionsGateway,PositionsPolicy,positions_request,PositionsDecision.SUCCESS),(DeterministicMarketDataRuntime,MarketSession,MarketGateway,MarketDataPolicy,market_request,MarketDataDecision.SUCCESS),(DeterministicOrderPlacementRuntime,PlacementSession,PlacementGateway,OrderPlacementPolicy,placement_request,OrderPlacementDecision.SUCCESS),(DeterministicOrderStatusRuntime,StatusSession,StatusGateway,OrderStatusPolicy,status_request,OrderStatusDecision.SUCCESS),(DeterministicOpenOrdersRuntime,OpenSession,OpenGateway,OpenOrdersPolicy,open_request,OpenOrdersDecision.SUCCESS),(DeterministicOrderCancellationRuntime,CancellationSession,CancellationGateway,OrderCancellationPolicy,cancellation_request,OrderCancellationDecision.SUCCESS))
+@pytest.mark.parametrize("runtime_type,session_type,gateway_type,policy_type,request_factory,decision",CASES)
+def test_structurally_conforming_adapter_returns_only_broker_neutral_result(runtime_type,session_type,gateway_type,policy_type,request_factory,decision):
+ session,gateway=session_type(),gateway_type();runtime=runtime_type(session,gateway,policy_type(enabled=True));result=getattr(runtime,next(n for n in dir(runtime) if not n.startswith("_") and n not in ("metadata",)))(request_factory());assert result.decision is decision and session.calls==1 and len(gateway.requests)==1 and "webull" not in type(result).__module__.lower()
+FAILURES=((DeterministicAccountInformationRuntime,AccountSession,AccountGateway,AccountInformationPolicy,account_request,AccountInformationDecision.GATEWAY_FAILURE),(DeterministicPositionsRuntime,PositionsSession,PositionsGateway,PositionsPolicy,positions_request,PositionsDecision.GATEWAY_FAILURE),(DeterministicMarketDataRuntime,MarketSession,MarketGateway,MarketDataPolicy,market_request,MarketDataDecision.GATEWAY_FAILURE),(DeterministicOrderPlacementRuntime,PlacementSession,PlacementGateway,OrderPlacementPolicy,placement_request,OrderPlacementDecision.GATEWAY_FAILURE),(DeterministicOrderStatusRuntime,StatusSession,StatusGateway,OrderStatusPolicy,status_request,OrderStatusDecision.GATEWAY_FAILURE),(DeterministicOpenOrdersRuntime,OpenSession,OpenGateway,OpenOrdersPolicy,open_request,OpenOrdersDecision.GATEWAY_FAILURE),(DeterministicOrderCancellationRuntime,CancellationSession,CancellationGateway,OrderCancellationPolicy,cancellation_request,OrderCancellationDecision.GATEWAY_FAILURE))
+@pytest.mark.parametrize("runtime_type,session_type,gateway_type,policy_type,request_factory,failure",FAILURES)
+def test_adapter_exceptions_normalize_without_retry(runtime_type,session_type,gateway_type,policy_type,request_factory,failure):
+ gateway=gateway_type(error=RuntimeError("unsupported broker response"));result=getattr(runtime_type(session_type(),gateway,policy_type(enabled=True)),next(n for n in dir(runtime_type) if not n.startswith("_") and callable(getattr(runtime_type,n))))(request_factory());assert result.decision is failure and len(gateway.requests)==1

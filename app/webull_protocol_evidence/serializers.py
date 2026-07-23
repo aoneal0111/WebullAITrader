@@ -1,0 +1,6 @@
+def serialize_claim(v):return v.to_dict()
+def serialize_record(v):return v.to_dict()
+def serialize_bundle(v):return v.to_dict()
+def serialize_policy(v):return v.to_dict()
+def serialize_registration(v):return v.to_dict()
+def serialize_assessment(v):return v.to_dict()

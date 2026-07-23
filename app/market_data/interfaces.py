@@ -1,0 +1,6 @@
+from typing import Protocol
+from app.market_data.models import MarketDataRequest,MarketDataResult,QuoteModel
+class BrokerMarketDataGateway(Protocol):
+ def get_market_data(self,request:MarketDataRequest)->tuple[QuoteModel,...]:...
+class MarketDataRuntime(Protocol):
+ def get_market_data(self,request:MarketDataRequest)->MarketDataResult:...

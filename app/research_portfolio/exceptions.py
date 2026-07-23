@@ -1,0 +1,4 @@
+class ResearchPortfolioError(Exception): pass
+class ResearchPortfolioValidationError(ResearchPortfolioError): pass
+class ResearchPortfolioDependencyError(ResearchPortfolioError): pass
+class ResearchPortfolioSerializationError(ResearchPortfolioError): pass

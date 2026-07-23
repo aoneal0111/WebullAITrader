@@ -1,0 +1,2 @@
+from app.order_placement import *
+def test_hierarchy():assert issubclass(OrderPlacementValidationError,OrderPlacementError) and issubclass(OrderPlacementDependencyError,OrderPlacementError) and issubclass(OrderPlacementSerializationError,OrderPlacementError)

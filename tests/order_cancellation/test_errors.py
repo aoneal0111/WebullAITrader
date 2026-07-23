@@ -1,0 +1,3 @@
+from app.order_cancellation import *
+def test_hierarchy():
+ for error in (OrderCancellationValidationError,OrderCancellationDependencyError,OrderCancellationGatewayError,OrderCancellationIdentityError,OrderCancellationAcknowledgementError,OrderCancellationSerializationError):assert issubclass(error,OrderCancellationError)

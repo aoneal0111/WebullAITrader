@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import os
@@ -307,24 +307,182 @@ def check_startup() -> int:
             close_journal()
 
 
+
+def _unresolved_mutations(execution_journal) -> tuple[object, ...]:
+    return tuple(
+        item
+        for item in execution_journal.pending
+        if getattr(item.state, "value", str(item.state)) == "UNRESOLVED"
+    )
+
+
+def _validate_observation_mode(configuration, emergency_stop) -> None:
+    if configuration.environment is TradingEnvironment.LIVE:
+        raise RuntimeError("observation mode refuses LIVE environment")
+    if configuration.live_trading_enabled:
+        raise RuntimeError(
+            "observation mode requires LIVE_TRADING_ENABLED=false"
+        )
+    if not emergency_stop.state().enabled:
+        raise RuntimeError(
+            "observation mode requires the emergency stop to remain active"
+        )
+
+
+def run_observation(
+    *,
+    max_cycles: int | None = None,
+    interval_seconds: Decimal | None = None,
+) -> int:
+    """Continuously reconcile and display broker state without mutations."""
+    if max_cycles is not None and max_cycles <= 0:
+        raise ValueError("max_cycles must be positive")
+    if interval_seconds is not None and interval_seconds < 0:
+        raise ValueError("interval_seconds must be nonnegative")
+
+    configuration = load_configuration()
+    validate_environment(configuration)
+    ensure_parent_directories(configuration)
+
+    authorization_registry = AuthorizationRegistry(
+        configuration.authorization_database_path
+    )
+    execution_journal = DurableExecutionJournal(
+        configuration.execution_database_path
+    )
+    market_store = DurableMarketEventStore(
+        configuration.market_event_database_path
+    )
+    emergency_stop = EmergencyStopStore(
+        configuration.emergency_stop_database_path,
+        utc_now,
+    )
+    broker = build_broker(configuration)
+    connected = False
+
+    try:
+        _validate_observation_mode(configuration, emergency_stop)
+
+        # Verify all durable dependencies before network access.
+        authorization_registry.authorizations
+        execution_journal.pending
+        market_store.reachable()
+        emergency_stop.reachable()
+
+        print("OBSERVATION MODE", flush=True)
+        print(f"Environment: {configuration.environment.value}", flush=True)
+        print("Order submission: DISABLED", flush=True)
+        print("Emergency stop: ACTIVE", flush=True)
+
+        broker.connect()
+        connected = True
+
+        reconcile_startup(
+            execution_journal,
+            broker,
+            authorization_registry,
+            utc_now(),
+        )
+        unresolved = _unresolved_mutations(execution_journal)
+        if execution_journal.pending or unresolved:
+            raise RuntimeError(
+                "observation mode refuses pending or unresolved "
+                "execution mutations"
+            )
+
+        delay = (
+            interval_seconds
+            if interval_seconds is not None
+            else Decimal(configuration.reconciliation_interval_seconds)
+        )
+        cycle = 0
+        while max_cycles is None or cycle < max_cycles:
+            _validate_observation_mode(configuration, emergency_stop)
+
+            account = broker.get_account()
+            cash = broker.get_cash()
+            positions = broker.get_positions()
+            orders = broker.get_orders()
+
+            cycle += 1
+            timestamp = utc_now().isoformat()
+            print(
+                f"Observation cycle {cycle} at {timestamp}",
+                flush=True,
+            )
+            print(f"Account: {account}", flush=True)
+            print(f"Cash: {cash}", flush=True)
+            print(f"Positions: {positions}", flush=True)
+            print(f"Open orders: {orders}", flush=True)
+
+            reconcile_startup(
+                execution_journal,
+                broker,
+                authorization_registry,
+                utc_now(),
+            )
+            if execution_journal.pending or _unresolved_mutations(
+                execution_journal
+            ):
+                raise RuntimeError(
+                    "execution mutation appeared during observation mode"
+                )
+
+            if max_cycles is None or cycle < max_cycles:
+                sleep_decimal(delay)
+
+        print("OBSERVATION RUN COMPLETED", flush=True)
+        return 0
+    finally:
+        if connected:
+            broker.disconnect()
+        market_store.close()
+        emergency_stop.close()
+        authorization_registry.close()
+        close_journal = getattr(execution_journal, "close", None)
+        if callable(close_journal):
+            close_journal()
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Webull operational startup validation"
+        description="Webull operational startup and observation service"
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
         "--check",
         action="store_true",
         help="validate durable state and sandbox broker connectivity",
     )
+    mode.add_argument(
+        "--run",
+        action="store_true",
+        help="run continuous read-only broker observation",
+    )
+    parser.add_argument(
+        "--max-cycles",
+        type=int,
+        default=None,
+        help="stop observation mode after this many cycles",
+    )
+    parser.add_argument(
+        "--interval-seconds",
+        type=Decimal,
+        default=None,
+        help="override the configured observation interval",
+    )
     args = parser.parse_args()
 
-    if not args.check:
-        parser.error(
-            "Only --check is currently supported. "
-            "Continuous trading remains disabled."
-        )
+    if args.check:
+        if args.max_cycles is not None or args.interval_seconds is not None:
+            parser.error(
+                "--max-cycles and --interval-seconds require --run"
+            )
+        return check_startup()
 
-    return check_startup()
+    return run_observation(
+        max_cycles=args.max_cycles,
+        interval_seconds=args.interval_seconds,
+    )
 
 
 if __name__ == "__main__":

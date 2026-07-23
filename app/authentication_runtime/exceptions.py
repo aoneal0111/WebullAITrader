@@ -1,0 +1,6 @@
+class AuthenticationRuntimeError(ValueError): pass
+class AuthenticationRuntimeDisabledError(AuthenticationRuntimeError): pass
+class AuthenticationRuntimeDependencyError(AuthenticationRuntimeError): pass
+class AuthenticationRuntimeCredentialError(AuthenticationRuntimeError): pass
+class AuthenticationRuntimeExecutionError(AuthenticationRuntimeError): pass
+class AuthenticationRuntimeValidationError(AuthenticationRuntimeError): pass

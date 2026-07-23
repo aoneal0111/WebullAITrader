@@ -1,0 +1,9 @@
+"""Stable broker aliases for public Order Placement exceptions."""
+from app.order_placement import OrderPlacementDependencyError,OrderPlacementError,OrderPlacementSerializationError,OrderPlacementValidationError
+
+BrokerOrderError=OrderPlacementError
+BrokerOrderValidationError=OrderPlacementValidationError
+BrokerOrderDependencyError=OrderPlacementDependencyError
+BrokerOrderSerializationError=OrderPlacementSerializationError
+
+__all__=("BrokerOrderError","BrokerOrderValidationError","BrokerOrderDependencyError","BrokerOrderSerializationError")

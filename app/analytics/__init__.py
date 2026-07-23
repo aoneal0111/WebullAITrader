@@ -25,6 +25,12 @@ from app.analytics.performance import (
     analyze_walk_forward,
 )
 from app.analytics.report import analytics_to_json, analytics_to_text
+from app.analytics.domain_models import *
+from app.analytics.exceptions import *
+from app.analytics.interfaces import AnalyticsEvaluator
+from app.analytics.policies import AnalyticsPolicy
+from app.analytics.runtime import AnalyticsRuntime, DeterministicAnalyticsEvaluator
+from app.analytics.serializers import *
 
 __all__ = [
     "AnalyticsConfig", "MarketObservation", "BacktestAnalyticsResult", "DistributionAnalytics", "DrawdownEpisode",
@@ -34,4 +40,9 @@ __all__ = [
     "WalkForwardExperimentAggregateAnalytics", "WalkForwardWindowExperimentAnalytics",
     "analyze_backtest", "analyze_experiment", "analyze_experiment_suite", "analyze_walk_forward",
     "analytics_to_json", "analytics_to_text",
+    "AnalyticsRuntime", "DeterministicAnalyticsEvaluator", "AnalyticsEvaluator", "AnalyticsPolicy",
+    "AnalyticsRequest", "AnalyticsResult", "AnalyticsSummary", "AnalyticsMetrics", "AnalyticsCriteriaResult",
+    "EquityPoint", "DrawdownPoint", "AnalyticsStatus", "AnalyticsEntryClassification", "DrawdownStatus",
+    "AnalyticsError", "AnalyticsValidationError", "AnalyticsDependencyError", "AnalyticsEvaluationError", "AnalyticsSerializationError",
+    "serialize_request", "serialize_result", "serialize_summary", "serialize_metrics", "serialize_policy", "serialize_criteria", "serialize_equity_point", "serialize_drawdown_point",
 ]

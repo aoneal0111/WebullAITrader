@@ -11,7 +11,7 @@ from app.order_compliance.models import (
     OrderSide, OrderType, ProposedOrder, TradingSession,
 )
 from app.order_compliance.price_rules import PriceValidation, validate_prices
-from app.risk.models import RiskDecision
+from app.risk.models import LegacyRiskDecision
 
 ZERO = Decimal("0")
 
@@ -24,7 +24,7 @@ def evaluate_order_compliance(
     kill_switch: KillSwitchState,
     *,
     gfv_decision: SellComplianceDecision | None = None,
-    risk_decision: RiskDecision | None = None,
+    risk_decision: LegacyRiskDecision | None = None,
 ) -> OrderComplianceDecision:
     """Evaluate, but never transform or execute, an immutable order proposal."""
     passed: list[str] = []
@@ -47,7 +47,7 @@ def evaluate_order_compliance(
     if kill_failure:
         warnings.append(kill_failure)
 
-    risk_approved = isinstance(risk_decision, RiskDecision) and risk_decision.approved
+    risk_approved = isinstance(risk_decision, LegacyRiskDecision) and risk_decision.approved
     _check(passed, failed, "risk_approval", risk_approved)
 
     is_cash_sell = proposed_order.side is OrderSide.SELL and account_state.account_type is AccountType.CASH
@@ -198,7 +198,7 @@ def _proposal_price(order: ProposedOrder, market: MarketComplianceState) -> Deci
     return market.verified_reference_price if _positive_decimal(market.verified_reference_price) else None
 
 
-def _maximum_quantity(order: ProposedOrder, account: AccountComplianceState, risk: RiskDecision | None,
+def _maximum_quantity(order: ProposedOrder, account: AccountComplianceState, risk: LegacyRiskDecision | None,
                       gfv: SellComplianceDecision | None, price: Decimal | None) -> Decimal | None:
     if order.side is OrderSide.SELL:
         maximum = account.current_symbol_position_quantity
@@ -207,7 +207,7 @@ def _maximum_quantity(order: ProposedOrder, account: AccountComplianceState, ris
                 return ZERO
             maximum = min(maximum, gfv.safe_sell_quantity)
         return maximum
-    if not isinstance(risk, RiskDecision) or price is None:
+    if not isinstance(risk, LegacyRiskDecision) or price is None:
         return ZERO
     percent = risk.max_position_percent
     if not percent.is_finite() or percent < ZERO:

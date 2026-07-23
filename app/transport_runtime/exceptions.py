@@ -1,0 +1,3 @@
+class TransportRuntimeError(ValueError):pass
+class TransportValidationError(TransportRuntimeError):pass
+class TransportExecutionError(TransportRuntimeError):pass

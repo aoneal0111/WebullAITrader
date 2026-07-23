@@ -1,4 +1,79 @@
-# Webull AI Trader — Read-Only Foundation
+# Webull AI Trader — Deterministic Trading Architecture
+
+Webull AI Trader is a layered Python 3.13 system for deterministic research,
+safety validation, broker-neutral runtime orchestration, paper execution, and
+strictly capability-gated live execution. Broker-specific protocol code is
+confined to adapter and transport packages. Most runtimes are disabled by
+default and receive dependencies through constructor injection.
+
+## Architecture
+
+```text
+Research and proposals
+        ↓
+Risk, compliance, and authorization
+        ↓
+Broker-neutral runtimes and gateway protocols
+        ↓
+Broker adapters
+        ↓
+Injected transport implementations
+```
+
+Account information, positions, market data, portfolio composition, order
+placement, status, open-order retrieval, and cancellation use separate narrow
+interfaces. The Webull adapter certification suite verifies these boundaries,
+exception normalization, immutable models, and exactly-once gateway calls.
+
+## Installation
+
+```powershell
+py -3.13 -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m pip install --no-deps .
+```
+
+Dependencies are explicitly pinned in `requirements.txt`. Project runtime
+dependencies and Python compatibility are declared in `pyproject.toml`.
+
+## Configuration
+
+Copy `.env.example` to `.env` only for operational components that explicitly
+load external configuration:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Never commit `.env`, credentials, account identifiers, or broker tokens.
+Deterministic engine and runtime packages do not read environment variables.
+
+## Running tests
+
+```powershell
+python -m pytest
+python -m pytest tests/certification -q
+git diff --check
+```
+
+Tests use injected fakes, temporary storage, and mocked transports. They must
+not contact a real broker or external service.
+
+## Project structure
+
+```text
+app/                     Application packages and broker-neutral runtimes
+app/broker_protocol/     Neutral broker contracts and immutable DTOs
+app/*_runtime/           Deterministic orchestration boundaries
+app/webull*/             Webull-specific mapping and transport boundaries
+tests/                   Unit and integration tests
+tests/certification/     Cross-boundary adapter certification
+.github/workflows/       Continuous-integration configuration
+docs/                    Operational and architecture documentation
+```
+
+## Original read-only account foundation
 
 This first version retrieves account balances and positions from a connected
 Webull MCP server and prints a redacted JSON summary. It does **not** place,

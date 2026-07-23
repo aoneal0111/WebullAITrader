@@ -1,0 +1,5 @@
+from app.webull_authentication_config.exceptions import WebullAuthenticationConfigurationValidationError
+from app.webull_authentication_config.models import WebullAuthenticationProfileConfiguration
+def validate_configuration(v):
+ if not isinstance(v,WebullAuthenticationProfileConfiguration):raise WebullAuthenticationConfigurationValidationError("configuration must be WebullAuthenticationProfileConfiguration")
+ return v

@@ -1,0 +1,4 @@
+class SessionBootstrapError(ValueError): pass
+class SessionBootstrapDependencyError(SessionBootstrapError): pass
+class SessionBootstrapValidationError(SessionBootstrapError): pass
+class SessionBootstrapCredentialError(SessionBootstrapError): pass

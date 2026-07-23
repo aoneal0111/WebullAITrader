@@ -1,0 +1,4 @@
+class ResearchCampaignError(Exception): pass
+class ResearchCampaignValidationError(ResearchCampaignError): pass
+class ResearchCampaignDependencyError(ResearchCampaignError): pass
+class ResearchCampaignSerializationError(ResearchCampaignError): pass

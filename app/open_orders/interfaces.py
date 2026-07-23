@@ -1,0 +1,6 @@
+from typing import Protocol
+from app.open_orders.models import OpenOrderSnapshot,OpenOrdersRequest,OpenOrdersResult
+class BrokerOpenOrdersGateway(Protocol):
+ def get_open_orders(self,request:OpenOrdersRequest)->tuple[OpenOrderSnapshot,...]:...
+class OpenOrdersRuntime(Protocol):
+ def get_open_orders(self,request:OpenOrdersRequest)->OpenOrdersResult:...
