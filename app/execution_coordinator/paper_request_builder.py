@@ -33,7 +33,13 @@ class PaperRequestBuilder:
         cycle: int,
         symbol_index: int,
     ) -> CoordinationRequest:
-        context = self.context_provider.get_context(decision.symbol)
+        context = self.context_provider.get_context(
+            symbol=decision.symbol,
+            snapshot=snapshot,
+            session=session,
+            cycle=cycle,
+            symbol_index=symbol_index,
+        )
 
         return CoordinationRequest(
             order_intent=self.order_intent_factory.create(decision),

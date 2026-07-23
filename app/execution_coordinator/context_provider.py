@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.execution_coordinator import CoordinationRequest
+from app.paper_session import PaperTradingSession
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +36,11 @@ class CoordinationContextProvider:
 
     def get_context(
         self,
+        *,
         symbol: str,
+        snapshot: object,
+        session: PaperTradingSession,
+        cycle: int,
+        symbol_index: int,
     ) -> CoordinationContext:
         raise NotImplementedError
