@@ -1,0 +1,56 @@
+"""Deterministic application contracts around the public paper order book.
+
+This package observes and coordinates caller-owned lifecycle objects. It does
+not mutate books, execute transitions, match orders, calculate fills, or own a
+runtime.
+"""
+
+from app.paper_order_book.exceptions import (
+    PaperOrderBookError,
+    PaperOrderBookSerializationError,
+    PaperOrderBookValidationError,
+)
+from app.paper_order_book.models import (
+    PaperOrderBookCommand,
+    PaperOrderBookCriteriaResult,
+    PaperOrderBookIdentity,
+    PaperOrderBookRequest,
+    PaperOrderBookResult,
+    PaperOrderBookObservation,
+    PaperOrderBookSummary,
+)
+from app.paper_order_book.policies import PaperOrderBookPolicy
+from app.paper_order_book.serializers import (
+    serialize_command,
+    serialize_criteria,
+    serialize_identity,
+    serialize_policy,
+    serialize_request,
+    serialize_result,
+    serialize_snapshot,
+    serialize_summary,
+)
+from app.paper_order_book.validation import validate_request
+
+__all__ = (
+    "PaperOrderBookError",
+    "PaperOrderBookValidationError",
+    "PaperOrderBookSerializationError",
+    "PaperOrderBookIdentity",
+    "PaperOrderBookObservation",
+    "PaperOrderBookCommand",
+    "PaperOrderBookRequest",
+    "PaperOrderBookPolicy",
+    "PaperOrderBookCriteriaResult",
+    "PaperOrderBookSummary",
+    "PaperOrderBookResult",
+    "serialize_identity",
+    "serialize_snapshot",
+    "serialize_command",
+    "serialize_policy",
+    "serialize_request",
+    "serialize_criteria",
+    "serialize_summary",
+    "serialize_result",
+    "validate_request",
+)
