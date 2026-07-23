@@ -17,6 +17,7 @@ from app.paper_order_book.factories import (
     create_observation,
     create_request,
     create_submit_command,
+    create_update_command,
 )
 from app.paper_order_book.models import (
     PaperOrderBookCommand,
@@ -63,6 +64,7 @@ __all__ = (
     "create_request",
     "create_service",
     "create_submit_command",
+    "create_update_command",
     "default_service",
     "execute",
     "serialize_command",

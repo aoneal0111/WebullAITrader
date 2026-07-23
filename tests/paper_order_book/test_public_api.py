@@ -33,6 +33,7 @@ def test_public_exports_are_complete_and_intentional() -> None:
         "create_request",
         "create_service",
         "create_submit_command",
+        "create_update_command",
         "default_service",
     }
 
@@ -74,6 +75,7 @@ def test_application_entry_points_are_exported() -> None:
     assert "create_request" in api.__all__
     assert "create_service" in api.__all__
     assert "create_submit_command" in api.__all__
+    assert "create_update_command" in api.__all__
     assert "default_service" in api.__all__
 
 

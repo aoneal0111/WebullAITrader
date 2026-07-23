@@ -101,9 +101,24 @@ def create_submit_command(
     )
 
 
+def create_update_command(
+    *,
+    command_id: str,
+    order: OrderBookPaperOrder,
+    occurred_at: datetime,
+) -> PaperOrderBookCommand:
+    return PaperOrderBookCommand(
+        command_id=command_id,
+        command_type="update",
+        payload=order,
+        occurred_at=occurred_at,
+    )
+
+
 __all__ = (
     "create_cancel_command",
     "create_observation",
     "create_request",
     "create_submit_command",
+    "create_update_command",
 )
