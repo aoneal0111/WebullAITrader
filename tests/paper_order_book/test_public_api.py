@@ -31,6 +31,7 @@ def test_public_exports_are_complete_and_intentional() -> None:
         "create_accept_command",
         "create_cancel_command",
         "create_observation",
+        "create_reject_command",
         "create_request",
         "create_service",
         "create_submit_command",
@@ -74,6 +75,7 @@ def test_application_entry_points_are_exported() -> None:
     assert "create_accept_command" in api.__all__
     assert "create_cancel_command" in api.__all__
     assert "create_observation" in api.__all__
+    assert "create_reject_command" in api.__all__
     assert "create_request" in api.__all__
     assert "create_service" in api.__all__
     assert "create_submit_command" in api.__all__
