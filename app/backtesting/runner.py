@@ -16,9 +16,10 @@ from app.backtesting.results import BacktestResult
 from app.compliance.gfv_validator import evaluate_sell_compliance
 from app.compliance.models import AccountType, FundingSource, PurchaseLot
 from app.order_compliance.models import (
-    AccountComplianceState, OrderComplianceDecision, OrderSide, ProposedOrder,
+    OrderComplianceDecision, OrderSide, ProposedOrder,
 )
 from app.order_compliance.validator import evaluate_order_compliance
+from app.order_compliance.account_state_builder import build_account_state
 from app.paper_trading.metrics import calculate_metrics
 from app.paper_trading.models import EquityPoint, ExecutionStatus, PaperJournal, PaperMarketQuote
 from app.paper_trading.portfolio import create_portfolio
@@ -148,7 +149,13 @@ def _run(frames, responses, intents, config, checkpoint, stop):
             gfv = evaluate_sell_compliance(intent.symbol, intent.quantity, config.account_type, timestamp, state.purchase_lots)
             state = replace(state, replay_journal=append_replay_event(state.replay_journal, index, timestamp,
                                 ReplayEventType.GFV, "APPROVED" if gfv.approved else "REJECTED"))
-        account = _account_state(state, config, intent.symbol, timestamp)
+        account = build_account_state(
+            portfolio=state.portfolio,
+            account_type=config.account_type,
+            filled_orders=state.filled,
+            symbol=intent.symbol,
+            timestamp=timestamp,
+        )
         decision = evaluate_order_compliance(proposal, account, frame.market_state, config.compliance_limits,
                                              config.kill_switch, gfv_decision=gfv, risk_decision=risk)
         journal = append_replay_event(state.replay_journal, index, timestamp, ReplayEventType.ORDER_COMPLIANCE,
@@ -158,15 +165,6 @@ def _run(frames, responses, intents, config, checkpoint, stop):
                         proposals=state.proposals + 1, approved=state.approved + int(decision.approved),
                         rejected=state.rejected + int(not decision.approved), next_candle_index=index + 1)
     return state
-
-
-def _account_state(state, config, symbol, timestamp):
-    position = next((item for item in state.portfolio.positions if item.symbol == symbol.upper()), None)
-    return AccountComplianceState(
-        config.account_type, state.portfolio.equity, state.portfolio.realized_pnl, state.portfolio.unrealized_pnl,
-        state.filled, (), (), position.quantity if position else Decimal(0), position.market_value if position else Decimal(0),
-        sum((item.market_value for item in state.portfolio.positions), Decimal(0)), timestamp,
-    )
 
 
 def _proposal_json(value):
@@ -211,3 +209,8 @@ def _update_lots(lots, fill):
         if lot.remaining_quantity > 0:
             updated.append(lot)
     return tuple(updated)
+
+
+
+
+
