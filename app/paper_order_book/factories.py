@@ -17,6 +17,20 @@ from app.paper_trading.order_book_api import (
 )
 
 
+def create_accept_command(
+    *,
+    command_id: str,
+    order: OrderBookPaperOrder,
+    occurred_at: datetime,
+) -> PaperOrderBookCommand:
+    return PaperOrderBookCommand(
+        command_id=command_id,
+        command_type="accept",
+        payload=order,
+        occurred_at=occurred_at,
+    )
+
+
 def create_observation(
     *,
     identity: PaperOrderBookIdentity,
@@ -116,6 +130,7 @@ def create_update_command(
 
 
 __all__ = (
+    "create_accept_command",
     "create_cancel_command",
     "create_observation",
     "create_request",
