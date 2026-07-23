@@ -15,6 +15,7 @@ from app.paper_order_book.facade import execute
 from app.paper_order_book.factories import (
     create_accept_command,
     create_cancel_command,
+    create_expire_command,
     create_observation,
     create_reject_command,
     create_request,
@@ -63,6 +64,7 @@ __all__ = (
     "PaperOrderBookValidationError",
     "create_accept_command",
     "create_cancel_command",
+    "create_expire_command",
     "create_observation",
     "create_reject_command",
     "create_request",

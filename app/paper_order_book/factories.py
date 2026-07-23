@@ -79,6 +79,20 @@ def create_cancel_command(
     )
 
 
+def create_expire_command(
+    *,
+    command_id: str,
+    order: OrderBookPaperOrder,
+    occurred_at: datetime,
+) -> PaperOrderBookCommand:
+    return PaperOrderBookCommand(
+        command_id=command_id,
+        command_type="expire",
+        payload=order,
+        occurred_at=occurred_at,
+    )
+
+
 def create_reject_command(
     *,
     command_id: str,
@@ -146,6 +160,7 @@ def create_update_command(
 __all__ = (
     "create_accept_command",
     "create_cancel_command",
+    "create_expire_command",
     "create_observation",
     "create_reject_command",
     "create_request",
