@@ -1,13 +1,43 @@
-from app.composition.container import CompositionContainer
-from app.composition.exceptions import *
-from app.composition.factories import ComponentFactory, factory
-from app.composition.policies import CompositionPolicy
-from app.composition.registry import CompositionRoot, Registry
-from app.composition.validation import implements_methods, validate_factory_graph
+"""
+Application composition root.
+
+The composition package is responsible for constructing and wiring the
+application dependency graph. Business logic belongs elsewhere.
+"""
+
+from .container import CompositionContainer
+from .desktop import DesktopComposition, create_desktop_composition
+from .exceptions import (
+    CircularDependencyError,
+    CompositionError,
+    DuplicateRegistrationError,
+    FactoryValidationError,
+    MissingDependencyError,
+)
+from .factories import ComponentFactory, factory
+from .policies import CompositionPolicy
+from .registry import CompositionRoot, Registry
+from .validation import implements_methods, validate_factory_graph
 
 __all__ = [
-    "CompositionContainer", "CompositionPolicy", "CompositionRoot", "Registry",
-    "ComponentFactory", "factory", "implements_methods", "validate_factory_graph",
-    "CompositionError", "DuplicateRegistrationError", "MissingDependencyError",
-    "CircularDependencyError", "FactoryValidationError",
+    # Desktop composition
+    "DesktopComposition",
+    "create_desktop_composition",
+
+    # Existing composition framework
+    "CompositionContainer",
+    "CompositionRoot",
+    "Registry",
+    "CompositionPolicy",
+    "ComponentFactory",
+    "factory",
+    "implements_methods",
+    "validate_factory_graph",
+
+    # Exceptions
+    "CompositionError",
+    "DuplicateRegistrationError",
+    "MissingDependencyError",
+    "CircularDependencyError",
+    "FactoryValidationError",
 ]
