@@ -10,6 +10,7 @@ from app.paper_order_book.exceptions import (
     PaperOrderBookSerializationError,
     PaperOrderBookValidationError,
 )
+from app.paper_order_book.facade import execute
 from app.paper_order_book.models import (
     PaperOrderBookCommand,
     PaperOrderBookCriteriaResult,
@@ -59,4 +60,5 @@ __all__ = (
     "serialize_summary",
     "serialize_result",
     "validate_request",
+    "execute",
 )

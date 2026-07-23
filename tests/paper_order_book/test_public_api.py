@@ -27,6 +27,7 @@ def test_public_exports_are_complete_and_intentional() -> None:
         "serialize_summary",
         "serialize_result",
         "validate_request",
+        "execute",
     }
 
 
