@@ -179,3 +179,23 @@ def test_no_lifecycle_dataclasses_or_enums_are_declared() -> None:
             node.name for node in tree.body if isinstance(node, ast.ClassDef)
         }
         assert lifecycle_names.isdisjoint(declared), path
+
+
+def test_package_all_is_a_literal_tuple_for_static_api_review() -> None:
+    path = PRODUCTION / "__init__.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    assignments = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in node.targets
+        )
+    ]
+    assert len(assignments) == 1
+    assert isinstance(assignments[0].value, ast.Tuple)
+    assert all(
+        isinstance(item, ast.Constant) and isinstance(item.value, str)
+        for item in assignments[0].value.elts
+    )
