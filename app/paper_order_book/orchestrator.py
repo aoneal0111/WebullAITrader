@@ -8,7 +8,12 @@ from app.paper_order_book.execution_trace import (
     PaperOrderBookExecutionTraceEntry,
     trace_command_dispatch,
 )
+from app.paper_order_book.execution_summary import (
+    PaperOrderBookExecutionSummary,
+    summarize_execution_trace,
+)
 from app.paper_order_book.models import (
+    PaperOrderBookCommand,
     PaperOrderBookObservation,
     PaperOrderBookRequest,
     PaperOrderBookResult,
@@ -29,29 +34,42 @@ class PaperOrderBookOrchestrator:
         self._execution_trace: tuple[
             PaperOrderBookExecutionTraceEntry, ...
         ] = ()
+        self._execution_summary: PaperOrderBookExecutionSummary | None = None
+
+    def _record_execution(
+        self,
+        command: PaperOrderBookCommand,
+        outcome: str,
+    ) -> None:
+        self._execution_trace = (
+            *self._execution_trace,
+            trace_command_dispatch(command, outcome),
+        )
 
     def execute(
         self,
         request: PaperOrderBookRequest,
     ) -> PaperOrderBookResult:
         self._execution_trace = ()
+        self._execution_summary = None
         evaluated = self._runtime.evaluate(request)
         if not evaluated.criteria.accepted:
+            self._execution_summary = summarize_execution_trace(
+                self._execution_trace
+            )
             return evaluated
 
         order_book = request.snapshot.order_book
-        for command in request.commands:
-            try:
+        try:
+            for command in request.commands:
                 command_dispatcher.dispatch_command(order_book, command)
-            except Exception:
-                self._execution_trace = (
-                    *self._execution_trace,
-                    trace_command_dispatch(command, FAILED),
-                )
-                raise
-            self._execution_trace = (
-                *self._execution_trace,
-                trace_command_dispatch(command, COMPLETED),
+                self._record_execution(command, COMPLETED)
+        except Exception:
+            self._record_execution(command, FAILED)
+            raise
+        finally:
+            self._execution_summary = summarize_execution_trace(
+                self._execution_trace
             )
 
         observation = PaperOrderBookObservation(
