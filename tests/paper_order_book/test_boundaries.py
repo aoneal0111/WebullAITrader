@@ -142,6 +142,36 @@ def test_composition_imports_only_functools_and_local_modules() -> None:
     }
 
 
+def test_factories_import_only_permitted_construction_boundaries() -> None:
+    path = PRODUCTION / "factories.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imports = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert imports == {
+        "datetime",
+        "app.paper_order_book.models",
+        "app.paper_trading.order_book_api",
+    }
+
+
+def test_lifecycle_book_type_is_not_in_factory_function_annotations() -> None:
+    path = PRODUCTION / "factories.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and not node.name.startswith("_"):
+            annotations = [
+                argument.annotation for argument in node.args.kwonlyargs
+            ] + [node.returns]
+            assert all(
+                not isinstance(annotation, ast.Name)
+                or annotation.id != "PaperOrderBook"
+                for annotation in annotations
+            )
+
+
 def test_only_composition_instantiates_application_graph_types() -> None:
     graph_types = {
         "PaperOrderBookRuntime",
