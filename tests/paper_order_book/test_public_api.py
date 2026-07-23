@@ -29,6 +29,7 @@ def test_public_exports_are_complete_and_intentional() -> None:
         "validate_request",
         "execute",
         "create_accept_command",
+        "create_apply_fill_command",
         "create_cancel_command",
         "create_expire_command",
         "create_fill",
@@ -75,6 +76,7 @@ def test_every_public_export_exists_and_is_not_private() -> None:
 def test_application_entry_points_are_exported() -> None:
     assert "execute" in api.__all__
     assert "create_accept_command" in api.__all__
+    assert "create_apply_fill_command" in api.__all__
     assert "create_cancel_command" in api.__all__
     assert "create_expire_command" in api.__all__
     assert "create_fill" in api.__all__

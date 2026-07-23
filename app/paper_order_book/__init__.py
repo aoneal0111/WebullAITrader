@@ -14,6 +14,7 @@ from app.paper_order_book.composition import create_service, default_service
 from app.paper_order_book.facade import execute
 from app.paper_order_book.factories import (
     create_accept_command,
+    create_apply_fill_command,
     create_cancel_command,
     create_expire_command,
     create_fill,
@@ -64,6 +65,7 @@ __all__ = (
     "PaperOrderBookSummary",
     "PaperOrderBookValidationError",
     "create_accept_command",
+    "create_apply_fill_command",
     "create_cancel_command",
     "create_expire_command",
     "create_fill",

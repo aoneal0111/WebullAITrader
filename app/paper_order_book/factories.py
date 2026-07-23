@@ -11,6 +11,7 @@ from app.paper_order_book.models import (
     PaperOrderBookRequest,
 )
 from app.paper_trading.order_book_api import (
+    OrderBookFill,
     OrderBookPaperOrder,
     PaperOrderBook,
     create_fill as create_lifecycle_fill,
@@ -28,6 +29,20 @@ def create_accept_command(
         command_id=command_id,
         command_type="accept",
         payload=order,
+        occurred_at=occurred_at,
+    )
+
+
+def create_apply_fill_command(
+    *,
+    command_id: str,
+    fill: OrderBookFill,
+    occurred_at: datetime,
+) -> PaperOrderBookCommand:
+    return PaperOrderBookCommand(
+        command_id=command_id,
+        command_type="apply_fill",
+        payload=fill,
         occurred_at=occurred_at,
     )
 
@@ -185,6 +200,7 @@ def create_update_command(
 
 __all__ = (
     "create_accept_command",
+    "create_apply_fill_command",
     "create_cancel_command",
     "create_expire_command",
     "create_fill",
