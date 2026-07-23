@@ -20,6 +20,7 @@ from app.paper_order_book.models import (
     PaperOrderBookSummary,
 )
 from app.paper_order_book.policies import PaperOrderBookPolicy
+from app.paper_order_book.runtime import PaperOrderBookRuntime
 from app.paper_order_book.serializers import (
     serialize_command,
     serialize_criteria,
@@ -44,6 +45,7 @@ __all__ = (
     "PaperOrderBookCriteriaResult",
     "PaperOrderBookSummary",
     "PaperOrderBookResult",
+    "PaperOrderBookRuntime",
     "serialize_identity",
     "serialize_snapshot",
     "serialize_command",

@@ -24,7 +24,7 @@ def test_production_imports_only_permitted_boundaries() -> None:
                 ), (path, module)
 
 
-def test_no_runtime_transition_matching_execution_or_market_data_logic() -> None:
+def test_no_transition_matching_execution_or_market_data_logic() -> None:
     forbidden_names = {
         "create_order",
         "accept_order",
@@ -39,7 +39,6 @@ def test_no_runtime_transition_matching_execution_or_market_data_logic() -> None
     for path in PRODUCTION.glob("*.py"):
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source)
-        assert path.name != "runtime.py"
         imported_names = {
             alias.name
             for node in ast.walk(tree)
@@ -47,6 +46,26 @@ def test_no_runtime_transition_matching_execution_or_market_data_logic() -> None
             for alias in node.names
         }
         assert forbidden_names.isdisjoint(imported_names), path
+        called_names = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        assert forbidden_names.isdisjoint(called_names), path
+
+
+def test_runtime_has_only_local_application_imports() -> None:
+    path = PRODUCTION / "runtime.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imports = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert imports == {
+        "app.paper_order_book.models",
+        "app.paper_order_book.validation",
+    }
 
 
 def test_no_lifecycle_dataclasses_or_enums_are_declared() -> None:
