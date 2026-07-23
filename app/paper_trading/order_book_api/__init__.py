@@ -35,6 +35,7 @@ from app.paper_trading.order_book_api.interfaces import PaperOrderBookInterface
 from app.paper_trading.order_book_api.operations import (
     accept,
     cancel,
+    create_submission_order,
     expire,
     expire_day_orders,
     record_fill,
@@ -90,4 +91,5 @@ __all__ = (
     "expire",
     "record_fill",
     "expire_day_orders",
+    "create_submission_order",
 )

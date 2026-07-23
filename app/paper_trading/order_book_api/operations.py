@@ -1,15 +1,76 @@
 """Stable public operations over the existing paper-order lifecycle."""
 
 from datetime import datetime
+from decimal import Decimal
 
+from app.momentum_scanner import AssetClass
 from app.paper_trading.fill_models import Fill
 from app.paper_trading.order_book import PaperOrderBook
-from app.paper_trading.order_models import PaperOrder
+from app.paper_trading.order_models import (
+    OrderRequest,
+    OrderSide,
+    OrderType,
+    PaperOrder,
+    TimeInForce,
+)
 from app.paper_trading.orders import (
+    OrderValidationError,
     accept_order,
     apply_fill,
+    create_order,
     expire_order,
 )
+
+
+def _enum_value(enum_type, value: object, field_name: str):
+    try:
+        return enum_type(value)
+    except (TypeError, ValueError) as exc:
+        raise OrderValidationError(f"{field_name} is invalid") from None
+
+
+def create_submission_order(
+    *,
+    order_id: str,
+    occurred_at: datetime,
+    symbol: str,
+    asset_class: str,
+    side: str | OrderSide,
+    order_type: str | OrderType,
+    quantity: Decimal,
+    time_in_force: str | TimeInForce,
+    limit_price: Decimal | None = None,
+    stop_price: Decimal | None = None,
+    client_order_id: str | None = None,
+) -> PaperOrder:
+    if (
+        not isinstance(order_id, str)
+        or not order_id.strip()
+        or order_id != order_id.strip()
+    ):
+        raise OrderValidationError(
+            "order_id must be a nonblank stripped string"
+        )
+    request = OrderRequest(
+        symbol=symbol,
+        asset_class=_enum_value(AssetClass, asset_class, "asset_class"),
+        side=_enum_value(OrderSide, side, "side"),
+        order_type=_enum_value(OrderType, order_type, "order_type"),
+        quantity=quantity,
+        time_in_force=_enum_value(
+            TimeInForce,
+            time_in_force,
+            "time_in_force",
+        ),
+        limit_price=limit_price,
+        stop_price=stop_price,
+        client_order_id=client_order_id,
+    )
+    return create_order(
+        request,
+        order_id_factory=lambda: order_id,
+        clock=lambda: occurred_at,
+    )
 
 
 def submit(book: PaperOrderBook, order: PaperOrder) -> PaperOrder:
@@ -72,6 +133,7 @@ def expire_day_orders(
 
 
 __all__ = (
+    "create_submission_order",
     "submit",
     "update",
     "cancel",
