@@ -10,6 +10,7 @@ def test_public_exports_are_complete_and_intentional() -> None:
         "PaperOrderBookIdentity",
         "PaperOrderBookObservation",
         "PaperOrderBookCommand",
+        "PaperOrderBookRejection",
         "PaperOrderBookRequest",
         "PaperOrderBookPolicy",
         "PaperOrderBookCriteriaResult",

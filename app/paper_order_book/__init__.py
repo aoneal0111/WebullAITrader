@@ -31,6 +31,7 @@ from app.paper_order_book.models import (
     PaperOrderBookRequest,
     PaperOrderBookResult,
     PaperOrderBookObservation,
+    PaperOrderBookRejection,
     PaperOrderBookSummary,
 )
 from app.paper_order_book.orchestrator import PaperOrderBookOrchestrator
@@ -57,6 +58,7 @@ __all__ = (
     "PaperOrderBookObservation",
     "PaperOrderBookOrchestrator",
     "PaperOrderBookPolicy",
+    "PaperOrderBookRejection",
     "PaperOrderBookRequest",
     "PaperOrderBookResult",
     "PaperOrderBookRuntime",

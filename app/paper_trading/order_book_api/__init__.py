@@ -40,6 +40,7 @@ from app.paper_trading.order_book_api.operations import (
     expire,
     expire_day_orders,
     record_fill,
+    reject,
     submit,
     update,
 )
@@ -89,6 +90,7 @@ __all__ = (
     "update",
     "cancel",
     "accept",
+    "reject",
     "expire",
     "record_fill",
     "expire_day_orders",

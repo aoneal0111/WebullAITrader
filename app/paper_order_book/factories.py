@@ -8,6 +8,7 @@ from app.paper_order_book.models import (
     PaperOrderBookIdentity,
     PaperOrderBookObservation,
     PaperOrderBookPolicy,
+    PaperOrderBookRejection,
     PaperOrderBookRequest,
 )
 from app.paper_trading.order_book_api import (
@@ -138,12 +139,16 @@ def create_reject_command(
     *,
     command_id: str,
     order: OrderBookPaperOrder,
+    reason: str,
     occurred_at: datetime,
 ) -> PaperOrderBookCommand:
     return PaperOrderBookCommand(
         command_id=command_id,
         command_type="reject",
-        payload=order,
+        payload=PaperOrderBookRejection(
+            order=order,
+            reason=reason,
+        ),
         occurred_at=occurred_at,
     )
 

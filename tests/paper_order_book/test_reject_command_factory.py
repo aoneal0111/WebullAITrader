@@ -3,6 +3,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 import app.paper_order_book as api
 
 NOW = datetime(2026, 7, 22, 12, 0, tzinfo=UTC)
@@ -31,13 +33,16 @@ def test_public_factory_wraps_existing_order_without_copying() -> None:
     command = api.create_reject_command(
         command_id=command_id,
         order=order,
+        reason="Risk limit exceeded",
         occurred_at=occurred_at,
     )
 
     assert isinstance(command, api.PaperOrderBookCommand)
     assert command.command_type == "reject"
     assert command.command_id is command_id
-    assert command.payload is order
+    assert isinstance(command.payload, api.PaperOrderBookRejection)
+    assert command.payload.order is order
+    assert command.payload.reason == "Risk limit exceeded"
     assert command.occurred_at is occurred_at
 
 
@@ -48,11 +53,13 @@ def test_reject_command_serialization_is_deterministic() -> None:
     first = api.create_reject_command(
         command_id="REJECT-1",
         order=first_order,
+        reason="Risk limit exceeded",
         occurred_at=NOW,
     )
     second = api.create_reject_command(
         command_id="REJECT-1",
         order=second_order,
+        reason="Risk limit exceeded",
         occurred_at=NOW,
     )
 
@@ -60,7 +67,13 @@ def test_reject_command_serialization_is_deterministic() -> None:
     assert first_serialized == api.serialize_command(first)
     assert first_serialized == api.serialize_command(second)
     assert first_serialized["command_type"] == "reject"
-    assert first_serialized["payload"]["value"]["order_id"] == "ORDER-1"
+    assert first_serialized["payload"]["type"] == "rejection"
+    assert first_serialized["payload"]["value"]["order"]["order_id"] == (
+        "ORDER-1"
+    )
+    assert first_serialized["payload"]["value"]["reason"] == (
+        "Risk limit exceeded"
+    )
 
 
 def test_factory_does_not_mutate_caller_owned_values() -> None:
@@ -78,13 +91,27 @@ def test_factory_does_not_mutate_caller_owned_values() -> None:
     command = api.create_reject_command(
         command_id=command_id,
         order=order,
+        reason="Risk limit exceeded",
         occurred_at=occurred_at,
     )
 
     assert api.serialize_command(submit) == order_before
     assert command_id == "REJECT-1"
     assert occurred_at is NOW
-    assert command.payload is order
+    assert command.payload.order is order
+
+
+def test_rejection_reason_is_required() -> None:
+    with pytest.raises(
+        api.PaperOrderBookValidationError,
+        match="^rejection reason is required$",
+    ):
+        api.create_reject_command(
+            command_id="REJECT-1",
+            order=make_order(),
+            reason=" ",
+            occurred_at=NOW,
+        )
 
 
 def test_reject_factory_test_imports_only_public_package_and_stdlib() -> None:

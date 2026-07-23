@@ -19,6 +19,7 @@ from app.paper_trading.orders import (
     apply_fill,
     create_order,
     expire_order,
+    reject_order,
 )
 
 
@@ -124,6 +125,16 @@ def accept(
     return book.update(accept_order(order, at=at))
 
 
+def reject(
+    book: PaperOrderBook,
+    order: PaperOrder,
+    reason: str,
+    *,
+    at: datetime,
+) -> PaperOrder:
+    return book.update(reject_order(order, reason, at=at))
+
+
 def expire(
     book: PaperOrderBook,
     order: PaperOrder,
@@ -164,6 +175,7 @@ __all__ = (
     "update",
     "cancel",
     "accept",
+    "reject",
     "expire",
     "record_fill",
     "expire_day_orders",

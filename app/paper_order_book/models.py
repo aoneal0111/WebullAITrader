@@ -12,14 +12,6 @@ from app.paper_trading.order_book_api import (
     PaperOrderBook,
 )
 
-PaperOrderBookCommandPayload = (
-    PaperOrderBook
-    | OrderBookPaperOrder
-    | OrderBookFill
-    | OrderBookOrderRequest
-)
-
-
 def _text(value: object, name: str) -> str:
     if (
         not isinstance(value, str)
@@ -53,6 +45,31 @@ def _errors(value: object) -> tuple[str, ...]:
             "errors must be an immutable tuple of nonblank strings"
         )
     return value
+
+
+@dataclass(frozen=True, slots=True)
+class PaperOrderBookRejection:
+    order: OrderBookPaperOrder
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.order, OrderBookPaperOrder):
+            raise PaperOrderBookValidationError(
+                "rejection order must be OrderBookPaperOrder"
+            )
+        if not isinstance(self.reason, str) or not self.reason.strip():
+            raise PaperOrderBookValidationError(
+                "rejection reason is required"
+            )
+
+
+PaperOrderBookCommandPayload = (
+    PaperOrderBook
+    | OrderBookPaperOrder
+    | OrderBookFill
+    | OrderBookOrderRequest
+    | PaperOrderBookRejection
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +115,7 @@ class PaperOrderBookCommand:
                 OrderBookPaperOrder,
                 OrderBookFill,
                 OrderBookOrderRequest,
+                PaperOrderBookRejection,
             ),
         ):
             raise PaperOrderBookValidationError(
@@ -224,6 +242,7 @@ __all__ = (
     "PaperOrderBookIdentity",
     "PaperOrderBookObservation",
     "PaperOrderBookCommand",
+    "PaperOrderBookRejection",
     "PaperOrderBookRequest",
     "PaperOrderBookCriteriaResult",
     "PaperOrderBookSummary",

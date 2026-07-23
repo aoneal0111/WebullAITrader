@@ -74,6 +74,7 @@ def test_public_all_is_intentional() -> None:
         "update",
         "cancel",
         "accept",
+        "reject",
         "expire",
         "record_fill",
         "expire_day_orders",

@@ -3,7 +3,10 @@
 import app.paper_trading.order_book_api as lifecycle_api
 
 from app.paper_order_book.exceptions import PaperOrderBookValidationError
-from app.paper_order_book.models import PaperOrderBookCommand
+from app.paper_order_book.models import (
+    PaperOrderBookCommand,
+    PaperOrderBookRejection,
+)
 
 
 def dispatch_command(
@@ -36,6 +39,16 @@ def dispatch_command(
         lifecycle_api.accept(
             order_book,
             payload,
+            at=command.occurred_at,
+        )
+        return
+    if command.command_type == "reject" and isinstance(
+        payload, PaperOrderBookRejection
+    ):
+        lifecycle_api.reject(
+            order_book,
+            payload.order,
+            payload.reason,
             at=command.occurred_at,
         )
         return

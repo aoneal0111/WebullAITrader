@@ -3,6 +3,7 @@
 from app.paper_order_book.exceptions import PaperOrderBookValidationError
 from app.paper_order_book.models import (
     PaperOrderBookCriteriaResult,
+    PaperOrderBookRejection,
     PaperOrderBookRequest,
 )
 from app.paper_trading.order_book_api import (
@@ -16,6 +17,7 @@ _COMMAND_PAYLOAD_TYPES = {
     "update": OrderBookPaperOrder,
     "cancel": OrderBookPaperOrder,
     "accept": OrderBookPaperOrder,
+    "reject": PaperOrderBookRejection,
     "expire": OrderBookPaperOrder,
     "apply_fill": OrderBookFill,
     "expire_day_orders": PaperOrderBook,

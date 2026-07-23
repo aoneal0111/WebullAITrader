@@ -5,6 +5,7 @@ from app.paper_order_book.models import (
     PaperOrderBookCommand,
     PaperOrderBookCriteriaResult,
     PaperOrderBookIdentity,
+    PaperOrderBookRejection,
     PaperOrderBookRequest,
     PaperOrderBookResult,
     PaperOrderBookObservation,
@@ -45,6 +46,16 @@ def serialize_snapshot(value: PaperOrderBookObservation) -> dict[str, object]:
 
 
 def _serialize_payload(value: object) -> dict[str, object]:
+    if isinstance(value, PaperOrderBookRejection):
+        return {
+            "type": "rejection",
+            "value": {
+                "order": lifecycle_serializers.serialize_order_book_order(
+                    value.order
+                ),
+                "reason": value.reason,
+            },
+        }
     if isinstance(value, PaperOrderBook):
         return {
             "type": "order_book",
