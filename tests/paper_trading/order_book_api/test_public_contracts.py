@@ -77,6 +77,7 @@ def test_public_all_is_intentional() -> None:
         "expire",
         "record_fill",
         "expire_day_orders",
+        "create_fill",
         "create_submission_order",
     }
 

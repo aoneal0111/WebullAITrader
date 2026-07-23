@@ -29,6 +29,31 @@ def _enum_value(enum_type, value: object, field_name: str):
         raise OrderValidationError(f"{field_name} is invalid") from None
 
 
+def create_fill(
+    *,
+    fill_id: str,
+    order_id: str,
+    quantity: Decimal,
+    price: Decimal,
+    occurred_at: datetime,
+    commission: Decimal = Decimal("0"),
+    slippage: Decimal = Decimal("0"),
+    venue: str | None = None,
+    liquidity_flag: str | None = None,
+) -> Fill:
+    return Fill(
+        fill_id=fill_id,
+        order_id=order_id,
+        quantity=quantity,
+        price=price,
+        timestamp=occurred_at,
+        commission=commission,
+        slippage=slippage,
+        venue=venue,
+        liquidity_flag=liquidity_flag,
+    )
+
+
 def create_submission_order(
     *,
     order_id: str,
@@ -133,6 +158,7 @@ def expire_day_orders(
 
 
 __all__ = (
+    "create_fill",
     "create_submission_order",
     "submit",
     "update",

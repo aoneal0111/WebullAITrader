@@ -13,6 +13,7 @@ from app.paper_order_book.models import (
 from app.paper_trading.order_book_api import (
     OrderBookPaperOrder,
     PaperOrderBook,
+    create_fill as create_lifecycle_fill,
     create_submission_order,
 )
 
@@ -93,6 +94,31 @@ def create_expire_command(
     )
 
 
+def create_fill(
+    *,
+    fill_id: str,
+    order_id: str,
+    quantity: Decimal,
+    price: Decimal,
+    occurred_at: datetime,
+    commission: Decimal = Decimal("0"),
+    slippage: Decimal = Decimal("0"),
+    venue: str | None = None,
+    liquidity_flag: str | None = None,
+):
+    return create_lifecycle_fill(
+        fill_id=fill_id,
+        order_id=order_id,
+        quantity=quantity,
+        price=price,
+        occurred_at=occurred_at,
+        commission=commission,
+        slippage=slippage,
+        venue=venue,
+        liquidity_flag=liquidity_flag,
+    )
+
+
 def create_reject_command(
     *,
     command_id: str,
@@ -161,6 +187,7 @@ __all__ = (
     "create_accept_command",
     "create_cancel_command",
     "create_expire_command",
+    "create_fill",
     "create_observation",
     "create_reject_command",
     "create_request",
