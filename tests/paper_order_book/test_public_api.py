@@ -28,6 +28,7 @@ def test_public_exports_are_complete_and_intentional() -> None:
         "serialize_result",
         "validate_request",
         "execute",
+        "create_cancel_command",
         "create_observation",
         "create_request",
         "create_service",
@@ -68,6 +69,7 @@ def test_every_public_export_exists_and_is_not_private() -> None:
 
 def test_application_entry_points_are_exported() -> None:
     assert "execute" in api.__all__
+    assert "create_cancel_command" in api.__all__
     assert "create_observation" in api.__all__
     assert "create_request" in api.__all__
     assert "create_service" in api.__all__

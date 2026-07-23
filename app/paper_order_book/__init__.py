@@ -13,6 +13,7 @@ from app.paper_order_book.exceptions import (
 from app.paper_order_book.composition import create_service, default_service
 from app.paper_order_book.facade import execute
 from app.paper_order_book.factories import (
+    create_cancel_command,
     create_observation,
     create_request,
     create_submit_command,
@@ -57,6 +58,7 @@ __all__ = (
     "PaperOrderBookService",
     "PaperOrderBookSummary",
     "PaperOrderBookValidationError",
+    "create_cancel_command",
     "create_observation",
     "create_request",
     "create_service",

@@ -11,6 +11,7 @@ from app.paper_order_book.models import (
     PaperOrderBookRequest,
 )
 from app.paper_trading.order_book_api import (
+    OrderBookPaperOrder,
     PaperOrderBook,
     create_submission_order,
 )
@@ -47,6 +48,20 @@ def create_request(
         requested_at=requested_at,
         completed_at=completed_at,
         policy=policy,
+    )
+
+
+def create_cancel_command(
+    *,
+    command_id: str,
+    order: OrderBookPaperOrder,
+    occurred_at: datetime,
+) -> PaperOrderBookCommand:
+    return PaperOrderBookCommand(
+        command_id=command_id,
+        command_type="cancel",
+        payload=order,
+        occurred_at=occurred_at,
     )
 
 
@@ -87,6 +102,7 @@ def create_submit_command(
 
 
 __all__ = (
+    "create_cancel_command",
     "create_observation",
     "create_request",
     "create_submit_command",
