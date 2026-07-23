@@ -6,6 +6,7 @@ from enum import StrEnum
 from threading import Event, RLock, Thread
 from typing import Protocol
 
+from app.services.runtime_driver_validation import validate_runtime_driver
 from app.operations_core import (
     OperationsBus,
     RuntimeCycleCompleted,
@@ -116,18 +117,7 @@ class RuntimeService:
                 return False
 
             driver = self._driver_factory()
-
-            if not isinstance(driver.environment, str):
-                raise TypeError("runtime driver environment must be a string")
-
-            if not driver.environment.strip():
-                raise ValueError("runtime driver environment must not be empty")
-
-            if not isinstance(driver.active_model, str):
-                raise TypeError("runtime driver active_model must be a string")
-
-            if not driver.active_model.strip():
-                raise ValueError("runtime driver active_model must not be empty")
+            validate_runtime_driver(driver)
 
             self._driver = driver
             self._stop_event = Event()
