@@ -1,27 +1,11 @@
 """Observational validation for Paper Order Book application requests."""
 
+from app.paper_order_book.command_contracts import COMMAND_PAYLOAD_TYPES
 from app.paper_order_book.exceptions import PaperOrderBookValidationError
 from app.paper_order_book.models import (
     PaperOrderBookCriteriaResult,
-    PaperOrderBookRejection,
     PaperOrderBookRequest,
 )
-from app.paper_trading.order_book_api import (
-    OrderBookFill,
-    OrderBookPaperOrder,
-    PaperOrderBook,
-)
-
-_COMMAND_PAYLOAD_TYPES = {
-    "submit": OrderBookPaperOrder,
-    "update": OrderBookPaperOrder,
-    "cancel": OrderBookPaperOrder,
-    "accept": OrderBookPaperOrder,
-    "reject": PaperOrderBookRejection,
-    "expire": OrderBookPaperOrder,
-    "apply_fill": OrderBookFill,
-    "expire_day_orders": PaperOrderBook,
-}
 
 
 def validate_request(request: object) -> PaperOrderBookCriteriaResult:
@@ -69,7 +53,7 @@ def validate_request(request: object) -> PaperOrderBookCriteriaResult:
         previous_timestamp = command.occurred_at
 
     for index, command in enumerate(request.commands):
-        expected_payload = _COMMAND_PAYLOAD_TYPES.get(command.command_type)
+        expected_payload = COMMAND_PAYLOAD_TYPES.get(command.command_type)
         if expected_payload is None:
             errors.append(
                 f"unsupported command_type at command index {index}: "

@@ -95,7 +95,24 @@ def test_dispatcher_imports_only_models_exceptions_and_lifecycle_facade() -> Non
         elif isinstance(node, ast.Import):
             imports.update(alias.name for alias in node.names)
     assert imports == {
+        "app.paper_order_book.command_contracts",
         "app.paper_order_book.exceptions",
+        "app.paper_order_book.models",
+        "app.paper_trading.order_book_api",
+    }
+
+
+def test_command_contracts_import_only_models_and_lifecycle_facade() -> None:
+    path = PRODUCTION / "command_contracts.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imports = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert imports == {
+        "types",
+        "typing",
         "app.paper_order_book.models",
         "app.paper_trading.order_book_api",
     }
