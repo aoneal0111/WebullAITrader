@@ -152,6 +152,7 @@ def test_factories_import_only_permitted_construction_boundaries() -> None:
     }
     assert imports == {
         "datetime",
+        "decimal",
         "app.paper_order_book.models",
         "app.paper_trading.order_book_api",
     }

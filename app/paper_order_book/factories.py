@@ -1,6 +1,7 @@
 """Public construction helpers for Paper Order Book application contracts."""
 
 from datetime import datetime
+from decimal import Decimal
 
 from app.paper_order_book.models import (
     PaperOrderBookCommand,
@@ -9,7 +10,10 @@ from app.paper_order_book.models import (
     PaperOrderBookPolicy,
     PaperOrderBookRequest,
 )
-from app.paper_trading.order_book_api import PaperOrderBook
+from app.paper_trading.order_book_api import (
+    PaperOrderBook,
+    create_submission_order,
+)
 
 
 def create_observation(
@@ -46,4 +50,44 @@ def create_request(
     )
 
 
-__all__ = ("create_observation", "create_request")
+def create_submit_command(
+    *,
+    command_id: str,
+    order_id: str,
+    occurred_at: datetime,
+    symbol: str,
+    asset_class: str,
+    side: str,
+    order_type: str,
+    quantity: Decimal,
+    time_in_force: str,
+    limit_price: Decimal | None = None,
+    stop_price: Decimal | None = None,
+    client_order_id: str | None = None,
+) -> PaperOrderBookCommand:
+    order = create_submission_order(
+        order_id=order_id,
+        occurred_at=occurred_at,
+        symbol=symbol,
+        asset_class=asset_class,
+        side=side,
+        order_type=order_type,
+        quantity=quantity,
+        time_in_force=time_in_force,
+        limit_price=limit_price,
+        stop_price=stop_price,
+        client_order_id=client_order_id,
+    )
+    return PaperOrderBookCommand(
+        command_id=command_id,
+        command_type="submit",
+        payload=order,
+        occurred_at=occurred_at,
+    )
+
+
+__all__ = (
+    "create_observation",
+    "create_request",
+    "create_submit_command",
+)

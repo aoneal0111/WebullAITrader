@@ -12,7 +12,11 @@ from app.paper_order_book.exceptions import (
 )
 from app.paper_order_book.composition import create_service, default_service
 from app.paper_order_book.facade import execute
-from app.paper_order_book.factories import create_observation, create_request
+from app.paper_order_book.factories import (
+    create_observation,
+    create_request,
+    create_submit_command,
+)
 from app.paper_order_book.models import (
     PaperOrderBookCommand,
     PaperOrderBookCriteriaResult,
@@ -56,6 +60,7 @@ __all__ = (
     "create_observation",
     "create_request",
     "create_service",
+    "create_submit_command",
     "default_service",
     "execute",
     "serialize_command",

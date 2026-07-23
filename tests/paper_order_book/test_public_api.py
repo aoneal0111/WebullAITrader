@@ -31,6 +31,7 @@ def test_public_exports_are_complete_and_intentional() -> None:
         "create_observation",
         "create_request",
         "create_service",
+        "create_submit_command",
         "default_service",
     }
 
@@ -70,6 +71,7 @@ def test_application_entry_points_are_exported() -> None:
     assert "create_observation" in api.__all__
     assert "create_request" in api.__all__
     assert "create_service" in api.__all__
+    assert "create_submit_command" in api.__all__
     assert "default_service" in api.__all__
 
 
