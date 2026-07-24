@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from app.execution_coordinator import ExecutionCoordinator
@@ -133,7 +133,7 @@ def create_paper_runtime_dependencies(
     snapshot_source: SnapshotSource,
     coordinator: ExecutionCoordinator,
     request_builder: RequestBuilder,
-    clock: Clock = utc_clock,
+    clock: Clock,
     strategy_engine: StrategyEngine | None = None,
     inference_adapter: RuntimeInferenceAdapter | None = None,
 ) -> PaperRuntimeDependencies:
