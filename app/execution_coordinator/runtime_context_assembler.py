@@ -11,7 +11,42 @@ class RuntimeContextAssembler:
 
     account_state_builder: Callable[..., Any] = build_account_state
 
-    def build(self, *args: Any, **kwargs: Any) -> CoordinationContext:
-        raise NotImplementedError(
-            "Runtime context assembly is not implemented yet."
+    def build(
+        self,
+        *,
+        portfolio: object,
+        account_type: object,
+        filled_orders: int,
+        symbol: str,
+        timestamp: object,
+        market_state: object,
+        risk_limits: object,
+        compliance_limits: object,
+        gfv_decision: object,
+        kill_switch: object,
+        market_quote: object,
+        execution_config: object,
+        journal: object,
+        equity_curve: object,
+    ) -> CoordinationContext:
+        account_state = self.account_state_builder(
+            portfolio=portfolio,
+            account_type=account_type,
+            filled_orders=filled_orders,
+            symbol=symbol,
+            timestamp=timestamp,
+        )
+
+        return CoordinationContext(
+            account_state=account_state,
+            market_state=market_state,
+            risk_limits=risk_limits,
+            compliance_limits=compliance_limits,
+            gfv_decision=gfv_decision,
+            kill_switch=kill_switch,
+            portfolio=portfolio,
+            market_quote=market_quote,
+            execution_config=execution_config,
+            journal=journal,
+            equity_curve=equity_curve,
         )
