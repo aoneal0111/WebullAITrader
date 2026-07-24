@@ -1,10 +1,13 @@
 ﻿from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.execution_coordinator.context_provider import (
     CoordinationContext,
     CoordinationContextProvider,
+)
+from app.execution_coordinator.runtime_context_assembler import (
+    RuntimeContextAssembler,
 )
 from app.paper_session import PaperTradingSession
 from app.strategy_engine import StrategyOrderIntent
@@ -13,6 +16,10 @@ from app.strategy_engine import StrategyOrderIntent
 @dataclass(frozen=True, slots=True)
 class RuntimeCoordinationContextProvider(CoordinationContextProvider):
     """Production coordination-context provider for the paper runtime."""
+
+    assembler: RuntimeContextAssembler = field(
+        default_factory=RuntimeContextAssembler
+    )
 
     def get_context(
         self,
@@ -24,4 +31,6 @@ class RuntimeCoordinationContextProvider(CoordinationContextProvider):
         cycle: int,
         symbol_index: int,
     ) -> CoordinationContext:
-        raise NotImplementedError
+        raise NotImplementedError(
+            "Runtime context inputs have not been composed yet."
+        )
