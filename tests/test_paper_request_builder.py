@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -34,6 +34,7 @@ class RecordingContextProvider:
     def get_context(
         self,
         *,
+        order_intent,
         symbol,
         snapshot,
         session,
@@ -110,3 +111,4 @@ def test_builder_forwards_current_runtime_inputs_to_context_provider() -> None:
     assert request.portfolio is session.portfolio
     assert request.journal is session.journal
     assert request.equity_curve is session.equity_curve
+

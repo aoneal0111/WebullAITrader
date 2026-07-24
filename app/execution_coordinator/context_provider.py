@@ -1,8 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 
 from app.paper_session import PaperTradingSession
+from app.strategy_engine import StrategyOrderIntent
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +38,7 @@ class CoordinationContextProvider:
     def get_context(
         self,
         *,
+        order_intent: StrategyOrderIntent,
         symbol: str,
         snapshot: object,
         session: PaperTradingSession,
@@ -44,3 +46,4 @@ class CoordinationContextProvider:
         symbol_index: int,
     ) -> CoordinationContext:
         raise NotImplementedError
+

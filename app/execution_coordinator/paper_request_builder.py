@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -33,7 +33,10 @@ class PaperRequestBuilder:
         cycle: int,
         symbol_index: int,
     ) -> CoordinationRequest:
+        order_intent = self.order_intent_factory.create(decision)
+
         context = self.context_provider.get_context(
+            order_intent=order_intent,
             symbol=decision.symbol,
             snapshot=snapshot,
             session=session,
@@ -42,7 +45,7 @@ class PaperRequestBuilder:
         )
 
         return CoordinationRequest(
-            order_intent=self.order_intent_factory.create(decision),
+            order_intent=order_intent,
             advisory_response=decision,
             snapshot=snapshot,
             risk_limits=context.risk_limits,
@@ -57,3 +60,4 @@ class PaperRequestBuilder:
             journal=context.journal,
             equity_curve=context.equity_curve,
         )
+
