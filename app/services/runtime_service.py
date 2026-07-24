@@ -6,6 +6,7 @@ from enum import StrEnum
 from threading import Event, RLock, Thread
 from typing import Protocol
 
+from app.services.runtime_driver_validation import validate_runtime_driver
 from app.operations_core import (
     OperationsBus,
     RuntimeCycleCompleted,
@@ -116,18 +117,7 @@ class RuntimeService:
                 return False
 
             driver = self._driver_factory()
-
-            if not isinstance(driver.environment, str):
-                raise TypeError("runtime driver environment must be a string")
-
-            if not driver.environment.strip():
-                raise ValueError("runtime driver environment must not be empty")
-
-            if not isinstance(driver.active_model, str):
-                raise TypeError("runtime driver active_model must be a string")
-
-            if not driver.active_model.strip():
-                raise ValueError("runtime driver active_model must not be empty")
+            validate_runtime_driver(driver)
 
             self._driver = driver
             self._stop_event = Event()
@@ -275,55 +265,3 @@ class RuntimeService:
         )
 
 
-class SimulatedPaperRuntimeDriver:
-    """
-    Temporary non-trading driver used until PaperOperationsEngine is composed.
-
-    It has no broker, order, position, scanner, or market-data capability.
-    """
-
-    def __init__(
-        self,
-        *,
-        interval_seconds: float = 1.0,
-        environment: str = "PAPER",
-        active_model: str = "Promoted model",
-    ) -> None:
-        if interval_seconds < 0:
-            raise ValueError("interval_seconds must be nonnegative")
-
-        if not environment.strip():
-            raise ValueError("environment must not be empty")
-
-        if not active_model.strip():
-            raise ValueError("active_model must not be empty")
-
-        self._interval_seconds = interval_seconds
-        self._environment = environment.strip()
-        self._active_model = active_model.strip()
-        self._cycles_completed = 0
-
-    @property
-    def environment(self) -> str:
-        return self._environment
-
-    @property
-    def active_model(self) -> str:
-        return self._active_model
-
-    @property
-    def cycles_completed(self) -> int:
-        return self._cycles_completed
-
-    def run(
-        self,
-        *,
-        stop_event: Event,
-        cycle_sink: Callable[[int], None],
-    ) -> None:
-        while not stop_event.is_set():
-            self._cycles_completed += 1
-            cycle_sink(self._cycles_completed)
-
-            if stop_event.wait(self._interval_seconds):
-                break

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.services import RuntimeService
+from app.gui.pages.orders import OrdersPage
 from app.gui.state_bridge import QtStateBridge
 from app.operations_core import (
     ApplicationState,
@@ -196,14 +198,17 @@ class MainWindow(QMainWindow):
         self._update_clock()
 
     def _build_interface(self) -> None:
-        root = QWidget()
-        root.setObjectName("appRoot")
-        root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(18, 14, 18, 14)
-        root_layout.setSpacing(12)
+        self._page_stack = QStackedWidget()
+        self._page_stack.setObjectName("pageStack")
 
-        root_layout.addWidget(self._build_header())
-        root_layout.addLayout(self._build_metrics())
+        dashboard = QWidget()
+        dashboard.setObjectName("appRoot")
+        dashboard_layout = QVBoxLayout(dashboard)
+        dashboard_layout.setContentsMargins(18, 14, 18, 14)
+        dashboard_layout.setSpacing(12)
+
+        dashboard_layout.addWidget(self._build_header())
+        dashboard_layout.addLayout(self._build_metrics())
 
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
         main_splitter.setObjectName("mainSplitter")
@@ -214,10 +219,63 @@ class MainWindow(QMainWindow):
         main_splitter.setStretchFactor(1, 7)
         main_splitter.setStretchFactor(2, 3)
         main_splitter.setSizes([235, 850, 300])
-        root_layout.addWidget(main_splitter, 1)
+        dashboard_layout.addWidget(main_splitter, 1)
 
-        root_layout.addWidget(self._build_footer())
-        self.setCentralWidget(root)
+        dashboard_layout.addWidget(self._build_footer())
+
+        self._orders_page = OrdersPage()
+
+        orders_container = QWidget()
+        orders_container.setObjectName("appRoot")
+        orders_layout = QVBoxLayout(orders_container)
+        orders_layout.setContentsMargins(18, 14, 18, 14)
+        orders_layout.setSpacing(12)
+        orders_layout.addWidget(self._build_orders_navigation())
+        orders_layout.addWidget(self._orders_page, 1)
+
+        self._page_stack.addWidget(dashboard)
+        self._page_stack.addWidget(orders_container)
+
+        self.setCentralWidget(self._page_stack)
+
+
+    def _build_orders_navigation(self) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("headerPanel")
+
+        layout = QHBoxLayout(panel)
+        layout.setContentsMargins(18, 12, 18, 12)
+        layout.setSpacing(10)
+
+        title_box = QVBoxLayout()
+        title_box.setSpacing(0)
+
+        title = QLabel("WEBULL AI TRADER")
+        title.setObjectName("applicationTitle")
+
+        subtitle = QLabel("Autonomous paper-trading workstation")
+        subtitle.setObjectName("mutedText")
+
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+
+        dashboard_button = QPushButton("DASHBOARD")
+        dashboard_button.setObjectName("workspaceNavButton")
+        dashboard_button.clicked.connect(
+            lambda: self._page_stack.setCurrentIndex(0)
+        )
+
+        orders_button = QPushButton("ORDERS")
+        orders_button.setObjectName("workspaceNavButton")
+        orders_button.setEnabled(False)
+
+        layout.addLayout(title_box)
+        layout.addSpacing(18)
+        layout.addWidget(dashboard_button)
+        layout.addWidget(orders_button)
+        layout.addStretch()
+
+        return panel
 
     def _build_header(self) -> QFrame:
         panel = QFrame()
@@ -240,7 +298,22 @@ class MainWindow(QMainWindow):
         self._connection_pill = StatusPill("●  OFFLINE")
         self._mode_pill = StatusPill("PAPER", "good")
 
+        self._dashboard_button = QPushButton("DASHBOARD")
+        self._dashboard_button.setObjectName("workspaceNavButton")
+        self._dashboard_button.clicked.connect(
+            lambda: self._page_stack.setCurrentIndex(0)
+        )
+
+        self._orders_button = QPushButton("ORDERS")
+        self._orders_button.setObjectName("workspaceNavButton")
+        self._orders_button.clicked.connect(
+            lambda: self._page_stack.setCurrentIndex(1)
+        )
+
         layout.addLayout(title_box)
+        layout.addSpacing(18)
+        layout.addWidget(self._dashboard_button)
+        layout.addWidget(self._orders_button)
         layout.addStretch()
         layout.addWidget(self._clock_label)
         layout.addWidget(self._connection_pill)
@@ -854,6 +927,7 @@ class MainWindow(QMainWindow):
     def _render_state(self, state: ApplicationState) -> None:
         self._state = state
         runtime = state.runtime
+        self._orders_page.render(state)
 
         self._runtime_card.set_value(runtime.phase.value.title(), "Service lifecycle")
         self._broker_card.set_value(runtime.broker_status, "Paper broker")
@@ -1018,6 +1092,45 @@ class MainWindow(QMainWindow):
             #signalValue { color: #68a9ff; font-size: 17px; font-weight: 800; }
             #runtimeSummary { background: #0d141d; border: 1px solid #202b3a; border-radius: 7px; color: #b9c3d1; padding: 10px; }
             QPushButton { min-height: 39px; border-radius: 7px; font-weight: 750; }
+            #ordersFilter {
+                min-height: 30px;
+                min-width: 155px;
+                padding: 0 10px;
+                background: #111a26;
+                border: 1px solid #334052;
+                border-radius: 6px;
+                color: #cbd5e3;
+                font-size: 9px;
+                font-weight: 750;
+            }
+            #ordersFilter:hover {
+                border-color: #4f8cff;
+            }
+            #ordersFilter QAbstractItemView {
+                background: #111a26;
+                border: 1px solid #334052;
+                color: #cbd5e3;
+                selection-background-color: #1d3554;
+            }
+            #workspaceNavButton {
+                min-height: 30px;
+                padding: 0 14px;
+                background: #151e29;
+                border: 1px solid #334052;
+                color: #aab6c8;
+                font-size: 9px;
+                font-weight: 800;
+            }
+            #workspaceNavButton:hover {
+                background: #1d2a3a;
+                border-color: #4f8cff;
+                color: #ffffff;
+            }
+            #workspaceNavButton:disabled {
+                background: #17385f;
+                border-color: #3888df;
+                color: #ffffff;
+            }
             #startButton { background: #1d7a50; border: 1px solid #2b9a69; color: white; }
             #startButton:hover { background: #258b5d; }
             #startButton:disabled { background: #23322c; border-color: #34453f; color: #68766f; }

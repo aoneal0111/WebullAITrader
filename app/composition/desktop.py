@@ -3,7 +3,9 @@
 from dataclasses import dataclass
 
 from app.operations_core import ApplicationStateStore, OperationsBus
-from app.services import RuntimeService, SimulatedPaperRuntimeDriver
+from app.services import RuntimeService
+
+from .desktop_runtime import create_desktop_runtime_service
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,14 +36,7 @@ def create_desktop_composition() -> DesktopComposition:
     bus = OperationsBus()
     state_store = ApplicationStateStore(bus)
 
-    runtime_service = RuntimeService(
-        bus,
-        lambda: SimulatedPaperRuntimeDriver(
-            interval_seconds=1.0,
-            environment="PAPER",
-            active_model="Promoted model",
-        ),
-    )
+    runtime_service = create_desktop_runtime_service(bus)
 
     return DesktopComposition(
         bus=bus,
