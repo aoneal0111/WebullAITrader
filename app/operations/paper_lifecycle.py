@@ -19,7 +19,7 @@ Clock = Callable[[], datetime]
 
 @dataclass(slots=True)
 class PaperRuntimeSession:
-    """Own creation, recovery, and closure of one paper session."""
+    """Own creation, recovery, updates, and closure of one paper session."""
 
     session_id: str
     initial_cash: Decimal
@@ -39,7 +39,7 @@ class PaperRuntimeSession:
             raise TypeError("clock must be callable")
 
         if self.session is not None:
-            self._validate_recovery(self.session)
+            self._validate_active_session(self.session)
 
     def __enter__(self) -> PaperRuntimeSession:
         return self
@@ -55,7 +55,9 @@ class PaperRuntimeSession:
         """Create and own a fresh active paper session."""
 
         if self.session is not None:
-            raise RuntimeError("paper runtime session has already been initialized")
+            raise RuntimeError(
+                "paper runtime session has already been initialized"
+            )
 
         self.session = create_paper_session(
             session_id=self.session_id,
@@ -71,9 +73,26 @@ class PaperRuntimeSession:
         """Take lifecycle ownership of an existing active paper session."""
 
         if self.session is not None:
-            raise RuntimeError("paper runtime session has already been initialized")
+            raise RuntimeError(
+                "paper runtime session has already been initialized"
+            )
 
-        self._validate_recovery(session)
+        self._validate_active_session(session)
+        self.session = session
+        return session
+
+    def update(
+        self,
+        session: PaperTradingSession,
+    ) -> PaperTradingSession:
+        """Adopt the updated active value of the owned paper session."""
+
+        if self.session is None:
+            raise RuntimeError(
+                "paper runtime session has not been initialized"
+            )
+
+        self._validate_active_session(session)
         self.session = session
         return session
 
@@ -98,7 +117,7 @@ class PaperRuntimeSession:
     ) -> None:
         self.close()
 
-    def _validate_recovery(
+    def _validate_active_session(
         self,
         session: PaperTradingSession,
     ) -> None:

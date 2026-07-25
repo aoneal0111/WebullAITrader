@@ -1,5 +1,6 @@
 from app.operations.checkpoint import AtomicPaperRuntimeCheckpoint
 from app.operations.journal import AtomicPaperRuntimeJournal
+from app.operations.paper_lifecycle import PaperRuntimeSession
 from app.operations.learning_runtime import (
     FeatureBuilder,
     ReloadableInferenceEngine,
@@ -34,6 +35,7 @@ __all__ = [
     "CredentialProvider",
     "EnvironmentCredentialProvider",
     "PaperOperationsEngine",
+    "PaperRuntimeSession",
     "PaperRuntimeCycleResult",
     "PaperRuntimeEvent",
     "PaperRuntimeState",

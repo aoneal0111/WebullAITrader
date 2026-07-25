@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.composition.paper_lifecycle import PaperRuntimeSession
+from app.operations.paper_lifecycle import PaperRuntimeSession
 from app.paper_session import close_paper_session, create_paper_session
 
 

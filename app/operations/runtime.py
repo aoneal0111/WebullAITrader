@@ -12,10 +12,9 @@ from app.operations.learning_runtime import (
     RuntimeInferenceAdapter,
     RuntimeInferenceAudit,
 )
+from app.operations.paper_lifecycle import PaperRuntimeSession
 from app.paper_session import (
     PaperTradingSession,
-    close_paper_session,
-    create_paper_session,
     process_decision,
 )
 from app.strategy_engine import StrategyDecision, StrategyEngine, StrategyPosition
@@ -163,6 +162,7 @@ class PaperOperationsEngine:
         checkpoint_sink: CheckpointSink | None = None,
         cycle_sink: CycleSink | None = None,
         inference_adapter: RuntimeInferenceAdapter | None = None,
+        session_lifecycle: PaperRuntimeSession | None = None,
     ) -> None:
         if not session_id.strip():
             raise ValueError("session ID is required")
@@ -177,7 +177,30 @@ class PaperOperationsEngine:
         self._checkpoint_sink = checkpoint_sink
         self._cycle_sink = cycle_sink
         self._inference_adapter = inference_adapter
-        self._session: PaperTradingSession | None = None
+
+        if session_lifecycle is not None:
+            if not isinstance(session_lifecycle, PaperRuntimeSession):
+                raise TypeError(
+                    "session_lifecycle must be PaperRuntimeSession"
+                )
+            if session_lifecycle.session_id != self._session_id:
+                raise ValueError(
+                    "session lifecycle ID does not match runtime session ID"
+                )
+            if session_lifecycle.initial_cash != self._initial_cash:
+                raise ValueError(
+                    "session lifecycle initial cash does not match runtime"
+                )
+
+        self._session_lifecycle = (
+            session_lifecycle
+            if session_lifecycle is not None
+            else PaperRuntimeSession(
+                session_id=self._session_id,
+                initial_cash=self._initial_cash,
+                clock=self._clock,
+            )
+        )
         self._state = PaperRuntimeState(
             status=PaperRuntimeStatus.CREATED,
             session_id=self._session_id,
@@ -219,9 +242,14 @@ class PaperOperationsEngine:
             checkpoint_sink=checkpoint_sink,
             cycle_sink=cycle_sink,
             inference_adapter=inference_adapter,
+            session_lifecycle=PaperRuntimeSession(
+                session_id=state.session_id,
+                initial_cash=session.portfolio.initial_cash,
+                clock=clock,
+                session=session,
+            ),
         )
         engine._state = state
-        engine._session = session
         return engine
 
     @property
@@ -230,19 +258,15 @@ class PaperOperationsEngine:
 
     @property
     def session(self) -> PaperTradingSession:
-        if self._session is None:
+        if self._session_lifecycle.session is None:
             raise RuntimeError("paper runtime has not started")
-        return self._session
+        return self._session_lifecycle.session
 
     def start(self) -> PaperRuntimeState:
         if self._state.status is not PaperRuntimeStatus.CREATED:
             raise RuntimeError("paper runtime can only be started once")
-        now = self._now()
-        self._session = create_paper_session(
-            session_id=self._session_id,
-            initial_cash=self._initial_cash,
-            started_at=now,
-        )
+        session = self._session_lifecycle.start()
+        now = session.started_at
         self._state = replace(
             self._state,
             status=PaperRuntimeStatus.RUNNING,
@@ -370,7 +394,7 @@ class PaperOperationsEngine:
             )
             if self._cycle_sink is not None:
                 self._cycle_sink(result)
-            self._session = session
+            self._session_lifecycle.update(session)
             self._state = replace(
                 self._state,
                 cycles_completed=cycle,
@@ -443,8 +467,10 @@ class PaperOperationsEngine:
             PaperRuntimeStatus.FAILED,
         }:
             raise RuntimeError("paper runtime is not active")
-        now = self._now()
-        self._session = close_paper_session(self.session, ended_at=now)
+        session = self._session_lifecycle.close()
+        assert session is not None
+        assert session.ended_at is not None
+        now = session.ended_at
         self._state = replace(
             self._state,
             status=PaperRuntimeStatus.STOPPED,
@@ -495,8 +521,9 @@ class PaperOperationsEngine:
             self._event_sink(event)
 
     def _checkpoint(self) -> None:
-        if self._checkpoint_sink is not None and self._session is not None:
-            self._checkpoint_sink(self._state, self._session)
+        session = self._session_lifecycle.session
+        if self._checkpoint_sink is not None and session is not None:
+            self._checkpoint_sink(self._state, session)
 
 
 def _veto_to_hold(decision: StrategyDecision) -> StrategyDecision:
