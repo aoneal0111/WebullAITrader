@@ -9,6 +9,9 @@ from app.broker_plugins.exceptions import (
     InvalidBrokerPluginError,
     UnknownBrokerProviderError,
 )
+from app.broker_plugins.factory import (
+    create_broker_runtime,
+)
 from app.broker_plugins.models import (
     BrokerCapabilities,
     BrokerRuntime,
@@ -27,5 +30,6 @@ __all__ = [
     "InvalidBrokerPluginError",
     "UnknownBrokerProviderError",
     "create_builtin_broker_registry",
+    "create_broker_runtime",
     "normalize_provider",
 ]
