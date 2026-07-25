@@ -1,5 +1,8 @@
 ﻿"""Broker-neutral plugin registration and runtime composition."""
 
+from app.broker_plugins.builtins import (
+    create_builtin_broker_registry,
+)
 from app.broker_plugins.exceptions import (
     BrokerPluginError,
     DuplicateBrokerProviderError,
@@ -23,5 +26,6 @@ __all__ = [
     "DuplicateBrokerProviderError",
     "InvalidBrokerPluginError",
     "UnknownBrokerProviderError",
+    "create_builtin_broker_registry",
     "normalize_provider",
 ]
