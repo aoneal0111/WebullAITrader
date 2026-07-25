@@ -11,11 +11,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from os import environ
 from typing import Callable, Mapping, Sequence
+from uuid import uuid4
 
 from app.webull.websocket_client import OfficialSdkStreamBackend
 
 
 SDKClientFactory = Callable[..., object]
+SessionIdFactory = Callable[[], str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,21 +36,44 @@ class WebullStreamingCredentials:
     def from_environment(
         cls,
         values: Mapping[str, str] | None = None,
+        *,
+        session_id_factory: SessionIdFactory | None = None,
     ) -> "WebullStreamingCredentials":
+        """Load SDK credentials and create a connection identifier when omitted.
+
+        Webull's streaming ``session_id`` identifies the MQTT client session; it
+        is not an OAuth access token. Operators may set ``WEBULL_STREAM_SESSION_ID``
+        for stable diagnostics, otherwise Atlas creates a unique identifier.
+        """
+
         source = environ if values is None else values
         required = {
             "app_key": "WEBULL_APP_KEY",
             "app_secret": "WEBULL_APP_SECRET",
-            "session_id": "WEBULL_STREAM_SESSION_ID",
         }
-        missing = [environment_name for environment_name in required.values() if not source.get(environment_name, "").strip()]
+        missing = [
+            environment_name
+            for environment_name in required.values()
+            if not source.get(environment_name, "").strip()
+        ]
         if missing:
-            raise ValueError(f"missing Webull streaming environment variables: {', '.join(sorted(missing))}")
+            raise ValueError(
+                f"missing Webull streaming environment variables: {', '.join(sorted(missing))}"
+            )
+
+        create_session_id = (
+            (lambda: f"atlas-{uuid4().hex}")
+            if session_id_factory is None
+            else session_id_factory
+        )
+        session_id = source.get("WEBULL_STREAM_SESSION_ID", "").strip() or create_session_id().strip()
+        if not session_id:
+            raise ValueError("session_id_factory must return a non-blank identifier")
 
         return cls(
             app_key=source[required["app_key"]],
             app_secret=source[required["app_secret"]],
-            session_id=source[required["session_id"]],
+            session_id=session_id,
             region_id=source.get("WEBULL_REGION_ID", "us"),
         )
 
@@ -71,16 +96,21 @@ class WebullMarketSubscription:
             raise ValueError("depth must be positive")
 
     def sdk_arguments(self, symbols: Sequence[str]) -> dict[str, object]:
-        normalized = tuple(dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip()))
+        normalized = tuple(
+            dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip())
+        )
         if not normalized:
             raise ValueError("at least one symbol is required")
-        return {
+        arguments: dict[str, object] = {
             "symbols": normalized,
             "category": self.category,
             "sub_types": self.sub_types,
-            "depth": self.depth,
-            "overnight_required": self.overnight_required,
         }
+        if self.depth is not None:
+            arguments["depth"] = self.depth
+        if self.overnight_required is not None:
+            arguments["overnight_required"] = self.overnight_required
+        return arguments
 
 
 def _official_client_factory(**kwargs: object) -> object:
@@ -111,17 +141,21 @@ def create_official_stream_backend(
         raise ValueError("mqtt_port must be positive")
 
     factory = _official_client_factory if client_factory is None else client_factory
-    client = factory(
-        app_key=credentials.app_key,
-        app_secret=credentials.app_secret,
-        region_id=credentials.region_id,
-        session_id=credentials.session_id,
-        http_host=http_host,
-        mqtt_host=mqtt_host,
-        mqtt_port=mqtt_port,
-        tls_enable=tls_enable,
-        transport=transport,
-    )
+    client_arguments: dict[str, object] = {
+        "app_key": credentials.app_key,
+        "app_secret": credentials.app_secret,
+        "region_id": credentials.region_id,
+        "session_id": credentials.session_id,
+        "mqtt_port": mqtt_port,
+        "tls_enable": tls_enable,
+        "transport": transport,
+    }
+    if http_host is not None:
+        client_arguments["http_host"] = http_host
+    if mqtt_host is not None:
+        client_arguments["mqtt_host"] = mqtt_host
+
+    client = factory(**client_arguments)
     return OfficialSdkStreamBackend(
         client,
         subscription_mapper=subscription.sdk_arguments,
