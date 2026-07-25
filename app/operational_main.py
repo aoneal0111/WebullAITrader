@@ -9,6 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from app.authorization.registry import AuthorizationRegistry
+from app.broker_plugins.factory import create_broker_runtime
 from app.live_execution.broker_factory import build_webull_broker
 from app.configuration.loader import load_configuration
 from app.configuration.models import TradingEnvironment
@@ -32,8 +33,16 @@ def sleep_decimal(seconds: Decimal) -> None:
     time.sleep(float(seconds))
 
 
-# Preserve the existing entry-point seam for callers and tests.
-build_broker = build_webull_broker
+def build_broker(configuration):
+    """Create the configured broker through the broker-plugin runtime."""
+
+    runtime = create_broker_runtime(
+        provider=configuration.broker_provider,
+        configuration=configuration,
+        webull_broker_factory=build_webull_broker,
+    )
+
+    return runtime.execution
 
 
 def ensure_parent_directories(configuration) -> None:
