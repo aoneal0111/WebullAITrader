@@ -9,6 +9,9 @@ from decimal import Decimal
 from pathlib import Path
 
 from app.broker_plugins.factory import create_broker_runtime
+from app.composition.operational_lifecycle import (
+    OperationalRuntimeSession,
+)
 from app.composition.operational_runtime import (
     OperationalRuntimeComposition,
     create_operational_runtime_composition,
@@ -110,9 +113,7 @@ def check_startup() -> int:
     emergency_stop = runtime.emergency_stop
     broker = runtime.broker
 
-    connected = False
-
-    try:
+    with OperationalRuntimeSession(runtime) as session:
         print(
             f"Environment: {configuration.environment.value}",
             flush=True,
@@ -145,8 +146,7 @@ def check_startup() -> int:
         print("Durable stores: reachable", flush=True)
         print("Connecting to configured Webull environment.", flush=True)
 
-        broker.connect()
-        connected = True
+        session.connect()
 
         account = broker.get_account()
         cash = broker.get_cash()
@@ -209,17 +209,6 @@ def check_startup() -> int:
         print("SANDBOX STARTUP CHECK PASSED", flush=True)
         return 0
 
-    finally:
-        if connected:
-            broker.disconnect()
-
-        market_store.close()
-        emergency_stop.close()
-        authorization_registry.close()
-
-        close_journal = getattr(execution_journal, "close", None)
-        if callable(close_journal):
-            close_journal()
 
 
 def _unresolved_mutations(execution_journal) -> tuple[object, ...]:
@@ -265,9 +254,7 @@ def run_observation(
     market_store = runtime.market_store
     emergency_stop = runtime.emergency_stop
     broker = runtime.broker
-    connected = False
-
-    try:
+    with OperationalRuntimeSession(runtime) as session:
         _validate_observation_mode(configuration, emergency_stop)
 
         # Verify all durable dependencies before network access.
@@ -284,8 +271,7 @@ def run_observation(
         print("Order submission: DISABLED", flush=True)
         print("Emergency stop: ACTIVE", flush=True)
 
-        broker.connect()
-        connected = True
+        session.connect()
 
         reconcile_startup(
             execution_journal,
@@ -345,17 +331,6 @@ def run_observation(
         print("OBSERVATION RUN COMPLETED", flush=True)
         return 0
 
-    finally:
-        if connected:
-            broker.disconnect()
-
-        market_store.close()
-        emergency_stop.close()
-        authorization_registry.close()
-
-        close_journal = getattr(execution_journal, "close", None)
-        if callable(close_journal):
-            close_journal()
 
 
 def main() -> int:

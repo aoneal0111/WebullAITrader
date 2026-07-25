@@ -8,6 +8,9 @@ import pytest
 
 from app.configuration.models import OperationalConfiguration, TradingEnvironment
 from app import operational_main
+from app.composition.operational_runtime import (
+    OperationalRuntimeComposition,
+)
 
 
 class FakeClosable:
@@ -109,7 +112,8 @@ def install_fakes(monkeypatch, tmp_path, *, stop_enabled=True, pending=()):
     market = FakeClosable()
     stop = FakeStop(enabled=stop_enabled)
     broker = FakeBroker()
-    runtime = SimpleNamespace(
+    runtime = OperationalRuntimeComposition(
+        configuration=config,
         authorization_registry=auth,
         execution_journal=journal,
         market_store=market,
@@ -180,7 +184,8 @@ def test_observation_mode_rejects_live_trading_flag(
 ):
     config = configuration(tmp_path, live_enabled=True)
     stop = FakeStop(enabled=True)
-    runtime = SimpleNamespace(
+    runtime = OperationalRuntimeComposition(
+        configuration=config,
         authorization_registry=FakeClosable(),
         execution_journal=FakeClosable(),
         market_store=FakeClosable(),
@@ -270,3 +275,58 @@ def test_main_routes_run_arguments(monkeypatch):
         "max_cycles": 3,
         "interval_seconds": Decimal("0.5"),
     }
+
+def test_check_startup_uses_operational_runtime_session(
+    monkeypatch,
+    tmp_path,
+):
+    install_fakes(monkeypatch, tmp_path)
+
+    runtime = SimpleNamespace(
+        authorization_registry=FakeClosable(),
+        execution_journal=FakeClosable(),
+        market_store=FakeClosable(),
+        emergency_stop=FakeStop(enabled=True),
+        broker=FakeBroker(),
+    )
+    events = []
+
+    class FakeSession:
+        def __init__(self, supplied_runtime):
+            assert supplied_runtime is runtime
+            events.append("created")
+
+        def __enter__(self):
+            events.append("entered")
+            return self
+
+        def connect(self):
+            events.append("connected")
+            runtime.broker.connect()
+
+        def __exit__(self, exception_type, exception, traceback):
+            events.append("exited")
+
+    monkeypatch.setattr(
+        operational_main,
+        "build_operational_runtime",
+        lambda configuration: runtime,
+    )
+    monkeypatch.setattr(
+        operational_main,
+        "OperationalRuntimeSession",
+        FakeSession,
+    )
+    monkeypatch.setattr(
+        operational_main,
+        "reconcile_startup",
+        lambda *args: (),
+    )
+
+    assert operational_main.check_startup() == 0
+    assert events == [
+        "created",
+        "entered",
+        "connected",
+        "exited",
+    ]
