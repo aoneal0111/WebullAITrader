@@ -1229,6 +1229,50 @@ class MainWindow(QMainWindow):
             #headerPanel, #contentPanel, #footerPanel, #healthRibbon { background: #101720; border: 1px solid #253143; border-radius: 11px; }
             #healthRibbonTitle { color: #718099; font-size: 9px; font-weight: 800; letter-spacing: 1px; }
             #healthRibbon #statusPill { min-width: 112px; padding: 5px 8px; font-size: 8px; }
+
+            /* Milestone 4.1: watchlist contrast */
+            #universeList {
+                background: #111a25;
+                color: #f7f9fc;
+                border: 1px solid #3d526d;
+                border-radius: 8px;
+                padding: 6px;
+                font-family: "Cascadia Mono", "Consolas";
+                font-size: 15px;
+                font-weight: 700;
+                outline: none;
+            }
+
+            #universeList::item {
+                min-height: 42px;
+                padding: 5px 10px;
+                margin: 2px 0;
+                color: #f7f9fc;
+                background: #162230;
+                border: 1px solid #26384d;
+                border-radius: 6px;
+            }
+
+            #universeList::item:alternate {
+                background: #192737;
+            }
+
+            #universeList::item:hover {
+                background: #24486f;
+                color: #ffffff;
+                border: 1px solid #4f86bd;
+            }
+
+            #universeList::item:selected {
+                background: #2864a8;
+                color: #ffffff;
+                border: 1px solid #78b9ff;
+            }
+
+            #universeList::item:selected:active {
+                background: #3377c5;
+                color: #ffffff;
+            }
             #applicationTitle { color: #f7f9fc; font-size: 22px; font-weight: 800; letter-spacing: 1.3px; }
             #mutedText { color: #7f8b9e; font-size: 10px; }
             #clockLabel { color: #95a2b5; font-family: "Cascadia Mono", "Consolas"; }
