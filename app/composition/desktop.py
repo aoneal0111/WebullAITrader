@@ -10,6 +10,7 @@ from app.operations_core import (
 from app.services import RuntimeService
 
 from .desktop_runtime import create_desktop_runtime_service
+from .desktop_runtime_config import DesktopRuntimeConfiguration
 
 
 @dataclass(slots=True)
@@ -30,6 +31,8 @@ class DesktopComposition:
 
 def create_desktop_composition(
     driver_factory: Callable[[], object] | None = None,
+    *,
+    configuration: DesktopRuntimeConfiguration = DesktopRuntimeConfiguration(),
 ) -> DesktopComposition:
     """Construct the desktop application dependency graph."""
 
@@ -39,6 +42,7 @@ def create_desktop_composition(
     runtime_service = create_desktop_runtime_service(
         bus,
         driver_factory=driver_factory,
+        runtime_mode=configuration.runtime_mode,
     )
 
     return DesktopComposition(
