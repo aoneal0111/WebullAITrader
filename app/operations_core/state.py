@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -48,8 +48,33 @@ class TimelineEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class ScannerState:
+    candidates: tuple[str, ...] = ()
+    last_scan_at: datetime | None = None
+    status: str = "Idle"
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerState:
+    connected: bool = False
+    account_id: str = ""
+    status: str = "Disconnected"
+
+
+@dataclass(frozen=True, slots=True)
+class PortfolioState:
+    positions: int = 0
+    unrealized_pl: float = 0.0
+    realized_pl: float = 0.0
+    buying_power: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
 class ApplicationState:
     runtime: RuntimeState = field(default_factory=RuntimeState)
+    scanner: ScannerState = field(default_factory=ScannerState)
+    broker: BrokerState = field(default_factory=BrokerState)
+    portfolio: PortfolioState = field(default_factory=PortfolioState)
     timeline: tuple[TimelineEntry, ...] = ()
     revision: int = 0
 
@@ -123,6 +148,9 @@ class ApplicationStateStore:
 
             self._state = ApplicationState(
                 runtime=runtime,
+                scanner=self._state.scanner,
+                broker=self._state.broker,
+                portfolio=self._state.portfolio,
                 timeline=timeline,
                 revision=self._state.revision + 1,
             )
