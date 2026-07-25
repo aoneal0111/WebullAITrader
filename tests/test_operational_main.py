@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import replace
 from decimal import Decimal
@@ -74,6 +74,7 @@ class FakeBroker:
 def configuration(tmp_path, *, live_enabled=False):
     return OperationalConfiguration(
         environment=TradingEnvironment.SANDBOX,
+        broker_provider="webull",
         account_id="acct",
         api_key="key",
         api_secret="secret",
