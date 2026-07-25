@@ -1,17 +1,19 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from app.operations_core import ApplicationStateStore, OperationsBus
+from app.operations_core import (
+    ApplicationStateStore,
+    OperationsBus,
+)
 from app.services import RuntimeService
 
 from .desktop_runtime import create_desktop_runtime_service
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class DesktopComposition:
-    """Fully composed application dependencies for the desktop entry point."""
-
     bus: OperationsBus
     state_store: ApplicationStateStore
     runtime_service: RuntimeService
@@ -26,17 +28,18 @@ class DesktopComposition:
         return runtime_stopped
 
 
-def create_desktop_composition() -> DesktopComposition:
-    """Construct the current desktop application dependency graph.
-
-    This initial composition intentionally retains the simulated runtime.
-    Replacing the driver belongs to Bravo 2 and will not require GUI changes.
-    """
+def create_desktop_composition(
+    driver_factory: Callable[[], object] | None = None,
+) -> DesktopComposition:
+    """Construct the desktop application dependency graph."""
 
     bus = OperationsBus()
     state_store = ApplicationStateStore(bus)
 
-    runtime_service = create_desktop_runtime_service(bus)
+    runtime_service = create_desktop_runtime_service(
+        bus,
+        driver_factory=driver_factory,
+    )
 
     return DesktopComposition(
         bus=bus,

@@ -1,8 +1,21 @@
-﻿from app.composition import (
+from threading import Event
+
+from app.composition import (
     DesktopComposition,
     create_desktop_composition,
 )
 from app.services import RuntimeServiceStatus
+
+
+class FakeDriver:
+    environment = "PAPER"
+    active_model = "fake-model"
+    cycles_completed = 0
+
+    def run(self, *, stop_event: Event, cycle_sink):
+        while not stop_event.is_set():
+            cycle_sink(1)
+            stop_event.wait(0.01)
 
 
 def test_create_desktop_composition_returns_complete_graph() -> None:
@@ -29,3 +42,27 @@ def test_desktop_composition_uses_fresh_dependencies() -> None:
     finally:
         first.close(timeout_seconds=1.0)
         second.close(timeout_seconds=1.0)
+
+
+def test_desktop_composition_accepts_driver_factory() -> None:
+    created = []
+
+    def factory():
+        driver = FakeDriver()
+        created.append(driver)
+        return driver
+
+    composition = create_desktop_composition(driver_factory=factory)
+
+    try:
+        assert composition.runtime_service.status is RuntimeServiceStatus.STOPPED
+
+        assert composition.runtime_service.start() is True
+        assert composition.runtime_service.wait(1.0) is False
+
+        assert len(created) == 1
+
+        composition.runtime_service.stop()
+        assert composition.runtime_service.wait(1.0)
+    finally:
+        composition.close(timeout_seconds=1.0)
