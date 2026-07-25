@@ -8,17 +8,15 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from app.authorization.registry import AuthorizationRegistry
 from app.broker_plugins.factory import create_broker_runtime
-from app.live_execution.broker_factory import build_webull_broker
+from app.composition.operational_runtime import (
+    OperationalRuntimeComposition,
+    create_operational_runtime_composition,
+)
 from app.configuration.loader import load_configuration
 from app.configuration.models import TradingEnvironment
-from app.live_execution.recovery import (
-    DurableExecutionJournal,
-    reconcile_startup,
-)
-from app.market_data.durable_store import DurableMarketEventStore
-from app.operations.emergency_stop import EmergencyStopStore
+from app.live_execution.broker_factory import build_webull_broker
+from app.live_execution.recovery import reconcile_startup
 
 
 def utc_now() -> datetime:
@@ -43,6 +41,18 @@ def build_broker(configuration):
     )
 
     return runtime.execution
+
+
+def build_operational_runtime(
+    configuration,
+) -> OperationalRuntimeComposition:
+    """Compose operational infrastructure without starting its lifecycle."""
+
+    return create_operational_runtime_composition(
+        configuration=configuration,
+        clock=utc_now,
+        broker_factory=build_broker,
+    )
 
 
 def ensure_parent_directories(configuration) -> None:
@@ -93,20 +103,12 @@ def check_startup() -> int:
     validate_environment(configuration)
     ensure_parent_directories(configuration)
 
-    authorization_registry = AuthorizationRegistry(
-        configuration.authorization_database_path
-    )
-    execution_journal = DurableExecutionJournal(
-        configuration.execution_database_path
-    )
-    market_store = DurableMarketEventStore(
-        configuration.market_event_database_path
-    )
-    emergency_stop = EmergencyStopStore(
-        configuration.emergency_stop_database_path,
-        utc_now,
-    )
-    broker = build_broker(configuration)
+    runtime = build_operational_runtime(configuration)
+    authorization_registry = runtime.authorization_registry
+    execution_journal = runtime.execution_journal
+    market_store = runtime.market_store
+    emergency_stop = runtime.emergency_stop
+    broker = runtime.broker
 
     connected = False
 
@@ -257,20 +259,12 @@ def run_observation(
     validate_environment(configuration)
     ensure_parent_directories(configuration)
 
-    authorization_registry = AuthorizationRegistry(
-        configuration.authorization_database_path
-    )
-    execution_journal = DurableExecutionJournal(
-        configuration.execution_database_path
-    )
-    market_store = DurableMarketEventStore(
-        configuration.market_event_database_path
-    )
-    emergency_stop = EmergencyStopStore(
-        configuration.emergency_stop_database_path,
-        utc_now,
-    )
-    broker = build_broker(configuration)
+    runtime = build_operational_runtime(configuration)
+    authorization_registry = runtime.authorization_registry
+    execution_journal = runtime.execution_journal
+    market_store = runtime.market_store
+    emergency_stop = runtime.emergency_stop
+    broker = runtime.broker
     connected = False
 
     try:

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import replace
 from decimal import Decimal
@@ -109,19 +109,45 @@ def install_fakes(monkeypatch, tmp_path, *, stop_enabled=True, pending=()):
     market = FakeClosable()
     stop = FakeStop(enabled=stop_enabled)
     broker = FakeBroker()
+    runtime = SimpleNamespace(
+        authorization_registry=auth,
+        execution_journal=journal,
+        market_store=market,
+        emergency_stop=stop,
+        broker=broker,
+    )
 
-    monkeypatch.setattr(operational_main, "load_configuration", lambda: config)
-    monkeypatch.setattr(operational_main, "validate_environment", lambda value: None)
-    monkeypatch.setattr(operational_main, "ensure_parent_directories", lambda value: None)
-    monkeypatch.setattr(operational_main, "AuthorizationRegistry", lambda path: auth)
-    monkeypatch.setattr(operational_main, "DurableExecutionJournal", lambda path: journal)
-    monkeypatch.setattr(operational_main, "DurableMarketEventStore", lambda path: market)
-    monkeypatch.setattr(operational_main, "EmergencyStopStore", lambda path, clock: stop)
-    monkeypatch.setattr(operational_main, "build_broker", lambda value: broker)
-    monkeypatch.setattr(operational_main, "reconcile_startup", lambda *args: ())
-    monkeypatch.setattr(operational_main, "sleep_decimal", lambda seconds: None)
+    monkeypatch.setattr(
+        operational_main,
+        "load_configuration",
+        lambda: config,
+    )
+    monkeypatch.setattr(
+        operational_main,
+        "validate_environment",
+        lambda value: None,
+    )
+    monkeypatch.setattr(
+        operational_main,
+        "ensure_parent_directories",
+        lambda value: None,
+    )
+    monkeypatch.setattr(
+        operational_main,
+        "build_operational_runtime",
+        lambda value: runtime,
+    )
+    monkeypatch.setattr(
+        operational_main,
+        "reconcile_startup",
+        lambda *args: (),
+    )
+    monkeypatch.setattr(
+        operational_main,
+        "sleep_decimal",
+        lambda seconds: None,
+    )
     return broker, stop
-
 
 def test_observation_mode_runs_bounded_without_mutations(monkeypatch, tmp_path, capsys):
     broker, _ = install_fakes(monkeypatch, tmp_path)
@@ -148,21 +174,82 @@ def test_observation_mode_requires_active_emergency_stop(monkeypatch, tmp_path):
     assert not broker.connected
 
 
-def test_observation_mode_rejects_live_trading_flag(monkeypatch, tmp_path):
+def test_observation_mode_rejects_live_trading_flag(
+    monkeypatch,
+    tmp_path,
+):
     config = configuration(tmp_path, live_enabled=True)
     stop = FakeStop(enabled=True)
-    monkeypatch.setattr(operational_main, "load_configuration", lambda: config)
-    monkeypatch.setattr(operational_main, "validate_environment", lambda value: None)
-    monkeypatch.setattr(operational_main, "ensure_parent_directories", lambda value: None)
-    monkeypatch.setattr(operational_main, "AuthorizationRegistry", lambda path: FakeClosable())
-    monkeypatch.setattr(operational_main, "DurableExecutionJournal", lambda path: FakeClosable())
-    monkeypatch.setattr(operational_main, "DurableMarketEventStore", lambda path: FakeClosable())
-    monkeypatch.setattr(operational_main, "EmergencyStopStore", lambda path, clock: stop)
-    monkeypatch.setattr(operational_main, "build_broker", lambda value: FakeBroker())
+    runtime = SimpleNamespace(
+        authorization_registry=FakeClosable(),
+        execution_journal=FakeClosable(),
+        market_store=FakeClosable(),
+        emergency_stop=stop,
+        broker=FakeBroker(),
+    )
 
-    with pytest.raises(RuntimeError, match="LIVE_TRADING_ENABLED=false"):
+    monkeypatch.setattr(
+        operational_main,
+        "load_configuration",
+        lambda: config,
+    )
+    monkeypatch.setattr(
+        operational_main,
+        "validate_environment",
+        lambda value: None,
+    )
+    monkeypatch.setattr(
+        operational_main,
+        "ensure_parent_directories",
+        lambda value: None,
+    )
+    monkeypatch.setattr(
+        operational_main,
+        "build_operational_runtime",
+        lambda value: runtime,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="LIVE_TRADING_ENABLED=false",
+    ):
         operational_main.run_observation(max_cycles=1)
 
+
+def test_build_operational_runtime_uses_composition_root(
+    monkeypatch,
+    tmp_path,
+):
+    configured = configuration(tmp_path)
+    composed = object()
+    captured = {}
+
+    def fake_create_operational_runtime_composition(
+        *,
+        configuration,
+        clock,
+        broker_factory,
+    ):
+        captured["configuration"] = configuration
+        captured["clock"] = clock
+        captured["broker_factory"] = broker_factory
+        return composed
+
+    monkeypatch.setattr(
+        operational_main,
+        "create_operational_runtime_composition",
+        fake_create_operational_runtime_composition,
+    )
+
+    assert (
+        operational_main.build_operational_runtime(configured)
+        is composed
+    )
+    assert captured == {
+        "configuration": configured,
+        "clock": operational_main.utc_now,
+        "broker_factory": operational_main.build_broker,
+    }
 
 def test_main_routes_run_arguments(monkeypatch):
     captured = {}
