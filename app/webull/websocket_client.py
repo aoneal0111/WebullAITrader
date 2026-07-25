@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from queue import Empty, Queue
+from threading import Event
 from typing import Callable, Protocol
 
 from app.market_data.events import append_event
@@ -20,13 +21,12 @@ SubscriptionMapper = Callable[[tuple[str, ...]], object]
 
 
 class OfficialSdkStreamBackend:
-    """Adapt the official callback-driven Webull SDK client to a receive API.
+    """Adapt Webull's callback-driven streaming client to a receive API.
 
-    Webull's ``DataStreamingClient`` inherits from the Paho MQTT client. Incoming
-    messages therefore arrive through ``on_message`` rather than a synchronous
-    ``receive`` method. This adapter captures those callbacks in a thread-safe
-    queue while keeping SDK-specific subscription arguments behind an injected
-    mapper.
+    The official SDK publishes decoded quote objects through
+    ``on_quotes_message(client, topic, quotes)``. Atlas stores those objects in a
+    thread-safe queue and exposes a synchronous ``receive`` boundary to the rest
+    of the runtime.
     """
 
     def __init__(
@@ -35,28 +35,51 @@ class OfficialSdkStreamBackend:
         *,
         subscription_mapper: SubscriptionMapper | None = None,
         receive_timeout_seconds: float = 1.0,
+        connect_timeout_seconds: float = 10.0,
     ) -> None:
         if receive_timeout_seconds < 0:
             raise ValueError("receive_timeout_seconds must be non-negative")
+        if connect_timeout_seconds < 0:
+            raise ValueError("connect_timeout_seconds must be non-negative")
 
         self.client = sdk_client
         self._subscription_mapper = subscription_mapper
         self._receive_timeout_seconds = receive_timeout_seconds
+        self._connect_timeout_seconds = connect_timeout_seconds
         self._messages: Queue[object] = Queue()
-        self._original_on_message = getattr(sdk_client, "on_message", None)
-        setattr(sdk_client, "on_message", self._on_message)
+        self._connected = Event()
 
-    def _on_message(self, client: object, userdata: object, message: object) -> None:
-        payload = getattr(message, "payload", message)
-        self._messages.put(payload)
+        self._original_on_quotes_message = getattr(sdk_client, "on_quotes_message", None)
+        self._original_on_connect_success = getattr(sdk_client, "on_connect_success", None)
+        self._original_on_disconnect = getattr(sdk_client, "on_disconnect", None)
 
-        if callable(self._original_on_message):
-            self._original_on_message(client, userdata, message)
+        setattr(sdk_client, "on_quotes_message", self._on_quotes_message)
+        setattr(sdk_client, "on_connect_success", self._on_connect_success)
+        if hasattr(sdk_client, "on_disconnect"):
+            setattr(sdk_client, "on_disconnect", self._on_disconnect)
+
+    def _on_quotes_message(self, client: object, topic: object, quotes: object) -> None:
+        self._messages.put(quotes)
+        if callable(self._original_on_quotes_message):
+            self._original_on_quotes_message(client, topic, quotes)
+
+    def _on_connect_success(self, client: object, api_client: object, session_id: object) -> None:
+        self._connected.set()
+        if callable(self._original_on_connect_success):
+            self._original_on_connect_success(client, api_client, session_id)
+
+    def _on_disconnect(self, *args: object, **kwargs: object) -> None:
+        self._connected.clear()
+        if callable(self._original_on_disconnect):
+            self._original_on_disconnect(*args, **kwargs)
 
     def connect(self) -> None:
+        self._connected.clear()
         connect_and_loop_start = getattr(self.client, "connect_and_loop_start", None)
         if callable(connect_and_loop_start):
             connect_and_loop_start()
+            if not self._connected.wait(timeout=self._connect_timeout_seconds):
+                raise TimeoutError("official SDK streaming connection timed out")
             return
 
         connect = getattr(self.client, "connect", None)
@@ -65,6 +88,7 @@ class OfficialSdkStreamBackend:
         connect()
 
     def disconnect(self) -> None:
+        self._connected.clear()
         loop_stop = getattr(self.client, "loop_stop", None)
         if callable(loop_stop):
             loop_stop()
