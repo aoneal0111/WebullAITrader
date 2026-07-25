@@ -1,0 +1,971 @@
+﻿===== websocket_client.py =====
+from __future__ import annotations
+from typing import Protocol
+from app.market_data.events import append_event
+from app.market_data.models import HeartbeatPayload, MarketEventLog, MarketEventType
+from app.webull.errors import NetworkError, SerializationError
+from app.webull.health import ConnectionHealth, update_health
+
+class StreamBackend(Protocol):
+    def connect(self) -> None: ...
+    def disconnect(self) -> None: ...
+    def subscribe(self, channels: tuple[str, ...]) -> None: ...
+    def receive(self) -> object | None: ...
+
+class OfficialSdkStreamBackend:
+    """Adapts an official Webull SDK MQTT/gRPC client without exposing it upstream."""
+    def __init__(self, sdk_client): self.client = sdk_client
+    def connect(self): return self.client.connect()
+    def disconnect(self): return self.client.disconnect()
+    def subscribe(self, channels): return self.client.subscribe(channels)
+    def receive(self): return self.client.receive()
+
+class WebullWebSocketClient:
+    """Protocol adapter for the official SDK's MQTT/gRPC streaming clients."""
+    def __init__(self, backend, parser, reconnect_policy, sleeper, logger):
+        self.backend, self.parser, self.policy, self.sleeper, self.logger = backend, parser, reconnect_policy, sleeper, logger
+        self.health = ConnectionHealth(); self.log = MarketEventLog(); self.channels = ()
+    def connect(self):
+        try:
+            self.backend.connect(); self.health = update_health(self.health, websocket_connected=True, connected=True); self.logger.log("stream_connect", "succeeded")
+        except Exception as exc:
+            self.logger.log("stream_connect", "failed", error_type=type(exc).__name__); raise NetworkError("Webull stream connection failed", retryable=True) from exc
+    def disconnect(self): self.backend.disconnect(); self.health = update_health(self.health, websocket_connected=False); self.logger.log("stream_disconnect", "succeeded")
+    def subscribe(self, channels):
+        self.channels = tuple(sorted(set(channels))); self.backend.subscribe(self.channels); self.logger.log("stream_subscribe", "succeeded", channel_count=len(self.channels))
+    def receive(self):
+        for attempt in range(self.policy.maximum_attempts + 1):
+            try:
+                message = self.backend.receive()
+                if message is None: return None
+                event = self.parser(message)
+                before = len(self.log.events)
+                try: self.log = append_event(self.log, event)
+                except ValueError as exc:
+                    if any(item.source == event.source and item.sequence == event.sequence for item in self.log.events): return None
+                    raise SerializationError("invalid Webull stream sequence") from exc
+                if event.event_type is MarketEventType.HEARTBEAT and isinstance(event.payload, HeartbeatPayload):
+                    self.health = update_health(self.health, last_successful_heartbeat=event.timestamp)
+                self.logger.log("stream_receive", "succeeded", event_type=event.event_type.value); return event
+            except SerializationError: raise
+            except Exception as exc:
+                if attempt >= self.policy.maximum_attempts: raise NetworkError("Webull stream reconnect exhausted", retryable=False) from exc
+                self.sleeper(self.policy.backoff_seconds); self.backend.connect(); self.backend.subscribe(self.channels)
+                self.health = update_health(self.health, websocket_connected=True, reconnect_count=self.health.reconnect_count + 1)
+                self.logger.log("stream_reconnect", "succeeded", reconnect_count=self.health.reconnect_count)
+
+===== live_scanner protocols =====
+from __future__ import annotations
+
+from typing import Any, Protocol, runtime_checkable
+
+
+@runtime_checkable
+class SubscribableMarketDataTransport(Protocol):
+    def connect(self) -> None:
+        """Connect to the market-data stream."""
+
+    def disconnect(self) -> None:
+        """Disconnect from the market-data stream."""
+
+    def subscribe(
+        self,
+        channels: tuple[str, ...],
+    ) -> None:
+        """Subscribe to market-data channels."""
+
+    def read_event(self) -> Any | None:
+        """Read the next normalized market event."""
+
+
+@runtime_checkable
+class LiveScannerEngine(Protocol):
+    def refresh_universe(
+        self,
+        asset_classes: tuple[Any, ...] = ...,
+        *,
+        force_reference_refresh: bool = False,
+    ) -> tuple[str, ...]:
+        """Refresh eligible symbols and reference data."""
+
+    def consume(self, event: Any) -> Any | None:
+        """Process one normalized market event."""
+
+    def snapshot(
+        self,
+        *,
+        limit: int = 25,
+    ) -> Any:
+        """Return the current scanner snapshot."""
+
+===== scanner files =====
+C:\Users\aonea\WebullAITrader\app\live_scanner\coordinator.py
+C:\Users\aonea\WebullAITrader\app\live_scanner\models.py
+C:\Users\aonea\WebullAITrader\app\live_scanner\protocols.py
+C:\Users\aonea\WebullAITrader\app\live_scanner\transport.py
+C:\Users\aonea\WebullAITrader\app\live_scanner\__init__.py
+
+===== scanner class definitions =====
+app/live_scanner/transport.py:6:class ReceiveTransportAdapter:
+app/operations/scanner_runtime.py:9:class ScannerCoordinator(Protocol):
+app/realtime_scanner/engine.py:24:class RealtimeScannerEngine:
+technical_evidence_inspection.txt:5972:class ReceiveTransportAdapter:
+technical_evidence_inspection.txt:8477:class ScannerCoordinator(Protocol):
+technical_evidence_inspection.txt:10949:class RealtimeScannerEngine:
+
+===== scanner constructor context =====
+app/realtime_scanner/engine.py-12-from app.realtime_scanner.models import (
+app/realtime_scanner/engine.py-13-    ReferenceWarmupFailure,
+app/realtime_scanner/engine.py-14-    ScannerSnapshot,
+app/realtime_scanner/engine.py-15-)
+app/realtime_scanner/engine.py-16-from app.realtime_scanner.protocols import (
+app/realtime_scanner/engine.py-17-    EventPipeline,
+app/realtime_scanner/engine.py-18-    ReferenceLoader,
+app/realtime_scanner/engine.py-19-    ReferenceSink,
+app/realtime_scanner/engine.py-20-    UniverseSelector,
+app/realtime_scanner/engine.py-21-)
+app/realtime_scanner/engine.py-22-
+app/realtime_scanner/engine.py-23-
+app/realtime_scanner/engine.py:24:class RealtimeScannerEngine:
+app/realtime_scanner/engine.py-25-    """
+app/realtime_scanner/engine.py-26-    Coordinates the eligible universe, reference-data warmup,
+app/realtime_scanner/engine.py-27-    market-event processing, and momentum ranking.
+app/realtime_scanner/engine.py-28-
+app/realtime_scanner/engine.py-29-    This engine does not place, modify, or cancel orders.
+app/realtime_scanner/engine.py-30-    """
+app/realtime_scanner/engine.py-31-
+app/realtime_scanner/engine.py-32-    def __init__(
+app/realtime_scanner/engine.py-33-        self,
+app/realtime_scanner/engine.py-34-        universe_service: UniverseSelector,
+app/realtime_scanner/engine.py-35-        reference_data_service: ReferenceLoader,
+app/realtime_scanner/engine.py-36-        pipeline: EventPipeline,
+--
+technical_evidence_inspection.txt-10937-from app.realtime_scanner.models import (
+technical_evidence_inspection.txt-10938-    ReferenceWarmupFailure,
+technical_evidence_inspection.txt-10939-    ScannerSnapshot,
+technical_evidence_inspection.txt-10940-)
+technical_evidence_inspection.txt-10941-from app.realtime_scanner.protocols import (
+technical_evidence_inspection.txt-10942-    EventPipeline,
+technical_evidence_inspection.txt-10943-    ReferenceLoader,
+technical_evidence_inspection.txt-10944-    ReferenceSink,
+technical_evidence_inspection.txt-10945-    UniverseSelector,
+technical_evidence_inspection.txt-10946-)
+technical_evidence_inspection.txt-10947-
+technical_evidence_inspection.txt-10948-
+technical_evidence_inspection.txt:10949:class RealtimeScannerEngine:
+technical_evidence_inspection.txt-10950-    """
+technical_evidence_inspection.txt-10951-    Coordinates the eligible universe, reference-data warmup,
+technical_evidence_inspection.txt-10952-    market-event processing, and momentum ranking.
+technical_evidence_inspection.txt-10953-
+technical_evidence_inspection.txt-10954-    This engine does not place, modify, or cancel orders.
+technical_evidence_inspection.txt-10955-    """
+technical_evidence_inspection.txt-10956-
+technical_evidence_inspection.txt-10957-    def __init__(
+technical_evidence_inspection.txt-10958-        self,
+technical_evidence_inspection.txt-10959-        universe_service: UniverseSelector,
+technical_evidence_inspection.txt-10960-        reference_data_service: ReferenceLoader,
+technical_evidence_inspection.txt-10961-        pipeline: EventPipeline,
+app/live_scanner/transport.py-1-∩╗┐from __future__ import annotations
+app/live_scanner/transport.py-2-
+app/live_scanner/transport.py-3-from typing import Any
+app/live_scanner/transport.py-4-
+app/live_scanner/transport.py-5-
+app/live_scanner/transport.py:6:class ReceiveTransportAdapter:
+app/live_scanner/transport.py-7-    """
+app/live_scanner/transport.py-8-    Adapts a Webull-style client exposing receive() to the
+app/live_scanner/transport.py-9-    MarketDataTransport read_event() interface.
+app/live_scanner/transport.py-10-
+app/live_scanner/transport.py-11-    The wrapped client is expected to expose:
+app/live_scanner/transport.py-12-        connect()
+app/live_scanner/transport.py-13-        disconnect()
+app/live_scanner/transport.py-14-        subscribe(channels)
+app/live_scanner/transport.py-15-        receive()
+app/live_scanner/transport.py-16-    """
+app/live_scanner/transport.py-17-
+app/live_scanner/transport.py-18-    def __init__(self, client: Any) -> None:
+--
+technical_evidence_inspection.txt-5960-        limit: int = 25,
+technical_evidence_inspection.txt-5961-    ) -> Any:
+technical_evidence_inspection.txt-5962-        """Return the current scanner snapshot."""
+technical_evidence_inspection.txt-5963-
+technical_evidence_inspection.txt-5964-====================================================================================================
+technical_evidence_inspection.txt-5965-FILE: app\live_scanner\transport.py
+technical_evidence_inspection.txt-5966-====================================================================================================
+technical_evidence_inspection.txt-5967-from __future__ import annotations
+technical_evidence_inspection.txt-5968-
+technical_evidence_inspection.txt-5969-from typing import Any
+technical_evidence_inspection.txt-5970-
+technical_evidence_inspection.txt-5971-
+technical_evidence_inspection.txt:5972:class ReceiveTransportAdapter:
+technical_evidence_inspection.txt-5973-    """
+technical_evidence_inspection.txt-5974-    Adapts a Webull-style client exposing receive() to the
+technical_evidence_inspection.txt-5975-    MarketDataTransport read_event() interface.
+technical_evidence_inspection.txt-5976-
+technical_evidence_inspection.txt-5977-    The wrapped client is expected to expose:
+technical_evidence_inspection.txt-5978-        connect()
+technical_evidence_inspection.txt-5979-        disconnect()
+technical_evidence_inspection.txt-5980-        subscribe(channels)
+technical_evidence_inspection.txt-5981-        receive()
+technical_evidence_inspection.txt-5982-    """
+technical_evidence_inspection.txt-5983-
+technical_evidence_inspection.txt-5984-    def __init__(self, client: Any) -> None:
+
+===== broker runtime model =====
+"""Broker-neutral models exposed by broker plugins."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from app.broker_protocol.protocol import Broker
+from app.live_scanner.protocols import LiveScannerEngine
+from app.market_data.transport import MarketDataTransport
+from app.realtime_scanner.protocols import ReferenceLoader, UniverseSelector
+
+
+def normalize_provider(value: str) -> str:
+    """Return the canonical registry key for a broker provider."""
+
+    if not isinstance(value, str):
+        raise ValueError("broker provider must be a string")
+
+    normalized = value.strip().casefold()
+
+    if not normalized:
+        raise ValueError("broker provider is required")
+
+    if not all(character.isalnum() or character in {"-", "_"} for character in normalized):
+        raise ValueError(
+            "broker provider may contain only letters, numbers, hyphens, and underscores"
+        )
+
+    return normalized
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerCapabilities:
+    """Static capabilities advertised by a broker plugin."""
+
+    provider: str
+    version: str
+    supports_execution: bool = False
+    supports_market_data: bool = False
+    supports_scanner: bool = False
+    supports_account_data: bool = False
+    supports_live_trading: bool = False
+    supports_streaming: bool = False
+    supports_options: bool = False
+    supports_shorting: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "provider", normalize_provider(self.provider))
+
+        if not isinstance(self.version, str) or not self.version.strip():
+            raise ValueError("broker plugin version is required")
+
+        object.__setattr__(self, "version", self.version.strip())
+
+        boolean_fields = (
+            "supports_execution",
+            "supports_market_data",
+            "supports_scanner",
+            "supports_account_data",
+            "supports_live_trading",
+            "supports_streaming",
+            "supports_options",
+            "supports_shorting",
+        )
+
+        for field_name in boolean_fields:
+            if not isinstance(getattr(self, field_name), bool):
+                raise ValueError(f"{field_name} must be boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerRuntime:
+    """Broker-neutral services composed by one broker plugin."""
+
+    provider: str
+    capabilities: BrokerCapabilities
+    execution: Broker | None = None
+    market_data: MarketDataTransport | None = None
+    scanner: LiveScannerEngine | None = None
+    universe_provider: UniverseSelector | None = None
+    reference_data_provider: ReferenceLoader | None = None
+
+    def __post_init__(self) -> None:
+        normalized_provider = normalize_provider(self.provider)
+        object.__setattr__(self, "provider", normalized_provider)
+
+        if not isinstance(self.capabilities, BrokerCapabilities):
+            raise ValueError("BrokerCapabilities is required")
+
+        if self.capabilities.provider != normalized_provider:
+            raise ValueError(
+                "runtime provider must match the capability provider"
+            )
+
+        if self.execution is not None and not self.capabilities.supports_execution:
+            raise ValueError(
+                "execution service supplied without execution capability"
+            )
+
+        if self.market_data is not None and not self.capabilities.supports_market_data:
+            raise ValueError(
+                "market-data service supplied without market-data capability"
+            )
+
+        if self.scanner is not None and not self.capabilities.supports_scanner:
+            raise ValueError(
+                "scanner service supplied without scanner capability"
+            )
+
+===== Webull plugin =====
+"""Webull implementation of the broker-plugin contract."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from app.broker_plugins.models import (
+    BrokerCapabilities,
+    BrokerRuntime,
+)
+from app.broker_plugins.webull.composition import (
+    WebullBrokerFactory,
+    create_webull_runtime,
+)
+
+
+WEBULL_CAPABILITIES = BrokerCapabilities(
+    provider="webull",
+    version="1.0",
+    supports_execution=True,
+    supports_market_data=False,
+    supports_scanner=False,
+    supports_account_data=True,
+    supports_live_trading=True,
+    supports_streaming=False,
+    supports_options=False,
+    supports_shorting=False,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class WebullBrokerPlugin:
+    """Compose Webull services behind broker-neutral application contracts."""
+
+    broker_factory: WebullBrokerFactory
+
+    @property
+    def provider(self) -> str:
+        return WEBULL_CAPABILITIES.provider
+
+    @property
+    def capabilities(self) -> BrokerCapabilities:
+        return WEBULL_CAPABILITIES
+
+    def create_runtime(
+        self,
+        configuration: object,
+    ) -> BrokerRuntime:
+        return create_webull_runtime(
+            configuration,
+            broker_factory=self.broker_factory,
+        )
+
+
+__all__ = [
+    "WEBULL_CAPABILITIES",
+    "WebullBrokerPlugin",
+]
+
+===== Webull capabilities =====
+app/broker_plugins/webull/__init__.py-1-∩╗┐"""Webull broker plugin."""
+app/broker_plugins/webull/__init__.py-2-
+app/broker_plugins/webull/__init__.py-3-from app.broker_plugins.webull.composition import (
+app/broker_plugins/webull/__init__.py-4-    WebullBrokerFactory,
+app/broker_plugins/webull/__init__.py-5-    create_webull_runtime,
+app/broker_plugins/webull/__init__.py-6-)
+app/broker_plugins/webull/__init__.py-7-from app.broker_plugins.webull.plugin import (
+app/broker_plugins/webull/__init__.py:8:    WEBULL_CAPABILITIES,
+app/broker_plugins/webull/__init__.py-9-    WebullBrokerPlugin,
+app/broker_plugins/webull/__init__.py-10-)
+app/broker_plugins/webull/__init__.py-11-
+app/broker_plugins/webull/__init__.py-12-__all__ = [
+app/broker_plugins/webull/__init__.py:13:    "WEBULL_CAPABILITIES",
+app/broker_plugins/webull/__init__.py-14-    "WebullBrokerFactory",
+app/broker_plugins/webull/__init__.py-15-    "WebullBrokerPlugin",
+app/broker_plugins/webull/__init__.py-16-    "create_webull_runtime",
+app/broker_plugins/webull/__init__.py-17-]
+--
+app/broker_plugins/webull/composition.py-15-def create_webull_runtime(
+app/broker_plugins/webull/composition.py-16-    configuration: object,
+app/broker_plugins/webull/composition.py-17-    *,
+app/broker_plugins/webull/composition.py-18-    broker_factory: WebullBrokerFactory,
+app/broker_plugins/webull/composition.py-19-) -> BrokerRuntime:
+app/broker_plugins/webull/composition.py-20-    """Create a broker-neutral runtime backed by Webull execution services."""
+app/broker_plugins/webull/composition.py-21-
+app/broker_plugins/webull/composition.py-22-    if not callable(broker_factory):
+app/broker_plugins/webull/composition.py-23-        raise ValueError("broker_factory must be callable")
+app/broker_plugins/webull/composition.py-24-
+app/broker_plugins/webull/composition.py-25-    broker = broker_factory(configuration)
+app/broker_plugins/webull/composition.py-26-
+app/broker_plugins/webull/composition.py-27-    if broker is None:
+app/broker_plugins/webull/composition.py-28-        raise ValueError("Webull broker factory returned no broker")
+app/broker_plugins/webull/composition.py-29-
+app/broker_plugins/webull/composition.py:30:    from app.broker_plugins.webull.plugin import WEBULL_CAPABILITIES
+app/broker_plugins/webull/composition.py-31-
+app/broker_plugins/webull/composition.py-32-    return BrokerRuntime(
+app/broker_plugins/webull/composition.py-33-        provider="webull",
+app/broker_plugins/webull/composition.py:34:        capabilities=WEBULL_CAPABILITIES,
+app/broker_plugins/webull/composition.py-35-        execution=broker,
+app/broker_plugins/webull/composition.py-36-    )
+app/broker_plugins/webull/composition.py-37-
+app/broker_plugins/webull/composition.py-38-
+app/broker_plugins/webull/composition.py-39-__all__ = [
+app/broker_plugins/webull/composition.py-40-    "WebullBrokerFactory",
+app/broker_plugins/webull/composition.py-41-    "create_webull_runtime",
+app/broker_plugins/webull/composition.py-42-]
+--
+app/broker_plugins/webull/plugin.py-2-
+app/broker_plugins/webull/plugin.py-3-from __future__ import annotations
+app/broker_plugins/webull/plugin.py-4-
+app/broker_plugins/webull/plugin.py-5-from dataclasses import dataclass
+app/broker_plugins/webull/plugin.py-6-
+app/broker_plugins/webull/plugin.py-7-from app.broker_plugins.models import (
+app/broker_plugins/webull/plugin.py-8-    BrokerCapabilities,
+app/broker_plugins/webull/plugin.py-9-    BrokerRuntime,
+app/broker_plugins/webull/plugin.py-10-)
+app/broker_plugins/webull/plugin.py-11-from app.broker_plugins.webull.composition import (
+app/broker_plugins/webull/plugin.py-12-    WebullBrokerFactory,
+app/broker_plugins/webull/plugin.py-13-    create_webull_runtime,
+app/broker_plugins/webull/plugin.py-14-)
+app/broker_plugins/webull/plugin.py-15-
+app/broker_plugins/webull/plugin.py-16-
+app/broker_plugins/webull/plugin.py:17:WEBULL_CAPABILITIES = BrokerCapabilities(
+app/broker_plugins/webull/plugin.py-18-    provider="webull",
+app/broker_plugins/webull/plugin.py-19-    version="1.0",
+app/broker_plugins/webull/plugin.py-20-    supports_execution=True,
+app/broker_plugins/webull/plugin.py-21-    supports_market_data=False,
+app/broker_plugins/webull/plugin.py-22-    supports_scanner=False,
+app/broker_plugins/webull/plugin.py-23-    supports_account_data=True,
+app/broker_plugins/webull/plugin.py-24-    supports_live_trading=True,
+app/broker_plugins/webull/plugin.py-25-    supports_streaming=False,
+app/broker_plugins/webull/plugin.py-26-    supports_options=False,
+app/broker_plugins/webull/plugin.py-27-    supports_shorting=False,
+app/broker_plugins/webull/plugin.py-28-)
+app/broker_plugins/webull/plugin.py-29-
+app/broker_plugins/webull/plugin.py-30-
+app/broker_plugins/webull/plugin.py-31-@dataclass(frozen=True, slots=True)
+app/broker_plugins/webull/plugin.py-32-class WebullBrokerPlugin:
+app/broker_plugins/webull/plugin.py-33-    """Compose Webull services behind broker-neutral application contracts."""
+app/broker_plugins/webull/plugin.py-34-
+app/broker_plugins/webull/plugin.py-35-    broker_factory: WebullBrokerFactory
+app/broker_plugins/webull/plugin.py-36-
+app/broker_plugins/webull/plugin.py-37-    @property
+app/broker_plugins/webull/plugin.py-38-    def provider(self) -> str:
+app/broker_plugins/webull/plugin.py:39:        return WEBULL_CAPABILITIES.provider
+app/broker_plugins/webull/plugin.py-40-
+app/broker_plugins/webull/plugin.py-41-    @property
+app/broker_plugins/webull/plugin.py-42-    def capabilities(self) -> BrokerCapabilities:
+app/broker_plugins/webull/plugin.py:43:        return WEBULL_CAPABILITIES
+app/broker_plugins/webull/plugin.py-44-
+app/broker_plugins/webull/plugin.py-45-    def create_runtime(
+app/broker_plugins/webull/plugin.py-46-        self,
+app/broker_plugins/webull/plugin.py-47-        configuration: object,
+app/broker_plugins/webull/plugin.py-48-    ) -> BrokerRuntime:
+app/broker_plugins/webull/plugin.py-49-        return create_webull_runtime(
+app/broker_plugins/webull/plugin.py-50-            configuration,
+app/broker_plugins/webull/plugin.py-51-            broker_factory=self.broker_factory,
+app/broker_plugins/webull/plugin.py-52-        )
+app/broker_plugins/webull/plugin.py-53-
+app/broker_plugins/webull/plugin.py-54-
+app/broker_plugins/webull/plugin.py-55-__all__ = [
+app/broker_plugins/webull/plugin.py:56:    "WEBULL_CAPABILITIES",
+app/broker_plugins/webull/plugin.py-57-    "WebullBrokerPlugin",
+app/broker_plugins/webull/plugin.py-58-]
+--
+tests/test_builtin_broker_registry.py-1-∩╗┐from __future__ import annotations
+tests/test_builtin_broker_registry.py-2-
+tests/test_builtin_broker_registry.py-3-from dataclasses import dataclass
+tests/test_builtin_broker_registry.py-4-
+tests/test_builtin_broker_registry.py-5-import pytest
+tests/test_builtin_broker_registry.py-6-
+tests/test_builtin_broker_registry.py-7-from app.broker_plugins import (
+tests/test_builtin_broker_registry.py-8-    BrokerPluginRegistry,
+tests/test_builtin_broker_registry.py-9-    create_builtin_broker_registry,
+tests/test_builtin_broker_registry.py-10-)
+tests/test_builtin_broker_registry.py:11:from app.broker_plugins.webull import WEBULL_CAPABILITIES
+tests/test_builtin_broker_registry.py-12-
+tests/test_builtin_broker_registry.py-13-
+tests/test_builtin_broker_registry.py-14-@dataclass(frozen=True, slots=True)
+tests/test_builtin_broker_registry.py-15-class FakeConfiguration:
+tests/test_builtin_broker_registry.py-16-    account_id: str = "test-account"
+tests/test_builtin_broker_registry.py-17-
+tests/test_builtin_broker_registry.py-18-
+tests/test_builtin_broker_registry.py-19-class FakeBroker:
+tests/test_builtin_broker_registry.py-20-    def connect(self) -> None:
+tests/test_builtin_broker_registry.py-21-        pass
+tests/test_builtin_broker_registry.py-22-
+tests/test_builtin_broker_registry.py-23-    def disconnect(self) -> None:
+tests/test_builtin_broker_registry.py-24-        pass
+tests/test_builtin_broker_registry.py-25-
+tests/test_builtin_broker_registry.py-26-    def submit_order(self, order):
+--
+tests/test_builtin_broker_registry.py-43-
+tests/test_builtin_broker_registry.py-44-    def get_account(self):
+tests/test_builtin_broker_registry.py-45-        return None
+tests/test_builtin_broker_registry.py-46-
+tests/test_builtin_broker_registry.py-47-    def get_fills(self) -> tuple:
+tests/test_builtin_broker_registry.py-48-        return ()
+tests/test_builtin_broker_registry.py-49-
+tests/test_builtin_broker_registry.py-50-
+tests/test_builtin_broker_registry.py-51-def test_builtin_registry_registers_webull() -> None:
+tests/test_builtin_broker_registry.py-52-    registry = create_builtin_broker_registry(
+tests/test_builtin_broker_registry.py-53-        webull_broker_factory=lambda configuration: FakeBroker(),
+tests/test_builtin_broker_registry.py-54-    )
+tests/test_builtin_broker_registry.py-55-
+tests/test_builtin_broker_registry.py-56-    assert isinstance(registry, BrokerPluginRegistry)
+tests/test_builtin_broker_registry.py-57-    assert registry.providers() == ("webull",)
+tests/test_builtin_broker_registry.py:58:    assert registry.capabilities("webull") is WEBULL_CAPABILITIES
+tests/test_builtin_broker_registry.py-59-
+tests/test_builtin_broker_registry.py-60-
+tests/test_builtin_broker_registry.py-61-def test_builtin_registry_creates_webull_runtime() -> None:
+tests/test_builtin_broker_registry.py-62-    configuration = FakeConfiguration()
+tests/test_builtin_broker_registry.py-63-    broker = FakeBroker()
+tests/test_builtin_broker_registry.py-64-    observed_configurations: list[object] = []
+tests/test_builtin_broker_registry.py-65-
+tests/test_builtin_broker_registry.py-66-    def broker_factory(value: object) -> FakeBroker:
+tests/test_builtin_broker_registry.py-67-        observed_configurations.append(value)
+tests/test_builtin_broker_registry.py-68-        return broker
+tests/test_builtin_broker_registry.py-69-
+tests/test_builtin_broker_registry.py-70-    registry = create_builtin_broker_registry(
+tests/test_builtin_broker_registry.py-71-        webull_broker_factory=broker_factory,
+tests/test_builtin_broker_registry.py-72-    )
+tests/test_builtin_broker_registry.py-73-
+tests/test_builtin_broker_registry.py-74-    runtime = registry.create_runtime(
+tests/test_builtin_broker_registry.py-75-        "WEBULL",
+tests/test_builtin_broker_registry.py-76-        configuration,
+tests/test_builtin_broker_registry.py-77-    )
+tests/test_builtin_broker_registry.py-78-
+tests/test_builtin_broker_registry.py-79-    assert runtime.provider == "webull"
+tests/test_builtin_broker_registry.py-80-    assert runtime.execution is broker
+tests/test_builtin_broker_registry.py:81:    assert runtime.capabilities is WEBULL_CAPABILITIES
+tests/test_builtin_broker_registry.py-82-    assert observed_configurations == [configuration]
+tests/test_builtin_broker_registry.py-83-
+tests/test_builtin_broker_registry.py-84-
+tests/test_builtin_broker_registry.py-85-def test_builtin_registry_returns_new_registry_each_time() -> None:
+tests/test_builtin_broker_registry.py-86-    factory = lambda configuration: FakeBroker()
+tests/test_builtin_broker_registry.py-87-
+tests/test_builtin_broker_registry.py-88-    first = create_builtin_broker_registry(
+tests/test_builtin_broker_registry.py-89-        webull_broker_factory=factory,
+tests/test_builtin_broker_registry.py-90-    )
+tests/test_builtin_broker_registry.py-91-    second = create_builtin_broker_registry(
+tests/test_builtin_broker_registry.py-92-        webull_broker_factory=factory,
+tests/test_builtin_broker_registry.py-93-    )
+tests/test_builtin_broker_registry.py-94-
+tests/test_builtin_broker_registry.py-95-    assert first is not second
+tests/test_builtin_broker_registry.py-96-    assert first.providers() == second.providers() == ("webull",)
+--
+tests/test_webull_broker_plugin.py-1-∩╗┐from __future__ import annotations
+tests/test_webull_broker_plugin.py-2-
+tests/test_webull_broker_plugin.py-3-from dataclasses import dataclass
+tests/test_webull_broker_plugin.py-4-from decimal import Decimal
+tests/test_webull_broker_plugin.py-5-
+tests/test_webull_broker_plugin.py-6-import pytest
+tests/test_webull_broker_plugin.py-7-
+tests/test_webull_broker_plugin.py-8-from app.broker_plugins import (
+tests/test_webull_broker_plugin.py-9-    BrokerPluginRegistry,
+tests/test_webull_broker_plugin.py-10-    BrokerRuntime,
+tests/test_webull_broker_plugin.py-11-)
+tests/test_webull_broker_plugin.py-12-from app.broker_plugins.webull import (
+tests/test_webull_broker_plugin.py:13:    WEBULL_CAPABILITIES,
+tests/test_webull_broker_plugin.py-14-    WebullBrokerPlugin,
+tests/test_webull_broker_plugin.py-15-    create_webull_runtime,
+tests/test_webull_broker_plugin.py-16-)
+tests/test_webull_broker_plugin.py-17-from app.broker_protocol.models import (
+tests/test_webull_broker_plugin.py-18-    BrokerAccount,
+tests/test_webull_broker_plugin.py-19-    BrokerCash,
+tests/test_webull_broker_plugin.py-20-)
+tests/test_webull_broker_plugin.py-21-
+tests/test_webull_broker_plugin.py-22-
+tests/test_webull_broker_plugin.py-23-@dataclass(frozen=True, slots=True)
+tests/test_webull_broker_plugin.py-24-class FakeConfiguration:
+tests/test_webull_broker_plugin.py-25-    account_id: str = "test-account"
+tests/test_webull_broker_plugin.py-26-
+tests/test_webull_broker_plugin.py-27-
+tests/test_webull_broker_plugin.py-28-class FakeBroker:
+--
+tests/test_webull_broker_plugin.py-57-            currency="USD",
+tests/test_webull_broker_plugin.py-58-        )
+tests/test_webull_broker_plugin.py-59-
+tests/test_webull_broker_plugin.py-60-    def get_account(self) -> BrokerAccount:
+tests/test_webull_broker_plugin.py-61-        return BrokerAccount(
+tests/test_webull_broker_plugin.py-62-            account_id_redacted="****1234",
+tests/test_webull_broker_plugin.py-63-            account_type="PAPER",
+tests/test_webull_broker_plugin.py-64-            status="ACTIVE",
+tests/test_webull_broker_plugin.py-65-        )
+tests/test_webull_broker_plugin.py-66-
+tests/test_webull_broker_plugin.py-67-    def get_fills(self) -> tuple:
+tests/test_webull_broker_plugin.py-68-        return ()
+tests/test_webull_broker_plugin.py-69-
+tests/test_webull_broker_plugin.py-70-
+tests/test_webull_broker_plugin.py-71-def test_webull_capabilities_are_execution_only_for_now() -> None:
+tests/test_webull_broker_plugin.py:72:    assert WEBULL_CAPABILITIES.provider == "webull"
+tests/test_webull_broker_plugin.py:73:    assert WEBULL_CAPABILITIES.supports_execution is True
+tests/test_webull_broker_plugin.py:74:    assert WEBULL_CAPABILITIES.supports_account_data is True
+tests/test_webull_broker_plugin.py:75:    assert WEBULL_CAPABILITIES.supports_market_data is False
+tests/test_webull_broker_plugin.py:76:    assert WEBULL_CAPABILITIES.supports_streaming is False
+tests/test_webull_broker_plugin.py:77:    assert WEBULL_CAPABILITIES.supports_scanner is False
+tests/test_webull_broker_plugin.py-78-
+tests/test_webull_broker_plugin.py-79-
+tests/test_webull_broker_plugin.py-80-def test_webull_plugin_exposes_expected_metadata() -> None:
+tests/test_webull_broker_plugin.py-81-    plugin = WebullBrokerPlugin(
+tests/test_webull_broker_plugin.py-82-        broker_factory=lambda configuration: FakeBroker()
+tests/test_webull_broker_plugin.py-83-    )
+tests/test_webull_broker_plugin.py-84-
+tests/test_webull_broker_plugin.py-85-    assert plugin.provider == "webull"
+tests/test_webull_broker_plugin.py:86:    assert plugin.capabilities is WEBULL_CAPABILITIES
+tests/test_webull_broker_plugin.py-87-
+tests/test_webull_broker_plugin.py-88-
+tests/test_webull_broker_plugin.py-89-def test_webull_plugin_creates_execution_runtime() -> None:
+tests/test_webull_broker_plugin.py-90-    configuration = FakeConfiguration()
+tests/test_webull_broker_plugin.py-91-    broker = FakeBroker()
+tests/test_webull_broker_plugin.py-92-    observed_configurations: list[object] = []
+tests/test_webull_broker_plugin.py-93-
+tests/test_webull_broker_plugin.py-94-    def broker_factory(value: object) -> FakeBroker:
+tests/test_webull_broker_plugin.py-95-        observed_configurations.append(value)
+tests/test_webull_broker_plugin.py-96-        return broker
+tests/test_webull_broker_plugin.py-97-
+tests/test_webull_broker_plugin.py-98-    plugin = WebullBrokerPlugin(
+tests/test_webull_broker_plugin.py-99-        broker_factory=broker_factory
+tests/test_webull_broker_plugin.py-100-    )
+tests/test_webull_broker_plugin.py-101-
+tests/test_webull_broker_plugin.py-102-    runtime = plugin.create_runtime(configuration)
+tests/test_webull_broker_plugin.py-103-
+tests/test_webull_broker_plugin.py-104-    assert isinstance(runtime, BrokerRuntime)
+tests/test_webull_broker_plugin.py-105-    assert runtime.provider == "webull"
+tests/test_webull_broker_plugin.py:106:    assert runtime.capabilities is WEBULL_CAPABILITIES
+tests/test_webull_broker_plugin.py-107-    assert runtime.execution is broker
+tests/test_webull_broker_plugin.py-108-    assert runtime.market_data is None
+tests/test_webull_broker_plugin.py-109-    assert runtime.scanner is None
+tests/test_webull_broker_plugin.py-110-    assert observed_configurations == [configuration]
+tests/test_webull_broker_plugin.py-111-
+tests/test_webull_broker_plugin.py-112-
+tests/test_webull_broker_plugin.py-113-def test_webull_plugin_can_be_registered_and_resolved() -> None:
+tests/test_webull_broker_plugin.py-114-    broker = FakeBroker()
+tests/test_webull_broker_plugin.py-115-    plugin = WebullBrokerPlugin(
+tests/test_webull_broker_plugin.py-116-        broker_factory=lambda configuration: broker
+tests/test_webull_broker_plugin.py-117-    )
+tests/test_webull_broker_plugin.py-118-    registry = BrokerPluginRegistry()
+tests/test_webull_broker_plugin.py-119-
+tests/test_webull_broker_plugin.py-120-    registry.register(plugin)
+tests/test_webull_broker_plugin.py-121-    runtime = registry.create_runtime(
+
+===== transport smoke SDK imports =====
+from __future__ import annotations
+
+import os
+import sys
+import time
+import uuid
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any
+
+from webull.core.client import ApiClient
+from webull.core.http.initializer.token.token_manager import TokenManager
+from webull.trade.trade_client import TradeClient
+from decimal import Decimal
+from uuid import uuid4
+
+from app.broker_protocol.models import (
+    BrokerOrderRequest,
+    BrokerOrderType,
+    BrokerSide,
+    TimeInForce,
+    TradingSession,
+)
+from app.live_execution.webull_adapter import WebullAdapter
+from app.operations.credentials import EnvironmentCredentialProvider
+from app.webull.configuration import (
+    ReconnectPolicy,
+    RetryPolicy,
+    WebSocketSettings,
+    WebullConfiguration,
+)
+from app.webull.trading_sessions import MarketSessionClosedError
+from app.webull.http_client import UrllibHttpBackend, WebullHttpClient
+from app.webull.logging import StructuredLogger
+from app.webull.rate_limits import DeterministicRateLimiter, RateLimit
+from app.webull.signing import WebullRequestSigner
+from app.webull.transport import WebullBrokerTransport
+from app.webull.errors import BrokerRejectionError
+API_KEY = os.environ.get("WEBULL_API_KEY", "").strip()
+API_SECRET = os.environ.get("WEBULL_API_SECRET", "").strip()
+ACCOUNT_ID = os.environ.get("WEBULL_ACCOUNT_ID", "").strip()
+
+SDK_ENDPOINT = os.environ.get(
+    "WEBULL_API_ENDPOINT",
+    "api.sandbox.webull.com",
+).strip()
+SDK_ENDPOINT = SDK_ENDPOINT.removeprefix("https://").removeprefix("http://")
+SDK_ENDPOINT = SDK_ENDPOINT.rstrip("/")
+
+HTTP_ENDPOINT = f"https://{SDK_ENDPOINT}"
+
+WEBSOCKET_ENDPOINT = os.environ.get(
+    "WEBULL_WEBSOCKET_ENDPOINT",
+    "wss://data-api.sandbox.webull.com/mqtt",
+).strip()
+
+REGION_ID = os.environ.get("WEBULL_REGION_ID", "us").strip() or "us"
+RUN_ORDER_TEST = os.environ.get(
+    "WEBULL_RUN_ORDER_TEST",
+    "",
+).strip().lower() in {"1", "true", "yes"}
+
+
+def require_environment() -> None:
+    missing: list[str] = []
+
+    if not API_KEY:
+        missing.append("WEBULL_API_KEY")
+    if not API_SECRET:
+        missing.append("WEBULL_API_SECRET")
+    if not ACCOUNT_ID:
+        missing.append("WEBULL_ACCOUNT_ID")
+
+    if missing:
+        print("Missing required environment variables:")
+        for name in missing:
+            print(f"  - {name}")
+        print("\nSet the variables in PowerShell before running this script.")
+        raise SystemExit(1)
+
+
+===== transport smoke SDK setup =====
+        print(
+            "TradingSession.AUTO correctly detected that "
+            "US equity markets are closed."
+        )
+        return
+
+    except BrokerRejectionError as exc:
+        if (
+            "OAUTH_OPENAPI_CAN_NOT_TRADING_FOR_NON_TRADING_HOURS"
+            in str(exc)
+        ):
+            print()
+            print("Transport test PASSED")
+            print(
+                "Webull accepted the request format but rejected execution "
+                "because the market is closed."
+            )
+            return
+
+        raise
+
+def main() -> None:
+    require_environment()
+
+    # Official Webull SDK
+    sdk_client = ApiClient(
+        API_KEY,
+        API_SECRET,
+        REGION_ID,
+    )
+
+    sdk_client.add_endpoint(
+        REGION_ID,
+        SDK_ENDPOINT,
+    )
+
+    print("\nInitializing Webull access token...")
+
+    token_manager = TokenManager()
+    access_token = token_manager.init_token(sdk_client)
+
+    if not access_token:
+        raise RuntimeError(
+            "Webull SDK did not return an access token."
+        )
+
+    print("Access token initialized.")
+
+    try:
+        run_sdk_checks(
+            sdk_client,
+            ACCOUNT_ID,
+        )
+    except Exception as exc:
+        print("\nDirect SDK check failed:")
+        print(type(exc).__name__, str(exc))
+
+    # Custom transport
+    credentials = EnvironmentCredentialProvider(os.environ)
+
+    configuration = WebullConfiguration(
+        HTTP_ENDPOINT,
+        ACCOUNT_ID,
+        Decimal("10"),
+        RetryPolicy(
+            3,
+            Decimal("1"),
+            Decimal("2"),
+            Decimal("5"),
+        ),
+
+===== universe implementations =====
+app/universe/provider.py:23:class InMemoryUniverseProvider:
+app/universe/provider.py:68:class CompositeUniverseProvider:
+app/universe/service.py:17:class UniverseService:
+
+===== reference data implementations =====
+app/reference_data/provider.py:35:class InMemoryReferenceDataProvider:
+app/reference_data/provider.py:76:class CompositeReferenceDataProvider:
+app/reference_data/service.py:12:class ReferenceDataService:
+
+===== desktop bootstrap =====
+"""Top-level composition for a configured desktop paper runtime."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
+from typing import Any
+
+from app.execution_coordinator.runtime_context_input_source import (
+    GFVDecisionSource,
+    MarketQuoteSource,
+    MarketStateSource,
+    RuntimeContextConfiguration,
+    TimestampSource,
+)
+from app.momentum_scanner import MomentumScannerConfig
+from app.operations.runtime import CheckpointSink, RuntimeEventSink
+from app.operations.scanner_runtime import SnapshotResolver
+from app.realtime_scanner.protocols import (
+    ReferenceLoader,
+    ReferenceSink,
+    UniverseSelector,
+)
+from app.scanner_adapter.adapter import MarketEventScannerAdapter
+from app.services.runtime_service import DriverFactory
+from app.strategy_engine.order_intent_factory import (
+    QuantityProvider,
+    RequestIdProvider,
+)
+
+from .desktop_infrastructure import (
+    DesktopScannerInfrastructure,
+    create_desktop_paper_runtime_dependencies,
+    create_desktop_scanner_infrastructure,
+)
+from .paper_dependencies import PaperRuntimeDependencies
+from .paper_runtime_composition import create_paper_runtime_driver_factory
+
+
+Clock = Callable[[], datetime]
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopRuntimeBootstrap:
+    """Objects assembled for one configured desktop paper runtime."""
+
+    scanner_infrastructure: DesktopScannerInfrastructure
+    runtime_dependencies: PaperRuntimeDependencies
+    driver_factory: DriverFactory
+
+
+def create_desktop_runtime_bootstrap(
+    *,
+    market_data_client: Any,
+    universe_service: UniverseSelector,
+    reference_data_service: ReferenceLoader,
+    scanner_adapter: MarketEventScannerAdapter,
+    snapshot_resolver: SnapshotResolver,
+    quantity_provider: QuantityProvider,
+    request_id_provider: RequestIdProvider,
+    runtime_context_configuration: RuntimeContextConfiguration,
+    timestamp_source: TimestampSource,
+    market_state_source: MarketStateSource,
+    market_quote_source: MarketQuoteSource,
+    gfv_decision_source: GFVDecisionSource,
+    clock: Clock,
+    session_id: str,
+    initial_cash: Decimal,
+    scanner_config: MomentumScannerConfig = MomentumScannerConfig(),
+    reference_sink: ReferenceSink | None = None,
+    default_channels: Iterable[str] = (),
+    maximum_events_per_cycle: int = 1000,
+    candidate_limit: int = 25,
+    strategy_engine: Any | None = None,
+    inference_adapter: Any | None = None,
+    event_sink: RuntimeEventSink | None = None,
+    checkpoint_sink: CheckpointSink | None = None,
+    interval_seconds: float = 1.0,
+    environment: str = "PAPER",
+    active_model: str = "Promoted model",
+) -> DesktopRuntimeBootstrap:
+    """
+    Assemble a configured desktop paper runtime from application authorities.
+
+    This composition function wires existing services only. It does not invent
+    quantities, identifiers, market data, account state, or policy decisions.
+    """
+
+    scanner_infrastructure = create_desktop_scanner_infrastructure(
+        market_data_client=market_data_client,
+        universe_service=universe_service,
+        reference_data_service=reference_data_service,
+        scanner_adapter=scanner_adapter,
+        scanner_config=scanner_config,
+        reference_sink=reference_sink,
+        clock=clock,
+        default_channels=default_channels,
+        maximum_events_per_cycle=maximum_events_per_cycle,
+    )
+
+    runtime_dependencies = create_desktop_paper_runtime_dependencies(
+        scanner_infrastructure=scanner_infrastructure,
+        snapshot_resolver=snapshot_resolver,
+        quantity_provider=quantity_provider,
+        request_id_provider=request_id_provider,
+        runtime_context_configuration=runtime_context_configuration,
+        timestamp_source=timestamp_source,
+        market_state_source=market_state_source,
+        market_quote_source=market_quote_source,
+        gfv_decision_source=gfv_decision_source,
+        clock=clock,
+        strategy_engine=strategy_engine,
+        inference_adapter=inference_adapter,
+        candidate_limit=candidate_limit,
+        maximum_events_per_cycle=maximum_events_per_cycle,
+    )
+
+    driver_factory = create_paper_runtime_driver_factory(
+        session_id=session_id,
+        initial_cash=initial_cash,
+        dependencies=runtime_dependencies,
+        event_sink=event_sink,
+        checkpoint_sink=checkpoint_sink,
+        interval_seconds=interval_seconds,
+        environment=environment,
+        active_model=active_model,
+    )
+
+    return DesktopRuntimeBootstrap(
+        scanner_infrastructure=scanner_infrastructure,
+        runtime_dependencies=runtime_dependencies,
+        driver_factory=driver_factory,
+    )
+
+
+__all__ = [
+    "DesktopRuntimeBootstrap",
+    "create_desktop_runtime_bootstrap",
+]
