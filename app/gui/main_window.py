@@ -221,6 +221,7 @@ class MainWindow(QMainWindow):
         main_splitter.setSizes([235, 850, 300])
         dashboard_layout.addWidget(main_splitter, 1)
 
+        dashboard_layout.addWidget(self._build_health_ribbon())
         dashboard_layout.addWidget(self._build_footer())
 
         self._orders_page = OrdersPage()
@@ -892,6 +893,36 @@ class MainWindow(QMainWindow):
         layout.addWidget(value_label)
         return frame, value_label
 
+    def _build_health_ribbon(self) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("healthRibbon")
+
+        layout = QHBoxLayout(panel)
+        layout.setContentsMargins(12, 7, 12, 7)
+        layout.setSpacing(8)
+
+        title = QLabel("SYSTEM HEALTH")
+        title.setObjectName("healthRibbonTitle")
+
+        self._runtime_health_pill = StatusPill("RUNTIME  STOPPED", "neutral")
+        self._broker_health_pill = StatusPill("BROKER  OFFLINE", "neutral")
+        self._market_health_pill = StatusPill("MARKET  IDLE", "neutral")
+        self._ai_health_pill = StatusPill("AI  WAITING", "neutral")
+        self._risk_health_pill = StatusPill("RISK  PROTECTED", "good")
+        self._database_health_pill = StatusPill("DATABASE  NOT WIRED", "neutral")
+
+        layout.addWidget(title)
+        layout.addSpacing(4)
+        layout.addWidget(self._runtime_health_pill)
+        layout.addWidget(self._broker_health_pill)
+        layout.addWidget(self._market_health_pill)
+        layout.addWidget(self._ai_health_pill)
+        layout.addWidget(self._risk_health_pill)
+        layout.addWidget(self._database_health_pill)
+        layout.addStretch()
+
+        return panel
+
     def _build_footer(self) -> QFrame:
         panel = QFrame()
         panel.setObjectName("footerPanel")
@@ -955,6 +986,124 @@ class MainWindow(QMainWindow):
 
         self._mode_pill.update_status(runtime.environment, "good")
 
+        runtime_health_text = {
+            RuntimePhase.RUNNING: "RUNTIME  HEALTHY",
+            RuntimePhase.STARTING: "RUNTIME  STARTING",
+            RuntimePhase.STOPPING: "RUNTIME  STOPPING",
+            RuntimePhase.FAILED: "RUNTIME  FAILED",
+        }.get(runtime.phase, "RUNTIME  STOPPED")
+        self._runtime_health_pill.update_status(
+            runtime_health_text,
+            phase_state,
+        )
+
+        broker_text = runtime.broker_status.strip()
+        broker_lower = broker_text.lower()
+
+        broker_auth_failed = any(
+            token in broker_lower
+            for token in (
+                "auth failed",
+                "authentication failed",
+                "unauthorized",
+                "invalid credential",
+                "invalid app key",
+                "invalid secret",
+            )
+        )
+        broker_connected = (
+            "connect" in broker_lower
+            and "disconnect" not in broker_lower
+            and "not connected" not in broker_lower
+        )
+
+        if broker_auth_failed:
+            self._broker_health_pill.update_status(
+                "BROKER  AUTH DEGRADED",
+                "warn",
+            )
+        elif broker_connected:
+            self._broker_health_pill.update_status(
+                "BROKER  CONNECTED",
+                "good",
+            )
+        elif runtime.phase is RuntimePhase.RUNNING:
+            self._broker_health_pill.update_status(
+                "BROKER  PAPER MODE",
+                "good",
+            )
+        else:
+            self._broker_health_pill.update_status(
+                "BROKER  OFFLINE",
+                "neutral",
+            )
+
+        feed_lower = runtime.market_feed_status.lower()
+        feed_active = any(
+            token in feed_lower
+            for token in ("live", "active", "connected", "streaming")
+        )
+        feed_failed = any(
+            token in feed_lower
+            for token in ("error", "failed", "disconnected")
+        )
+
+        if feed_failed:
+            self._market_health_pill.update_status(
+                "MARKET  DEGRADED",
+                "warn",
+            )
+        elif feed_active:
+            self._market_health_pill.update_status(
+                "MARKET  ACTIVE",
+                "good",
+            )
+        else:
+            self._market_health_pill.update_status(
+                "MARKET  IDLE",
+                "neutral",
+            )
+
+        model_lower = (
+            f"{runtime.active_model} {runtime.inference_status}"
+        ).lower()
+        model_failed = any(
+            token in model_lower
+            for token in ("error", "failed", "unavailable")
+        )
+        model_ready = (
+            runtime.active_model.strip().lower()
+            not in {"", "none", "not loaded"}
+        )
+
+        if model_failed:
+            self._ai_health_pill.update_status(
+                "AI  DEGRADED",
+                "warn",
+            )
+        elif model_ready:
+            self._ai_health_pill.update_status(
+                "AI  READY",
+                "good",
+            )
+        else:
+            self._ai_health_pill.update_status(
+                "AI  WAITING",
+                "neutral",
+            )
+
+        self._risk_health_pill.update_status(
+            "RISK  PROTECTED",
+            "good",
+        )
+
+        # Database readiness is intentionally neutral until real database
+        # health inputs are wired into ApplicationState.
+        self._database_health_pill.update_status(
+            "DATABASE  NOT WIRED",
+            "neutral",
+        )
+
         running_or_transitioning = runtime.phase in {
             RuntimePhase.STARTING,
             RuntimePhase.RUNNING,
@@ -991,11 +1140,31 @@ class MainWindow(QMainWindow):
             self._started_at = None
 
         self._render_activity(state)
-        health = "ERROR" if runtime.phase is RuntimePhase.FAILED else "HEALTHY"
+        if runtime.phase is RuntimePhase.FAILED:
+            health = "FAILED"
+        elif broker_auth_failed or feed_failed or model_failed:
+            health = "DEGRADED"
+        elif runtime.phase is RuntimePhase.RUNNING:
+            health = "HEALTHY"
+        else:
+            health = "READY"
+
+        readiness = (
+            "YES"
+            if runtime.phase is RuntimePhase.RUNNING
+            and not feed_failed
+            and not model_failed
+            else "NO"
+        )
+
         self._footer_status.setText(
-            f"Runtime: {runtime.phase.value}  •  Broker: {runtime.broker_status}  •  "
-            f"Feed: {runtime.market_feed_status}  •  Model: {runtime.active_model}  •  "
-            f"Cycles: {runtime.cycles_completed}  •  {health}"
+            f"{runtime.phase.value.upper()}  |  "
+            f"{runtime.environment.upper()}  |  "
+            f"Broker: {runtime.broker_status}  |  "
+            f"Feed: {runtime.market_feed_status}  |  "
+            f"AI: {runtime.inference_status}  |  "
+            f"Cycles: {runtime.cycles_completed}  |  "
+            f"Ready: {readiness}  |  {health}"
         )
         self._update_clock()
 
@@ -1057,7 +1226,9 @@ class MainWindow(QMainWindow):
             QMainWindow, QWidget#appRoot { background: #080c11; color: #e8edf5; font-family: "Segoe UI"; font-size: 13px; }
             QWidget#transparentContainer { background: transparent; }
             QLabel { background: transparent; }
-            #headerPanel, #contentPanel, #footerPanel { background: #101720; border: 1px solid #253143; border-radius: 11px; }
+            #headerPanel, #contentPanel, #footerPanel, #healthRibbon { background: #101720; border: 1px solid #253143; border-radius: 11px; }
+            #healthRibbonTitle { color: #718099; font-size: 9px; font-weight: 800; letter-spacing: 1px; }
+            #healthRibbon #statusPill { min-width: 112px; padding: 5px 8px; font-size: 8px; }
             #applicationTitle { color: #f7f9fc; font-size: 22px; font-weight: 800; letter-spacing: 1.3px; }
             #mutedText { color: #7f8b9e; font-size: 10px; }
             #clockLabel { color: #95a2b5; font-family: "Cascadia Mono", "Consolas"; }
