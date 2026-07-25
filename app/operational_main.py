@@ -4,33 +4,20 @@ import argparse
 import os
 import sys
 import time
-import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
 from app.authorization.registry import AuthorizationRegistry
+from app.live_execution.broker_factory import build_webull_broker
 from app.configuration.loader import load_configuration
 from app.configuration.models import TradingEnvironment
 from app.live_execution.recovery import (
     DurableExecutionJournal,
     reconcile_startup,
 )
-from app.live_execution.webull_adapter import WebullAdapter
 from app.market_data.durable_store import DurableMarketEventStore
-from app.operations.credentials import EnvironmentCredentialProvider
 from app.operations.emergency_stop import EmergencyStopStore
-from app.webull.configuration import (
-    ReconnectPolicy,
-    RetryPolicy,
-    WebSocketSettings,
-    WebullConfiguration,
-)
-from app.webull.http_client import UrllibHttpBackend, WebullHttpClient
-from app.webull.logging import StructuredLogger
-from app.webull.rate_limits import DeterministicRateLimiter, RateLimit
-from app.webull.signing import WebullRequestSigner
-from app.webull.transport import WebullBrokerTransport
 
 
 def utc_now() -> datetime:
@@ -45,29 +32,8 @@ def sleep_decimal(seconds: Decimal) -> None:
     time.sleep(float(seconds))
 
 
-class ConsoleSink:
-    def emit(self, record: object) -> None:
-        print(record, flush=True)
-
-
-class SignedAuthentication:
-    """Authentication interface expected by WebullBrokerTransport."""
-
-    def __init__(self, signer: WebullRequestSigner) -> None:
-        self.signer = signer
-
-    def headers(
-        self,
-        method: str,
-        path: str,
-        query: tuple[tuple[str, object], ...],
-        body: bytes | None,
-    ) -> dict[str, str]:
-        return self.signer.headers(method, path, query, body)
-
-    def verify(self) -> bool:
-        # The authenticated account-list request verifies the credentials.
-        return True
+# Preserve the existing entry-point seam for callers and tests.
+build_broker = build_webull_broker
 
 
 def ensure_parent_directories(configuration) -> None:
@@ -80,69 +46,6 @@ def ensure_parent_directories(configuration) -> None:
 
     for path in paths:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-
-
-def build_broker(configuration) -> WebullAdapter:
-    credentials = EnvironmentCredentialProvider(os.environ)
-    transport_logger = StructuredLogger(ConsoleSink())
-
-    webull_configuration = WebullConfiguration(
-        api_endpoint=configuration.api_base_url.rstrip("/"),
-        account_id=configuration.account_id,
-        timeout_seconds=Decimal("10"),
-        retry_policy=RetryPolicy(
-            maximum_attempts=3,
-            initial_backoff_seconds=Decimal("1"),
-            multiplier=Decimal("2"),
-            maximum_backoff_seconds=Decimal("5"),
-        ),
-        reconnect_policy=ReconnectPolicy(
-            maximum_attempts=3,
-            backoff_seconds=Decimal("1"),
-        ),
-        websocket=WebSocketSettings(
-            endpoint=configuration.stream_url,
-        ),
-    )
-
-    signer = WebullRequestSigner(
-        credentials=credentials,
-        host=webull_configuration.api_endpoint,
-        clock=utc_now,
-        nonce_provider=lambda: uuid.uuid4().hex,
-    )
-
-    authentication = SignedAuthentication(signer)
-
-    limiter = DeterministicRateLimiter(
-        RateLimit(
-            requests=10,
-            window_seconds=Decimal("1"),
-        ),
-        monotonic_decimal,
-        sleep_decimal,
-    )
-
-    http_client = WebullHttpClient(
-        endpoint=webull_configuration.api_endpoint,
-        timeout=webull_configuration.timeout_seconds,
-        retry_policy=webull_configuration.retry_policy,
-        backend=UrllibHttpBackend(),
-        auth=authentication,
-        limiter=limiter,
-        sleeper=sleep_decimal,
-        logger=transport_logger,
-    )
-
-    transport = WebullBrokerTransport(
-        webull_configuration,
-        http_client,
-        authentication,
-        transport_logger,
-        utc_now,
-    )
-
-    return WebullAdapter(transport)
 
 
 def validate_environment(configuration) -> None:
@@ -252,7 +155,8 @@ def check_startup() -> int:
         )
 
         unresolved = tuple(
-            item for item in execution_journal.pending
+            item
+            for item in execution_journal.pending
             if getattr(item.state, "value", str(item.state))
             == "UNRESOLVED"
         )
@@ -307,7 +211,6 @@ def check_startup() -> int:
             close_journal()
 
 
-
 def _unresolved_mutations(execution_journal) -> tuple[object, ...]:
     return tuple(
         item
@@ -335,6 +238,7 @@ def run_observation(
     interval_seconds: Decimal | None = None,
 ) -> int:
     """Continuously reconcile and display broker state without mutations."""
+
     if max_cycles is not None and max_cycles <= 0:
         raise ValueError("max_cycles must be positive")
     if interval_seconds is not None and interval_seconds < 0:
@@ -370,7 +274,10 @@ def run_observation(
         emergency_stop.reachable()
 
         print("OBSERVATION MODE", flush=True)
-        print(f"Environment: {configuration.environment.value}", flush=True)
+        print(
+            f"Environment: {configuration.environment.value}",
+            flush=True,
+        )
         print("Order submission: DISABLED", flush=True)
         print("Emergency stop: ACTIVE", flush=True)
 
@@ -396,6 +303,7 @@ def run_observation(
             else Decimal(configuration.reconciliation_interval_seconds)
         )
         cycle = 0
+
         while max_cycles is None or cycle < max_cycles:
             _validate_observation_mode(configuration, emergency_stop)
 
@@ -433,15 +341,19 @@ def run_observation(
 
         print("OBSERVATION RUN COMPLETED", flush=True)
         return 0
+
     finally:
         if connected:
             broker.disconnect()
+
         market_store.close()
         emergency_stop.close()
         authorization_registry.close()
+
         close_journal = getattr(execution_journal, "close", None)
         if callable(close_journal):
             close_journal()
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -470,6 +382,7 @@ def main() -> int:
         default=None,
         help="override the configured observation interval",
     )
+
     args = parser.parse_args()
 
     if args.check:
