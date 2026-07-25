@@ -1,4 +1,4 @@
-﻿"""
+"""
 Application composition root.
 
 The composition package is responsible for constructing and wiring the
@@ -15,6 +15,7 @@ from .exceptions import (
     MissingDependencyError,
 )
 from .factories import ComponentFactory, factory
+from .operational_lifecycle import OperationalRuntimeSession
 from .operational_runtime import (
     OperationalRuntimeComposition,
     create_operational_runtime_composition,
@@ -30,6 +31,7 @@ __all__ = [
 
     # Operational composition
     "OperationalRuntimeComposition",
+    "OperationalRuntimeSession",
     "create_operational_runtime_composition",
 
     # Existing composition framework
@@ -49,4 +51,3 @@ __all__ = [
     "CircularDependencyError",
     "FactoryValidationError",
 ]
-
