@@ -4,16 +4,16 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from app.gui.models import DashboardSnapshot
-from app.gui.widgets.common import StatusBadge
-from app.gui.widgets.panel import SectionPanel
 from app.gui.widgets.activity_panel import ActivityPanel
+from app.gui.widgets.common import StatusBadge
+from app.gui.widgets.orders_panel import OrdersPanel
+from app.gui.widgets.panel import SectionPanel
+from app.gui.widgets.positions_panel import PositionsPanel
 from app.gui.widgets.runtime_ribbon import RuntimeRibbon
 
 
@@ -26,7 +26,6 @@ class DashboardPage(QWidget):
         root.setSpacing(16)
 
         header = QHBoxLayout()
-
         heading = QVBoxLayout()
 
         title = QLabel("Autonomous Trading Dashboard")
@@ -55,45 +54,34 @@ class DashboardPage(QWidget):
         body.setSpacing(12)
 
         self.activity_panel = ActivityPanel()
+        self.positions_panel = PositionsPanel()
+        self.orders_panel = OrdersPanel()
 
         body.addWidget(
-            SectionPanel("Decision & Activity Feed", self.activity_panel),
+            SectionPanel(
+                "Decision & Activity Feed",
+                self.activity_panel,
+            ),
             0,
             0,
             2,
             2,
         )
 
-        positions = QTableWidget(3, 4)
-        positions.setHorizontalHeaderLabels(("Symbol", "Qty", "Avg Price", "P/L"))
-
-        for r in range(3):
-            for c in range(4):
-                positions.setItem(r, c, QTableWidgetItem("--"))
-
-        positions.horizontalHeader().setStretchLastSection(True)
-        positions.verticalHeader().setVisible(False)
-        positions.setEnabled(False)
-
         body.addWidget(
-            SectionPanel("Open Positions", positions),
+            SectionPanel(
+                "Open Positions",
+                self.positions_panel,
+            ),
             0,
             2,
         )
 
-        orders = QTableWidget(3, 3)
-        orders.setHorizontalHeaderLabels(("Order", "Status", "Updated"))
-
-        for r in range(3):
-            for c in range(3):
-                orders.setItem(r, c, QTableWidgetItem("--"))
-
-        orders.horizontalHeader().setStretchLastSection(True)
-        orders.verticalHeader().setVisible(False)
-        orders.setEnabled(False)
-
         body.addWidget(
-            SectionPanel("Active Orders", orders),
+            SectionPanel(
+                "Active Orders",
+                self.orders_panel,
+            ),
             1,
             2,
         )
