@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
@@ -346,12 +346,13 @@ class PaperOperationsEngine:
                             "request builder must return CoordinationRequest "
                             "for executable decisions"
                         )
-                session = process_decision(
+                process_result = process_decision(
                     session,
                     coordinator=self._coordinator,
                     strategy_decision=decision,
                     request=request,
                 )
+                session = process_result.session
                 decisions.append(decision)
                 self._append_event(
                     timestamp,
@@ -570,3 +571,4 @@ def _symbol(snapshot: SnapshotLike) -> str:
 def _require_aware(value: datetime) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("runtime timestamps must be timezone-aware")
+

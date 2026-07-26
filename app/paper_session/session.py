@@ -12,6 +12,7 @@ from app.paper_session.models import (
     PaperSessionEvent,
     PaperSessionStatus,
     PaperTradingSession,
+    ProcessDecisionResult,
 )
 from app.paper_session.statistics import (
     advance_statistics,
@@ -80,7 +81,7 @@ def process_decision(
     coordinator: ExecutionCoordinator,
     strategy_decision: StrategyDecision,
     request: CoordinationRequest | None = None,
-) -> PaperTradingSession:
+) -> ProcessDecisionResult:
     if session.status is not PaperSessionStatus.ACTIVE:
         raise RuntimeError(
             "cannot process a closed paper session"
@@ -149,7 +150,7 @@ def process_decision(
         message=_coordination_message(coordination),
     )
 
-    return replace(
+    updated_session = replace(
         session,
         portfolio=portfolio,
         journal=journal,
@@ -159,6 +160,11 @@ def process_decision(
         processed_request_ids=processed_ids,
         events=(*session.events, event),
         last_coordination_result=coordination,
+    )
+
+    return ProcessDecisionResult(
+        session=updated_session,
+        coordination=coordination,
     )
 
 
@@ -236,3 +242,4 @@ def _coordination_message(coordination) -> str:
         f"Coordination ended at "
         f"{coordination.final_stage.value}."
     )
+

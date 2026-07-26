@@ -260,13 +260,15 @@ def test_hold_advances_statistics() -> None:
         started_at=NOW,
     )
 
-    updated = process_decision(
+    result = process_decision(
         session,
         coordinator=StubCoordinator(skipped_result),
         strategy_decision=strategy_decision(
             StrategyDecisionAction.HOLD
         ),
     )
+
+    updated = result.session
 
     assert updated.statistics.decisions_processed == 1
     assert updated.statistics.decisions_skipped == 1
@@ -280,12 +282,14 @@ def test_risk_rejection_is_recorded() -> None:
         started_at=NOW,
     )
 
-    updated = process_decision(
+    result = process_decision(
         session,
         coordinator=StubCoordinator(rejected_result),
         strategy_decision=strategy_decision(),
         request=request(),
     )
+
+    updated = result.session
 
     assert updated.statistics.orders_attempted == 1
     assert updated.statistics.orders_rejected == 1
@@ -299,12 +303,14 @@ def test_filled_result_advances_state() -> None:
         started_at=NOW,
     )
 
-    updated = process_decision(
+    result = process_decision(
         session,
         coordinator=StubCoordinator(filled_result),
         strategy_decision=strategy_decision(),
         request=request(),
     )
+
+    updated = result.session
 
     assert updated.statistics.orders_filled == 1
     assert updated.portfolio.cash == Decimal("9900")
@@ -344,12 +350,14 @@ def test_original_session_is_immutable() -> None:
         started_at=NOW,
     )
 
-    updated = process_decision(
+    result = process_decision(
         session,
         coordinator=StubCoordinator(rejected_result),
         strategy_decision=strategy_decision(),
         request=request(),
     )
+
+    updated = result.session
 
     assert updated is not session
     assert session.statistics.decisions_processed == 0
@@ -363,12 +371,14 @@ def test_request_id_is_recorded() -> None:
         started_at=NOW,
     )
 
-    updated = process_decision(
+    result = process_decision(
         session,
         coordinator=StubCoordinator(rejected_result),
         strategy_decision=strategy_decision(),
         request=request("req-25"),
     )
+
+    updated = result.session
 
     assert updated.processed_request_ids == ("req-25",)
 
@@ -381,19 +391,20 @@ def test_duplicate_request_id_is_rejected() -> None:
     )
     coordinator = StubCoordinator(rejected_result)
 
-    updated = process_decision(
+    result = process_decision(
         session,
         coordinator=coordinator,
         strategy_decision=strategy_decision(),
         request=request("req-1"),
     )
 
+    updated = result.session
+
     with pytest.raises(
         ValueError,
         match="duplicate request ID",
     ):
-        process_decision(
-            updated,
+        process_decision(updated,
             coordinator=coordinator,
             strategy_decision=strategy_decision(),
             request=request("req-1"),
@@ -407,13 +418,15 @@ def test_skipped_decision_has_no_request_id() -> None:
         started_at=NOW,
     )
 
-    updated = process_decision(
+    result = process_decision(
         session,
         coordinator=StubCoordinator(skipped_result),
         strategy_decision=strategy_decision(
             StrategyDecisionAction.IGNORE
         ),
     )
+
+    updated = result.session
 
     assert updated.processed_request_ids == ()
     assert updated.events[0].request_id is None
@@ -427,15 +440,14 @@ def test_event_sequence_increments() -> None:
     )
     coordinator = StubCoordinator(skipped_result)
 
-    first = process_decision(
+    first_result = process_decision(
         session,
         coordinator=coordinator,
         strategy_decision=strategy_decision(
             StrategyDecisionAction.HOLD
         ),
     )
-    second = process_decision(
-        first,
+    second_result = process_decision(first_result.session,
         coordinator=coordinator,
         strategy_decision=strategy_decision(
             StrategyDecisionAction.HOLD,
@@ -445,7 +457,7 @@ def test_event_sequence_increments() -> None:
 
     assert tuple(
         event.sequence
-        for event in second.events
+        for event in second_result.session.events
     ) == (1, 2)
 
 
@@ -537,7 +549,7 @@ def test_close_cannot_precede_activity() -> None:
         initial_cash=Decimal("10000"),
         started_at=NOW,
     )
-    updated = process_decision(
+    result = process_decision(
         session,
         coordinator=StubCoordinator(skipped_result),
         strategy_decision=strategy_decision(
@@ -549,8 +561,7 @@ def test_close_cannot_precede_activity() -> None:
         ValueError,
         match="precede",
     ):
-        close_paper_session(
-            updated,
+        close_paper_session(result.session,
             ended_at=NOW,
         )
 
@@ -609,6 +620,9 @@ def test_repeated_replay_is_deterministic() -> None:
     )
 
     assert (
-        paper_session_to_json(first_result)
-        == paper_session_to_json(second_result)
+        paper_session_to_json(first_result.session)
+        == paper_session_to_json(second_result.session)
     )
+
+
+

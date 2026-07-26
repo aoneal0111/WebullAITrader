@@ -142,6 +142,12 @@ class PaperSessionEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class ProcessDecisionResult:
+    session: PaperTradingSession
+    coordination: ExecutionCoordinationResult
+
+
+@dataclass(frozen=True, slots=True)
 class PaperTradingSession:
     schema_version: str
     session_id: str
@@ -235,3 +241,4 @@ class PaperTradingSession:
             "processed_request_ids",
             normalized_ids,
         )
+
