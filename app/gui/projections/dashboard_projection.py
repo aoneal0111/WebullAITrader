@@ -4,11 +4,11 @@ from app.gui.models import (
     ActivityEntry,
     ActivitySnapshot,
     DashboardSnapshot,
-    OrdersSnapshot,
     PositionsSnapshot,
     RuntimeSnapshot,
     RuntimeState,
 )
+from app.gui.projections.orders_projection import project_orders
 from app.operations_core import ApplicationState
 
 
@@ -37,5 +37,5 @@ def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
             )
         ),
         positions=PositionsSnapshot.initial(),
-        orders=OrdersSnapshot.initial(),
+        orders=project_orders(state.orders),
     )
