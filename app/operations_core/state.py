@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -9,6 +9,8 @@ from threading import RLock
 from app.operations_core.bus import OperationsBus, Subscription
 from app.operations_core.events import (
     OperationsEvent,
+    OperationsOrder,
+    OrdersUpdated,
     RuntimeCycleCompleted,
     RuntimeFailed,
     RuntimeStarted,
@@ -50,6 +52,7 @@ class TimelineEntry:
 @dataclass(frozen=True, slots=True)
 class ApplicationState:
     runtime: RuntimeState = field(default_factory=RuntimeState)
+    orders: tuple[OperationsOrder, ...] = ()
     timeline: tuple[TimelineEntry, ...] = ()
     revision: int = 0
 
@@ -114,6 +117,7 @@ class ApplicationStateStore:
     def _handle_event(self, event: OperationsEvent) -> None:
         with self._lock:
             runtime = self._reduce_runtime(self._state.runtime, event)
+            orders = self._reduce_orders(self._state.orders, event)
 
             timeline = self._state.timeline
 
@@ -123,6 +127,7 @@ class ApplicationStateStore:
 
             self._state = ApplicationState(
                 runtime=runtime,
+                orders=orders,
                 timeline=timeline,
                 revision=self._state.revision + 1,
             )
@@ -198,6 +203,15 @@ class ApplicationStateStore:
         return current
 
     @staticmethod
+    def _reduce_orders(
+        current: tuple[OperationsOrder, ...],
+        event: OperationsEvent,
+    ) -> tuple[OperationsOrder, ...]:
+        if isinstance(event, OrdersUpdated):
+            return event.orders
+
+        return current
+    @staticmethod
     def _timeline_entry(event: OperationsEvent) -> TimelineEntry:
         if isinstance(event, RuntimeStarting):
             message = f"Starting {event.environment} runtime."
@@ -215,6 +229,10 @@ class ApplicationStateStore:
             )
         elif isinstance(event, RuntimeFailed):
             message = f"Runtime failed: {event.error_message}"
+        elif isinstance(event, OrdersUpdated):
+            order_count = len(event.orders)
+            noun = "order" if order_count == 1 else "orders"
+            message = f"Order state updated: {order_count} {noun}."
         else:
             message = type(event).__name__
 
