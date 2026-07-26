@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPu
 from app.gui.design.theme import application_stylesheet
 from app.gui.pages.dashboard import DashboardPage
 from app.gui.pages.placeholder import PlaceholderPage
+from app.gui.projections.dashboard_projection import project_dashboard
 from app.gui.shell.sidebar import Sidebar
 from app.gui.state_bridge import QtStateBridge
 from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus, RuntimePhase
@@ -21,7 +22,7 @@ class MainWindow(QMainWindow):
         self._last_error = ""
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
-        self.setWindowTitle("Atlas — WebullAITrader")
+        self.setWindowTitle("Atlas â€” WebullAITrader")
         self.setMinimumSize(1180, 760)
         self.resize(1440, 900)
         self._build()
@@ -80,7 +81,7 @@ class MainWindow(QMainWindow):
         status = QStatusBar()
         self.status_label = QLabel()
         status.addWidget(self.status_label, 1)
-        safety = QLabel("PAPER MODE · NO LIVE BROKER MUTATIONS")
+        safety = QLabel("PAPER MODE Â· NO LIVE BROKER MUTATIONS")
         safety.setObjectName("muted")
         status.addPermanentWidget(safety)
         self.setStatusBar(status)
@@ -90,7 +91,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Emergency stop requested. Runtime shutdown in progress.", 5000)
 
     def _render_state(self, state: ApplicationState) -> None:
-        self.dashboard.render(state)
+        dashboard_snapshot = project_dashboard(state)
+        self.dashboard.render(dashboard_snapshot)
         phase = state.runtime.phase
         active = phase in {RuntimePhase.STARTING, RuntimePhase.RUNNING, RuntimePhase.STOPPING}
         self.start_button.setEnabled(not active)

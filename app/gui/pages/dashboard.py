@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QTa
 
 from app.gui.widgets.common import MetricCard, StatusBadge
 from app.gui.widgets.panel import SectionPanel
-from app.operations_core import ApplicationState, RuntimePhase
+from app.gui.models import DashboardSnapshot
 
 
 class DashboardPage(QWidget):
@@ -72,20 +72,22 @@ class DashboardPage(QWidget):
         body.setColumnStretch(2, 3)
         root.addLayout(body, 1)
 
-    def render(self, state: ApplicationState) -> None:
-        runtime = state.runtime
-        self.runtime.set_value(runtime.phase.value.title(), "Runtime lifecycle state")
-        self.broker.set_value(runtime.broker_status, "Broker gateway status")
-        self.market.set_value(runtime.market_feed_status, "Market data connection")
-        self.model.set_value(runtime.active_model, runtime.inference_status)
-        self.cycles.set_value(str(runtime.cycles_completed), "Completed runtime cycles")
+    def render(self, snapshot: DashboardSnapshot) -> None:
+        snapshot_runtime = snapshot
+        self.runtime.set_value(snapshot_runtime.runtime_state.value.title(), "Runtime lifecycle state")
+        self.broker.set_value(snapshot_runtime.broker_status, "Broker gateway status")
+        self.market.set_value(snapshot_runtime.market_feed_status, "Market data connection")
+        self.model.set_value(snapshot_runtime.active_model, snapshot_runtime.inference_status)
+        self.cycles.set_value(str(snapshot_runtime.cycle_count), "Completed runtime cycles")
         self.risk.set_value("Protected", "Emergency stop enabled")
-        level = "good" if runtime.phase is RuntimePhase.RUNNING else "warn"
-        self.mode_badge.set_status(runtime.environment, level)
-        if state.timeline:
-            self.activity.setText("\n\n".join(
-                f"{entry.occurred_at.astimezone():%H:%M:%S}   {entry.message}"
-                for entry in state.timeline[-10:][::-1]
-            ))
+        level = "good" if snapshot_runtime.runtime_state.value == "RUNNING" else "warn"
+        self.mode_badge.set_status(snapshot_runtime.environment, level)
+        if snapshot.activity:
+            self.activity.setText(
+                "\n\n".join(
+                    f"{entry.occurred_at.astimezone():%H:%M:%S}   {entry.message}"
+                    for entry in snapshot.activity
+                )
+            )
         else:
             self.activity.setText("No operations events recorded.")

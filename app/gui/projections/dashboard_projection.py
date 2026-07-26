@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.gui.models import DashboardSnapshot
+from app.gui.models import ActivityEntry, DashboardSnapshot, RuntimeState
 from app.operations_core import ApplicationState
 
 
@@ -9,7 +9,7 @@ def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
 
     return DashboardSnapshot(
         environment=runtime.environment,
-        runtime_state=runtime.phase,
+        runtime_state=RuntimeState(runtime.phase.value),
         broker_status=runtime.broker_status,
         market_feed_status=runtime.market_feed_status,
         inference_status=runtime.inference_status,
@@ -17,4 +17,11 @@ def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
         active_model=runtime.active_model,
         cycle_count=runtime.cycles_completed,
         status_message=runtime.last_error or "Healthy",
+        activity=tuple(
+            ActivityEntry(
+                occurred_at=entry.occurred_at,
+                message=entry.message,
+            )
+            for entry in state.timeline[-10:][::-1]
+        ),
     )
