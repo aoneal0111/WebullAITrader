@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.momentum_scanner import ScannerDecision
+
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -51,6 +53,7 @@ class TimelineEntry:
 @dataclass(frozen=True, slots=True)
 class ScannerState:
     candidates: tuple[str, ...] = ()
+    ranked_candidates: tuple[ScannerDecision, ...] = ()
     last_scan_at: datetime | None = None
     status: str = "Idle"
 
@@ -172,6 +175,7 @@ class ApplicationStateStore:
             return replace(
                 current,
                 candidates=event.candidates,
+                ranked_candidates=event.ranked_candidates,
                 last_scan_at=event.occurred_at,
                 status="Active",
             )

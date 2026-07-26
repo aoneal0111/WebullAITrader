@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.momentum_scanner import ScannerDecision
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -53,6 +55,7 @@ class RuntimeCycleCompleted(OperationsEvent):
 class ScannerSnapshotUpdated(OperationsEvent):
     candidates: tuple[str, ...] = ()
 
+    ranked_candidates: tuple[ScannerDecision, ...] = ()
     def __post_init__(self) -> None:
         OperationsEvent.__post_init__(self)
 

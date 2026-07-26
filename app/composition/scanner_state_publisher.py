@@ -31,6 +31,7 @@ class ScannerStatePublisher:
                 source=self._source,
                 occurred_at=cycle.timestamp,
                 candidates=cycle.ranked_symbols,
+                ranked_candidates=(),
             )
         )
 
