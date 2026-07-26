@@ -31,7 +31,7 @@ from app.strategy_engine.order_intent_factory import (
 from app.webull.sdk_streaming_adapter import WebullMarketSubscription
 
 from .desktop import DesktopComposition, create_desktop_composition
-from .desktop_live_stream import create_desktop_live_market_stream
+from app.webull.live_stream_factory import create_desktop_live_market_stream
 from .desktop_runtime_bootstrap import (
     DesktopRuntimeBootstrap,
     create_desktop_runtime_bootstrap,
@@ -145,3 +145,4 @@ __all__ = [
     "DesktopPaperApplication",
     "create_desktop_paper_application",
 ]
+
