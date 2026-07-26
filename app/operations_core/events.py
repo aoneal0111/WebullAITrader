@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -26,6 +26,57 @@ class OperationsEvent:
         if not self.source.strip():
             raise ValueError("source must not be empty")
 
+
+@dataclass(frozen=True, slots=True)
+class OperationsOrder:
+    """Backend-neutral immutable order state for Operations Center consumers."""
+
+    order_id: str
+    symbol: str
+    side: str
+    quantity: str
+    status: str
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "order_id",
+            "symbol",
+            "side",
+            "quantity",
+            "status",
+        ):
+            value = getattr(self, field_name)
+
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must not be empty")
+
+            if value != value.strip():
+                raise ValueError(f"{field_name} must be stripped")
+
+        if self.updated_at.tzinfo is None:
+            raise ValueError("updated_at must be timezone-aware")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OrdersUpdated(OperationsEvent):
+    """Replace the Operations Center order slice with an immutable snapshot."""
+
+    orders: tuple[OperationsOrder, ...] = ()
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+
+        if not isinstance(self.orders, tuple):
+            raise TypeError("orders must be an immutable tuple")
+
+        if any(
+            not isinstance(order, OperationsOrder)
+            for order in self.orders
+        ):
+            raise TypeError(
+                "orders must contain only OperationsOrder instances"
+            )
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RuntimeStarting(OperationsEvent):
