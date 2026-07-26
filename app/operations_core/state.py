@@ -15,6 +15,7 @@ from app.operations_core.events import (
     RuntimeStarting,
     RuntimeStopped,
     RuntimeStopping,
+    ScannerSnapshotUpdated,
 )
 
 
@@ -139,6 +140,7 @@ class ApplicationStateStore:
     def _handle_event(self, event: OperationsEvent) -> None:
         with self._lock:
             runtime = self._reduce_runtime(self._state.runtime, event)
+            scanner = self._reduce_scanner(self._state.scanner, event)
 
             timeline = self._state.timeline
 
@@ -148,7 +150,7 @@ class ApplicationStateStore:
 
             self._state = ApplicationState(
                 runtime=runtime,
-                scanner=self._state.scanner,
+                scanner=scanner,
                 broker=self._state.broker,
                 portfolio=self._state.portfolio,
                 timeline=timeline,
@@ -226,6 +228,21 @@ class ApplicationStateStore:
         return current
 
     @staticmethod
+    def _reduce_scanner(
+        current: ScannerState,
+        event: OperationsEvent,
+    ) -> ScannerState:
+        if isinstance(event, ScannerSnapshotUpdated):
+            return replace(
+                current,
+                candidates=event.ranked_symbols,
+                last_scan_at=event.occurred_at,
+                status="Active",
+            )
+
+        return current
+
+    @staticmethod
     def _timeline_entry(event: OperationsEvent) -> TimelineEntry:
         if isinstance(event, RuntimeStarting):
             message = f"Starting {event.environment} runtime."
@@ -243,6 +260,11 @@ class ApplicationStateStore:
             )
         elif isinstance(event, RuntimeFailed):
             message = f"Runtime failed: {event.error_message}"
+        elif isinstance(event, ScannerSnapshotUpdated):
+            message = (
+                f"Scanner snapshot updated with "
+                f"{len(event.ranked_symbols)} ranked symbols."
+            )
         else:
             message = type(event).__name__
 
