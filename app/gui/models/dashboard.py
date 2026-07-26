@@ -7,15 +7,9 @@ from .runtime import RuntimeState
 
 
 @dataclass(frozen=True, slots=True)
-class ActivityEntry:
-    occurred_at: datetime
-    message: str
-
-
-@dataclass(frozen=True, slots=True)
-class DashboardSnapshot:
+class RuntimeSnapshot:
     environment: str
-    runtime_state: RuntimeState
+    state: RuntimeState
     broker_status: str
     market_feed_status: str
     inference_status: str
@@ -23,13 +17,12 @@ class DashboardSnapshot:
     active_model: str
     cycle_count: int
     status_message: str
-    activity: tuple[ActivityEntry, ...]
 
     @classmethod
-    def initial(cls) -> "DashboardSnapshot":
+    def initial(cls) -> "RuntimeSnapshot":
         return cls(
             environment="PAPER",
-            runtime_state=RuntimeState.STOPPED,
+            state=RuntimeState.STOPPED,
             broker_status="Disconnected",
             market_feed_status="Idle",
             inference_status="Ready",
@@ -37,5 +30,54 @@ class DashboardSnapshot:
             active_model="Not loaded",
             cycle_count=0,
             status_message="Ready to start.",
-            activity=(),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ActivityEntry:
+    occurred_at: datetime
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class ActivitySnapshot:
+    entries: tuple[ActivityEntry, ...]
+
+    @classmethod
+    def initial(cls) -> "ActivitySnapshot":
+        return cls(entries=())
+
+
+@dataclass(frozen=True, slots=True)
+class PositionsSnapshot:
+    rows: tuple[tuple[str, str, str, str], ...]
+
+    @classmethod
+    def initial(cls) -> "PositionsSnapshot":
+        return cls(rows=())
+
+
+@dataclass(frozen=True, slots=True)
+class OrdersSnapshot:
+    rows: tuple[tuple[str, str, str], ...]
+
+    @classmethod
+    def initial(cls) -> "OrdersSnapshot":
+        return cls(rows=())
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardSnapshot:
+    runtime: RuntimeSnapshot
+    activity: ActivitySnapshot
+    positions: PositionsSnapshot
+    orders: OrdersSnapshot
+
+    @classmethod
+    def initial(cls) -> "DashboardSnapshot":
+        return cls(
+            runtime=RuntimeSnapshot.initial(),
+            activity=ActivitySnapshot.initial(),
+            positions=PositionsSnapshot.initial(),
+            orders=OrdersSnapshot.initial(),
         )

@@ -93,17 +93,19 @@ class DashboardPage(QWidget):
         root.addLayout(body, 1)
 
     def render(self, snapshot: DashboardSnapshot) -> None:
-        self.runtime_ribbon.render(snapshot)
+        self.runtime_ribbon.render(snapshot.runtime)
 
         level = (
             "good"
-            if snapshot.runtime_state.value == "RUNNING"
+            if snapshot.runtime.state.value == "RUNNING"
             else "warn"
         )
 
         self.mode_badge.set_status(
-            snapshot.environment,
+            snapshot.runtime.environment,
             level,
         )
 
         self.activity_panel.render(snapshot.activity)
+        self.positions_panel.render(snapshot.positions)
+        self.orders_panel.render(snapshot.orders)

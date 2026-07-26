@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QGridLayout, QWidget
 
-from app.gui.models import DashboardSnapshot
+from app.gui.models import RuntimeSnapshot
 from app.gui.widgets.common import MetricCard
 
 
@@ -32,9 +32,9 @@ class RuntimeRibbon(QWidget):
         for index, card in enumerate(cards):
             layout.addWidget(card, index // 3, index % 3)
 
-    def render(self, snapshot: DashboardSnapshot) -> None:
+    def render(self, snapshot: RuntimeSnapshot) -> None:
         self.runtime.set_value(
-            snapshot.runtime_state.value.title(),
+            snapshot.state.value.title(),
             "Runtime lifecycle state",
         )
 
@@ -59,6 +59,8 @@ class RuntimeRibbon(QWidget):
         )
 
         self.risk.set_value(
-            "Protected",
-            "Emergency stop enabled",
+            "Protected" if snapshot.emergency_stop_enabled else "Unprotected",
+            "Emergency stop enabled"
+            if snapshot.emergency_stop_enabled
+            else "Emergency stop unavailable",
         )

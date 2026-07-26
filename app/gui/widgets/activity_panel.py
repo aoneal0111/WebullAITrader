@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-from app.gui.models import ActivityEntry
+from app.gui.models import ActivitySnapshot
 
 
 class ActivityPanel(QWidget):
@@ -19,14 +19,14 @@ class ActivityPanel(QWidget):
 
         layout.addWidget(self._activity)
 
-    def render(self, activity: tuple[ActivityEntry, ...]) -> None:
-        if not activity:
+    def render(self, snapshot: ActivitySnapshot) -> None:
+        if not snapshot.entries:
             self._activity.setText("No operations events recorded.")
             return
 
         self._activity.setText(
             "\n\n".join(
                 f"{entry.occurred_at.astimezone():%H:%M:%S}   {entry.message}"
-                for entry in activity
+                for entry in snapshot.entries
             )
         )
