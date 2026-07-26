@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -47,6 +47,46 @@ class RuntimeCycleCompleted(OperationsEvent):
 
         if self.cycle_count < 0:
             raise ValueError("cycle_count must be nonnegative")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ScannerSnapshotUpdated(OperationsEvent):
+    ranked_symbols: tuple[str, ...] = ()
+    resolved_symbols: tuple[str, ...] = ()
+    missing_symbols: tuple[str, ...] = ()
+    events_read: int = 0
+    decisions_created: int = 0
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+
+        if self.events_read < 0:
+            raise ValueError("events_read must be nonnegative")
+
+        if self.decisions_created < 0:
+            raise ValueError("decisions_created must be nonnegative")
+
+        for collection_name, symbols in (
+            ("ranked_symbols", self.ranked_symbols),
+            ("resolved_symbols", self.resolved_symbols),
+            ("missing_symbols", self.missing_symbols),
+        ):
+            normalized = tuple(symbol.strip().upper() for symbol in symbols)
+
+            if any(not symbol for symbol in normalized):
+                raise ValueError(
+                    f"{collection_name} must not contain empty symbols"
+                )
+
+            if len(set(normalized)) != len(normalized):
+                raise ValueError(
+                    f"{collection_name} must not contain duplicates"
+                )
+
+            if normalized != symbols:
+                raise ValueError(
+                    f"{collection_name} symbols must be normalized"
+                )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
