@@ -32,11 +32,14 @@ class DesktopComposition:
 def create_desktop_composition(
     driver_factory: Callable[[], object] | None = None,
     *,
+    bus: OperationsBus | None = None,
     configuration: DesktopRuntimeConfiguration = DesktopRuntimeConfiguration(),
 ) -> DesktopComposition:
     """Construct the desktop application dependency graph."""
 
-    bus = OperationsBus()
+    if bus is None:
+        bus = OperationsBus()
+
     state_store = ApplicationStateStore(bus)
 
     runtime_service = create_desktop_runtime_service(

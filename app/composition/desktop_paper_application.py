@@ -17,6 +17,7 @@ from app.execution_coordinator.runtime_context_input_source import (
 )
 from app.momentum_scanner import MomentumScannerConfig
 from app.operations.runtime import CheckpointSink, RuntimeEventSink
+from app.operations_core import OperationsBus
 from app.operations.scanner_runtime import ScannerRuntimeCycle, SnapshotResolver
 from app.realtime_scanner.protocols import (
     ReferenceLoader,
@@ -38,6 +39,7 @@ from .desktop_runtime_bootstrap import (
 )
 from .desktop_runtime_config import DesktopRuntimeConfiguration
 from .runtime_mode import RuntimeMode
+from .scanner_state_publisher import ScannerStatePublisher
 
 
 Clock = Callable[[], datetime]
@@ -96,6 +98,9 @@ def create_desktop_paper_application(
         subscription=subscription,
     )
 
+    bus = OperationsBus()
+    scanner_state_publisher = ScannerStatePublisher(bus)
+
     runtime_bootstrap = create_desktop_runtime_bootstrap(
         market_data_client=market_data_client,
         universe_service=universe_service,
@@ -125,10 +130,12 @@ def create_desktop_paper_application(
         environment=environment,
         active_model=active_model,
         scanner_cycle_sink=scanner_cycle_sink,
+        scanner_snapshot_sink=scanner_state_publisher,
     )
 
     desktop = create_desktop_composition(
         driver_factory=runtime_bootstrap.driver_factory,
+        bus=bus,
         configuration=DesktopRuntimeConfiguration(
             runtime_mode=RuntimeMode.PAPER,
         ),
