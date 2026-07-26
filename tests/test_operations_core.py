@@ -13,6 +13,7 @@ from app.operations_core import (
     RuntimeStarted,
     RuntimeStarting,
     RuntimeStopped,
+    ScannerSnapshotUpdated,
 )
 
 
@@ -184,3 +185,57 @@ def test_runtime_cycle_event_rejects_negative_count() -> None:
 
     with pytest.raises(ValueError, match="nonnegative"):
         RuntimeCycleCompleted(cycle_count=-1)
+
+
+def test_scanner_snapshot_updates_scanner_state_without_changing_runtime() -> None:
+    bus = OperationsBus()
+    store = ApplicationStateStore(bus)
+    occurred_at = datetime(2026, 7, 25, 15, 0, tzinfo=timezone.utc)
+
+    initial_runtime = store.snapshot().runtime
+
+    bus.publish(
+        ScannerSnapshotUpdated(
+            occurred_at=occurred_at,
+            source="scanner-runtime",
+            ranked_symbols=("NVDA", "AAPL", "AMD"),
+            resolved_symbols=("NVDA", "AAPL"),
+            missing_symbols=("AMD",),
+            events_read=12,
+            decisions_created=4,
+        )
+    )
+
+    snapshot = store.snapshot()
+
+    assert snapshot.runtime == initial_runtime
+    assert snapshot.scanner.candidates == ("NVDA", "AAPL", "AMD")
+    assert snapshot.scanner.last_scan_at == occurred_at
+    assert snapshot.scanner.status == "Active"
+    assert snapshot.timeline[-1].event_type == "ScannerSnapshotUpdated"
+    assert "3 ranked symbols" in snapshot.timeline[-1].message
+
+
+def test_runtime_events_preserve_scanner_state() -> None:
+    bus = OperationsBus()
+    store = ApplicationStateStore(bus)
+    occurred_at = datetime(2026, 7, 25, 15, 5, tzinfo=timezone.utc)
+
+    bus.publish(
+        ScannerSnapshotUpdated(
+            occurred_at=occurred_at,
+            ranked_symbols=("MSFT", "META"),
+            resolved_symbols=("MSFT", "META"),
+        )
+    )
+    scanner_before = store.snapshot().scanner
+
+    bus.publish(RuntimeStarting())
+    bus.publish(RuntimeStarted(active_model="model-v2"))
+
+    assert store.snapshot().scanner == scanner_before
+
+
+def test_scanner_snapshot_rejects_non_normalized_symbols() -> None:
+    with pytest.raises(ValueError, match="normalized"):
+        ScannerSnapshotUpdated(ranked_symbols=("nvda",))
