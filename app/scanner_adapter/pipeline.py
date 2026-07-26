@@ -10,6 +10,7 @@ from app.momentum_scanner.rules import (
     evaluate_candidate,
 )
 from app.opportunity import OpportunityAssessment, OpportunityEngine
+from app.opportunity.ranking import rank_opportunities
 from app.scanner_adapter.adapter import MarketEventScannerAdapter
 
 
@@ -91,11 +92,9 @@ class MomentumScannerPipeline:
         *,
         limit: int = 25,
     ) -> tuple[OpportunityAssessment, ...]:
-        ranked = self.ranked(limit=limit)
-
-        return tuple(
-            self._latest_assessments[d.symbol]
-            for d in ranked
+        return rank_opportunities(
+            self._latest_assessments.values(),
+            limit=limit,
         )
 
     def all_latest(self) -> tuple[ScannerDecision, ...]:
@@ -111,3 +110,4 @@ class MomentumScannerPipeline:
             self._latest_assessments[symbol]
             for symbol in sorted(self._latest_assessments)
         )
+
