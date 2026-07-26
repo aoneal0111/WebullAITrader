@@ -38,6 +38,7 @@ def create_paper_runtime_driver(
     interval_seconds: float = 1.0,
     environment: str = "PAPER",
     active_model: str = "Promoted model",
+    runtime_result_sink: Callable[[PaperRuntimeCycleResult], None] | None = None,
 ) -> PaperRuntimeDriver:
     """Create a runtime driver with a fresh engine for each runtime session."""
 
@@ -84,6 +85,7 @@ def create_paper_runtime_driver(
         interval_seconds=interval_seconds,
         environment=environment,
         active_model=active_model,
+        runtime_result_sink=runtime_result_sink,
     )
 
 
