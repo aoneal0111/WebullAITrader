@@ -1,4 +1,5 @@
 from app.committee.chair import CommitteeChair
+from app.committee.engine import CommitteeEngine
 from app.committee.models import (
     AgentOpinion,
     AgentOpinionAction,
@@ -19,6 +20,7 @@ __all__ = [
     "AgentWeightConfiguration",
     "CommitteeAction",
     "CommitteeChair",
+    "CommitteeEngine",
     "CommitteeOpinion",
     "CommitteeVote",
     "TechnicalAgent",
