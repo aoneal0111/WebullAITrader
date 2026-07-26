@@ -7,6 +7,7 @@ application dependency graph. Business logic belongs elsewhere.
 
 from .container import CompositionContainer
 from .desktop import DesktopComposition, create_desktop_composition
+from .desktop_paper_application import create_desktop_paper_composition
 from .exceptions import (
     CircularDependencyError,
     CompositionError,
@@ -28,6 +29,7 @@ __all__ = [
     # Desktop composition
     "DesktopComposition",
     "create_desktop_composition",
+    "create_desktop_paper_composition",
 
     # Operational composition
     "OperationalRuntimeComposition",

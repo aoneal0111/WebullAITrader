@@ -148,8 +148,26 @@ def create_desktop_paper_application(
     )
 
 
+def create_desktop_paper_composition(
+    *,
+    driver_factory: Callable[[], object],
+) -> DesktopComposition:
+    """Compose the desktop application around an explicit paper driver factory."""
+
+    if not callable(driver_factory):
+        raise TypeError("driver_factory must be callable")
+
+    return create_desktop_composition(
+        driver_factory=driver_factory,
+        configuration=DesktopRuntimeConfiguration(
+            runtime_mode=RuntimeMode.PAPER,
+        ),
+    )
+
+
 __all__ = [
     "DesktopPaperApplication",
     "create_desktop_paper_application",
+    "create_desktop_paper_composition",
 ]
 
