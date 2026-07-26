@@ -50,6 +50,7 @@ class LiveScannerSnapshotSource:
         candidate_limit: int = 25,
         maximum_events_per_cycle: int = 1000,
         cycle_sink: Callable[[ScannerRuntimeCycle], None] | None = None,
+        snapshot_sink: Callable[[Any], None] | None = None,
     ) -> None:
         if candidate_limit < 1:
             raise ValueError("candidate limit must be positive")
@@ -60,6 +61,7 @@ class LiveScannerSnapshotSource:
         self._candidate_limit = candidate_limit
         self._maximum_events_per_cycle = maximum_events_per_cycle
         self._cycle_sink = cycle_sink
+        self._snapshot_sink = snapshot_sink
         self._last_cycle: ScannerRuntimeCycle | None = None
 
     @property
@@ -104,6 +106,8 @@ class LiveScannerSnapshotSource:
         self._last_cycle = cycle
         if self._cycle_sink is not None:
             self._cycle_sink(cycle)
+        if self._snapshot_sink is not None:
+            self._snapshot_sink(scanner_snapshot)
         return tuple(resolved)
 
 

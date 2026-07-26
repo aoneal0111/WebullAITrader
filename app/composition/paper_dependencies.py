@@ -1,4 +1,4 @@
-﻿"""Composition helpers for paper-runtime production dependencies."""
+"""Composition helpers for paper-runtime production dependencies."""
 
 from __future__ import annotations
 
@@ -79,6 +79,7 @@ def create_live_snapshot_source(
     candidate_limit: int = 25,
     maximum_events_per_cycle: int = 1000,
     cycle_sink: Callable[[Any], None] | None = None,
+    snapshot_sink: Callable[[Any], None] | None = None,
 ) -> LiveScannerSnapshotSource:
     """Adapt the existing live scanner to the paper-runtime snapshot contract."""
 
@@ -91,6 +92,7 @@ def create_live_snapshot_source(
         candidate_limit=candidate_limit,
         maximum_events_per_cycle=maximum_events_per_cycle,
         cycle_sink=cycle_sink,
+        snapshot_sink=snapshot_sink,
     )
 
 

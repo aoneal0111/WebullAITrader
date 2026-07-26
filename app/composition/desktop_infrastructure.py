@@ -111,25 +111,32 @@ def create_desktop_paper_runtime_dependencies(
     candidate_limit: int = 25,
     maximum_events_per_cycle: int = 1000,
     scanner_cycle_sink: Callable[[ScannerRuntimeCycle], None] | None = None,
+    scanner_snapshot_sink: Callable[[Any], None] | None = None,
 ) -> PaperRuntimeDependencies:
     """Create configured paper-runtime dependencies from desktop infrastructure."""
 
+    configured_arguments: dict[str, Any] = {
+        "scanner_coordinator": scanner_infrastructure.coordinator,
+        "snapshot_resolver": snapshot_resolver,
+        "quantity_provider": quantity_provider,
+        "request_id_provider": request_id_provider,
+        "runtime_context_configuration": runtime_context_configuration,
+        "timestamp_source": timestamp_source,
+        "market_state_source": market_state_source,
+        "market_quote_source": market_quote_source,
+        "gfv_decision_source": gfv_decision_source,
+        "clock": clock,
+        "strategy_engine": strategy_engine,
+        "inference_adapter": inference_adapter,
+        "candidate_limit": candidate_limit,
+        "maximum_events_per_cycle": maximum_events_per_cycle,
+        "scanner_cycle_sink": scanner_cycle_sink,
+    }
+    if scanner_snapshot_sink is not None:
+        configured_arguments["scanner_snapshot_sink"] = scanner_snapshot_sink
+
     return create_configured_paper_runtime_dependencies(
-        scanner_coordinator=scanner_infrastructure.coordinator,
-        snapshot_resolver=snapshot_resolver,
-        quantity_provider=quantity_provider,
-        request_id_provider=request_id_provider,
-        runtime_context_configuration=runtime_context_configuration,
-        timestamp_source=timestamp_source,
-        market_state_source=market_state_source,
-        market_quote_source=market_quote_source,
-        gfv_decision_source=gfv_decision_source,
-        clock=clock,
-        strategy_engine=strategy_engine,
-        inference_adapter=inference_adapter,
-        candidate_limit=candidate_limit,
-        maximum_events_per_cycle=maximum_events_per_cycle,
-        scanner_cycle_sink=scanner_cycle_sink,
+        **configured_arguments
     )
 
 

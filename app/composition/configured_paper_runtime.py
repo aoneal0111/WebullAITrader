@@ -52,6 +52,7 @@ def create_configured_paper_runtime_dependencies(
     candidate_limit: int = 25,
     maximum_events_per_cycle: int = 1000,
     scanner_cycle_sink: Callable[[Any], None] | None = None,
+    scanner_snapshot_sink: Callable[[Any], None] | None = None,
 ) -> PaperRuntimeDependencies:
     """
     Assemble paper-runtime dependencies from application-supplied authorities.
@@ -61,12 +62,18 @@ def create_configured_paper_runtime_dependencies(
     execution configuration.
     """
 
+    snapshot_source_arguments: dict[str, Any] = {
+        "coordinator": scanner_coordinator,
+        "snapshot_resolver": snapshot_resolver,
+        "candidate_limit": candidate_limit,
+        "maximum_events_per_cycle": maximum_events_per_cycle,
+        "cycle_sink": scanner_cycle_sink,
+    }
+    if scanner_snapshot_sink is not None:
+        snapshot_source_arguments["snapshot_sink"] = scanner_snapshot_sink
+
     snapshot_source = create_live_snapshot_source(
-        coordinator=scanner_coordinator,
-        snapshot_resolver=snapshot_resolver,
-        candidate_limit=candidate_limit,
-        maximum_events_per_cycle=maximum_events_per_cycle,
-        cycle_sink=scanner_cycle_sink,
+        **snapshot_source_arguments
     )
 
     context_provider = create_runtime_context_provider(

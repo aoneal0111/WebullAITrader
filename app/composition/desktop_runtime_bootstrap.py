@@ -81,6 +81,7 @@ def create_desktop_runtime_bootstrap(
     environment: str = "PAPER",
     active_model: str = "Promoted model",
     scanner_cycle_sink: Callable[[ScannerRuntimeCycle], None] | None = None,
+    scanner_snapshot_sink: Callable[[Any], None] | None = None,
 ) -> DesktopRuntimeBootstrap:
     """
     Assemble a configured desktop paper runtime from application authorities.
@@ -101,22 +102,30 @@ def create_desktop_runtime_bootstrap(
         maximum_events_per_cycle=maximum_events_per_cycle,
     )
 
+    runtime_dependency_arguments: dict[str, Any] = {
+        "scanner_infrastructure": scanner_infrastructure,
+        "snapshot_resolver": snapshot_resolver,
+        "quantity_provider": quantity_provider,
+        "request_id_provider": request_id_provider,
+        "runtime_context_configuration": runtime_context_configuration,
+        "timestamp_source": timestamp_source,
+        "market_state_source": market_state_source,
+        "market_quote_source": market_quote_source,
+        "gfv_decision_source": gfv_decision_source,
+        "clock": clock,
+        "strategy_engine": strategy_engine,
+        "inference_adapter": inference_adapter,
+        "candidate_limit": candidate_limit,
+        "maximum_events_per_cycle": maximum_events_per_cycle,
+        "scanner_cycle_sink": scanner_cycle_sink,
+    }
+    if scanner_snapshot_sink is not None:
+        runtime_dependency_arguments["scanner_snapshot_sink"] = (
+            scanner_snapshot_sink
+        )
+
     runtime_dependencies = create_desktop_paper_runtime_dependencies(
-        scanner_infrastructure=scanner_infrastructure,
-        snapshot_resolver=snapshot_resolver,
-        quantity_provider=quantity_provider,
-        request_id_provider=request_id_provider,
-        runtime_context_configuration=runtime_context_configuration,
-        timestamp_source=timestamp_source,
-        market_state_source=market_state_source,
-        market_quote_source=market_quote_source,
-        gfv_decision_source=gfv_decision_source,
-        clock=clock,
-        strategy_engine=strategy_engine,
-        inference_adapter=inference_adapter,
-        candidate_limit=candidate_limit,
-        maximum_events_per_cycle=maximum_events_per_cycle,
-        scanner_cycle_sink=scanner_cycle_sink,
+        **runtime_dependency_arguments
     )
 
     driver_factory = create_paper_runtime_driver_factory(
