@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from app.market_data.models import MarketEvent
+from app.committee import CommitteeEngine, CommitteeOpinion
 from app.momentum_scanner.models import ScannerDecision
 from app.momentum_scanner.ranking import rank_candidates
 from app.momentum_scanner.rules import (
@@ -24,9 +25,11 @@ class MomentumScannerPipeline:
         self.config = config
 
         self._opportunity_engine = OpportunityEngine()
+        self._committee_engine = CommitteeEngine()
 
         self._latest: dict[str, ScannerDecision] = {}
         self._latest_assessments: dict[str, OpportunityAssessment] = {}
+        self._latest_committee: dict[str, CommitteeOpinion] = {}
 
     def consume(
         self,
@@ -111,3 +114,11 @@ class MomentumScannerPipeline:
             for symbol in sorted(self._latest_assessments)
         )
 
+
+    def latest_committee(
+        self,
+        symbol: str,
+    ) -> CommitteeOpinion | None:
+        return self._latest_committee.get(
+            symbol.strip().upper()
+        )
