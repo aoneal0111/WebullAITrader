@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
 from app.execution_coordinator.paper_request_builder import PaperRequestBuilder
 from app.execution_coordinator.runtime_context_input_source import (
@@ -17,8 +16,10 @@ from app.operations.learning_runtime import RuntimeInferenceAdapter
 from app.operations.runtime import Clock
 from app.operations.scanner_runtime import (
     ScannerCoordinator,
+    ScannerRuntimeCycle,
     SnapshotResolver,
 )
+from app.operations_core import OperationsBus, ScannerSnapshotUpdated
 from app.strategy_engine import StrategyEngine
 from app.strategy_engine.order_intent_factory import (
     QuantityProvider,
@@ -51,7 +52,8 @@ def create_configured_paper_runtime_dependencies(
     inference_adapter: RuntimeInferenceAdapter | None = None,
     candidate_limit: int = 25,
     maximum_events_per_cycle: int = 1000,
-    scanner_cycle_sink: Callable[[Any], None] | None = None,
+    scanner_cycle_sink: Callable[[ScannerRuntimeCycle], None] | None = None,
+    operations_bus: OperationsBus | None = None,
 ) -> PaperRuntimeDependencies:
     """
     Assemble paper-runtime dependencies from application-supplied authorities.
@@ -61,12 +63,17 @@ def create_configured_paper_runtime_dependencies(
     execution configuration.
     """
 
+    cycle_sink = _compose_scanner_cycle_sink(
+        operations_bus=operations_bus,
+        scanner_cycle_sink=scanner_cycle_sink,
+    )
+
     snapshot_source = create_live_snapshot_source(
         coordinator=scanner_coordinator,
         snapshot_resolver=snapshot_resolver,
         candidate_limit=candidate_limit,
         maximum_events_per_cycle=maximum_events_per_cycle,
-        cycle_sink=scanner_cycle_sink,
+        cycle_sink=cycle_sink,
     )
 
     context_provider = create_runtime_context_provider(
@@ -95,6 +102,33 @@ def create_configured_paper_runtime_dependencies(
         strategy_engine=strategy_engine,
         inference_adapter=inference_adapter,
     )
+
+
+def _compose_scanner_cycle_sink(
+    *,
+    operations_bus: OperationsBus | None,
+    scanner_cycle_sink: Callable[[ScannerRuntimeCycle], None] | None,
+) -> Callable[[ScannerRuntimeCycle], None] | None:
+    if operations_bus is None:
+        return scanner_cycle_sink
+
+    def publish_cycle(cycle: ScannerRuntimeCycle) -> None:
+        operations_bus.publish(
+            ScannerSnapshotUpdated(
+                occurred_at=cycle.timestamp,
+                source="scanner-runtime",
+                ranked_symbols=cycle.ranked_symbols,
+                resolved_symbols=cycle.resolved_symbols,
+                missing_symbols=cycle.missing_symbols,
+                events_read=cycle.events_read,
+                decisions_created=cycle.decisions_created,
+            )
+        )
+
+        if scanner_cycle_sink is not None:
+            scanner_cycle_sink(cycle)
+
+    return publish_cycle
 
 
 __all__ = [
