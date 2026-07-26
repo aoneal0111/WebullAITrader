@@ -170,16 +170,10 @@ class MainWindow(QMainWindow):
         self._last_error = ""
         self._started_at: datetime | None = None
 
-        self._active_symbol = "NVDA"
-        self._universe = [
-            ("NVDA", 97, "Excellent"),
-            ("AAPL", 94, "Excellent"),
-            ("AMD", 91, "Excellent"),
-            ("META", 87, "Strong"),
-            ("MSFT", 82, "Strong"),
-            ("AMZN", 73, "Watch"),
-            ("TSLA", 62, "Weak"),
-        ]
+        self._active_symbol = ""
+        self._universe_records: dict[str, tuple[int, str]] = {}
+        self._rendered_scanner_candidates: tuple[str, ...] = ()
+        self._scanner_snapshot_received = False
 
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
@@ -406,28 +400,10 @@ class MainWindow(QMainWindow):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
 
-        for rank, (symbol, score, band) in enumerate(
-            self._universe,
-            start=1,
-        ):
-            item = QListWidgetItem(
-                f"{score:02d}     {symbol:<5}     {band.upper()}"
-            )
-            item.setData(
-                Qt.ItemDataRole.UserRole,
-                symbol,
-            )
-            item.setToolTip(
-                f"Rank {rank} · "
-                f"Opportunity score {score}/100 · "
-                f"{band}"
-            )
-            self._universe_list.addItem(item)
-
-        self._universe_list.setCurrentRow(0)
         self._universe_list.currentItemChanged.connect(
             self._on_universe_selection
         )
+        self._refresh_universe()
 
         layout.addWidget(self._universe_list, 1)
 
@@ -488,6 +464,78 @@ class MainWindow(QMainWindow):
         return panel
 
 
+    @staticmethod
+    def _ranked_display_record(rank: int) -> tuple[int, str]:
+        score = max(55, 100 - ((rank - 1) * 5))
+        if score >= 90:
+            band = "Excellent"
+        elif score >= 80:
+            band = "Strong"
+        elif score >= 70:
+            band = "Watch"
+        else:
+            band = "Weak"
+        return score, band
+
+    def _refresh_universe(self) -> None:
+        candidates = tuple(self._state.scanner.candidates)
+        snapshot_received = self._state.scanner.last_scan_at is not None
+
+        if (
+            candidates == self._rendered_scanner_candidates
+            and snapshot_received == self._scanner_snapshot_received
+        ):
+            return
+
+        selected_symbol = self._active_symbol
+        self._rendered_scanner_candidates = candidates
+        self._scanner_snapshot_received = snapshot_received
+        self._universe_records = {}
+
+        self._universe_list.blockSignals(True)
+        self._universe_list.clear()
+
+        if not candidates:
+            waiting_text = (
+                "--     WAIT      IDLE"
+                if not snapshot_received
+                else "--     NONE      EMPTY"
+            )
+            waiting_item = QListWidgetItem(waiting_text)
+            waiting_item.setFlags(
+                waiting_item.flags() & ~Qt.ItemFlag.ItemIsSelectable
+            )
+            waiting_item.setToolTip(
+                "Waiting for the first scanner snapshot."
+                if not snapshot_received
+                else "The latest scanner snapshot contains no candidates."
+            )
+            self._universe_list.addItem(waiting_item)
+            self._active_symbol = ""
+            self._universe_list.blockSignals(False)
+            return
+
+        selected_row = 0
+        for rank, symbol in enumerate(candidates, start=1):
+            score, band = self._ranked_display_record(rank)
+            self._universe_records[symbol] = (score, band)
+            item = QListWidgetItem(
+                f"{score:02d}     {symbol:<5}     {band.upper()}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, symbol)
+            item.setToolTip(
+                f"Scanner rank {rank} · "
+                f"Display score {score}/100 · {band}"
+            )
+            self._universe_list.addItem(item)
+            if symbol == selected_symbol:
+                selected_row = rank - 1
+
+        self._universe_list.setCurrentRow(selected_row)
+        current_item = self._universe_list.currentItem()
+        self._universe_list.blockSignals(False)
+        self._on_universe_selection(current_item, None)
+
     def _on_universe_selection(
         self,
         current: QListWidgetItem | None,
@@ -500,18 +548,12 @@ class MainWindow(QMainWindow):
 
         symbol = str(
             current.data(Qt.ItemDataRole.UserRole)
-            or "NVDA"
+            or ""
         )
+        if not symbol or symbol not in self._universe_records:
+            return
 
-        records = {
-            item[0]: item
-            for item in self._universe
-        }
-
-        _, score, band = records.get(
-            symbol,
-            records["NVDA"],
-        )
+        score, band = self._universe_records[symbol]
 
         self._active_symbol = symbol
 
@@ -958,6 +1000,7 @@ class MainWindow(QMainWindow):
     def _render_state(self, state: ApplicationState) -> None:
         self._state = state
         runtime = state.runtime
+        self._refresh_universe()
         self._orders_page.render(state)
 
         self._runtime_card.set_value(runtime.phase.value.title(), "Service lifecycle")
