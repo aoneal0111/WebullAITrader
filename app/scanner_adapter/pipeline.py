@@ -9,6 +9,7 @@ from app.momentum_scanner.rules import (
     MomentumScannerConfig,
     evaluate_candidate,
 )
+from app.opportunity import OpportunityAssessment, OpportunityEngine
 from app.scanner_adapter.adapter import MarketEventScannerAdapter
 
 
@@ -20,7 +21,11 @@ class MomentumScannerPipeline:
     ) -> None:
         self.adapter = adapter
         self.config = config
+
+        self._opportunity_engine = OpportunityEngine()
+
         self._latest: dict[str, ScannerDecision] = {}
+        self._latest_assessments: dict[str, OpportunityAssessment] = {}
 
     def consume(
         self,
@@ -35,7 +40,12 @@ class MomentumScannerPipeline:
             result.observation,
             self.config,
         )
+
         self._latest[decision.symbol] = decision
+
+        self._latest_assessments[decision.symbol] = (
+            self._opportunity_engine.evaluate(decision)
+        )
 
         return decision
 
@@ -58,6 +68,14 @@ class MomentumScannerPipeline:
     ) -> ScannerDecision | None:
         return self._latest.get(symbol.strip().upper())
 
+    def latest_assessment(
+        self,
+        symbol: str,
+    ) -> OpportunityAssessment | None:
+        return self._latest_assessments.get(
+            symbol.strip().upper()
+        )
+
     def ranked(
         self,
         *,
@@ -68,8 +86,28 @@ class MomentumScannerPipeline:
             limit=limit,
         )
 
+    def ranked_assessments(
+        self,
+        *,
+        limit: int = 25,
+    ) -> tuple[OpportunityAssessment, ...]:
+        ranked = self.ranked(limit=limit)
+
+        return tuple(
+            self._latest_assessments[d.symbol]
+            for d in ranked
+        )
+
     def all_latest(self) -> tuple[ScannerDecision, ...]:
         return tuple(
             self._latest[symbol]
             for symbol in sorted(self._latest)
+        )
+
+    def all_assessments(
+        self,
+    ) -> tuple[OpportunityAssessment, ...]:
+        return tuple(
+            self._latest_assessments[symbol]
+            for symbol in sorted(self._latest_assessments)
         )
