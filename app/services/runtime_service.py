@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import time
 from collections.abc import Callable
@@ -10,6 +10,7 @@ from app.services.runtime_driver_validation import validate_runtime_driver
 from app.operations_core import (
     OperationsBus,
     RuntimeCycleCompleted,
+    ScannerSnapshotUpdated,
     RuntimeFailed,
     RuntimeStarted,
     RuntimeStarting,
@@ -261,6 +262,20 @@ class RuntimeService:
             RuntimeCycleCompleted(
                 source=self._source,
                 cycle_count=cycle_count,
+            )
+        )
+
+        with self._lock:
+            driver = self._driver
+
+        candidates = getattr(driver, "scanner_candidates", None)
+        if candidates is None:
+            return
+
+        self._bus.publish(
+            ScannerSnapshotUpdated(
+                source=self._source,
+                candidates=tuple(candidates),
             )
         )
 

@@ -75,6 +75,18 @@ class SimulatedPaperRuntimeDriver:
 
 
     @property
+    def scanner_candidates(self) -> tuple[str, ...]:
+        rotations = (
+            ("NVDA", "AAPL", "AMD", "META", "MSFT", "AMZN", "TSLA"),
+            ("AMD", "NVDA", "META", "AAPL", "PLTR", "MSFT", "AMZN"),
+            ("META", "NVDA", "AMD", "MSFT", "AAPL", "TSLA", "PLTR"),
+        )
+        index = max(self._cycles_completed - 1, 0) % len(rotations)
+        return rotations[index]
+
+
+
+    @property
 
     def cycles_completed(self) -> int:
 

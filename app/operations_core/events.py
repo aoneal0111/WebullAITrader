@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -47,6 +47,28 @@ class RuntimeCycleCompleted(OperationsEvent):
 
         if self.cycle_count < 0:
             raise ValueError("cycle_count must be nonnegative")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ScannerSnapshotUpdated(OperationsEvent):
+    candidates: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+
+        normalized = tuple(
+            str(symbol).strip().upper()
+            for symbol in self.candidates
+        )
+
+        if any(not symbol for symbol in normalized):
+            raise ValueError("scanner candidates must not contain empty symbols")
+
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("scanner candidates must be unique")
+
+        object.__setattr__(self, "candidates", normalized)
+
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

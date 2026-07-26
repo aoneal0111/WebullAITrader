@@ -10,6 +10,7 @@ from app.operations_core.bus import OperationsBus, Subscription
 from app.operations_core.events import (
     OperationsEvent,
     RuntimeCycleCompleted,
+    ScannerSnapshotUpdated,
     RuntimeFailed,
     RuntimeStarted,
     RuntimeStarting,
@@ -139,6 +140,7 @@ class ApplicationStateStore:
     def _handle_event(self, event: OperationsEvent) -> None:
         with self._lock:
             runtime = self._reduce_runtime(self._state.runtime, event)
+            scanner = self._reduce_scanner(self._state.scanner, event)
 
             timeline = self._state.timeline
 
@@ -148,7 +150,7 @@ class ApplicationStateStore:
 
             self._state = ApplicationState(
                 runtime=runtime,
-                scanner=self._state.scanner,
+                scanner=scanner,
                 broker=self._state.broker,
                 portfolio=self._state.portfolio,
                 timeline=timeline,
@@ -160,6 +162,28 @@ class ApplicationStateStore:
 
         for listener in listeners:
             listener(state)
+
+    @staticmethod
+    def _reduce_scanner(
+        current: ScannerState,
+        event: OperationsEvent,
+    ) -> ScannerState:
+        if isinstance(event, ScannerSnapshotUpdated):
+            return replace(
+                current,
+                candidates=event.candidates,
+                last_scan_at=event.occurred_at,
+                status="Active",
+            )
+
+        if isinstance(event, RuntimeStopped):
+            return replace(current, status="Idle")
+
+        if isinstance(event, RuntimeFailed):
+            return replace(current, status="Error")
+
+        return current
+
 
     @staticmethod
     def _reduce_runtime(
@@ -233,6 +257,11 @@ class ApplicationStateStore:
             message = (
                 f"{event.environment} runtime started using "
                 f"{event.active_model}."
+            )
+        elif isinstance(event, ScannerSnapshotUpdated):
+            message = (
+                f"Scanner snapshot updated with "
+                f"{len(event.candidates)} candidates."
             )
         elif isinstance(event, RuntimeStopping):
             message = event.reason
