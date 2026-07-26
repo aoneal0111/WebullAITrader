@@ -17,7 +17,7 @@ from app.execution_coordinator.runtime_context_input_source import (
 from app.live_scanner.coordinator import LiveScannerCoordinator
 from app.live_scanner.transport import ReceiveTransportAdapter
 from app.momentum_scanner import MomentumScannerConfig
-from app.operations.scanner_runtime import SnapshotResolver
+from app.operations.scanner_runtime import ScannerRuntimeCycle, SnapshotResolver
 from app.realtime_scanner.engine import RealtimeScannerEngine
 from app.realtime_scanner.protocols import (
     ReferenceLoader,
@@ -110,6 +110,7 @@ def create_desktop_paper_runtime_dependencies(
     inference_adapter: Any | None = None,
     candidate_limit: int = 25,
     maximum_events_per_cycle: int = 1000,
+    scanner_cycle_sink: Callable[[ScannerRuntimeCycle], None] | None = None,
 ) -> PaperRuntimeDependencies:
     """Create configured paper-runtime dependencies from desktop infrastructure."""
 
@@ -128,6 +129,7 @@ def create_desktop_paper_runtime_dependencies(
         inference_adapter=inference_adapter,
         candidate_limit=candidate_limit,
         maximum_events_per_cycle=maximum_events_per_cycle,
+        scanner_cycle_sink=scanner_cycle_sink,
     )
 
 

@@ -68,6 +68,7 @@ def test_create_desktop_runtime_bootstrap_wires_existing_composition_layers(
     inference_adapter = Mock()
     event_sink = Mock()
     checkpoint_sink = Mock()
+    scanner_cycle_sink = Mock()
 
     result = create_desktop_runtime_bootstrap(
         market_data_client=market_data_client,
@@ -93,6 +94,7 @@ def test_create_desktop_runtime_bootstrap_wires_existing_composition_layers(
         inference_adapter=inference_adapter,
         event_sink=event_sink,
         checkpoint_sink=checkpoint_sink,
+        scanner_cycle_sink=scanner_cycle_sink,
         interval_seconds=2.5,
         environment="PAPER",
         active_model="production-model",
@@ -133,6 +135,7 @@ def test_create_desktop_runtime_bootstrap_wires_existing_composition_layers(
             "inference_adapter": inference_adapter,
             "candidate_limit": 15,
             "maximum_events_per_cycle": 250,
+            "scanner_cycle_sink": scanner_cycle_sink,
         }
     ]
 

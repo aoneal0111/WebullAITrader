@@ -17,7 +17,7 @@ from app.execution_coordinator.runtime_context_input_source import (
 )
 from app.momentum_scanner import MomentumScannerConfig
 from app.operations.runtime import CheckpointSink, RuntimeEventSink
-from app.operations.scanner_runtime import SnapshotResolver
+from app.operations.scanner_runtime import ScannerRuntimeCycle, SnapshotResolver
 from app.realtime_scanner.protocols import (
     ReferenceLoader,
     ReferenceSink,
@@ -80,6 +80,7 @@ def create_desktop_runtime_bootstrap(
     interval_seconds: float = 1.0,
     environment: str = "PAPER",
     active_model: str = "Promoted model",
+    scanner_cycle_sink: Callable[[ScannerRuntimeCycle], None] | None = None,
 ) -> DesktopRuntimeBootstrap:
     """
     Assemble a configured desktop paper runtime from application authorities.
@@ -115,6 +116,7 @@ def create_desktop_runtime_bootstrap(
         inference_adapter=inference_adapter,
         candidate_limit=candidate_limit,
         maximum_events_per_cycle=maximum_events_per_cycle,
+        scanner_cycle_sink=scanner_cycle_sink,
     )
 
     driver_factory = create_paper_runtime_driver_factory(
