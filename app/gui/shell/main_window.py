@@ -22,7 +22,7 @@ class MainWindow(QMainWindow):
         self._last_error = ""
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
-        self.setWindowTitle("Atlas Ã¢â‚¬â€ WebullAITrader")
+        self.setWindowTitle("Atlas — WebullAITrader")
         self.setMinimumSize(1180, 760)
         self.resize(1440, 900)
         self._build()
@@ -81,7 +81,7 @@ class MainWindow(QMainWindow):
         status = QStatusBar()
         self.status_label = QLabel()
         status.addWidget(self.status_label, 1)
-        safety = QLabel("PAPER MODE Ã‚Â· NO LIVE BROKER MUTATIONS")
+        safety = QLabel("PAPER MODE · NO LIVE BROKER MUTATIONS")
         safety.setObjectName("muted")
         status.addPermanentWidget(safety)
         self.setStatusBar(status)

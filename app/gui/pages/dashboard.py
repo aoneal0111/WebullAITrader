@@ -1,6 +1,5 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
@@ -14,6 +13,7 @@ from PySide6.QtWidgets import (
 from app.gui.models import DashboardSnapshot
 from app.gui.widgets.common import StatusBadge
 from app.gui.widgets.panel import SectionPanel
+from app.gui.widgets.activity_panel import ActivityPanel
 from app.gui.widgets.runtime_ribbon import RuntimeRibbon
 
 
@@ -54,12 +54,10 @@ class DashboardPage(QWidget):
         body = QGridLayout()
         body.setSpacing(12)
 
-        self.activity = QLabel("No operations events recorded.")
-        self.activity.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.activity.setWordWrap(True)
+        self.activity_panel = ActivityPanel()
 
         body.addWidget(
-            SectionPanel("Decision & Activity Feed", self.activity),
+            SectionPanel("Decision & Activity Feed", self.activity_panel),
             0,
             0,
             2,
@@ -120,14 +118,4 @@ class DashboardPage(QWidget):
             level,
         )
 
-        if snapshot.activity:
-            self.activity.setText(
-                "\n\n".join(
-                    f"{entry.occurred_at.astimezone():%H:%M:%S}   {entry.message}"
-                    for entry in snapshot.activity
-                )
-            )
-        else:
-            self.activity.setText(
-                "No operations events recorded."
-            )
+        self.activity_panel.render(snapshot.activity)
