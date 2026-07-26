@@ -5,6 +5,7 @@ from app.scanner_adapter.models import (
     SymbolScannerState,
 )
 from app.scanner_adapter.pipeline import MomentumScannerPipeline
+from .analysis_snapshot import RankedAnalysis
 from app.scanner_adapter.reference_store import ScannerReferenceStore
 
 __all__ = [

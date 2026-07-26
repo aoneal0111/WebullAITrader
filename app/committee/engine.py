@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from app.committee import (
+from app.committee.chair import CommitteeChair
+from app.committee.models import (
     AgentOpinion,
-    CommitteeChair,
     CommitteeOpinion,
-    TechnicalAgent,
 )
+from app.committee.technical_agent import TechnicalAgent
 from app.evidence_adapter import opportunity_to_evidence
 from app.opportunity import OpportunityAssessment
 
