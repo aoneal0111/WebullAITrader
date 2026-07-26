@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import app.composition.configured_paper_runtime as composition_module
 from app.composition.configured_paper_runtime import (
     create_configured_paper_runtime_dependencies,
 )
+from app.operations.scanner_runtime import ScannerRuntimeCycle
+from app.operations_core import OperationsBus, ScannerSnapshotUpdated
 
 
 def test_create_configured_paper_runtime_dependencies_composes_graph(
@@ -195,3 +199,84 @@ def test_configured_runtime_defaults_are_forwarded(monkeypatch) -> None:
     assert captured["snapshot"]["candidate_limit"] == 25
     assert captured["snapshot"]["maximum_events_per_cycle"] == 1000
     assert captured["snapshot"]["cycle_sink"] is None
+
+
+def test_scanner_cycle_sink_publishes_operations_event_and_preserves_sink(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+    forwarded_cycles: list[ScannerRuntimeCycle] = []
+    published_events: list[ScannerSnapshotUpdated] = []
+    bus = OperationsBus()
+    bus.subscribe(ScannerSnapshotUpdated, published_events.append)
+
+    monkeypatch.setattr(
+        composition_module,
+        "create_live_snapshot_source",
+        lambda **kwargs: captured.setdefault("snapshot", kwargs),
+    )
+    monkeypatch.setattr(
+        composition_module,
+        "create_runtime_context_provider",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        composition_module,
+        "RuntimeOrderIntentFactory",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        composition_module,
+        "PaperRequestBuilder",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        composition_module,
+        "create_paper_execution_pipeline",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        composition_module,
+        "create_paper_runtime_dependencies",
+        lambda **kwargs: kwargs,
+    )
+
+    create_configured_paper_runtime_dependencies(
+        scanner_coordinator=object(),
+        snapshot_resolver=object(),
+        quantity_provider=object(),
+        request_id_provider=object(),
+        runtime_context_configuration=object(),
+        timestamp_source=object(),
+        market_state_source=object(),
+        market_quote_source=object(),
+        gfv_decision_source=object(),
+        clock=object(),
+        scanner_cycle_sink=forwarded_cycles.append,
+        operations_bus=bus,
+    )
+
+    cycle = ScannerRuntimeCycle(
+        timestamp=datetime(2026, 7, 25, 14, 30, tzinfo=UTC),
+        events_read=7,
+        decisions_created=3,
+        ranked_symbols=("NVDA", "AAPL", "AMD"),
+        resolved_symbols=("NVDA", "AAPL"),
+        missing_symbols=("AMD",),
+    )
+
+    cycle_sink = captured["snapshot"]["cycle_sink"]
+    assert callable(cycle_sink)
+    cycle_sink(cycle)
+
+    assert forwarded_cycles == [cycle]
+    assert len(published_events) == 1
+
+    event = published_events[0]
+    assert event.occurred_at == cycle.timestamp
+    assert event.source == "scanner-runtime"
+    assert event.ranked_symbols == cycle.ranked_symbols
+    assert event.resolved_symbols == cycle.resolved_symbols
+    assert event.missing_symbols == cycle.missing_symbols
+    assert event.events_read == cycle.events_read
+    assert event.decisions_created == cycle.decisions_created
