@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from decimal import Decimal
 from typing import Sequence
@@ -25,6 +25,7 @@ from app.open_orders.models import (
     OpenOrdersResult,
 )
 from app.operations_core import ApplicationState
+from app.gui.widgets.order_entry_panel import OrderEntryPanel
 
 
 class OrdersPage(QWidget):
@@ -77,6 +78,8 @@ class OrdersPage(QWidget):
 
         root.addLayout(header)
 
+        self.order_entry_panel = OrderEntryPanel()
+        root.addWidget(self.order_entry_panel)
         orders_panel = QFrame()
         orders_panel.setObjectName("contentPanel")
 
