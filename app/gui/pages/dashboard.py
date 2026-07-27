@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from app.gui.widgets.common import MetricCard, StatusBadge
 from app.gui.widgets.panel import SectionPanel
-from app.operations_core import ApplicationState, RuntimePhase
+from app.gui.models import DashboardSnapshot, RuntimeState
 
 
 class DashboardPage(QWidget):
@@ -72,20 +72,45 @@ class DashboardPage(QWidget):
         body.setColumnStretch(2, 3)
         root.addLayout(body, 1)
 
-    def render(self, state: ApplicationState) -> None:
-        runtime = state.runtime
-        self.runtime.set_value(runtime.phase.value.title(), "Runtime lifecycle state")
-        self.broker.set_value(runtime.broker_status, "Broker gateway status")
-        self.market.set_value(runtime.market_feed_status, "Market data connection")
-        self.model.set_value(runtime.active_model, runtime.inference_status)
-        self.cycles.set_value(str(runtime.cycles_completed), "Completed runtime cycles")
-        self.risk.set_value("Protected", "Emergency stop enabled")
-        level = "good" if runtime.phase is RuntimePhase.RUNNING else "warn"
-        self.mode_badge.set_status(runtime.environment, level)
-        if state.timeline:
-            self.activity.setText("\n\n".join(
-                f"{entry.occurred_at.astimezone():%H:%M:%S}   {entry.message}"
-                for entry in state.timeline[-10:][::-1]
-            ))
-        else:
-            self.activity.setText("No operations events recorded.")
+    def render(self, snapshot: DashboardSnapshot) -> None:
+        self.runtime.set_value(
+            snapshot.runtime_state.value.title(),
+            "Runtime lifecycle state",
+        )
+        self.broker.set_value(
+            snapshot.broker_status,
+            "Broker gateway status",
+        )
+        self.market.set_value(
+            snapshot.market_feed_status,
+            "Market data connection",
+        )
+        self.model.set_value(
+            snapshot.active_model,
+            snapshot.inference_status,
+        )
+        self.cycles.set_value(
+            str(snapshot.cycle_count),
+            "Completed runtime cycles",
+        )
+
+        safety_value = (
+            "Protected"
+            if snapshot.emergency_stop_enabled
+            else "Unprotected"
+        )
+        safety_note = (
+            "Emergency stop enabled"
+            if snapshot.emergency_stop_enabled
+            else "Emergency stop unavailable"
+        )
+        self.risk.set_value(safety_value, safety_note)
+
+        level = (
+            "good"
+            if snapshot.runtime_state is RuntimeState.RUNNING
+            else "warn"
+        )
+        self.mode_badge.set_status(snapshot.environment, level)
+        self.activity.setText(snapshot.status_message)
+
