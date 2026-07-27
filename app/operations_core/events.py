@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
@@ -47,6 +48,160 @@ class RuntimeCycleCompleted(OperationsEvent):
 
         if self.cycle_count < 0:
             raise ValueError("cycle_count must be nonnegative")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PaperRuntimeSnapshot:
+    cycle: int
+    timestamp: datetime
+    session_id: str
+    symbols: tuple[str, ...]
+
+    decisions_processed: int
+    orders_attempted: int
+    orders_filled: int
+    orders_rejected: int
+    orders_not_filled: int
+    decisions_skipped: int
+
+    winning_fills: int
+    losing_fills: int
+    breakeven_fills: int
+
+    realized_pnl: Decimal
+    unrealized_pnl: Decimal
+    current_equity: Decimal
+    peak_equity: Decimal
+    current_drawdown: Decimal
+
+    win_rate: Decimal
+    total_return: Decimal
+    maximum_drawdown: Decimal
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.cycle, bool)
+            or not isinstance(self.cycle, int)
+            or self.cycle < 1
+        ):
+            raise ValueError(
+                "paper runtime cycle must be positive"
+            )
+
+        if (
+            not isinstance(self.timestamp, datetime)
+            or self.timestamp.tzinfo is None
+        ):
+            raise ValueError(
+                "paper runtime timestamp must be timezone-aware"
+            )
+
+        session_id = self.session_id.strip()
+
+        if not session_id:
+            raise ValueError(
+                "paper runtime session ID is required"
+            )
+
+        object.__setattr__(
+            self,
+            "session_id",
+            session_id,
+        )
+
+        if not isinstance(self.symbols, tuple):
+            raise TypeError(
+                "paper runtime symbols must be a tuple"
+            )
+
+        if any(
+            not isinstance(symbol, str)
+            for symbol in self.symbols
+        ):
+            raise TypeError(
+                "paper runtime symbols must contain strings"
+            )
+
+        symbols = tuple(
+            symbol.strip().upper()
+            for symbol in self.symbols
+        )
+
+        if any(not symbol for symbol in symbols):
+            raise ValueError(
+                "paper runtime symbols cannot be blank"
+            )
+
+        if len(set(symbols)) != len(symbols):
+            raise ValueError(
+                "paper runtime symbols must be unique"
+            )
+
+        object.__setattr__(
+            self,
+            "symbols",
+            symbols,
+        )
+
+        counts = (
+            self.decisions_processed,
+            self.orders_attempted,
+            self.orders_filled,
+            self.orders_rejected,
+            self.orders_not_filled,
+            self.decisions_skipped,
+            self.winning_fills,
+            self.losing_fills,
+            self.breakeven_fills,
+        )
+
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            for value in counts
+        ):
+            raise ValueError(
+                "paper runtime counts must be "
+                "nonnegative integers"
+            )
+
+        financial_values = (
+            self.realized_pnl,
+            self.unrealized_pnl,
+            self.current_equity,
+            self.peak_equity,
+            self.current_drawdown,
+            self.win_rate,
+            self.total_return,
+            self.maximum_drawdown,
+        )
+
+        if any(
+            not isinstance(value, Decimal)
+            or not value.is_finite()
+            for value in financial_values
+        ):
+            raise ValueError(
+                "paper runtime financial values must be "
+                "finite Decimals"
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PaperRuntimeUpdated(OperationsEvent):
+    snapshot: PaperRuntimeSnapshot
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+
+        if not isinstance(
+            self.snapshot,
+            PaperRuntimeSnapshot,
+        ):
+            raise TypeError(
+                "snapshot must be a PaperRuntimeSnapshot"
+            )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
