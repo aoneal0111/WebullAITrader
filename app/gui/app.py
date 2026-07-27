@@ -1,12 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 
 from PySide6.QtWidgets import QApplication
 
+from app.composition.desktop import create_desktop_composition
 from app.gui.main_window import MainWindow
-from app.operations_core import ApplicationStateStore, OperationsBus
-from app.services import RuntimeService, SimulatedPaperRuntimeDriver
 
 
 def main() -> int:
@@ -14,31 +13,19 @@ def main() -> int:
     application.setApplicationName("Webull AI Trader")
     application.setOrganizationName("Webull AI Trader")
 
-    bus = OperationsBus()
-    state_store = ApplicationStateStore(bus)
-
-    runtime_service = RuntimeService(
-        bus,
-        lambda: SimulatedPaperRuntimeDriver(
-            interval_seconds=1.0,
-            environment="PAPER",
-            active_model="Promoted model",
-        ),
-    )
+    composition = create_desktop_composition()
 
     window = MainWindow(
-        bus,
-        state_store,
-        runtime_service,
+        composition.bus,
+        composition.state_store,
+        composition.runtime_service,
     )
     window.show()
 
-    exit_code = application.exec()
-
-    runtime_service.close()
-    state_store.close()
-
-    return exit_code
+    try:
+        return application.exec()
+    finally:
+        composition.close()
 
 
 if __name__ == "__main__":
