@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPu
 
 from app.gui.design.theme import application_stylesheet
 from app.gui.pages.dashboard import DashboardPage
+from app.gui.pages.orders import OrdersPage
 from app.gui.pages.placeholder import PlaceholderPage
 from app.gui.projections.dashboard_projection import project_dashboard
 from app.gui.shell.sidebar import Sidebar
@@ -64,15 +65,36 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
         self.dashboard = DashboardPage()
         self.pages.addWidget(self.dashboard)
-        descriptions = {
-            "Positions": "Portfolio views will bind to the existing position and account-state services.",
-            "Orders": "The completed Paper Order Book will become the first fully functional tool here.",
-            "Strategies": "Strategy selection, promotion state, and autonomous runtime controls will live here.",
-            "Risk": "Risk limits, safety gates, and live-trading permissions will be surfaced here.",
-            "Activity": "Auditable system events, decisions, warnings, and execution records will appear here.",
-        }
-        for title, description in descriptions.items():
-            self.pages.addWidget(PlaceholderPage(title, description))
+        self.pages.addWidget(
+            PlaceholderPage(
+                "Positions",
+                "Portfolio views will bind to the existing position and account-state services.",
+            )
+        )
+
+        self.orders = OrdersPage()
+        self.pages.addWidget(self.orders)
+
+        self.pages.addWidget(
+            PlaceholderPage(
+                "Strategies",
+                "Strategy selection, promotion state, and autonomous runtime controls will live here.",
+            )
+        )
+
+        self.pages.addWidget(
+            PlaceholderPage(
+                "Risk",
+                "Risk limits, safety gates, and live-trading permissions will be surfaced here.",
+            )
+        )
+
+        self.pages.addWidget(
+            PlaceholderPage(
+                "Activity",
+                "Auditable system events, decisions, warnings, and execution records will appear here.",
+            )
+        )
         content_layout.addWidget(self.pages, 1)
         outer.addWidget(content, 1)
         self.sidebar.page_requested.connect(self.pages.setCurrentIndex)
@@ -112,3 +134,4 @@ class MainWindow(QMainWindow):
             return
         self._state_bridge.close()
         event.accept()
+
