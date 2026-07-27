@@ -35,6 +35,7 @@ def create_paper_runtime_driver(
     inference_adapter: RuntimeInferenceAdapter | None = None,
     event_sink: RuntimeEventSink | None = None,
     checkpoint_sink: CheckpointSink | None = None,
+    runtime_result_sink: Callable[[PaperRuntimeCycleResult], None] | None = None,
     interval_seconds: float = 1.0,
     environment: str = "PAPER",
     active_model: str = "Promoted model",
@@ -84,6 +85,7 @@ def create_paper_runtime_driver(
         interval_seconds=interval_seconds,
         environment=environment,
         active_model=active_model,
+        runtime_result_sink=runtime_result_sink,
     )
 
 

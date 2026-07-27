@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -9,6 +10,7 @@ from app.execution_coordinator import ExecutionCoordinator
 from app.operations.learning_runtime import RuntimeInferenceAdapter
 from app.operations.runtime import (
     CheckpointSink,
+    PaperRuntimeCycleResult,
     RequestBuilder,
     RuntimeEventSink,
     SnapshotSource,
@@ -39,6 +41,7 @@ class PaperRuntimeDriverFactory:
     inference_adapter: RuntimeInferenceAdapter | None = None
     event_sink: RuntimeEventSink | None = None
     checkpoint_sink: CheckpointSink | None = None
+    runtime_result_sink: Callable[[PaperRuntimeCycleResult], None] | None = None
     interval_seconds: float = 1.0
     environment: str = "PAPER"
     active_model: str = "Promoted model"
@@ -57,6 +60,7 @@ class PaperRuntimeDriverFactory:
             inference_adapter=self.inference_adapter,
             event_sink=self.event_sink,
             checkpoint_sink=self.checkpoint_sink,
+            runtime_result_sink=self.runtime_result_sink,
             interval_seconds=self.interval_seconds,
             environment=self.environment,
             active_model=self.active_model,
