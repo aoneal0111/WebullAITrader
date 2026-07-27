@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPu
 from app.gui.design.theme import application_stylesheet
 from app.gui.pages.dashboard import DashboardPage
 from app.gui.pages.placeholder import PlaceholderPage
+from app.gui.projections.dashboard_projection import project_dashboard
 from app.gui.shell.sidebar import Sidebar
 from app.gui.state_bridge import QtStateBridge
 from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus, RuntimePhase
@@ -49,7 +50,7 @@ class MainWindow(QMainWindow):
         self.start_button.clicked.connect(self._runtime_service.start)
         self.stop_button = QPushButton("Stop Runtime")
         self.stop_button.setObjectName("secondaryButton")
-        self.stop_button.clicked.connect(self._runtime_service.stop)
+        self.stop_button.clicked.connect(lambda checked=False: self._runtime_service.stop())
         self.emergency_button = QPushButton("Emergency Stop")
         self.emergency_button.setObjectName("dangerButton")
         self.emergency_button.clicked.connect(self._emergency_stop)
@@ -90,7 +91,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Emergency stop requested. Runtime shutdown in progress.", 5000)
 
     def _render_state(self, state: ApplicationState) -> None:
-        self.dashboard.render(state)
+        dashboard_snapshot = project_dashboard(state)
+        self.dashboard.render(dashboard_snapshot)
         phase = state.runtime.phase
         active = phase in {RuntimePhase.STARTING, RuntimePhase.RUNNING, RuntimePhase.STOPPING}
         self.start_button.setEnabled(not active)
