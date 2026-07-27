@@ -1,10 +1,12 @@
-﻿"""Application-wide events, state, and event distribution."""
+"""Application-wide events, state, and event distribution."""
 
 from app.operations_core.bus import OperationsBus, Subscription
 from app.operations_core.events import (
     OperationsEvent,
     OperationsOrder,
+    OperationsPosition,
     OrdersUpdated,
+    PositionsUpdated,
     PaperRuntimeSnapshot,
     PaperRuntimeUpdated,
     RuntimeCycleCompleted,
@@ -28,7 +30,9 @@ __all__ = [
     "OperationsBus",
     "OperationsEvent",
     "OperationsOrder",
+    "OperationsPosition",
     "OrdersUpdated",
+    "PositionsUpdated",
     "PaperRuntimeSnapshot",
     "PaperRuntimeUpdated",
     "RuntimeCycleCompleted",

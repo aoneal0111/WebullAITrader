@@ -59,6 +59,59 @@ class OperationsOrder:
             raise ValueError("updated_at must be timezone-aware")
 
 
+
+@dataclass(frozen=True, slots=True)
+class OperationsPosition:
+    """Backend-neutral immutable position state for Operations Center consumers."""
+
+    account_id: str
+    symbol: str
+    asset_type: str
+    quantity: str
+    average_cost: str
+    market_value: str
+    unrealized_gain_loss: str
+    realized_gain_loss: str | None
+    currency: str
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        required_text_fields = (
+            "account_id",
+            "symbol",
+            "asset_type",
+            "quantity",
+            "average_cost",
+            "market_value",
+            "unrealized_gain_loss",
+            "currency",
+        )
+
+        for field_name in required_text_fields:
+            value = getattr(self, field_name)
+
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must not be empty")
+
+            if value != value.strip():
+                raise ValueError(f"{field_name} must be stripped")
+
+        if self.realized_gain_loss is not None:
+            if (
+                not isinstance(self.realized_gain_loss, str)
+                or not self.realized_gain_loss.strip()
+            ):
+                raise ValueError(
+                    "realized_gain_loss must be None or non-empty text"
+                )
+
+            if self.realized_gain_loss != self.realized_gain_loss.strip():
+                raise ValueError("realized_gain_loss must be stripped")
+
+        if self.updated_at.tzinfo is None:
+            raise ValueError("updated_at must be timezone-aware")
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OrdersUpdated(OperationsEvent):
     """Replace the Operations Center order slice with an immutable snapshot."""
@@ -78,6 +131,29 @@ class OrdersUpdated(OperationsEvent):
             raise TypeError(
                 "orders must contain only OperationsOrder instances"
             )
+
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PositionsUpdated(OperationsEvent):
+    """Replace the Operations Center position slice with an immutable snapshot."""
+
+    positions: tuple[OperationsPosition, ...] = ()
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+
+        if not isinstance(self.positions, tuple):
+            raise TypeError("positions must be an immutable tuple")
+
+        if any(
+            not isinstance(position, OperationsPosition)
+            for position in self.positions
+        ):
+            raise TypeError(
+                "positions must contain only OperationsPosition instances"
+            )
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RuntimeStarting(OperationsEvent):

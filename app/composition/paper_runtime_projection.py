@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from app.composition.operations_position_mapper import map_paper_positions
 from app.operations import PaperRuntimeCycleResult
 from app.operations_core import (
     OperationsBus,
     PaperRuntimeSnapshot,
     PaperRuntimeUpdated,
+    PositionsUpdated,
 )
 
 
@@ -17,7 +19,6 @@ def create_paper_runtime_snapshot(
     result: PaperRuntimeCycleResult,
 ) -> PaperRuntimeSnapshot:
     """Map a completed paper-runtime cycle into presentation-safe state."""
-
     if not isinstance(result, PaperRuntimeCycleResult):
         raise TypeError(
             "result must be a PaperRuntimeCycleResult"
@@ -51,13 +52,19 @@ def create_paper_runtime_snapshot(
     )
 
 
+def create_operations_positions(
+    result: PaperRuntimeCycleResult,
+):
+    """Backward-compatible wrapper for paper position mapping."""
+    return map_paper_positions(result)
+
+
 def create_paper_runtime_result_publisher(
     bus: OperationsBus,
     *,
     source: str = "paper-runtime",
 ) -> PaperRuntimeResultSink:
-    """Create a sink that publishes presentation-safe paper-runtime updates."""
-
+    """Publish presentation-safe runtime and position updates."""
     if not isinstance(bus, OperationsBus):
         raise TypeError("bus must be an OperationsBus")
 
@@ -75,12 +82,19 @@ def create_paper_runtime_result_publisher(
                 snapshot=create_paper_runtime_snapshot(result),
             )
         )
+        bus.publish(
+            PositionsUpdated(
+                source=normalized_source,
+                positions=map_paper_positions(result),
+            )
+        )
 
     return publish_result
 
 
 __all__ = [
     "PaperRuntimeResultSink",
+    "create_operations_positions",
     "create_paper_runtime_result_publisher",
     "create_paper_runtime_snapshot",
 ]

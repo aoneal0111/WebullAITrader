@@ -9,6 +9,12 @@ from decimal import Decimal
 from pathlib import Path
 
 from app.broker_plugins.factory import create_broker_runtime
+from app.composition.broker_order_projection import (
+    create_broker_orders_publisher,
+)
+from app.composition.broker_position_projection import (
+    create_broker_positions_publisher,
+)
 from app.composition.operational_lifecycle import (
     OperationalRuntimeSession,
 )
@@ -20,6 +26,7 @@ from app.configuration.loader import load_configuration
 from app.configuration.models import TradingEnvironment
 from app.live_execution.broker_factory import build_webull_broker
 from app.live_execution.recovery import reconcile_startup
+from app.operations_core import OperationsBus
 
 
 def utc_now() -> datetime:
@@ -236,6 +243,7 @@ def run_observation(
     *,
     max_cycles: int | None = None,
     interval_seconds: Decimal | None = None,
+    operations_bus: OperationsBus | None = None,
 ) -> int:
     """Continuously reconcile and display broker state without mutations."""
 
@@ -248,12 +256,27 @@ def run_observation(
     validate_environment(configuration)
     ensure_parent_directories(configuration)
 
+    if operations_bus is not None and not isinstance(
+        operations_bus, OperationsBus
+    ):
+        raise TypeError("operations_bus must be an OperationsBus")
+
     runtime = build_operational_runtime(configuration)
     authorization_registry = runtime.authorization_registry
     execution_journal = runtime.execution_journal
     market_store = runtime.market_store
     emergency_stop = runtime.emergency_stop
     broker = runtime.broker
+    publish_orders = (
+        create_broker_orders_publisher(operations_bus)
+        if operations_bus is not None
+        else None
+    )
+    publish_positions = (
+        create_broker_positions_publisher(operations_bus)
+        if operations_bus is not None
+        else None
+    )
     with OperationalRuntimeSession(runtime) as session:
         _validate_observation_mode(configuration, emergency_stop)
 
@@ -301,8 +324,19 @@ def run_observation(
             positions = broker.get_positions()
             orders = broker.get_orders()
 
+            observed_at = utc_now()
+            if publish_orders is not None:
+                publish_orders(orders, observed_at)
+            if publish_positions is not None:
+                publish_positions(
+                    positions,
+                    account,
+                    cash,
+                    observed_at,
+                )
+
             cycle += 1
-            timestamp = utc_now().isoformat()
+            timestamp = observed_at.isoformat()
             print(
                 f"Observation cycle {cycle} at {timestamp}",
                 flush=True,
