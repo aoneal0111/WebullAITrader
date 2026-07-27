@@ -5,8 +5,10 @@ from collections.abc import Callable
 from app.operations import PaperRuntimeCycleResult
 from app.operations_core import (
     OperationsBus,
+    OperationsPosition,
     PaperRuntimeSnapshot,
     PaperRuntimeUpdated,
+    PositionsUpdated,
 )
 
 
@@ -17,7 +19,6 @@ def create_paper_runtime_snapshot(
     result: PaperRuntimeCycleResult,
 ) -> PaperRuntimeSnapshot:
     """Map a completed paper-runtime cycle into presentation-safe state."""
-
     if not isinstance(result, PaperRuntimeCycleResult):
         raise TypeError(
             "result must be a PaperRuntimeCycleResult"
@@ -51,13 +52,46 @@ def create_paper_runtime_snapshot(
     )
 
 
+def create_operations_positions(
+    result: PaperRuntimeCycleResult,
+) -> tuple[OperationsPosition, ...]:
+    """Map paper portfolio positions into backend-neutral operations state."""
+    if not isinstance(result, PaperRuntimeCycleResult):
+        raise TypeError(
+            "result must be a PaperRuntimeCycleResult"
+        )
+
+    portfolio = result.session.portfolio
+
+    return tuple(
+        OperationsPosition(
+            account_id=result.session.session_id,
+            symbol=position.symbol,
+            asset_type="EQUITY",
+            quantity=format(position.quantity, "f"),
+            average_cost=format(position.average_cost, "f"),
+            market_value=format(position.market_value, "f"),
+            unrealized_gain_loss=format(
+                position.unrealized_pnl,
+                "f",
+            ),
+            realized_gain_loss=None,
+            currency="USD",
+            updated_at=portfolio.timestamp,
+        )
+        for position in sorted(
+            portfolio.positions,
+            key=lambda item: item.symbol,
+        )
+    )
+
+
 def create_paper_runtime_result_publisher(
     bus: OperationsBus,
     *,
     source: str = "paper-runtime",
 ) -> PaperRuntimeResultSink:
-    """Create a sink that publishes presentation-safe paper-runtime updates."""
-
+    """Publish presentation-safe runtime and position updates."""
     if not isinstance(bus, OperationsBus):
         raise TypeError("bus must be an OperationsBus")
 
@@ -75,12 +109,19 @@ def create_paper_runtime_result_publisher(
                 snapshot=create_paper_runtime_snapshot(result),
             )
         )
+        bus.publish(
+            PositionsUpdated(
+                source=normalized_source,
+                positions=create_operations_positions(result),
+            )
+        )
 
     return publish_result
 
 
 __all__ = [
     "PaperRuntimeResultSink",
+    "create_operations_positions",
     "create_paper_runtime_result_publisher",
     "create_paper_runtime_snapshot",
 ]
