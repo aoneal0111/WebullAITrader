@@ -16,7 +16,11 @@ from app.execution_coordinator.runtime_context_input_source import (
     TimestampSource,
 )
 from app.momentum_scanner import MomentumScannerConfig
-from app.operations.runtime import CheckpointSink, RuntimeEventSink
+from app.operations.runtime import (
+    CheckpointSink,
+    PaperRuntimeCycleResult,
+    RuntimeEventSink,
+)
 from app.operations.scanner_runtime import SnapshotResolver
 from app.realtime_scanner.protocols import (
     ReferenceLoader,
@@ -77,6 +81,7 @@ def create_desktop_runtime_bootstrap(
     inference_adapter: Any | None = None,
     event_sink: RuntimeEventSink | None = None,
     checkpoint_sink: CheckpointSink | None = None,
+    runtime_result_sink: Callable[[PaperRuntimeCycleResult], None] | None = None,
     interval_seconds: float = 1.0,
     environment: str = "PAPER",
     active_model: str = "Promoted model",
@@ -123,6 +128,7 @@ def create_desktop_runtime_bootstrap(
         dependencies=runtime_dependencies,
         event_sink=event_sink,
         checkpoint_sink=checkpoint_sink,
+        runtime_result_sink=runtime_result_sink,
         interval_seconds=interval_seconds,
         environment=environment,
         active_model=active_model,

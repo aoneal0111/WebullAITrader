@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -63,6 +63,7 @@ def test_factory_delegates_all_runtime_dependencies(monkeypatch) -> None:
             "inference_adapter": inference_adapter,
             "event_sink": event_sink,
             "checkpoint_sink": checkpoint_sink,
+                "runtime_result_sink": None,
             "interval_seconds": 2.5,
             "environment": "PAPER",
             "active_model": "production-model",

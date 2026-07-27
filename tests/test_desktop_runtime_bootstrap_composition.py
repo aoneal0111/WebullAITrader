@@ -143,6 +143,7 @@ def test_create_desktop_runtime_bootstrap_wires_existing_composition_layers(
             "dependencies": runtime_dependencies,
             "event_sink": event_sink,
             "checkpoint_sink": checkpoint_sink,
+            "runtime_result_sink": None,
             "interval_seconds": 2.5,
             "environment": "PAPER",
             "active_model": "production-model",
