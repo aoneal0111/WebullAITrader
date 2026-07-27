@@ -26,6 +26,7 @@ class PaperRuntimeDriver:
         interval_seconds: float = 1.0,
         environment: str = "PAPER",
         active_model: str = "Promoted model",
+        runtime_result_sink: Callable[[PaperRuntimeCycleResult], None] | None = None,
     ) -> None:
         if not callable(engine_factory):
             raise TypeError("engine_factory must be callable")
@@ -43,6 +44,7 @@ class PaperRuntimeDriver:
         self._interval_seconds = interval_seconds
         self._environment = environment.strip()
         self._active_model = active_model.strip()
+        self._runtime_result_sink = runtime_result_sink
         self._engine: PaperOperationsEngine | None = None
 
     @property
@@ -69,6 +71,8 @@ class PaperRuntimeDriver:
             raise RuntimeError("paper runtime driver can only be run once")
 
         def publish_cycle(result: PaperRuntimeCycleResult) -> None:
+            if self._runtime_result_sink is not None:
+                self._runtime_result_sink(result)
             cycle_sink(result.cycle)
 
         engine = self._engine_factory(publish_cycle)

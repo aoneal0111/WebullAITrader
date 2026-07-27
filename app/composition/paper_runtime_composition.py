@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from decimal import Decimal
 
-from app.operations.runtime import CheckpointSink, RuntimeEventSink
+from app.operations.runtime import (
+    CheckpointSink,
+    PaperRuntimeCycleResult,
+    RuntimeEventSink,
+)
 
 from .paper_dependencies import PaperRuntimeDependencies
 from .paper_runtime_driver_factory import PaperRuntimeDriverFactory
@@ -17,6 +22,7 @@ def create_paper_runtime_driver_factory(
     dependencies: PaperRuntimeDependencies,
     event_sink: RuntimeEventSink | None = None,
     checkpoint_sink: CheckpointSink | None = None,
+    runtime_result_sink: Callable[[PaperRuntimeCycleResult], None] | None = None,
     interval_seconds: float = 1.0,
     environment: str = "PAPER",
     active_model: str = "Promoted model",
@@ -39,6 +45,7 @@ def create_paper_runtime_driver_factory(
         inference_adapter=dependencies.inference_adapter,
         event_sink=event_sink,
         checkpoint_sink=checkpoint_sink,
+        runtime_result_sink=runtime_result_sink,
         interval_seconds=interval_seconds,
         environment=environment,
         active_model=active_model,

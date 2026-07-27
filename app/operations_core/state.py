@@ -9,6 +9,8 @@ from threading import RLock
 from app.operations_core.bus import OperationsBus, Subscription
 from app.operations_core.events import (
     OperationsEvent,
+    PaperRuntimeSnapshot,
+    PaperRuntimeUpdated,
     RuntimeCycleCompleted,
     RuntimeFailed,
     RuntimeStarted,
@@ -50,6 +52,7 @@ class TimelineEntry:
 @dataclass(frozen=True, slots=True)
 class ApplicationState:
     runtime: RuntimeState = field(default_factory=RuntimeState)
+    paper_runtime: PaperRuntimeSnapshot | None = None
     timeline: tuple[TimelineEntry, ...] = ()
     revision: int = 0
 
@@ -114,15 +117,23 @@ class ApplicationStateStore:
     def _handle_event(self, event: OperationsEvent) -> None:
         with self._lock:
             runtime = self._reduce_runtime(self._state.runtime, event)
+            paper_runtime = self._reduce_paper_runtime(
+                self._state.paper_runtime,
+                event,
+            )
 
             timeline = self._state.timeline
 
-            if not isinstance(event, RuntimeCycleCompleted):
+            if not isinstance(
+                event,
+                (RuntimeCycleCompleted, PaperRuntimeUpdated),
+            ):
                 timeline = timeline + (self._timeline_entry(event),)
                 timeline = timeline[-self._timeline_limit :]
 
             self._state = ApplicationState(
                 runtime=runtime,
+                paper_runtime=paper_runtime,
                 timeline=timeline,
                 revision=self._state.revision + 1,
             )
@@ -132,6 +143,16 @@ class ApplicationStateStore:
 
         for listener in listeners:
             listener(state)
+
+    @staticmethod
+    def _reduce_paper_runtime(
+        current: PaperRuntimeSnapshot | None,
+        event: OperationsEvent,
+    ) -> PaperRuntimeSnapshot | None:
+        if isinstance(event, PaperRuntimeUpdated):
+            return event.snapshot
+
+        return current
 
     @staticmethod
     def _reduce_runtime(
