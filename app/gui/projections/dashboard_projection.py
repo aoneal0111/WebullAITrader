@@ -1,5 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+from app.gui.formatters import format_orders
 from app.gui.models import (
     ActivityEntry,
     ActivitySnapshot,
@@ -8,12 +9,13 @@ from app.gui.models import (
     RuntimeSnapshot,
     RuntimeState,
 )
-from app.gui.projections.orders_projection import project_orders
 from app.operations_core import ApplicationState
+from app.read_models.orders import project_orders_read_model
 
 
 def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
     runtime = state.runtime
+    orders_read_model = project_orders_read_model(state)
 
     return DashboardSnapshot(
         runtime=RuntimeSnapshot(
@@ -37,5 +39,5 @@ def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
             )
         ),
         positions=PositionsSnapshot.initial(),
-        orders=project_orders(state.orders),
+        orders=format_orders(orders_read_model),
     )
