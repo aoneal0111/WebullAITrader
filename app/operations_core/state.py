@@ -10,7 +10,9 @@ from app.operations_core.bus import OperationsBus, Subscription
 from app.operations_core.events import (
     OperationsEvent,
     OperationsOrder,
+    OperationsPosition,
     OrdersUpdated,
+    PositionsUpdated,
     PaperRuntimeSnapshot,
     PaperRuntimeUpdated,
 
@@ -57,6 +59,7 @@ class ApplicationState:
     runtime: RuntimeState = field(default_factory=RuntimeState)
     paper_runtime: PaperRuntimeSnapshot | None = None
     orders: tuple[OperationsOrder, ...] = ()
+    positions: tuple[OperationsPosition, ...] = ()
 
     timeline: tuple[TimelineEntry, ...] = ()
     revision: int = 0
@@ -127,7 +130,10 @@ class ApplicationStateStore:
                 event,
             )
             orders = self._reduce_orders(self._state.orders, event)
-
+            positions = self._reduce_positions(
+                self._state.positions,
+                event,
+            )
 
             timeline = self._state.timeline
 
@@ -142,7 +148,7 @@ class ApplicationStateStore:
                 runtime=runtime,
                 paper_runtime=paper_runtime,
                 orders=orders,
-
+                positions=positions,
                 timeline=timeline,
                 revision=self._state.revision + 1,
             )
@@ -236,6 +242,17 @@ class ApplicationStateStore:
             return event.orders
 
         return current
+
+    @staticmethod
+    def _reduce_positions(
+        current: tuple[OperationsPosition, ...],
+        event: OperationsEvent,
+    ) -> tuple[OperationsPosition, ...]:
+        if isinstance(event, PositionsUpdated):
+            return event.positions
+
+        return current
+
     @staticmethod
     def _timeline_entry(event: OperationsEvent) -> TimelineEntry:
         if isinstance(event, RuntimeStarting):
@@ -258,6 +275,12 @@ class ApplicationStateStore:
             order_count = len(event.orders)
             noun = "order" if order_count == 1 else "orders"
             message = f"Order state updated: {order_count} {noun}."
+        elif isinstance(event, PositionsUpdated):
+            position_count = len(event.positions)
+            noun = "position" if position_count == 1 else "positions"
+            message = (
+                f"Position state updated: {position_count} {noun}."
+            )
         else:
             message = type(event).__name__
 
