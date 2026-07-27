@@ -3,6 +3,8 @@
 from app.operations_core.bus import OperationsBus, Subscription
 from app.operations_core.events import (
     OperationsEvent,
+    OperationsOrder,
+    OrdersUpdated,
     PaperRuntimeSnapshot,
     PaperRuntimeUpdated,
     RuntimeCycleCompleted,
@@ -25,6 +27,8 @@ __all__ = [
     "ApplicationStateStore",
     "OperationsBus",
     "OperationsEvent",
+    "OperationsOrder",
+    "OrdersUpdated",
     "PaperRuntimeSnapshot",
     "PaperRuntimeUpdated",
     "RuntimeCycleCompleted",
