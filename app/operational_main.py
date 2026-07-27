@@ -9,6 +9,9 @@ from decimal import Decimal
 from pathlib import Path
 
 from app.broker_plugins.factory import create_broker_runtime
+from app.composition.broker_order_projection import (
+    create_broker_orders_publisher,
+)
 from app.composition.broker_position_projection import (
     create_broker_positions_publisher,
 )
@@ -264,6 +267,11 @@ def run_observation(
     market_store = runtime.market_store
     emergency_stop = runtime.emergency_stop
     broker = runtime.broker
+    publish_orders = (
+        create_broker_orders_publisher(operations_bus)
+        if operations_bus is not None
+        else None
+    )
     publish_positions = (
         create_broker_positions_publisher(operations_bus)
         if operations_bus is not None
@@ -317,6 +325,8 @@ def run_observation(
             orders = broker.get_orders()
 
             observed_at = utc_now()
+            if publish_orders is not None:
+                publish_orders(orders, observed_at)
             if publish_positions is not None:
                 publish_positions(
                     positions,
