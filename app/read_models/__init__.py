@@ -22,6 +22,14 @@ from app.read_models.timeline import (
     TimelineReadModelSnapshot,
     TimelineSeverity,
 )
+from app.read_models.trade_lifecycle import (
+    TradeLifecycle,
+    TradeLifecycleEntry,
+    TradeLifecyclePhase,
+    TradeLifecycleProjector,
+    TradeLifecycleSnapshot,
+    TradeLifecycleStatus,
+)
 
 __all__ = [
     "DecisionProjector",
@@ -36,4 +44,10 @@ __all__ = [
     "TimelineProjector",
     "TimelineReadModelSnapshot",
     "TimelineSeverity",
+    "TradeLifecycle",
+    "TradeLifecycleEntry",
+    "TradeLifecyclePhase",
+    "TradeLifecycleProjector",
+    "TradeLifecycleSnapshot",
+    "TradeLifecycleStatus",
 ]
