@@ -208,10 +208,11 @@ class ChartRenderer:
 
     def render(
         self,
-        canvas: "CandleCanvas",
         painter: QPainter,
         viewport: ChartViewport,
         snapshot: CandleSeriesSnapshot,
+        markers: tuple[ChartMarker, ...],
+        cursor_position: tuple[float, float] | None,
     ) -> None:
         self._draw_grid(
             painter,
@@ -226,8 +227,17 @@ class ChartRenderer:
             viewport,
             snapshot,
         )
-        canvas._draw_markers(painter, viewport)
-        canvas._draw_overlay(painter, viewport)
+        self._draw_markers(
+            painter,
+            viewport,
+            markers,
+        )
+        self._draw_overlay(
+            painter,
+            viewport,
+            snapshot,
+            cursor_position,
+        )
 
 
     def _draw_grid(
@@ -292,108 +302,25 @@ class ChartRenderer:
             )
 
 
-class CandleCanvas(QWidget):
-    """The existing read-only candlestick canvas, retained unchanged in role."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.setMinimumHeight(Sizing.CHART_MIN_HEIGHT)
-        self.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Expanding,
-        )
-        self._snapshot = CandleSeriesSnapshot(
-            None,
-            CandleInterval.ONE_MINUTE,
-        )
-        self._markers: tuple[ChartMarker, ...] = ()
-        self._cursor_position: tuple[float, float] | None = None
-        self._camera = ChartCamera()
-        self._renderer = ChartRenderer()
-        self.setMouseTracking(True)
-
-    def render(
-        self,
-        snapshot: CandleSeriesSnapshot,
-        markers: tuple[ChartMarker, ...] = (),
-    ) -> None:
-        self._snapshot = snapshot
-        self._markers = markers
-        self.update()
-
-    def mouseMoveEvent(self, event: object) -> None:
-        position = event.position()
-        self._cursor_position = (
-            float(position.x()),
-            float(position.y()),
-        )
-        self.update()
-
-    def leaveEvent(self, event: object) -> None:
-        del event
-        self._cursor_position = None
-        self.update()
-
-    def paintEvent(self, event: object) -> None:
-        del event
-        painter = QPainter(self)
-
-        self._draw_background(painter)
-
-        if not self._snapshot.candles:
-            self._draw_empty_state(painter)
-            return
-
-        viewport = self._build_viewport()
-        self._renderer.render(
-            self,
-            painter,
-            viewport,
-            self._snapshot,
-        )
-
-    def _draw_background(self, painter: QPainter) -> None:
-        painter.fillRect(self.rect(), QColor(Colors.SURFACE))
-
-    def _draw_empty_state(self, painter: QPainter) -> None:
-        painter.setPen(QColor(Colors.TEXT_MUTED))
-        painter.drawText(
-            self.rect(),
-            Qt.AlignmentFlag.AlignCenter,
-            "Waiting for market data",
-        )
-
-    def _build_viewport(self) -> ChartViewport:
-        return self._camera.build_viewport(
-            canvas_width=float(self.width()),
-            canvas_height=float(self.height()),
-            candles=self._snapshot.candles,
-        )
-
-    def _draw_grid(
-        self,
-        painter: QPainter,
-        viewport: ChartViewport,
-    ) -> None:
-        del painter, viewport
-
-
     def _draw_markers(
         self,
         painter: QPainter,
         viewport: ChartViewport,
+        markers: tuple[ChartMarker, ...],
     ) -> None:
-        del painter, viewport
+        del painter, viewport, markers
 
     def _draw_overlay(
         self,
         painter: QPainter,
         viewport: ChartViewport,
+        snapshot: CandleSeriesSnapshot,
+        cursor_position: tuple[float, float] | None,
     ) -> None:
-        if self._cursor_position is None:
+        if cursor_position is None:
             return
 
-        cursor_x, cursor_y = self._cursor_position
+        cursor_x, cursor_y = cursor_position
 
         right = viewport.left + viewport.width
         bottom = viewport.top + viewport.height
@@ -405,7 +332,7 @@ class CandleCanvas(QWidget):
             return
 
         transform = ChartTransform(viewport)
-        candles = self._snapshot.candles
+        candles = snapshot.candles
         candle_index = transform.x_to_index(
             cursor_x,
             len(candles),
@@ -466,6 +393,93 @@ class CandleCanvas(QWidget):
             Qt.AlignmentFlag.AlignCenter,
             price_text,
         )
+
+class CandleCanvas(QWidget):
+    """The existing read-only candlestick canvas, retained unchanged in role."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setMinimumHeight(Sizing.CHART_MIN_HEIGHT)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        self._snapshot = CandleSeriesSnapshot(
+            None,
+            CandleInterval.ONE_MINUTE,
+        )
+        self._markers: tuple[ChartMarker, ...] = ()
+        self._cursor_position: tuple[float, float] | None = None
+        self._camera = ChartCamera()
+        self._renderer = ChartRenderer()
+        self.setMouseTracking(True)
+
+    def render(
+        self,
+        snapshot: CandleSeriesSnapshot,
+        markers: tuple[ChartMarker, ...] = (),
+    ) -> None:
+        self._snapshot = snapshot
+        self._markers = markers
+        self.update()
+
+    def mouseMoveEvent(self, event: object) -> None:
+        position = event.position()
+        self._cursor_position = (
+            float(position.x()),
+            float(position.y()),
+        )
+        self.update()
+
+    def leaveEvent(self, event: object) -> None:
+        del event
+        self._cursor_position = None
+        self.update()
+
+    def paintEvent(self, event: object) -> None:
+        del event
+        painter = QPainter(self)
+
+        self._draw_background(painter)
+
+        if not self._snapshot.candles:
+            self._draw_empty_state(painter)
+            return
+
+        viewport = self._build_viewport()
+        self._renderer.render(
+            painter,
+            viewport,
+            self._snapshot,
+            self._markers,
+            self._cursor_position,
+        )
+
+    def _draw_background(self, painter: QPainter) -> None:
+        painter.fillRect(self.rect(), QColor(Colors.SURFACE))
+
+    def _draw_empty_state(self, painter: QPainter) -> None:
+        painter.setPen(QColor(Colors.TEXT_MUTED))
+        painter.drawText(
+            self.rect(),
+            Qt.AlignmentFlag.AlignCenter,
+            "Waiting for market data",
+        )
+
+    def _build_viewport(self) -> ChartViewport:
+        return self._camera.build_viewport(
+            canvas_width=float(self.width()),
+            canvas_height=float(self.height()),
+            candles=self._snapshot.candles,
+        )
+
+    def _draw_grid(
+        self,
+        painter: QPainter,
+        viewport: ChartViewport,
+    ) -> None:
+        del painter, viewport
+
 
 
 class CandlestickChart(QWidget):
