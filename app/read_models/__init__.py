@@ -16,6 +16,12 @@ from app.read_models.runtime_health import (
     RuntimeHealthSnapshot,
     SubsystemHealth,
 )
+from app.read_models.timeline import (
+    TimelineCategory,
+    TimelineProjector,
+    TimelineReadModelSnapshot,
+    TimelineSeverity,
+)
 
 __all__ = [
     "DecisionProjector",
@@ -26,4 +32,8 @@ __all__ = [
     "RuntimeHealthProjector",
     "RuntimeHealthSnapshot",
     "SubsystemHealth",
+    "TimelineCategory",
+    "TimelineProjector",
+    "TimelineReadModelSnapshot",
+    "TimelineSeverity",
 ]
