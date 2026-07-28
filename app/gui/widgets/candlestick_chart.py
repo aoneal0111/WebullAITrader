@@ -149,8 +149,32 @@ class ChartTransform:
 
 
 @dataclass(frozen=True, slots=True)
+class ChartLayout:
+    left: float = 42.0
+    top: float = 16.0
+    right: float = 14.0
+    bottom: float = 28.0
+    minimum_width: float = 20.0
+    minimum_height: float = 40.0
+
+    def drawable_rect(
+        self,
+        canvas_width: float,
+        canvas_height: float,
+    ) -> tuple[float, float, float, float]:
+        return (
+            self.left,
+            self.top,
+            max(self.minimum_width, canvas_width - self.left - self.right),
+            max(self.minimum_height, canvas_height - self.top - self.bottom),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ChartCamera:
     """Build the viewport used for one chart render."""
+
+    layout: ChartLayout = ChartLayout()
 
     def build_viewport(
         self,
@@ -158,10 +182,10 @@ class ChartCamera:
         canvas_height: float,
         candles: tuple,
     ) -> ChartViewport:
-        left = 42.0
-        top = 16.0
-        width = max(20.0, canvas_width - 56.0)
-        height = max(40.0, canvas_height - 44.0)
+        left, top, width, height = self.layout.drawable_rect(
+            canvas_width,
+            canvas_height,
+        )
         low = min(float(candle.low) for candle in candles)
         high = max(float(candle.high) for candle in candles)
         step = width / max(len(candles), 1)
