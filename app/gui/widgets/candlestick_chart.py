@@ -218,8 +218,7 @@ class ChartRenderer:
 
         self._draw_grid(context)
         self._draw_axes(
-            painter,
-            viewport,
+            context,
         )
         self._draw_candles(
             painter,
@@ -249,9 +248,10 @@ class ChartRenderer:
 
     def _draw_axes(
         self,
-        painter: QPainter,
-        viewport: ChartViewport,
+        context: ChartRenderContext,
     ) -> None:
+        painter = context.painter
+        viewport = context.viewport
         left = viewport.left
         top = viewport.top
         width = viewport.width
