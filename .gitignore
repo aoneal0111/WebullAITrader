@@ -16,6 +16,7 @@ venv/
 .pytest_tmp/
 .pytest-temp/
 .pytest_cache/
+*_pytest_temp/
 
 # Logs
 *.log
