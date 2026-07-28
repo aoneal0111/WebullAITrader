@@ -15,6 +15,7 @@ from app.services import RuntimeService
 from app.read_models.decisions import DecisionProjector
 from app.read_models.runtime_health import RuntimeHealthProjector
 from app.read_models.timeline import TimelineProjector
+from app.read_models.trade_lifecycle import TradeLifecycleProjector
 
 
 class MainWindow(QMainWindow):
@@ -26,6 +27,7 @@ class MainWindow(QMainWindow):
         decision_projector: DecisionProjector,
         runtime_health_projector: RuntimeHealthProjector,
         timeline_projector: TimelineProjector,
+        trade_lifecycle_projector: TradeLifecycleProjector,
     ) -> None:
         super().__init__()
         self._bus = bus
@@ -34,6 +36,7 @@ class MainWindow(QMainWindow):
         self._decision_projector = decision_projector
         self._runtime_health_projector = runtime_health_projector
         self._timeline_projector = timeline_projector
+        self._trade_lifecycle_projector = trade_lifecycle_projector
         self._last_error = ""
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
@@ -132,6 +135,7 @@ class MainWindow(QMainWindow):
             self._decision_projector.snapshot(),
             self._runtime_health_projector.snapshot(),
             self._timeline_projector.snapshot(),
+            self._trade_lifecycle_projector.snapshot(),
         )
         self.dashboard.render(dashboard_snapshot)
         phase = state.runtime.phase

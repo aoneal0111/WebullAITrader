@@ -209,6 +209,33 @@ class TimelineSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class LifecycleEntryRow:
+    time: str
+    phase: str
+    summary: str
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleRow:
+    symbol: str
+    status: str
+    opened: str
+    closed: str
+    realized_pnl: str
+    entries: tuple[LifecycleEntryRow, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleExplorerSnapshot:
+    rows: tuple[LifecycleRow, ...]
+    selected_symbol: str | None
+
+    @classmethod
+    def initial(cls) -> "LifecycleExplorerSnapshot":
+        return cls(rows=(), selected_symbol=None)
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardSnapshot:
     runtime: RuntimeSnapshot
     portfolio: PortfolioSnapshot
@@ -218,6 +245,7 @@ class DashboardSnapshot:
     decisions: DecisionCenterSnapshot
     runtime_health: HealthCenterSnapshot
     timeline: TimelineSnapshot
+    lifecycle_explorer: LifecycleExplorerSnapshot
 
     @classmethod
     def initial(cls) -> "DashboardSnapshot":
@@ -230,4 +258,5 @@ class DashboardSnapshot:
             decisions=DecisionCenterSnapshot.initial(),
             runtime_health=HealthCenterSnapshot.initial(),
             timeline=TimelineSnapshot.initial(),
+            lifecycle_explorer=LifecycleExplorerSnapshot.initial(),
         )

@@ -18,6 +18,7 @@ from app.gui.widgets.portfolio_metrics import PortfolioMetrics
 from app.gui.widgets.runtime_ribbon import RuntimeRibbon
 from app.gui.widgets.runtime_health_panel import RuntimeHealthPanel
 from app.gui.widgets.timeline_panel import TimelinePanel
+from app.gui.widgets.trade_lifecycle_panel import TradeLifecyclePanel
 
 
 class DashboardPage(QWidget):
@@ -71,6 +72,7 @@ class DashboardPage(QWidget):
         self.decision_center = DecisionCenter()
         self.positions_panel = PositionsPanel()
         self.orders_panel = OrdersPanel()
+        self.trade_lifecycle_panel = TradeLifecyclePanel()
 
         body.addWidget(
             SectionPanel(
@@ -112,6 +114,17 @@ class DashboardPage(QWidget):
             2,
         )
 
+        body.addWidget(
+            SectionPanel(
+                "Trade Lifecycle Explorer - Read Only",
+                self.trade_lifecycle_panel,
+            ),
+            2,
+            0,
+            1,
+            3,
+        )
+
         body.setColumnStretch(0, 2)
         body.setColumnStretch(1, 2)
         body.setColumnStretch(2, 3)
@@ -138,3 +151,6 @@ class DashboardPage(QWidget):
         self.decision_center.render(snapshot.decisions)
         self.positions_panel.render(snapshot.positions)
         self.orders_panel.render(snapshot.orders)
+        self.trade_lifecycle_panel.render(
+            snapshot.lifecycle_explorer
+        )

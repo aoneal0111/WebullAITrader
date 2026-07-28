@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
+from decimal import Decimal
+
 from app.gui.formatters import format_orders, format_positions
 from app.gui.models import (
     ActivityEntry,
@@ -9,6 +12,9 @@ from app.gui.models import (
     DecisionRow,
     HealthBadgeSnapshot,
     HealthCenterSnapshot,
+    LifecycleEntryRow,
+    LifecycleExplorerSnapshot,
+    LifecycleRow,
     PortfolioSnapshot,
     RuntimeSnapshot,
     RuntimeState,
@@ -29,6 +35,10 @@ from app.read_models.timeline import (
     TimelineEntry as TimelineReadModelEntry,
     TimelineReadModelSnapshot,
 )
+from app.read_models.trade_lifecycle import (
+    TradeLifecycleEntry,
+    TradeLifecycleSnapshot,
+)
 
 
 def project_dashboard(
@@ -36,6 +46,7 @@ def project_dashboard(
     decisions: DecisionsReadModelSnapshot | None = None,
     runtime_health: RuntimeHealthSnapshot | None = None,
     timeline: TimelineReadModelSnapshot | None = None,
+    trade_lifecycle: TradeLifecycleSnapshot | None = None,
 ) -> DashboardSnapshot:
     if not isinstance(state, ApplicationState):
         raise TypeError("state must be an ApplicationState")
@@ -51,6 +62,12 @@ def project_dashboard(
         timeline = TimelineReadModelSnapshot.initial()
     if not isinstance(timeline, TimelineReadModelSnapshot):
         raise TypeError("timeline must be a TimelineReadModelSnapshot")
+    if trade_lifecycle is None:
+        trade_lifecycle = TradeLifecycleSnapshot.initial()
+    if not isinstance(trade_lifecycle, TradeLifecycleSnapshot):
+        raise TypeError(
+            "trade_lifecycle must be a TradeLifecycleSnapshot"
+        )
 
     runtime = state.runtime
     orders_read_model = project_orders_read_model(state)
@@ -184,6 +201,27 @@ def project_dashboard(
             ),
             max_entries=timeline.max_entries,
         ),
+        lifecycle_explorer=LifecycleExplorerSnapshot(
+            rows=tuple(
+                LifecycleRow(
+                    symbol=lifecycle.symbol,
+                    status=lifecycle.status.value,
+                    opened=_optional_time(lifecycle.opened_at),
+                    closed=_optional_time(lifecycle.closed_at),
+                    realized_pnl=_signed_money(lifecycle.realized_pnl),
+                    entries=tuple(
+                        LifecycleEntryRow(
+                            time=_optional_time(entry.timestamp),
+                            phase=entry.phase.value.replace("_", " "),
+                            summary=_lifecycle_summary(entry),
+                        )
+                        for entry in lifecycle.entries
+                    ),
+                )
+                for lifecycle in trade_lifecycle.lifecycles
+            ),
+            selected_symbol=trade_lifecycle.selected_symbol,
+        ),
     )
 
 
@@ -232,3 +270,31 @@ def _timeline_summary(entry: TimelineReadModelEntry) -> str:
     )
     suffix = "" if not context else f" ({' | '.join(context)})"
     return f"{entry.title}: {entry.description}{suffix}"
+
+
+def _optional_time(value: datetime | None) -> str:
+    return "--" if value is None else f"{value.astimezone():%H:%M:%S}"
+
+
+def _lifecycle_summary(entry: TradeLifecycleEntry) -> str:
+    identifiers = tuple(
+        value
+        for value in (
+            None if entry.order_id is None else f"Order {entry.order_id}",
+            (
+                None
+                if entry.position_id is None
+                else f"Position {entry.position_id}"
+            ),
+            None if entry.cycle is None else f"Cycle {entry.cycle}",
+        )
+        if value is not None
+    )
+    suffix = "" if not identifiers else f" ({' | '.join(identifiers)})"
+    return f"{entry.title}: {entry.description}{suffix}"
+
+
+def _signed_money(value: Decimal) -> str:
+    if value > 0:
+        return f"+${value:,.2f}"
+    return _money(value)

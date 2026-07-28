@@ -17,6 +17,10 @@ from app.read_models.runtime_health import (
     RuntimeHealthProjector,
 )
 from app.read_models.timeline import TimelineProjector
+from app.read_models.trade_lifecycle import (
+    TradeLifecycleProjector,
+    TradeLifecycleStatus,
+)
 from app.services import RuntimeServiceStatus
 
 
@@ -52,6 +56,10 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
             composition.timeline_projector,
             TimelineProjector,
         )
+        assert isinstance(
+            composition.trade_lifecycle_projector,
+            TradeLifecycleProjector,
+        )
     finally:
         composition.close(timeout_seconds=1.0)
 
@@ -70,6 +78,10 @@ def test_desktop_composition_uses_fresh_dependencies() -> None:
             is not second.runtime_health_projector
         )
         assert first.timeline_projector is not second.timeline_projector
+        assert (
+            first.trade_lifecycle_projector
+            is not second.trade_lifecycle_projector
+        )
         assert first.runtime_service is not second.runtime_service
     finally:
         first.close(timeout_seconds=1.0)
@@ -163,7 +175,7 @@ def test_composed_state_notifications_observe_latest_health_snapshot() -> None:
 def test_close_releases_all_composed_bus_subscriptions() -> None:
     composition = create_desktop_composition()
 
-    assert composition.bus.subscription_count == 5
+    assert composition.bus.subscription_count == 6
     composition.close(timeout_seconds=1.0)
 
     assert composition.bus.subscription_count == 0
@@ -190,6 +202,53 @@ def test_state_notifications_observe_latest_timeline_entry() -> None:
         )
 
         assert observed_titles == [None, "Runtime started"]
+    finally:
+        composition.state_store.unsubscribe(listener_id)
+        composition.close(timeout_seconds=1.0)
+
+
+def test_state_notifications_observe_latest_trade_lifecycle() -> None:
+    composition = create_desktop_composition()
+    observed_statuses: list[TradeLifecycleStatus | None] = []
+    listener_id = composition.state_store.subscribe(
+        lambda state: observed_statuses.append(
+            (
+                composition.trade_lifecycle_projector
+                .snapshot()
+                .lifecycles[0]
+                .status
+                if composition.trade_lifecycle_projector
+                .snapshot()
+                .lifecycles
+                else None
+            )
+        )
+    )
+    try:
+        composition.bus.publish(
+            DecisionsUpdated(
+                cycle=1,
+                decisions=(
+                    OperationsDecision(
+                        symbol="AAPL",
+                        action="ENTER_LONG",
+                        confidence=80,
+                        score=Decimal("0.8"),
+                        reasons=("approved",),
+                        source_action="BUY",
+                        position_quantity=Decimal("0"),
+                        strategy_version="1.0",
+                        decided_at=NOW,
+                    ),
+                ),
+                occurred_at=NOW,
+            )
+        )
+
+        assert observed_statuses == [
+            None,
+            TradeLifecycleStatus.OPEN,
+        ]
     finally:
         composition.state_store.unsubscribe(listener_id)
         composition.close(timeout_seconds=1.0)
