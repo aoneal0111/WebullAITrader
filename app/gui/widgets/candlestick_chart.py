@@ -221,9 +221,7 @@ class ChartRenderer:
             context,
         )
         self._draw_candles(
-            painter,
-            viewport,
-            snapshot,
+            context,
         )
         self._draw_markers(
             painter,
@@ -266,10 +264,12 @@ class ChartRenderer:
 
     def _draw_candles(
         self,
-        painter: QPainter,
-        viewport: ChartViewport,
-        snapshot: CandleSeriesSnapshot,
+        context: ChartRenderContext,
     ) -> None:
+        painter = context.painter
+        viewport = context.viewport
+        snapshot = context.snapshot
+
         candles = snapshot.candles
         transform = ChartTransform(viewport)
         step = viewport.step
