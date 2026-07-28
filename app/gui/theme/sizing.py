@@ -1,0 +1,23 @@
+from __future__ import annotations
+
+
+class Sizing:
+    WINDOW_MIN_WIDTH = 1100
+    WINDOW_MIN_HEIGHT = 700
+    WINDOW_DEFAULT_WIDTH = 1500
+    WINDOW_DEFAULT_HEIGHT = 920
+    SIDEBAR_MIN_WIDTH = 168
+    SIDEBAR_MAX_WIDTH = 224
+    SIDEBAR_COLLAPSED_WIDTH = 56
+    CARD_MIN_WIDTH = 132
+    CONTROL_HEIGHT = 34
+    STATUS_BAR_HEIGHT = 28
+    CHART_MIN_HEIGHT = 300
+
+
+class Radius:
+    SM = 5
+    MD = 8
+    LG = 12
+    PILL = 999
+
