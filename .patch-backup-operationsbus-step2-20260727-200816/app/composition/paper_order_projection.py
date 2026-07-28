@@ -3,17 +3,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from decimal import Decimal
 
-from app.operations_core import (
-    OperationsBus,
-    OperationsOrder,
-    OrdersUpdated,
-    PaperOrderLifecycleUpdated,
-)
+from app.operations_core import OperationsBus, OperationsOrder, OrdersUpdated
 from app.paper_trading.order_book import PaperOrderBook
-from app.paper_trading.order_lifecycle import (
-    OrderLifecycleEvent,
-    PaperOrderLifecycleCoordinator,
-)
+from app.paper_trading.order_lifecycle import OrderLifecycleEvent
 from app.paper_trading.order_models import PaperOrder
 
 PaperOrderLifecycleSink = Callable[[OrderLifecycleEvent], None]
@@ -58,18 +50,6 @@ def create_paper_order_lifecycle_publisher(
         if not isinstance(event, OrderLifecycleEvent):
             raise TypeError("event must be an OrderLifecycleEvent")
         bus.publish(
-            PaperOrderLifecycleUpdated(
-                source=normalized_source,
-                occurred_at=event.occurred_at,
-                order_id=event.order_id,
-                previous_status=event.previous_status.value,
-                current_status=event.current_status.value,
-                filled_quantity=event.filled_quantity,
-                remaining_quantity=event.remaining_quantity,
-                fill_price=event.fill_price,
-            )
-        )
-        bus.publish(
             OrdersUpdated(
                 source=normalized_source,
                 orders=map_paper_orders(order_book.history()),
@@ -78,26 +58,6 @@ def create_paper_order_lifecycle_publisher(
         )
 
     return publish_order_lifecycle
-
-
-def create_operations_paper_order_lifecycle_coordinator(
-    bus: OperationsBus,
-    order_book: PaperOrderBook,
-    *,
-    source: str = "paper-order-lifecycle",
-    clock=None,
-) -> PaperOrderLifecycleCoordinator:
-    """Compose lifecycle execution with deterministic OperationsBus events."""
-    publisher = create_paper_order_lifecycle_publisher(
-        bus,
-        order_book,
-        source=source,
-    )
-    return PaperOrderLifecycleCoordinator(
-        order_book,
-        listeners=(publisher,),
-        clock=clock,
-    )
 
 
 def _map_paper_order(order: PaperOrder) -> OperationsOrder:
@@ -117,7 +77,6 @@ def _decimal_text(value: Decimal) -> str:
 
 __all__ = [
     "PaperOrderLifecycleSink",
-    "create_operations_paper_order_lifecycle_coordinator",
     "create_paper_order_lifecycle_publisher",
     "map_paper_orders",
 ]

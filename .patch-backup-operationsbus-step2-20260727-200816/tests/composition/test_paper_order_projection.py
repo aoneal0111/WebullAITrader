@@ -4,16 +4,11 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from app.composition.paper_order_projection import (
-    create_operations_paper_order_lifecycle_coordinator,
     create_paper_order_lifecycle_publisher,
     map_paper_orders,
 )
 from app.momentum_scanner import AssetClass
-from app.operations_core import (
-    OperationsBus,
-    OrdersUpdated,
-    PaperOrderLifecycleUpdated,
-)
+from app.operations_core import OperationsBus, OrdersUpdated
 from app.paper_trading.order_book import PaperOrderBook
 from app.paper_trading.order_lifecycle import OrderLifecycleEvent
 from app.paper_trading.order_models import (
@@ -66,8 +61,6 @@ def test_lifecycle_publisher_emits_current_order_book_snapshot() -> None:
     book.submit(first)
     book.submit(second)
     received: list[OrdersUpdated] = []
-    transitions: list[PaperOrderLifecycleUpdated] = []
-    bus.subscribe(PaperOrderLifecycleUpdated, transitions.append)
     bus.subscribe(OrdersUpdated, received.append)
     publisher = create_paper_order_lifecycle_publisher(bus, book)
     occurred_at = NOW + timedelta(seconds=2)
@@ -83,16 +76,6 @@ def test_lifecycle_publisher_emits_current_order_book_snapshot() -> None:
             fill_price=D("192.50"),
         )
     )
-
-    assert len(transitions) == 1
-    transition = transitions[0]
-    assert transition.order_id == "PAPER-1"
-    assert transition.previous_status == "ACCEPTED"
-    assert transition.current_status == "FILLED"
-    assert transition.filled_quantity == D("10")
-    assert transition.remaining_quantity == D("0")
-    assert transition.fill_price == D("192.50")
-    assert transition.occurred_at == occurred_at
 
     assert len(received) == 1
     event = received[0]
@@ -122,31 +105,3 @@ def test_projection_rejects_mutable_or_invalid_inputs() -> None:
         assert str(exc) == "event must be an OrderLifecycleEvent"
     else:
         raise AssertionError("invalid lifecycle event should be rejected")
-
-
-def test_composed_coordinator_publishes_transition_then_snapshot() -> None:
-    bus = OperationsBus()
-    book = PaperOrderBook()
-    order = accepted_order("PAPER-1")
-    book.submit(order)
-    published: list[object] = []
-    bus.subscribe(PaperOrderLifecycleUpdated, published.append)
-    bus.subscribe(OrdersUpdated, published.append)
-    coordinator = create_operations_paper_order_lifecycle_coordinator(
-        bus,
-        book,
-        clock=lambda: NOW + timedelta(seconds=2),
-    )
-
-    updated = coordinator.process_order(
-        order.order_id,
-        market_price=D("192.50"),
-    )
-
-    assert updated.status is OrderStatus.FILLED
-    assert [type(event) for event in published] == [
-        PaperOrderLifecycleUpdated,
-        OrdersUpdated,
-    ]
-    assert published[0].order_id == order.order_id
-    assert published[1].orders[0].status == "FILLED"

@@ -96,32 +96,3 @@ def test_orders_updated_rejects_invalid_tuple_members() -> None:
             orders=("not-an-order",),
             occurred_at=NOW,
         )
-
-def test_paper_order_lifecycle_updated_validates_payload() -> None:
-    from datetime import UTC, datetime
-    from decimal import Decimal
-
-    import pytest
-
-    from app.operations_core import PaperOrderLifecycleUpdated
-
-    event = PaperOrderLifecycleUpdated(
-        occurred_at=datetime(2026, 7, 28, tzinfo=UTC),
-        order_id="PAPER-1",
-        previous_status="ACCEPTED",
-        current_status="FILLED",
-        filled_quantity=Decimal("10"),
-        remaining_quantity=Decimal("0"),
-        fill_price=Decimal("100"),
-    )
-    assert event.current_status == "FILLED"
-
-    with pytest.raises(ValueError, match="remaining_quantity"):
-        PaperOrderLifecycleUpdated(
-            occurred_at=datetime(2026, 7, 28, tzinfo=UTC),
-            order_id="PAPER-1",
-            previous_status="ACCEPTED",
-            current_status="FILLED",
-            filled_quantity=Decimal("10"),
-            remaining_quantity=Decimal("-1"),
-        )

@@ -113,39 +113,6 @@ class OperationsPosition:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class PaperOrderLifecycleUpdated(OperationsEvent):
-    """One deterministic paper-order lifecycle transition."""
-
-    order_id: str
-    previous_status: str
-    current_status: str
-    filled_quantity: Decimal
-    remaining_quantity: Decimal
-    fill_price: Decimal | None = None
-
-    def __post_init__(self) -> None:
-        OperationsEvent.__post_init__(self)
-
-        for field_name in (
-            "order_id",
-            "previous_status",
-            "current_status",
-        ):
-            value = getattr(self, field_name)
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError(f"{field_name} must not be empty")
-            if value != value.strip():
-                raise ValueError(f"{field_name} must be stripped")
-
-        if self.filled_quantity < Decimal("0"):
-            raise ValueError("filled_quantity must be nonnegative")
-        if self.remaining_quantity < Decimal("0"):
-            raise ValueError("remaining_quantity must be nonnegative")
-        if self.fill_price is not None and self.fill_price <= Decimal("0"):
-            raise ValueError("fill_price must be positive when provided")
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
 class OrdersUpdated(OperationsEvent):
     """Replace the Operations Center order slice with an immutable snapshot."""
 
