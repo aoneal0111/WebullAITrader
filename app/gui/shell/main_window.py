@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QStatusBar, QVBoxLayout, QWidget
 
@@ -8,6 +11,7 @@ from app.gui.pages.dashboard import DashboardPage
 from app.gui.pages.orders import OrdersPage
 from app.gui.pages.placeholder import PlaceholderPage
 from app.gui.projections.dashboard_projection import project_dashboard
+from app.gui.replay_bridge import QtReplayBridge
 from app.gui.shell.sidebar import Sidebar
 from app.gui.state_bridge import QtStateBridge
 from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus, OperatorSelectionEvent, RuntimePhase
@@ -17,6 +21,13 @@ from app.read_models.operator_workspace import OperatorWorkspaceProjector
 from app.read_models.runtime_health import RuntimeHealthProjector
 from app.read_models.timeline import TimelineProjector
 from app.read_models.trade_lifecycle import TradeLifecycleProjector
+from app.composition.desktop import ReplayProjectionGraph
+from app.replay import (
+    ReplayController,
+    ReplaySnapshot,
+    ReplayState,
+    ReplayStatus,
+)
 
 
 class MainWindow(QMainWindow):
@@ -30,6 +41,8 @@ class MainWindow(QMainWindow):
         timeline_projector: TimelineProjector,
         trade_lifecycle_projector: TradeLifecycleProjector,
         operator_workspace_projector: OperatorWorkspaceProjector,
+        replay_controller: ReplayController,
+        replay_projections: ReplayProjectionGraph,
     ) -> None:
         super().__init__()
         self._bus = bus
@@ -40,9 +53,19 @@ class MainWindow(QMainWindow):
         self._timeline_projector = timeline_projector
         self._trade_lifecycle_projector = trade_lifecycle_projector
         self._operator_workspace_projector = operator_workspace_projector
+        self._replay_controller = replay_controller
+        self._replay_projections = replay_projections
         self._last_error = ""
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
+        self._replay_bridge = QtReplayBridge(replay_controller, self)
+        self._replay_bridge.replay_changed.connect(
+            self._render_replay
+        )
+        self._replay_timer = QTimer(self)
+        self._replay_timer.setInterval(100)
+        self._replay_timer.timeout.connect(self._advance_replay)
+        self._replay_timer.start()
         self.setWindowTitle("Atlas — WebullAITrader")
         self.setMinimumSize(1180, 760)
         self.resize(1440, 900)
@@ -86,6 +109,27 @@ class MainWindow(QMainWindow):
         self.dashboard = DashboardPage()
         self.dashboard.selection_requested.connect(
             self._publish_operator_selection
+        )
+        self.dashboard.replay_play_requested.connect(
+            self._replay_controller.play
+        )
+        self.dashboard.replay_pause_requested.connect(
+            self._replay_controller.pause
+        )
+        self.dashboard.replay_stop_requested.connect(
+            self._replay_controller.stop
+        )
+        self.dashboard.replay_step_forward_requested.connect(
+            self._replay_controller.step_forward
+        )
+        self.dashboard.replay_step_backward_requested.connect(
+            self._replay_controller.step_backward
+        )
+        self.dashboard.replay_jump_requested.connect(
+            self._replay_controller.seek
+        )
+        self.dashboard.replay_speed_requested.connect(
+            self._replay_controller.set_speed
         )
         self.pages.addWidget(self.dashboard)
         self.pages.addWidget(
@@ -136,13 +180,39 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Emergency stop requested. Runtime shutdown in progress.", 5000)
 
     def _render_state(self, state: ApplicationState) -> None:
+        replay = self._replay_controller.snapshot()
+        if replay.state is ReplayState.REPLAY:
+            source_state = self._replay_projections.state_store.snapshot()
+            decision_projector = (
+                self._replay_projections.decision_projector
+            )
+            health_projector = (
+                self._replay_projections.runtime_health_projector
+            )
+            timeline_projector = (
+                self._replay_projections.timeline_projector
+            )
+            lifecycle_projector = (
+                self._replay_projections.trade_lifecycle_projector
+            )
+            workspace_projector = (
+                self._replay_projections.operator_workspace_projector
+            )
+        else:
+            source_state = state
+            decision_projector = self._decision_projector
+            health_projector = self._runtime_health_projector
+            timeline_projector = self._timeline_projector
+            lifecycle_projector = self._trade_lifecycle_projector
+            workspace_projector = self._operator_workspace_projector
         dashboard_snapshot = project_dashboard(
-            state,
-            self._decision_projector.snapshot(),
-            self._runtime_health_projector.snapshot(),
-            self._timeline_projector.snapshot(),
-            self._trade_lifecycle_projector.snapshot(),
-            self._operator_workspace_projector.snapshot(),
+            source_state,
+            decision_projector.snapshot(),
+            health_projector.snapshot(),
+            timeline_projector.snapshot(),
+            lifecycle_projector.snapshot(),
+            workspace_projector.snapshot(),
+            replay,
         )
         self.dashboard.render(dashboard_snapshot)
         phase = state.runtime.phase
@@ -162,7 +232,25 @@ class MainWindow(QMainWindow):
             raise TypeError(
                 "selection event must be an OperatorSelectionEvent"
             )
-        self._bus.publish(event)
+        if (
+            self._replay_controller.snapshot().state
+            is ReplayState.REPLAY
+        ):
+            self._replay_projections.bus.publish(event)
+            self._render_state(self._state_store.snapshot())
+        else:
+            self._bus.publish(event)
+
+    def _render_replay(self, snapshot: ReplaySnapshot) -> None:
+        del snapshot
+        self._render_state(self._state_store.snapshot())
+
+    def _advance_replay(self) -> None:
+        if (
+            self._replay_controller.snapshot().status
+            is ReplayStatus.PLAYING
+        ):
+            self._replay_controller.advance(Decimal("0.1"))
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self._runtime_service.close(timeout_seconds=5.0):
@@ -170,5 +258,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self._state_bridge.close()
+        self._replay_bridge.close()
+        self._replay_timer.stop()
         event.accept()
 

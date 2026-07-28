@@ -22,6 +22,7 @@ from app.gui.widgets.orders_panel import OrdersPanel
 from app.gui.widgets.panel import SectionPanel
 from app.gui.widgets.positions_panel import PositionsPanel
 from app.gui.widgets.portfolio_metrics import PortfolioMetrics
+from app.gui.widgets.replay_panel import ReplayPanel
 from app.gui.widgets.runtime_ribbon import RuntimeRibbon
 from app.gui.widgets.runtime_health_panel import RuntimeHealthPanel
 from app.gui.widgets.timeline_panel import TimelinePanel
@@ -30,6 +31,13 @@ from app.gui.widgets.trade_lifecycle_panel import TradeLifecyclePanel
 
 class DashboardPage(QWidget):
     selection_requested = Signal(object)
+    replay_play_requested = Signal()
+    replay_pause_requested = Signal()
+    replay_stop_requested = Signal()
+    replay_step_forward_requested = Signal()
+    replay_step_backward_requested = Signal()
+    replay_jump_requested = Signal(int)
+    replay_speed_requested = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -62,6 +70,35 @@ class DashboardPage(QWidget):
 
         self.runtime_ribbon = RuntimeRibbon()
         root.addWidget(self.runtime_ribbon)
+
+        self.replay_panel = ReplayPanel()
+        self.replay_panel.play_requested.connect(
+            self.replay_play_requested
+        )
+        self.replay_panel.pause_requested.connect(
+            self.replay_pause_requested
+        )
+        self.replay_panel.stop_requested.connect(
+            self.replay_stop_requested
+        )
+        self.replay_panel.step_forward_requested.connect(
+            self.replay_step_forward_requested
+        )
+        self.replay_panel.step_backward_requested.connect(
+            self.replay_step_backward_requested
+        )
+        self.replay_panel.jump_requested.connect(
+            self.replay_jump_requested
+        )
+        self.replay_panel.speed_requested.connect(
+            self.replay_speed_requested
+        )
+        root.addWidget(
+            SectionPanel(
+                "Session Replay",
+                self.replay_panel,
+            )
+        )
 
         self.portfolio_metrics = PortfolioMetrics()
         root.addWidget(self.portfolio_metrics)
@@ -159,6 +196,7 @@ class DashboardPage(QWidget):
         self.runtime_ribbon.render(snapshot.runtime)
         self.portfolio_metrics.render(snapshot.portfolio)
         self.runtime_health_panel.render(snapshot.runtime_health)
+        self.replay_panel.render(snapshot.replay)
 
         level = (
             "good"

@@ -24,6 +24,8 @@ def main() -> int:
         composition.timeline_projector,
         composition.trade_lifecycle_projector,
         composition.operator_workspace_projector,
+        composition.replay_controller,
+        composition.replay_projections,
     )
     window.show()
 
