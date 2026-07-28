@@ -4,6 +4,13 @@ from app.backtesting.models import *
 from app.backtesting.report import render_text_report
 from app.backtesting.results import BacktestResult, checkpoint_from_json
 from app.backtesting.runner import resume_backtest, run_backtest, run_until
+from app.backtesting.market_feed import (
+    HistoricalMarketFeed,
+    InMemoryHistoricalMarketFeed,
+)
+from app.backtesting.playback_engine import PlaybackEngine
+from app.backtesting.repository import ExperimentRepository
+from app.backtesting.comparison import ComparisonEngine
 
 __all__ = ["BacktestResult", "checkpoint_from_json", "render_text_report", "resume_backtest", "run_backtest", "run_until"]
 
@@ -27,4 +34,9 @@ __all__ += [
     "compare_historical_exit_methods",
     "evaluate_fixed_target_entries",
     "evaluate_trailing_entries",
+    "HistoricalMarketFeed",
+    "InMemoryHistoricalMarketFeed",
+    "PlaybackEngine",
+    "ExperimentRepository",
+    "ComparisonEngine",
 ]
