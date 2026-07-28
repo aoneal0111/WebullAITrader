@@ -20,6 +20,7 @@ def main() -> int:
         composition.state_store,
         composition.runtime_service,
         composition.decision_projector,
+        composition.runtime_health_projector,
     )
     window.show()
 

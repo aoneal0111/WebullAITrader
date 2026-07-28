@@ -17,6 +17,7 @@ from app.gui.widgets.panel import SectionPanel
 from app.gui.widgets.positions_panel import PositionsPanel
 from app.gui.widgets.portfolio_metrics import PortfolioMetrics
 from app.gui.widgets.runtime_ribbon import RuntimeRibbon
+from app.gui.widgets.runtime_health_panel import RuntimeHealthPanel
 
 
 class DashboardPage(QWidget):
@@ -54,6 +55,14 @@ class DashboardPage(QWidget):
 
         self.portfolio_metrics = PortfolioMetrics()
         root.addWidget(self.portfolio_metrics)
+
+        self.runtime_health_panel = RuntimeHealthPanel()
+        root.addWidget(
+            SectionPanel(
+                "Runtime Health Center - Read Only",
+                self.runtime_health_panel,
+            )
+        )
 
         body = QGridLayout()
         body.setSpacing(12)
@@ -112,6 +121,7 @@ class DashboardPage(QWidget):
     def render(self, snapshot: DashboardSnapshot) -> None:
         self.runtime_ribbon.render(snapshot.runtime)
         self.portfolio_metrics.render(snapshot.portfolio)
+        self.runtime_health_panel.render(snapshot.runtime_health)
 
         level = (
             "good"

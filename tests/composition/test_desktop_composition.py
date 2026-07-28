@@ -6,8 +6,16 @@ from app.composition import (
     DesktopComposition,
     create_desktop_composition,
 )
-from app.operations_core import DecisionsUpdated, OperationsDecision
+from app.operations_core import (
+    DecisionsUpdated,
+    OperationsDecision,
+    RuntimeStarted,
+)
 from app.read_models.decisions import DecisionProjector
+from app.read_models.runtime_health import (
+    OverallHealth,
+    RuntimeHealthProjector,
+)
 from app.services import RuntimeServiceStatus
 
 
@@ -35,6 +43,10 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
         assert composition.state_store.snapshot().revision == 0
         assert isinstance(composition.decision_projector, DecisionProjector)
         assert composition.decision_projector.snapshot().decisions == ()
+        assert isinstance(
+            composition.runtime_health_projector,
+            RuntimeHealthProjector,
+        )
     finally:
         composition.close(timeout_seconds=1.0)
 
@@ -48,6 +60,10 @@ def test_desktop_composition_uses_fresh_dependencies() -> None:
         assert first.bus is not second.bus
         assert first.state_store is not second.state_store
         assert first.decision_projector is not second.decision_projector
+        assert (
+            first.runtime_health_projector
+            is not second.runtime_health_projector
+        )
         assert first.runtime_service is not second.runtime_service
     finally:
         first.close(timeout_seconds=1.0)
@@ -111,3 +127,37 @@ def test_composed_state_notifications_observe_latest_decision_snapshot() -> None
     finally:
         composition.state_store.unsubscribe(listener_id)
         composition.close(timeout_seconds=1.0)
+
+
+def test_composed_state_notifications_observe_latest_health_snapshot() -> None:
+    composition = create_desktop_composition()
+    observed_health: list[OverallHealth] = []
+    listener_id = composition.state_store.subscribe(
+        lambda state: observed_health.append(
+            composition.runtime_health_projector.snapshot().overall_health
+        )
+    )
+    try:
+        composition.bus.publish(
+            RuntimeStarted(
+                active_model="atlas",
+                occurred_at=NOW,
+            )
+        )
+
+        assert observed_health == [
+            OverallHealth.UNKNOWN,
+            OverallHealth.HEALTHY,
+        ]
+    finally:
+        composition.state_store.unsubscribe(listener_id)
+        composition.close(timeout_seconds=1.0)
+
+
+def test_close_releases_all_composed_bus_subscriptions() -> None:
+    composition = create_desktop_composition()
+
+    assert composition.bus.subscription_count == 4
+    composition.close(timeout_seconds=1.0)
+
+    assert composition.bus.subscription_count == 0

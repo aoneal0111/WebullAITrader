@@ -13,6 +13,7 @@ from app.gui.state_bridge import QtStateBridge
 from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus, RuntimePhase
 from app.services import RuntimeService
 from app.read_models.decisions import DecisionProjector
+from app.read_models.runtime_health import RuntimeHealthProjector
 
 
 class MainWindow(QMainWindow):
@@ -22,12 +23,14 @@ class MainWindow(QMainWindow):
         state_store: ApplicationStateStore,
         runtime_service: RuntimeService,
         decision_projector: DecisionProjector,
+        runtime_health_projector: RuntimeHealthProjector,
     ) -> None:
         super().__init__()
         self._bus = bus
         self._state_store = state_store
         self._runtime_service = runtime_service
         self._decision_projector = decision_projector
+        self._runtime_health_projector = runtime_health_projector
         self._last_error = ""
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
@@ -124,6 +127,7 @@ class MainWindow(QMainWindow):
         dashboard_snapshot = project_dashboard(
             state,
             self._decision_projector.snapshot(),
+            self._runtime_health_projector.snapshot(),
         )
         self.dashboard.render(dashboard_snapshot)
         phase = state.runtime.phase

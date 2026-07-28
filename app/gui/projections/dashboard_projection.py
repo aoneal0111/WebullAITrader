@@ -7,6 +7,8 @@ from app.gui.models import (
     DashboardSnapshot,
     DecisionCenterSnapshot,
     DecisionRow,
+    HealthBadgeSnapshot,
+    HealthCenterSnapshot,
     PortfolioSnapshot,
     RuntimeSnapshot,
     RuntimeState,
@@ -16,11 +18,17 @@ from app.read_models.orders import project_orders_read_model
 from app.read_models.positions import project_positions_read_model
 from app.read_models.portfolio import project_portfolio_read_model
 from app.read_models.decisions import DecisionsReadModelSnapshot
+from app.read_models.runtime_health import (
+    OverallHealth,
+    RuntimeHealthSnapshot,
+    SubsystemHealth,
+)
 
 
 def project_dashboard(
     state: ApplicationState,
     decisions: DecisionsReadModelSnapshot | None = None,
+    runtime_health: RuntimeHealthSnapshot | None = None,
 ) -> DashboardSnapshot:
     if not isinstance(state, ApplicationState):
         raise TypeError("state must be an ApplicationState")
@@ -28,6 +36,10 @@ def project_dashboard(
         decisions = DecisionsReadModelSnapshot.initial()
     if not isinstance(decisions, DecisionsReadModelSnapshot):
         raise TypeError("decisions must be a DecisionsReadModelSnapshot")
+    if runtime_health is None:
+        runtime_health = RuntimeHealthSnapshot.initial()
+    if not isinstance(runtime_health, RuntimeHealthSnapshot):
+        raise TypeError("runtime_health must be a RuntimeHealthSnapshot")
 
     runtime = state.runtime
     orders_read_model = project_orders_read_model(state)
@@ -94,6 +106,61 @@ def project_dashboard(
                 for decision in decisions.decisions
             ),
         ),
+        runtime_health=HealthCenterSnapshot(
+            overall_health=_health_badge(
+                "Overall Health",
+                runtime_health.overall_health.value,
+                runtime_health.overall_health,
+            ),
+            runtime_state=_health_badge(
+                "Runtime State",
+                runtime_health.runtime_state,
+                runtime_health.overall_health,
+            ),
+            broker_status=_subsystem_badge(
+                "Broker Status",
+                runtime_health.broker,
+            ),
+            scanner_status=_subsystem_badge(
+                "Scanner Status",
+                runtime_health.scanner,
+            ),
+            market_data_status=_subsystem_badge(
+                "Market Data Status",
+                runtime_health.market_data,
+            ),
+            operations_bus_status=_subsystem_badge(
+                "Operations Bus Status",
+                runtime_health.operations_bus,
+            ),
+            current_cycle=HealthBadgeSnapshot(
+                "Current Cycle",
+                str(runtime_health.current_cycle.value),
+                "neutral",
+            ),
+            last_completed_cycle=HealthBadgeSnapshot(
+                "Last Completed Cycle",
+                str(runtime_health.last_completed_cycle.value),
+                "neutral",
+            ),
+            last_update_time=HealthBadgeSnapshot(
+                "Last Update Time",
+                (
+                    "NEVER"
+                    if runtime_health.last_update_time is None
+                    else f"{runtime_health.last_update_time.astimezone():%H:%M:%S}"
+                ),
+                "neutral",
+            ),
+            warnings=tuple(
+                HealthBadgeSnapshot("Warning", warning, "warn")
+                for warning in runtime_health.warnings
+            ),
+            errors=tuple(
+                HealthBadgeSnapshot("Error", error, "danger")
+                for error in runtime_health.errors
+            ),
+        ),
     )
 
 
@@ -104,3 +171,28 @@ def _money(value) -> str:
 
 def _percent(value) -> str:
     return f"{value:.2f}%"
+
+
+def _subsystem_badge(
+    label: str,
+    subsystem: SubsystemHealth,
+) -> HealthBadgeSnapshot:
+    return _health_badge(
+        label,
+        subsystem.status,
+        subsystem.health,
+    )
+
+
+def _health_badge(
+    label: str,
+    value: str,
+    health: OverallHealth,
+) -> HealthBadgeSnapshot:
+    levels = {
+        OverallHealth.UNKNOWN: "neutral",
+        OverallHealth.HEALTHY: "good",
+        OverallHealth.DEGRADED: "warn",
+        OverallHealth.UNHEALTHY: "danger",
+    }
+    return HealthBadgeSnapshot(label, value, levels[health])

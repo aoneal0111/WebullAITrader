@@ -117,6 +117,80 @@ class DecisionCenterSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class HealthBadgeSnapshot:
+    label: str
+    value: str
+    level: str
+
+
+@dataclass(frozen=True, slots=True)
+class HealthCenterSnapshot:
+    overall_health: HealthBadgeSnapshot
+    runtime_state: HealthBadgeSnapshot
+    broker_status: HealthBadgeSnapshot
+    scanner_status: HealthBadgeSnapshot
+    market_data_status: HealthBadgeSnapshot
+    operations_bus_status: HealthBadgeSnapshot
+    current_cycle: HealthBadgeSnapshot
+    last_completed_cycle: HealthBadgeSnapshot
+    last_update_time: HealthBadgeSnapshot
+    warnings: tuple[HealthBadgeSnapshot, ...]
+    errors: tuple[HealthBadgeSnapshot, ...]
+
+    @classmethod
+    def initial(cls) -> "HealthCenterSnapshot":
+        return cls(
+            overall_health=HealthBadgeSnapshot(
+                "Overall Health",
+                "UNKNOWN",
+                "neutral",
+            ),
+            runtime_state=HealthBadgeSnapshot(
+                "Runtime State",
+                "STOPPED",
+                "neutral",
+            ),
+            broker_status=HealthBadgeSnapshot(
+                "Broker Status",
+                "Unknown",
+                "neutral",
+            ),
+            scanner_status=HealthBadgeSnapshot(
+                "Scanner Status",
+                "Unknown",
+                "neutral",
+            ),
+            market_data_status=HealthBadgeSnapshot(
+                "Market Data Status",
+                "Unknown",
+                "neutral",
+            ),
+            operations_bus_status=HealthBadgeSnapshot(
+                "Operations Bus Status",
+                "Unknown",
+                "neutral",
+            ),
+            current_cycle=HealthBadgeSnapshot(
+                "Current Cycle",
+                "0",
+                "neutral",
+            ),
+            last_completed_cycle=HealthBadgeSnapshot(
+                "Last Completed Cycle",
+                "0",
+                "neutral",
+            ),
+            last_update_time=HealthBadgeSnapshot(
+                "Last Update Time",
+                "NEVER",
+                "neutral",
+            ),
+            warnings=(),
+            errors=(),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardSnapshot:
     runtime: RuntimeSnapshot
     portfolio: PortfolioSnapshot
@@ -124,6 +198,7 @@ class DashboardSnapshot:
     positions: PositionsSnapshot
     orders: OrdersSnapshot
     decisions: DecisionCenterSnapshot
+    runtime_health: HealthCenterSnapshot
 
     @classmethod
     def initial(cls) -> "DashboardSnapshot":
@@ -134,4 +209,5 @@ class DashboardSnapshot:
             positions=PositionsSnapshot.initial(),
             orders=OrdersSnapshot.initial(),
             decisions=DecisionCenterSnapshot.initial(),
+            runtime_health=HealthCenterSnapshot.initial(),
         )
