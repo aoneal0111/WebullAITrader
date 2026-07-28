@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from decimal import Decimal
 
@@ -119,7 +119,7 @@ class OrderEntryPanel(QFrame):
         self.clear_button.setObjectName("secondaryButton")
         self.clear_button.clicked.connect(self.clear)
 
-        self.submit_button = QPushButton("Validate Paper Order")
+        self.submit_button = QPushButton("Place Paper Order")
         self.submit_button.setObjectName("primaryButton")
         self.submit_button.clicked.connect(self._validate)
 
@@ -132,6 +132,43 @@ class OrderEntryPanel(QFrame):
             self._update_price_controls
         )
         self._update_price_controls(self.order_type.currentText())
+
+    def set_execution_enabled(self, enabled: bool) -> None:
+        """Enable placement only when the command dependencies are available."""
+
+        self.submit_button.setEnabled(enabled)
+        if enabled:
+            self.submit_button.setToolTip("")
+            self._validation_status.setText(
+                "Ready for paper-order input."
+            )
+        else:
+            self.submit_button.setToolTip(
+                "Paper trading service is unavailable."
+            )
+            self._validation_status.setText(
+                "Paper trading service is unavailable."
+            )
+
+    def show_submission_success(
+        self,
+        *,
+        broker_order_id: str,
+        message: str,
+    ) -> None:
+        """Display an accepted paper-order acknowledgement."""
+
+        self._validation_status.setText(
+            f"Submitted: {broker_order_id} - {message}"
+        )
+
+    def show_submission_error(self, message: str) -> None:
+        """Display a normalized placement failure."""
+
+        normalized = str(message).strip() or "Unknown placement failure."
+        self._validation_status.setText(
+            f"Submission error: {normalized}"
+        )
 
     @staticmethod
     def _label(text: str) -> QLabel:
