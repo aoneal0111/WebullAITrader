@@ -201,6 +201,23 @@ class ChartCamera:
         )
 
 
+
+
+class ChartRenderer:
+    """Render a candlestick chart onto a QPainter."""
+
+    def render(
+        self,
+        canvas: "CandleCanvas",
+        painter: QPainter,
+        viewport: ChartViewport,
+    ) -> None:
+        canvas._draw_grid(painter, viewport)
+        canvas._draw_axes(painter, viewport)
+        canvas._draw_candles(painter, viewport)
+        canvas._draw_markers(painter, viewport)
+        canvas._draw_overlay(painter, viewport)
+
 class CandleCanvas(QWidget):
     """The existing read-only candlestick canvas, retained unchanged in role."""
 
@@ -218,6 +235,7 @@ class CandleCanvas(QWidget):
         self._markers: tuple[ChartMarker, ...] = ()
         self._cursor_position: tuple[float, float] | None = None
         self._camera = ChartCamera()
+        self._renderer = ChartRenderer()
         self.setMouseTracking(True)
 
     def render(
@@ -253,11 +271,11 @@ class CandleCanvas(QWidget):
             return
 
         viewport = self._build_viewport()
-        self._draw_grid(painter, viewport)
-        self._draw_axes(painter, viewport)
-        self._draw_candles(painter, viewport)
-        self._draw_markers(painter, viewport)
-        self._draw_overlay(painter, viewport)
+        self._renderer.render(
+            self,
+            painter,
+            viewport,
+        )
 
     def _draw_background(self, painter: QPainter) -> None:
         painter.fillRect(self.rect(), QColor(Colors.SURFACE))
