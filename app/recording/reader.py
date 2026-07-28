@@ -23,6 +23,14 @@ class RecordingReader:
 
     def read_archive(self, path: Path) -> ReplayEventArchive:
         session = self.read_session(path)
+        return self.to_archive(session)
+
+    def to_archive(
+        self,
+        session: RecordedSession,
+    ) -> ReplayEventArchive:
+        if not isinstance(session, RecordedSession):
+            raise TypeError("session must be a RecordedSession")
         return ReplayEventArchive.from_events(
             self._serializer.restore_event(event)
             for event in session.events
