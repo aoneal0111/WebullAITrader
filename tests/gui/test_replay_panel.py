@@ -15,6 +15,11 @@ from app.replay import (
     ReplayState,
     ReplayStatus,
 )
+from app.recording import (
+    RecordingSnapshot,
+    RecordingState,
+    RecordingStatus,
+)
 
 
 APPLICATION = QApplication.instance() or QApplication([])
@@ -80,4 +85,37 @@ def test_replay_panel_renders_snapshot_and_emits_navigation_intents() -> None:
     assert ("backward", None) in events
     assert ("jump", 3) in events
     assert ("speed", ReplaySpeed.X10) in events
+    panel.deleteLater()
+
+
+def test_replay_panel_renders_recording_status_and_file_intents() -> None:
+    panel = ReplayPanel()
+    events = []
+    panel.open_recording_requested.connect(
+        lambda: events.append("open")
+    )
+    panel.save_recording_requested.connect(
+        lambda: events.append("save")
+    )
+    recording = RecordingSnapshot(
+        state=RecordingState.STOPPED,
+        status=RecordingStatus.COMPLETED,
+        session_id="session-1",
+        started_at=NOW,
+        ended_at=NOW,
+        duration_seconds=Decimal("12.5"),
+        event_count=10,
+        size_bytes=2048,
+        file_path="session.atlas-session.json",
+        error=None,
+    )
+
+    panel.render(_snapshot(), recording)
+    panel.open_button.click()
+    panel.save_button.click()
+
+    assert panel.recording_status.text() == "COMPLETED"
+    assert panel.recording_duration.text() == "Duration 12.5s"
+    assert panel.recording_size.text() == "Size 2,048 B"
+    assert events == ["open", "save"]
     panel.deleteLater()

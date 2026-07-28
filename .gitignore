@@ -23,6 +23,7 @@ venv/
 
 # Runtime data
 .webull-token/
+.atlas_recordings/
 conf/token.txt
 
 # IDE
@@ -70,6 +71,8 @@ __pycache__/
 # Temporary test/verification directories
 *_full_temp/
 architecture_verification_temp_*/
+recording_*/
+.pytest_runs/
 
 # Python
 __pycache__/

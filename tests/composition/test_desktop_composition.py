@@ -32,6 +32,13 @@ from app.replay import (
     ReplayEngine,
     ReplayEventArchive,
 )
+from app.recording import (
+    RecordingController,
+    RecordingReader,
+    RecordingSerializer,
+    RecordingWriter,
+    SessionRecorder,
+)
 from app.services import RuntimeServiceStatus
 
 
@@ -83,6 +90,26 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
             ReplayController,
         )
         assert composition.replay_projections.bus is not composition.bus
+        assert isinstance(
+            composition.session_recorder,
+            SessionRecorder,
+        )
+        assert isinstance(
+            composition.recording_serializer,
+            RecordingSerializer,
+        )
+        assert isinstance(
+            composition.recording_writer,
+            RecordingWriter,
+        )
+        assert isinstance(
+            composition.recording_reader,
+            RecordingReader,
+        )
+        assert isinstance(
+            composition.recording_controller,
+            RecordingController,
+        )
     finally:
         composition.close(timeout_seconds=1.0)
 
@@ -116,6 +143,11 @@ def test_desktop_composition_uses_fresh_dependencies() -> None:
         assert (
             first.replay_projections
             is not second.replay_projections
+        )
+        assert first.session_recorder is not second.session_recorder
+        assert (
+            first.recording_controller
+            is not second.recording_controller
         )
         assert first.runtime_service is not second.runtime_service
     finally:
@@ -211,7 +243,7 @@ def test_close_releases_all_composed_bus_subscriptions() -> None:
     composition = create_desktop_composition()
     replay_bus = composition.replay_projections.bus
 
-    assert composition.bus.subscription_count == 7
+    assert composition.bus.subscription_count == 8
     assert replay_bus.subscription_count == 7
     composition.close(timeout_seconds=1.0)
 

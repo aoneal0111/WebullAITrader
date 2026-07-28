@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QStatusBar, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QStatusBar, QVBoxLayout, QWidget
 
 from app.gui.design.theme import application_stylesheet
 from app.gui.pages.dashboard import DashboardPage
@@ -12,6 +13,7 @@ from app.gui.pages.orders import OrdersPage
 from app.gui.pages.placeholder import PlaceholderPage
 from app.gui.projections.dashboard_projection import project_dashboard
 from app.gui.replay_bridge import QtReplayBridge
+from app.gui.recording_bridge import QtRecordingBridge
 from app.gui.shell.sidebar import Sidebar
 from app.gui.state_bridge import QtStateBridge
 from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus, OperatorSelectionEvent, RuntimePhase
@@ -28,6 +30,7 @@ from app.replay import (
     ReplayState,
     ReplayStatus,
 )
+from app.recording import RecordingController, RecordingSnapshot
 
 
 class MainWindow(QMainWindow):
@@ -43,6 +46,7 @@ class MainWindow(QMainWindow):
         operator_workspace_projector: OperatorWorkspaceProjector,
         replay_controller: ReplayController,
         replay_projections: ReplayProjectionGraph,
+        recording_controller: RecordingController,
     ) -> None:
         super().__init__()
         self._bus = bus
@@ -55,12 +59,20 @@ class MainWindow(QMainWindow):
         self._operator_workspace_projector = operator_workspace_projector
         self._replay_controller = replay_controller
         self._replay_projections = replay_projections
+        self._recording_controller = recording_controller
         self._last_error = ""
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
         self._replay_bridge = QtReplayBridge(replay_controller, self)
         self._replay_bridge.replay_changed.connect(
             self._render_replay
+        )
+        self._recording_bridge = QtRecordingBridge(
+            recording_controller,
+            self,
+        )
+        self._recording_bridge.recording_changed.connect(
+            self._render_recording
         )
         self._replay_timer = QTimer(self)
         self._replay_timer.setInterval(100)
@@ -130,6 +142,12 @@ class MainWindow(QMainWindow):
         )
         self.dashboard.replay_speed_requested.connect(
             self._replay_controller.set_speed
+        )
+        self.dashboard.recording_open_requested.connect(
+            self._open_recording
+        )
+        self.dashboard.recording_save_requested.connect(
+            self._save_recording
         )
         self.pages.addWidget(self.dashboard)
         self.pages.addWidget(
@@ -213,6 +231,7 @@ class MainWindow(QMainWindow):
             lifecycle_projector.snapshot(),
             workspace_projector.snapshot(),
             replay,
+            self._recording_controller.snapshot(),
         )
         self.dashboard.render(dashboard_snapshot)
         phase = state.runtime.phase
@@ -245,6 +264,49 @@ class MainWindow(QMainWindow):
         del snapshot
         self._render_state(self._state_store.snapshot())
 
+    def _render_recording(
+        self,
+        snapshot: RecordingSnapshot,
+    ) -> None:
+        del snapshot
+        self._render_state(self._state_store.snapshot())
+
+    def _open_recording(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Atlas Recording",
+            "",
+            "Atlas Session (*.atlas-session.json);;JSON (*.json)",
+        )
+        if not path:
+            return
+        try:
+            self._recording_controller.open(Path(path))
+        except (OSError, ValueError, RuntimeError) as exc:
+            QMessageBox.critical(
+                self,
+                "Recording Error",
+                str(exc),
+            )
+
+    def _save_recording(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Atlas Recording",
+            "session.atlas-session.json",
+            "Atlas Session (*.atlas-session.json);;JSON (*.json)",
+        )
+        if not path:
+            return
+        try:
+            self._recording_controller.save(Path(path))
+        except (OSError, ValueError, RuntimeError) as exc:
+            QMessageBox.critical(
+                self,
+                "Recording Error",
+                str(exc),
+            )
+
     def _advance_replay(self) -> None:
         if (
             self._replay_controller.snapshot().status
@@ -259,5 +321,6 @@ class MainWindow(QMainWindow):
             return
         self._state_bridge.close()
         self._replay_bridge.close()
+        self._recording_bridge.close()
         self._replay_timer.stop()
         event.accept()

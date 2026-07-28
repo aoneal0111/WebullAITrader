@@ -26,6 +26,7 @@ def main() -> int:
         composition.operator_workspace_projector,
         composition.replay_controller,
         composition.replay_projections,
+        composition.recording_controller,
     )
     window.show()
 

@@ -38,6 +38,8 @@ class DashboardPage(QWidget):
     replay_step_backward_requested = Signal()
     replay_jump_requested = Signal(int)
     replay_speed_requested = Signal(object)
+    recording_open_requested = Signal()
+    recording_save_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -92,6 +94,12 @@ class DashboardPage(QWidget):
         )
         self.replay_panel.speed_requested.connect(
             self.replay_speed_requested
+        )
+        self.replay_panel.open_recording_requested.connect(
+            self.recording_open_requested
+        )
+        self.replay_panel.save_recording_requested.connect(
+            self.recording_save_requested
         )
         root.addWidget(
             SectionPanel(
@@ -196,7 +204,10 @@ class DashboardPage(QWidget):
         self.runtime_ribbon.render(snapshot.runtime)
         self.portfolio_metrics.render(snapshot.portfolio)
         self.runtime_health_panel.render(snapshot.runtime_health)
-        self.replay_panel.render(snapshot.replay)
+        self.replay_panel.render(
+            snapshot.replay,
+            snapshot.recording,
+        )
 
         level = (
             "good"

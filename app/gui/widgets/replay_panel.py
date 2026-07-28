@@ -17,6 +17,10 @@ from app.replay import (
     ReplayState,
     ReplayStatus,
 )
+from app.recording import (
+    RecordingSnapshot,
+    RecordingStatus,
+)
 
 
 class ReplayPanel(QWidget):
@@ -29,6 +33,8 @@ class ReplayPanel(QWidget):
     step_backward_requested = Signal()
     jump_requested = Signal(int)
     speed_requested = Signal(object)
+    open_recording_requested = Signal()
+    save_recording_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -51,6 +57,23 @@ class ReplayPanel(QWidget):
         summary.addWidget(self.position)
         summary.addWidget(self.timestamp)
         root.addLayout(summary)
+
+        recording = QHBoxLayout()
+        self.recording_status = QLabel("READY")
+        self.recording_status.setObjectName("statusBadge")
+        self.recording_duration = QLabel("Duration 0.0s")
+        self.recording_duration.setObjectName("muted")
+        self.recording_size = QLabel("Size 0 B")
+        self.recording_size.setObjectName("muted")
+        self.open_button = QPushButton("Open Recording")
+        self.save_button = QPushButton("Save Recording")
+        recording.addWidget(self.recording_status)
+        recording.addWidget(self.recording_duration)
+        recording.addWidget(self.recording_size)
+        recording.addStretch()
+        recording.addWidget(self.open_button)
+        recording.addWidget(self.save_button)
+        root.addLayout(recording)
 
         controls = QHBoxLayout()
         self.play_button = QPushButton("Play")
@@ -88,11 +111,30 @@ class ReplayPanel(QWidget):
         self.speed.currentIndexChanged.connect(
             self._request_speed
         )
-        self.render(ReplaySnapshot.initial())
+        self.open_button.clicked.connect(
+            self.open_recording_requested
+        )
+        self.save_button.clicked.connect(
+            self.save_recording_requested
+        )
+        self.render(
+            ReplaySnapshot.initial(),
+            RecordingSnapshot.initial(),
+        )
 
-    def render(self, snapshot: ReplaySnapshot) -> None:
+    def render(
+        self,
+        snapshot: ReplaySnapshot,
+        recording: RecordingSnapshot | None = None,
+    ) -> None:
         if not isinstance(snapshot, ReplaySnapshot):
             raise TypeError("snapshot must be a ReplaySnapshot")
+        if recording is None:
+            recording = RecordingSnapshot.initial()
+        if not isinstance(recording, RecordingSnapshot):
+            raise TypeError(
+                "recording must be a RecordingSnapshot"
+            )
         replay_active = snapshot.state is ReplayState.REPLAY
         self.mode.setText(
             (
@@ -150,6 +192,16 @@ class ReplayPanel(QWidget):
         )
         self.speed.setEnabled(replay_active)
         self.slider.setEnabled(replay_active)
+        self.recording_status.setText(recording.status.value)
+        self.recording_duration.setText(
+            f"Duration {recording.duration_seconds:f}s"
+        )
+        self.recording_size.setText(
+            f"Size {recording.size_bytes:,} B"
+        )
+        self.save_button.setEnabled(
+            recording.status is RecordingStatus.COMPLETED
+        )
 
     def _request_jump(self) -> None:
         self.jump_requested.emit(self.slider.value())

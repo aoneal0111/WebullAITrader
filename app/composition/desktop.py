@@ -16,6 +16,13 @@ from app.read_models.operator_workspace import OperatorWorkspaceProjector
 from app.read_models.runtime_health import RuntimeHealthProjector
 from app.read_models.timeline import TimelineProjector
 from app.read_models.trade_lifecycle import TradeLifecycleProjector
+from app.recording import (
+    RecordingController,
+    RecordingReader,
+    RecordingSerializer,
+    RecordingWriter,
+    SessionRecorder,
+)
 from app.replay import (
     ReplayClock,
     ReplayController,
@@ -109,6 +116,11 @@ class DesktopComposition:
     timeline_projector: TimelineProjector
     trade_lifecycle_projector: TradeLifecycleProjector
     operator_workspace_projector: OperatorWorkspaceProjector
+    session_recorder: SessionRecorder
+    recording_serializer: RecordingSerializer
+    recording_writer: RecordingWriter
+    recording_reader: RecordingReader
+    recording_controller: RecordingController
     replay_archive: ReplayEventArchive
     replay_clock: ReplayClock
     replay_engine: ReplayEngine
@@ -126,6 +138,8 @@ class DesktopComposition:
         runtime_stopped = self.runtime_service.close(
             timeout_seconds=timeout_seconds
         )
+        self.session_recorder.close()
+        self.recording_controller.close()
         self.state_store.close()
         self.decision_projector.close()
         self.runtime_health_projector.close()
@@ -154,6 +168,19 @@ def create_desktop_composition(
     timeline_projector = TimelineProjector(bus)
     trade_lifecycle_projector = TradeLifecycleProjector(bus)
     operator_workspace_projector = OperatorWorkspaceProjector(bus)
+    recording_serializer = RecordingSerializer()
+    recording_writer = RecordingWriter(
+        configuration.recording_directory,
+        recording_serializer,
+    )
+    recording_reader = RecordingReader(recording_serializer)
+    session_recorder = SessionRecorder(
+        bus,
+        recording_serializer,
+        application_version="0.1.0",
+        broker="BROKER_NEUTRAL",
+        runtime_mode=configuration.runtime_mode.value,
+    )
     state_store = ApplicationStateStore(bus)
     replay_archive = ReplayEventArchive()
     replay_clock = ReplayClock()
@@ -167,6 +194,12 @@ def create_desktop_composition(
         replay_archive,
         replay_clock,
         replay_engine,
+    )
+    recording_controller = RecordingController(
+        session_recorder,
+        recording_writer,
+        recording_reader,
+        replay_controller,
     )
 
     runtime_service = create_desktop_runtime_service(
@@ -206,6 +239,11 @@ def create_desktop_composition(
         timeline_projector=timeline_projector,
         trade_lifecycle_projector=trade_lifecycle_projector,
         operator_workspace_projector=operator_workspace_projector,
+        session_recorder=session_recorder,
+        recording_serializer=recording_serializer,
+        recording_writer=recording_writer,
+        recording_reader=recording_reader,
+        recording_controller=recording_controller,
         replay_archive=replay_archive,
         replay_clock=replay_clock,
         replay_engine=replay_engine,

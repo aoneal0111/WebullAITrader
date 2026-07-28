@@ -28,6 +28,7 @@ def test_atlas_automatically_switches_to_replay_projection() -> None:
         composition.operator_workspace_projector,
         composition.replay_controller,
         composition.replay_projections,
+        composition.recording_controller,
     )
     archive = ReplayEventArchive.from_events(
         (
