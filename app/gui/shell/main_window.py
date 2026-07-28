@@ -3,11 +3,21 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QStatusBar, QVBoxLayout, QWidget
+from PySide6.QtCore import QByteArray, QRect, QSettings, QTimer
+from PySide6.QtGui import QCloseEvent, QGuiApplication
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QMainWindow,
+    QMessageBox,
+    QSizePolicy,
+    QSplitter,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
-from app.gui.design.theme import application_stylesheet
+from app.gui.components.statusbar import PersistentStatusBar
+from app.gui.theme import Sizing, Spacing, application_stylesheet
 from app.gui.event_store_bridge import QtEventStoreBridge
 from app.gui.analytics_bridge import QtAnalyticsBridge
 from app.gui.backtesting_bridge import QtBacktestingBridge
@@ -65,6 +75,8 @@ class MainWindow(QMainWindow):
         event_store_controller: EventStoreController,
         analytics_controller: AnalyticsController,
         backtesting_controller: BacktestingController,
+        *,
+        settings: QSettings | None = None,
     ) -> None:
         super().__init__()
         self._bus = bus
@@ -81,6 +93,11 @@ class MainWindow(QMainWindow):
         self._event_store_controller = event_store_controller
         self._analytics_controller = analytics_controller
         self._backtesting_controller = backtesting_controller
+        self._settings = (
+            settings
+            if settings is not None
+            else QSettings("Webull AI Trader", "Atlas X")
+        )
         self._last_error = ""
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
@@ -120,47 +137,51 @@ class MainWindow(QMainWindow):
         self._replay_timer.setInterval(100)
         self._replay_timer.timeout.connect(self._advance_replay)
         self._replay_timer.start()
-        self.setWindowTitle("Atlas — WebullAITrader")
-        self.setMinimumSize(1180, 760)
-        self.resize(1440, 900)
+        self.setWindowTitle("Atlas X — WebullAITrader")
+        self.setMinimumSize(
+            Sizing.WINDOW_MIN_WIDTH,
+            Sizing.WINDOW_MIN_HEIGHT,
+        )
         self._build()
         self.setStyleSheet(application_stylesheet())
+        self._restore_workspace_state()
         self._render_state(state_store.snapshot())
 
     def _build(self) -> None:
         root = QWidget()
         root.setObjectName("appRoot")
-        outer = QHBoxLayout(root)
+        outer = QVBoxLayout(root)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+
+        self.shell_splitter = QSplitter()
+        self.shell_splitter.setObjectName("shellSplitter")
+        self.shell_splitter.setChildrenCollapsible(False)
         self.sidebar = Sidebar()
-        outer.addWidget(self.sidebar)
+        self.shell_splitter.addWidget(self.sidebar)
 
         content = QWidget()
+        content.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(24, 18, 24, 18)
-        content_layout.setSpacing(16)
-        controls = QHBoxLayout()
-        system = QLabel("SYSTEM CONTROL")
-        system.setObjectName("sectionTitle")
-        self.start_button = QPushButton("Start Paper Runtime")
-        self.start_button.setObjectName("primaryButton")
-        self.start_button.clicked.connect(self._runtime_service.start)
-        self.stop_button = QPushButton("Stop Runtime")
-        self.stop_button.setObjectName("secondaryButton")
-        self.stop_button.clicked.connect(lambda checked=False: self._runtime_service.stop())
-        self.emergency_button = QPushButton("Emergency Stop")
-        self.emergency_button.setObjectName("dangerButton")
-        self.emergency_button.clicked.connect(self._emergency_stop)
-        controls.addWidget(system)
-        controls.addStretch()
-        controls.addWidget(self.start_button)
-        controls.addWidget(self.stop_button)
-        controls.addWidget(self.emergency_button)
-        content_layout.addLayout(controls)
+        content_layout.setContentsMargins(
+            Spacing.LG,
+            Spacing.MD,
+            Spacing.LG,
+            Spacing.MD,
+        )
+        content_layout.setSpacing(Spacing.MD)
 
         self.pages = QStackedWidget()
         self.dashboard = DashboardPage()
+        self.dashboard.start_runtime_requested.connect(
+            self._runtime_service.start
+        )
+        self.dashboard.stop_runtime_requested.connect(
+            self._runtime_service.stop
+        )
         self.dashboard.selection_requested.connect(
             self._publish_operator_selection
         )
@@ -250,17 +271,20 @@ class MainWindow(QMainWindow):
             )
         )
         content_layout.addWidget(self.pages, 1)
-        outer.addWidget(content, 1)
+        self.shell_splitter.addWidget(content)
+        self.shell_splitter.setStretchFactor(0, 0)
+        self.shell_splitter.setStretchFactor(1, 1)
+        self.shell_splitter.setSizes([190, 1310])
+        outer.addWidget(self.shell_splitter, 1)
         self.sidebar.page_requested.connect(self.pages.setCurrentIndex)
         self.setCentralWidget(root)
 
-        status = QStatusBar()
-        self.status_label = QLabel()
-        status.addWidget(self.status_label, 1)
-        safety = QLabel("PAPER MODE · NO LIVE BROKER MUTATIONS")
-        safety.setObjectName("muted")
-        status.addPermanentWidget(safety)
-        self.setStatusBar(status)
+        self.workspace_splitter = self.dashboard.workspace_splitter
+        self.start_button = self.dashboard.runtime_ribbon.start_button
+        self.stop_button = self.dashboard.runtime_ribbon.stop_button
+        self.persistent_status_bar = PersistentStatusBar()
+        self.status_label = self.persistent_status_bar.runtime
+        self.setStatusBar(self.persistent_status_bar)
 
     def _emergency_stop(self) -> None:
         self._runtime_service.stop()
@@ -310,9 +334,13 @@ class MainWindow(QMainWindow):
         active = phase in {RuntimePhase.STARTING, RuntimePhase.RUNNING, RuntimePhase.STOPPING}
         self.start_button.setEnabled(not active)
         self.stop_button.setEnabled(phase in {RuntimePhase.STARTING, RuntimePhase.RUNNING})
-        self.status_label.setText(
-            f"{state.runtime.environment}  |  Runtime {phase.value}  |  "
-            f"Feed {state.runtime.market_feed_status}  |  Cycles {state.runtime.cycles_completed}"
+        self.persistent_status_bar.set_runtime(phase.value)
+        recording = self._recording_controller.snapshot()
+        self.persistent_status_bar.set_recorder(
+            recording.status.value
+        )
+        self.persistent_status_bar.set_events_per_second(
+            "0"
         )
         if phase is RuntimePhase.FAILED and state.runtime.last_error and state.runtime.last_error != self._last_error:
             self._last_error = state.runtime.last_error
@@ -444,5 +472,102 @@ class MainWindow(QMainWindow):
         self._analytics_bridge.close()
         self._backtesting_bridge.close()
         self._replay_timer.stop()
+        self._save_workspace_state()
         event.accept()
+
+    def _restore_workspace_state(self) -> None:
+        geometry = self._settings.value("window/geometry")
+        restored_geometry = (
+            isinstance(geometry, QByteArray)
+            and self.restoreGeometry(geometry)
+        )
+        if not restored_geometry or not self._is_on_screen():
+            self._apply_default_geometry()
+
+        window_state = self._settings.value("window/state")
+        if isinstance(window_state, QByteArray):
+            self.restoreState(window_state)
+
+        shell_state = self._settings.value("splitters/shell")
+        if isinstance(shell_state, QByteArray):
+            self.shell_splitter.restoreState(shell_state)
+        workspace_state = self._settings.value(
+            "splitters/workspace"
+        )
+        if isinstance(workspace_state, QByteArray):
+            self.workspace_splitter.restoreState(workspace_state)
+
+        collapsed = self._settings.value(
+            "sidebar/collapsed",
+            False,
+            type=bool,
+        )
+        self.sidebar.set_collapsed(bool(collapsed))
+        page_index = self._settings.value(
+            "sidebar/page",
+            0,
+            type=int,
+        )
+        if 0 <= page_index < self.pages.count():
+            self.pages.setCurrentIndex(page_index)
+            self.sidebar.set_current_index(page_index)
+
+    def _save_workspace_state(self) -> None:
+        self._settings.setValue(
+            "window/geometry",
+            self.saveGeometry(),
+        )
+        self._settings.setValue("window/state", self.saveState())
+        self._settings.setValue(
+            "splitters/shell",
+            self.shell_splitter.saveState(),
+        )
+        self._settings.setValue(
+            "splitters/workspace",
+            self.workspace_splitter.saveState(),
+        )
+        self._settings.setValue(
+            "sidebar/collapsed",
+            self.sidebar.is_collapsed,
+        )
+        self._settings.setValue(
+            "sidebar/page",
+            self.pages.currentIndex(),
+        )
+        self._settings.sync()
+
+    def _is_on_screen(self) -> bool:
+        frame = self.frameGeometry()
+        return any(
+            screen.availableGeometry().intersects(frame)
+            for screen in QGuiApplication.screens()
+        )
+
+    def _apply_default_geometry(self) -> None:
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            self.resize(
+                Sizing.WINDOW_DEFAULT_WIDTH,
+                Sizing.WINDOW_DEFAULT_HEIGHT,
+            )
+            return
+        available = screen.availableGeometry()
+        width = min(
+            Sizing.WINDOW_DEFAULT_WIDTH,
+            available.width(),
+        )
+        height = min(
+            Sizing.WINDOW_DEFAULT_HEIGHT,
+            available.height(),
+        )
+        self.setGeometry(
+            QRect(
+                available.x()
+                + (available.width() - width) // 2,
+                available.y()
+                + (available.height() - height) // 2,
+                width,
+                height,
+            )
+        )
 

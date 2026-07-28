@@ -2,38 +2,52 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QGridLayout,
-    QHBoxLayout,
-    QLabel,
+    QFrame,
+    QSizePolicy,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from app.gui.models import DashboardSnapshot
+from app.gui.components import (
+    InfrastructureCards,
+    PanelHeader,
+    PortfolioCards,
+    RuntimeRibbon,
+)
+from app.gui.components.layout import WorkstationSplitter
+from app.gui.models import (
+    CandleInterval,
+    CandleSeriesSnapshot,
+    DashboardSnapshot,
+)
+from app.gui.widgets.analytics_panel import AnalyticsPanel
+from app.gui.widgets.candlestick_chart import CandlestickChart
+from app.gui.widgets.decision_center import DecisionCenter
+from app.gui.widgets.event_store_panel import EventStorePanel
+from app.gui.widgets.experiment_panel import ExperimentPanel
+from app.gui.widgets.orders_panel import OrdersPanel
+from app.gui.widgets.panel import SectionPanel
+from app.gui.widgets.positions_panel import PositionsPanel
+from app.gui.widgets.replay_panel import ReplayPanel
+from app.gui.widgets.runtime_health_panel import RuntimeHealthPanel
+from app.gui.widgets.timeline_panel import TimelinePanel
+from app.gui.widgets.trade_lifecycle_panel import TradeLifecyclePanel
 from app.operations_core import (
     OperatorDecisionSelected,
     OperatorSymbolSelected,
     OperatorTimelineSelected,
     OperatorTradeSelected,
 )
-from app.gui.widgets.common import StatusBadge
-from app.gui.widgets.decision_center import DecisionCenter
-from app.gui.widgets.analytics_panel import AnalyticsPanel
-from app.gui.widgets.experiment_panel import ExperimentPanel
-from app.gui.widgets.event_store_panel import EventStorePanel
-from app.gui.widgets.orders_panel import OrdersPanel
-from app.gui.widgets.panel import SectionPanel
-from app.gui.widgets.positions_panel import PositionsPanel
-from app.gui.widgets.portfolio_metrics import PortfolioMetrics
-from app.gui.widgets.replay_panel import ReplayPanel
-from app.gui.widgets.runtime_ribbon import RuntimeRibbon
-from app.gui.widgets.runtime_health_panel import RuntimeHealthPanel
-from app.gui.widgets.timeline_panel import TimelinePanel
-from app.gui.widgets.trade_lifecycle_panel import TradeLifecyclePanel
 
 
 class DashboardPage(QWidget):
+    """Responsive Atlas workstation composed entirely from read-only widgets."""
+
     selection_requested = Signal(object)
+    start_runtime_requested = Signal()
+    stop_runtime_requested = Signal()
+    runtime_control_requested = Signal()
     replay_play_requested = Signal()
     replay_pause_requested = Signal()
     replay_stop_requested = Signal()
@@ -55,37 +69,122 @@ class DashboardPage(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-
+        self.setObjectName("workspaceSurface")
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(16)
-
-        header = QHBoxLayout()
-        heading = QVBoxLayout()
-
-        title = QLabel("Autonomous Trading Dashboard")
-        title.setObjectName("pageTitle")
-
-        subtitle = QLabel(
-            "Monitor the runtime, strategy state, risk posture, and execution activity."
-        )
-        subtitle.setObjectName("muted")
-
-        heading.addWidget(title)
-        heading.addWidget(subtitle)
-
-        self.mode_badge = StatusBadge("PAPER")
-
-        header.addLayout(heading)
-        header.addStretch()
-        header.addWidget(self.mode_badge)
-
-        root.addLayout(header)
+        root.setSpacing(10)
 
         self.runtime_ribbon = RuntimeRibbon()
+        self.runtime_ribbon.start_requested.connect(
+            self.start_runtime_requested
+        )
+        self.runtime_ribbon.stop_requested.connect(
+            self.stop_runtime_requested
+        )
         root.addWidget(self.runtime_ribbon)
 
+        root.addWidget(PanelHeader("Infrastructure"))
+        self.infrastructure_cards = InfrastructureCards()
+        root.addWidget(self.infrastructure_cards)
+
+        root.addWidget(PanelHeader("Portfolio"))
+        self.portfolio_metrics = PortfolioCards()
+        root.addWidget(self.portfolio_metrics)
+
+        self.chart = CandlestickChart()
+        self.chart_panel = SectionPanel(
+            "Market Chart",
+            self.chart,
+        )
+        self.chart_panel.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+
+        self.operator_workspace = QFrame()
+        self.operator_workspace.setObjectName("operatorWorkspace")
+        self.operator_workspace.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Expanding,
+        )
+        operator_layout = QVBoxLayout(self.operator_workspace)
+        operator_layout.setContentsMargins(10, 10, 10, 10)
+        operator_layout.setSpacing(8)
+        operator_layout.addWidget(PanelHeader("Operator Workspace"))
+        self.workspace_tabs = QTabWidget()
+        self.workspace_tabs.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Expanding,
+        )
+        operator_layout.addWidget(self.workspace_tabs, 1)
+
+        self.timeline_panel = TimelinePanel()
+        self.decision_center = DecisionCenter()
+        self.positions_panel = PositionsPanel()
+        self.orders_panel = OrdersPanel()
+        self.trade_lifecycle_panel = TradeLifecyclePanel()
+        self.runtime_health_panel = RuntimeHealthPanel()
+        self.workspace_tabs.addTab(self.positions_panel, "Positions")
+        self.workspace_tabs.addTab(self.orders_panel, "Orders")
+        self.workspace_tabs.addTab(self.decision_center, "Decisions")
+        self.workspace_tabs.addTab(self.timeline_panel, "Timeline")
+        self.workspace_tabs.addTab(
+            self.trade_lifecycle_panel,
+            "Lifecycle",
+        )
+        self.workspace_tabs.addTab(
+            self.runtime_health_panel,
+            "Health",
+        )
+
+        self.timeline_panel.selection_requested.connect(
+            self._select_timeline
+        )
+        self.decision_center.selection_requested.connect(
+            self._select_decision
+        )
+        self.trade_lifecycle_panel.selection_requested.connect(
+            self._select_trade
+        )
+        self.positions_panel.selection_requested.connect(
+            self._select_position
+        )
+        self.orders_panel.selection_requested.connect(
+            self._select_order
+        )
+
+        self.workspace_splitter = WorkstationSplitter(
+            self.chart_panel,
+            self.operator_workspace,
+        )
+        root.addWidget(self.workspace_splitter, 1)
+
+        # These established tools remain constructed and wired for their
+        # dedicated navigation pages. They stay outside the primary
+        # workstation so the chart remains the visual centerpiece.
+        self._support_surfaces = QWidget(self)
+        self._support_surfaces.hide()
         self.replay_panel = ReplayPanel()
+        self.event_store_panel = EventStorePanel()
+        self.analytics_panel = AnalyticsPanel()
+        self.experiment_panel = ExperimentPanel()
+        for panel in (
+            self.replay_panel,
+            self.event_store_panel,
+            self.analytics_panel,
+            self.experiment_panel,
+        ):
+            panel.setParent(self._support_surfaces)
+        self._connect_support_surfaces()
+
+        # Compatibility with the former dashboard public attributes.
+        self.mode_badge = self.runtime_ribbon.mode.value_label
+
+    def _connect_support_surfaces(self) -> None:
         self.replay_panel.play_requested.connect(
             self.replay_play_requested
         )
@@ -113,14 +212,6 @@ class DashboardPage(QWidget):
         self.replay_panel.save_recording_requested.connect(
             self.recording_save_requested
         )
-        root.addWidget(
-            SectionPanel(
-                "Session Replay",
-                self.replay_panel,
-            )
-        )
-
-        self.event_store_panel = EventStorePanel()
         self.event_store_panel.search_requested.connect(
             lambda value: self.event_store_query_requested.emit(
                 "search",
@@ -151,22 +242,6 @@ class DashboardPage(QWidget):
         self.event_store_panel.refresh_requested.connect(
             self.event_store_refresh_requested
         )
-        root.addWidget(
-            SectionPanel(
-                "Historical Event Store - Read Only",
-                self.event_store_panel,
-            )
-        )
-
-        self.analytics_panel = AnalyticsPanel()
-        root.addWidget(
-            SectionPanel(
-                "Historical Analytics - Read Only",
-                self.analytics_panel,
-            )
-        )
-
-        self.experiment_panel = ExperimentPanel()
         self.experiment_panel.start_requested.connect(
             self.experiment_start_requested
         )
@@ -185,108 +260,24 @@ class DashboardPage(QWidget):
         self.experiment_panel.compare_requested.connect(
             self.experiment_compare_requested
         )
-        root.addWidget(
-            SectionPanel(
-                "Historical Experiment Center",
-                self.experiment_panel,
-            )
-        )
-
-        self.portfolio_metrics = PortfolioMetrics()
-        root.addWidget(self.portfolio_metrics)
-
-        self.runtime_health_panel = RuntimeHealthPanel()
-        root.addWidget(
-            SectionPanel(
-                "Runtime Health Center - Read Only",
-                self.runtime_health_panel,
-            )
-        )
-
-        body = QGridLayout()
-        body.setSpacing(12)
-
-        self.timeline_panel = TimelinePanel()
-        self.decision_center = DecisionCenter()
-        self.positions_panel = PositionsPanel()
-        self.orders_panel = OrdersPanel()
-        self.trade_lifecycle_panel = TradeLifecyclePanel()
-        self.timeline_panel.selection_requested.connect(
-            self._select_timeline
-        )
-        self.decision_center.selection_requested.connect(
-            self._select_decision
-        )
-        self.trade_lifecycle_panel.selection_requested.connect(
-            self._select_trade
-        )
-        self.positions_panel.selection_requested.connect(
-            self._select_position
-        )
-        self.orders_panel.selection_requested.connect(
-            self._select_order
-        )
-
-        body.addWidget(
-            SectionPanel(
-                "AI Decision Center - Read Only",
-                self.decision_center,
-            ),
-            0,
-            0,
-            1,
-            2,
-        )
-
-        body.addWidget(
-            SectionPanel(
-                "Immutable Event Timeline - Read Only",
-                self.timeline_panel,
-            ),
-            1,
-            0,
-            1,
-            2,
-        )
-
-        body.addWidget(
-            SectionPanel(
-                "Open Positions",
-                self.positions_panel,
-            ),
-            0,
-            2,
-        )
-
-        body.addWidget(
-            SectionPanel(
-                "Active Orders",
-                self.orders_panel,
-            ),
-            1,
-            2,
-        )
-
-        body.addWidget(
-            SectionPanel(
-                "Trade Lifecycle Explorer - Read Only",
-                self.trade_lifecycle_panel,
-            ),
-            2,
-            0,
-            1,
-            3,
-        )
-
-        body.setColumnStretch(0, 2)
-        body.setColumnStretch(1, 2)
-        body.setColumnStretch(2, 3)
-
-        root.addLayout(body, 1)
 
     def render(self, snapshot: DashboardSnapshot) -> None:
+        if not isinstance(snapshot, DashboardSnapshot):
+            raise TypeError("snapshot must be a DashboardSnapshot")
         self.runtime_ribbon.render(snapshot.runtime)
+        self.infrastructure_cards.render(
+            snapshot.runtime,
+            snapshot.runtime_health,
+            snapshot.recording,
+            snapshot.event_store,
+        )
         self.portfolio_metrics.render(snapshot.portfolio)
+        self.chart.render(
+            CandleSeriesSnapshot(
+                snapshot.operator_workspace.selected_symbol,
+                CandleInterval.ONE_MINUTE,
+            )
+        )
         self.runtime_health_panel.render(snapshot.runtime_health)
         self.replay_panel.render(
             snapshot.replay,
@@ -295,18 +286,6 @@ class DashboardPage(QWidget):
         self.event_store_panel.render(snapshot.event_store)
         self.analytics_panel.render(snapshot.analytics)
         self.experiment_panel.render(snapshot.experiments)
-
-        level = (
-            "good"
-            if snapshot.runtime.state.value == "RUNNING"
-            else "warn"
-        )
-
-        self.mode_badge.set_status(
-            snapshot.runtime.environment,
-            level,
-        )
-
         self.timeline_panel.render(snapshot.timeline)
         self.decision_center.render(snapshot.decisions)
         self.positions_panel.render(snapshot.positions)

@@ -17,6 +17,13 @@ from .dashboard import (
     TimelineSnapshot,
 )
 from .runtime import RuntimeState
+from .operator_console import (
+    Candle,
+    CandleInterval,
+    CandleSeriesSnapshot,
+    ChartMarker,
+    ChartMarkerKind,
+)
 from app.read_models.operator_workspace import OperatorWorkspaceSnapshot
 from app.replay import ReplaySnapshot
 from app.recording import RecordingSnapshot
@@ -27,6 +34,11 @@ from app.backtesting.models import ExperimentSnapshot
 __all__ = [
     "ActivityEntry",
     "ActivitySnapshot",
+    "Candle",
+    "CandleInterval",
+    "CandleSeriesSnapshot",
+    "ChartMarker",
+    "ChartMarkerKind",
     "DashboardSnapshot",
     "DecisionCenterSnapshot",
     "DecisionRow",
