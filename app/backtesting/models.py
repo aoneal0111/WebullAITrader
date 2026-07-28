@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, is_dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from hashlib import sha256
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.compliance.models import AccountType, PurchaseLot
 from app.order_compliance.kill_switch import KillSwitchState
@@ -14,6 +14,8 @@ from app.order_compliance.models import ComplianceLimits, MarketComplianceState,
 from app.paper_trading.models import EquityPoint, PaperExecutionConfig, PaperJournal, PaperPortfolio
 from app.risk.limits import DEFAULT_RISK_LIMITS, RiskLimits
 from app.market_history import MarketObservation
+if TYPE_CHECKING:
+    from app.analytics import AnalyticsSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,3 +160,239 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, (tuple, list)):
         return [_json_safe(item) for item in value]
     return value
+
+
+class PlaybackStatus(StrEnum):
+    EMPTY = "EMPTY"
+    READY = "READY"
+    RUNNING = "RUNNING"
+    PAUSED = "PAUSED"
+    COMPLETED = "COMPLETED"
+    STOPPED = "STOPPED"
+    CLOSED = "CLOSED"
+    ERROR = "ERROR"
+
+
+@dataclass(frozen=True, slots=True)
+class PlaybackSnapshot:
+    status: PlaybackStatus
+    position: int
+    event_count: int
+    speed: Decimal
+    current_timestamp: datetime | None = None
+    error: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, PlaybackStatus):
+            raise TypeError("status must be PlaybackStatus")
+        for value, name in (
+            (self.position, "position"),
+            (self.event_count, "event_count"),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be nonnegative")
+        if self.position > self.event_count:
+            raise ValueError("position cannot exceed event_count")
+        _playback_decimal(self.speed, "speed", positive=True)
+        _playback_timestamp(self.current_timestamp, "current_timestamp", True)
+        _playback_optional_text(self.error, "error")
+
+    @classmethod
+    def initial(cls) -> "PlaybackSnapshot":
+        return cls(PlaybackStatus.EMPTY, 0, 0, Decimal("1"))
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestConfiguration:
+    strategy_version: str
+    speed: Decimal = Decimal("1")
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+
+    def __post_init__(self) -> None:
+        _playback_text(self.strategy_version, "strategy_version")
+        _playback_decimal(self.speed, "speed", positive=True)
+        _playback_timestamp(self.start_time, "start_time", True)
+        _playback_timestamp(self.end_time, "end_time", True)
+        if (
+            self.start_time is not None
+            and self.end_time is not None
+            and self.end_time < self.start_time
+        ):
+            raise ValueError("end_time cannot precede start_time")
+
+
+@dataclass(frozen=True, slots=True)
+class Experiment:
+    experiment_id: str
+    name: str
+    configuration: BacktestConfiguration
+
+    def __post_init__(self) -> None:
+        _playback_text(self.experiment_id, "experiment_id")
+        _playback_text(self.name, "name")
+        if not isinstance(self.configuration, BacktestConfiguration):
+            raise TypeError("configuration must be BacktestConfiguration")
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentResult:
+    experiment: Experiment
+    playback_status: PlaybackStatus
+    started_at: datetime
+    ended_at: datetime
+    processed_event_count: int
+    recorded_session_id: str | None
+    analytics: "AnalyticsSnapshot"
+    completed_at: datetime
+    error: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.experiment, Experiment):
+            raise TypeError("experiment must be Experiment")
+        if not isinstance(self.playback_status, PlaybackStatus):
+            raise TypeError("playback_status must be PlaybackStatus")
+        for value, name in (
+            (self.started_at, "started_at"),
+            (self.ended_at, "ended_at"),
+            (self.completed_at, "completed_at"),
+        ):
+            _playback_timestamp(value, name)
+        if self.ended_at < self.started_at:
+            raise ValueError("ended_at cannot precede started_at")
+        if (
+            isinstance(self.processed_event_count, bool)
+            or not isinstance(self.processed_event_count, int)
+            or self.processed_event_count < 0
+        ):
+            raise ValueError("processed_event_count must be nonnegative")
+        _playback_optional_text(
+            self.recorded_session_id,
+            "recorded_session_id",
+        )
+        from app.analytics import AnalyticsSnapshot
+        if not isinstance(self.analytics, AnalyticsSnapshot):
+            raise TypeError("analytics must be AnalyticsSnapshot")
+        _playback_optional_text(self.error, "error")
+
+
+@dataclass(frozen=True, slots=True)
+class MetricComparison:
+    name: str
+    baseline: Decimal | int | timedelta | None
+    candidate: Decimal | int | timedelta | None
+    delta: Decimal | int | timedelta | None
+
+    def __post_init__(self) -> None:
+        _playback_text(self.name, "name")
+        for value in (self.baseline, self.candidate, self.delta):
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (Decimal, int, timedelta))
+            ):
+                raise TypeError("comparison values must be numeric, duration, or None")
+            if isinstance(value, Decimal) and not value.is_finite():
+                raise ValueError("comparison Decimal values must be finite")
+
+
+@dataclass(frozen=True, slots=True)
+class ComparisonSnapshot:
+    baseline_experiment_id: str | None
+    candidate_experiment_id: str | None
+    metrics: tuple[MetricComparison, ...] = ()
+
+    def __post_init__(self) -> None:
+        _playback_optional_text(
+            self.baseline_experiment_id,
+            "baseline_experiment_id",
+        )
+        _playback_optional_text(
+            self.candidate_experiment_id,
+            "candidate_experiment_id",
+        )
+        if not isinstance(self.metrics, tuple) or any(
+            not isinstance(value, MetricComparison)
+            for value in self.metrics
+        ):
+            raise TypeError("metrics must be immutable MetricComparison values")
+
+    @classmethod
+    def initial(cls) -> "ComparisonSnapshot":
+        return cls(None, None)
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentSnapshot:
+    playback: PlaybackSnapshot
+    experiments: tuple[ExperimentResult, ...]
+    selected_experiment_id: str | None
+    comparison: ComparisonSnapshot
+    error: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.playback, PlaybackSnapshot):
+            raise TypeError("playback must be PlaybackSnapshot")
+        if not isinstance(self.experiments, tuple) or any(
+            not isinstance(value, ExperimentResult)
+            for value in self.experiments
+        ):
+            raise TypeError("experiments must be immutable ExperimentResult values")
+        identifiers = tuple(
+            value.experiment.experiment_id for value in self.experiments
+        )
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("experiment identifiers must be unique")
+        _playback_optional_text(
+            self.selected_experiment_id,
+            "selected_experiment_id",
+        )
+        if (
+            self.selected_experiment_id is not None
+            and self.selected_experiment_id not in identifiers
+        ):
+            raise ValueError("selected experiment must exist")
+        if not isinstance(self.comparison, ComparisonSnapshot):
+            raise TypeError("comparison must be ComparisonSnapshot")
+        _playback_optional_text(self.error, "error")
+
+    @classmethod
+    def initial(cls) -> "ExperimentSnapshot":
+        return cls(
+            PlaybackSnapshot.initial(),
+            (),
+            None,
+            ComparisonSnapshot.initial(),
+        )
+
+
+def _playback_text(value: str, name: str) -> None:
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise ValueError(f"{name} must be stripped non-empty text")
+
+
+def _playback_optional_text(value: str | None, name: str) -> None:
+    if value is not None:
+        _playback_text(value, name)
+
+
+def _playback_timestamp(
+    value: datetime | None,
+    name: str,
+    optional: bool = False,
+) -> None:
+    if optional and value is None:
+        return
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError(f"{name} must be timezone-aware")
+
+
+def _playback_decimal(
+    value: Decimal,
+    name: str,
+    *,
+    positive: bool = False,
+) -> None:
+    if not isinstance(value, Decimal) or not value.is_finite():
+        raise ValueError(f"{name} must be a finite Decimal")
+    if positive and value <= 0:
+        raise ValueError(f"{name} must be positive")
