@@ -224,9 +224,7 @@ class ChartRenderer:
             context,
         )
         self._draw_markers(
-            painter,
-            viewport,
-            markers,
+            context,
         )
         self._draw_overlay(
             painter,
@@ -304,10 +302,11 @@ class ChartRenderer:
 
     def _draw_markers(
         self,
-        painter: QPainter,
-        viewport: ChartViewport,
-        markers: tuple[ChartMarker, ...],
+        context: ChartRenderContext,
     ) -> None:
+        painter = context.painter
+        viewport = context.viewport
+        markers = context.markers
         del painter, viewport, markers
 
     def _draw_overlay(
