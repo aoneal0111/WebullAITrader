@@ -57,6 +57,15 @@ def create_paper_order_lifecycle_publisher(
     def publish_order_lifecycle(event: OrderLifecycleEvent) -> None:
         if not isinstance(event, OrderLifecycleEvent):
             raise TypeError("event must be an OrderLifecycleEvent")
+        history = order_book.history()
+        matching_order = next(
+            (
+                order
+                for order in reversed(history)
+                if order.order_id == event.order_id
+            ),
+            None,
+        )
         bus.publish(
             PaperOrderLifecycleUpdated(
                 source=normalized_source,
@@ -67,12 +76,17 @@ def create_paper_order_lifecycle_publisher(
                 filled_quantity=event.filled_quantity,
                 remaining_quantity=event.remaining_quantity,
                 fill_price=event.fill_price,
+                symbol=(
+                    None
+                    if matching_order is None
+                    else matching_order.symbol
+                ),
             )
         )
         bus.publish(
             OrdersUpdated(
                 source=normalized_source,
-                orders=map_paper_orders(order_book.history()),
+                orders=map_paper_orders(history),
                 occurred_at=event.occurred_at,
             )
         )

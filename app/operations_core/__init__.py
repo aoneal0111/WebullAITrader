@@ -18,6 +18,7 @@ from app.operations_core.events import (
     RuntimeStarting,
     RuntimeStopped,
     RuntimeStopping,
+    TradeLifecycleUpdated,
 )
 from app.operations_core.state import (
     ApplicationState,
@@ -51,4 +52,5 @@ __all__ = [
     "RuntimeStopping",
     "Subscription",
     "TimelineEntry",
+    "TradeLifecycleUpdated",
 ]

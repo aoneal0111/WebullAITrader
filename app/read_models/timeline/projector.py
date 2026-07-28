@@ -18,6 +18,7 @@ from app.operations_core import (
     RuntimeStopped,
     RuntimeStopping,
     Subscription,
+    TradeLifecycleUpdated,
 )
 
 from .models import (
@@ -69,6 +70,17 @@ class TimelineProjector:
 
 
 def _project_event(event: OperationsEvent) -> TimelineEntry:
+    if isinstance(event, TradeLifecycleUpdated):
+        category, severity = _trade_lifecycle_classification(event.phase)
+        return _entry(
+            event,
+            category,
+            severity,
+            event.title,
+            event.description,
+            cycle=event.cycle,
+            symbol=event.symbol,
+        )
     if isinstance(event, RuntimeStarting):
         return _entry(
             event,
@@ -169,6 +181,7 @@ def _project_event(event: OperationsEvent) -> TimelineEntry:
                 f"Order {event.order_id} moved from "
                 f"{event.previous_status} to {event.current_status}."
             ),
+            symbol=event.symbol,
         )
     if isinstance(event, OrdersUpdated):
         return _entry(
@@ -272,3 +285,34 @@ def _infer_classification(
 
 def _humanize(value: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", " ", value).strip()
+
+
+def _trade_lifecycle_classification(
+    phase: str,
+) -> tuple[TimelineCategory, TimelineSeverity]:
+    normalized = phase.strip().upper()
+    categories = {
+        "SCANNED": TimelineCategory.SCANNER,
+        "EVIDENCE": TimelineCategory.EVIDENCE,
+        "COMMITTEE": TimelineCategory.COMMITTEE,
+        "DECISION": TimelineCategory.DECISION,
+        "ORDER_SUBMITTED": TimelineCategory.ORDER,
+        "ORDER_ACCEPTED": TimelineCategory.ORDER,
+        "PARTIAL_FILL": TimelineCategory.FILL,
+        "FILLED": TimelineCategory.FILL,
+        "POSITION_OPEN": TimelineCategory.POSITION,
+        "RISK_UPDATE": TimelineCategory.RISK,
+        "STOP_UPDATED": TimelineCategory.RISK,
+        "TARGET_UPDATED": TimelineCategory.RISK,
+        "POSITION_CLOSE": TimelineCategory.POSITION,
+        "EXIT": TimelineCategory.EXIT,
+        "ERROR": TimelineCategory.ERROR,
+    }
+    category = categories.get(normalized, TimelineCategory.SYSTEM)
+    if normalized == "ERROR":
+        severity = TimelineSeverity.ERROR
+    elif normalized in {"FILLED", "POSITION_OPEN", "POSITION_CLOSE", "EXIT"}:
+        severity = TimelineSeverity.SUCCESS
+    else:
+        severity = TimelineSeverity.INFO
+    return category, severity

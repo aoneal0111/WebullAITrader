@@ -92,6 +92,7 @@ def test_lifecycle_publisher_emits_current_order_book_snapshot() -> None:
     assert transition.filled_quantity == D("10")
     assert transition.remaining_quantity == D("0")
     assert transition.fill_price == D("192.50")
+    assert transition.symbol == "AAPL"
     assert transition.occurred_at == occurred_at
 
     assert len(received) == 1

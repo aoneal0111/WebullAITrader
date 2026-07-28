@@ -194,6 +194,58 @@ class DecisionsUpdated(OperationsEvent):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class TradeLifecycleUpdated(OperationsEvent):
+    """Broker-neutral lifecycle fact for symbol-scoped trade reconstruction."""
+
+    symbol: str
+    phase: str
+    title: str
+    description: str
+    order_id: str | None = None
+    position_id: str | None = None
+    cycle: int | None = None
+    realized_pnl: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        for field_name in ("symbol", "phase", "title", "description"):
+            value = getattr(self, field_name)
+            if (
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+            ):
+                raise ValueError(
+                    f"{field_name} must be stripped non-empty text"
+                )
+        if self.symbol != self.symbol.upper():
+            raise ValueError("symbol must be uppercase")
+        if self.phase != self.phase.upper():
+            raise ValueError("phase must be uppercase")
+        for field_name in ("order_id", "position_id"):
+            value = getattr(self, field_name)
+            if value is not None and (
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+            ):
+                raise ValueError(
+                    f"{field_name} must be stripped non-empty text or None"
+                )
+        if self.cycle is not None and (
+            isinstance(self.cycle, bool)
+            or not isinstance(self.cycle, int)
+            or self.cycle < 0
+        ):
+            raise ValueError("cycle must be a nonnegative integer or None")
+        if self.realized_pnl is not None and (
+            not isinstance(self.realized_pnl, Decimal)
+            or not self.realized_pnl.is_finite()
+        ):
+            raise ValueError("realized_pnl must be a finite Decimal or None")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class PaperOrderLifecycleUpdated(OperationsEvent):
     """One deterministic paper-order lifecycle transition."""
 
@@ -203,6 +255,7 @@ class PaperOrderLifecycleUpdated(OperationsEvent):
     filled_quantity: Decimal
     remaining_quantity: Decimal
     fill_price: Decimal | None = None
+    symbol: str | None = None
 
     def __post_init__(self) -> None:
         OperationsEvent.__post_init__(self)
@@ -224,6 +277,17 @@ class PaperOrderLifecycleUpdated(OperationsEvent):
             raise ValueError("remaining_quantity must be nonnegative")
         if self.fill_price is not None and self.fill_price <= Decimal("0"):
             raise ValueError("fill_price must be positive when provided")
+        if self.symbol is not None:
+            if (
+                not isinstance(self.symbol, str)
+                or not self.symbol.strip()
+                or self.symbol != self.symbol.strip()
+            ):
+                raise ValueError(
+                    "symbol must be stripped non-empty text or None"
+                )
+            if self.symbol != self.symbol.upper():
+                raise ValueError("symbol must be uppercase")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
