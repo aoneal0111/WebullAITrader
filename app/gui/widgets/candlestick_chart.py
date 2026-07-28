@@ -216,10 +216,7 @@ class ChartRenderer:
         markers = context.markers
         cursor_position = context.cursor_position
 
-        self._draw_grid(
-            painter,
-            viewport,
-        )
+        self._draw_grid(context)
         self._draw_axes(
             painter,
             viewport,
@@ -244,9 +241,10 @@ class ChartRenderer:
 
     def _draw_grid(
         self,
-        painter: QPainter,
-        viewport: ChartViewport,
+        context: ChartRenderContext,
     ) -> None:
+        painter = context.painter
+        viewport = context.viewport
         del painter, viewport
 
     def _draw_axes(
