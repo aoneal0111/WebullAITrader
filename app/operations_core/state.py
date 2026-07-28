@@ -43,6 +43,8 @@ class RuntimeState:
     active_model: str = "Not loaded"
     cycles_completed: int = 0
     last_error: str | None = None
+    started_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +186,8 @@ class ApplicationStateStore:
                 inference_status="Loading",
                 cycles_completed=0,
                 last_error=None,
+                started_at=None,
+                last_heartbeat_at=None,
             )
 
         if isinstance(event, RuntimeStarted):
@@ -196,12 +200,15 @@ class ApplicationStateStore:
                 inference_status="Healthy",
                 active_model=event.active_model,
                 last_error=None,
+                started_at=event.occurred_at,
+                last_heartbeat_at=event.occurred_at,
             )
 
         if isinstance(event, RuntimeCycleCompleted):
             return replace(
                 current,
                 cycles_completed=event.cycle_count,
+                last_heartbeat_at=event.occurred_at,
             )
 
         if isinstance(event, RuntimeStopping):
@@ -219,6 +226,7 @@ class ApplicationStateStore:
                 inference_status="Ready",
                 cycles_completed=event.cycles_completed,
                 last_error=None,
+                last_heartbeat_at=event.occurred_at,
             )
 
         if isinstance(event, RuntimeFailed):
@@ -229,6 +237,7 @@ class ApplicationStateStore:
                 market_feed_status="Error",
                 inference_status="Error",
                 last_error=event.error_message,
+                last_heartbeat_at=event.occurred_at,
             )
 
         return current

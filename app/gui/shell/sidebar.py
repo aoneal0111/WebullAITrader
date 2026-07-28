@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QButtonGroup, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QButtonGroup, QLabel, QPushButton, QVBoxLayout, QWidget, QSizePolicy
 
 
 class Sidebar(QWidget):
     page_requested = Signal(int)
 
-    ITEMS = ("Dashboard", "Positions", "Orders", "AI", "Risk", "Diagnostics")
+    ITEMS = ("Dashboard", "Positions", "Orders", "Risk", "Analytics", "Experiments", "Event Store", "Diagnostics")
 
     def __init__(self) -> None:
         super().__init__()
-        self.setFixedWidth(190)
+        self.setMinimumWidth(176)
+        self.setMaximumWidth(232)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 20, 16, 16)
         layout.setSpacing(6)

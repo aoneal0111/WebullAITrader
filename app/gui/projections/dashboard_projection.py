@@ -180,6 +180,8 @@ def project_dashboard(
             active_model=runtime.active_model,
             cycle_count=runtime.cycles_completed,
             status_message=runtime.last_error or "Healthy",
+            started_at=runtime.started_at,
+            last_heartbeat_at=runtime.last_heartbeat_at,
         ),
         portfolio=PortfolioSnapshot(
             equity=_money(portfolio.equity),

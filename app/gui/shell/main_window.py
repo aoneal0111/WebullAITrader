@@ -3,8 +3,8 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QTimer, QSettings, QRect
+from PySide6.QtGui import QCloseEvent, QGuiApplication
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QStatusBar, QVBoxLayout, QWidget
 
 from app.gui.design.theme import application_stylesheet
@@ -121,9 +121,9 @@ class MainWindow(QMainWindow):
         self._replay_timer.timeout.connect(self._advance_replay)
         self._replay_timer.start()
         self.setWindowTitle("Atlas — WebullAITrader")
-        self.setMinimumSize(1180, 760)
-        self.resize(1440, 900)
+        self.setMinimumSize(1280, 720)
         self._build()
+        self._restore_geometry()
         self.setStyleSheet(application_stylesheet())
         self._render_state(state_store.snapshot())
 
@@ -143,24 +143,13 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         system = QLabel("SYSTEM CONTROL")
         system.setObjectName("sectionTitle")
-        self.start_button = QPushButton("Start Paper Runtime")
-        self.start_button.setObjectName("primaryButton")
-        self.start_button.clicked.connect(self._runtime_service.start)
-        self.stop_button = QPushButton("Stop Runtime")
-        self.stop_button.setObjectName("secondaryButton")
-        self.stop_button.clicked.connect(lambda checked=False: self._runtime_service.stop())
-        self.emergency_button = QPushButton("Emergency Stop")
-        self.emergency_button.setObjectName("dangerButton")
-        self.emergency_button.clicked.connect(self._emergency_stop)
         controls.addWidget(system)
         controls.addStretch()
-        controls.addWidget(self.start_button)
-        controls.addWidget(self.stop_button)
-        controls.addWidget(self.emergency_button)
         content_layout.addLayout(controls)
 
         self.pages = QStackedWidget()
         self.dashboard = DashboardPage()
+        self.dashboard.runtime_control_requested.connect(self._toggle_runtime)
         self.dashboard.selection_requested.connect(
             self._publish_operator_selection
         )
@@ -219,36 +208,16 @@ class MainWindow(QMainWindow):
             self._backtesting_controller.compare
         )
         self.pages.addWidget(self.dashboard)
-        self.pages.addWidget(
-            PlaceholderPage(
-                "Positions",
-                "Portfolio views will bind to the existing position and account-state services.",
-            )
-        )
+        self.pages.addWidget(PlaceholderPage("Positions", "Live positions and account read models."))
 
         self.orders = OrdersPage()
         self.pages.addWidget(self.orders)
 
-        self.pages.addWidget(
-            PlaceholderPage(
-                "Strategies",
-                "Strategy selection, promotion state, and autonomous runtime controls will live here.",
-            )
-        )
-
-        self.pages.addWidget(
-            PlaceholderPage(
-                "Risk",
-                "Risk limits, safety gates, and live-trading permissions will be surfaced here.",
-            )
-        )
-
-        self.pages.addWidget(
-            PlaceholderPage(
-                "Activity",
-                "Auditable system events, decisions, warnings, and execution records will appear here.",
-            )
-        )
+        self.pages.addWidget(PlaceholderPage("Risk", "Risk limits, safety gates, and paper-trading permissions."))
+        self.pages.addWidget(PlaceholderPage("Analytics", "Historical analytics and performance read models."))
+        self.pages.addWidget(PlaceholderPage("Experiments", "Historical playback and experiment execution."))
+        self.pages.addWidget(PlaceholderPage("Event Store", "Recorded sessions, event browsing, and replay timeline."))
+        self.pages.addWidget(PlaceholderPage("Diagnostics", "Runtime internals, health, and logs."))
         content_layout.addWidget(self.pages, 1)
         outer.addWidget(content, 1)
         self.sidebar.page_requested.connect(self.pages.setCurrentIndex)
@@ -265,6 +234,13 @@ class MainWindow(QMainWindow):
     def _emergency_stop(self) -> None:
         self._runtime_service.stop()
         self.statusBar().showMessage("Emergency stop requested. Runtime shutdown in progress.", 5000)
+
+    def _toggle_runtime(self) -> None:
+        phase = self._state_store.snapshot().runtime.phase
+        if phase is RuntimePhase.STOPPED or phase is RuntimePhase.FAILED:
+            self._runtime_service.start()
+        elif phase is RuntimePhase.RUNNING:
+            self._runtime_service.stop()
 
     def _render_state(self, state: ApplicationState) -> None:
         replay = self._replay_controller.snapshot()
@@ -308,8 +284,6 @@ class MainWindow(QMainWindow):
         self.dashboard.render(dashboard_snapshot)
         phase = state.runtime.phase
         active = phase in {RuntimePhase.STARTING, RuntimePhase.RUNNING, RuntimePhase.STOPPING}
-        self.start_button.setEnabled(not active)
-        self.stop_button.setEnabled(phase in {RuntimePhase.STARTING, RuntimePhase.RUNNING})
         self.status_label.setText(
             f"{state.runtime.environment}  |  Runtime {phase.value}  |  "
             f"Feed {state.runtime.market_feed_status}  |  Cycles {state.runtime.cycles_completed}"
@@ -444,5 +418,23 @@ class MainWindow(QMainWindow):
         self._analytics_bridge.close()
         self._backtesting_bridge.close()
         self._replay_timer.stop()
+        self._save_geometry()
         event.accept()
+
+    def _restore_geometry(self) -> None:
+        settings = QSettings("Webull AI Trader", "Atlas")
+        geometry = settings.value("mainWindowGeometry")
+        if geometry is not None and self.restoreGeometry(geometry):
+            available = QGuiApplication.primaryScreen().availableGeometry()
+            if available.intersects(self.frameGeometry()):
+                return
+        available = QGuiApplication.primaryScreen().availableGeometry()
+        width = min(available.width() * 9 // 10, 1680)
+        height = min(available.height() * 9 // 10, 1000)
+        width = max(width, 1280)
+        height = max(height, 720)
+        self.setGeometry(QRect(available.x() + (available.width() - width) // 2, available.y() + (available.height() - height) // 2, width, height))
+
+    def _save_geometry(self) -> None:
+        QSettings("Webull AI Trader", "Atlas").setValue("mainWindowGeometry", self.saveGeometry())
 

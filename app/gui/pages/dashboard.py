@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from app.gui.models import DashboardSnapshot
+from app.gui.models import CandleInterval, CandleSeriesSnapshot, DashboardSnapshot
 from app.operations_core import (
     OperatorDecisionSelected,
     OperatorSymbolSelected,
@@ -30,10 +32,12 @@ from app.gui.widgets.runtime_ribbon import RuntimeRibbon
 from app.gui.widgets.runtime_health_panel import RuntimeHealthPanel
 from app.gui.widgets.timeline_panel import TimelinePanel
 from app.gui.widgets.trade_lifecycle_panel import TradeLifecyclePanel
+from app.gui.widgets.candlestick_chart import CandlestickChart
 
 
 class DashboardPage(QWidget):
     selection_requested = Signal(object)
+    runtime_control_requested = Signal()
     replay_play_requested = Signal()
     replay_pause_requested = Signal()
     replay_stop_requested = Signal()
@@ -63,11 +67,11 @@ class DashboardPage(QWidget):
         header = QHBoxLayout()
         heading = QVBoxLayout()
 
-        title = QLabel("Autonomous Trading Dashboard")
+        title = QLabel("Operator Console")
         title.setObjectName("pageTitle")
 
         subtitle = QLabel(
-            "Monitor the runtime, strategy state, risk posture, and execution activity."
+            "Live paper-trading operations at a glance."
         )
         subtitle.setObjectName("muted")
 
@@ -78,12 +82,21 @@ class DashboardPage(QWidget):
 
         header.addLayout(heading)
         header.addStretch()
+        self.runtime_button = QToolButton()
+        self.runtime_button.setText("Start Paper Runtime")
+        self.runtime_button.setObjectName("primaryButton")
+        self.runtime_button.clicked.connect(self.runtime_control_requested)
+        header.addWidget(self.runtime_button)
         header.addWidget(self.mode_badge)
 
         root.addLayout(header)
 
         self.runtime_ribbon = RuntimeRibbon()
         root.addWidget(self.runtime_ribbon)
+
+        self.chart = CandlestickChart()
+        chart_panel = SectionPanel("LIVE MARKET CHART", self.chart)
+        root.addWidget(chart_panel, 1)
 
         self.replay_panel = ReplayPanel()
         self.replay_panel.play_requested.connect(
@@ -113,12 +126,12 @@ class DashboardPage(QWidget):
         self.replay_panel.save_recording_requested.connect(
             self.recording_save_requested
         )
-        root.addWidget(
-            SectionPanel(
+        replay_section = SectionPanel(
                 "Session Replay",
                 self.replay_panel,
             )
-        )
+        replay_section.setVisible(False)
+        root.addWidget(replay_section)
 
         self.event_store_panel = EventStorePanel()
         self.event_store_panel.search_requested.connect(
@@ -151,20 +164,20 @@ class DashboardPage(QWidget):
         self.event_store_panel.refresh_requested.connect(
             self.event_store_refresh_requested
         )
-        root.addWidget(
-            SectionPanel(
+        event_store_section = SectionPanel(
                 "Historical Event Store - Read Only",
                 self.event_store_panel,
             )
-        )
+        event_store_section.setVisible(False)
+        root.addWidget(event_store_section)
 
         self.analytics_panel = AnalyticsPanel()
-        root.addWidget(
-            SectionPanel(
+        analytics_section = SectionPanel(
                 "Historical Analytics - Read Only",
                 self.analytics_panel,
             )
-        )
+        analytics_section.setVisible(False)
+        root.addWidget(analytics_section)
 
         self.experiment_panel = ExperimentPanel()
         self.experiment_panel.start_requested.connect(
@@ -185,23 +198,22 @@ class DashboardPage(QWidget):
         self.experiment_panel.compare_requested.connect(
             self.experiment_compare_requested
         )
-        root.addWidget(
-            SectionPanel(
+        experiment_section = SectionPanel(
                 "Historical Experiment Center",
                 self.experiment_panel,
             )
-        )
+        experiment_section.setVisible(False)
+        root.addWidget(experiment_section)
 
         self.portfolio_metrics = PortfolioMetrics()
         root.addWidget(self.portfolio_metrics)
 
         self.runtime_health_panel = RuntimeHealthPanel()
-        root.addWidget(
-            SectionPanel(
+        health_section = SectionPanel(
                 "Runtime Health Center - Read Only",
                 self.runtime_health_panel,
             )
-        )
+        root.addWidget(health_section)
 
         body = QGridLayout()
         body.setSpacing(12)
@@ -227,56 +239,38 @@ class DashboardPage(QWidget):
             self._select_order
         )
 
-        body.addWidget(
-            SectionPanel(
+        decision_section = SectionPanel(
                 "AI Decision Center - Read Only",
                 self.decision_center,
-            ),
-            0,
-            0,
-            1,
-            2,
-        )
+            )
+        decision_section.setVisible(False)
+        body.addWidget(decision_section, 0, 0, 1, 2)
 
-        body.addWidget(
-            SectionPanel(
+        timeline_section = SectionPanel(
                 "Immutable Event Timeline - Read Only",
                 self.timeline_panel,
-            ),
-            1,
-            0,
-            1,
-            2,
-        )
+            )
+        timeline_section.setVisible(False)
+        body.addWidget(timeline_section, 1, 0, 1, 2)
 
-        body.addWidget(
-            SectionPanel(
+        positions_section = SectionPanel(
                 "Open Positions",
                 self.positions_panel,
-            ),
-            0,
-            2,
-        )
+            )
+        body.addWidget(positions_section, 0, 2)
 
-        body.addWidget(
-            SectionPanel(
+        orders_section = SectionPanel(
                 "Active Orders",
                 self.orders_panel,
-            ),
-            1,
-            2,
-        )
+            )
+        body.addWidget(orders_section, 1, 2)
 
-        body.addWidget(
-            SectionPanel(
+        lifecycle_section = SectionPanel(
                 "Trade Lifecycle Explorer - Read Only",
                 self.trade_lifecycle_panel,
-            ),
-            2,
-            0,
-            1,
-            3,
-        )
+            )
+        lifecycle_section.setVisible(False)
+        body.addWidget(lifecycle_section, 2, 0, 1, 3)
 
         body.setColumnStretch(0, 2)
         body.setColumnStretch(1, 2)
@@ -286,6 +280,18 @@ class DashboardPage(QWidget):
 
     def render(self, snapshot: DashboardSnapshot) -> None:
         self.runtime_ribbon.render(snapshot.runtime)
+        phase = snapshot.runtime.state.value
+        transitioning = phase in {"STARTING", "STOPPING"}
+        self.runtime_button.setEnabled(not transitioning)
+        self.runtime_button.setText(
+            "Stop Runtime" if phase in {"RUNNING", "STARTING"} else "Start Paper Runtime"
+        )
+        self.chart.render(
+            CandleSeriesSnapshot(
+                snapshot.operator_workspace.selected_symbol,
+                CandleInterval.ONE_MINUTE,
+            )
+        )
         self.portfolio_metrics.render(snapshot.portfolio)
         self.runtime_health_panel.render(snapshot.runtime_health)
         self.replay_panel.render(
