@@ -92,12 +92,38 @@ class PortfolioSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class DecisionRow:
+    symbol: str
+    action: str
+    confidence: str
+    score: str
+    rationale: str
+    decided_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionCenterSnapshot:
+    cycle: str
+    updated_at: str
+    rows: tuple[DecisionRow, ...]
+
+    @classmethod
+    def initial(cls) -> "DecisionCenterSnapshot":
+        return cls(
+            cycle="Awaiting first cycle",
+            updated_at="No decisions projected",
+            rows=(),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardSnapshot:
     runtime: RuntimeSnapshot
     portfolio: PortfolioSnapshot
     activity: ActivitySnapshot
     positions: PositionsSnapshot
     orders: OrdersSnapshot
+    decisions: DecisionCenterSnapshot
 
     @classmethod
     def initial(cls) -> "DashboardSnapshot":
@@ -107,4 +133,5 @@ class DashboardSnapshot:
             activity=ActivitySnapshot.initial(),
             positions=PositionsSnapshot.initial(),
             orders=OrdersSnapshot.initial(),
+            decisions=DecisionCenterSnapshot.initial(),
         )

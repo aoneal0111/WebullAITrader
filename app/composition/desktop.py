@@ -7,6 +7,7 @@ from app.operations_core import ApplicationStateStore, OperationsBus
 from app.order_cancellation import OrderCancellationRuntime
 from app.order_placement import OrderPlacementRuntime
 from app.paper_trading.order_book import PaperOrderBook
+from app.read_models.decisions import DecisionProjector
 from app.services import OrderCommandFactory, RuntimeService, TradingService
 
 from .desktop_runtime import create_desktop_runtime_service
@@ -21,6 +22,7 @@ from app.paper_trading.command_composition import (
 class DesktopComposition:
     bus: OperationsBus
     state_store: ApplicationStateStore
+    decision_projector: DecisionProjector
     runtime_service: RuntimeService
     trading_service: TradingService | None = None
     order_command_factory: OrderCommandFactory | None = None
@@ -34,6 +36,7 @@ class DesktopComposition:
             timeout_seconds=timeout_seconds
         )
         self.state_store.close()
+        self.decision_projector.close()
         return runtime_stopped
 
 
@@ -49,6 +52,7 @@ def create_desktop_composition(
     """Construct the desktop application dependency graph."""
 
     bus = OperationsBus()
+    decision_projector = DecisionProjector(bus)
     state_store = ApplicationStateStore(bus)
 
     runtime_service = create_desktop_runtime_service(
@@ -83,6 +87,7 @@ def create_desktop_composition(
     return DesktopComposition(
         bus=bus,
         state_store=state_store,
+        decision_projector=decision_projector,
         runtime_service=runtime_service,
         trading_service=trading_service,
         order_command_factory=order_command_factory,

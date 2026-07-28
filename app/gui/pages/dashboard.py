@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 from app.gui.models import DashboardSnapshot
 from app.gui.widgets.activity_panel import ActivityPanel
 from app.gui.widgets.common import StatusBadge
+from app.gui.widgets.decision_center import DecisionCenter
 from app.gui.widgets.orders_panel import OrdersPanel
 from app.gui.widgets.panel import SectionPanel
 from app.gui.widgets.positions_panel import PositionsPanel
@@ -58,17 +59,29 @@ class DashboardPage(QWidget):
         body.setSpacing(12)
 
         self.activity_panel = ActivityPanel()
+        self.decision_center = DecisionCenter()
         self.positions_panel = PositionsPanel()
         self.orders_panel = OrdersPanel()
 
         body.addWidget(
             SectionPanel(
-                "Decision & Activity Feed",
-                self.activity_panel,
+                "AI Decision Center - Read Only",
+                self.decision_center,
             ),
             0,
             0,
+            1,
             2,
+        )
+
+        body.addWidget(
+            SectionPanel(
+                "Operations Activity",
+                self.activity_panel,
+            ),
+            1,
+            0,
+            1,
             2,
         )
 
@@ -112,5 +125,6 @@ class DashboardPage(QWidget):
         )
 
         self.activity_panel.render(snapshot.activity)
+        self.decision_center.render(snapshot.decisions)
         self.positions_panel.render(snapshot.positions)
         self.orders_panel.render(snapshot.orders)

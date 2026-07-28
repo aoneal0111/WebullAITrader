@@ -12,14 +12,22 @@ from app.gui.shell.sidebar import Sidebar
 from app.gui.state_bridge import QtStateBridge
 from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus, RuntimePhase
 from app.services import RuntimeService
+from app.read_models.decisions import DecisionProjector
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, bus: OperationsBus, state_store: ApplicationStateStore, runtime_service: RuntimeService) -> None:
+    def __init__(
+        self,
+        bus: OperationsBus,
+        state_store: ApplicationStateStore,
+        runtime_service: RuntimeService,
+        decision_projector: DecisionProjector,
+    ) -> None:
         super().__init__()
         self._bus = bus
         self._state_store = state_store
         self._runtime_service = runtime_service
+        self._decision_projector = decision_projector
         self._last_error = ""
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
@@ -113,7 +121,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Emergency stop requested. Runtime shutdown in progress.", 5000)
 
     def _render_state(self, state: ApplicationState) -> None:
-        dashboard_snapshot = project_dashboard(state)
+        dashboard_snapshot = project_dashboard(
+            state,
+            self._decision_projector.snapshot(),
+        )
         self.dashboard.render(dashboard_snapshot)
         phase = state.runtime.phase
         active = phase in {RuntimePhase.STARTING, RuntimePhase.RUNNING, RuntimePhase.STOPPING}

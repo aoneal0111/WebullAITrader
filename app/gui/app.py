@@ -19,6 +19,7 @@ def main() -> int:
         composition.bus,
         composition.state_store,
         composition.runtime_service,
+        composition.decision_projector,
     )
     window.show()
 

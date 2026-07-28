@@ -5,6 +5,8 @@ from app.gui.models import (
     ActivityEntry,
     ActivitySnapshot,
     DashboardSnapshot,
+    DecisionCenterSnapshot,
+    DecisionRow,
     PortfolioSnapshot,
     RuntimeSnapshot,
     RuntimeState,
@@ -13,9 +15,20 @@ from app.operations_core import ApplicationState
 from app.read_models.orders import project_orders_read_model
 from app.read_models.positions import project_positions_read_model
 from app.read_models.portfolio import project_portfolio_read_model
+from app.read_models.decisions import DecisionsReadModelSnapshot
 
 
-def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
+def project_dashboard(
+    state: ApplicationState,
+    decisions: DecisionsReadModelSnapshot | None = None,
+) -> DashboardSnapshot:
+    if not isinstance(state, ApplicationState):
+        raise TypeError("state must be an ApplicationState")
+    if decisions is None:
+        decisions = DecisionsReadModelSnapshot.initial()
+    if not isinstance(decisions, DecisionsReadModelSnapshot):
+        raise TypeError("decisions must be a DecisionsReadModelSnapshot")
+
     runtime = state.runtime
     orders_read_model = project_orders_read_model(state)
     positions_read_model = project_positions_read_model(state)
@@ -54,6 +67,33 @@ def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
         ),
         positions=format_positions(positions_read_model),
         orders=format_orders(orders_read_model),
+        decisions=DecisionCenterSnapshot(
+            cycle=(
+                "Awaiting first cycle"
+                if decisions.cycle is None
+                else f"Cycle {decisions.cycle}"
+            ),
+            updated_at=(
+                "No decisions projected"
+                if decisions.updated_at is None
+                else f"Updated {decisions.updated_at.astimezone():%H:%M:%S}"
+            ),
+            rows=tuple(
+                DecisionRow(
+                    symbol=decision.symbol,
+                    action=decision.action.replace("_", " "),
+                    confidence=f"{decision.confidence}%",
+                    score=f"{decision.score:f}",
+                    rationale=(
+                        " | ".join(decision.reasons)
+                        if decision.reasons
+                        else "No rationale supplied"
+                    ),
+                    decided_at=f"{decision.decided_at.astimezone():%H:%M:%S}",
+                )
+                for decision in decisions.decisions
+            ),
+        ),
     )
 
 

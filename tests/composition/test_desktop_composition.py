@@ -1,9 +1,13 @@
+from datetime import datetime, timezone
+from decimal import Decimal
 from threading import Event
 
 from app.composition import (
     DesktopComposition,
     create_desktop_composition,
 )
+from app.operations_core import DecisionsUpdated, OperationsDecision
+from app.read_models.decisions import DecisionProjector
 from app.services import RuntimeServiceStatus
 
 
@@ -18,6 +22,9 @@ class FakeDriver:
             stop_event.wait(0.01)
 
 
+NOW = datetime(2026, 7, 28, 14, 0, tzinfo=timezone.utc)
+
+
 def test_create_desktop_composition_returns_complete_graph() -> None:
     composition = create_desktop_composition()
 
@@ -26,6 +33,8 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
         assert composition.runtime_service.status is RuntimeServiceStatus.STOPPED
         assert composition.runtime_service.cycles_completed == 0
         assert composition.state_store.snapshot().revision == 0
+        assert isinstance(composition.decision_projector, DecisionProjector)
+        assert composition.decision_projector.snapshot().decisions == ()
     finally:
         composition.close(timeout_seconds=1.0)
 
@@ -38,6 +47,7 @@ def test_desktop_composition_uses_fresh_dependencies() -> None:
         assert first is not second
         assert first.bus is not second.bus
         assert first.state_store is not second.state_store
+        assert first.decision_projector is not second.decision_projector
         assert first.runtime_service is not second.runtime_service
     finally:
         first.close(timeout_seconds=1.0)
@@ -65,4 +75,39 @@ def test_desktop_composition_accepts_driver_factory() -> None:
         composition.runtime_service.stop()
         assert composition.runtime_service.wait(1.0)
     finally:
+        composition.close(timeout_seconds=1.0)
+
+
+def test_composed_state_notifications_observe_latest_decision_snapshot() -> None:
+    composition = create_desktop_composition()
+    observed_cycles: list[int | None] = []
+    listener_id = composition.state_store.subscribe(
+        lambda state: observed_cycles.append(
+            composition.decision_projector.snapshot().cycle
+        )
+    )
+    try:
+        composition.bus.publish(
+            DecisionsUpdated(
+                cycle=2,
+                occurred_at=NOW,
+                decisions=(
+                    OperationsDecision(
+                        symbol="AAPL",
+                        action="HOLD",
+                        confidence=50,
+                        score=Decimal("0.5"),
+                        reasons=("waiting",),
+                        source_action="HOLD",
+                        position_quantity=Decimal("0"),
+                        strategy_version="1.0",
+                        decided_at=NOW,
+                    ),
+                ),
+            )
+        )
+
+        assert observed_cycles == [None, 2]
+    finally:
+        composition.state_store.unsubscribe(listener_id)
         composition.close(timeout_seconds=1.0)
