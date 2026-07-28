@@ -109,6 +109,30 @@ class ChartViewport:
     high: float
     step: float
 
+
+@dataclass(frozen=True, slots=True)
+class ChartTransform:
+    """Convert chart data coordinates into canvas coordinates."""
+
+    viewport: ChartViewport
+
+    def price_to_y(self, value: object) -> float:
+        span = max(self.viewport.high - self.viewport.low, 0.01)
+        return (
+            self.viewport.top
+            + (self.viewport.high - float(value))
+            / span
+            * self.viewport.height
+        )
+
+    def index_to_x(self, index: int) -> float:
+        return (
+            self.viewport.left
+            + index * self.viewport.step
+            + self.viewport.step / 2
+        )
+
+
 class CandleCanvas(QWidget):
     """The existing read-only candlestick canvas, retained unchanged in role."""
 
@@ -182,18 +206,6 @@ class CandleCanvas(QWidget):
             step=step,
         )
 
-    def _price_to_y(
-        self,
-        value: object,
-        *,
-        top: float,
-        height: float,
-        low: float,
-        high: float,
-    ) -> float:
-        span = max(high - low, 0.01)
-        return top + (high - float(value)) / span * height
-
     def _draw_grid(
         self,
         painter: QPainter,
@@ -224,15 +236,11 @@ class CandleCanvas(QWidget):
         viewport: ChartViewport,
     ) -> None:
         candles = self._snapshot.candles
-        left = viewport.left
-        top = viewport.top
-        height = viewport.height
-        low = viewport.low
-        high = viewport.high
+        transform = ChartTransform(viewport)
         step = viewport.step
 
         for index, candle in enumerate(candles):
-            x = left + index * step + step / 2
+            x = transform.index_to_x(index)
             color = QColor(
                 Colors.SUCCESS
                 if candle.close >= candle.open
@@ -240,36 +248,12 @@ class CandleCanvas(QWidget):
             )
             painter.setPen(QPen(color, 1.2))
 
-            high_y = self._price_to_y(
-                candle.high,
-                top=top,
-                height=height,
-                low=low,
-                high=high,
-            )
-            low_y = self._price_to_y(
-                candle.low,
-                top=top,
-                height=height,
-                low=low,
-                high=high,
-            )
+            high_y = transform.price_to_y(candle.high)
+            low_y = transform.price_to_y(candle.low)
             painter.drawLine(x, high_y, x, low_y)
 
-            open_y = self._price_to_y(
-                candle.open,
-                top=top,
-                height=height,
-                low=low,
-                high=high,
-            )
-            close_y = self._price_to_y(
-                candle.close,
-                top=top,
-                height=height,
-                low=low,
-                high=high,
-            )
+            open_y = transform.price_to_y(candle.open)
+            close_y = transform.price_to_y(candle.close)
             body_top, body_bottom = sorted((open_y, close_y))
 
             painter.fillRect(
