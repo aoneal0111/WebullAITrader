@@ -23,6 +23,7 @@ def main() -> int:
         composition.runtime_health_projector,
         composition.timeline_projector,
         composition.trade_lifecycle_projector,
+        composition.operator_workspace_projector,
     )
     window.show()
 

@@ -8,6 +8,7 @@ from app.order_cancellation import OrderCancellationRuntime
 from app.order_placement import OrderPlacementRuntime
 from app.paper_trading.order_book import PaperOrderBook
 from app.read_models.decisions import DecisionProjector
+from app.read_models.operator_workspace import OperatorWorkspaceProjector
 from app.read_models.runtime_health import RuntimeHealthProjector
 from app.read_models.timeline import TimelineProjector
 from app.read_models.trade_lifecycle import TradeLifecycleProjector
@@ -29,6 +30,7 @@ class DesktopComposition:
     runtime_health_projector: RuntimeHealthProjector
     timeline_projector: TimelineProjector
     trade_lifecycle_projector: TradeLifecycleProjector
+    operator_workspace_projector: OperatorWorkspaceProjector
     runtime_service: RuntimeService
     trading_service: TradingService | None = None
     order_command_factory: OrderCommandFactory | None = None
@@ -46,6 +48,7 @@ class DesktopComposition:
         self.runtime_health_projector.close()
         self.timeline_projector.close()
         self.trade_lifecycle_projector.close()
+        self.operator_workspace_projector.close()
         return runtime_stopped
 
 
@@ -65,6 +68,7 @@ def create_desktop_composition(
     runtime_health_projector = RuntimeHealthProjector(bus)
     timeline_projector = TimelineProjector(bus)
     trade_lifecycle_projector = TradeLifecycleProjector(bus)
+    operator_workspace_projector = OperatorWorkspaceProjector(bus)
     state_store = ApplicationStateStore(bus)
 
     runtime_service = create_desktop_runtime_service(
@@ -103,6 +107,7 @@ def create_desktop_composition(
         runtime_health_projector=runtime_health_projector,
         timeline_projector=timeline_projector,
         trade_lifecycle_projector=trade_lifecycle_projector,
+        operator_workspace_projector=operator_workspace_projector,
         runtime_service=runtime_service,
         trading_service=trading_service,
         order_command_factory=order_command_factory,

@@ -9,12 +9,17 @@ from app.composition import (
 from app.operations_core import (
     DecisionsUpdated,
     OperationsDecision,
+    OperatorDecisionSelected,
     RuntimeStarted,
 )
 from app.read_models.decisions import DecisionProjector
 from app.read_models.runtime_health import (
     OverallHealth,
     RuntimeHealthProjector,
+)
+from app.read_models.operator_workspace import (
+    OperatorWorkspaceProjector,
+    WorkspaceSelectionSource,
 )
 from app.read_models.timeline import TimelineProjector
 from app.read_models.trade_lifecycle import (
@@ -60,6 +65,10 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
             composition.trade_lifecycle_projector,
             TradeLifecycleProjector,
         )
+        assert isinstance(
+            composition.operator_workspace_projector,
+            OperatorWorkspaceProjector,
+        )
     finally:
         composition.close(timeout_seconds=1.0)
 
@@ -81,6 +90,10 @@ def test_desktop_composition_uses_fresh_dependencies() -> None:
         assert (
             first.trade_lifecycle_projector
             is not second.trade_lifecycle_projector
+        )
+        assert (
+            first.operator_workspace_projector
+            is not second.operator_workspace_projector
         )
         assert first.runtime_service is not second.runtime_service
     finally:
@@ -175,10 +188,43 @@ def test_composed_state_notifications_observe_latest_health_snapshot() -> None:
 def test_close_releases_all_composed_bus_subscriptions() -> None:
     composition = create_desktop_composition()
 
-    assert composition.bus.subscription_count == 6
+    assert composition.bus.subscription_count == 7
     composition.close(timeout_seconds=1.0)
 
     assert composition.bus.subscription_count == 0
+
+
+def test_state_notifications_observe_latest_workspace_selection() -> None:
+    composition = create_desktop_composition()
+    observed: list[tuple[str | None, WorkspaceSelectionSource]] = []
+    listener_id = composition.state_store.subscribe(
+        lambda state: observed.append(
+            (
+                composition.operator_workspace_projector
+                .snapshot()
+                .selected_symbol,
+                composition.operator_workspace_projector
+                .snapshot()
+                .selection_source,
+            )
+        )
+    )
+    try:
+        composition.bus.publish(
+            OperatorDecisionSelected(
+                symbol="AAPL",
+                decision_id="decision-1",
+                occurred_at=NOW,
+            )
+        )
+
+        assert observed == [
+            (None, WorkspaceSelectionSource.NONE),
+            ("AAPL", WorkspaceSelectionSource.DECISION),
+        ]
+    finally:
+        composition.state_store.unsubscribe(listener_id)
+        composition.close(timeout_seconds=1.0)
 
 
 def test_state_notifications_observe_latest_timeline_entry() -> None:

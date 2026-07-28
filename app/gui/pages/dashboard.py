@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
@@ -9,6 +10,12 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.models import DashboardSnapshot
+from app.operations_core import (
+    OperatorDecisionSelected,
+    OperatorSymbolSelected,
+    OperatorTimelineSelected,
+    OperatorTradeSelected,
+)
 from app.gui.widgets.common import StatusBadge
 from app.gui.widgets.decision_center import DecisionCenter
 from app.gui.widgets.orders_panel import OrdersPanel
@@ -22,6 +29,8 @@ from app.gui.widgets.trade_lifecycle_panel import TradeLifecyclePanel
 
 
 class DashboardPage(QWidget):
+    selection_requested = Signal(object)
+
     def __init__(self) -> None:
         super().__init__()
 
@@ -73,6 +82,21 @@ class DashboardPage(QWidget):
         self.positions_panel = PositionsPanel()
         self.orders_panel = OrdersPanel()
         self.trade_lifecycle_panel = TradeLifecyclePanel()
+        self.timeline_panel.selection_requested.connect(
+            self._select_timeline
+        )
+        self.decision_center.selection_requested.connect(
+            self._select_decision
+        )
+        self.trade_lifecycle_panel.selection_requested.connect(
+            self._select_trade
+        )
+        self.positions_panel.selection_requested.connect(
+            self._select_position
+        )
+        self.orders_panel.selection_requested.connect(
+            self._select_order
+        )
 
         body.addWidget(
             SectionPanel(
@@ -153,4 +177,57 @@ class DashboardPage(QWidget):
         self.orders_panel.render(snapshot.orders)
         self.trade_lifecycle_panel.render(
             snapshot.lifecycle_explorer
+        )
+
+    def _select_timeline(
+        self,
+        symbol: str,
+        timeline_entry_id: str,
+    ) -> None:
+        self.selection_requested.emit(
+            OperatorTimelineSelected(
+                timeline_entry_id=timeline_entry_id,
+                symbol=symbol or None,
+                source="atlas-timeline",
+            )
+        )
+
+    def _select_decision(
+        self,
+        symbol: str,
+        decision_id: str,
+    ) -> None:
+        self.selection_requested.emit(
+            OperatorDecisionSelected(
+                symbol=symbol,
+                decision_id=decision_id,
+                source="atlas-decision",
+            )
+        )
+
+    def _select_trade(self, symbol: str) -> None:
+        self.selection_requested.emit(
+            OperatorTradeSelected(
+                symbol=symbol,
+                source="atlas-trade",
+            )
+        )
+
+    def _select_position(self, symbol: str) -> None:
+        self.selection_requested.emit(
+            OperatorSymbolSelected(
+                symbol=symbol,
+                selection_source="POSITION",
+                source="atlas-position",
+            )
+        )
+
+    def _select_order(self, symbol: str, order_id: str) -> None:
+        self.selection_requested.emit(
+            OperatorSymbolSelected(
+                symbol=symbol,
+                selection_source="ORDER",
+                selection_id=order_id,
+                source="atlas-order",
+            )
         )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
@@ -16,6 +17,8 @@ from app.gui.models import DecisionCenterSnapshot
 
 class DecisionCenter(QWidget):
     """Read-only view of the latest autonomous decision projection."""
+
+    selection_requested = Signal(str, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -38,6 +41,7 @@ class DecisionCenter(QWidget):
             QAbstractItemView.SelectionMode.NoSelection
         )
         self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.table.cellClicked.connect(self._request_selection)
         self.table.verticalHeader().setVisible(False)
         header = self.table.horizontalHeader()
         for column in (0, 1, 2, 3, 5):
@@ -65,8 +69,33 @@ class DecisionCenter(QWidget):
                 row.decided_at,
             )
             for column_index, value in enumerate(values):
-                self.table.setItem(
-                    row_index,
-                    column_index,
-                    QTableWidgetItem(value),
+                item = QTableWidgetItem(value)
+                item.setData(
+                    Qt.ItemDataRole.UserRole,
+                    (row.symbol, row.selection_id),
                 )
+                if (
+                    row.selection_id
+                    and row.selection_id == snapshot.selected_decision
+                ):
+                    item.setBackground(QColor("#243b53"))
+                self.table.setItem(row_index, column_index, item)
+            if (
+                row.selection_id
+                and row.selection_id == snapshot.selected_decision
+            ):
+                self.table.scrollToItem(self.table.item(row_index, 0))
+
+    def _request_selection(self, row: int, column: int) -> None:
+        item = self.table.item(row, column)
+        if item is None:
+            return
+        selection = item.data(Qt.ItemDataRole.UserRole)
+        if (
+            isinstance(selection, tuple)
+            and len(selection) == 2
+            and all(isinstance(value, str) for value in selection)
+            and selection[0]
+            and selection[1]
+        ):
+            self.selection_requested.emit(selection[0], selection[1])

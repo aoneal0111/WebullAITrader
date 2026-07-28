@@ -35,6 +35,9 @@ class PortfolioMetrics(QFrame):
         }
         for index, card in enumerate(self._cards.values()):
             layout.addWidget(card, index // 3, index % 3)
+        self.selected_symbol = QLabel("ALL SYMBOLS")
+        self.selected_symbol.setObjectName("statusBadge")
+        layout.addWidget(self.selected_symbol, 2, 0, 1, 3)
 
     def render(self, snapshot: PortfolioSnapshot) -> None:
         values = {
@@ -47,3 +50,10 @@ class PortfolioMetrics(QFrame):
         }
         for name, value in values.items():
             self._cards[name].value_label.setText(value)
+        self.selected_symbol.setText(
+            (
+                "ALL SYMBOLS"
+                if snapshot.selected_symbol is None
+                else f"FOCUS: {snapshot.selected_symbol}"
+            )
+        )

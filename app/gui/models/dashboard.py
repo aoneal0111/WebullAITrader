@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from app.read_models.operator_workspace import OperatorWorkspaceSnapshot
+
 from .runtime import RuntimeState
 
 
@@ -51,6 +53,8 @@ class ActivitySnapshot:
 @dataclass(frozen=True, slots=True)
 class PositionsSnapshot:
     rows: tuple[tuple[str, str, str, str], ...]
+    symbols: tuple[str, ...] = ()
+    selected_symbol: str | None = None
 
     @classmethod
     def initial(cls) -> "PositionsSnapshot":
@@ -60,6 +64,9 @@ class PositionsSnapshot:
 @dataclass(frozen=True, slots=True)
 class OrdersSnapshot:
     rows: tuple[tuple[str, str, str], ...]
+    symbols: tuple[str, ...] = ()
+    order_ids: tuple[str, ...] = ()
+    selected_order: str | None = None
 
     @classmethod
     def initial(cls) -> "OrdersSnapshot":
@@ -76,6 +83,7 @@ class PortfolioSnapshot:
     win_rate: str
     order_count: int
     position_count: int
+    selected_symbol: str | None = None
 
     @classmethod
     def initial(cls) -> "PortfolioSnapshot":
@@ -99,6 +107,7 @@ class DecisionRow:
     score: str
     rationale: str
     decided_at: str
+    selection_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +115,7 @@ class DecisionCenterSnapshot:
     cycle: str
     updated_at: str
     rows: tuple[DecisionRow, ...]
+    selected_decision: str | None = None
 
     @classmethod
     def initial(cls) -> "DecisionCenterSnapshot":
@@ -196,12 +206,15 @@ class TimelineRow:
     category: str
     severity: str
     summary: str
+    selection_id: str = ""
+    symbol: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class TimelineSnapshot:
     rows: tuple[TimelineRow, ...]
     max_entries: int
+    selected_entry: str | None = None
 
     @classmethod
     def initial(cls) -> "TimelineSnapshot":
@@ -246,6 +259,7 @@ class DashboardSnapshot:
     runtime_health: HealthCenterSnapshot
     timeline: TimelineSnapshot
     lifecycle_explorer: LifecycleExplorerSnapshot
+    operator_workspace: OperatorWorkspaceSnapshot
 
     @classmethod
     def initial(cls) -> "DashboardSnapshot":
@@ -259,4 +273,5 @@ class DashboardSnapshot:
             runtime_health=HealthCenterSnapshot.initial(),
             timeline=TimelineSnapshot.initial(),
             lifecycle_explorer=LifecycleExplorerSnapshot.initial(),
+            operator_workspace=OperatorWorkspaceSnapshot.initial(),
         )

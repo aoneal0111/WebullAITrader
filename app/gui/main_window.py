@@ -10,9 +10,10 @@ from app.gui.pages.placeholder import PlaceholderPage
 from app.gui.projections.dashboard_projection import project_dashboard
 from app.gui.shell.sidebar import Sidebar
 from app.gui.state_bridge import QtStateBridge
-from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus, RuntimePhase
+from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus, OperatorSelectionEvent, RuntimePhase
 from app.services import RuntimeService
 from app.read_models.decisions import DecisionProjector
+from app.read_models.operator_workspace import OperatorWorkspaceProjector
 from app.read_models.runtime_health import RuntimeHealthProjector
 from app.read_models.timeline import TimelineProjector
 from app.read_models.trade_lifecycle import TradeLifecycleProjector
@@ -28,6 +29,7 @@ class MainWindow(QMainWindow):
         runtime_health_projector: RuntimeHealthProjector,
         timeline_projector: TimelineProjector,
         trade_lifecycle_projector: TradeLifecycleProjector,
+        operator_workspace_projector: OperatorWorkspaceProjector,
     ) -> None:
         super().__init__()
         self._bus = bus
@@ -37,6 +39,7 @@ class MainWindow(QMainWindow):
         self._runtime_health_projector = runtime_health_projector
         self._timeline_projector = timeline_projector
         self._trade_lifecycle_projector = trade_lifecycle_projector
+        self._operator_workspace_projector = operator_workspace_projector
         self._last_error = ""
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
@@ -81,6 +84,9 @@ class MainWindow(QMainWindow):
 
         self.pages = QStackedWidget()
         self.dashboard = DashboardPage()
+        self.dashboard.selection_requested.connect(
+            self._publish_operator_selection
+        )
         self.pages.addWidget(self.dashboard)
         self.pages.addWidget(
             PlaceholderPage(
@@ -136,6 +142,7 @@ class MainWindow(QMainWindow):
             self._runtime_health_projector.snapshot(),
             self._timeline_projector.snapshot(),
             self._trade_lifecycle_projector.snapshot(),
+            self._operator_workspace_projector.snapshot(),
         )
         self.dashboard.render(dashboard_snapshot)
         phase = state.runtime.phase
@@ -149,6 +156,13 @@ class MainWindow(QMainWindow):
         if phase is RuntimePhase.FAILED and state.runtime.last_error and state.runtime.last_error != self._last_error:
             self._last_error = state.runtime.last_error
             QMessageBox.critical(self, "Runtime Error", state.runtime.last_error)
+
+    def _publish_operator_selection(self, event: object) -> None:
+        if not isinstance(event, OperatorSelectionEvent):
+            raise TypeError(
+                "selection event must be an OperatorSelectionEvent"
+            )
+        self._bus.publish(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self._runtime_service.close(timeout_seconds=5.0):
