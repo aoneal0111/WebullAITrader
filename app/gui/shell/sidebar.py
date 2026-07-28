@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QButtonGroup, QLabel, QPushButton, QVBoxLayout, QW
 class Sidebar(QWidget):
     page_requested = Signal(int)
 
-    ITEMS = ("Dashboard", "Positions", "Orders", "Strategies", "Risk", "Activity")
+    ITEMS = ("Dashboard", "Positions", "Orders", "AI", "Risk", "Diagnostics")
 
     def __init__(self) -> None:
         super().__init__()
@@ -34,7 +34,7 @@ class Sidebar(QWidget):
             if index == 0:
                 button.setChecked(True)
         layout.addStretch()
-        version = QLabel("PAPER CONTROL CENTER")
+        version = QLabel("AUTONOMOUS CONTROL CENTER")
         version.setObjectName("muted")
         version.setWordWrap(True)
         layout.addWidget(version)

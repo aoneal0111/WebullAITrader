@@ -14,6 +14,7 @@ from app.gui.widgets.common import StatusBadge
 from app.gui.widgets.orders_panel import OrdersPanel
 from app.gui.widgets.panel import SectionPanel
 from app.gui.widgets.positions_panel import PositionsPanel
+from app.gui.widgets.portfolio_metrics import PortfolioMetrics
 from app.gui.widgets.runtime_ribbon import RuntimeRibbon
 
 
@@ -49,6 +50,9 @@ class DashboardPage(QWidget):
 
         self.runtime_ribbon = RuntimeRibbon()
         root.addWidget(self.runtime_ribbon)
+
+        self.portfolio_metrics = PortfolioMetrics()
+        root.addWidget(self.portfolio_metrics)
 
         body = QGridLayout()
         body.setSpacing(12)
@@ -94,6 +98,7 @@ class DashboardPage(QWidget):
 
     def render(self, snapshot: DashboardSnapshot) -> None:
         self.runtime_ribbon.render(snapshot.runtime)
+        self.portfolio_metrics.render(snapshot.portfolio)
 
         level = (
             "good"

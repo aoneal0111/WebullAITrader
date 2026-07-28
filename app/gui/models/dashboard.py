@@ -67,8 +67,34 @@ class OrdersSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class PortfolioSnapshot:
+    equity: str
+    realized_pnl: str
+    unrealized_pnl: str
+    current_drawdown: str
+    total_return: str
+    win_rate: str
+    order_count: int
+    position_count: int
+
+    @classmethod
+    def initial(cls) -> "PortfolioSnapshot":
+        return cls(
+            equity="$0.00",
+            realized_pnl="$0.00",
+            unrealized_pnl="$0.00",
+            current_drawdown="0.00%",
+            total_return="0.00%",
+            win_rate="0.00%",
+            order_count=0,
+            position_count=0,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardSnapshot:
     runtime: RuntimeSnapshot
+    portfolio: PortfolioSnapshot
     activity: ActivitySnapshot
     positions: PositionsSnapshot
     orders: OrdersSnapshot
@@ -77,6 +103,7 @@ class DashboardSnapshot:
     def initial(cls) -> "DashboardSnapshot":
         return cls(
             runtime=RuntimeSnapshot.initial(),
+            portfolio=PortfolioSnapshot.initial(),
             activity=ActivitySnapshot.initial(),
             positions=PositionsSnapshot.initial(),
             orders=OrdersSnapshot.initial(),

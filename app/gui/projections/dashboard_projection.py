@@ -5,18 +5,21 @@ from app.gui.models import (
     ActivityEntry,
     ActivitySnapshot,
     DashboardSnapshot,
+    PortfolioSnapshot,
     RuntimeSnapshot,
     RuntimeState,
 )
 from app.operations_core import ApplicationState
 from app.read_models.orders import project_orders_read_model
 from app.read_models.positions import project_positions_read_model
+from app.read_models.portfolio import project_portfolio_read_model
 
 
 def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
     runtime = state.runtime
     orders_read_model = project_orders_read_model(state)
     positions_read_model = project_positions_read_model(state)
+    portfolio = project_portfolio_read_model(state)
 
     return DashboardSnapshot(
         runtime=RuntimeSnapshot(
@@ -30,6 +33,16 @@ def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
             cycle_count=runtime.cycles_completed,
             status_message=runtime.last_error or "Healthy",
         ),
+        portfolio=PortfolioSnapshot(
+            equity=_money(portfolio.equity),
+            realized_pnl=_money(portfolio.realized_pnl),
+            unrealized_pnl=_money(portfolio.unrealized_pnl),
+            current_drawdown=_percent(portfolio.current_drawdown),
+            total_return=_percent(portfolio.total_return),
+            win_rate=_percent(portfolio.win_rate),
+            order_count=portfolio.order_count,
+            position_count=portfolio.position_count,
+        ),
         activity=ActivitySnapshot(
             entries=tuple(
                 ActivityEntry(
@@ -42,3 +55,12 @@ def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
         positions=format_positions(positions_read_model),
         orders=format_orders(orders_read_model),
     )
+
+
+def _money(value) -> str:
+    sign = "-" if value < 0 else ""
+    return f"{sign}${abs(value):,.2f}"
+
+
+def _percent(value) -> str:
+    return f"{value:.2f}%"

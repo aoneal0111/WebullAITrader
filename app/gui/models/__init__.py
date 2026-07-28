@@ -3,6 +3,7 @@ from .dashboard import (
     ActivitySnapshot,
     DashboardSnapshot,
     OrdersSnapshot,
+    PortfolioSnapshot,
     PositionsSnapshot,
     RuntimeSnapshot,
 )
@@ -13,6 +14,7 @@ __all__ = [
     "ActivitySnapshot",
     "DashboardSnapshot",
     "OrdersSnapshot",
+    "PortfolioSnapshot",
     "PositionsSnapshot",
     "RuntimeSnapshot",
     "RuntimeState",

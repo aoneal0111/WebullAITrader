@@ -11,7 +11,7 @@ from app.gui.projections.dashboard_projection import project_dashboard
 from app.gui.shell.sidebar import Sidebar
 from app.gui.state_bridge import QtStateBridge
 from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus, RuntimePhase
-from app.services import OrderCommandFactory, RuntimeService, TradingService
+from app.services import RuntimeService
 
 
 class MainWindow(QMainWindow):
@@ -20,15 +20,11 @@ class MainWindow(QMainWindow):
         bus: OperationsBus,
         state_store: ApplicationStateStore,
         runtime_service: RuntimeService,
-        trading_service: TradingService | None = None,
-        order_command_factory: OrderCommandFactory | None = None,
     ) -> None:
         super().__init__()
         self._bus = bus
         self._state_store = state_store
         self._runtime_service = runtime_service
-        self._trading_service = trading_service
-        self._order_command_factory = order_command_factory
         self._last_error = ""
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
@@ -81,10 +77,7 @@ class MainWindow(QMainWindow):
             )
         )
 
-        self.orders = OrdersPage(
-            trading_service=self._trading_service,
-            order_command_factory=self._order_command_factory,
-        )
+        self.orders = OrdersPage()
         self.pages.addWidget(self.orders)
 
         self.pages.addWidget(
@@ -115,7 +108,7 @@ class MainWindow(QMainWindow):
         status = QStatusBar()
         self.status_label = QLabel()
         status.addWidget(self.status_label, 1)
-        safety = QLabel("PAPER MODE · NO LIVE BROKER MUTATIONS")
+        safety = QLabel("AUTONOMOUS MODE · GUI ORDER ENTRY DISABLED")
         safety.setObjectName("muted")
         status.addPermanentWidget(safety)
         self.setStatusBar(status)
