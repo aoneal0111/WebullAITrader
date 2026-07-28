@@ -1,5 +1,7 @@
 ﻿from __future__ import annotations
 
+from dataclasses import dataclass
+
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
@@ -95,6 +97,18 @@ class ChartStatusBar(QWidget):
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ChartViewport:
+    """Immutable geometry and price range for one chart render."""
+
+    left: float
+    top: float
+    width: float
+    height: float
+    low: float
+    high: float
+    step: float
+
 class CandleCanvas(QWidget):
     """The existing read-only candlestick canvas, retained unchanged in role."""
 
@@ -130,12 +144,12 @@ class CandleCanvas(QWidget):
             self._draw_empty_state(painter)
             return
 
-        bounds = self._visible_bounds()
-        self._draw_grid(painter, bounds)
-        self._draw_axes(painter, bounds)
-        self._draw_candles(painter, bounds)
-        self._draw_markers(painter, bounds)
-        self._draw_overlay(painter, bounds)
+        viewport = self._build_viewport()
+        self._draw_grid(painter, viewport)
+        self._draw_axes(painter, viewport)
+        self._draw_candles(painter, viewport)
+        self._draw_markers(painter, viewport)
+        self._draw_overlay(painter, viewport)
 
     def _draw_background(self, painter: QPainter) -> None:
         painter.fillRect(self.rect(), QColor(Colors.SURFACE))
@@ -148,9 +162,7 @@ class CandleCanvas(QWidget):
             "Waiting for market data",
         )
 
-    def _visible_bounds(
-        self,
-    ) -> tuple[float, float, float, float, float, float]:
+    def _build_viewport(self) -> ChartViewport:
         candles = self._snapshot.candles
         left = 42.0
         top = 16.0
@@ -158,7 +170,17 @@ class CandleCanvas(QWidget):
         height = max(40.0, self.height() - 44.0)
         low = min(float(candle.low) for candle in candles)
         high = max(float(candle.high) for candle in candles)
-        return left, top, width, height, low, high
+        step = width / max(len(candles), 1)
+
+        return ChartViewport(
+            left=left,
+            top=top,
+            width=width,
+            height=height,
+            low=low,
+            high=high,
+            step=step,
+        )
 
     def _price_to_y(
         self,
@@ -175,16 +197,19 @@ class CandleCanvas(QWidget):
     def _draw_grid(
         self,
         painter: QPainter,
-        bounds: tuple[float, float, float, float, float, float],
+        viewport: ChartViewport,
     ) -> None:
-        del painter, bounds
+        del painter, viewport
 
     def _draw_axes(
         self,
         painter: QPainter,
-        bounds: tuple[float, float, float, float, float, float],
+        viewport: ChartViewport,
     ) -> None:
-        left, top, width, height, _, _ = bounds
+        left = viewport.left
+        top = viewport.top
+        width = viewport.width
+        height = viewport.height
         painter.setPen(QColor(Colors.BORDER_STRONG))
         painter.drawLine(
             left,
@@ -196,11 +221,15 @@ class CandleCanvas(QWidget):
     def _draw_candles(
         self,
         painter: QPainter,
-        bounds: tuple[float, float, float, float, float, float],
+        viewport: ChartViewport,
     ) -> None:
         candles = self._snapshot.candles
-        left, top, width, height, low, high = bounds
-        step = width / max(len(candles), 1)
+        left = viewport.left
+        top = viewport.top
+        height = viewport.height
+        low = viewport.low
+        high = viewport.high
+        step = viewport.step
 
         for index, candle in enumerate(candles):
             x = left + index * step + step / 2
@@ -256,16 +285,16 @@ class CandleCanvas(QWidget):
     def _draw_markers(
         self,
         painter: QPainter,
-        bounds: tuple[float, float, float, float, float, float],
+        viewport: ChartViewport,
     ) -> None:
-        del painter, bounds
+        del painter, viewport
 
     def _draw_overlay(
         self,
         painter: QPainter,
-        bounds: tuple[float, float, float, float, float, float],
+        viewport: ChartViewport,
     ) -> None:
-        del painter, bounds
+        del painter, viewport
 
 
 class CandlestickChart(QWidget):
@@ -309,6 +338,4 @@ class CandlestickChart(QWidget):
         )
         self.canvas.render(snapshot, markers)
         self.status_bar.render(snapshot)
-
-
 
