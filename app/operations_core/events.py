@@ -112,6 +112,87 @@ class OperationsPosition:
             raise ValueError("updated_at must be timezone-aware")
 
 
+@dataclass(frozen=True, slots=True)
+class OperationsDecision:
+    """Backend-neutral immutable strategy decision for read-model consumers."""
+
+    symbol: str
+    action: str
+    confidence: int
+    score: Decimal
+    reasons: tuple[str, ...]
+    source_action: str
+    position_quantity: Decimal
+    strategy_version: str
+    decided_at: datetime
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "symbol",
+            "action",
+            "source_action",
+            "strategy_version",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must not be empty")
+            if value != value.strip():
+                raise ValueError(f"{field_name} must be stripped")
+
+        if self.symbol != self.symbol.upper():
+            raise ValueError("symbol must be uppercase")
+        if (
+            isinstance(self.confidence, bool)
+            or not isinstance(self.confidence, int)
+            or not 0 <= self.confidence <= 100
+        ):
+            raise ValueError("confidence must be an integer between 0 and 100")
+        for field_name in ("score", "position_quantity"):
+            value = getattr(self, field_name)
+            if not isinstance(value, Decimal) or not value.is_finite():
+                raise ValueError(f"{field_name} must be a finite Decimal")
+        if not isinstance(self.reasons, tuple):
+            raise TypeError("reasons must be an immutable tuple")
+        if any(
+            not isinstance(reason, str)
+            or not reason.strip()
+            or reason != reason.strip()
+            for reason in self.reasons
+        ):
+            raise ValueError("reasons must contain stripped non-empty strings")
+        if (
+            not isinstance(self.decided_at, datetime)
+            or self.decided_at.tzinfo is None
+        ):
+            raise ValueError("decided_at must be timezone-aware")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DecisionsUpdated(OperationsEvent):
+    """Replace the current strategy-decision slice for one completed cycle."""
+
+    cycle: int
+    decisions: tuple[OperationsDecision, ...] = ()
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        if (
+            isinstance(self.cycle, bool)
+            or not isinstance(self.cycle, int)
+            or self.cycle < 1
+        ):
+            raise ValueError("cycle must be a positive integer")
+        if not isinstance(self.decisions, tuple):
+            raise TypeError("decisions must be an immutable tuple")
+        if any(
+            not isinstance(decision, OperationsDecision)
+            for decision in self.decisions
+        ):
+            raise TypeError(
+                "decisions must contain only OperationsDecision instances"
+            )
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PaperOrderLifecycleUpdated(OperationsEvent):
     """One deterministic paper-order lifecycle transition."""

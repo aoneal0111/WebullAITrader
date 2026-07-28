@@ -5,6 +5,8 @@ from collections.abc import Callable
 from app.composition.operations_position_mapper import map_paper_positions
 from app.operations import PaperRuntimeCycleResult
 from app.operations_core import (
+    DecisionsUpdated,
+    OperationsDecision,
     OperationsBus,
     PaperRuntimeSnapshot,
     PaperRuntimeUpdated,
@@ -59,6 +61,29 @@ def create_operations_positions(
     return map_paper_positions(result)
 
 
+def create_operations_decisions(
+    result: PaperRuntimeCycleResult,
+) -> tuple[OperationsDecision, ...]:
+    """Map strategy decisions without leaking strategy-engine types."""
+    if not isinstance(result, PaperRuntimeCycleResult):
+        raise TypeError("result must be a PaperRuntimeCycleResult")
+
+    return tuple(
+        OperationsDecision(
+            symbol=decision.symbol,
+            action=decision.action.value,
+            confidence=decision.confidence,
+            score=decision.score,
+            reasons=decision.reasons,
+            source_action=decision.source_action,
+            position_quantity=decision.position_quantity,
+            strategy_version=decision.strategy_version,
+            decided_at=decision.timestamp,
+        )
+        for decision in result.decisions
+    )
+
+
 def create_paper_runtime_result_publisher(
     bus: OperationsBus,
     *,
@@ -77,6 +102,14 @@ def create_paper_runtime_result_publisher(
         result: PaperRuntimeCycleResult,
     ) -> None:
         bus.publish(
+            DecisionsUpdated(
+                source=normalized_source,
+                occurred_at=result.timestamp,
+                cycle=result.cycle,
+                decisions=create_operations_decisions(result),
+            )
+        )
+        bus.publish(
             PaperRuntimeUpdated(
                 source=normalized_source,
                 snapshot=create_paper_runtime_snapshot(result),
@@ -94,6 +127,7 @@ def create_paper_runtime_result_publisher(
 
 __all__ = [
     "PaperRuntimeResultSink",
+    "create_operations_decisions",
     "create_operations_positions",
     "create_paper_runtime_result_publisher",
     "create_paper_runtime_snapshot",

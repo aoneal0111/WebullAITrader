@@ -2,6 +2,8 @@
 
 from app.operations_core.bus import OperationsBus, Subscription
 from app.operations_core.events import (
+    DecisionsUpdated,
+    OperationsDecision,
     OperationsEvent,
     OperationsOrder,
     OperationsPosition,
@@ -28,7 +30,9 @@ from app.operations_core.state import (
 __all__ = [
     "ApplicationState",
     "ApplicationStateStore",
+    "DecisionsUpdated",
     "OperationsBus",
+    "OperationsDecision",
     "OperationsEvent",
     "OperationsOrder",
     "OperationsPosition",
