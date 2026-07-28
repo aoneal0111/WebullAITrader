@@ -123,29 +123,84 @@ class CandleCanvas(QWidget):
     def paintEvent(self, event: object) -> None:
         del event
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(Colors.SURFACE))
-        candles = self._snapshot.candles
 
-        if not candles:
-            painter.setPen(QColor(Colors.TEXT_MUTED))
-            painter.drawText(
-                self.rect(),
-                Qt.AlignmentFlag.AlignCenter,
-                "Waiting for market data",
-            )
+        self._draw_background(painter)
+
+        if not self._snapshot.candles:
+            self._draw_empty_state(painter)
             return
 
+        bounds = self._visible_bounds()
+        self._draw_grid(painter, bounds)
+        self._draw_axes(painter, bounds)
+        self._draw_candles(painter, bounds)
+        self._draw_markers(painter, bounds)
+        self._draw_overlay(painter, bounds)
+
+    def _draw_background(self, painter: QPainter) -> None:
+        painter.fillRect(self.rect(), QColor(Colors.SURFACE))
+
+    def _draw_empty_state(self, painter: QPainter) -> None:
+        painter.setPen(QColor(Colors.TEXT_MUTED))
+        painter.drawText(
+            self.rect(),
+            Qt.AlignmentFlag.AlignCenter,
+            "Waiting for market data",
+        )
+
+    def _visible_bounds(
+        self,
+    ) -> tuple[float, float, float, float, float, float]:
+        candles = self._snapshot.candles
         left = 42.0
         top = 16.0
         width = max(20.0, self.width() - 56.0)
         height = max(40.0, self.height() - 44.0)
         low = min(float(candle.low) for candle in candles)
         high = max(float(candle.high) for candle in candles)
-        span = max(high - low, 0.01)
-        step = width / max(len(candles), 1)
+        return left, top, width, height, low, high
 
-        def y(value: object) -> float:
-            return top + (high - float(value)) / span * height
+    def _price_to_y(
+        self,
+        value: object,
+        *,
+        top: float,
+        height: float,
+        low: float,
+        high: float,
+    ) -> float:
+        span = max(high - low, 0.01)
+        return top + (high - float(value)) / span * height
+
+    def _draw_grid(
+        self,
+        painter: QPainter,
+        bounds: tuple[float, float, float, float, float, float],
+    ) -> None:
+        del painter, bounds
+
+    def _draw_axes(
+        self,
+        painter: QPainter,
+        bounds: tuple[float, float, float, float, float, float],
+    ) -> None:
+        left, top, width, height, _, _ = bounds
+        painter.setPen(QColor(Colors.BORDER_STRONG))
+        painter.drawLine(
+            left,
+            top + height,
+            left + width,
+            top + height,
+        )
+
+    def _draw_candles(
+        self,
+        painter: QPainter,
+        bounds: tuple[float, float, float, float, float, float],
+    ) -> None:
+        candles = self._snapshot.candles
+        left, top, width, height, low, high = bounds
+        step = width / max(len(candles), 1)
 
         for index, candle in enumerate(candles):
             x = left + index * step + step / 2
@@ -155,11 +210,39 @@ class CandleCanvas(QWidget):
                 else Colors.DANGER
             )
             painter.setPen(QPen(color, 1.2))
-            painter.drawLine(x, y(candle.high), x, y(candle.low))
 
-            body_top, body_bottom = sorted(
-                (y(candle.open), y(candle.close))
+            high_y = self._price_to_y(
+                candle.high,
+                top=top,
+                height=height,
+                low=low,
+                high=high,
             )
+            low_y = self._price_to_y(
+                candle.low,
+                top=top,
+                height=height,
+                low=low,
+                high=high,
+            )
+            painter.drawLine(x, high_y, x, low_y)
+
+            open_y = self._price_to_y(
+                candle.open,
+                top=top,
+                height=height,
+                low=low,
+                high=high,
+            )
+            close_y = self._price_to_y(
+                candle.close,
+                top=top,
+                height=height,
+                low=low,
+                high=high,
+            )
+            body_top, body_bottom = sorted((open_y, close_y))
+
             painter.fillRect(
                 QRectF(
                     x - max(2.0, step * 0.28),
@@ -170,13 +253,19 @@ class CandleCanvas(QWidget):
                 color,
             )
 
-        painter.setPen(QColor(Colors.BORDER_STRONG))
-        painter.drawLine(
-            left,
-            top + height,
-            left + width,
-            top + height,
-        )
+    def _draw_markers(
+        self,
+        painter: QPainter,
+        bounds: tuple[float, float, float, float, float, float],
+    ) -> None:
+        del painter, bounds
+
+    def _draw_overlay(
+        self,
+        painter: QPainter,
+        bounds: tuple[float, float, float, float, float, float],
+    ) -> None:
+        del painter, bounds
 
 
 class CandlestickChart(QWidget):
@@ -220,5 +309,6 @@ class CandlestickChart(QWidget):
         )
         self.canvas.render(snapshot, markers)
         self.status_bar.render(snapshot)
+
 
 
