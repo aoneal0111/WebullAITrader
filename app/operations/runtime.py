@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from threading import Event
+from decimal import Decimal
 from typing import Protocol
 
 from app.execution_coordinator import CoordinationRequest, ExecutionCoordinator
@@ -13,6 +14,8 @@ from app.operations.learning_runtime import (
     RuntimeInferenceAudit,
 )
 from app.operations.paper_lifecycle import PaperRuntimeSession
+from app.paper_trading.order_lifecycle import PaperOrderLifecycleCoordinator
+from app.paper_trading.order_models import PaperOrder
 from app.paper_session import (
     PaperTradingSession,
     process_decision,
@@ -42,6 +45,7 @@ CheckpointSink = Callable[["PaperRuntimeState", PaperTradingSession], None]
 CycleSink = Callable[["PaperRuntimeCycleResult"], None]
 Clock = Callable[[], datetime]
 WaitFunction = Callable[[float], bool]
+MarketPriceResolver = Callable[[SnapshotLike], Decimal]
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +82,7 @@ class PaperRuntimeCycleResult:
     decisions: tuple[StrategyDecision, ...]
     session: PaperTradingSession
     inference_audits: tuple[RuntimeInferenceAudit, ...] = ()
+    lifecycle_orders: tuple[PaperOrder, ...] = ()
 
     def __post_init__(self) -> None:
         if self.cycle < 1:
@@ -163,6 +168,8 @@ class PaperOperationsEngine:
         cycle_sink: CycleSink | None = None,
         inference_adapter: RuntimeInferenceAdapter | None = None,
         session_lifecycle: PaperRuntimeSession | None = None,
+        order_lifecycle_coordinator: PaperOrderLifecycleCoordinator | None = None,
+        market_price_resolver: MarketPriceResolver | None = None,
     ) -> None:
         if not session_id.strip():
             raise ValueError("session ID is required")
@@ -177,6 +184,27 @@ class PaperOperationsEngine:
         self._checkpoint_sink = checkpoint_sink
         self._cycle_sink = cycle_sink
         self._inference_adapter = inference_adapter
+
+        if order_lifecycle_coordinator is not None and not isinstance(
+            order_lifecycle_coordinator, PaperOrderLifecycleCoordinator
+        ):
+            raise TypeError(
+                "order_lifecycle_coordinator must be "
+                "PaperOrderLifecycleCoordinator or None"
+            )
+        if market_price_resolver is not None and not callable(
+            market_price_resolver
+        ):
+            raise TypeError("market_price_resolver must be callable or None")
+        if (order_lifecycle_coordinator is None) != (
+            market_price_resolver is None
+        ):
+            raise ValueError(
+                "order lifecycle coordinator and market price resolver "
+                "must be configured together"
+            )
+        self._order_lifecycle_coordinator = order_lifecycle_coordinator
+        self._market_price_resolver = market_price_resolver
 
         if session_lifecycle is not None:
             if not isinstance(session_lifecycle, PaperRuntimeSession):
@@ -228,6 +256,8 @@ class PaperOperationsEngine:
         checkpoint_sink: CheckpointSink | None = None,
         cycle_sink: CycleSink | None = None,
         inference_adapter: RuntimeInferenceAdapter | None = None,
+        order_lifecycle_coordinator: PaperOrderLifecycleCoordinator | None = None,
+        market_price_resolver: MarketPriceResolver | None = None,
     ) -> "PaperOperationsEngine":
         _validate_recovery(state, session)
         engine = cls(
@@ -242,6 +272,8 @@ class PaperOperationsEngine:
             checkpoint_sink=checkpoint_sink,
             cycle_sink=cycle_sink,
             inference_adapter=inference_adapter,
+            order_lifecycle_coordinator=order_lifecycle_coordinator,
+            market_price_resolver=market_price_resolver,
             session_lifecycle=PaperRuntimeSession(
                 session_id=state.session_id,
                 initial_cash=session.portfolio.initial_cash,
@@ -384,6 +416,30 @@ class PaperOperationsEngine:
                     cycle,
                     symbol,
                 )
+
+            lifecycle_orders: tuple[PaperOrder, ...] = ()
+            if self._order_lifecycle_coordinator is not None:
+                assert self._market_price_resolver is not None
+                market_prices: dict[str, Decimal] = {}
+                for snapshot in snapshots:
+                    symbol = _symbol(snapshot)
+                    price = self._market_price_resolver(snapshot)
+                    if not isinstance(price, Decimal):
+                        raise TypeError(
+                            "market price resolver must return Decimal"
+                        )
+                    if price <= Decimal("0"):
+                        raise ValueError(
+                            "market price resolver must return a positive price"
+                        )
+                    market_prices[symbol] = price
+                lifecycle_orders = (
+                    self._order_lifecycle_coordinator.process_open_orders(
+                        market_prices,
+                        at=timestamp,
+                    )
+                )
+
             result = PaperRuntimeCycleResult(
                 cycle=cycle,
                 timestamp=timestamp,
@@ -391,6 +447,7 @@ class PaperOperationsEngine:
                 decisions=tuple(decisions),
                 session=session,
                 inference_audits=tuple(inference_audits),
+                lifecycle_orders=lifecycle_orders,
             )
             if self._cycle_sink is not None:
                 self._cycle_sink(result)

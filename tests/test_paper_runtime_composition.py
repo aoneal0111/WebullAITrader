@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -74,6 +74,8 @@ def test_create_paper_runtime_driver_factory_forwards_dependencies(
             "interval_seconds": 2.5,
             "environment": "PAPER",
             "active_model": "production-model",
+            "order_lifecycle_coordinator": None,
+            "market_price_resolver": None,
         }
     ]
 

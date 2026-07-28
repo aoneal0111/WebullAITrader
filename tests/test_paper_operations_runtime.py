@@ -484,3 +484,83 @@ def test_runtime_journal_rejects_different_session(tmp_path) -> None:
     second.start()
     with pytest.raises(ValueError, match="session ID"):
         second.run_cycle()
+
+
+def test_cycle_processes_open_orders_after_strategy_decisions() -> None:
+    from app.momentum_scanner import AssetClass
+    from app.paper_trading.order_book import PaperOrderBook
+    from app.paper_trading.order_lifecycle import PaperOrderLifecycleCoordinator
+    from app.paper_trading.order_models import (
+        OrderRequest,
+        OrderSide as PaperOrderSide,
+        OrderStatus,
+        OrderType as PaperOrderType,
+        TimeInForce,
+    )
+    from app.paper_trading.orders import accept_order, create_order
+
+    book = PaperOrderBook()
+    created = create_order(
+        OrderRequest(
+            symbol="AAPL",
+            asset_class=AssetClass.STOCK,
+            side=PaperOrderSide.BUY,
+            order_type=PaperOrderType.MARKET,
+            quantity=Decimal("2"),
+            time_in_force=TimeInForce.DAY,
+        ),
+        order_id_factory=lambda: "runtime-order-1",
+        clock=lambda: NOW,
+    )
+    book.submit(accept_order(created, at=NOW))
+    lifecycle_events = []
+    lifecycle = PaperOrderLifecycleCoordinator(
+        book,
+        listeners=(lifecycle_events.append,),
+    )
+    cycle_results = []
+    engine = PaperOperationsEngine(
+        session_id="paper-1",
+        initial_cash=Decimal("10000"),
+        snapshot_source=lambda timestamp: (Snapshot("AAPL"),),
+        strategy_engine=StubStrategy(),
+        coordinator=StubCoordinator(),
+        request_builder=request_builder,
+        clock=Clock(),
+        cycle_sink=cycle_results.append,
+        order_lifecycle_coordinator=lifecycle,
+        market_price_resolver=lambda snapshot: Decimal("193.25"),
+    )
+
+    engine.start()
+    engine.run_cycle()
+
+    updated = book.get("runtime-order-1")
+    assert updated.status is OrderStatus.FILLED
+    assert updated.average_fill_price == Decimal("193.25")
+    assert len(lifecycle_events) == 1
+    assert cycle_results[0].lifecycle_orders == (updated,)
+    assert [event.event_type for event in engine.state.events] == [
+        "STARTED",
+        "DECISION_PROCESSED",
+        "CYCLE_COMPLETED",
+    ]
+
+
+def test_order_lifecycle_dependencies_must_be_configured_together() -> None:
+    from app.paper_trading.order_book import PaperOrderBook
+    from app.paper_trading.order_lifecycle import PaperOrderLifecycleCoordinator
+
+    with pytest.raises(ValueError, match="must be configured together"):
+        PaperOperationsEngine(
+            session_id="paper-1",
+            initial_cash=Decimal("10000"),
+            snapshot_source=lambda timestamp: (),
+            strategy_engine=StubStrategy(),
+            coordinator=StubCoordinator(),
+            request_builder=request_builder,
+            clock=Clock(),
+            order_lifecycle_coordinator=PaperOrderLifecycleCoordinator(
+                PaperOrderBook()
+            ),
+        )

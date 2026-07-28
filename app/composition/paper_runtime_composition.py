@@ -7,9 +7,12 @@ from decimal import Decimal
 
 from app.operations.runtime import (
     CheckpointSink,
+    MarketPriceResolver,
     PaperRuntimeCycleResult,
     RuntimeEventSink,
 )
+
+from app.paper_trading.order_lifecycle import PaperOrderLifecycleCoordinator
 
 from .paper_dependencies import PaperRuntimeDependencies
 from .paper_runtime_driver_factory import PaperRuntimeDriverFactory
@@ -26,6 +29,8 @@ def create_paper_runtime_driver_factory(
     interval_seconds: float = 1.0,
     environment: str = "PAPER",
     active_model: str = "Promoted model",
+    order_lifecycle_coordinator: PaperOrderLifecycleCoordinator | None = None,
+    market_price_resolver: MarketPriceResolver | None = None,
 ) -> PaperRuntimeDriverFactory:
     """Create a PaperRuntimeDriverFactory from validated dependencies."""
 
@@ -49,6 +54,8 @@ def create_paper_runtime_driver_factory(
         interval_seconds=interval_seconds,
         environment=environment,
         active_model=active_model,
+        order_lifecycle_coordinator=order_lifecycle_coordinator,
+        market_price_resolver=market_price_resolver,
     )
 
 

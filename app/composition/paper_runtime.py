@@ -12,10 +12,12 @@ from app.operations.runtime import (
     CheckpointSink,
     PaperOperationsEngine,
     PaperRuntimeCycleResult,
+    MarketPriceResolver,
     RequestBuilder,
     RuntimeEventSink,
     SnapshotSource,
 )
+from app.paper_trading.order_lifecycle import PaperOrderLifecycleCoordinator
 from app.services.runtime_drivers import PaperRuntimeDriver
 from app.strategy_engine import StrategyEngine
 
@@ -39,6 +41,8 @@ def create_paper_runtime_driver(
     interval_seconds: float = 1.0,
     environment: str = "PAPER",
     active_model: str = "Promoted model",
+    order_lifecycle_coordinator: PaperOrderLifecycleCoordinator | None = None,
+    market_price_resolver: MarketPriceResolver | None = None,
 ) -> PaperRuntimeDriver:
     """Create a runtime driver with a fresh engine for each runtime session."""
 
@@ -78,6 +82,8 @@ def create_paper_runtime_driver(
             checkpoint_sink=checkpoint_sink,
             cycle_sink=cycle_sink,
             inference_adapter=inference_adapter,
+            order_lifecycle_coordinator=order_lifecycle_coordinator,
+            market_price_resolver=market_price_resolver,
         )
 
     return PaperRuntimeDriver(
