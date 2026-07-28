@@ -3,7 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from app.operations_core import ApplicationStateStore, OperationsBus
+from app.operations_core import (
+    ApplicationStateStore,
+    OperationsBus,
+    OperationsEvent,
+)
 from app.order_cancellation import OrderCancellationRuntime
 from app.order_placement import OrderPlacementRuntime
 from app.paper_trading.order_book import PaperOrderBook
@@ -12,6 +16,12 @@ from app.read_models.operator_workspace import OperatorWorkspaceProjector
 from app.read_models.runtime_health import RuntimeHealthProjector
 from app.read_models.timeline import TimelineProjector
 from app.read_models.trade_lifecycle import TradeLifecycleProjector
+from app.replay import (
+    ReplayClock,
+    ReplayController,
+    ReplayEngine,
+    ReplayEventArchive,
+)
 from app.services import OrderCommandFactory, RuntimeService, TradingService
 
 from .desktop_runtime import create_desktop_runtime_service
@@ -23,6 +33,74 @@ from app.paper_trading.command_composition import (
 
 
 @dataclass(slots=True)
+class ReplayProjectionGraph:
+    """Dedicated replay projections rebuilt for backward navigation."""
+
+    bus: OperationsBus
+    state_store: ApplicationStateStore
+    decision_projector: DecisionProjector
+    runtime_health_projector: RuntimeHealthProjector
+    timeline_projector: TimelineProjector
+    trade_lifecycle_projector: TradeLifecycleProjector
+    operator_workspace_projector: OperatorWorkspaceProjector
+    _closed: bool = False
+
+    @classmethod
+    def create(cls) -> "ReplayProjectionGraph":
+        bus = OperationsBus()
+        decision_projector = DecisionProjector(bus)
+        runtime_health_projector = RuntimeHealthProjector(bus)
+        timeline_projector = TimelineProjector(bus)
+        trade_lifecycle_projector = TradeLifecycleProjector(bus)
+        operator_workspace_projector = OperatorWorkspaceProjector(bus)
+        state_store = ApplicationStateStore(bus)
+        return cls(
+            bus=bus,
+            state_store=state_store,
+            decision_projector=decision_projector,
+            runtime_health_projector=runtime_health_projector,
+            timeline_projector=timeline_projector,
+            trade_lifecycle_projector=trade_lifecycle_projector,
+            operator_workspace_projector=operator_workspace_projector,
+        )
+
+    def reset(
+        self,
+        events: tuple[OperationsEvent, ...],
+    ) -> OperationsBus:
+        self.close()
+        replacement = type(self).create()
+        self.bus = replacement.bus
+        self.state_store = replacement.state_store
+        self.decision_projector = replacement.decision_projector
+        self.runtime_health_projector = (
+            replacement.runtime_health_projector
+        )
+        self.timeline_projector = replacement.timeline_projector
+        self.trade_lifecycle_projector = (
+            replacement.trade_lifecycle_projector
+        )
+        self.operator_workspace_projector = (
+            replacement.operator_workspace_projector
+        )
+        self._closed = False
+        for event in events:
+            self.bus.publish(event)
+        return self.bus
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self.state_store.close()
+        self.decision_projector.close()
+        self.runtime_health_projector.close()
+        self.timeline_projector.close()
+        self.trade_lifecycle_projector.close()
+        self.operator_workspace_projector.close()
+        self._closed = True
+
+
+@dataclass(slots=True)
 class DesktopComposition:
     bus: OperationsBus
     state_store: ApplicationStateStore
@@ -31,6 +109,11 @@ class DesktopComposition:
     timeline_projector: TimelineProjector
     trade_lifecycle_projector: TradeLifecycleProjector
     operator_workspace_projector: OperatorWorkspaceProjector
+    replay_archive: ReplayEventArchive
+    replay_clock: ReplayClock
+    replay_engine: ReplayEngine
+    replay_controller: ReplayController
+    replay_projections: ReplayProjectionGraph
     runtime_service: RuntimeService
     trading_service: TradingService | None = None
     order_command_factory: OrderCommandFactory | None = None
@@ -49,6 +132,8 @@ class DesktopComposition:
         self.timeline_projector.close()
         self.trade_lifecycle_projector.close()
         self.operator_workspace_projector.close()
+        self.replay_controller.close()
+        self.replay_projections.close()
         return runtime_stopped
 
 
@@ -70,6 +155,19 @@ def create_desktop_composition(
     trade_lifecycle_projector = TradeLifecycleProjector(bus)
     operator_workspace_projector = OperatorWorkspaceProjector(bus)
     state_store = ApplicationStateStore(bus)
+    replay_archive = ReplayEventArchive()
+    replay_clock = ReplayClock()
+    replay_projections = ReplayProjectionGraph.create()
+    replay_engine = ReplayEngine(
+        replay_projections.bus,
+        replay_clock,
+        reset_sink=replay_projections.reset,
+    )
+    replay_controller = ReplayController(
+        replay_archive,
+        replay_clock,
+        replay_engine,
+    )
 
     runtime_service = create_desktop_runtime_service(
         bus,
@@ -108,6 +206,11 @@ def create_desktop_composition(
         timeline_projector=timeline_projector,
         trade_lifecycle_projector=trade_lifecycle_projector,
         operator_workspace_projector=operator_workspace_projector,
+        replay_archive=replay_archive,
+        replay_clock=replay_clock,
+        replay_engine=replay_engine,
+        replay_controller=replay_controller,
+        replay_projections=replay_projections,
         runtime_service=runtime_service,
         trading_service=trading_service,
         order_command_factory=order_command_factory,
@@ -118,5 +221,6 @@ def create_desktop_composition(
 
 __all__ = [
     "DesktopComposition",
+    "ReplayProjectionGraph",
     "create_desktop_composition",
 ]

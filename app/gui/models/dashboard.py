@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.read_models.operator_workspace import OperatorWorkspaceSnapshot
+from app.replay import ReplaySnapshot
 
 from .runtime import RuntimeState
 
@@ -260,6 +261,7 @@ class DashboardSnapshot:
     timeline: TimelineSnapshot
     lifecycle_explorer: LifecycleExplorerSnapshot
     operator_workspace: OperatorWorkspaceSnapshot
+    replay: ReplaySnapshot
 
     @classmethod
     def initial(cls) -> "DashboardSnapshot":
@@ -274,4 +276,5 @@ class DashboardSnapshot:
             timeline=TimelineSnapshot.initial(),
             lifecycle_explorer=LifecycleExplorerSnapshot.initial(),
             operator_workspace=OperatorWorkspaceSnapshot.initial(),
+            replay=ReplaySnapshot.initial(),
         )

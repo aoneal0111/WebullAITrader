@@ -43,6 +43,7 @@ from app.read_models.trade_lifecycle import (
     TradeLifecycleEntry,
     TradeLifecycleSnapshot,
 )
+from app.replay import ReplaySnapshot
 
 
 def project_dashboard(
@@ -52,6 +53,7 @@ def project_dashboard(
     timeline: TimelineReadModelSnapshot | None = None,
     trade_lifecycle: TradeLifecycleSnapshot | None = None,
     operator_workspace: OperatorWorkspaceSnapshot | None = None,
+    replay: ReplaySnapshot | None = None,
 ) -> DashboardSnapshot:
     if not isinstance(state, ApplicationState):
         raise TypeError("state must be an ApplicationState")
@@ -79,6 +81,10 @@ def project_dashboard(
         raise TypeError(
             "operator_workspace must be an OperatorWorkspaceSnapshot"
         )
+    if replay is None:
+        replay = ReplaySnapshot.initial()
+    if not isinstance(replay, ReplaySnapshot):
+        raise TypeError("replay must be a ReplaySnapshot")
 
     runtime = state.runtime
     orders_read_model = project_orders_read_model(state)
@@ -294,6 +300,7 @@ def project_dashboard(
             selected_symbol=selected_trade_symbol,
         ),
         operator_workspace=operator_workspace,
+        replay=replay,
     )
 
 

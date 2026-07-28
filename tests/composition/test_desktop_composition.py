@@ -26,6 +26,12 @@ from app.read_models.trade_lifecycle import (
     TradeLifecycleProjector,
     TradeLifecycleStatus,
 )
+from app.replay import (
+    ReplayClock,
+    ReplayController,
+    ReplayEngine,
+    ReplayEventArchive,
+)
 from app.services import RuntimeServiceStatus
 
 
@@ -69,6 +75,14 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
             composition.operator_workspace_projector,
             OperatorWorkspaceProjector,
         )
+        assert isinstance(composition.replay_archive, ReplayEventArchive)
+        assert isinstance(composition.replay_clock, ReplayClock)
+        assert isinstance(composition.replay_engine, ReplayEngine)
+        assert isinstance(
+            composition.replay_controller,
+            ReplayController,
+        )
+        assert composition.replay_projections.bus is not composition.bus
     finally:
         composition.close(timeout_seconds=1.0)
 
@@ -94,6 +108,14 @@ def test_desktop_composition_uses_fresh_dependencies() -> None:
         assert (
             first.operator_workspace_projector
             is not second.operator_workspace_projector
+        )
+        assert first.replay_archive is not second.replay_archive
+        assert first.replay_clock is not second.replay_clock
+        assert first.replay_engine is not second.replay_engine
+        assert first.replay_controller is not second.replay_controller
+        assert (
+            first.replay_projections
+            is not second.replay_projections
         )
         assert first.runtime_service is not second.runtime_service
     finally:
@@ -187,11 +209,14 @@ def test_composed_state_notifications_observe_latest_health_snapshot() -> None:
 
 def test_close_releases_all_composed_bus_subscriptions() -> None:
     composition = create_desktop_composition()
+    replay_bus = composition.replay_projections.bus
 
     assert composition.bus.subscription_count == 7
+    assert replay_bus.subscription_count == 7
     composition.close(timeout_seconds=1.0)
 
     assert composition.bus.subscription_count == 0
+    assert replay_bus.subscription_count == 0
 
 
 def test_state_notifications_observe_latest_workspace_selection() -> None:

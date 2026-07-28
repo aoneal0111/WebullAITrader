@@ -6,7 +6,11 @@ application dependency graph. Business logic belongs elsewhere.
 """
 
 from .container import CompositionContainer
-from .desktop import DesktopComposition, create_desktop_composition
+from .desktop import (
+    DesktopComposition,
+    ReplayProjectionGraph,
+    create_desktop_composition,
+)
 from .exceptions import (
     CircularDependencyError,
     CompositionError,
@@ -31,6 +35,7 @@ from .validation import implements_methods, validate_factory_graph
 __all__ = [
     # Desktop composition
     "DesktopComposition",
+    "ReplayProjectionGraph",
     "create_desktop_composition",
 
     # Operational composition

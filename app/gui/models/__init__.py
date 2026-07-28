@@ -18,6 +18,7 @@ from .dashboard import (
 )
 from .runtime import RuntimeState
 from app.read_models.operator_workspace import OperatorWorkspaceSnapshot
+from app.replay import ReplaySnapshot
 
 __all__ = [
     "ActivityEntry",
@@ -35,6 +36,7 @@ __all__ = [
     "PortfolioSnapshot",
     "PositionsSnapshot",
     "RuntimeSnapshot",
+    "ReplaySnapshot",
     "TimelineRow",
     "TimelineSnapshot",
     "RuntimeState",
