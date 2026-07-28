@@ -17,6 +17,12 @@ from app.analytics.models import (
     WalkForwardAnalyticsResult,
     WalkForwardExperimentAggregateAnalytics,
     WalkForwardWindowExperimentAnalytics,
+    AnalyticsSnapshot,
+    PerformanceMetrics,
+    RiskMetrics,
+    StrategyMetrics,
+    SymbolMetrics,
+    TimeMetrics,
 )
 from app.analytics.performance import (
     analyze_backtest,
@@ -31,6 +37,13 @@ from app.analytics.interfaces import AnalyticsEvaluator
 from app.analytics.policies import AnalyticsPolicy
 from app.analytics.runtime import AnalyticsRuntime, DeterministicAnalyticsEvaluator
 from app.analytics.serializers import *
+from app.analytics.controller import AnalyticsController
+from app.analytics.engine import AnalyticsEngine, AnalyticsResultSet
+from app.analytics.repository import (
+    AnalyticsDataset,
+    AnalyticsRepository,
+    HistoricalTrade,
+)
 
 __all__ = [
     "AnalyticsConfig", "MarketObservation", "BacktestAnalyticsResult", "DistributionAnalytics", "DrawdownEpisode",
@@ -41,6 +54,9 @@ __all__ = [
     "analyze_backtest", "analyze_experiment", "analyze_experiment_suite", "analyze_walk_forward",
     "analytics_to_json", "analytics_to_text",
     "AnalyticsRuntime", "DeterministicAnalyticsEvaluator", "AnalyticsEvaluator", "AnalyticsPolicy",
+    "AnalyticsSnapshot", "PerformanceMetrics", "RiskMetrics", "StrategyMetrics",
+    "SymbolMetrics", "TimeMetrics", "AnalyticsController", "AnalyticsEngine",
+    "AnalyticsResultSet", "AnalyticsDataset", "AnalyticsRepository", "HistoricalTrade",
     "AnalyticsRequest", "AnalyticsResult", "AnalyticsSummary", "AnalyticsMetrics", "AnalyticsCriteriaResult",
     "EquityPoint", "DrawdownPoint", "AnalyticsStatus", "AnalyticsEntryClassification", "DrawdownStatus",
     "AnalyticsError", "AnalyticsValidationError", "AnalyticsDependencyError", "AnalyticsEvaluationError", "AnalyticsSerializationError",

@@ -170,6 +170,7 @@ class QueryResult:
 class EventStoreSnapshot:
     status: EventStoreStatus
     sessions: tuple[IndexedSession, ...]
+    all_events: tuple[IndexedEvent, ...]
     result: QueryResult
     statistics: QueryStatistics
     available_symbols: tuple[str, ...]
@@ -188,6 +189,15 @@ class EventStoreSnapshot:
         ):
             raise TypeError(
                 "sessions must contain only IndexedSession instances"
+            )
+        if not isinstance(self.all_events, tuple):
+            raise TypeError("all_events must be an immutable tuple")
+        if any(
+            not isinstance(event, IndexedEvent)
+            for event in self.all_events
+        ):
+            raise TypeError(
+                "all_events must contain only IndexedEvent instances"
             )
         if not isinstance(self.result, QueryResult):
             raise TypeError("result must be QueryResult")
@@ -213,6 +223,7 @@ class EventStoreSnapshot:
         empty = QueryStatistics.empty()
         return cls(
             EventStoreStatus.EMPTY,
+            (),
             (),
             QueryResult.empty(),
             empty,

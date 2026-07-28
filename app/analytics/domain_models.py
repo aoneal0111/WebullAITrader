@@ -23,7 +23,14 @@ def _time(v,n,optional=False):
 def _strings(v,n):
     if not isinstance(v,tuple) or any(not isinstance(x,str) or not x.strip() for x in v):raise AnalyticsValidationError(f"{n} must be immutable strings")
     return v
-class AnalyticsStatus(StrEnum):COMPLETED="COMPLETED";DISABLED="DISABLED";INSUFFICIENT_DATA="INSUFFICIENT_DATA"
+class AnalyticsStatus(StrEnum):
+    COMPLETED = "COMPLETED"
+    DISABLED = "DISABLED"
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
+    EMPTY = "EMPTY"
+    READY = "READY"
+    ERROR = "ERROR"
+    CLOSED = "CLOSED"
 class AnalyticsEntryClassification(StrEnum):WIN="WIN";LOSS="LOSS";BREAKEVEN="BREAKEVEN";UNCLASSIFIED="UNCLASSIFIED"
 class DrawdownStatus(StrEnum):AT_PEAK="AT_PEAK";IN_DRAWDOWN="IN_DRAWDOWN"
 @dataclass(frozen=True,slots=True)

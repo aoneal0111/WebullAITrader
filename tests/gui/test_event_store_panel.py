@@ -58,6 +58,7 @@ def snapshot() -> EventStoreSnapshot:
                 1,
             ),
         ),
+        all_events=(event,),
         result=QueryResult("all", (event,), statistics),
         statistics=statistics,
         available_symbols=("AAPL",),

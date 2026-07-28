@@ -64,6 +64,7 @@ class EventStoreController:
                 self._snapshot = EventStoreSnapshot(
                     status=EventStoreStatus.ERROR,
                     sessions=self._snapshot.sessions,
+                    all_events=self._snapshot.all_events,
                     result=self._snapshot.result,
                     statistics=self._snapshot.statistics,
                     available_symbols=self._snapshot.available_symbols,
@@ -85,6 +86,7 @@ class EventStoreController:
             self._snapshot = EventStoreSnapshot(
                 status=status,
                 sessions=index.sessions,
+                all_events=index.events,
                 result=result,
                 statistics=result.statistics,
                 available_symbols=tuple(
@@ -123,6 +125,7 @@ class EventStoreController:
             self._snapshot = EventStoreSnapshot(
                 status=self._snapshot.status,
                 sessions=self._snapshot.sessions,
+                all_events=self._snapshot.all_events,
                 result=result,
                 statistics=self._snapshot.statistics,
                 available_symbols=self._snapshot.available_symbols,
@@ -168,6 +171,7 @@ class EventStoreController:
             self._snapshot = EventStoreSnapshot(
                 status=EventStoreStatus.CLOSED,
                 sessions=self._snapshot.sessions,
+                all_events=self._snapshot.all_events,
                 result=self._snapshot.result,
                 statistics=self._snapshot.statistics,
                 available_symbols=self._snapshot.available_symbols,
