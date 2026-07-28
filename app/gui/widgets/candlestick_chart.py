@@ -218,6 +218,32 @@ class ChartRenderer:
         canvas._draw_markers(painter, viewport)
         canvas._draw_overlay(painter, viewport)
 
+
+    def _draw_grid(
+        self,
+        painter: QPainter,
+        viewport: ChartViewport,
+    ) -> None:
+        del painter, viewport
+
+    def _draw_axes(
+        self,
+        painter: QPainter,
+        viewport: ChartViewport,
+    ) -> None:
+        left = viewport.left
+        top = viewport.top
+        width = viewport.width
+        height = viewport.height
+        painter.setPen(QColor(Colors.BORDER_STRONG))
+        painter.drawLine(
+            left,
+            top + height,
+            left + width,
+            top + height,
+        )
+
+
 class CandleCanvas(QWidget):
     """The existing read-only candlestick canvas, retained unchanged in role."""
 
@@ -301,23 +327,6 @@ class CandleCanvas(QWidget):
         viewport: ChartViewport,
     ) -> None:
         del painter, viewport
-
-    def _draw_axes(
-        self,
-        painter: QPainter,
-        viewport: ChartViewport,
-    ) -> None:
-        left = viewport.left
-        top = viewport.top
-        width = viewport.width
-        height = viewport.height
-        painter.setPen(QColor(Colors.BORDER_STRONG))
-        painter.drawLine(
-            left,
-            top + height,
-            left + width,
-            top + height,
-        )
 
     def _draw_candles(
         self,
