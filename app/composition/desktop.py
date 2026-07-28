@@ -9,6 +9,7 @@ from app.order_placement import OrderPlacementRuntime
 from app.paper_trading.order_book import PaperOrderBook
 from app.read_models.decisions import DecisionProjector
 from app.read_models.runtime_health import RuntimeHealthProjector
+from app.read_models.timeline import TimelineProjector
 from app.services import OrderCommandFactory, RuntimeService, TradingService
 
 from .desktop_runtime import create_desktop_runtime_service
@@ -25,6 +26,7 @@ class DesktopComposition:
     state_store: ApplicationStateStore
     decision_projector: DecisionProjector
     runtime_health_projector: RuntimeHealthProjector
+    timeline_projector: TimelineProjector
     runtime_service: RuntimeService
     trading_service: TradingService | None = None
     order_command_factory: OrderCommandFactory | None = None
@@ -40,6 +42,7 @@ class DesktopComposition:
         self.state_store.close()
         self.decision_projector.close()
         self.runtime_health_projector.close()
+        self.timeline_projector.close()
         return runtime_stopped
 
 
@@ -57,6 +60,7 @@ def create_desktop_composition(
     bus = OperationsBus()
     decision_projector = DecisionProjector(bus)
     runtime_health_projector = RuntimeHealthProjector(bus)
+    timeline_projector = TimelineProjector(bus)
     state_store = ApplicationStateStore(bus)
 
     runtime_service = create_desktop_runtime_service(
@@ -93,6 +97,7 @@ def create_desktop_composition(
         state_store=state_store,
         decision_projector=decision_projector,
         runtime_health_projector=runtime_health_projector,
+        timeline_projector=timeline_projector,
         runtime_service=runtime_service,
         trading_service=trading_service,
         order_command_factory=order_command_factory,

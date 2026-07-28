@@ -10,6 +10,8 @@ from .dashboard import (
     PortfolioSnapshot,
     PositionsSnapshot,
     RuntimeSnapshot,
+    TimelineRow,
+    TimelineSnapshot,
 )
 from .runtime import RuntimeState
 
@@ -25,5 +27,7 @@ __all__ = [
     "PortfolioSnapshot",
     "PositionsSnapshot",
     "RuntimeSnapshot",
+    "TimelineRow",
+    "TimelineSnapshot",
     "RuntimeState",
 ]

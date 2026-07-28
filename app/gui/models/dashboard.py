@@ -191,6 +191,24 @@ class HealthCenterSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class TimelineRow:
+    time: str
+    category: str
+    severity: str
+    summary: str
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineSnapshot:
+    rows: tuple[TimelineRow, ...]
+    max_entries: int
+
+    @classmethod
+    def initial(cls) -> "TimelineSnapshot":
+        return cls(rows=(), max_entries=500)
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardSnapshot:
     runtime: RuntimeSnapshot
     portfolio: PortfolioSnapshot
@@ -199,6 +217,7 @@ class DashboardSnapshot:
     orders: OrdersSnapshot
     decisions: DecisionCenterSnapshot
     runtime_health: HealthCenterSnapshot
+    timeline: TimelineSnapshot
 
     @classmethod
     def initial(cls) -> "DashboardSnapshot":
@@ -210,4 +229,5 @@ class DashboardSnapshot:
             orders=OrdersSnapshot.initial(),
             decisions=DecisionCenterSnapshot.initial(),
             runtime_health=HealthCenterSnapshot.initial(),
+            timeline=TimelineSnapshot.initial(),
         )

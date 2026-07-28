@@ -16,6 +16,7 @@ from app.read_models.runtime_health import (
     OverallHealth,
     RuntimeHealthProjector,
 )
+from app.read_models.timeline import TimelineProjector
 from app.services import RuntimeServiceStatus
 
 
@@ -47,6 +48,10 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
             composition.runtime_health_projector,
             RuntimeHealthProjector,
         )
+        assert isinstance(
+            composition.timeline_projector,
+            TimelineProjector,
+        )
     finally:
         composition.close(timeout_seconds=1.0)
 
@@ -64,6 +69,7 @@ def test_desktop_composition_uses_fresh_dependencies() -> None:
             first.runtime_health_projector
             is not second.runtime_health_projector
         )
+        assert first.timeline_projector is not second.timeline_projector
         assert first.runtime_service is not second.runtime_service
     finally:
         first.close(timeout_seconds=1.0)
@@ -157,7 +163,33 @@ def test_composed_state_notifications_observe_latest_health_snapshot() -> None:
 def test_close_releases_all_composed_bus_subscriptions() -> None:
     composition = create_desktop_composition()
 
-    assert composition.bus.subscription_count == 4
+    assert composition.bus.subscription_count == 5
     composition.close(timeout_seconds=1.0)
 
     assert composition.bus.subscription_count == 0
+
+
+def test_state_notifications_observe_latest_timeline_entry() -> None:
+    composition = create_desktop_composition()
+    observed_titles: list[str | None] = []
+    listener_id = composition.state_store.subscribe(
+        lambda state: observed_titles.append(
+            (
+                composition.timeline_projector.snapshot().entries[0].title
+                if composition.timeline_projector.snapshot().entries
+                else None
+            )
+        )
+    )
+    try:
+        composition.bus.publish(
+            RuntimeStarted(
+                active_model="atlas",
+                occurred_at=NOW,
+            )
+        )
+
+        assert observed_titles == [None, "Runtime started"]
+    finally:
+        composition.state_store.unsubscribe(listener_id)
+        composition.close(timeout_seconds=1.0)

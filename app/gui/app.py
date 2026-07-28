@@ -21,6 +21,7 @@ def main() -> int:
         composition.runtime_service,
         composition.decision_projector,
         composition.runtime_health_projector,
+        composition.timeline_projector,
     )
     window.show()
 

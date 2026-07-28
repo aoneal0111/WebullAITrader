@@ -12,6 +12,8 @@ from app.gui.models import (
     PortfolioSnapshot,
     RuntimeSnapshot,
     RuntimeState,
+    TimelineRow,
+    TimelineSnapshot,
 )
 from app.operations_core import ApplicationState
 from app.read_models.orders import project_orders_read_model
@@ -23,12 +25,17 @@ from app.read_models.runtime_health import (
     RuntimeHealthSnapshot,
     SubsystemHealth,
 )
+from app.read_models.timeline import (
+    TimelineEntry as TimelineReadModelEntry,
+    TimelineReadModelSnapshot,
+)
 
 
 def project_dashboard(
     state: ApplicationState,
     decisions: DecisionsReadModelSnapshot | None = None,
     runtime_health: RuntimeHealthSnapshot | None = None,
+    timeline: TimelineReadModelSnapshot | None = None,
 ) -> DashboardSnapshot:
     if not isinstance(state, ApplicationState):
         raise TypeError("state must be an ApplicationState")
@@ -40,6 +47,10 @@ def project_dashboard(
         runtime_health = RuntimeHealthSnapshot.initial()
     if not isinstance(runtime_health, RuntimeHealthSnapshot):
         raise TypeError("runtime_health must be a RuntimeHealthSnapshot")
+    if timeline is None:
+        timeline = TimelineReadModelSnapshot.initial()
+    if not isinstance(timeline, TimelineReadModelSnapshot):
+        raise TypeError("timeline must be a TimelineReadModelSnapshot")
 
     runtime = state.runtime
     orders_read_model = project_orders_read_model(state)
@@ -161,6 +172,18 @@ def project_dashboard(
                 for error in runtime_health.errors
             ),
         ),
+        timeline=TimelineSnapshot(
+            rows=tuple(
+                TimelineRow(
+                    time=f"{entry.timestamp.astimezone():%H:%M:%S}",
+                    category=entry.category.value,
+                    severity=entry.severity.value,
+                    summary=_timeline_summary(entry),
+                )
+                for entry in timeline.entries
+            ),
+            max_entries=timeline.max_entries,
+        ),
     )
 
 
@@ -196,3 +219,16 @@ def _health_badge(
         OverallHealth.UNHEALTHY: "danger",
     }
     return HealthBadgeSnapshot(label, value, levels[health])
+
+
+def _timeline_summary(entry: TimelineReadModelEntry) -> str:
+    context = tuple(
+        value
+        for value in (
+            None if entry.cycle is None else f"Cycle {entry.cycle}",
+            entry.symbol,
+        )
+        if value is not None
+    )
+    suffix = "" if not context else f" ({' | '.join(context)})"
+    return f"{entry.title}: {entry.description}{suffix}"

@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.models import DashboardSnapshot
-from app.gui.widgets.activity_panel import ActivityPanel
 from app.gui.widgets.common import StatusBadge
 from app.gui.widgets.decision_center import DecisionCenter
 from app.gui.widgets.orders_panel import OrdersPanel
@@ -18,6 +17,7 @@ from app.gui.widgets.positions_panel import PositionsPanel
 from app.gui.widgets.portfolio_metrics import PortfolioMetrics
 from app.gui.widgets.runtime_ribbon import RuntimeRibbon
 from app.gui.widgets.runtime_health_panel import RuntimeHealthPanel
+from app.gui.widgets.timeline_panel import TimelinePanel
 
 
 class DashboardPage(QWidget):
@@ -67,7 +67,7 @@ class DashboardPage(QWidget):
         body = QGridLayout()
         body.setSpacing(12)
 
-        self.activity_panel = ActivityPanel()
+        self.timeline_panel = TimelinePanel()
         self.decision_center = DecisionCenter()
         self.positions_panel = PositionsPanel()
         self.orders_panel = OrdersPanel()
@@ -85,8 +85,8 @@ class DashboardPage(QWidget):
 
         body.addWidget(
             SectionPanel(
-                "Operations Activity",
-                self.activity_panel,
+                "Immutable Event Timeline - Read Only",
+                self.timeline_panel,
             ),
             1,
             0,
@@ -134,7 +134,7 @@ class DashboardPage(QWidget):
             level,
         )
 
-        self.activity_panel.render(snapshot.activity)
+        self.timeline_panel.render(snapshot.timeline)
         self.decision_center.render(snapshot.decisions)
         self.positions_panel.render(snapshot.positions)
         self.orders_panel.render(snapshot.orders)
