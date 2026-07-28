@@ -18,6 +18,19 @@ from app.analytics import (
     AnalyticsEngine,
     AnalyticsRepository,
 )
+from app.backtesting.market_feed import (
+    InMemoryHistoricalMarketFeed,
+)
+from app.backtesting.playback_engine import PlaybackEngine
+from app.backtesting.experiment_runner import ExperimentRunner
+from app.backtesting.repository import ExperimentRepository
+from app.backtesting.comparison import ComparisonEngine
+from app.backtesting.controller import BacktestingController
+from app.scanner_adapter import (
+    MarketEventScannerAdapter,
+    MomentumScannerPipeline,
+    ScannerReferenceStore,
+)
 from app.order_cancellation import OrderCancellationRuntime
 from app.order_placement import OrderPlacementRuntime
 from app.paper_trading.order_book import PaperOrderBook
@@ -136,6 +149,13 @@ class DesktopComposition:
     analytics_repository: AnalyticsRepository
     analytics_engine: AnalyticsEngine
     analytics_controller: AnalyticsController
+    historical_market_feed: InMemoryHistoricalMarketFeed
+    historical_market_pipeline: MomentumScannerPipeline
+    playback_engine: PlaybackEngine
+    experiment_runner: ExperimentRunner
+    experiment_repository: ExperimentRepository
+    comparison_engine: ComparisonEngine
+    backtesting_controller: BacktestingController
     replay_archive: ReplayEventArchive
     replay_clock: ReplayClock
     replay_engine: ReplayEngine
@@ -153,6 +173,7 @@ class DesktopComposition:
         runtime_stopped = self.runtime_service.close(
             timeout_seconds=timeout_seconds
         )
+        self.backtesting_controller.close()
         self.session_recorder.close()
         self.recording_controller.close()
         self.analytics_controller.close()
@@ -234,6 +255,31 @@ def create_desktop_composition(
         analytics_engine,
         event_store_controller.snapshot,
     )
+    historical_market_feed = InMemoryHistoricalMarketFeed()
+    historical_market_adapter = MarketEventScannerAdapter(
+        ScannerReferenceStore()
+    )
+    historical_market_pipeline = MomentumScannerPipeline(
+        historical_market_adapter
+    )
+    playback_engine = PlaybackEngine(
+        historical_market_pipeline.consume
+    )
+    experiment_repository = ExperimentRepository()
+    comparison_engine = ComparisonEngine()
+    experiment_runner = ExperimentRunner(
+        playback_engine,
+        bus,
+        session_recorder,
+        event_store_controller,
+        analytics_controller,
+    )
+    backtesting_controller = BacktestingController(
+        playback_engine,
+        experiment_runner,
+        experiment_repository,
+        comparison_engine,
+    )
 
     runtime_service = create_desktop_runtime_service(
         bus,
@@ -282,6 +328,13 @@ def create_desktop_composition(
         analytics_repository=analytics_repository,
         analytics_engine=analytics_engine,
         analytics_controller=analytics_controller,
+        historical_market_feed=historical_market_feed,
+        historical_market_pipeline=historical_market_pipeline,
+        playback_engine=playback_engine,
+        experiment_runner=experiment_runner,
+        experiment_repository=experiment_repository,
+        comparison_engine=comparison_engine,
+        backtesting_controller=backtesting_controller,
         replay_archive=replay_archive,
         replay_clock=replay_clock,
         replay_engine=replay_engine,

@@ -130,7 +130,9 @@ def test_dashboard_routes_read_only_panel_selections_as_events() -> None:
         page.decision_center.table.item(0, 0).background().color().name()
         == "#243b53"
     )
-    assert set(page.findChildren(QPushButton)) == set(
-        page.replay_panel.findChildren(QPushButton)
-    ) | set(page.event_store_panel.findChildren(QPushButton))
+    assert set(page.findChildren(QPushButton)) == (
+        set(page.replay_panel.findChildren(QPushButton))
+        | set(page.event_store_panel.findChildren(QPushButton))
+        | set(page.experiment_panel.findChildren(QPushButton))
+    )
     page.deleteLater()

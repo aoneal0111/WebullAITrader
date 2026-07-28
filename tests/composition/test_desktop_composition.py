@@ -48,6 +48,13 @@ from app.analytics import (
     AnalyticsEngine,
     AnalyticsRepository,
 )
+from app.backtesting.comparison import ComparisonEngine
+from app.backtesting.controller import BacktestingController
+from app.backtesting.experiment_runner import ExperimentRunner
+from app.backtesting.market_feed import InMemoryHistoricalMarketFeed
+from app.backtesting.playback_engine import PlaybackEngine
+from app.backtesting.repository import ExperimentRepository
+from app.scanner_adapter import MomentumScannerPipeline
 from app.services import RuntimeServiceStatus
 
 
@@ -139,6 +146,25 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
             composition.analytics_controller,
             AnalyticsController,
         )
+        assert isinstance(
+            composition.historical_market_feed,
+            InMemoryHistoricalMarketFeed,
+        )
+        assert isinstance(
+            composition.historical_market_pipeline,
+            MomentumScannerPipeline,
+        )
+        assert isinstance(composition.playback_engine, PlaybackEngine)
+        assert isinstance(composition.experiment_runner, ExperimentRunner)
+        assert isinstance(
+            composition.experiment_repository,
+            ExperimentRepository,
+        )
+        assert isinstance(composition.comparison_engine, ComparisonEngine)
+        assert isinstance(
+            composition.backtesting_controller,
+            BacktestingController,
+        )
     finally:
         composition.close(timeout_seconds=1.0)
 
@@ -194,6 +220,25 @@ def test_desktop_composition_uses_fresh_dependencies() -> None:
         assert (
             first.analytics_controller
             is not second.analytics_controller
+        )
+        assert (
+            first.historical_market_feed
+            is not second.historical_market_feed
+        )
+        assert (
+            first.historical_market_pipeline
+            is not second.historical_market_pipeline
+        )
+        assert first.playback_engine is not second.playback_engine
+        assert first.experiment_runner is not second.experiment_runner
+        assert (
+            first.experiment_repository
+            is not second.experiment_repository
+        )
+        assert first.comparison_engine is not second.comparison_engine
+        assert (
+            first.backtesting_controller
+            is not second.backtesting_controller
         )
         assert first.runtime_service is not second.runtime_service
     finally:

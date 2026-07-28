@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMe
 from app.gui.design.theme import application_stylesheet
 from app.gui.event_store_bridge import QtEventStoreBridge
 from app.gui.analytics_bridge import QtAnalyticsBridge
+from app.gui.backtesting_bridge import QtBacktestingBridge
 from app.gui.pages.dashboard import DashboardPage
 from app.gui.pages.orders import OrdersPage
 from app.gui.pages.placeholder import PlaceholderPage
@@ -39,6 +40,12 @@ from app.analytics import (
     AnalyticsController,
     AnalyticsSnapshot,
 )
+from app.backtesting.controller import BacktestingController
+from app.backtesting.models import (
+    BacktestConfiguration,
+    Experiment,
+    ExperimentSnapshot,
+)
 
 
 class MainWindow(QMainWindow):
@@ -57,6 +64,7 @@ class MainWindow(QMainWindow):
         recording_controller: RecordingController,
         event_store_controller: EventStoreController,
         analytics_controller: AnalyticsController,
+        backtesting_controller: BacktestingController,
     ) -> None:
         super().__init__()
         self._bus = bus
@@ -72,6 +80,7 @@ class MainWindow(QMainWindow):
         self._recording_controller = recording_controller
         self._event_store_controller = event_store_controller
         self._analytics_controller = analytics_controller
+        self._backtesting_controller = backtesting_controller
         self._last_error = ""
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
@@ -99,6 +108,13 @@ class MainWindow(QMainWindow):
         )
         self._analytics_bridge.analytics_changed.connect(
             self._render_analytics
+        )
+        self._backtesting_bridge = QtBacktestingBridge(
+            backtesting_controller,
+            self,
+        )
+        self._backtesting_bridge.experiments_changed.connect(
+            self._render_experiments
         )
         self._replay_timer = QTimer(self)
         self._replay_timer.setInterval(100)
@@ -183,6 +199,24 @@ class MainWindow(QMainWindow):
         )
         self.dashboard.event_store_refresh_requested.connect(
             self._event_store_controller.refresh
+        )
+        self.dashboard.experiment_start_requested.connect(
+            self._start_experiment
+        )
+        self.dashboard.experiment_pause_requested.connect(
+            self._backtesting_controller.pause
+        )
+        self.dashboard.experiment_resume_requested.connect(
+            self._backtesting_controller.resume
+        )
+        self.dashboard.experiment_step_requested.connect(
+            self._backtesting_controller.step
+        )
+        self.dashboard.experiment_stop_requested.connect(
+            self._backtesting_controller.stop
+        )
+        self.dashboard.experiment_compare_requested.connect(
+            self._backtesting_controller.compare
         )
         self.pages.addWidget(self.dashboard)
         self.pages.addWidget(
@@ -269,6 +303,7 @@ class MainWindow(QMainWindow):
             self._recording_controller.snapshot(),
             self._event_store_controller.snapshot(),
             self._analytics_controller.snapshot(),
+            self._backtesting_controller.snapshot(),
         )
         self.dashboard.render(dashboard_snapshot)
         phase = state.runtime.phase
@@ -323,6 +358,30 @@ class MainWindow(QMainWindow):
     ) -> None:
         del snapshot
         self._render_state(self._state_store.snapshot())
+
+    def _render_experiments(
+        self,
+        snapshot: ExperimentSnapshot,
+    ) -> None:
+        del snapshot
+        self._render_state(self._state_store.snapshot())
+
+    def _start_experiment(
+        self,
+        experiment_id: str,
+        name: str,
+        strategy_version: str,
+    ) -> None:
+        try:
+            self._backtesting_controller.start_experiment(
+                Experiment(
+                    experiment_id,
+                    name,
+                    BacktestConfiguration(strategy_version),
+                )
+            )
+        except (TypeError, ValueError, RuntimeError) as exc:
+            QMessageBox.critical(self, "Experiment Error", str(exc))
 
     def _query_event_store(self, method: str, value: object) -> None:
         if method == "all":
@@ -383,6 +442,7 @@ class MainWindow(QMainWindow):
         self._recording_bridge.close()
         self._event_store_bridge.close()
         self._analytics_bridge.close()
+        self._backtesting_bridge.close()
         self._replay_timer.stop()
         event.accept()
 

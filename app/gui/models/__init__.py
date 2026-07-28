@@ -22,6 +22,7 @@ from app.replay import ReplaySnapshot
 from app.recording import RecordingSnapshot
 from app.event_store import EventStoreSnapshot
 from app.analytics import AnalyticsSnapshot
+from app.backtesting.models import ExperimentSnapshot
 
 __all__ = [
     "ActivityEntry",
@@ -43,6 +44,7 @@ __all__ = [
     "RecordingSnapshot",
     "EventStoreSnapshot",
     "AnalyticsSnapshot",
+    "ExperimentSnapshot",
     "TimelineRow",
     "TimelineSnapshot",
     "RuntimeState",

@@ -19,6 +19,7 @@ from app.operations_core import (
 from app.gui.widgets.common import StatusBadge
 from app.gui.widgets.decision_center import DecisionCenter
 from app.gui.widgets.analytics_panel import AnalyticsPanel
+from app.gui.widgets.experiment_panel import ExperimentPanel
 from app.gui.widgets.event_store_panel import EventStorePanel
 from app.gui.widgets.orders_panel import OrdersPanel
 from app.gui.widgets.panel import SectionPanel
@@ -45,6 +46,12 @@ class DashboardPage(QWidget):
     event_store_query_requested = Signal(str, object)
     event_store_replay_requested = Signal(str)
     event_store_refresh_requested = Signal()
+    experiment_start_requested = Signal(str, str, str)
+    experiment_pause_requested = Signal()
+    experiment_resume_requested = Signal()
+    experiment_step_requested = Signal()
+    experiment_stop_requested = Signal()
+    experiment_compare_requested = Signal(str, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -159,6 +166,32 @@ class DashboardPage(QWidget):
             )
         )
 
+        self.experiment_panel = ExperimentPanel()
+        self.experiment_panel.start_requested.connect(
+            self.experiment_start_requested
+        )
+        self.experiment_panel.pause_requested.connect(
+            self.experiment_pause_requested
+        )
+        self.experiment_panel.resume_requested.connect(
+            self.experiment_resume_requested
+        )
+        self.experiment_panel.step_requested.connect(
+            self.experiment_step_requested
+        )
+        self.experiment_panel.stop_requested.connect(
+            self.experiment_stop_requested
+        )
+        self.experiment_panel.compare_requested.connect(
+            self.experiment_compare_requested
+        )
+        root.addWidget(
+            SectionPanel(
+                "Historical Experiment Center",
+                self.experiment_panel,
+            )
+        )
+
         self.portfolio_metrics = PortfolioMetrics()
         root.addWidget(self.portfolio_metrics)
 
@@ -261,6 +294,7 @@ class DashboardPage(QWidget):
         )
         self.event_store_panel.render(snapshot.event_store)
         self.analytics_panel.render(snapshot.analytics)
+        self.experiment_panel.render(snapshot.experiments)
 
         level = (
             "good"

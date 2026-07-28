@@ -8,6 +8,7 @@ from app.replay import ReplaySnapshot
 from app.recording import RecordingSnapshot
 from app.event_store import EventStoreSnapshot
 from app.analytics import AnalyticsSnapshot
+from app.backtesting.models import ExperimentSnapshot
 
 from .runtime import RuntimeState
 
@@ -268,6 +269,7 @@ class DashboardSnapshot:
     recording: RecordingSnapshot
     event_store: EventStoreSnapshot
     analytics: AnalyticsSnapshot
+    experiments: ExperimentSnapshot
 
     @classmethod
     def initial(cls) -> "DashboardSnapshot":
@@ -286,4 +288,5 @@ class DashboardSnapshot:
             recording=RecordingSnapshot.initial(),
             event_store=EventStoreSnapshot.initial(),
             analytics=AnalyticsSnapshot.initial(),
+            experiments=ExperimentSnapshot.initial(),
         )

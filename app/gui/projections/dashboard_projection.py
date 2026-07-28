@@ -47,6 +47,7 @@ from app.replay import ReplaySnapshot
 from app.recording import RecordingSnapshot
 from app.event_store import EventStoreSnapshot
 from app.analytics import AnalyticsSnapshot
+from app.backtesting.models import ExperimentSnapshot
 
 
 def project_dashboard(
@@ -60,6 +61,7 @@ def project_dashboard(
     recording: RecordingSnapshot | None = None,
     event_store: EventStoreSnapshot | None = None,
     analytics: AnalyticsSnapshot | None = None,
+    experiments: ExperimentSnapshot | None = None,
 ) -> DashboardSnapshot:
     if not isinstance(state, ApplicationState):
         raise TypeError("state must be an ApplicationState")
@@ -103,6 +105,10 @@ def project_dashboard(
         analytics = AnalyticsSnapshot.initial()
     if not isinstance(analytics, AnalyticsSnapshot):
         raise TypeError("analytics must be an AnalyticsSnapshot")
+    if experiments is None:
+        experiments = ExperimentSnapshot.initial()
+    if not isinstance(experiments, ExperimentSnapshot):
+        raise TypeError("experiments must be an ExperimentSnapshot")
 
     runtime = state.runtime
     orders_read_model = project_orders_read_model(state)
@@ -322,6 +328,7 @@ def project_dashboard(
         recording=recording,
         event_store=event_store,
         analytics=analytics,
+        experiments=experiments,
     )
 
 

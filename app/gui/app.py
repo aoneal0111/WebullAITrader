@@ -29,6 +29,7 @@ def main() -> int:
         composition.recording_controller,
         composition.event_store_controller,
         composition.analytics_controller,
+        composition.backtesting_controller,
     )
     window.show()
 
