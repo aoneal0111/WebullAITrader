@@ -1,6 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from decimal import Decimal
+from collections.abc import Mapping
 from typing import Sequence
 
 from PySide6.QtCore import Qt
@@ -25,6 +26,8 @@ from app.open_orders.models import (
     OpenOrdersResult,
 )
 from app.operations_core import ApplicationState
+from app.services import OrderCommandFactory, OrderEntryCommand, TradingService
+from app.gui.widgets.order_entry_panel import OrderEntryPanel
 
 
 class OrdersPage(QWidget):
@@ -32,8 +35,20 @@ class OrdersPage(QWidget):
 
     ALL_STATUSES = "ALL STATUSES"
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        trading_service: TradingService | None = None,
+        order_command_factory: OrderCommandFactory | None = None,
+    ) -> None:
         super().__init__()
+
+        if (trading_service is None) != (order_command_factory is None):
+            raise ValueError(
+                "trading_service and order_command_factory must be provided together"
+            )
+
+        self._trading_service = trading_service
+        self._order_command_factory = order_command_factory
 
         self._orders: tuple[OpenOrderSnapshot, ...] = ()
         self._visible_orders: tuple[OpenOrderSnapshot, ...] = ()
@@ -77,6 +92,14 @@ class OrdersPage(QWidget):
 
         root.addLayout(header)
 
+        self.order_entry_panel = OrderEntryPanel()
+        self.order_entry_panel.set_execution_enabled(
+            self._trading_service is not None
+        )
+        self.order_entry_panel.order_validated.connect(
+            self._place_validated_order
+        )
+        root.addWidget(self.order_entry_panel)
         orders_panel = QFrame()
         orders_panel.setObjectName("contentPanel")
 
@@ -229,6 +252,49 @@ class OrdersPage(QWidget):
 
         self._show_empty_state()
         self._clear_selected_order()
+
+    def _place_validated_order(self, payload: object) -> None:
+        """Convert validated presentation input and place a paper order."""
+
+        if self._trading_service is None or self._order_command_factory is None:
+            self.order_entry_panel.show_submission_error(
+                "Paper trading service is unavailable."
+            )
+            return
+
+        if not isinstance(payload, Mapping):
+            self.order_entry_panel.show_submission_error(
+                "Validated order payload is invalid."
+            )
+            return
+
+        try:
+            command = OrderEntryCommand(
+                symbol=str(payload["symbol"]),
+                side=str(payload["side"]),
+                quantity=Decimal(str(payload["quantity"])),
+                order_type=str(payload["order_type"]),
+                limit_price=payload.get("limit_price"),
+                stop_price=payload.get("stop_price"),
+                time_in_force=str(payload["time_in_force"]),
+            )
+            request = self._order_command_factory.create_placement_request(
+                command
+            )
+            result = self._trading_service.place_order(request)
+        except Exception as exc:
+            self.order_entry_panel.show_submission_error(str(exc))
+            return
+
+        if result.success:
+            self.order_entry_panel.show_submission_success(
+                broker_order_id=result.broker_order_id,
+                message=result.gateway_message,
+            )
+        else:
+            self.order_entry_panel.show_submission_error(
+                result.gateway_message
+            )
 
     @staticmethod
     def _detail_row(

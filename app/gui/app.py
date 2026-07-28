@@ -19,6 +19,8 @@ def main() -> int:
         composition.bus,
         composition.state_store,
         composition.runtime_service,
+        composition.trading_service,
+        composition.order_command_factory,
     )
     window.show()
 

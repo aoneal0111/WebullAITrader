@@ -20,6 +20,10 @@ from .operational_runtime import (
     OperationalRuntimeComposition,
     create_operational_runtime_composition,
 )
+from app.paper_trading.command_composition import (
+    PaperTradingCommandComposition,
+    create_paper_trading_command_composition,
+)
 from .policies import CompositionPolicy
 from .registry import CompositionRoot, Registry
 from .validation import implements_methods, validate_factory_graph
@@ -33,6 +37,10 @@ __all__ = [
     "OperationalRuntimeComposition",
     "OperationalRuntimeSession",
     "create_operational_runtime_composition",
+
+    # Paper trading commands
+    "PaperTradingCommandComposition",
+    "create_paper_trading_command_composition",
 
     # Existing composition framework
     "CompositionContainer",

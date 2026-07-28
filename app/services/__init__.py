@@ -4,6 +4,7 @@ from app.services.runtime_drivers import (
     PaperRuntimeDriver,
     SimulatedPaperRuntimeDriver,
 )
+from app.services.trading_service import TradingService
 from app.services.runtime_service import (
     RuntimeDriver,
     RuntimeService,
@@ -13,7 +14,11 @@ from app.services.runtime_service import (
 __all__ = [
     "PaperRuntimeDriver",
     "RuntimeDriver",
+    "OrderCommandFactory",
+    "OrderEntryCommand",
     "RuntimeService",
     "RuntimeServiceStatus",
     "SimulatedPaperRuntimeDriver",
+    "TradingService",
 ]
+from .order_command_factory import OrderCommandFactory, OrderEntryCommand
