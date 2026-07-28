@@ -9,6 +9,11 @@ from app.read_models.decisions import (
     DecisionReadModel,
     DecisionsReadModelSnapshot,
 )
+from app.read_models.operator_workspace import (
+    OperatorWorkspaceProjector,
+    OperatorWorkspaceSnapshot,
+    WorkspaceSelectionSource,
+)
 from app.read_models.runtime_health import (
     HealthMetric,
     OverallHealth,
@@ -37,6 +42,8 @@ __all__ = [
     "DecisionsReadModelSnapshot",
     "HealthMetric",
     "OverallHealth",
+    "OperatorWorkspaceProjector",
+    "OperatorWorkspaceSnapshot",
     "RuntimeHealthProjector",
     "RuntimeHealthSnapshot",
     "SubsystemHealth",
@@ -50,4 +57,5 @@ __all__ = [
     "TradeLifecycleProjector",
     "TradeLifecycleSnapshot",
     "TradeLifecycleStatus",
+    "WorkspaceSelectionSource",
 ]
