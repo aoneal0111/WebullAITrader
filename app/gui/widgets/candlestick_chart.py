@@ -208,12 +208,14 @@ class ChartRenderer:
 
     def render(
         self,
-        painter: QPainter,
-        viewport: ChartViewport,
-        snapshot: CandleSeriesSnapshot,
-        markers: tuple[ChartMarker, ...],
-        cursor_position: tuple[float, float] | None,
+        context: ChartRenderContext,
     ) -> None:
+        painter = context.painter
+        viewport = context.viewport
+        snapshot = context.snapshot
+        markers = context.markers
+        cursor_position = context.cursor_position
+
         self._draw_grid(
             painter,
             viewport,
@@ -447,13 +449,16 @@ class CandleCanvas(QWidget):
             return
 
         viewport = self._build_viewport()
-        self._renderer.render(
-            painter,
-            viewport,
-            self._snapshot,
-            self._markers,
-            self._cursor_position,
+
+        context = ChartRenderContext(
+            painter=painter,
+            viewport=viewport,
+            snapshot=self._snapshot,
+            markers=self._markers,
+            cursor_position=self._cursor_position,
         )
+
+        self._renderer.render(context)
 
     def _draw_background(self, painter: QPainter) -> None:
         painter.fillRect(self.rect(), QColor(Colors.SURFACE))
@@ -523,3 +528,4 @@ class CandlestickChart(QWidget):
         )
         self.canvas.render(snapshot, markers)
         self.status_bar.render(snapshot)
+
