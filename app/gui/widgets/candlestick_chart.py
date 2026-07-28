@@ -212,8 +212,14 @@ class ChartRenderer:
         painter: QPainter,
         viewport: ChartViewport,
     ) -> None:
-        canvas._draw_grid(painter, viewport)
-        canvas._draw_axes(painter, viewport)
+        self._draw_grid(
+            painter,
+            viewport,
+        )
+        self._draw_axes(
+            painter,
+            viewport,
+        )
         canvas._draw_candles(painter, viewport)
         canvas._draw_markers(painter, viewport)
         canvas._draw_overlay(painter, viewport)
