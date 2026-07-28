@@ -41,6 +41,32 @@ def test_bus_delivers_events_in_subscription_order() -> None:
     assert received == ["first", "second"]
 
 
+def test_bus_preserves_global_order_across_base_and_specific_types() -> None:
+    bus = OperationsBus()
+    received: list[str] = []
+
+    bus.subscribe(
+        OperationsEvent,
+        lambda event: received.append("base-first"),
+    )
+    bus.subscribe(
+        RuntimeStarted,
+        lambda event: received.append("specific-second"),
+    )
+    bus.subscribe(
+        OperationsEvent,
+        lambda event: received.append("base-third"),
+    )
+
+    bus.publish(RuntimeStarted(active_model="model-v1"))
+
+    assert received == [
+        "base-first",
+        "specific-second",
+        "base-third",
+    ]
+
+
 def test_bus_unsubscribe_stops_delivery() -> None:
     bus = OperationsBus()
     received: list[RuntimeStarted] = []

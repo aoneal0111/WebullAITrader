@@ -84,11 +84,18 @@ class OperationsBus:
             raise TypeError("event must inherit OperationsEvent")
 
         with self._lock:
-            handlers = tuple(
-                handler
+            matching_handlers = (
+                (subscription_id, handler)
                 for registered_type, registered_handlers in self._handlers.items()
                 if isinstance(event, registered_type)
-                for handler in registered_handlers.values()
+                for subscription_id, handler in registered_handlers.items()
+            )
+            handlers = tuple(
+                handler
+                for _, handler in sorted(
+                    matching_handlers,
+                    key=lambda item: item[0],
+                )
             )
 
         for handler in handlers:

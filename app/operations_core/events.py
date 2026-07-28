@@ -246,6 +246,68 @@ class TradeLifecycleUpdated(OperationsEvent):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class OperatorSelectionEvent(OperationsEvent):
+    """Base type for immutable, broker-neutral operator selections."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OperatorSymbolSelected(OperatorSelectionEvent):
+    symbol: str
+    selection_source: str = "NONE"
+    selection_id: str | None = None
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        _validate_operator_symbol(self.symbol)
+        allowed_sources = {"POSITION", "ORDER", "NONE"}
+        if self.selection_source not in allowed_sources:
+            raise ValueError(
+                "selection_source must be POSITION, ORDER, or NONE"
+            )
+        _validate_optional_selection_id(self.selection_id)
+        if (
+            self.selection_source == "ORDER"
+            and self.selection_id is None
+        ):
+            raise ValueError("ORDER selection requires selection_id")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OperatorTradeSelected(OperatorSelectionEvent):
+    symbol: str
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        _validate_operator_symbol(self.symbol)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OperatorDecisionSelected(OperatorSelectionEvent):
+    symbol: str
+    decision_id: str
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        _validate_operator_symbol(self.symbol)
+        _validate_selection_id(self.decision_id, "decision_id")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OperatorTimelineSelected(OperatorSelectionEvent):
+    timeline_entry_id: str
+    symbol: str | None = None
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        _validate_selection_id(
+            self.timeline_entry_id,
+            "timeline_entry_id",
+        )
+        if self.symbol is not None:
+            _validate_operator_symbol(self.symbol)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class PaperOrderLifecycleUpdated(OperationsEvent):
     """One deterministic paper-order lifecycle transition."""
 
@@ -535,3 +597,30 @@ class RuntimeFailed(OperationsEvent):
 
         if not self.error_message.strip():
             raise ValueError("error_message must not be empty")
+
+
+def _validate_operator_symbol(symbol: str) -> None:
+    if (
+        not isinstance(symbol, str)
+        or not symbol.strip()
+        or symbol != symbol.strip()
+    ):
+        raise ValueError("symbol must be stripped non-empty text")
+    if symbol != symbol.upper():
+        raise ValueError("symbol must be uppercase")
+
+
+def _validate_selection_id(value: str, field_name: str) -> None:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value != value.strip()
+    ):
+        raise ValueError(
+            f"{field_name} must be stripped non-empty text"
+        )
+
+
+def _validate_optional_selection_id(value: str | None) -> None:
+    if value is not None:
+        _validate_selection_id(value, "selection_id")
