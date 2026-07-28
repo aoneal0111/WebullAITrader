@@ -8,6 +8,7 @@ from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QStatusBar, QVBoxLayout, QWidget
 
 from app.gui.design.theme import application_stylesheet
+from app.gui.event_store_bridge import QtEventStoreBridge
 from app.gui.pages.dashboard import DashboardPage
 from app.gui.pages.orders import OrdersPage
 from app.gui.pages.placeholder import PlaceholderPage
@@ -31,6 +32,8 @@ from app.replay import (
     ReplayStatus,
 )
 from app.recording import RecordingController, RecordingSnapshot
+from app.recording import RecordingStatus
+from app.event_store import EventStoreController, EventStoreSnapshot
 
 
 class MainWindow(QMainWindow):
@@ -47,6 +50,7 @@ class MainWindow(QMainWindow):
         replay_controller: ReplayController,
         replay_projections: ReplayProjectionGraph,
         recording_controller: RecordingController,
+        event_store_controller: EventStoreController,
     ) -> None:
         super().__init__()
         self._bus = bus
@@ -60,6 +64,7 @@ class MainWindow(QMainWindow):
         self._replay_controller = replay_controller
         self._replay_projections = replay_projections
         self._recording_controller = recording_controller
+        self._event_store_controller = event_store_controller
         self._last_error = ""
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
@@ -73,6 +78,13 @@ class MainWindow(QMainWindow):
         )
         self._recording_bridge.recording_changed.connect(
             self._render_recording
+        )
+        self._event_store_bridge = QtEventStoreBridge(
+            event_store_controller,
+            self,
+        )
+        self._event_store_bridge.event_store_changed.connect(
+            self._render_event_store
         )
         self._replay_timer = QTimer(self)
         self._replay_timer.setInterval(100)
@@ -148,6 +160,15 @@ class MainWindow(QMainWindow):
         )
         self.dashboard.recording_save_requested.connect(
             self._save_recording
+        )
+        self.dashboard.event_store_query_requested.connect(
+            self._query_event_store
+        )
+        self.dashboard.event_store_replay_requested.connect(
+            self._event_store_controller.open_replay
+        )
+        self.dashboard.event_store_refresh_requested.connect(
+            self._event_store_controller.refresh
         )
         self.pages.addWidget(self.dashboard)
         self.pages.addWidget(
@@ -232,6 +253,7 @@ class MainWindow(QMainWindow):
             workspace_projector.snapshot(),
             replay,
             self._recording_controller.snapshot(),
+            self._event_store_controller.snapshot(),
         )
         self.dashboard.render(dashboard_snapshot)
         phase = state.runtime.phase
@@ -268,8 +290,22 @@ class MainWindow(QMainWindow):
         self,
         snapshot: RecordingSnapshot,
     ) -> None:
+        if snapshot.status is RecordingStatus.COMPLETED:
+            self._event_store_controller.refresh()
+        self._render_state(self._state_store.snapshot())
+
+    def _render_event_store(
+        self,
+        snapshot: EventStoreSnapshot,
+    ) -> None:
         del snapshot
         self._render_state(self._state_store.snapshot())
+
+    def _query_event_store(self, method: str, value: object) -> None:
+        if method == "all":
+            self._event_store_controller.query("all")
+        elif isinstance(value, str):
+            self._event_store_controller.query(method, value)
 
     def _open_recording(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -322,6 +358,7 @@ class MainWindow(QMainWindow):
         self._state_bridge.close()
         self._replay_bridge.close()
         self._recording_bridge.close()
+        self._event_store_bridge.close()
         self._replay_timer.stop()
         event.accept()
 

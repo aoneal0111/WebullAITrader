@@ -18,6 +18,7 @@ from app.operations_core import (
 )
 from app.gui.widgets.common import StatusBadge
 from app.gui.widgets.decision_center import DecisionCenter
+from app.gui.widgets.event_store_panel import EventStorePanel
 from app.gui.widgets.orders_panel import OrdersPanel
 from app.gui.widgets.panel import SectionPanel
 from app.gui.widgets.positions_panel import PositionsPanel
@@ -40,6 +41,9 @@ class DashboardPage(QWidget):
     replay_speed_requested = Signal(object)
     recording_open_requested = Signal()
     recording_save_requested = Signal()
+    event_store_query_requested = Signal(str, object)
+    event_store_replay_requested = Signal(str)
+    event_store_refresh_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -105,6 +109,44 @@ class DashboardPage(QWidget):
             SectionPanel(
                 "Session Replay",
                 self.replay_panel,
+            )
+        )
+
+        self.event_store_panel = EventStorePanel()
+        self.event_store_panel.search_requested.connect(
+            lambda value: self.event_store_query_requested.emit(
+                "search",
+                value,
+            )
+        )
+        self.event_store_panel.session_requested.connect(
+            lambda value: self.event_store_query_requested.emit(
+                "session",
+                value,
+            )
+        )
+        self.event_store_panel.symbol_requested.connect(
+            lambda value: self.event_store_query_requested.emit(
+                "all" if not value else "symbol",
+                value,
+            )
+        )
+        self.event_store_panel.event_type_requested.connect(
+            lambda value: self.event_store_query_requested.emit(
+                "all" if not value else "event_type",
+                value,
+            )
+        )
+        self.event_store_panel.replay_requested.connect(
+            self.event_store_replay_requested
+        )
+        self.event_store_panel.refresh_requested.connect(
+            self.event_store_refresh_requested
+        )
+        root.addWidget(
+            SectionPanel(
+                "Historical Event Store - Read Only",
+                self.event_store_panel,
             )
         )
 
@@ -208,6 +250,7 @@ class DashboardPage(QWidget):
             snapshot.replay,
             snapshot.recording,
         )
+        self.event_store_panel.render(snapshot.event_store)
 
         level = (
             "good"

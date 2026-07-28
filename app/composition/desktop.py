@@ -8,6 +8,11 @@ from app.operations_core import (
     OperationsBus,
     OperationsEvent,
 )
+from app.event_store import (
+    EventStoreController,
+    EventStoreQueryEngine,
+    EventStoreRepository,
+)
 from app.order_cancellation import OrderCancellationRuntime
 from app.order_placement import OrderPlacementRuntime
 from app.paper_trading.order_book import PaperOrderBook
@@ -121,6 +126,8 @@ class DesktopComposition:
     recording_writer: RecordingWriter
     recording_reader: RecordingReader
     recording_controller: RecordingController
+    event_store_repository: EventStoreRepository
+    event_store_controller: EventStoreController
     replay_archive: ReplayEventArchive
     replay_clock: ReplayClock
     replay_engine: ReplayEngine
@@ -140,6 +147,7 @@ class DesktopComposition:
         )
         self.session_recorder.close()
         self.recording_controller.close()
+        self.event_store_controller.close()
         self.state_store.close()
         self.decision_projector.close()
         self.runtime_health_projector.close()
@@ -201,6 +209,15 @@ def create_desktop_composition(
         recording_reader,
         replay_controller,
     )
+    event_store_repository = EventStoreRepository(
+        configuration.recording_directory,
+        recording_reader,
+    )
+    event_store_controller = EventStoreController(
+        event_store_repository,
+        EventStoreQueryEngine(),
+        replay_controller,
+    )
 
     runtime_service = create_desktop_runtime_service(
         bus,
@@ -244,6 +261,8 @@ def create_desktop_composition(
         recording_writer=recording_writer,
         recording_reader=recording_reader,
         recording_controller=recording_controller,
+        event_store_repository=event_store_repository,
+        event_store_controller=event_store_controller,
         replay_archive=replay_archive,
         replay_clock=replay_clock,
         replay_engine=replay_engine,

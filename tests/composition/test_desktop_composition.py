@@ -39,6 +39,10 @@ from app.recording import (
     RecordingWriter,
     SessionRecorder,
 )
+from app.event_store import (
+    EventStoreController,
+    EventStoreRepository,
+)
 from app.services import RuntimeServiceStatus
 
 
@@ -110,6 +114,14 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
             composition.recording_controller,
             RecordingController,
         )
+        assert isinstance(
+            composition.event_store_repository,
+            EventStoreRepository,
+        )
+        assert isinstance(
+            composition.event_store_controller,
+            EventStoreController,
+        )
     finally:
         composition.close(timeout_seconds=1.0)
 
@@ -148,6 +160,14 @@ def test_desktop_composition_uses_fresh_dependencies() -> None:
         assert (
             first.recording_controller
             is not second.recording_controller
+        )
+        assert (
+            first.event_store_repository
+            is not second.event_store_repository
+        )
+        assert (
+            first.event_store_controller
+            is not second.event_store_controller
         )
         assert first.runtime_service is not second.runtime_service
     finally:

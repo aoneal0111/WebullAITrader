@@ -27,6 +27,7 @@ def main() -> int:
         composition.replay_controller,
         composition.replay_projections,
         composition.recording_controller,
+        composition.event_store_controller,
     )
     window.show()
 

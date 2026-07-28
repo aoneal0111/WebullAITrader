@@ -6,6 +6,7 @@ from datetime import datetime
 from app.read_models.operator_workspace import OperatorWorkspaceSnapshot
 from app.replay import ReplaySnapshot
 from app.recording import RecordingSnapshot
+from app.event_store import EventStoreSnapshot
 
 from .runtime import RuntimeState
 
@@ -264,6 +265,7 @@ class DashboardSnapshot:
     operator_workspace: OperatorWorkspaceSnapshot
     replay: ReplaySnapshot
     recording: RecordingSnapshot
+    event_store: EventStoreSnapshot
 
     @classmethod
     def initial(cls) -> "DashboardSnapshot":
@@ -280,4 +282,5 @@ class DashboardSnapshot:
             operator_workspace=OperatorWorkspaceSnapshot.initial(),
             replay=ReplaySnapshot.initial(),
             recording=RecordingSnapshot.initial(),
+            event_store=EventStoreSnapshot.initial(),
         )
