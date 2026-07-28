@@ -227,10 +227,7 @@ class ChartRenderer:
             context,
         )
         self._draw_overlay(
-            painter,
-            viewport,
-            snapshot,
-            cursor_position,
+            context,
         )
 
 
@@ -311,11 +308,12 @@ class ChartRenderer:
 
     def _draw_overlay(
         self,
-        painter: QPainter,
-        viewport: ChartViewport,
-        snapshot: CandleSeriesSnapshot,
-        cursor_position: tuple[float, float] | None,
+        context: ChartRenderContext,
     ) -> None:
+        painter = context.painter
+        viewport = context.viewport
+        snapshot = context.snapshot
+        cursor_position = context.cursor_position
         if cursor_position is None:
             return
 
