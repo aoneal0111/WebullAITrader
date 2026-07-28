@@ -46,6 +46,7 @@ from app.read_models.trade_lifecycle import (
 from app.replay import ReplaySnapshot
 from app.recording import RecordingSnapshot
 from app.event_store import EventStoreSnapshot
+from app.analytics import AnalyticsSnapshot
 
 
 def project_dashboard(
@@ -58,6 +59,7 @@ def project_dashboard(
     replay: ReplaySnapshot | None = None,
     recording: RecordingSnapshot | None = None,
     event_store: EventStoreSnapshot | None = None,
+    analytics: AnalyticsSnapshot | None = None,
 ) -> DashboardSnapshot:
     if not isinstance(state, ApplicationState):
         raise TypeError("state must be an ApplicationState")
@@ -97,6 +99,10 @@ def project_dashboard(
         event_store = EventStoreSnapshot.initial()
     if not isinstance(event_store, EventStoreSnapshot):
         raise TypeError("event_store must be an EventStoreSnapshot")
+    if analytics is None:
+        analytics = AnalyticsSnapshot.initial()
+    if not isinstance(analytics, AnalyticsSnapshot):
+        raise TypeError("analytics must be an AnalyticsSnapshot")
 
     runtime = state.runtime
     orders_read_model = project_orders_read_model(state)
@@ -315,6 +321,7 @@ def project_dashboard(
         replay=replay,
         recording=recording,
         event_store=event_store,
+        analytics=analytics,
     )
 
 

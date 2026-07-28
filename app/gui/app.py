@@ -28,6 +28,7 @@ def main() -> int:
         composition.replay_projections,
         composition.recording_controller,
         composition.event_store_controller,
+        composition.analytics_controller,
     )
     window.show()
 

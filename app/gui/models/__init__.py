@@ -21,6 +21,7 @@ from app.read_models.operator_workspace import OperatorWorkspaceSnapshot
 from app.replay import ReplaySnapshot
 from app.recording import RecordingSnapshot
 from app.event_store import EventStoreSnapshot
+from app.analytics import AnalyticsSnapshot
 
 __all__ = [
     "ActivityEntry",
@@ -41,6 +42,7 @@ __all__ = [
     "ReplaySnapshot",
     "RecordingSnapshot",
     "EventStoreSnapshot",
+    "AnalyticsSnapshot",
     "TimelineRow",
     "TimelineSnapshot",
     "RuntimeState",

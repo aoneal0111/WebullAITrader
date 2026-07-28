@@ -43,6 +43,11 @@ from app.event_store import (
     EventStoreController,
     EventStoreRepository,
 )
+from app.analytics import (
+    AnalyticsController,
+    AnalyticsEngine,
+    AnalyticsRepository,
+)
 from app.services import RuntimeServiceStatus
 
 
@@ -122,6 +127,18 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
             composition.event_store_controller,
             EventStoreController,
         )
+        assert isinstance(
+            composition.analytics_repository,
+            AnalyticsRepository,
+        )
+        assert isinstance(
+            composition.analytics_engine,
+            AnalyticsEngine,
+        )
+        assert isinstance(
+            composition.analytics_controller,
+            AnalyticsController,
+        )
     finally:
         composition.close(timeout_seconds=1.0)
 
@@ -168,6 +185,15 @@ def test_desktop_composition_uses_fresh_dependencies() -> None:
         assert (
             first.event_store_controller
             is not second.event_store_controller
+        )
+        assert (
+            first.analytics_repository
+            is not second.analytics_repository
+        )
+        assert first.analytics_engine is not second.analytics_engine
+        assert (
+            first.analytics_controller
+            is not second.analytics_controller
         )
         assert first.runtime_service is not second.runtime_service
     finally:

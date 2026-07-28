@@ -18,6 +18,7 @@ from app.operations_core import (
 )
 from app.gui.widgets.common import StatusBadge
 from app.gui.widgets.decision_center import DecisionCenter
+from app.gui.widgets.analytics_panel import AnalyticsPanel
 from app.gui.widgets.event_store_panel import EventStorePanel
 from app.gui.widgets.orders_panel import OrdersPanel
 from app.gui.widgets.panel import SectionPanel
@@ -150,6 +151,14 @@ class DashboardPage(QWidget):
             )
         )
 
+        self.analytics_panel = AnalyticsPanel()
+        root.addWidget(
+            SectionPanel(
+                "Historical Analytics - Read Only",
+                self.analytics_panel,
+            )
+        )
+
         self.portfolio_metrics = PortfolioMetrics()
         root.addWidget(self.portfolio_metrics)
 
@@ -251,6 +260,7 @@ class DashboardPage(QWidget):
             snapshot.recording,
         )
         self.event_store_panel.render(snapshot.event_store)
+        self.analytics_panel.render(snapshot.analytics)
 
         level = (
             "good"

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMe
 
 from app.gui.design.theme import application_stylesheet
 from app.gui.event_store_bridge import QtEventStoreBridge
+from app.gui.analytics_bridge import QtAnalyticsBridge
 from app.gui.pages.dashboard import DashboardPage
 from app.gui.pages.orders import OrdersPage
 from app.gui.pages.placeholder import PlaceholderPage
@@ -34,6 +35,10 @@ from app.replay import (
 from app.recording import RecordingController, RecordingSnapshot
 from app.recording import RecordingStatus
 from app.event_store import EventStoreController, EventStoreSnapshot
+from app.analytics import (
+    AnalyticsController,
+    AnalyticsSnapshot,
+)
 
 
 class MainWindow(QMainWindow):
@@ -51,6 +56,7 @@ class MainWindow(QMainWindow):
         replay_projections: ReplayProjectionGraph,
         recording_controller: RecordingController,
         event_store_controller: EventStoreController,
+        analytics_controller: AnalyticsController,
     ) -> None:
         super().__init__()
         self._bus = bus
@@ -65,6 +71,7 @@ class MainWindow(QMainWindow):
         self._replay_projections = replay_projections
         self._recording_controller = recording_controller
         self._event_store_controller = event_store_controller
+        self._analytics_controller = analytics_controller
         self._last_error = ""
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
@@ -85,6 +92,13 @@ class MainWindow(QMainWindow):
         )
         self._event_store_bridge.event_store_changed.connect(
             self._render_event_store
+        )
+        self._analytics_bridge = QtAnalyticsBridge(
+            analytics_controller,
+            self,
+        )
+        self._analytics_bridge.analytics_changed.connect(
+            self._render_analytics
         )
         self._replay_timer = QTimer(self)
         self._replay_timer.setInterval(100)
@@ -254,6 +268,7 @@ class MainWindow(QMainWindow):
             replay,
             self._recording_controller.snapshot(),
             self._event_store_controller.snapshot(),
+            self._analytics_controller.snapshot(),
         )
         self.dashboard.render(dashboard_snapshot)
         phase = state.runtime.phase
@@ -297,6 +312,14 @@ class MainWindow(QMainWindow):
     def _render_event_store(
         self,
         snapshot: EventStoreSnapshot,
+    ) -> None:
+        del snapshot
+        self._analytics_controller.refresh()
+        self._render_state(self._state_store.snapshot())
+
+    def _render_analytics(
+        self,
+        snapshot: AnalyticsSnapshot,
     ) -> None:
         del snapshot
         self._render_state(self._state_store.snapshot())
@@ -359,5 +382,6 @@ class MainWindow(QMainWindow):
         self._replay_bridge.close()
         self._recording_bridge.close()
         self._event_store_bridge.close()
+        self._analytics_bridge.close()
         self._replay_timer.stop()
         event.accept()
