@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -132,6 +132,21 @@ class ChartTransform:
             + self.viewport.step / 2
         )
 
+    def y_to_price(self, y: float) -> float:
+        span = max(self.viewport.high - self.viewport.low, 0.01)
+        ratio = (y - self.viewport.top) / self.viewport.height
+        return self.viewport.high - ratio * span
+
+    def x_to_index(self, x: float, candle_count: int) -> int:
+        if candle_count <= 0:
+            return 0
+
+        raw_index = int(
+            (x - self.viewport.left)
+            / max(self.viewport.step, 0.01)
+        )
+        return max(0, min(raw_index, candle_count - 1))
+
 
 class CandleCanvas(QWidget):
     """The existing read-only candlestick canvas, retained unchanged in role."""
@@ -148,6 +163,8 @@ class CandleCanvas(QWidget):
             CandleInterval.ONE_MINUTE,
         )
         self._markers: tuple[ChartMarker, ...] = ()
+        self._cursor_position: tuple[float, float] | None = None
+        self.setMouseTracking(True)
 
     def render(
         self,
@@ -156,6 +173,19 @@ class CandleCanvas(QWidget):
     ) -> None:
         self._snapshot = snapshot
         self._markers = markers
+        self.update()
+
+    def mouseMoveEvent(self, event: object) -> None:
+        position = event.position()
+        self._cursor_position = (
+            float(position.x()),
+            float(position.y()),
+        )
+        self.update()
+
+    def leaveEvent(self, event: object) -> None:
+        del event
+        self._cursor_position = None
         self.update()
 
     def paintEvent(self, event: object) -> None:
@@ -278,7 +308,82 @@ class CandleCanvas(QWidget):
         painter: QPainter,
         viewport: ChartViewport,
     ) -> None:
-        del painter, viewport
+        if self._cursor_position is None:
+            return
+
+        cursor_x, cursor_y = self._cursor_position
+
+        right = viewport.left + viewport.width
+        bottom = viewport.top + viewport.height
+
+        if not (
+            viewport.left <= cursor_x <= right
+            and viewport.top <= cursor_y <= bottom
+        ):
+            return
+
+        transform = ChartTransform(viewport)
+        candles = self._snapshot.candles
+        candle_index = transform.x_to_index(
+            cursor_x,
+            len(candles),
+        )
+        snapped_x = transform.index_to_x(candle_index)
+        price = transform.y_to_price(cursor_y)
+
+        crosshair_pen = QPen(QColor(Colors.TEXT_MUTED), 1.0)
+        crosshair_pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(crosshair_pen)
+
+        painter.drawLine(
+            snapped_x,
+            viewport.top,
+            snapped_x,
+            bottom,
+        )
+        painter.drawLine(
+            viewport.left,
+            cursor_y,
+            right,
+            cursor_y,
+        )
+
+        price_text = f"{price:.2f}"
+        metrics = painter.fontMetrics()
+        text_width = metrics.horizontalAdvance(price_text)
+        text_height = metrics.height()
+
+        label_width = text_width + 12
+        label_height = text_height + 6
+        label_x = max(
+            viewport.left,
+            right - label_width,
+        )
+        label_y = max(
+            viewport.top,
+            min(
+                cursor_y - label_height / 2,
+                bottom - label_height,
+            ),
+        )
+
+        label_rect = QRectF(
+            label_x,
+            label_y,
+            label_width,
+            label_height,
+        )
+
+        painter.fillRect(
+            label_rect,
+            QColor(Colors.SURFACE),
+        )
+        painter.setPen(QColor(Colors.TEXT_PRIMARY))
+        painter.drawText(
+            label_rect,
+            Qt.AlignmentFlag.AlignCenter,
+            price_text,
+        )
 
 
 class CandlestickChart(QWidget):
@@ -322,4 +427,3 @@ class CandlestickChart(QWidget):
         )
         self.canvas.render(snapshot, markers)
         self.status_bar.render(snapshot)
-
