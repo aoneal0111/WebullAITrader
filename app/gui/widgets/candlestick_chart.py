@@ -211,6 +211,7 @@ class ChartRenderer:
         canvas: "CandleCanvas",
         painter: QPainter,
         viewport: ChartViewport,
+        snapshot: CandleSeriesSnapshot,
     ) -> None:
         self._draw_grid(
             painter,
@@ -220,7 +221,11 @@ class ChartRenderer:
             painter,
             viewport,
         )
-        canvas._draw_candles(painter, viewport)
+        self._draw_candles(
+            painter,
+            viewport,
+            snapshot,
+        )
         canvas._draw_markers(painter, viewport)
         canvas._draw_overlay(painter, viewport)
 
@@ -248,6 +253,43 @@ class ChartRenderer:
             left + width,
             top + height,
         )
+
+    def _draw_candles(
+        self,
+        painter: QPainter,
+        viewport: ChartViewport,
+        snapshot: CandleSeriesSnapshot,
+    ) -> None:
+        candles = snapshot.candles
+        transform = ChartTransform(viewport)
+        step = viewport.step
+
+        for index, candle in enumerate(candles):
+            x = transform.index_to_x(index)
+            color = QColor(
+                Colors.SUCCESS
+                if candle.close >= candle.open
+                else Colors.DANGER
+            )
+            painter.setPen(QPen(color, 1.2))
+
+            high_y = transform.price_to_y(candle.high)
+            low_y = transform.price_to_y(candle.low)
+            painter.drawLine(x, high_y, x, low_y)
+
+            open_y = transform.price_to_y(candle.open)
+            close_y = transform.price_to_y(candle.close)
+            body_top, body_bottom = sorted((open_y, close_y))
+
+            painter.fillRect(
+                QRectF(
+                    x - max(2.0, step * 0.28),
+                    body_top,
+                    max(3.0, step * 0.56),
+                    max(1.0, body_bottom - body_top),
+                ),
+                color,
+            )
 
 
 class CandleCanvas(QWidget):
@@ -307,6 +349,7 @@ class CandleCanvas(QWidget):
             self,
             painter,
             viewport,
+            self._snapshot,
         )
 
     def _draw_background(self, painter: QPainter) -> None:
@@ -334,41 +377,6 @@ class CandleCanvas(QWidget):
     ) -> None:
         del painter, viewport
 
-    def _draw_candles(
-        self,
-        painter: QPainter,
-        viewport: ChartViewport,
-    ) -> None:
-        candles = self._snapshot.candles
-        transform = ChartTransform(viewport)
-        step = viewport.step
-
-        for index, candle in enumerate(candles):
-            x = transform.index_to_x(index)
-            color = QColor(
-                Colors.SUCCESS
-                if candle.close >= candle.open
-                else Colors.DANGER
-            )
-            painter.setPen(QPen(color, 1.2))
-
-            high_y = transform.price_to_y(candle.high)
-            low_y = transform.price_to_y(candle.low)
-            painter.drawLine(x, high_y, x, low_y)
-
-            open_y = transform.price_to_y(candle.open)
-            close_y = transform.price_to_y(candle.close)
-            body_top, body_bottom = sorted((open_y, close_y))
-
-            painter.fillRect(
-                QRectF(
-                    x - max(2.0, step * 0.28),
-                    body_top,
-                    max(3.0, step * 0.56),
-                    max(1.0, body_bottom - body_top),
-                ),
-                color,
-            )
 
     def _draw_markers(
         self,
