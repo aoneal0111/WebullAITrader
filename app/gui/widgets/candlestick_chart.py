@@ -148,6 +148,35 @@ class ChartTransform:
         return max(0, min(raw_index, candle_count - 1))
 
 
+@dataclass(frozen=True, slots=True)
+class ChartCamera:
+    """Build the viewport used for one chart render."""
+
+    def build_viewport(
+        self,
+        canvas_width: float,
+        canvas_height: float,
+        candles: tuple,
+    ) -> ChartViewport:
+        left = 42.0
+        top = 16.0
+        width = max(20.0, canvas_width - 56.0)
+        height = max(40.0, canvas_height - 44.0)
+        low = min(float(candle.low) for candle in candles)
+        high = max(float(candle.high) for candle in candles)
+        step = width / max(len(candles), 1)
+
+        return ChartViewport(
+            left=left,
+            top=top,
+            width=width,
+            height=height,
+            low=low,
+            high=high,
+            step=step,
+        )
+
+
 class CandleCanvas(QWidget):
     """The existing read-only candlestick canvas, retained unchanged in role."""
 
@@ -164,6 +193,7 @@ class CandleCanvas(QWidget):
         )
         self._markers: tuple[ChartMarker, ...] = ()
         self._cursor_position: tuple[float, float] | None = None
+        self._camera = ChartCamera()
         self.setMouseTracking(True)
 
     def render(
@@ -217,23 +247,10 @@ class CandleCanvas(QWidget):
         )
 
     def _build_viewport(self) -> ChartViewport:
-        candles = self._snapshot.candles
-        left = 42.0
-        top = 16.0
-        width = max(20.0, self.width() - 56.0)
-        height = max(40.0, self.height() - 44.0)
-        low = min(float(candle.low) for candle in candles)
-        high = max(float(candle.high) for candle in candles)
-        step = width / max(len(candles), 1)
-
-        return ChartViewport(
-            left=left,
-            top=top,
-            width=width,
-            height=height,
-            low=low,
-            high=high,
-            step=step,
+        return self._camera.build_viewport(
+            canvas_width=float(self.width()),
+            canvas_height=float(self.height()),
+            candles=self._snapshot.candles,
         )
 
     def _draw_grid(
