@@ -58,6 +58,11 @@ from app.gui.presenters.chart_view_adapter import (
     CandleChartTarget,
     ChartViewAdapter,
 )
+from app.market_data.candle_aggregator import CandleAggregator
+from app.market_data.candle_models import TimeFrame
+from app.market_data.candle_snapshot_runtime import CandleSnapshotRuntime
+from app.market_data.models import MarketEvent
+from app.market_data.snapshot_models import CandleSeriesSnapshot
 from app.market_data.snapshot_publisher import SnapshotPublisher
 
 from .desktop_runtime import create_desktop_runtime_service
@@ -173,8 +178,16 @@ class DesktopComposition:
     paper_order_book: PaperOrderBook | None = None
     paper_trading_commands: PaperTradingCommandComposition | None = None
     snapshot_publisher: SnapshotPublisher | None = None
+    candle_snapshot_runtime: CandleSnapshotRuntime | None = None
     chart_view_adapter: ChartViewAdapter | None = None
     chart_presenter: ChartPresenter | None = None
+
+    def publish_market_event(self, event: MarketEvent) -> CandleSeriesSnapshot:
+        """Route one canonical market event into the composed candle pipeline."""
+
+        if self.candle_snapshot_runtime is None:
+            raise RuntimeError("candle snapshot runtime is not composed")
+        return self.candle_snapshot_runtime.on_event(event)
 
     def bind_chart(self, target: CandleChartTarget) -> ChartPresenter:
         """Bind the composed snapshot pipeline to one chart rendering target."""
@@ -309,6 +322,10 @@ def create_desktop_composition(
     )
 
     snapshot_publisher = SnapshotPublisher()
+    candle_snapshot_runtime = CandleSnapshotRuntime(
+        CandleAggregator(TimeFrame.ONE_MINUTE),
+        snapshot_publisher,
+    )
 
     runtime_service = create_desktop_runtime_service(
         bus,
@@ -375,6 +392,7 @@ def create_desktop_composition(
         paper_order_book=paper_order_book,
         paper_trading_commands=paper_trading_commands,
         snapshot_publisher=snapshot_publisher,
+        candle_snapshot_runtime=candle_snapshot_runtime,
     )
 
 
