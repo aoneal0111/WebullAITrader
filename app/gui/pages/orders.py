@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.gui.theme.spacing import Spacing
 from app.open_orders.models import (
     OpenOrderSnapshot,
     OpenOrdersCriteriaResult,
@@ -40,7 +41,7 @@ class OrdersPage(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(16)
+        root.setSpacing(Spacing.LG)
 
         header = QHBoxLayout()
 
@@ -141,7 +142,7 @@ class OrdersPage(QWidget):
         root.addWidget(orders_panel, 3)
 
         lower = QGridLayout()
-        lower.setSpacing(12)
+        lower.setSpacing(Spacing.MD)
 
         details_panel = QFrame()
         details_panel.setObjectName("contentPanel")

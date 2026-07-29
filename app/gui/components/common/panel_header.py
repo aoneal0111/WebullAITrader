@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
+from app.gui.theme.spacing import Spacing
+
 from .section_title import SectionTitle
 
 
@@ -15,7 +17,7 @@ class PanelHeader(QWidget):
         super().__init__()
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(Spacing.SM)
         self.title = SectionTitle(title)
         layout.addWidget(self.title)
         if subtitle:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QGridLayout, QLabel, QVBoxLayout, QWidget
 
+from app.gui.theme.spacing import Spacing
 from app.gui.models import HealthBadgeSnapshot, HealthCenterSnapshot
 from app.gui.widgets.common import StatusBadge
 
@@ -13,10 +14,10 @@ class RuntimeHealthPanel(QWidget):
         super().__init__()
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(8)
+        root.setSpacing(Spacing.SM)
 
         self._grid = QGridLayout()
-        self._grid.setSpacing(8)
+        self._grid.setSpacing(Spacing.SM)
         root.addLayout(self._grid)
 
         initial = HealthCenterSnapshot.initial()

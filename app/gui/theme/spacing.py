@@ -2,6 +2,8 @@ from __future__ import annotations
 
 
 class Spacing:
+    """Shared layout spacing tokens."""
+
     NONE = 0
     XXS = 2
     XS = 4
@@ -10,4 +12,3 @@ class Spacing:
     LG = 16
     XL = 24
     XXL = 32
-

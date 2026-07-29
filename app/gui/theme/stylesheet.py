@@ -55,7 +55,7 @@ def application_stylesheet() -> str:
     }}
     QLabel#metricTitle {{
         color: {Colors.TEXT_MUTED};
-        font-size: {Typography.XS + 1}px;
+        font-size: {Typography.METRIC}px;
         font-weight: {Typography.WEIGHT_BOLD};
     }}
     QLabel#metricValue {{
@@ -64,7 +64,7 @@ def application_stylesheet() -> str:
     }}
     QLabel#metricNote {{
         color: {Colors.TEXT_SUBTLE};
-        font-size: {Typography.XS + 1}px;
+        font-size: {Typography.METRIC}px;
     }}
     QPushButton, QToolButton {{
         border: 0;

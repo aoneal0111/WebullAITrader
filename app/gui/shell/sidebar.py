@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.theme import Sizing
+from app.gui.theme.spacing import Spacing
 
 
 class Sidebar(QWidget):
@@ -28,7 +29,12 @@ class Sidebar(QWidget):
         )
         self._collapsed = False
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 20, 16, 16)
+        layout.setContentsMargins(
+            Spacing.LG,
+            20,
+            Spacing.LG,
+            Spacing.LG,
+        )
         layout.setSpacing(6)
         brand = QLabel("ATLAS")
         brand.setObjectName("brand")
@@ -36,7 +42,7 @@ class Sidebar(QWidget):
         subtitle.setObjectName("muted")
         layout.addWidget(brand)
         layout.addWidget(subtitle)
-        layout.addSpacing(24)
+        layout.addSpacing(Spacing.XL)
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
         self._buttons: list[QPushButton] = []

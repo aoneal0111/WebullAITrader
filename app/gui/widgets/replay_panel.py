@@ -22,6 +22,8 @@ from app.recording import (
     RecordingStatus,
 )
 
+from app.gui.theme.spacing import Spacing
+
 
 class ReplayPanel(QWidget):
     """Controls deterministic replay without accessing runtime objects."""
@@ -40,7 +42,7 @@ class ReplayPanel(QWidget):
         super().__init__()
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(8)
+        root.setSpacing(Spacing.SM)
 
         summary = QHBoxLayout()
         self.mode = QLabel("LIVE")

@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.gui.theme.spacing import Spacing
+
 from app.gui.models import DecisionCenterSnapshot
 
 
@@ -24,7 +26,7 @@ class DecisionCenter(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(Spacing.SM)
 
         self.summary = QLabel()
         self.summary.setObjectName("muted")

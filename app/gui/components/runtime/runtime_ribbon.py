@@ -77,7 +77,7 @@ class RuntimeRibbon(QFrame):
         frame = QFrame()
         field_layout = QVBoxLayout(frame)
         field_layout.setContentsMargins(0, 0, 0, 0)
-        field_layout.setSpacing(2)
+        field_layout.setSpacing(Spacing.XXS)
         title = QLabel(label)
         title.setObjectName("metricTitle")
         value.setObjectName(

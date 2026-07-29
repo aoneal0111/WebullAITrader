@@ -21,6 +21,7 @@ from app.gui.models import (
     CandleSeriesSnapshot,
     DashboardSnapshot,
 )
+from app.gui.theme.spacing import Spacing
 from app.gui.widgets.analytics_panel import AnalyticsPanel
 from app.gui.widgets.candlestick_chart import CandlestickChart
 from app.gui.widgets.decision_center import DecisionCenter
@@ -113,7 +114,7 @@ class DashboardPage(QWidget):
         )
         operator_layout = QVBoxLayout(self.operator_workspace)
         operator_layout.setContentsMargins(10, 10, 10, 10)
-        operator_layout.setSpacing(8)
+        operator_layout.setSpacing(Spacing.SM)
         operator_layout.addWidget(PanelHeader("Operator Workspace"))
         self.workspace_tabs = QTabWidget()
         self.workspace_tabs.setSizePolicy(

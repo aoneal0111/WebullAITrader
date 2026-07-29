@@ -10,6 +10,7 @@ class Typography:
     MD = 14
     LG = 18
     XL = 24
+    METRIC = SM
     WEIGHT_MEDIUM = 500
     WEIGHT_SEMIBOLD = 600
     WEIGHT_BOLD = 700
