@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QFrame,
@@ -16,6 +18,7 @@ from app.gui.components import (
     RuntimeRibbon,
 )
 from app.gui.components.layout import WorkstationSplitter
+from app.gui.demo_market import DemoMarketProvider
 from app.gui.models import (
     CandleInterval,
     CandleSeriesSnapshot,
@@ -40,6 +43,22 @@ from app.operations_core import (
     OperatorTimelineSelected,
     OperatorTradeSelected,
 )
+
+
+_DEFAULT_DEMO_MARKET = DemoMarketProvider()
+
+
+def _default_candle_snapshot_provider(
+    symbol: str | None,
+    interval: CandleInterval,
+) -> CandleSeriesSnapshot:
+    return _DEFAULT_DEMO_MARKET.snapshot(symbol, interval)
+
+
+CandleSnapshotProvider = Callable[
+    [str | None, CandleInterval],
+    CandleSeriesSnapshot,
+]
 
 
 class DashboardPage(QWidget):
@@ -68,8 +87,14 @@ class DashboardPage(QWidget):
     experiment_stop_requested = Signal()
     experiment_compare_requested = Signal(str, str)
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        candle_snapshot_provider: CandleSnapshotProvider = (
+            _default_candle_snapshot_provider
+        ),
+    ) -> None:
         super().__init__()
+        self._candle_snapshot_provider = candle_snapshot_provider
         self.setObjectName("workspaceSurface")
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding,
@@ -87,9 +112,6 @@ class DashboardPage(QWidget):
 
         self._build_operator_workspace(root)
 
-        # These established tools remain constructed and wired for their
-        # dedicated navigation pages. They stay outside the primary
-        # workstation so the chart remains the visual centerpiece.
         self._support_surfaces = QWidget(self)
         self._support_surfaces.hide()
         self.replay_panel = ReplayPanel()
@@ -105,7 +127,6 @@ class DashboardPage(QWidget):
             panel.setParent(self._support_surfaces)
         self._connect_support_surfaces()
 
-        # Compatibility with the former dashboard public attributes.
         self.mode_badge = self.runtime_ribbon.mode.value_label
 
     def _build_runtime(self, root: QVBoxLayout) -> None:
@@ -289,7 +310,7 @@ class DashboardPage(QWidget):
         )
         self.portfolio_metrics.render(snapshot.portfolio)
         self.chart.render(
-            CandleSeriesSnapshot(
+            self._candle_snapshot_provider(
                 snapshot.operator_workspace.selected_symbol,
                 CandleInterval.ONE_MINUTE,
             )
