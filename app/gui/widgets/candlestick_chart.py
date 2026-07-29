@@ -150,10 +150,12 @@ class ChartTransform:
 
 @dataclass(frozen=True, slots=True)
 class ChartLayout:
-    left: float = 42.0
+    """Margins reserved for the plot and its external axis labels."""
+
+    left: float = 12.0
     top: float = 16.0
-    right: float = 14.0
-    bottom: float = 28.0
+    right: float = 72.0
+    bottom: float = 36.0
     minimum_width: float = 20.0
     minimum_height: float = 40.0
 
@@ -201,6 +203,13 @@ class ChartCamera:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ChartRenderContext:
+    painter: QPainter
+    viewport: ChartViewport
+    snapshot: CandleSeriesSnapshot
+    markers: tuple[ChartMarker, ...]
+    cursor_position: tuple[float, float] | None
 
 
 class ChartRenderer:
@@ -210,52 +219,142 @@ class ChartRenderer:
         self,
         context: ChartRenderContext,
     ) -> None:
-        painter = context.painter
-        viewport = context.viewport
-        snapshot = context.snapshot
-        markers = context.markers
-        cursor_position = context.cursor_position
-
         self._draw_grid(context)
-        self._draw_axes(
-            context,
-        )
-        self._draw_candles(
-            context,
-        )
-        self._draw_markers(
-            context,
-        )
-        self._draw_overlay(
-            context,
-        )
-
+        self._draw_axes(context)
+        self._draw_candles(context)
+        self._draw_markers(context)
+        self._draw_overlay(context)
 
     def _draw_grid(
         self,
         context: ChartRenderContext,
     ) -> None:
+        """Draw responsive plot guides behind the market data."""
+
         painter = context.painter
         viewport = context.viewport
-        del painter, viewport
+        candles = context.snapshot.candles
+
+        left = viewport.left
+        top = viewport.top
+        right = left + viewport.width
+        bottom = top + viewport.height
+        price_divisions = self._price_divisions(viewport.height)
+
+        painter.setPen(QPen(QColor(Colors.CHART_GRID), 1.0))
+
+        for tick in range(price_divisions + 1):
+            ratio = tick / price_divisions
+            y = top + ratio * viewport.height
+            painter.drawLine(left, y, right, y)
+
+        if len(candles) < 2:
+            return
+
+        time_divisions = self._time_divisions(viewport.width)
+        transform = ChartTransform(viewport)
+        last_index = len(candles) - 1
+
+        for tick in range(time_divisions + 1):
+            index = round(tick * last_index / time_divisions)
+            x = transform.index_to_x(index)
+            x = max(left, min(x, right))
+            painter.drawLine(x, top, x, bottom)
 
     def _draw_axes(
         self,
         context: ChartRenderContext,
     ) -> None:
+        """Draw the right-side price scale and bottom time scale."""
+
         painter = context.painter
         viewport = context.viewport
+        candles = context.snapshot.candles
+
         left = viewport.left
         top = viewport.top
-        width = viewport.width
-        height = viewport.height
-        painter.setPen(QColor(Colors.BORDER_STRONG))
-        painter.drawLine(
-            left,
-            top + height,
-            left + width,
-            top + height,
-        )
+        right = left + viewport.width
+        bottom = top + viewport.height
+        axis_pen = QPen(QColor(Colors.CHART_AXIS), 1.0)
+
+        painter.setPen(axis_pen)
+        painter.drawLine(left, bottom, right, bottom)
+        painter.drawLine(right, top, right, bottom)
+
+        metrics = painter.fontMetrics()
+        label_height = float(metrics.height() + 4)
+        price_divisions = self._price_divisions(viewport.height)
+        price_span = max(viewport.high - viewport.low, 0.01)
+
+        for tick in range(price_divisions + 1):
+            ratio = tick / price_divisions
+            y = top + ratio * viewport.height
+            price = viewport.high - ratio * price_span
+            price_text = f"{price:.2f}"
+
+            painter.setPen(axis_pen)
+            painter.drawLine(right, y, right + 5.0, y)
+
+            price_rect = QRectF(
+                right + 8.0,
+                y - label_height / 2.0,
+                58.0,
+                label_height,
+            )
+            painter.setPen(QColor(Colors.TEXT_MUTED))
+            painter.drawText(
+                price_rect,
+                Qt.AlignmentFlag.AlignLeft
+                | Qt.AlignmentFlag.AlignVCenter,
+                price_text,
+            )
+
+        if not candles:
+            return
+
+        time_divisions = self._time_divisions(viewport.width)
+        transform = ChartTransform(viewport)
+        last_index = len(candles) - 1
+
+        for tick in range(time_divisions + 1):
+            index = round(tick * last_index / time_divisions)
+            candle = candles[index]
+            x = transform.index_to_x(index)
+            x = max(left, min(x, right))
+            time_text = candle.timestamp.strftime("%H:%M")
+            text_width = float(metrics.horizontalAdvance(time_text))
+            label_x = max(
+                left,
+                min(x - text_width / 2.0, right - text_width),
+            )
+
+            painter.setPen(axis_pen)
+            painter.drawLine(x, bottom, x, bottom + 5.0)
+
+            time_rect = QRectF(
+                label_x,
+                bottom + 7.0,
+                text_width,
+                label_height,
+            )
+            painter.setPen(QColor(Colors.TEXT_MUTED))
+            painter.drawText(
+                time_rect,
+                Qt.AlignmentFlag.AlignCenter,
+                time_text,
+            )
+
+    @staticmethod
+    def _price_divisions(viewport_height: float) -> int:
+        return 4 if viewport_height < 280.0 else 6
+
+    @staticmethod
+    def _time_divisions(viewport_width: float) -> int:
+        if viewport_width < 420.0:
+            return 2
+        if viewport_width < 700.0:
+            return 4
+        return 6
 
     def _draw_candles(
         self,
@@ -296,7 +395,6 @@ class ChartRenderer:
                 color,
             )
 
-
     def _draw_markers(
         self,
         context: ChartRenderContext,
@@ -318,7 +416,6 @@ class ChartRenderer:
             return
 
         cursor_x, cursor_y = cursor_position
-
         right = viewport.left + viewport.width
         bottom = viewport.top + viewport.height
 
@@ -390,6 +487,7 @@ class ChartRenderer:
             Qt.AlignmentFlag.AlignCenter,
             price_text,
         )
+
 
 class CandleCanvas(QWidget):
     """The existing read-only candlestick canvas, retained unchanged in role."""
@@ -473,14 +571,6 @@ class CandleCanvas(QWidget):
             candles=self._snapshot.candles,
         )
 
-    def _draw_grid(
-        self,
-        painter: QPainter,
-        viewport: ChartViewport,
-    ) -> None:
-        del painter, viewport
-
-
 
 class CandlestickChart(QWidget):
     interval_changed = Signal(object)
@@ -523,4 +613,3 @@ class CandlestickChart(QWidget):
         )
         self.canvas.render(snapshot, markers)
         self.status_bar.render(snapshot)
-
