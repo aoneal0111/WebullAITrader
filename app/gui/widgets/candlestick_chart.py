@@ -557,17 +557,18 @@ class ChartRenderer:
         self,
         context: ChartRenderContext,
     ) -> None:
+        """Draw a candle-snapped crosshair and hover inspection labels."""
+
         painter = context.painter
         viewport = context.viewport
         snapshot = context.snapshot
         cursor_position = context.cursor_position
-        if cursor_position is None:
+        if cursor_position is None or not snapshot.candles:
             return
 
         cursor_x, cursor_y = cursor_position
         right = viewport.left + viewport.width
         bottom = viewport.top + viewport.height
-
         if not (
             viewport.left <= cursor_x <= right
             and viewport.top <= cursor_y <= bottom
@@ -575,66 +576,108 @@ class ChartRenderer:
             return
 
         transform = ChartTransform(viewport)
-        candles = snapshot.candles
         candle_index = transform.x_to_index(
             cursor_x,
-            len(candles),
+            len(snapshot.candles),
         )
+        candle = snapshot.candles[candle_index]
         snapped_x = transform.index_to_x(candle_index)
         price = transform.y_to_price(cursor_y)
 
-        crosshair_pen = QPen(QColor(Colors.TEXT_MUTED), 1.0)
+        crosshair_color = QColor(Colors.TEXT_MUTED)
+        crosshair_color.setAlpha(190)
+        crosshair_pen = QPen(crosshair_color, 1.0)
         crosshair_pen.setStyle(Qt.PenStyle.DashLine)
         painter.setPen(crosshair_pen)
+        painter.drawLine(snapped_x, viewport.top, snapped_x, bottom)
+        painter.drawLine(viewport.left, cursor_y, right, cursor_y)
 
-        painter.drawLine(
-            snapped_x,
-            viewport.top,
-            snapped_x,
-            bottom,
+        highlight_color = self._candle_color(candle)
+        highlight_color.setAlpha(55)
+        highlight_width = max(
+            self.minimum_body_width + 6.0,
+            min(self.maximum_body_width + 8.0, viewport.step * 0.9),
         )
-        painter.drawLine(
-            viewport.left,
-            cursor_y,
-            right,
-            cursor_y,
+        painter.fillRect(
+            QRectF(
+                snapped_x - highlight_width / 2.0,
+                viewport.top,
+                highlight_width,
+                viewport.height,
+            ),
+            highlight_color,
         )
+
+        metrics = painter.fontMetrics()
+        label_height = float(metrics.height() + 6)
+        label_background = QColor(Colors.SURFACE)
+        label_background.setAlpha(235)
+        label_text_color = QColor(Colors.TEXT_PRIMARY)
 
         price_text = f"{price:.2f}"
-        metrics = painter.fontMetrics()
-        text_width = metrics.horizontalAdvance(price_text)
-        text_height = metrics.height()
-
-        label_width = text_width + 12
-        label_height = text_height + 6
-        label_x = max(
-            viewport.left,
-            right - label_width,
-        )
-        label_y = max(
-            viewport.top,
-            min(
-                cursor_y - label_height / 2,
-                bottom - label_height,
+        price_width = float(metrics.horizontalAdvance(price_text) + 14)
+        price_rect = QRectF(
+            right + 1.0,
+            max(
+                viewport.top,
+                min(cursor_y - label_height / 2.0, bottom - label_height),
             ),
-        )
-
-        label_rect = QRectF(
-            label_x,
-            label_y,
-            label_width,
+            min(68.0, price_width),
             label_height,
         )
-
-        painter.fillRect(
-            label_rect,
-            QColor(Colors.SURFACE),
-        )
-        painter.setPen(QColor(Colors.TEXT_PRIMARY))
+        painter.fillRect(price_rect, label_background)
+        painter.setPen(label_text_color)
         painter.drawText(
-            label_rect,
+            price_rect,
             Qt.AlignmentFlag.AlignCenter,
             price_text,
+        )
+
+        time_text = candle.timestamp.strftime("%Y-%m-%d %H:%M")
+        time_width = float(metrics.horizontalAdvance(time_text) + 16)
+        time_x = max(
+            viewport.left,
+            min(snapped_x - time_width / 2.0, right - time_width),
+        )
+        time_rect = QRectF(
+            time_x,
+            bottom + 1.0,
+            time_width,
+            label_height,
+        )
+        painter.fillRect(time_rect, label_background)
+        painter.setPen(label_text_color)
+        painter.drawText(
+            time_rect,
+            Qt.AlignmentFlag.AlignCenter,
+            time_text,
+        )
+
+        open_price = float(candle.open)
+        close_price = float(candle.close)
+        change = close_price - open_price
+        change_percent = (
+            change / open_price * 100.0 if open_price != 0.0 else 0.0
+        )
+        volume = getattr(candle, "volume", 0)
+        detail_text = (
+            f"O {open_price:.2f}  H {float(candle.high):.2f}  "
+            f"L {float(candle.low):.2f}  C {close_price:.2f}  "
+            f"Vol {volume:,}  {change:+.2f} ({change_percent:+.2f}%)"
+        )
+        detail_width = float(metrics.horizontalAdvance(detail_text) + 18)
+        detail_rect = QRectF(
+            viewport.left + 8.0,
+            viewport.top + 8.0,
+            min(detail_width, max(120.0, viewport.width - 16.0)),
+            label_height,
+        )
+        painter.fillRect(detail_rect, label_background)
+        painter.setPen(self._candle_color(candle))
+        painter.drawText(
+            detail_rect,
+            Qt.AlignmentFlag.AlignCenter,
+            detail_text,
         )
 
 
