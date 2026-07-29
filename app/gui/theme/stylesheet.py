@@ -37,15 +37,21 @@ def application_stylesheet() -> str:
         font-weight: {Typography.WEIGHT_BOLD};
         letter-spacing: 1px;
     }}
-    QFrame#panel, QFrame#metricCard, QFrame#statusCard,
-    QFrame#runtimeRibbon, QFrame#operatorWorkspace {{
-        background: {Colors.SURFACE};
+    QFrame#panel, QFrame#runtimeRibbon, QFrame#operatorWorkspace {{
+        background: {Colors.SURFACE_PANEL};
+        border: 1px solid {Colors.BORDER_SUBTLE};
+        border-radius: {Radius.LG}px;
+    }}
+
+    QFrame#metricCard, QFrame#statusCard {{
+        background: {Colors.SURFACE_CARD};
         border: 1px solid {Colors.BORDER};
         border-radius: {Radius.LG}px;
     }}
+
     QFrame#metricCard:hover, QFrame#statusCard:hover {{
-        border-color: {Colors.BORDER_STRONG};
-        background: {Colors.SURFACE_RAISED};
+        background: {Colors.SURFACE_ACTIVE};
+        border: 1px solid {Colors.BORDER_INTERACTIVE};
     }}
     QLabel#metricTitle {{
         color: {Colors.TEXT_MUTED};
@@ -89,17 +95,32 @@ def application_stylesheet() -> str:
     }}
     QPushButton#navButton {{
         text-align: left;
-        padding: 10px 13px;
-        color: {Colors.TEXT_MUTED};
+        padding: 10px 14px;
         background: transparent;
+        border: 1px solid transparent;
+        border-radius: {Radius.MD}px;
+        color: {Colors.TEXT_MUTED};
     }}
+
     QPushButton#navButton:hover {{
+        background: {Colors.SURFACE_HOVER};
         color: {Colors.TEXT};
-        background: {Colors.SURFACE_RAISED};
+        border: 1px solid {Colors.BORDER};
     }}
+
+    QPushButton#navButton:pressed {{
+        background: {Colors.ACCENT_MUTED};
+        border: 1px solid {Colors.ACCENT};
+    }}
+
     QPushButton#navButton:checked {{
-        color: white;
         background: {Colors.ACCENT};
+        color: {Colors.TEXT_INVERSE};
+        border: 1px solid {Colors.ACCENT_HOVER};
+    }}
+
+    QPushButton#navButton:focus {{
+        border: 1px solid {Colors.FOCUS};
     }}
     QLabel#statusPill, QLabel#statusBadge, QLabel#runtimeBadge {{
         border-radius: {Radius.MD}px;
