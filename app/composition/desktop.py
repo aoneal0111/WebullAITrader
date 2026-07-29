@@ -53,6 +53,12 @@ from app.replay import (
     ReplayEventArchive,
 )
 from app.services import OrderCommandFactory, RuntimeService, TradingService
+from app.gui.presenters.chart_presenter import ChartPresenter
+from app.gui.presenters.chart_view_adapter import (
+    CandleChartTarget,
+    ChartViewAdapter,
+)
+from app.market_data.snapshot_publisher import SnapshotPublisher
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -166,9 +172,30 @@ class DesktopComposition:
     order_command_factory: OrderCommandFactory | None = None
     paper_order_book: PaperOrderBook | None = None
     paper_trading_commands: PaperTradingCommandComposition | None = None
+    snapshot_publisher: SnapshotPublisher | None = None
+    chart_view_adapter: ChartViewAdapter | None = None
+    chart_presenter: ChartPresenter | None = None
+
+    def bind_chart(self, target: CandleChartTarget) -> ChartPresenter:
+        """Bind the composed snapshot pipeline to one chart rendering target."""
+
+        if self.chart_presenter is not None:
+            raise RuntimeError("chart pipeline is already bound")
+        if self.snapshot_publisher is None:
+            raise RuntimeError("snapshot publisher is not composed")
+
+        adapter = ChartViewAdapter(target)
+        presenter = ChartPresenter(self.snapshot_publisher, adapter)
+        presenter.start()
+        self.chart_view_adapter = adapter
+        self.chart_presenter = presenter
+        return presenter
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         """Close composed resources in lifecycle order."""
+
+        if self.chart_presenter is not None:
+            self.chart_presenter.stop()
 
         runtime_stopped = self.runtime_service.close(
             timeout_seconds=timeout_seconds
@@ -281,6 +308,8 @@ def create_desktop_composition(
         comparison_engine,
     )
 
+    snapshot_publisher = SnapshotPublisher()
+
     runtime_service = create_desktop_runtime_service(
         bus,
         driver_factory=driver_factory,
@@ -345,6 +374,7 @@ def create_desktop_composition(
         order_command_factory=order_command_factory,
         paper_order_book=paper_order_book,
         paper_trading_commands=paper_trading_commands,
+        snapshot_publisher=snapshot_publisher,
     )
 
 
