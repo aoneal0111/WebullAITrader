@@ -172,13 +172,73 @@ class ChartLayout:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class ChartCamera:
-    """Build the viewport used for one chart render."""
+    """Own the visible candle range and build its render viewport."""
 
     layout: ChartLayout = ChartLayout()
     vertical_padding_ratio: float = 0.08
     minimum_price_span: float = 0.01
+    minimum_visible_candles: int = 12
+    zoom_step_ratio: float = 0.16
+    visible_start: int = 0
+    visible_count: int | None = None
+
+    def reset(self, candle_count: int) -> None:
+        """Fit every available candle into the viewport."""
+
+        self.visible_start = 0
+        self.visible_count = max(candle_count, 0)
+
+    def visible_range(self, candle_count: int) -> tuple[int, int]:
+        """Return a clamped half-open range into the full candle series."""
+
+        if candle_count <= 0:
+            return 0, 0
+
+        if self.visible_count is None:
+            self.reset(candle_count)
+
+        count = max(1, min(int(self.visible_count or 1), candle_count))
+        start = max(0, min(self.visible_start, candle_count - count))
+        self.visible_start = start
+        self.visible_count = count
+        return start, start + count
+
+    def zoom_at(
+        self,
+        wheel_steps: float,
+        cursor_x: float,
+        canvas_width: float,
+        candle_count: int,
+    ) -> bool:
+        """Zoom horizontally while keeping the cursor's candle anchored."""
+
+        if candle_count <= 1 or wheel_steps == 0:
+            return False
+
+        start, end = self.visible_range(candle_count)
+        old_count = end - start
+        minimum = min(self.minimum_visible_candles, candle_count)
+        scale = 1.0 - self.zoom_step_ratio * wheel_steps
+        new_count = round(old_count * max(0.2, scale))
+        new_count = max(minimum, min(new_count, candle_count))
+        if new_count == old_count:
+            return False
+
+        left, _, width, _ = self.layout.drawable_rect(
+            canvas_width,
+            0.0,
+        )
+        cursor_ratio = (cursor_x - left) / max(width, 1.0)
+        cursor_ratio = max(0.0, min(cursor_ratio, 1.0))
+        anchor_index = start + cursor_ratio * old_count
+        new_start = round(anchor_index - cursor_ratio * new_count)
+        new_start = max(0, min(new_start, candle_count - new_count))
+
+        self.visible_start = new_start
+        self.visible_count = new_count
+        return True
 
     def build_viewport(
         self,
@@ -585,9 +645,48 @@ class CandleCanvas(QWidget):
         snapshot: CandleSeriesSnapshot,
         markers: tuple[ChartMarker, ...] = (),
     ) -> None:
+        previous_count = len(self._snapshot.candles)
+        series_changed = (
+            snapshot.symbol != self._snapshot.symbol
+            or snapshot.interval != self._snapshot.interval
+        )
+        was_fit_all = (
+            self._camera.visible_start == 0
+            and (
+                self._camera.visible_count is None
+                or self._camera.visible_count >= previous_count
+            )
+        )
         self._snapshot = snapshot
         self._markers = markers
+        if series_changed or was_fit_all:
+            self._camera.reset(len(snapshot.candles))
+        else:
+            self._camera.visible_range(len(snapshot.candles))
         self.update()
+
+    def wheelEvent(self, event: object) -> None:
+        position = event.position()
+        wheel_steps = float(event.angleDelta().y()) / 120.0
+        changed = self._camera.zoom_at(
+            wheel_steps=wheel_steps,
+            cursor_x=float(position.x()),
+            canvas_width=float(self.width()),
+            candle_count=len(self._snapshot.candles),
+        )
+        if changed:
+            self.update()
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def mouseDoubleClickEvent(self, event: object) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._camera.reset(len(self._snapshot.candles))
+            self.update()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event: object) -> None:
         position = event.position()
@@ -612,12 +711,13 @@ class CandleCanvas(QWidget):
             self._draw_empty_state(painter)
             return
 
-        viewport = self._build_viewport()
+        visible_snapshot = self._visible_snapshot()
+        viewport = self._build_viewport(visible_snapshot.candles)
 
         context = ChartRenderContext(
             painter=painter,
             viewport=viewport,
-            snapshot=self._snapshot,
+            snapshot=visible_snapshot,
             markers=self._markers,
             cursor_position=self._cursor_position,
         )
@@ -635,11 +735,22 @@ class CandleCanvas(QWidget):
             "Waiting for market data",
         )
 
-    def _build_viewport(self) -> ChartViewport:
+    def _visible_snapshot(self) -> CandleSeriesSnapshot:
+        start, end = self._camera.visible_range(
+            len(self._snapshot.candles)
+        )
+        return CandleSeriesSnapshot(
+            symbol=self._snapshot.symbol,
+            interval=self._snapshot.interval,
+            candles=self._snapshot.candles[start:end],
+            venue=self._snapshot.venue,
+        )
+
+    def _build_viewport(self, candles: tuple) -> ChartViewport:
         return self._camera.build_viewport(
             canvas_width=float(self.width()),
             canvas_height=float(self.height()),
-            candles=self._snapshot.candles,
+            candles=candles,
         )
 
 
