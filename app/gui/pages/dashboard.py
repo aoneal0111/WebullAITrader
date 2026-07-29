@@ -79,6 +79,36 @@ class DashboardPage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
 
+        self._build_runtime(root)
+
+        self._build_summary(root)
+
+        self._build_market_chart()
+
+        self._build_operator_workspace(root)
+
+        # These established tools remain constructed and wired for their
+        # dedicated navigation pages. They stay outside the primary
+        # workstation so the chart remains the visual centerpiece.
+        self._support_surfaces = QWidget(self)
+        self._support_surfaces.hide()
+        self.replay_panel = ReplayPanel()
+        self.event_store_panel = EventStorePanel()
+        self.analytics_panel = AnalyticsPanel()
+        self.experiment_panel = ExperimentPanel()
+        for panel in (
+            self.replay_panel,
+            self.event_store_panel,
+            self.analytics_panel,
+            self.experiment_panel,
+        ):
+            panel.setParent(self._support_surfaces)
+        self._connect_support_surfaces()
+
+        # Compatibility with the former dashboard public attributes.
+        self.mode_badge = self.runtime_ribbon.mode.value_label
+
+    def _build_runtime(self, root: QVBoxLayout) -> None:
         self.runtime_ribbon = RuntimeRibbon()
         self.runtime_ribbon.start_requested.connect(
             self.start_runtime_requested
@@ -88,6 +118,7 @@ class DashboardPage(QWidget):
         )
         root.addWidget(self.runtime_ribbon)
 
+    def _build_summary(self, root: QVBoxLayout) -> None:
         root.addWidget(PanelHeader("Infrastructure"))
         self.infrastructure_cards = InfrastructureCards()
         root.addWidget(self.infrastructure_cards)
@@ -96,6 +127,7 @@ class DashboardPage(QWidget):
         self.portfolio_metrics = PortfolioCards()
         root.addWidget(self.portfolio_metrics)
 
+    def _build_market_chart(self) -> None:
         self.chart = CandlestickChart()
         self.chart_panel = SectionPanel(
             "Market Chart",
@@ -106,6 +138,10 @@ class DashboardPage(QWidget):
             QSizePolicy.Policy.Expanding,
         )
 
+    def _build_operator_workspace(
+        self,
+        root: QVBoxLayout,
+    ) -> None:
         self.operator_workspace = QFrame()
         self.operator_workspace.setObjectName("operatorWorkspace")
         self.operator_workspace.setSizePolicy(
@@ -163,27 +199,6 @@ class DashboardPage(QWidget):
             self.operator_workspace,
         )
         root.addWidget(self.workspace_splitter, 1)
-
-        # These established tools remain constructed and wired for their
-        # dedicated navigation pages. They stay outside the primary
-        # workstation so the chart remains the visual centerpiece.
-        self._support_surfaces = QWidget(self)
-        self._support_surfaces.hide()
-        self.replay_panel = ReplayPanel()
-        self.event_store_panel = EventStorePanel()
-        self.analytics_panel = AnalyticsPanel()
-        self.experiment_panel = ExperimentPanel()
-        for panel in (
-            self.replay_panel,
-            self.event_store_panel,
-            self.analytics_panel,
-            self.experiment_panel,
-        ):
-            panel.setParent(self._support_surfaces)
-        self._connect_support_surfaces()
-
-        # Compatibility with the former dashboard public attributes.
-        self.mode_badge = self.runtime_ribbon.mode.value_label
 
     def _connect_support_surfaces(self) -> None:
         self.replay_panel.play_requested.connect(
