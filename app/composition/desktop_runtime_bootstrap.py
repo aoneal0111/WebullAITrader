@@ -41,6 +41,7 @@ from .desktop_infrastructure import (
 )
 from .paper_dependencies import PaperRuntimeDependencies
 from .paper_runtime_composition import create_paper_runtime_driver_factory
+from .runtime_event_sink import CompositeRuntimeEventSink
 
 
 Clock = Callable[[], datetime]
@@ -80,6 +81,7 @@ def create_desktop_runtime_bootstrap(
     strategy_engine: Any | None = None,
     inference_adapter: Any | None = None,
     event_sink: RuntimeEventSink | None = None,
+    event_sinks: Iterable[RuntimeEventSink | None] = (),
     checkpoint_sink: CheckpointSink | None = None,
     runtime_result_sink: Callable[[PaperRuntimeCycleResult], None] | None = None,
     interval_seconds: float = 1.0,
@@ -122,11 +124,18 @@ def create_desktop_runtime_bootstrap(
         maximum_events_per_cycle=maximum_events_per_cycle,
     )
 
+    composed_event_sinks = tuple(event_sinks)
+    resolved_event_sink: RuntimeEventSink | None = event_sink
+    if composed_event_sinks:
+        resolved_event_sink = CompositeRuntimeEventSink(
+            (event_sink, *composed_event_sinks)
+        )
+
     driver_factory = create_paper_runtime_driver_factory(
         session_id=session_id,
         initial_cash=initial_cash,
         dependencies=runtime_dependencies,
-        event_sink=event_sink,
+        event_sink=resolved_event_sink,
         checkpoint_sink=checkpoint_sink,
         runtime_result_sink=runtime_result_sink,
         interval_seconds=interval_seconds,
