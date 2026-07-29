@@ -31,6 +31,7 @@ def main() -> int:
         composition.analytics_controller,
         composition.backtesting_controller,
     )
+    composition.bind_chart(window.dashboard.chart)
     window.show()
 
     try:
