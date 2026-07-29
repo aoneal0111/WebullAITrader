@@ -1,6 +1,9 @@
 from app.market_data.exceptions import *
 from app.market_data.interfaces import BrokerMarketDataGateway,MarketDataRuntime
 from app.market_data.models import *
+from app.market_data.candle_models import Candle,CandleSeries,TimeFrame
+from app.market_data.candle_aggregator import CandleAggregator
+from app.market_data.interval_bucket import bucket_end,bucket_start
 from app.market_data.policies import MarketDataPolicy
 from app.market_data.runtime import DeterministicMarketDataRuntime
 from app.market_data.serializers import *
@@ -26,4 +29,5 @@ __all__=(
  "create_replay","event_log_from_json","event_log_to_json","heartbeat_is_stale","latest_recorded_session",
  "market_data_to_json","market_data_to_text","measure_clock","next_event","pause","record_event",
  "recorded_session","replay_all","resume","seek",
+ "Candle","CandleSeries","TimeFrame","CandleAggregator","bucket_start","bucket_end",
 )
