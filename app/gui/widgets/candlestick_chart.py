@@ -240,6 +240,24 @@ class ChartCamera:
         self.visible_count = new_count
         return True
 
+    def pan(self, delta_candles: int, candle_count: int) -> bool:
+        """Move the visible range horizontally without changing its size."""
+
+        if candle_count <= 0 or delta_candles == 0:
+            return False
+
+        start, end = self.visible_range(candle_count)
+        count = end - start
+        new_start = max(
+            0,
+            min(start + int(delta_candles), candle_count - count),
+        )
+        if new_start == start:
+            return False
+
+        self.visible_start = new_start
+        return True
+
     def build_viewport(
         self,
         canvas_width: float,
@@ -636,6 +654,8 @@ class CandleCanvas(QWidget):
         )
         self._markers: tuple[ChartMarker, ...] = ()
         self._cursor_position: tuple[float, float] | None = None
+        self._pan_last_x: float | None = None
+        self._pan_pixel_remainder = 0.0
         self._camera = ChartCamera()
         self._renderer = ChartRenderer()
         self.setMouseTracking(True)
@@ -688,12 +708,65 @@ class CandleCanvas(QWidget):
             return
         super().mouseDoubleClickEvent(event)
 
+    def mousePressEvent(self, event: object) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pan_last_x = float(event.position().x())
+            self._pan_pixel_remainder = 0.0
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: object) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._pan_last_x is not None
+        ):
+            self._pan_last_x = None
+            self._pan_pixel_remainder = 0.0
+            self.unsetCursor()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     def mouseMoveEvent(self, event: object) -> None:
         position = event.position()
+        current_x = float(position.x())
         self._cursor_position = (
-            float(position.x()),
+            current_x,
             float(position.y()),
         )
+
+        if self._pan_last_x is not None:
+            start, end = self._camera.visible_range(
+                len(self._snapshot.candles)
+            )
+            visible_count = end - start
+            _, _, drawable_width, _ = self._camera.layout.drawable_rect(
+                float(self.width()),
+                float(self.height()),
+            )
+            pixels_per_candle = drawable_width / max(visible_count, 1)
+            pixel_delta = (
+                current_x
+                - self._pan_last_x
+                + self._pan_pixel_remainder
+            )
+            candle_delta = int(pixel_delta / max(pixels_per_candle, 1.0))
+
+            if candle_delta != 0:
+                self._camera.pan(
+                    delta_candles=-candle_delta,
+                    candle_count=len(self._snapshot.candles),
+                )
+                self._pan_pixel_remainder = (
+                    pixel_delta - candle_delta * pixels_per_candle
+                )
+            else:
+                self._pan_pixel_remainder = pixel_delta
+
+            self._pan_last_x = current_x
+
         self.update()
 
     def leaveEvent(self, event: object) -> None:
