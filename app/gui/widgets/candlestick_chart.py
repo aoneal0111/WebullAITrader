@@ -177,6 +177,8 @@ class ChartCamera:
     """Build the viewport used for one chart render."""
 
     layout: ChartLayout = ChartLayout()
+    vertical_padding_ratio: float = 0.08
+    minimum_price_span: float = 0.01
 
     def build_viewport(
         self,
@@ -188,8 +190,12 @@ class ChartCamera:
             canvas_width,
             canvas_height,
         )
-        low = min(float(candle.low) for candle in candles)
-        high = max(float(candle.high) for candle in candles)
+        raw_low = min(float(candle.low) for candle in candles)
+        raw_high = max(float(candle.high) for candle in candles)
+        raw_span = max(raw_high - raw_low, self.minimum_price_span)
+        padding = raw_span * self.vertical_padding_ratio
+        low = raw_low - padding
+        high = raw_high + padding
         step = width / max(len(candles), 1)
 
         return ChartViewport(
@@ -215,13 +221,23 @@ class ChartRenderContext:
 class ChartRenderer:
     """Render a candlestick chart onto a QPainter."""
 
+    minimum_body_width = 1.5
+    maximum_body_width = 18.0
+    body_fill_ratio = 0.68
+    minimum_body_height = 1.5
+
     def render(
         self,
         context: ChartRenderContext,
     ) -> None:
+        context.painter.setRenderHint(
+            QPainter.RenderHint.Antialiasing,
+            True,
+        )
         self._draw_grid(context)
         self._draw_axes(context)
         self._draw_candles(context)
+        self._draw_last_price(context)
         self._draw_markers(context)
         self._draw_overlay(context)
 
@@ -362,38 +378,93 @@ class ChartRenderer:
     ) -> None:
         painter = context.painter
         viewport = context.viewport
-        snapshot = context.snapshot
-
-        candles = snapshot.candles
+        candles = context.snapshot.candles
         transform = ChartTransform(viewport)
-        step = viewport.step
+        body_width = self._body_width(viewport.step)
 
         for index, candle in enumerate(candles):
             x = transform.index_to_x(index)
-            color = QColor(
-                Colors.SUCCESS
-                if candle.close >= candle.open
-                else Colors.DANGER
-            )
-            painter.setPen(QPen(color, 1.2))
+            color = self._candle_color(candle)
+            wick_color = QColor(color)
+            wick_color.setAlpha(210)
 
             high_y = transform.price_to_y(candle.high)
             low_y = transform.price_to_y(candle.low)
+            painter.setPen(QPen(wick_color, 1.0))
             painter.drawLine(x, high_y, x, low_y)
 
             open_y = transform.price_to_y(candle.open)
             close_y = transform.price_to_y(candle.close)
             body_top, body_bottom = sorted((open_y, close_y))
-
-            painter.fillRect(
-                QRectF(
-                    x - max(2.0, step * 0.28),
-                    body_top,
-                    max(3.0, step * 0.56),
-                    max(1.0, body_bottom - body_top),
-                ),
-                color,
+            body_height = max(
+                self.minimum_body_height,
+                body_bottom - body_top,
             )
+            body_rect = QRectF(
+                x - body_width / 2.0,
+                body_top,
+                body_width,
+                body_height,
+            )
+
+            painter.setPen(QPen(color, 1.0))
+            painter.fillRect(body_rect, color)
+            painter.drawRect(body_rect)
+
+    def _draw_last_price(
+        self,
+        context: ChartRenderContext,
+    ) -> None:
+        candles = context.snapshot.candles
+        if not candles:
+            return
+
+        painter = context.painter
+        viewport = context.viewport
+        transform = ChartTransform(viewport)
+        last_candle = candles[-1]
+        last_price = float(last_candle.close)
+        y = transform.price_to_y(last_price)
+        right = viewport.left + viewport.width
+        color = self._candle_color(last_candle)
+
+        line_pen = QPen(color, 1.0)
+        line_pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(line_pen)
+        painter.drawLine(viewport.left, y, right, y)
+
+        price_text = f"{last_price:.2f}"
+        metrics = painter.fontMetrics()
+        label_width = float(metrics.horizontalAdvance(price_text) + 14)
+        label_height = float(metrics.height() + 6)
+        label_rect = QRectF(
+            right + 1.0,
+            y - label_height / 2.0,
+            min(68.0, label_width),
+            label_height,
+        )
+
+        painter.fillRect(label_rect, color)
+        painter.setPen(QColor(Colors.SURFACE))
+        painter.drawText(
+            label_rect,
+            Qt.AlignmentFlag.AlignCenter,
+            price_text,
+        )
+
+    def _body_width(self, step: float) -> float:
+        return max(
+            self.minimum_body_width,
+            min(self.maximum_body_width, step * self.body_fill_ratio),
+        )
+
+    @staticmethod
+    def _candle_color(candle: object) -> QColor:
+        return QColor(
+            Colors.SUCCESS
+            if candle.close >= candle.open
+            else Colors.DANGER
+        )
 
     def _draw_markers(
         self,
