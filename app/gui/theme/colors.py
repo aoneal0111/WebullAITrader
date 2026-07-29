@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 
 class Colors:
@@ -26,6 +26,7 @@ class Colors:
 
     # Primary text hierarchy
     TEXT = "#eef4fb"
+    TEXT_PRIMARY = TEXT
     TEXT_MUTED = "#8fa0b4"
     TEXT_SUBTLE = "#607086"
     TEXT_DISABLED = "#465467"
