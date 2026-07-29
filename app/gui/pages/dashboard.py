@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QFrame,
@@ -18,12 +16,7 @@ from app.gui.components import (
     RuntimeRibbon,
 )
 from app.gui.components.layout import WorkstationSplitter
-from app.gui.demo_market import DemoMarketProvider
-from app.gui.models import (
-    CandleInterval,
-    CandleSeriesSnapshot,
-    DashboardSnapshot,
-)
+from app.gui.models import DashboardSnapshot
 from app.gui.theme.spacing import Spacing
 from app.gui.widgets.analytics_panel import AnalyticsPanel
 from app.gui.widgets.candlestick_chart import CandlestickChart
@@ -43,22 +36,6 @@ from app.operations_core import (
     OperatorTimelineSelected,
     OperatorTradeSelected,
 )
-
-
-_DEFAULT_DEMO_MARKET = DemoMarketProvider()
-
-
-def _default_candle_snapshot_provider(
-    symbol: str | None,
-    interval: CandleInterval,
-) -> CandleSeriesSnapshot:
-    return _DEFAULT_DEMO_MARKET.snapshot(symbol, interval)
-
-
-CandleSnapshotProvider = Callable[
-    [str | None, CandleInterval],
-    CandleSeriesSnapshot,
-]
 
 
 class DashboardPage(QWidget):
@@ -87,14 +64,8 @@ class DashboardPage(QWidget):
     experiment_stop_requested = Signal()
     experiment_compare_requested = Signal(str, str)
 
-    def __init__(
-        self,
-        candle_snapshot_provider: CandleSnapshotProvider = (
-            _default_candle_snapshot_provider
-        ),
-    ) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self._candle_snapshot_provider = candle_snapshot_provider
         self.setObjectName("workspaceSurface")
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding,
@@ -309,12 +280,6 @@ class DashboardPage(QWidget):
             snapshot.event_store,
         )
         self.portfolio_metrics.render(snapshot.portfolio)
-        self.chart.render(
-            self._candle_snapshot_provider(
-                snapshot.operator_workspace.selected_symbol,
-                CandleInterval.ONE_MINUTE,
-            )
-        )
         self.runtime_health_panel.render(snapshot.runtime_health)
         self.replay_panel.render(
             snapshot.replay,
