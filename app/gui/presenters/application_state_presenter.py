@@ -6,6 +6,7 @@ from typing import Protocol
 from PySide6.QtWidgets import QLabel, QMessageBox, QPushButton, QWidget
 
 from app.gui.pages.dashboard import DashboardPage
+from app.gui.pages.orders import OrdersPage
 from app.gui.projections.dashboard_projection import project_dashboard
 from app.operations_core import ApplicationState, RuntimePhase
 
@@ -36,6 +37,18 @@ class DashboardPresenter:
 
     def render(self, state: ApplicationState) -> None:
         self._dashboard.render(project_dashboard(state))
+
+
+class OrdersPresenter:
+    """Render the event-driven immutable orders projection."""
+
+    def __init__(self, orders_page: OrdersPage) -> None:
+        self._orders_page = orders_page
+
+    def render(self, state: ApplicationState) -> None:
+        self._orders_page.render(state)
+        if state.order_projection.orders:
+            self._orders_page.render_projection(state.order_projection)
 
 
 class RuntimeControlsPresenter:

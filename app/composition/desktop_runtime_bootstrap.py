@@ -21,6 +21,8 @@ from app.operations.runtime import (
     PaperRuntimeCycleResult,
     RuntimeEventSink,
 )
+from app.operations_core import OperationsBus
+from app.read_models.order_projection import OrderProjection
 from app.operations.scanner_runtime import SnapshotResolver
 from app.realtime_scanner.protocols import (
     ReferenceLoader,
@@ -54,6 +56,7 @@ class DesktopRuntimeBootstrap:
     scanner_infrastructure: DesktopScannerInfrastructure
     runtime_dependencies: PaperRuntimeDependencies
     driver_factory: DriverFactory
+    order_projection: OrderProjection | None = None
 
 
 def create_desktop_runtime_bootstrap(
@@ -82,6 +85,7 @@ def create_desktop_runtime_bootstrap(
     inference_adapter: Any | None = None,
     event_sink: RuntimeEventSink | None = None,
     event_sinks: Iterable[RuntimeEventSink | None] = (),
+    operations_bus: OperationsBus | None = None,
     checkpoint_sink: CheckpointSink | None = None,
     runtime_result_sink: Callable[[PaperRuntimeCycleResult], None] | None = None,
     interval_seconds: float = 1.0,
@@ -124,9 +128,17 @@ def create_desktop_runtime_bootstrap(
         maximum_events_per_cycle=maximum_events_per_cycle,
     )
 
-    composed_event_sinks = tuple(event_sinks)
+    order_projection = (
+        OrderProjection(operations_bus)
+        if operations_bus is not None
+        else None
+    )
+    composed_event_sinks = (
+        order_projection,
+        *tuple(event_sinks),
+    )
     resolved_event_sink: RuntimeEventSink | None = event_sink
-    if composed_event_sinks:
+    if any(sink is not None for sink in composed_event_sinks):
         resolved_event_sink = CompositeRuntimeEventSink(
             (event_sink, *composed_event_sinks)
         )
@@ -147,6 +159,7 @@ def create_desktop_runtime_bootstrap(
         scanner_infrastructure=scanner_infrastructure,
         runtime_dependencies=runtime_dependencies,
         driver_factory=driver_factory,
+        order_projection=order_projection,
     )
 
 

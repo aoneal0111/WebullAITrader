@@ -1,6 +1,7 @@
 from app.gui.presenters.application_state_presenter import (
     ApplicationStatePresenter,
     DashboardPresenter,
+    OrdersPresenter,
     PresentationCoordinator,
     RuntimeControlsPresenter,
     RuntimeErrorPresenter,
@@ -10,6 +11,7 @@ from app.gui.presenters.application_state_presenter import (
 __all__ = [
     "ApplicationStatePresenter",
     "DashboardPresenter",
+    "OrdersPresenter",
     "PresentationCoordinator",
     "RuntimeControlsPresenter",
     "RuntimeErrorPresenter",

@@ -26,6 +26,7 @@ from app.open_orders.models import (
     OpenOrdersResult,
 )
 from app.operations_core import ApplicationState
+from app.read_models.orders import OrderReadModel, OrdersReadModelSnapshot
 from app.services import OrderCommandFactory, OrderEntryCommand, TradingService
 from app.gui.widgets.order_entry_panel import OrderEntryPanel
 
@@ -52,6 +53,8 @@ class OrdersPage(QWidget):
 
         self._orders: tuple[OpenOrderSnapshot, ...] = ()
         self._visible_orders: tuple[OpenOrderSnapshot, ...] = ()
+        self._projected_orders: tuple[OrderReadModel, ...] | None = None
+        self._visible_projected_orders: tuple[OrderReadModel, ...] = ()
         self._criteria: tuple[OpenOrdersCriteriaResult, ...] = ()
 
         root = QVBoxLayout(self)
@@ -399,6 +402,7 @@ class OrdersPage(QWidget):
             )
 
         self._orders = normalized
+        self._projected_orders = None
         self._rebuild_status_filter()
         self._apply_status_filter(
             self._status_filter.currentText()
@@ -431,11 +435,28 @@ class OrdersPage(QWidget):
 
         self.render_orders(result.orders)
 
+    def render_projection(
+        self,
+        snapshot: OrdersReadModelSnapshot,
+    ) -> None:
+        """Render an immutable order projection supplied by a presenter."""
+
+        if not isinstance(snapshot, OrdersReadModelSnapshot):
+            raise TypeError("snapshot must be an OrdersReadModelSnapshot")
+
+        self._projected_orders = snapshot.orders
+        self._rebuild_status_filter()
+        self._apply_status_filter(self._status_filter.currentText())
+
     def _rebuild_status_filter(self) -> None:
         selected = self._status_filter.currentText()
 
         statuses = sorted(
-            {order.status.value for order in self._orders}
+            (
+                {order.status for order in self._projected_orders}
+                if self._projected_orders is not None
+                else {order.status.value for order in self._orders}
+            )
         )
 
         self._status_filter.blockSignals(True)
@@ -450,6 +471,18 @@ class OrdersPage(QWidget):
         self._status_filter.blockSignals(False)
 
     def _apply_status_filter(self, selected: str) -> None:
+        if self._projected_orders is not None:
+            if selected == self.ALL_STATUSES:
+                self._visible_projected_orders = self._projected_orders
+            else:
+                self._visible_projected_orders = tuple(
+                    order
+                    for order in self._projected_orders
+                    if order.status == selected
+                )
+            self._populate_projection_table()
+            return
+
         if selected == self.ALL_STATUSES:
             self._visible_orders = self._orders
         else:
@@ -460,6 +493,44 @@ class OrdersPage(QWidget):
             )
 
         self._populate_table()
+
+    def _populate_projection_table(self) -> None:
+        self._orders_table.setSortingEnabled(False)
+        self._orders_table.clearContents()
+        self._orders_table.clearSpans()
+
+        if not self._visible_projected_orders:
+            self._show_empty_state()
+            self._clear_selected_order()
+            return
+
+        self._orders_table.setRowCount(len(self._visible_projected_orders))
+        for row, order in enumerate(self._visible_projected_orders):
+            values = (
+                order.symbol,
+                order.side,
+                "--",
+                order.quantity,
+                "--",
+                order.status,
+                "--",
+                order.updated_at.astimezone().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.ItemDataRole.UserRole, order.order_id)
+                if column == 5:
+                    item.setForeground(self._status_color(order.status))
+                self._orders_table.setItem(row, column, item)
+
+        count = len(self._visible_projected_orders)
+        self._order_count.setText(
+            f"{count} order" if count == 1 else f"{count} orders"
+        )
+        self._orders_table.setSortingEnabled(True)
+        self._orders_table.selectRow(0)
 
     def _populate_table(self) -> None:
         self._orders_table.setSortingEnabled(False)
@@ -564,6 +635,31 @@ class OrdersPage(QWidget):
         )
 
     def _render_selected_order(self) -> None:
+        if self._projected_orders is not None:
+            selected = self._orders_table.selectedItems()
+            order_id = (
+                selected[0].data(Qt.ItemDataRole.UserRole)
+                if selected
+                else None
+            )
+            order = next(
+                (
+                    item
+                    for item in self._visible_projected_orders
+                    if item.order_id == order_id
+                ),
+                None,
+            )
+            self._clear_selected_order()
+            if order is not None:
+                self._broker_order_id.setText(order.order_id)
+                self._submitted_at.setText(
+                    order.updated_at.astimezone().strftime(
+                        "%Y-%m-%d %H:%M:%S %Z"
+                    )
+                )
+            return
+
         order = self._selected_order()
 
         if order is None:

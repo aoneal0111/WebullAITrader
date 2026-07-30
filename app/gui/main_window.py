@@ -9,6 +9,7 @@ from app.gui.pages.orders import OrdersPage
 from app.gui.pages.placeholder import PlaceholderPage
 from app.gui.presenters import (
     DashboardPresenter,
+    OrdersPresenter,
     PresentationCoordinator,
     RuntimeControlsPresenter,
     RuntimeErrorPresenter,
@@ -44,6 +45,7 @@ class MainWindow(QMainWindow):
         self._presentation = PresentationCoordinator(
             (
                 DashboardPresenter(self.dashboard),
+                OrdersPresenter(self.orders),
                 RuntimeControlsPresenter(self.start_button, self.stop_button),
                 RuntimeStatusPresenter(self.status_label),
                 RuntimeErrorPresenter(self),

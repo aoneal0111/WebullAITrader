@@ -8,6 +8,7 @@ from threading import Event
 from typing import Protocol
 
 from app.execution_coordinator import CoordinationRequest, ExecutionCoordinator
+from app.operations_core import OperationsOrder
 from app.operations.learning_runtime import (
     RuntimeInferenceAdapter,
     RuntimeInferenceAudit,
@@ -52,6 +53,7 @@ class PaperRuntimeEvent:
     message: str
     cycle: int
     symbol: str | None = None
+    order: OperationsOrder | None = None
 
     def __post_init__(self) -> None:
         if self.sequence < 1:
@@ -68,6 +70,13 @@ class PaperRuntimeEvent:
             if not normalized:
                 raise ValueError("runtime event symbol cannot be blank")
             object.__setattr__(self, "symbol", normalized)
+        if self.order is not None:
+            if not isinstance(self.order, OperationsOrder):
+                raise TypeError("runtime event order must be an OperationsOrder")
+            if self.symbol is not None and self.order.symbol != self.symbol:
+                raise ValueError(
+                    "runtime event order symbol must match event symbol"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -377,12 +386,17 @@ class PaperOperationsEngine:
                     request=request,
                 )
                 decisions.append(decision)
+                order = _project_runtime_order(
+                    session.last_coordination_result,
+                    timestamp,
+                )
                 self._append_event(
                     timestamp,
                     "DECISION_PROCESSED",
                     f"Processed {decision.action.value} for {symbol}.",
                     cycle,
                     symbol,
+                    order,
                 )
             result = PaperRuntimeCycleResult(
                 cycle=cycle,
@@ -504,6 +518,7 @@ class PaperOperationsEngine:
         message: str,
         cycle: int,
         symbol: str | None = None,
+        order: OperationsOrder | None = None,
     ) -> None:
         event = PaperRuntimeEvent(
             sequence=len(self._state.events) + 1,
@@ -512,6 +527,7 @@ class PaperOperationsEngine:
             message=message,
             cycle=cycle,
             symbol=symbol,
+            order=order,
         )
         self._state = replace(
             self._state,
@@ -551,6 +567,33 @@ def _veto_to_hold(decision: StrategyDecision) -> StrategyDecision:
             "inference-vetoed strategy decision remained executable"
         )
     return vetoed
+
+
+def _project_runtime_order(
+    coordination,
+    timestamp: datetime,
+) -> OperationsOrder | None:
+    """Expose explicit immutable order facts on the runtime event boundary."""
+
+    if coordination is None or coordination.order_intent is None:
+        return None
+
+    intent = coordination.order_intent
+    status = coordination.status.value
+    execution_result = coordination.execution_result
+    execution = getattr(execution_result, "execution", None)
+    execution_status = getattr(execution, "status", None)
+    if execution_status is not None:
+        status = execution_status.value
+
+    return OperationsOrder(
+        order_id=intent.request_id,
+        symbol=intent.symbol,
+        side=intent.side.value,
+        quantity=format(intent.quantity, "f"),
+        status=status,
+        updated_at=timestamp,
+    )
 
 
 def _validate_recovery(

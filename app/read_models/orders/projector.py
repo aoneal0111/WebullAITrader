@@ -15,6 +15,11 @@ def project_orders_read_model(
     if not isinstance(state, ApplicationState):
         raise TypeError("state must be an ApplicationState")
 
+    if state.order_projection.orders or not state.orders:
+        return state.order_projection
+
+    # Compatibility for callers constructing ApplicationState with the
+    # pre-projection ``orders`` field directly.
     return project_operational_orders(state.orders)
 
 

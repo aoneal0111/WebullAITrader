@@ -249,6 +249,29 @@ def test_event_sink_receives_ordered_events() -> None:
     ]
 
 
+def test_executable_decision_event_exposes_explicit_order_fact() -> None:
+    events = []
+    engine = make_engine(
+        action=StrategyDecisionAction.ENTER_LONG,
+        events=events,
+    )
+
+    engine.start()
+    engine.run_cycle()
+
+    decision_event = next(
+        event
+        for event in events
+        if event.event_type == "DECISION_PROCESSED"
+    )
+    assert decision_event.order is not None
+    assert decision_event.order.order_id == "paper-1-1-1"
+    assert decision_event.order.symbol == "AAPL"
+    assert decision_event.order.side == "BUY"
+    assert decision_event.order.quantity == "1"
+    assert decision_event.order.status == "REJECTED"
+
+
 def test_checkpoint_sink_runs_after_transitions() -> None:
     checkpoints = []
     engine = make_engine(checkpoint=lambda state, session: checkpoints.append((state.status, session.status)))

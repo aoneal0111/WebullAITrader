@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
 from threading import RLock
+from typing import TYPE_CHECKING
 
 from app.operations_core.bus import OperationsBus, Subscription
 from app.operations_core.events import (
@@ -23,6 +24,15 @@ from app.operations_core.events import (
     RuntimeStopped,
     RuntimeStopping,
 )
+
+if TYPE_CHECKING:
+    from app.read_models.orders.models import OrdersReadModelSnapshot
+
+
+def _initial_order_projection() -> "OrdersReadModelSnapshot":
+    from app.read_models.orders.models import OrdersReadModelSnapshot
+
+    return OrdersReadModelSnapshot.initial()
 
 
 class RuntimePhase(StrEnum):
@@ -63,6 +73,9 @@ class ApplicationState:
 
     timeline: tuple[TimelineEntry, ...] = ()
     revision: int = 0
+    order_projection: "OrdersReadModelSnapshot" = field(
+        default_factory=_initial_order_projection
+    )
 
 
 StateListener = Callable[[ApplicationState], None]
@@ -130,6 +143,10 @@ class ApplicationStateStore:
                 event,
             )
             orders = self._reduce_orders(self._state.orders, event)
+            order_projection = self._reduce_order_projection(
+                self._state.order_projection,
+                event,
+            )
             positions = self._reduce_positions(
                 self._state.positions,
                 event,
@@ -148,6 +165,7 @@ class ApplicationStateStore:
                 runtime=runtime,
                 paper_runtime=paper_runtime,
                 orders=orders,
+                order_projection=order_projection,
                 positions=positions,
                 timeline=timeline,
                 revision=self._state.revision + 1,
@@ -240,6 +258,20 @@ class ApplicationStateStore:
     ) -> tuple[OperationsOrder, ...]:
         if isinstance(event, OrdersUpdated):
             return event.orders
+
+        return current
+
+    @staticmethod
+    def _reduce_order_projection(
+        current: "OrdersReadModelSnapshot",
+        event: OperationsEvent,
+    ) -> "OrdersReadModelSnapshot":
+        if isinstance(event, OrdersUpdated):
+            from app.read_models.orders.projector import (
+                project_operational_orders,
+            )
+
+            return project_operational_orders(event.orders)
 
         return current
 
