@@ -36,3 +36,11 @@ class ReceiveTransportAdapter:
     @property
     def client(self) -> Any:
         return self._client
+
+    def set_lifecycle_sink(self, sink) -> None:
+        setter = getattr(self._client, "set_lifecycle_sink", None)
+        if not callable(setter):
+            raise TypeError(
+                "market-data client does not support lifecycle events"
+            )
+        setter(sink)

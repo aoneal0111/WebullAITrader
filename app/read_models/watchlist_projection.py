@@ -129,12 +129,36 @@ def _reduce_watchlist(
                 )
                 entry = replace(
                     entry,
-                    latest_price=_decimal_text(quote.latest_price),
-                    change=_decimal_text(quote.change),
-                    change_percent=_decimal_text(quote.change_percent),
-                    bid=_decimal_text(quote.bid),
-                    ask=_decimal_text(quote.ask),
-                    volume=quote.volume,
+                    latest_price=(
+                        entry.latest_price
+                        if quote.latest_price is None
+                        else _decimal_text(quote.latest_price)
+                    ),
+                    change=(
+                        entry.change
+                        if quote.change is None
+                        else _decimal_text(quote.change)
+                    ),
+                    change_percent=(
+                        entry.change_percent
+                        if quote.change_percent is None
+                        else _decimal_text(quote.change_percent)
+                    ),
+                    bid=(
+                        entry.bid
+                        if quote.bid is None
+                        else _decimal_text(quote.bid)
+                    ),
+                    ask=(
+                        entry.ask
+                        if quote.ask is None
+                        else _decimal_text(quote.ask)
+                    ),
+                    volume=(
+                        entry.volume
+                        if quote.volume is None
+                        else quote.volume
+                    ),
                     last_update=quote.timestamp,
                     stale=stale,
                 )

@@ -139,6 +139,7 @@ def test_configured_driver_resolves_selected_broker_plugin() -> None:
         return broker_runtime(broker)
 
     webull_factory = lambda value: broker
+    market_data_factory = lambda value: None
     events: list[PaperRuntimeEvent] = []
 
     driver = create_configured_desktop_broker_driver(
@@ -147,6 +148,7 @@ def test_configured_driver_resolves_selected_broker_plugin() -> None:
         configuration_loader=lambda: configured,
         broker_runtime_factory=runtime_factory,
         webull_broker_factory=webull_factory,
+        webull_market_data_factory=market_data_factory,
         clock=lambda: NOW,
         source="test-broker-session",
     )
@@ -158,6 +160,7 @@ def test_configured_driver_resolves_selected_broker_plugin() -> None:
         "provider": "webull",
         "configuration": configured,
         "webull_broker_factory": webull_factory,
+        "webull_market_data_factory": market_data_factory,
     }
 
 

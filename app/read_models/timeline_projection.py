@@ -16,7 +16,9 @@ from app.read_models.timeline.models import (
 )
 
 
-_NOISY_EVENT_TYPES = frozenset({"CYCLE_COMPLETED"})
+_NOISY_EVENT_TYPES = frozenset(
+    {"CYCLE_COMPLETED", "MARKET_DATA_HEARTBEAT"}
+)
 
 
 class TimelineProjection:

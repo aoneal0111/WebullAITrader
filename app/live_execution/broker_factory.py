@@ -5,10 +5,13 @@ from __future__ import annotations
 import os
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from decimal import Decimal
+from urllib.parse import urlparse
 
 from app.live_execution.webull_adapter import WebullAdapter
+from app.live_scanner.transport import ReceiveTransportAdapter
 from app.operations.credentials import EnvironmentCredentialProvider
 from app.webull.configuration import (
     ReconnectPolicy,
@@ -20,7 +23,15 @@ from app.webull.http_client import UrllibHttpBackend, WebullHttpClient
 from app.webull.logging import StructuredLogger
 from app.webull.rate_limits import DeterministicRateLimiter, RateLimit
 from app.webull.signing import WebullRequestSigner
+from app.webull.market_event_parser import WebullMarketEventParser
+from app.webull.sdk_streaming_adapter import (
+    WebullMarketSubscription,
+    WebullStreamingCredentials,
+    create_official_market_subscription,
+    create_official_stream_backend,
+)
 from app.webull.transport import WebullBrokerTransport
+from app.webull.websocket_client import WebullWebSocketClient
 
 
 def utc_now() -> datetime:
@@ -125,4 +136,59 @@ def build_webull_broker(configuration) -> WebullAdapter:
     return WebullAdapter(transport)
 
 
-__all__ = ["build_webull_broker"]
+def build_webull_market_data_stream(
+    configuration,
+    *,
+    subscription_factory: Callable[
+        [], WebullMarketSubscription
+    ] = create_official_market_subscription,
+    backend_factory: Callable[..., object] = create_official_stream_backend,
+    client_factory: Callable[..., object] = WebullWebSocketClient,
+    session_id_factory: Callable[[], str] = lambda: (
+        f"atlas-{uuid.uuid4().hex}"
+    ),
+) -> ReceiveTransportAdapter | None:
+    """Build the existing official Webull streaming stack when enabled."""
+
+    if not configuration.market_data_streaming_enabled:
+        return None
+    if not configuration.market_data_symbols:
+        raise ValueError(
+            "market-data streaming requires subscription symbols"
+        )
+
+    credentials = WebullStreamingCredentials(
+        app_key=configuration.api_key,
+        app_secret=configuration.api_secret,
+        session_id=session_id_factory(),
+    )
+    stream_endpoint = urlparse(configuration.stream_url)
+    api_endpoint = urlparse(configuration.api_base_url)
+    backend = backend_factory(
+        credentials,
+        subscription_factory(),
+        receive_timeout_seconds=1.0,
+        http_host=api_endpoint.hostname,
+        mqtt_host=stream_endpoint.hostname,
+        mqtt_port=stream_endpoint.port or 1883,
+        tls_enable=True,
+    )
+    client = client_factory(
+        backend,
+        WebullMarketEventParser(clock=utc_now),
+        ReconnectPolicy(
+            maximum_attempts=configuration.stream_reconnect_attempts,
+            backoff_seconds=(
+                configuration.stream_reconnect_backoff_seconds
+            ),
+        ),
+        sleep_decimal,
+        StructuredLogger(ConsoleSink()),
+    )
+    return ReceiveTransportAdapter(client)
+
+
+__all__ = [
+    "build_webull_broker",
+    "build_webull_market_data_stream",
+]

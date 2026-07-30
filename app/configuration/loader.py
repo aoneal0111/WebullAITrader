@@ -127,6 +127,15 @@ def load_configuration(env=None):
         _int(e, "RECONCILIATION_INTERVAL_SECONDS", 30),
         _int(e, "MAXIMUM_RECONCILIATION_AGE_SECONDS", 60),
         _int(e, "MAXIMUM_UNRESOLVED_MUTATIONS", 0),
+        _bool(e.get("MARKET_DATA_STREAMING_ENABLED", "false")),
+        _symbols(
+            e.get(
+                "MARKET_DATA_SYMBOLS",
+                e.get("ALLOWED_SYMBOLS", ""),
+            )
+        ),
+        _int(e, "STREAM_RECONNECT_ATTEMPTS", 3),
+        _decimal(e, "STREAM_RECONNECT_BACKOFF_SECONDS", "1"),
     )
 
 

@@ -45,3 +45,8 @@ class OperationalConfiguration:
     reconciliation_interval_seconds: int
     maximum_reconciliation_age_seconds: int
     maximum_unresolved_mutations: int
+
+    market_data_streaming_enabled: bool = False
+    market_data_symbols: tuple[str, ...] = ()
+    stream_reconnect_attempts: int = 3
+    stream_reconnect_backoff_seconds: Decimal = Decimal("1")

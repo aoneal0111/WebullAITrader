@@ -11,3 +11,4 @@ ta==0.11.0
 tzdata==2026.3
 pandas-market-calendars==5.4.0
 PySide6==6.11.1
+webull-openapi-python-sdk==2.0.14

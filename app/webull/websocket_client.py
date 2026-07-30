@@ -18,6 +18,10 @@ class StreamBackend(Protocol):
 
 
 SubscriptionMapper = Callable[[tuple[str, ...]], object]
+StreamLifecycleSink = Callable[
+    [str, int, Exception | None],
+    None,
+]
 
 
 class OfficialSdkStreamBackend:
@@ -126,9 +130,36 @@ class OfficialSdkStreamBackend:
 class WebullWebSocketClient:
     """Protocol adapter for the official SDK's MQTT/gRPC streaming clients."""
 
-    def __init__(self, backend, parser, reconnect_policy, sleeper, logger):
+    def __init__(
+        self,
+        backend,
+        parser,
+        reconnect_policy,
+        sleeper,
+        logger,
+        *,
+        lifecycle_sink: StreamLifecycleSink | None = None,
+    ):
         self.backend, self.parser, self.policy, self.sleeper, self.logger = backend, parser, reconnect_policy, sleeper, logger
         self.health = ConnectionHealth(); self.log = MarketEventLog(); self.channels = ()
+        self.lifecycle_sink = lifecycle_sink
+
+    def set_lifecycle_sink(
+        self,
+        sink: StreamLifecycleSink | None,
+    ) -> None:
+        if sink is not None and not callable(sink):
+            raise TypeError("stream lifecycle sink must be callable")
+        self.lifecycle_sink = sink
+
+    def _notify(
+        self,
+        event: str,
+        attempt: int,
+        error: Exception | None = None,
+    ) -> None:
+        if self.lifecycle_sink is not None:
+            self.lifecycle_sink(event, attempt, error)
 
     def connect(self):
         try:
@@ -154,9 +185,34 @@ class WebullWebSocketClient:
                 if event.event_type is MarketEventType.HEARTBEAT and isinstance(event.payload, HeartbeatPayload):
                     self.health = update_health(self.health, last_successful_heartbeat=event.timestamp)
                 self.logger.log("stream_receive", "succeeded", event_type=event.event_type.value); return event
-            except SerializationError: raise
+            except SerializationError as exc:
+                self._notify(
+                    "parse_failed",
+                    self.health.reconnect_count,
+                    exc,
+                )
+                raise
             except Exception as exc:
-                if attempt >= self.policy.maximum_attempts: raise NetworkError("Webull stream reconnect exhausted", retryable=False) from exc
+                if attempt >= self.policy.maximum_attempts:
+                    terminal = NetworkError(
+                        "Webull stream reconnect exhausted",
+                        retryable=False,
+                    )
+                    self._notify(
+                        "terminal_failure",
+                        self.health.reconnect_count,
+                        terminal,
+                    )
+                    raise terminal from exc
+                self._notify(
+                    "reconnecting",
+                    self.health.reconnect_count + 1,
+                    exc,
+                )
                 self.sleeper(self.policy.backoff_seconds); self.backend.connect(); self.backend.subscribe(self.channels)
                 self.health = update_health(self.health, websocket_connected=True, reconnect_count=self.health.reconnect_count + 1)
+                self._notify(
+                    "reconnected",
+                    self.health.reconnect_count,
+                )
                 self.logger.log("stream_reconnect", "succeeded", reconnect_count=self.health.reconnect_count)

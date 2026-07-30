@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.broker_plugins.registry import BrokerPluginRegistry
 from app.broker_plugins.webull import (
     WebullBrokerFactory,
+    WebullMarketDataFactory,
     WebullBrokerPlugin,
 )
 
@@ -12,6 +13,7 @@ from app.broker_plugins.webull import (
 def create_builtin_broker_registry(
     *,
     webull_broker_factory: WebullBrokerFactory,
+    webull_market_data_factory: WebullMarketDataFactory | None = None,
 ) -> BrokerPluginRegistry:
     """Create a registry containing the application's built-in broker plugins.
 
@@ -26,6 +28,7 @@ def create_builtin_broker_registry(
     registry.register(
         WebullBrokerPlugin(
             broker_factory=webull_broker_factory,
+            market_data_factory=webull_market_data_factory,
         )
     )
     return registry

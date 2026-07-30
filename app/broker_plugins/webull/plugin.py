@@ -10,6 +10,7 @@ from app.broker_plugins.models import (
 )
 from app.broker_plugins.webull.composition import (
     WebullBrokerFactory,
+    WebullMarketDataFactory,
     create_webull_runtime,
 )
 
@@ -18,11 +19,11 @@ WEBULL_CAPABILITIES = BrokerCapabilities(
     provider="webull",
     version="1.0",
     supports_execution=True,
-    supports_market_data=False,
+    supports_market_data=True,
     supports_scanner=False,
     supports_account_data=True,
     supports_live_trading=True,
-    supports_streaming=False,
+    supports_streaming=True,
     supports_options=False,
     supports_shorting=False,
 )
@@ -33,6 +34,7 @@ class WebullBrokerPlugin:
     """Compose Webull services behind broker-neutral application contracts."""
 
     broker_factory: WebullBrokerFactory
+    market_data_factory: WebullMarketDataFactory | None = None
 
     @property
     def provider(self) -> str:
@@ -49,6 +51,7 @@ class WebullBrokerPlugin:
         return create_webull_runtime(
             configuration,
             broker_factory=self.broker_factory,
+            market_data_factory=self.market_data_factory,
         )
 
 

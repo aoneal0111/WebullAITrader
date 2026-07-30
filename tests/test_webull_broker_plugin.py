@@ -68,12 +68,12 @@ class FakeBroker:
         return ()
 
 
-def test_webull_capabilities_are_execution_only_for_now() -> None:
+def test_webull_capabilities_include_existing_streaming_stack() -> None:
     assert WEBULL_CAPABILITIES.provider == "webull"
     assert WEBULL_CAPABILITIES.supports_execution is True
     assert WEBULL_CAPABILITIES.supports_account_data is True
-    assert WEBULL_CAPABILITIES.supports_market_data is False
-    assert WEBULL_CAPABILITIES.supports_streaming is False
+    assert WEBULL_CAPABILITIES.supports_market_data is True
+    assert WEBULL_CAPABILITIES.supports_streaming is True
     assert WEBULL_CAPABILITIES.supports_scanner is False
 
 
@@ -108,6 +108,22 @@ def test_webull_plugin_creates_execution_runtime() -> None:
     assert runtime.market_data is None
     assert runtime.scanner is None
     assert observed_configurations == [configuration]
+
+
+def test_webull_plugin_composes_injected_market_data_transport() -> None:
+    configuration = FakeConfiguration()
+    broker = FakeBroker()
+    market_data = object()
+
+    plugin = WebullBrokerPlugin(
+        broker_factory=lambda value: broker,
+        market_data_factory=lambda value: market_data,
+    )
+
+    runtime = plugin.create_runtime(configuration)
+
+    assert runtime.execution is broker
+    assert runtime.market_data is market_data
 
 
 def test_webull_plugin_can_be_registered_and_resolved() -> None:

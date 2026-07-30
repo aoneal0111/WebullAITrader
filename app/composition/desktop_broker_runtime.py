@@ -10,7 +10,10 @@ from app.live_execution.account_polling import (
     BrokerAccountSnapshot,
     poll_broker_account,
 )
-from app.live_execution.broker_factory import build_webull_broker
+from app.live_execution.broker_factory import (
+    build_webull_broker,
+    build_webull_market_data_stream,
+)
 from app.operations.runtime import RuntimeEventSink
 from app.services.runtime_drivers.broker import (
     Clock,
@@ -30,6 +33,9 @@ def create_configured_desktop_broker_driver(
     configuration_loader: ConfigurationLoader = load_configuration,
     broker_runtime_factory: BrokerRuntimeFactory = create_broker_runtime,
     webull_broker_factory: Callable[[object], object] = build_webull_broker,
+    webull_market_data_factory: Callable[
+        [object], object
+    ] = build_webull_market_data_stream,
     account_poller: Callable[..., BrokerAccountSnapshot] = poll_broker_account,
     clock: Clock = utc_now,
     source: str = "desktop-broker-runtime",
@@ -42,6 +48,8 @@ def create_configured_desktop_broker_driver(
         raise TypeError("broker_runtime_factory must be callable")
     if not callable(webull_broker_factory):
         raise TypeError("webull_broker_factory must be callable")
+    if not callable(webull_market_data_factory):
+        raise TypeError("webull_market_data_factory must be callable")
     if not callable(account_snapshot_sink):
         raise TypeError("account_snapshot_sink must be callable")
     if not callable(account_poller):
@@ -57,6 +65,7 @@ def create_configured_desktop_broker_driver(
         provider=configuration.broker_provider,
         configuration=configuration,
         webull_broker_factory=webull_broker_factory,
+        webull_market_data_factory=webull_market_data_factory,
     )
 
     return DesktopBrokerRuntimeDriver(

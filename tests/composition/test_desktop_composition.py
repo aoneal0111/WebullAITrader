@@ -5,6 +5,10 @@ from app.composition import (
     DesktopComposition,
     create_desktop_composition,
 )
+from app.composition.desktop_runtime_config import (
+    DesktopRuntimeConfiguration,
+)
+from app.composition.runtime_mode import RuntimeMode
 from app.services import RuntimeServiceStatus
 
 
@@ -74,10 +78,22 @@ def test_desktop_composition_defaults_to_configured_broker_driver(
 ) -> None:
     created = []
 
-    def create_broker_driver(*, event_sink, account_snapshot_sink, source):
+    def create_broker_driver(
+        *,
+        event_sink,
+        account_snapshot_sink,
+        configuration_loader,
+        source,
+    ):
         driver = FakeDriver()
         created.append(
-            (driver, event_sink, account_snapshot_sink, source)
+            (
+                driver,
+                event_sink,
+                account_snapshot_sink,
+                configuration_loader,
+                source,
+            )
         )
         return driver
 
@@ -94,9 +110,37 @@ def test_desktop_composition_defaults_to_configured_broker_driver(
         assert len(created) == 1
         assert callable(created[0][1])
         assert callable(created[0][2])
-        assert created[0][3] == "desktop-broker-runtime:1"
+        assert callable(created[0][3])
+        assert created[0][4] == "desktop-broker-runtime:1"
 
         composition.runtime_service.stop()
         assert composition.runtime_service.wait(1.0)
+    finally:
+        composition.close(timeout_seconds=1.0)
+
+
+def test_simulation_mode_does_not_construct_configured_broker_stream(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        desktop_runtime_module,
+        "create_configured_desktop_broker_driver",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError(
+                "simulation must not construct broker market data"
+            )
+        ),
+    )
+    composition = create_desktop_composition(
+        configuration=DesktopRuntimeConfiguration(
+            runtime_mode=RuntimeMode.SIMULATED,
+        )
+    )
+
+    try:
+        assert composition.runtime_service.start() is True
+        assert composition.runtime_service.wait(0.05) is False
+        composition.runtime_service.stop()
+        assert composition.runtime_service.wait(2.0)
     finally:
         composition.close(timeout_seconds=1.0)

@@ -163,8 +163,29 @@ def create_official_stream_backend(
     )
 
 
+def create_official_market_subscription() -> WebullMarketSubscription:
+    """Build the supported US quote/trade subscription using official enums."""
+
+    try:
+        from webull.data.common.subscribe_type import SubscribeType
+    except ImportError as exc:
+        raise RuntimeError(
+            "Webull OpenAPI SDK is unavailable; "
+            "install webull-openapi-python-sdk"
+        ) from exc
+    return WebullMarketSubscription(
+        category="US_STOCK",
+        sub_types=(
+            SubscribeType.QUOTE.name,
+            SubscribeType.SNAPSHOT.name,
+            SubscribeType.TICK.name,
+        ),
+    )
+
+
 __all__ = [
     "WebullMarketSubscription",
     "WebullStreamingCredentials",
+    "create_official_market_subscription",
     "create_official_stream_backend",
 ]
