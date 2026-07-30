@@ -4,6 +4,7 @@ from decimal import Decimal
 from app.composition.runtime_projection_pipeline import (
     create_runtime_projection_pipeline,
 )
+from app.composition.runtime_event_sink import CompositeRuntimeEventSink
 from app.operations.runtime import (
     PaperRuntimeEvent,
     RuntimeDecision,
@@ -17,9 +18,12 @@ from app.operations_core import (
 )
 from app.paper_trading.models import PaperFill
 from app.runtime_event_replay import (
+    InMemoryRuntimeEventSource,
     ReplayControl,
     ReplayEngine,
+    ReplayProgress,
     ReplayStatus,
+    RuntimeEventRecorder,
 )
 
 
@@ -322,3 +326,127 @@ def test_explicit_determinism_verification_rebuilds_identical_state() -> None:
     engine = ReplayEngine(events())
 
     assert engine.verify_determinism() is True
+
+
+def test_step_mode_replays_exactly_one_event_at_a_time() -> None:
+    recorded = events()
+    engine = ReplayEngine(recorded)
+
+    first = engine.step()
+    second = engine.step()
+
+    assert first.status is ReplayStatus.PARTIAL
+    assert first.processed_events == 1
+    assert first.next_index == 1
+    assert second.processed_events == 1
+    assert second.start_index == 1
+    assert second.next_index == 2
+    assert engine.state.health_projection.runtime_status == "RUNNING"
+    assert engine.state.health_projection.broker_status == "CONNECTED"
+
+
+def test_reset_replaces_all_projected_state_and_restarts_cursor() -> None:
+    engine = ReplayEngine(events())
+    initial_state = engine.state
+    engine.replay()
+
+    reset_state = engine.reset()
+
+    assert reset_state == initial_state
+    assert engine.next_index == 0
+    assert engine.step().next_index == 1
+
+
+def test_progress_reports_initial_and_per_event_positions() -> None:
+    recorded = events()[:3]
+    updates: list[ReplayProgress] = []
+
+    result = ReplayEngine(recorded).replay(progress=updates.append)
+
+    assert updates == [
+        ReplayProgress(0, 3),
+        ReplayProgress(1, 3),
+        ReplayProgress(2, 3),
+        ReplayProgress(3, 3),
+    ]
+    assert result.progress == ReplayProgress(3, 3)
+
+
+def test_replay_statistics_use_processed_count_and_elapsed_time() -> None:
+    timestamps = iter((10.0, 12.0))
+    engine = ReplayEngine(events()[:4], clock=lambda: next(timestamps))
+
+    result = engine.replay()
+
+    assert result.statistics.events_processed == 4
+    assert result.statistics.elapsed_seconds == 2.0
+    assert result.statistics.processing_rate == 2.0
+
+
+def test_cancel_alias_stops_replay_and_can_be_reset_for_resume() -> None:
+    control = ReplayControl()
+    control.cancel()
+    engine = ReplayEngine(events())
+
+    cancelled = engine.replay(control=control)
+    control.reset()
+    resumed = engine.resume(control=control)
+
+    assert control.cancelled is False
+    assert cancelled.status is ReplayStatus.INTERRUPTED
+    assert cancelled.processed_events == 0
+    assert resumed.status is ReplayStatus.COMPLETED
+
+
+def test_recorder_is_both_a_runtime_sink_and_event_source() -> None:
+    recorder = RuntimeEventRecorder()
+    recorded = events()[:2]
+    for event in recorded:
+        recorder(event)
+
+    engine = ReplayEngine(recorder.snapshot())
+
+    assert len(recorder) == 2
+    assert recorder.read_events() == recorded
+    assert isinstance(recorder.snapshot(), InMemoryRuntimeEventSource)
+    assert engine.replay().processed_events == 2
+
+
+def test_recorded_live_session_rebuilds_every_projection_exactly() -> None:
+    bus = OperationsBus()
+    store = ApplicationStateStore(bus)
+    live_pipeline = create_runtime_projection_pipeline(
+        operations_bus=bus,
+        account_id="replay",
+    )
+    recorder = RuntimeEventRecorder()
+    live_sink = CompositeRuntimeEventSink((recorder, live_pipeline.sink))
+    for event in events():
+        live_sink(event)
+    expected_state = store.snapshot()
+
+    replayed_state = ReplayEngine(recorder).replay().state
+
+    assert replayed_state == expected_state
+    assert replayed_state.order_projection == expected_state.order_projection
+    assert (
+        replayed_state.position_projection
+        == expected_state.position_projection
+    )
+    assert (
+        replayed_state.timeline_projection
+        == expected_state.timeline_projection
+    )
+    assert (
+        replayed_state.decision_projection
+        == expected_state.decision_projection
+    )
+    assert (
+        replayed_state.portfolio_projection
+        == expected_state.portfolio_projection
+    )
+    assert replayed_state.health_projection == expected_state.health_projection
+    assert (
+        replayed_state.watchlist_projection
+        == expected_state.watchlist_projection
+    )
