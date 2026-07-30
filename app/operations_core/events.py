@@ -69,11 +69,12 @@ class OperationsPosition:
     asset_type: str
     quantity: str
     average_cost: str
-    market_value: str
-    unrealized_gain_loss: str
+    market_value: str | None
+    unrealized_gain_loss: str | None
     realized_gain_loss: str | None
     currency: str
     updated_at: datetime
+    exposure: str | None = None
 
     def __post_init__(self) -> None:
         required_text_fields = (
@@ -82,8 +83,6 @@ class OperationsPosition:
             "asset_type",
             "quantity",
             "average_cost",
-            "market_value",
-            "unrealized_gain_loss",
             "currency",
         )
 
@@ -107,6 +106,20 @@ class OperationsPosition:
 
             if self.realized_gain_loss != self.realized_gain_loss.strip():
                 raise ValueError("realized_gain_loss must be stripped")
+
+        for field_name in (
+            "market_value",
+            "unrealized_gain_loss",
+            "exposure",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(
+                        f"{field_name} must be None or non-empty text"
+                    )
+                if value != value.strip():
+                    raise ValueError(f"{field_name} must be stripped")
 
         if self.updated_at.tzinfo is None:
             raise ValueError("updated_at must be timezone-aware")

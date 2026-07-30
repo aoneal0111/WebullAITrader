@@ -7,8 +7,11 @@ from PySide6.QtWidgets import QLabel, QMessageBox, QPushButton, QWidget
 
 from app.gui.pages.dashboard import DashboardPage
 from app.gui.pages.orders import OrdersPage
+from app.gui.formatters import format_positions
 from app.gui.projections.dashboard_projection import project_dashboard
+from app.gui.widgets.positions_panel import PositionsPanel
 from app.operations_core import ApplicationState, RuntimePhase
+from app.read_models.positions import project_positions_read_model
 
 
 class ApplicationStatePresenter(Protocol):
@@ -49,6 +52,17 @@ class OrdersPresenter:
         self._orders_page.render(state)
         if state.order_projection.orders:
             self._orders_page.render_projection(state.order_projection)
+
+
+class PositionsPresenter:
+    """Prepare and render the immutable positions view model."""
+
+    def __init__(self, positions_panel: PositionsPanel) -> None:
+        self._positions_panel = positions_panel
+
+    def render(self, state: ApplicationState) -> None:
+        read_model = project_positions_read_model(state)
+        self._positions_panel.render(format_positions(read_model))
 
 
 class RuntimeControlsPresenter:

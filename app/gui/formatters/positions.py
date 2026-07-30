@@ -35,7 +35,7 @@ def _format_position(
     symbol: str,
     quantity: str,
     average_cost: str,
-    unrealized_gain_loss: str,
+    unrealized_gain_loss: str | None,
     currency: str,
 ) -> tuple[str, str, str, str]:
     quantity_label = _format_quantity(quantity)
@@ -44,10 +44,14 @@ def _format_position(
         currency=currency,
         include_sign=False,
     )
-    profit_loss_label = _format_money(
-        unrealized_gain_loss,
-        currency=currency,
-        include_sign=True,
+    profit_loss_label = (
+        _format_money(
+            unrealized_gain_loss,
+            currency=currency,
+            include_sign=True,
+        )
+        if unrealized_gain_loss is not None
+        else "--"
     )
 
     return (

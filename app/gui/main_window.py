@@ -10,6 +10,7 @@ from app.gui.pages.placeholder import PlaceholderPage
 from app.gui.presenters import (
     DashboardPresenter,
     OrdersPresenter,
+    PositionsPresenter,
     PresentationCoordinator,
     RuntimeControlsPresenter,
     RuntimeErrorPresenter,
@@ -17,6 +18,7 @@ from app.gui.presenters import (
 )
 from app.gui.shell.sidebar import Sidebar
 from app.gui.state_bridge import QtStateBridge
+from app.gui.widgets.positions_panel import PositionsPanel
 from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus
 from app.services import OrderCommandFactory, RuntimeService, TradingService
 
@@ -46,6 +48,7 @@ class MainWindow(QMainWindow):
             (
                 DashboardPresenter(self.dashboard),
                 OrdersPresenter(self.orders),
+                PositionsPresenter(self.positions),
                 RuntimeControlsPresenter(self.start_button, self.stop_button),
                 RuntimeStatusPresenter(self.status_label),
                 RuntimeErrorPresenter(self),
@@ -89,12 +92,8 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
         self.dashboard = DashboardPage()
         self.pages.addWidget(self.dashboard)
-        self.pages.addWidget(
-            PlaceholderPage(
-                "Positions",
-                "Portfolio views will bind to the existing position and account-state services.",
-            )
-        )
+        self.positions = PositionsPanel()
+        self.pages.addWidget(self.positions)
 
         self.orders = OrdersPage(
             trading_service=self._trading_service,

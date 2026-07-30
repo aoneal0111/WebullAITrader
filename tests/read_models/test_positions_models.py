@@ -161,6 +161,26 @@ def test_initial_positions_snapshot_is_empty() -> None:
     assert PositionsReadModelSnapshot.initial().positions == ()
 
 
+def test_position_read_model_allows_unknown_market_valuation() -> None:
+    position = PositionReadModel(
+        account_id="account-1",
+        symbol="AAPL",
+        asset_type="EQUITY",
+        quantity="10",
+        average_cost="185.25",
+        market_value=None,
+        unrealized_gain_loss=None,
+        realized_gain_loss="0",
+        currency="USD",
+        updated_at=NOW,
+        exposure=None,
+    )
+
+    assert position.market_value is None
+    assert position.unrealized_gain_loss is None
+    assert position.exposure is None
+
+
 def test_positions_snapshot_requires_immutable_tuple() -> None:
     with pytest.raises(
         TypeError,

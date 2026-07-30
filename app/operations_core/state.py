@@ -27,12 +27,19 @@ from app.operations_core.events import (
 
 if TYPE_CHECKING:
     from app.read_models.orders.models import OrdersReadModelSnapshot
+    from app.read_models.positions.models import PositionsReadModelSnapshot
 
 
 def _initial_order_projection() -> "OrdersReadModelSnapshot":
     from app.read_models.orders.models import OrdersReadModelSnapshot
 
     return OrdersReadModelSnapshot.initial()
+
+
+def _initial_position_projection() -> "PositionsReadModelSnapshot":
+    from app.read_models.positions.models import PositionsReadModelSnapshot
+
+    return PositionsReadModelSnapshot.initial()
 
 
 class RuntimePhase(StrEnum):
@@ -75,6 +82,9 @@ class ApplicationState:
     revision: int = 0
     order_projection: "OrdersReadModelSnapshot" = field(
         default_factory=_initial_order_projection
+    )
+    position_projection: "PositionsReadModelSnapshot" = field(
+        default_factory=_initial_position_projection
     )
 
 
@@ -151,6 +161,10 @@ class ApplicationStateStore:
                 self._state.positions,
                 event,
             )
+            position_projection = self._reduce_position_projection(
+                self._state.position_projection,
+                event,
+            )
 
             timeline = self._state.timeline
 
@@ -167,6 +181,7 @@ class ApplicationStateStore:
                 orders=orders,
                 order_projection=order_projection,
                 positions=positions,
+                position_projection=position_projection,
                 timeline=timeline,
                 revision=self._state.revision + 1,
             )
@@ -282,6 +297,20 @@ class ApplicationStateStore:
     ) -> tuple[OperationsPosition, ...]:
         if isinstance(event, PositionsUpdated):
             return event.positions
+
+        return current
+
+    @staticmethod
+    def _reduce_position_projection(
+        current: "PositionsReadModelSnapshot",
+        event: OperationsEvent,
+    ) -> "PositionsReadModelSnapshot":
+        if isinstance(event, PositionsUpdated):
+            from app.read_models.positions.projector import (
+                project_operational_positions,
+            )
+
+            return project_operational_positions(event.positions)
 
         return current
 

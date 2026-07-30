@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from threading import Event
 from typing import Protocol
@@ -18,6 +19,7 @@ from app.paper_session import (
     PaperTradingSession,
     process_decision,
 )
+from app.paper_trading.models import PaperFill
 from app.strategy_engine import StrategyDecision, StrategyEngine, StrategyPosition
 
 
@@ -54,6 +56,8 @@ class PaperRuntimeEvent:
     cycle: int
     symbol: str | None = None
     order: OperationsOrder | None = None
+    fill: PaperFill | None = None
+    mark_price: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.sequence < 1:
@@ -77,6 +81,24 @@ class PaperRuntimeEvent:
                 raise ValueError(
                     "runtime event order symbol must match event symbol"
                 )
+        if self.fill is not None:
+            if not isinstance(self.fill, PaperFill):
+                raise TypeError("runtime event fill must be a PaperFill")
+            if self.symbol is not None and self.fill.symbol != self.symbol:
+                raise ValueError(
+                    "runtime event fill symbol must match event symbol"
+                )
+        if self.mark_price is not None:
+            if (
+                not isinstance(self.mark_price, Decimal)
+                or not self.mark_price.is_finite()
+                or self.mark_price <= 0
+            ):
+                raise ValueError(
+                    "runtime event mark price must be a positive finite Decimal"
+                )
+            if self.fill is None:
+                raise ValueError("runtime event mark price requires a fill")
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,6 +412,9 @@ class PaperOperationsEngine:
                     session.last_coordination_result,
                     timestamp,
                 )
+                fill, mark_price = _project_runtime_fill(
+                    session.last_coordination_result,
+                )
                 self._append_event(
                     timestamp,
                     "DECISION_PROCESSED",
@@ -397,6 +422,8 @@ class PaperOperationsEngine:
                     cycle,
                     symbol,
                     order,
+                    fill,
+                    mark_price,
                 )
             result = PaperRuntimeCycleResult(
                 cycle=cycle,
@@ -519,6 +546,8 @@ class PaperOperationsEngine:
         cycle: int,
         symbol: str | None = None,
         order: OperationsOrder | None = None,
+        fill: PaperFill | None = None,
+        mark_price: Decimal | None = None,
     ) -> None:
         event = PaperRuntimeEvent(
             sequence=len(self._state.events) + 1,
@@ -528,6 +557,8 @@ class PaperOperationsEngine:
             cycle=cycle,
             symbol=symbol,
             order=order,
+            fill=fill,
+            mark_price=mark_price,
         )
         self._state = replace(
             self._state,
@@ -594,6 +625,35 @@ def _project_runtime_order(
         status=status,
         updated_at=timestamp,
     )
+
+
+def _project_runtime_fill(
+    coordination,
+) -> tuple[PaperFill | None, Decimal | None]:
+    """Expose fill and available post-fill mark on the event boundary."""
+
+    if coordination is None:
+        return None, None
+
+    execution_result = coordination.execution_result
+    execution = getattr(execution_result, "execution", None)
+    fill = getattr(execution, "fill", None)
+    if fill is None:
+        return None, None
+    if not isinstance(fill, PaperFill):
+        raise TypeError("paper execution fill must be a PaperFill")
+
+    portfolio = getattr(execution, "portfolio_after", None)
+    positions = getattr(portfolio, "positions", ())
+    mark_price = next(
+        (
+            position.current_mark
+            for position in positions
+            if position.symbol == fill.symbol
+        ),
+        None,
+    )
+    return fill, mark_price
 
 
 def _validate_recovery(

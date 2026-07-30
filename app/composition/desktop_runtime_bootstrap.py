@@ -23,6 +23,7 @@ from app.operations.runtime import (
 )
 from app.operations_core import OperationsBus
 from app.read_models.order_projection import OrderProjection
+from app.read_models.position_projection import PositionProjection
 from app.operations.scanner_runtime import SnapshotResolver
 from app.realtime_scanner.protocols import (
     ReferenceLoader,
@@ -57,6 +58,7 @@ class DesktopRuntimeBootstrap:
     runtime_dependencies: PaperRuntimeDependencies
     driver_factory: DriverFactory
     order_projection: OrderProjection | None = None
+    position_projection: PositionProjection | None = None
 
 
 def create_desktop_runtime_bootstrap(
@@ -133,8 +135,17 @@ def create_desktop_runtime_bootstrap(
         if operations_bus is not None
         else None
     )
+    position_projection = (
+        PositionProjection(
+            operations_bus,
+            account_id=session_id,
+        )
+        if operations_bus is not None
+        else None
+    )
     composed_event_sinks = (
         order_projection,
+        position_projection,
         *tuple(event_sinks),
     )
     resolved_event_sink: RuntimeEventSink | None = event_sink
@@ -160,6 +171,7 @@ def create_desktop_runtime_bootstrap(
         runtime_dependencies=runtime_dependencies,
         driver_factory=driver_factory,
         order_projection=order_projection,
+        position_projection=position_projection,
     )
 
 
