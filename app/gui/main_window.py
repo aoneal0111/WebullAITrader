@@ -10,6 +10,7 @@ from app.gui.pages.placeholder import PlaceholderPage
 from app.gui.presenters import (
     DashboardPresenter,
     DecisionsPresenter,
+    PortfolioPresenter,
     OrdersPresenter,
     PositionsPresenter,
     PresentationCoordinator,
@@ -55,6 +56,7 @@ class MainWindow(QMainWindow):
                 PositionsPresenter(self.positions),
                 TimelinePresenter(self.activity),
                 DecisionsPresenter(self.decisions),
+                PortfolioPresenter(self.dashboard.portfolio_panel),
                 RuntimeControlsPresenter(self.start_button, self.stop_button),
                 RuntimeStatusPresenter(self.status_label),
                 RuntimeErrorPresenter(self),

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime
 from decimal import Decimal
 from threading import RLock
 
@@ -57,21 +59,34 @@ class PositionProjection:
             self._last_sequence = event.sequence
 
             fill = event.fill
-            if fill is None or fill.request_id in self._processed_fill_ids:
+            if fill is not None:
+                if fill.request_id in self._processed_fill_ids:
+                    return
+                projected = _reduce_fill(
+                    self._snapshot,
+                    fill,
+                    mark_price=event.mark_price,
+                    account_id=self._account_id,
+                    asset_type=self._asset_type,
+                    currency=self._currency,
+                )
+                self._processed_fill_ids = (
+                    self._processed_fill_ids | {fill.request_id}
+                )
+                occurred_at = fill.timestamp
+            elif event.mark_price is not None and event.symbol is not None:
+                projected = _reduce_mark(
+                    self._snapshot,
+                    symbol=event.symbol,
+                    mark_price=event.mark_price,
+                    timestamp=event.timestamp,
+                )
+                occurred_at = event.timestamp
+            else:
                 return
-
-            projected = _reduce_fill(
-                self._snapshot,
-                fill,
-                mark_price=event.mark_price,
-                account_id=self._account_id,
-                asset_type=self._asset_type,
-                currency=self._currency,
-            )
+            if projected == self._snapshot:
+                return
             self._snapshot = projected
-            self._processed_fill_ids = (
-                self._processed_fill_ids | {fill.request_id}
-            )
             positions = tuple(
                 _to_operations_position(position)
                 for position in projected.positions
@@ -79,11 +94,47 @@ class PositionProjection:
 
         self._bus.publish(
             PositionsUpdated(
-                occurred_at=fill.timestamp,
+                occurred_at=occurred_at,
                 source="paper-runtime-position-projection",
                 positions=positions,
             )
         )
+
+
+def _reduce_mark(
+    current: PositionsReadModelSnapshot,
+    *,
+    symbol: str,
+    mark_price: Decimal,
+    timestamp: datetime,
+) -> PositionsReadModelSnapshot:
+    by_symbol = {
+        position.symbol: position
+        for position in current.positions
+    }
+    existing = by_symbol.get(symbol)
+    if existing is None:
+        return current
+    market_value, unrealized_pnl, exposure = _valuation(
+        quantity=Decimal(existing.quantity),
+        average_cost=Decimal(existing.average_cost),
+        mark_price=mark_price,
+    )
+    by_symbol[symbol] = replace(
+        existing,
+        market_value=_optional_decimal_text(market_value),
+        unrealized_gain_loss=_optional_decimal_text(unrealized_pnl),
+        exposure=_optional_decimal_text(exposure),
+        updated_at=timestamp,
+    )
+    return PositionsReadModelSnapshot(
+        positions=tuple(
+            sorted(
+                by_symbol.values(),
+                key=lambda position: position.symbol,
+            )
+        )
+    )
 
 
 def _reduce_fill(

@@ -161,8 +161,10 @@ class PaperRuntimeEvent:
                 raise ValueError(
                     "runtime event mark price must be a positive finite Decimal"
                 )
-            if self.fill is None:
-                raise ValueError("runtime event mark price requires a fill")
+            if self.fill is None and self.symbol is None:
+                raise ValueError(
+                    "runtime event mark price requires a fill or symbol"
+                )
         if self.decision is not None:
             if not isinstance(self.decision, RuntimeDecision):
                 raise TypeError(

@@ -15,6 +15,7 @@ from app.gui.widgets.orders_panel import OrdersPanel
 from app.gui.widgets.panel import SectionPanel
 from app.gui.widgets.positions_panel import PositionsPanel
 from app.gui.widgets.runtime_ribbon import RuntimeRibbon
+from app.gui.widgets.portfolio_panel import PortfolioPanel
 
 
 class DashboardPage(QWidget):
@@ -56,6 +57,7 @@ class DashboardPage(QWidget):
         self.activity_panel = ActivityPanel()
         self.positions_panel = PositionsPanel()
         self.orders_panel = OrdersPanel()
+        self.portfolio_panel = PortfolioPanel()
 
         body.addWidget(
             SectionPanel(
@@ -84,6 +86,16 @@ class DashboardPage(QWidget):
             ),
             1,
             2,
+        )
+        body.addWidget(
+            SectionPanel(
+                "Portfolio Summary",
+                self.portfolio_panel,
+            ),
+            2,
+            0,
+            1,
+            3,
         )
 
         body.setColumnStretch(0, 2)

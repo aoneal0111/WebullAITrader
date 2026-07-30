@@ -261,6 +261,105 @@ class OperationsDecisionRecord:
                 )
 
 
+@dataclass(frozen=True, slots=True)
+class OperationsPortfolioHighlight:
+    symbol: str
+    value: str
+
+    def __post_init__(self) -> None:
+        for field_name in ("symbol", "value"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"portfolio highlight {field_name} is required"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class OperationsPortfolioSummary:
+    total_market_value: str | None
+    total_cost_basis: str
+    realized_pnl: str | None
+    unrealized_pnl: str | None
+    total_pnl: str | None
+    gross_exposure: str | None
+    long_exposure: str | None
+    short_exposure: str | None
+    open_positions: int
+    working_orders: int
+    winning_positions: int | None
+    losing_positions: int | None
+    largest_position: OperationsPortfolioHighlight | None
+    largest_unrealized_gain: OperationsPortfolioHighlight | None
+    largest_unrealized_loss: OperationsPortfolioHighlight | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.total_cost_basis, str) or not (
+            self.total_cost_basis.strip()
+        ):
+            raise ValueError("portfolio total_cost_basis is required")
+        for value in (
+            self.total_market_value,
+            self.realized_pnl,
+            self.unrealized_pnl,
+            self.total_pnl,
+            self.gross_exposure,
+            self.long_exposure,
+            self.short_exposure,
+        ):
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()
+            ):
+                raise ValueError(
+                    "portfolio values must be None or non-empty text"
+                )
+        for value in (
+            self.open_positions,
+            self.working_orders,
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+            ):
+                raise ValueError(
+                    "portfolio counts must be nonnegative integers"
+                )
+        for value in (self.winning_positions, self.losing_positions):
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+            ):
+                raise ValueError(
+                    "portfolio win/loss counts must be nonnegative or None"
+                )
+        for value in (
+            self.largest_position,
+            self.largest_unrealized_gain,
+            self.largest_unrealized_loss,
+        ):
+            if value is not None and not isinstance(
+                value,
+                OperationsPortfolioHighlight,
+            ):
+                raise TypeError(
+                    "portfolio highlights must be immutable highlights"
+                )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PortfolioUpdated(OperationsEvent):
+    summary: OperationsPortfolioSummary
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        if not isinstance(self.summary, OperationsPortfolioSummary):
+            raise TypeError(
+                "summary must be an OperationsPortfolioSummary"
+            )
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DecisionsUpdated(OperationsEvent):
     """Replace the projected decision slice with an immutable snapshot."""

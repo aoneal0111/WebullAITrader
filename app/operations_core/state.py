@@ -11,6 +11,7 @@ from app.operations_core.bus import OperationsBus, Subscription
 from app.operations_core.events import (
     OperationsEvent,
     DecisionsUpdated,
+    PortfolioUpdated,
     OperationsOrder,
     OperationsPosition,
     OrdersUpdated,
@@ -32,6 +33,7 @@ if TYPE_CHECKING:
     from app.read_models.orders.models import OrdersReadModelSnapshot
     from app.read_models.positions.models import PositionsReadModelSnapshot
     from app.read_models.timeline.models import TimelineReadModelSnapshot
+    from app.read_models.portfolio.models import PortfolioSummary
 
 
 def _initial_order_projection() -> "OrdersReadModelSnapshot":
@@ -56,6 +58,12 @@ def _initial_decision_projection() -> "DecisionsReadModelSnapshot":
     from app.read_models.decisions.models import DecisionsReadModelSnapshot
 
     return DecisionsReadModelSnapshot.initial()
+
+
+def _initial_portfolio_projection() -> "PortfolioSummary":
+    from app.read_models.portfolio.models import PortfolioSummary
+
+    return PortfolioSummary.initial()
 
 
 class RuntimePhase(StrEnum):
@@ -107,6 +115,9 @@ class ApplicationState:
     )
     decision_projection: "DecisionsReadModelSnapshot" = field(
         default_factory=_initial_decision_projection
+    )
+    portfolio_projection: "PortfolioSummary" = field(
+        default_factory=_initial_portfolio_projection
     )
 
 
@@ -195,6 +206,10 @@ class ApplicationStateStore:
                 self._state.decision_projection,
                 event,
             )
+            portfolio_projection = self._reduce_portfolio_projection(
+                self._state.portfolio_projection,
+                event,
+            )
 
             timeline = self._state.timeline
 
@@ -205,6 +220,7 @@ class ApplicationStateStore:
                     PaperRuntimeUpdated,
                     TimelineUpdated,
                     DecisionsUpdated,
+                    PortfolioUpdated,
                 ),
             ):
                 timeline = timeline + (self._timeline_entry(event),)
@@ -219,6 +235,7 @@ class ApplicationStateStore:
                 position_projection=position_projection,
                 timeline_projection=timeline_projection,
                 decision_projection=decision_projection,
+                portfolio_projection=portfolio_projection,
                 timeline=timeline,
                 revision=self._state.revision + 1,
             )
@@ -376,6 +393,20 @@ class ApplicationStateStore:
             )
 
             return project_operational_decisions(event.decisions)
+
+        return current
+
+    @staticmethod
+    def _reduce_portfolio_projection(
+        current: "PortfolioSummary",
+        event: OperationsEvent,
+    ) -> "PortfolioSummary":
+        if isinstance(event, PortfolioUpdated):
+            from app.read_models.portfolio.projector import (
+                project_operational_portfolio,
+            )
+
+            return project_operational_portfolio(event.summary)
 
         return current
 
