@@ -284,6 +284,13 @@ def test_executable_decision_event_exposes_explicit_order_fact() -> None:
     assert decision_event.order.side == "BUY"
     assert decision_event.order.quantity == "1"
     assert decision_event.order.status == "REJECTED"
+    assert decision_event.decision is not None
+    assert decision_event.decision.decision_id == "paper-1-1-1"
+    assert decision_event.decision.strategy_id == "1.0"
+    assert decision_event.decision.symbol == "AAPL"
+    assert decision_event.decision.action == "BUY"
+    assert decision_event.decision.requested_quantity == Decimal("1")
+    assert decision_event.decision.resulting_order_id == "paper-1-1-1"
 
 
 def test_filled_decision_event_exposes_fill_and_available_mark() -> None:

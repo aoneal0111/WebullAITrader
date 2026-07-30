@@ -9,6 +9,7 @@ from app.gui.pages.orders import OrdersPage
 from app.gui.pages.placeholder import PlaceholderPage
 from app.gui.presenters import (
     DashboardPresenter,
+    DecisionsPresenter,
     OrdersPresenter,
     PositionsPresenter,
     PresentationCoordinator,
@@ -21,6 +22,7 @@ from app.gui.shell.sidebar import Sidebar
 from app.gui.state_bridge import QtStateBridge
 from app.gui.widgets.positions_panel import PositionsPanel
 from app.gui.widgets.activity_panel import ActivityPanel
+from app.gui.widgets.decisions_panel import DecisionsPanel
 from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus
 from app.services import OrderCommandFactory, RuntimeService, TradingService
 
@@ -52,6 +54,7 @@ class MainWindow(QMainWindow):
                 OrdersPresenter(self.orders),
                 PositionsPresenter(self.positions),
                 TimelinePresenter(self.activity),
+                DecisionsPresenter(self.decisions),
                 RuntimeControlsPresenter(self.start_button, self.stop_button),
                 RuntimeStatusPresenter(self.status_label),
                 RuntimeErrorPresenter(self),
@@ -120,6 +123,8 @@ class MainWindow(QMainWindow):
 
         self.activity = ActivityPanel()
         self.pages.addWidget(self.activity)
+        self.decisions = DecisionsPanel()
+        self.pages.addWidget(self.decisions)
         content_layout.addWidget(self.pages, 1)
         outer.addWidget(content, 1)
         self.sidebar.page_requested.connect(self.pages.setCurrentIndex)

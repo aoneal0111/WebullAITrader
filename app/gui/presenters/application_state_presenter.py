@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QLabel, QMessageBox, QPushButton, QWidget
 from app.gui.pages.dashboard import DashboardPage
 from app.gui.pages.orders import OrdersPage
 from app.gui.formatters import format_positions
+from app.gui.formatters import format_decisions
 from app.gui.projections.dashboard_projection import project_dashboard
 from app.gui.projections.activity_projection import project_timeline_activity
 from app.gui.widgets.activity_panel import ActivityPanel
@@ -75,6 +76,18 @@ class TimelinePresenter:
 
     def render(self, state: ApplicationState) -> None:
         self._activity_panel.render(project_timeline_activity(state))
+
+
+class DecisionsPresenter:
+    """Prepare the immutable decision lifecycle view model."""
+
+    def __init__(self, decisions_view) -> None:
+        self._decisions_view = decisions_view
+
+    def render(self, state: ApplicationState) -> None:
+        self._decisions_view.render(
+            format_decisions(state.decision_projection)
+        )
 
 
 class RuntimeControlsPresenter:

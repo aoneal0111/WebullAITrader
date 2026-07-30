@@ -8,6 +8,7 @@ from app.operations_core import OperationsBus
 from app.read_models.order_projection import OrderProjection
 from app.read_models.position_projection import PositionProjection
 from app.read_models.timeline_projection import TimelineProjection
+from app.read_models.decision_projection import DecisionProjection
 
 
 def test_desktop_bootstrap_composes_order_projection_with_runtime_sinks(
@@ -58,10 +59,12 @@ def test_desktop_bootstrap_composes_order_projection_with_runtime_sinks(
     assert isinstance(result.order_projection, OrderProjection)
     assert isinstance(result.position_projection, PositionProjection)
     assert isinstance(result.timeline_projection, TimelineProjection)
+    assert isinstance(result.decision_projection, DecisionProjection)
     assert composed.sinks == (
         existing_sink,
         result.order_projection,
         result.position_projection,
         result.timeline_projection,
+        result.decision_projection,
         additional_sink,
     )

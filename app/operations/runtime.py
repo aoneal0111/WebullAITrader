@@ -48,6 +48,64 @@ WaitFunction = Callable[[float], bool]
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeDecision:
+    """Structured decision facts exposed at the runtime event boundary."""
+
+    decision_id: str
+    timestamp: datetime
+    strategy_id: str
+    symbol: str
+    action: str
+    confidence: int
+    reasoning_summary: str
+    risk_assessment: str | None = None
+    requested_quantity: Decimal | None = None
+    resulting_order_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_aware(self.timestamp)
+        for field_name in (
+            "decision_id",
+            "strategy_id",
+            "symbol",
+            "action",
+            "reasoning_summary",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"runtime decision {field_name} is required")
+            object.__setattr__(self, field_name, value.strip())
+        object.__setattr__(self, "symbol", self.symbol.upper())
+        object.__setattr__(self, "action", self.action.upper())
+        if isinstance(self.confidence, bool) or not isinstance(
+            self.confidence,
+            int,
+        ):
+            raise TypeError("runtime decision confidence must be an integer")
+        if not 0 <= self.confidence <= 100:
+            raise ValueError(
+                "runtime decision confidence must be between 0 and 100"
+            )
+        for field_name in ("risk_assessment", "resulting_order_id"):
+            value = getattr(self, field_name)
+            if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(
+                        f"runtime decision {field_name} must be non-empty text"
+                    )
+                object.__setattr__(self, field_name, value.strip())
+        if self.requested_quantity is not None:
+            if (
+                not isinstance(self.requested_quantity, Decimal)
+                or not self.requested_quantity.is_finite()
+                or self.requested_quantity <= 0
+            ):
+                raise ValueError(
+                    "runtime decision requested quantity must be positive"
+                )
+
+
+@dataclass(frozen=True, slots=True)
 class PaperRuntimeEvent:
     sequence: int
     timestamp: datetime
@@ -59,6 +117,7 @@ class PaperRuntimeEvent:
     fill: PaperFill | None = None
     mark_price: Decimal | None = None
     source: str = "paper-runtime"
+    decision: RuntimeDecision | None = None
 
     def __post_init__(self) -> None:
         if self.sequence < 1:
@@ -104,6 +163,15 @@ class PaperRuntimeEvent:
                 )
             if self.fill is None:
                 raise ValueError("runtime event mark price requires a fill")
+        if self.decision is not None:
+            if not isinstance(self.decision, RuntimeDecision):
+                raise TypeError(
+                    "runtime event decision must be a RuntimeDecision"
+                )
+            if self.symbol is not None and self.decision.symbol != self.symbol:
+                raise ValueError(
+                    "runtime event decision symbol must match event symbol"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -420,6 +488,13 @@ class PaperOperationsEngine:
                 fill, mark_price = _project_runtime_fill(
                     session.last_coordination_result,
                 )
+                runtime_decision = _project_runtime_decision(
+                    session.last_coordination_result,
+                    decision,
+                    decision_id=(
+                        f"{self._state.session_id}:{cycle}:{index}:{symbol}"
+                    ),
+                )
                 self._append_event(
                     timestamp,
                     "DECISION_PROCESSED",
@@ -429,6 +504,7 @@ class PaperOperationsEngine:
                     order,
                     fill,
                     mark_price,
+                    runtime_decision,
                 )
             result = PaperRuntimeCycleResult(
                 cycle=cycle,
@@ -553,6 +629,7 @@ class PaperOperationsEngine:
         order: OperationsOrder | None = None,
         fill: PaperFill | None = None,
         mark_price: Decimal | None = None,
+        decision: RuntimeDecision | None = None,
     ) -> None:
         event = PaperRuntimeEvent(
             sequence=len(self._state.events) + 1,
@@ -564,6 +641,7 @@ class PaperOperationsEngine:
             order=order,
             fill=fill,
             mark_price=mark_price,
+            decision=decision,
         )
         self._state = replace(
             self._state,
@@ -629,6 +707,64 @@ def _project_runtime_order(
         quantity=format(intent.quantity, "f"),
         status=status,
         updated_at=timestamp,
+    )
+
+
+def _project_runtime_decision(
+    coordination,
+    decision: StrategyDecision,
+    *,
+    decision_id: str,
+) -> RuntimeDecision:
+    """Expose explicit strategy and risk facts without parsing event text."""
+
+    intent = (
+        coordination.order_intent
+        if coordination is not None
+        else None
+    )
+    risk_decision = (
+        coordination.risk_decision
+        if coordination is not None
+        else None
+    )
+    risk_assessment = None
+    primary_reason = getattr(risk_decision, "primary_reason", None)
+    approval_reason = getattr(risk_decision, "approval_reason", None)
+    if primary_reason is not None:
+        risk_assessment = getattr(primary_reason, "value", str(primary_reason))
+    elif isinstance(approval_reason, str) and approval_reason.strip():
+        risk_assessment = approval_reason.strip()
+
+    action = (
+        intent.side.value
+        if intent is not None
+        else decision.action.value
+    )
+    reasons = "; ".join(decision.reasons)
+    return RuntimeDecision(
+        decision_id=(
+            intent.request_id
+            if intent is not None
+            else decision_id
+        ),
+        timestamp=decision.timestamp,
+        strategy_id=decision.strategy_version,
+        symbol=decision.symbol,
+        action=action,
+        confidence=decision.confidence,
+        reasoning_summary=reasons,
+        risk_assessment=risk_assessment,
+        requested_quantity=(
+            intent.quantity
+            if intent is not None
+            else None
+        ),
+        resulting_order_id=(
+            intent.request_id
+            if intent is not None
+            else None
+        ),
     )
 
 

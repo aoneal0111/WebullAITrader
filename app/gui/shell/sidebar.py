@@ -7,7 +7,15 @@ from PySide6.QtWidgets import QButtonGroup, QLabel, QPushButton, QVBoxLayout, QW
 class Sidebar(QWidget):
     page_requested = Signal(int)
 
-    ITEMS = ("Dashboard", "Positions", "Orders", "Strategies", "Risk", "Activity")
+    ITEMS = (
+        "Dashboard",
+        "Positions",
+        "Orders",
+        "Strategies",
+        "Risk",
+        "Activity",
+        "Decisions",
+    )
 
     def __init__(self) -> None:
         super().__init__()

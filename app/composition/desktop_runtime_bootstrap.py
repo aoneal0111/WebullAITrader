@@ -25,6 +25,7 @@ from app.operations_core import OperationsBus
 from app.read_models.order_projection import OrderProjection
 from app.read_models.position_projection import PositionProjection
 from app.read_models.timeline_projection import TimelineProjection
+from app.read_models.decision_projection import DecisionProjection
 from app.operations.scanner_runtime import SnapshotResolver
 from app.realtime_scanner.protocols import (
     ReferenceLoader,
@@ -61,6 +62,7 @@ class DesktopRuntimeBootstrap:
     order_projection: OrderProjection | None = None
     position_projection: PositionProjection | None = None
     timeline_projection: TimelineProjection | None = None
+    decision_projection: DecisionProjection | None = None
 
 
 def create_desktop_runtime_bootstrap(
@@ -154,10 +156,16 @@ def create_desktop_runtime_bootstrap(
         if operations_bus is not None
         else None
     )
+    decision_projection = (
+        DecisionProjection(operations_bus)
+        if operations_bus is not None
+        else None
+    )
     composed_event_sinks = (
         order_projection,
         position_projection,
         timeline_projection,
+        decision_projection,
         *tuple(event_sinks),
     )
     resolved_event_sink: RuntimeEventSink | None = event_sink
@@ -185,6 +193,7 @@ def create_desktop_runtime_bootstrap(
         order_projection=order_projection,
         position_projection=position_projection,
         timeline_projection=timeline_projection,
+        decision_projection=decision_projection,
     )
 
 

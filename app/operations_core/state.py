@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from app.operations_core.bus import OperationsBus, Subscription
 from app.operations_core.events import (
     OperationsEvent,
+    DecisionsUpdated,
     OperationsOrder,
     OperationsPosition,
     OrdersUpdated,
@@ -27,6 +28,7 @@ from app.operations_core.events import (
 )
 
 if TYPE_CHECKING:
+    from app.read_models.decisions.models import DecisionsReadModelSnapshot
     from app.read_models.orders.models import OrdersReadModelSnapshot
     from app.read_models.positions.models import PositionsReadModelSnapshot
     from app.read_models.timeline.models import TimelineReadModelSnapshot
@@ -48,6 +50,12 @@ def _initial_timeline_projection() -> "TimelineReadModelSnapshot":
     from app.read_models.timeline.models import TimelineReadModelSnapshot
 
     return TimelineReadModelSnapshot.initial()
+
+
+def _initial_decision_projection() -> "DecisionsReadModelSnapshot":
+    from app.read_models.decisions.models import DecisionsReadModelSnapshot
+
+    return DecisionsReadModelSnapshot.initial()
 
 
 class RuntimePhase(StrEnum):
@@ -96,6 +104,9 @@ class ApplicationState:
     )
     timeline_projection: "TimelineReadModelSnapshot" = field(
         default_factory=_initial_timeline_projection
+    )
+    decision_projection: "DecisionsReadModelSnapshot" = field(
+        default_factory=_initial_decision_projection
     )
 
 
@@ -180,6 +191,10 @@ class ApplicationStateStore:
                 self._state.timeline_projection,
                 event,
             )
+            decision_projection = self._reduce_decision_projection(
+                self._state.decision_projection,
+                event,
+            )
 
             timeline = self._state.timeline
 
@@ -189,6 +204,7 @@ class ApplicationStateStore:
                     RuntimeCycleCompleted,
                     PaperRuntimeUpdated,
                     TimelineUpdated,
+                    DecisionsUpdated,
                 ),
             ):
                 timeline = timeline + (self._timeline_entry(event),)
@@ -202,6 +218,7 @@ class ApplicationStateStore:
                 positions=positions,
                 position_projection=position_projection,
                 timeline_projection=timeline_projection,
+                decision_projection=decision_projection,
                 timeline=timeline,
                 revision=self._state.revision + 1,
             )
@@ -345,6 +362,20 @@ class ApplicationStateStore:
             )
 
             return project_operational_timeline(event.entries)
+
+        return current
+
+    @staticmethod
+    def _reduce_decision_projection(
+        current: "DecisionsReadModelSnapshot",
+        event: OperationsEvent,
+    ) -> "DecisionsReadModelSnapshot":
+        if isinstance(event, DecisionsUpdated):
+            from app.read_models.decisions.projector import (
+                project_operational_decisions,
+            )
+
+            return project_operational_decisions(event.decisions)
 
         return current
 
