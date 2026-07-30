@@ -10,19 +10,29 @@ from PySide6.QtWidgets import (
 
 
 class MetricCard(QFrame):
-    def __init__(self, title: str, value: str = "--", note: str = "") -> None:
+    def __init__(
+        self,
+        title: str,
+        value: str = "--",
+        note: str = "",
+        *,
+        emphasis: str = "standard",
+    ) -> None:
         super().__init__()
         self.setObjectName("metricCard")
+        self.setProperty("emphasis", emphasis)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(6)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(3)
         title_label = QLabel(title.upper())
         title_label.setObjectName("metricTitle")
         self._value = QLabel(value)
         self._value.setObjectName("metricValue")
+        self._value.setProperty("emphasis", emphasis)
         self._note = QLabel(note)
         self._note.setObjectName("muted")
         self._note.setWordWrap(True)
+        self._note.setVisible(bool(note))
         layout.addWidget(title_label)
         layout.addWidget(self._value)
         layout.addWidget(self._note)
@@ -32,6 +42,12 @@ class MetricCard(QFrame):
         self._value.setText(value)
         if note is not None:
             self._note.setText(note)
+            self._note.setVisible(bool(note))
+
+    def set_tone(self, tone: str) -> None:
+        self._value.setProperty("tone", tone)
+        self._value.style().unpolish(self._value)
+        self._value.style().polish(self._value)
 
 
 class StatusIndicator(QLabel):
@@ -52,8 +68,8 @@ class StatusCard(QFrame):
         super().__init__()
         self.setObjectName("statusCard")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(7)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(4)
         title_row = QHBoxLayout()
         title_label = QLabel(title.upper())
         title_label.setObjectName("metricTitle")
@@ -86,6 +102,8 @@ class StatusBadge(QLabel):
 
     def set_status(self, text: str, level: str = "neutral") -> None:
         self.setText(text.upper())
+        if text.upper() in {"UNKNOWN", "--"}:
+            level = "neutral"
         self.setProperty("status", level)
         self.style().unpolish(self)
         self.style().polish(self)

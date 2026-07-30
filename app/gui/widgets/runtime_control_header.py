@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QVBoxLayout,
 )
 
+from app.gui.design.tokens import Dimensions
 from app.gui.models import (
     HealthDashboardSnapshot,
     PortfolioDashboardSnapshot,
@@ -24,47 +26,47 @@ class RuntimeControlHeader(QFrame):
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("panel")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 10, 16, 10)
-        layout.setSpacing(8)
-        context = QHBoxLayout()
-        context.setSpacing(18)
+        self.setMinimumHeight(Dimensions.HEADER_HEIGHT)
+        self.setMaximumHeight(Dimensions.HEADER_HEIGHT)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 7, 14, 7)
+        layout.setSpacing(10)
 
-        identity = QVBoxLayout()
-        eyebrow = QLabel("ATLAS AUTONOMOUS RUNTIME")
+        identity = _metric_group()
+        eyebrow = QLabel("ATLAS RUNTIME")
         eyebrow.setObjectName("eyebrow")
         self.runtime_indicator = StatusIndicator("Stopped")
         identity.addWidget(eyebrow)
         identity.addWidget(self.runtime_indicator)
-        context.addLayout(identity)
+        layout.addLayout(identity)
 
         self._metrics: dict[str, QLabel] = {}
-        for label in (
-            "Mode",
-            "Account",
-            "Duration",
-            "Total P&L",
-            "System Health",
+        for label, emphasis in (
+            ("Total P&L", "primary"),
+            ("System Health", "primary"),
+            ("Mode", "standard"),
+            ("Account", "standard"),
+            ("Duration", "standard"),
         ):
-            group = QVBoxLayout()
+            group = _metric_group()
             title = QLabel(label.upper())
             title.setObjectName("metricTitle")
             value = QLabel("--")
             value.setObjectName("monoValue")
+            value.setProperty("emphasis", emphasis)
             group.addWidget(title)
             group.addWidget(value)
-            context.addLayout(group)
+            layout.addLayout(group)
             self._metrics[label] = value
 
-        context.addStretch()
-        layout.addLayout(context)
-        actions = QHBoxLayout()
-        actions.addStretch()
-        self.resume_button = QPushButton("Start Runtime")
+        layout.addStretch()
+        self.resume_button = QPushButton("Start")
         self.resume_button.setObjectName("primaryButton")
-        self.pause_button = QPushButton("Pause Replay")
+        self.resume_button.setToolTip("Start runtime")
+        self.pause_button = QPushButton("Pause")
         self.pause_button.setObjectName("secondaryButton")
         self.pause_button.setEnabled(False)
+        self.pause_button.setToolTip("Pause or resume replay")
         self.stop_button = QPushButton("Stop")
         self.stop_button.setObjectName("dangerButton")
         self.flatten_button = QPushButton("Flatten")
@@ -73,13 +75,14 @@ class RuntimeControlHeader(QFrame):
         self.flatten_button.setToolTip(
             "No flatten command boundary is configured."
         )
-        for button in (
-            self.resume_button,
-            self.pause_button,
-            self.stop_button,
-            self.flatten_button,
-        ):
-            actions.addWidget(button)
+        actions = QGridLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setHorizontalSpacing(6)
+        actions.setVerticalSpacing(4)
+        actions.addWidget(self.resume_button, 0, 0)
+        actions.addWidget(self.pause_button, 0, 1)
+        actions.addWidget(self.stop_button, 1, 0)
+        actions.addWidget(self.flatten_button, 1, 1)
         layout.addLayout(actions)
 
     def render(self, snapshot: RuntimeSnapshot) -> None:
@@ -98,9 +101,9 @@ class RuntimeControlHeader(QFrame):
         self._metrics["Account"].setText(snapshot.account)
         self._metrics["Duration"].setText(snapshot.runtime_duration)
         self.resume_button.setText(
-            "Runtime Active"
+            "Running"
             if snapshot.state is RuntimeState.RUNNING
-            else "Start Runtime"
+            else "Start"
         )
 
     def render_portfolio(
@@ -108,20 +111,48 @@ class RuntimeControlHeader(QFrame):
         snapshot: PortfolioDashboardSnapshot,
     ) -> None:
         values = dict(snapshot.metrics)
-        self._metrics["Total P&L"].setText(
-            values.get("Total P/L", "--")
+        value = values.get("Total P/L", "--")
+        self._metrics["Total P&L"].setText(value)
+        self._set_metric_status(
+            "Total P&L",
+            "good"
+            if value.startswith("+")
+            else "danger"
+            if value.startswith("-")
+            else "neutral",
         )
 
     def render_health(self, snapshot: HealthDashboardSnapshot) -> None:
         self._metrics["System Health"].setText(snapshot.overall_status)
+        self._set_metric_status(
+            "System Health",
+            (
+                "neutral"
+                if snapshot.overall_status.upper() == "UNKNOWN"
+                else snapshot.status_level
+            ),
+        )
 
     def render_replay(self, snapshot: ReplayWorkspaceSnapshot) -> None:
         self.pause_button.setText(
-            "Pause Replay" if snapshot.can_pause else "Resume Replay"
+            "Pause" if snapshot.can_pause else "Resume"
         )
         self.pause_button.setEnabled(
             snapshot.can_pause or snapshot.can_play
         )
+
+    def _set_metric_status(self, metric: str, status: str) -> None:
+        label = self._metrics[metric]
+        label.setProperty("status", status)
+        label.style().unpolish(label)
+        label.style().polish(label)
+
+
+def _metric_group() -> QVBoxLayout:
+    layout = QVBoxLayout()
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(2)
+    return layout
 
 
 __all__ = ["RuntimeControlHeader"]

@@ -33,8 +33,8 @@ class DashboardPage(QWidget):
         content.setObjectName("contentArea")
         content.setMinimumWidth(900)
         root = QVBoxLayout(content)
-        root.setContentsMargins(4, 4, 8, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(4, 2, 6, 2)
+        root.setSpacing(7)
 
         heading = QHBoxLayout()
         titles = QVBoxLayout()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
@@ -8,6 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.models import WatchlistSnapshot
+from app.gui.design.tokens import Colors
 from app.gui.widgets.data_table import StyledDataTable
 
 
@@ -43,6 +45,11 @@ class WatchlistPanel(QWidget):
                 "State",
             )
         )
+        self._table.set_empty_state(
+            "No symbols",
+            "Subscribe to a symbol to build your watchlist.",
+            icon="\u2606",
+        )
         self._table.horizontalHeader().setSortIndicatorShown(True)
         self._table.horizontalHeader().sectionClicked.connect(
             self._request_sort
@@ -50,6 +57,7 @@ class WatchlistPanel(QWidget):
         layout.addWidget(self._table)
 
     def render(self, snapshot: WatchlistSnapshot) -> None:
+        self._table.clearSelection()
         self._table.setRowCount(len(snapshot.rows))
         for row_index, row in enumerate(snapshot.rows):
             values = (
@@ -65,11 +73,18 @@ class WatchlistPanel(QWidget):
                 row.stale,
             )
             for column_index, value in enumerate(values):
-                self._table.setItem(
-                    row_index,
-                    column_index,
-                    QTableWidgetItem(value),
-                )
+                item = QTableWidgetItem(value)
+                if column_index in (1, 2, 3, 4, 5, 6):
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight
+                        | Qt.AlignmentFlag.AlignVCenter
+                    )
+                color = _semantic_color(column_index, value)
+                if color is not None:
+                    item.setForeground(QBrush(QColor(color)))
+                self._table.setItem(row_index, column_index, item)
+            if row.selected:
+                self._table.selectRow(row_index)
         columns = {
             field: column
             for column, field in self._SORT_FIELDS.items()
@@ -88,3 +103,20 @@ class WatchlistPanel(QWidget):
         field = self._SORT_FIELDS.get(column)
         if field is not None:
             self.sort_requested.emit(field)
+
+
+def _semantic_color(column: int, value: str) -> str | None:
+    normalized = value.upper()
+    if column in (2, 3):
+        if value.startswith("+"):
+            return Colors.SUCCESS
+        if value.startswith("-"):
+            return Colors.DANGER
+        return Colors.TEXT_MUTED
+    if column in (7, 9):
+        if normalized in {"OPEN", "LIVE"}:
+            return Colors.SUCCESS
+        if normalized in {"CLOSED", "STALE", "DISCONNECTED"}:
+            return Colors.DANGER
+        return Colors.TEXT_MUTED
+    return None

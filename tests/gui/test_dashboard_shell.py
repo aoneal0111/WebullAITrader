@@ -3,6 +3,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QScrollArea
 
 from app.composition import create_desktop_composition
@@ -85,6 +86,7 @@ def test_supported_minimum_size_has_no_horizontal_dashboard_scroll(
 
     scroll = window.dashboard.findChild(QScrollArea)
     assert scroll.horizontalScrollBar().maximum() == 0
+    assert scroll.verticalScrollBar().maximum() == 0
     for button in (
         window.start_button,
         window.pause_button,
@@ -92,6 +94,41 @@ def test_supported_minimum_size_has_no_horizontal_dashboard_scroll(
         window.flatten_button,
     ):
         assert button.width() >= button.minimumSizeHint().width()
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    ((1180, 760), (1440, 900), (1920, 1080)),
+)
+def test_dashboard_fits_supported_resolutions_without_clipping(
+    application,
+    window,
+    width,
+    height,
+) -> None:
+    window.resize(width, height)
+    window.show()
+    application.processEvents()
+
+    scroll = window.dashboard.findChild(QScrollArea)
+    assert scroll.horizontalScrollBar().maximum() == 0
+    assert scroll.verticalScrollBar().maximum() == 0
+    assert window.dashboard.operator_workspace.height() > 150
+    assert window.dashboard.market_workspace.height() > (
+        window.dashboard.operator_workspace.height()
+    )
+
+
+def test_portfolio_summary_exposes_visual_metric_hierarchy(window) -> None:
+    cards = window.dashboard.portfolio_summary._cards
+
+    assert cards["Equity"].property("emphasis") == "primary"
+    assert cards["Total P/L"].property("emphasis") == "primary"
+    assert cards["Gross Exposure"].property("emphasis") == "medium"
+    assert cards["Buying Power"].property("emphasis") == "medium"
+    assert cards["Open Positions"]._value.objectName() == (
+        "compactMetricValue"
+    )
 
 
 def test_operator_workspace_exposes_projection_backed_tabs(
@@ -126,6 +163,13 @@ def test_infrastructure_unknowns_are_not_rendered_as_healthy(
         assert card._indicator.property("status") == "neutral"
 
 
+def test_unknown_system_health_uses_neutral_palette(window) -> None:
+    health = window.dashboard.runtime_header._metrics["System Health"]
+
+    assert health.text() == "UNKNOWN"
+    assert health.property("status") == "neutral"
+
+
 def test_market_workspace_uses_selected_watchlist_symbol_without_candles(
     application,
 ) -> None:
@@ -154,6 +198,11 @@ def test_market_workspace_uses_selected_watchlist_symbol_without_candles(
     assert workspace.chart_view._symbol.text() == "AAPL"
     assert "not configured" in workspace.chart_view._canvas._message
     assert workspace.watchlist._table.item(0, 0).text() == "\u25cf AAPL"
+    assert workspace.watchlist._table.currentRow() == 0
+    assert (
+        workspace.watchlist._table.item(0, 3).textAlignment()
+        & int(Qt.AlignmentFlag.AlignRight)
+    )
 
 
 def test_global_status_bar_includes_application_version(window) -> None:

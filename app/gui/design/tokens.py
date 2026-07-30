@@ -1,27 +1,29 @@
 from __future__ import annotations
 
 class Colors:
-    BACKGROUND = "#080b10"
-    SIDEBAR = "#0b0f16"
-    SURFACE = "#0f141d"
-    SURFACE_ALT = "#121925"
-    SURFACE_RAISED = "#182130"
-    BORDER = "#222d3d"
-    BORDER_STRONG = "#304159"
-    TEXT = "#e9eef5"
+    BACKGROUND = "#070a0f"
+    SIDEBAR = "#090e15"
+    SURFACE = "#0e141d"
+    SURFACE_ALT = "#121a25"
+    SURFACE_RAISED = "#182332"
+    SURFACE_HOVER = "#1c293a"
+    BORDER = "#243144"
+    BORDER_SOFT = "#192435"
+    BORDER_STRONG = "#3a4d68"
+    TEXT = "#edf2f8"
     TEXT_STRONG = "#ffffff"
-    TEXT_MUTED = "#8290a3"
-    TEXT_FAINT = "#556276"
-    ACCENT = "#2f81f7"
-    ACCENT_SOFT = "#162d4c"
-    ACCENT_HOVER = "#4d96ff"
-    SUCCESS = "#32d296"
-    SUCCESS_SOFT = "#102a24"
-    WARNING = "#f1b84b"
-    WARNING_SOFT = "#302613"
-    DANGER = "#f05d68"
-    DANGER_SOFT = "#32171d"
-    CHART_GRID = "#192333"
+    TEXT_MUTED = "#9aa9bb"
+    TEXT_FAINT = "#68778b"
+    ACCENT = "#3b8cff"
+    ACCENT_SOFT = "#172f50"
+    ACCENT_HOVER = "#62a3ff"
+    SUCCESS = "#36d399"
+    SUCCESS_SOFT = "#102b24"
+    WARNING = "#f4bd4f"
+    WARNING_SOFT = "#302612"
+    DANGER = "#ff6470"
+    DANGER_SOFT = "#34171d"
+    CHART_GRID = "#172231"
 
 class Spacing:
     XS = 4
@@ -43,15 +45,18 @@ class Typography:
     XS = 10
     SM = 11
     MD = 12
-    LG = 14
-    XL = 20
+    LG = 15
+    XL = 22
     XXL = 26
+    PANEL_TITLE = 16
+    PRIMARY_METRIC = 25
 
 
 class Dimensions:
     NAV_WIDTH = 208
-    HEADER_HEIGHT = 86
-    STATUS_HEIGHT = 30
-    TABLE_ROW_HEIGHT = 30
-    CHART_MIN_HEIGHT = 260
-    OPERATOR_MIN_HEIGHT = 230
+    HEADER_HEIGHT = 72
+    STATUS_HEIGHT = 24
+    TABLE_ROW_HEIGHT = 26
+    CHART_MIN_HEIGHT = 140
+    OPERATOR_MIN_HEIGHT = 158
+    WATCHLIST_MIN_WIDTH = 320

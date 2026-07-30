@@ -96,8 +96,8 @@ class MainWindow(QMainWindow):
         content = QWidget()
         content.setObjectName("contentArea")
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(14, 12, 14, 8)
-        content_layout.setSpacing(10)
+        content_layout.setContentsMargins(12, 9, 12, 5)
+        content_layout.setSpacing(8)
         self.pages = QStackedWidget()
         self.dashboard = DashboardPage()
         self.pages.addWidget(self.dashboard)  # 0

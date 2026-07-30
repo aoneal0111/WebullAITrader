@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QFormLayout,
     QLabel,
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.models import DecisionsSnapshot
+from app.gui.design.tokens import Colors
 from app.gui.widgets.data_table import StyledDataTable
 
 
@@ -33,6 +35,11 @@ class DecisionsPanel(QWidget):
                 "Confidence",
                 "Outcome",
             )
+        )
+        self._table.set_empty_state(
+            "No trading decisions",
+            "Strategy decisions will appear here.",
+            icon="\u2726",
         )
         inspector = QWidget()
         details = QFormLayout(inspector)
@@ -76,6 +83,10 @@ class DecisionsPanel(QWidget):
             for column_index, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.ItemDataRole.UserRole, row.decision_id)
+                if column_index in (3, 5):
+                    item.setForeground(
+                        QBrush(QColor(_decision_color(value)))
+                    )
                 self._table.setItem(row_index, column_index, item)
             if (
                 snapshot.selected is not None
@@ -106,3 +117,14 @@ class DecisionsPanel(QWidget):
             decision_id = selected[0].data(Qt.ItemDataRole.UserRole)
             if decision_id:
                 self.decision_selected.emit(decision_id)
+
+
+def _decision_color(value: str) -> str:
+    normalized = value.upper()
+    if normalized in {"BUY", "FILLED", "ACCEPTED"}:
+        return Colors.SUCCESS
+    if normalized in {"SELL", "REJECTED", "CANCELLED", "FAILED"}:
+        return Colors.DANGER
+    if normalized in {"HOLD", "PENDING", "SUBMITTED"}:
+        return Colors.WARNING
+    return Colors.TEXT_MUTED

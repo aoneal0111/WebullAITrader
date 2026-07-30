@@ -12,6 +12,8 @@ from app.gui.models import (
     DecisionDetail,
     DecisionRow,
     DecisionsSnapshot,
+    OrdersSnapshot,
+    PositionsSnapshot,
     ReplayWorkspaceSnapshot,
     TimelineFilter,
     WatchlistRow,
@@ -19,6 +21,8 @@ from app.gui.models import (
 )
 from app.gui.widgets.activity_panel import ActivityPanel
 from app.gui.widgets.decisions_panel import DecisionsPanel
+from app.gui.widgets.orders_panel import OrdersPanel
+from app.gui.widgets.positions_panel import PositionsPanel
 from app.gui.widgets.replay_status_panel import ReplayStatusPanel
 from app.gui.widgets.watchlist_panel import WatchlistPanel
 
@@ -163,3 +167,27 @@ def test_dashboard_replay_status_renders_presenter_model(application) -> None:
     assert panel._values["Status"].text() == "Paused"
     assert panel._values["Position"].text() == "3 / 10"
     assert panel._values["Speed"].text() == "2\u00d7"
+
+
+@pytest.mark.parametrize(
+    ("panel", "snapshot", "message"),
+    (
+        (PositionsPanel, PositionsSnapshot.initial(), "No positions"),
+        (OrdersPanel, OrdersSnapshot.initial(), "No active orders"),
+        (ActivityPanel, ActivitySnapshot.initial(), "No runtime events"),
+        (WatchlistPanel, WatchlistSnapshot(), "No symbols"),
+    ),
+)
+def test_empty_projection_tables_show_helpful_empty_states(
+    application,
+    panel,
+    snapshot,
+    message,
+) -> None:
+    del application
+    widget = panel()
+    widget.render(snapshot)
+
+    assert widget._table.rowCount() == 0
+    assert widget._table._empty_state.isVisibleTo(widget._table)
+    assert message in widget._table._empty_state.text()

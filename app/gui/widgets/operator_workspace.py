@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QSizePolicy, QTabWidget, QVBoxLayout, QWidget
 
 from app.gui.widgets.activity_panel import ActivityPanel
 from app.gui.widgets.decisions_panel import DecisionsPanel
@@ -16,11 +16,18 @@ class OperatorWorkspace(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setMaximumHeight(260)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.tabs = QTabWidget()
         self.tabs.setMinimumHeight(Dimensions.OPERATOR_MIN_HEIGHT)
+        self.tabs.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Ignored,
+        )
         self.positions = PositionsPanel()
         self.orders = OrdersPanel()
         self.decisions = DecisionsPanel()

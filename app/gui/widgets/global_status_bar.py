@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QWidget
 
 from app.gui.models import (
     DashboardSnapshot,
@@ -15,19 +15,25 @@ class GlobalStatusBar(QWidget):
     def __init__(self, *, version: str) -> None:
         super().__init__()
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 0, 8, 0)
-        layout.setSpacing(18)
+        layout.setContentsMargins(10, 0, 10, 0)
+        layout.setSpacing(10)
         self.runtime = StatusIndicator("Runtime Unknown")
         self.data_feed = StatusIndicator("Feed Unknown")
         self.broker = StatusIndicator("Broker Unknown")
         self.ai = StatusIndicator("AI Unknown")
-        for indicator in (
+        indicators = (
             self.runtime,
             self.data_feed,
             self.broker,
             self.ai,
-        ):
+        )
+        for index, indicator in enumerate(indicators):
             layout.addWidget(indicator)
+            if index < len(indicators) - 1:
+                separator = QFrame()
+                separator.setObjectName("statusSeparator")
+                separator.setFrameShape(QFrame.Shape.VLine)
+                layout.addWidget(separator)
         layout.addStretch()
         self.version = QLabel(f"Atlas v{version}")
         self.version.setObjectName("muted")

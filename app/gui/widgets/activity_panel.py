@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.models import ActivitySnapshot, TimelineFilter
+from app.gui.design.tokens import Colors
 from app.gui.widgets.data_table import StyledDataTable
 
 
@@ -44,6 +46,11 @@ class ActivityPanel(QWidget):
 
         self._table = StyledDataTable(
             ("Time", "Severity", "Category", "Symbol", "Source", "Event")
+        )
+        self._table.set_empty_state(
+            "No runtime events",
+            "Runtime activity will appear here.",
+            icon="\u25f7",
         )
         layout.addWidget(self._table)
 
@@ -83,11 +90,12 @@ class ActivityPanel(QWidget):
                 entry.message,
             )
             for column_index, value in enumerate(values):
-                self._table.setItem(
-                    row_index,
-                    column_index,
-                    QTableWidgetItem(value),
-                )
+                item = QTableWidgetItem(value)
+                if column_index == 1:
+                    item.setForeground(
+                        QBrush(QColor(_severity_color(value)))
+                    )
+                self._table.setItem(row_index, column_index, item)
 
     @staticmethod
     def _set_options(
@@ -110,3 +118,14 @@ class ActivityPanel(QWidget):
                 search=self._search.text(),
             )
         )
+
+
+def _severity_color(value: str) -> str:
+    normalized = value.upper()
+    if normalized in {"SUCCESS", "INFO"}:
+        return Colors.SUCCESS
+    if normalized in {"ERROR", "CRITICAL"}:
+        return Colors.DANGER
+    if normalized in {"WARNING", "WARN"}:
+        return Colors.WARNING
+    return Colors.TEXT_MUTED

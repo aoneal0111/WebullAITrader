@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
+    QLabel,
     QTableWidget,
 )
 
@@ -38,6 +40,42 @@ class StyledDataTable(QTableWidget):
             QAbstractItemView.SelectionMode.SingleSelection
         )
         self.setShowGrid(False)
+        self._empty_state = QLabel(self.viewport())
+        self._empty_state.setObjectName("emptyState")
+        self._empty_state.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_state.setWordWrap(True)
+        self._empty_state.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        self._empty_state.hide()
+
+    def set_empty_state(
+        self,
+        title: str,
+        detail: str,
+        *,
+        icon: str = "\u25cb",
+    ) -> None:
+        self._empty_state.setText(
+            f"{icon}\n{title}\n{detail}"
+        )
+        self._sync_empty_state()
+
+    def setRowCount(self, rows: int) -> None:
+        super().setRowCount(rows)
+        if hasattr(self, "_empty_state"):
+            self._sync_empty_state()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "_empty_state"):
+            self._empty_state.setGeometry(self.viewport().rect())
+
+    def _sync_empty_state(self) -> None:
+        self._empty_state.setGeometry(self.viewport().rect())
+        self._empty_state.setVisible(
+            self.rowCount() == 0 and bool(self._empty_state.text())
+        )
 
 
 __all__ = ["StyledDataTable"]
