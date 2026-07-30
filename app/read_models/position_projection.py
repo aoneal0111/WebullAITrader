@@ -16,6 +16,7 @@ from app.read_models.positions.models import (
     PositionReadModel,
     PositionsReadModelSnapshot,
 )
+from app.read_models.runtime_event_identity import projection_event_id
 
 
 ZERO = Decimal("0")
@@ -95,6 +96,7 @@ class PositionProjection:
         self._bus.publish(
             PositionsUpdated(
                 occurred_at=occurred_at,
+                event_id=projection_event_id("positions", event),
                 source="paper-runtime-position-projection",
                 positions=positions,
             )

@@ -50,6 +50,7 @@ from .desktop_infrastructure import (
 from .paper_dependencies import PaperRuntimeDependencies
 from .paper_runtime_composition import create_paper_runtime_driver_factory
 from .runtime_event_sink import CompositeRuntimeEventSink
+from .runtime_projection_pipeline import create_runtime_projection_pipeline
 
 
 Clock = Callable[[], datetime]
@@ -143,67 +144,54 @@ def create_desktop_runtime_bootstrap(
         maximum_events_per_cycle=maximum_events_per_cycle,
     )
 
-    order_projection = (
-        OrderProjection(operations_bus)
+    projection_pipeline = (
+        create_runtime_projection_pipeline(
+            operations_bus=operations_bus,
+            account_id=session_id,
+            timeline_history_limit=timeline_history_limit,
+            watchlist_maximum_symbols=watchlist_maximum_symbols,
+            watchlist_stale_after=watchlist_stale_after,
+        )
         if operations_bus is not None
+        else None
+    )
+    order_projection = (
+        projection_pipeline.order_projection
+        if projection_pipeline is not None
         else None
     )
     position_projection = (
-        PositionProjection(
-            operations_bus,
-            account_id=session_id,
-        )
-        if operations_bus is not None
-        else None
-    )
-    timeline_projection = (
-        TimelineProjection(
-            operations_bus,
-            maximum_entries=timeline_history_limit,
-        )
-        if operations_bus is not None
-        else None
-    )
-    decision_projection = (
-        DecisionProjection(operations_bus)
-        if operations_bus is not None
+        projection_pipeline.position_projection
+        if projection_pipeline is not None
         else None
     )
     portfolio_projection = (
-        PortfolioProjection(
-            operations_bus,
-            position_projection=position_projection,
-            order_projection=order_projection,
-        )
-        if (
-            operations_bus is not None
-            and position_projection is not None
-            and order_projection is not None
-        )
+        projection_pipeline.portfolio_projection
+        if projection_pipeline is not None
         else None
     )
     health_projection = (
-        HealthProjection(operations_bus)
-        if operations_bus is not None
+        projection_pipeline.health_projection
+        if projection_pipeline is not None
         else None
     )
     watchlist_projection = (
-        WatchlistProjection(
-            operations_bus,
-            maximum_symbols=watchlist_maximum_symbols,
-            stale_after=watchlist_stale_after,
-        )
-        if operations_bus is not None
+        projection_pipeline.watchlist_projection
+        if projection_pipeline is not None
+        else None
+    )
+    timeline_projection = (
+        projection_pipeline.timeline_projection
+        if projection_pipeline is not None
+        else None
+    )
+    decision_projection = (
+        projection_pipeline.decision_projection
+        if projection_pipeline is not None
         else None
     )
     composed_event_sinks = (
-        order_projection,
-        position_projection,
-        portfolio_projection,
-        health_projection,
-        watchlist_projection,
-        timeline_projection,
-        decision_projection,
+        *(projection_pipeline.sinks if projection_pipeline is not None else ()),
         *tuple(event_sinks),
     )
     resolved_event_sink: RuntimeEventSink | None = event_sink

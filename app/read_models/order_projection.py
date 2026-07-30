@@ -8,6 +8,7 @@ from app.read_models.orders.models import (
     OrderReadModel,
     OrdersReadModelSnapshot,
 )
+from app.read_models.runtime_event_identity import projection_event_id
 
 
 class OrderProjection:
@@ -46,6 +47,7 @@ class OrderProjection:
         self._bus.publish(
             OrdersUpdated(
                 occurred_at=event.timestamp,
+                event_id=projection_event_id("orders", event),
                 source="paper-runtime-order-projection",
                 orders=orders,
             )
