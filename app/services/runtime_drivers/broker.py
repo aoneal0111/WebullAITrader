@@ -27,6 +27,7 @@ Clock = Callable[[], datetime]
 AccountPoller = Callable[..., BrokerAccountSnapshot]
 AccountSnapshotSink = Callable[[BrokerAccountSnapshot], None]
 MarketEventTranslator = Callable[..., PaperRuntimeEvent | None]
+MarketEventObserver = Callable[[MarketEvent], object]
 
 
 def utc_now() -> datetime:
@@ -47,6 +48,7 @@ class DesktopBrokerRuntimeDriver:
         market_event_translator: MarketEventTranslator = (
             translate_market_event
         ),
+        market_event_observer: MarketEventObserver | None = None,
         clock: Clock = utc_now,
         source: str = "desktop-broker-runtime",
     ) -> None:
@@ -68,6 +70,13 @@ class DesktopBrokerRuntimeDriver:
             raise TypeError("account_poller must be callable")
         if not callable(market_event_translator):
             raise TypeError("market_event_translator must be callable")
+        if (
+            market_event_observer is not None
+            and not callable(market_event_observer)
+        ):
+            raise TypeError(
+                "market_event_observer must be callable or None"
+            )
         if not callable(clock):
             raise TypeError("clock must be callable")
         if not isinstance(source, str) or not source.strip():
@@ -80,6 +89,7 @@ class DesktopBrokerRuntimeDriver:
         self._account_snapshot_sink = account_snapshot_sink
         self._account_poller = account_poller
         self._market_event_translator = market_event_translator
+        self._market_event_observer = market_event_observer
         self._market_data = broker_runtime.market_data
         self._clock = clock
         self._source = source.strip()
@@ -249,6 +259,8 @@ class DesktopBrokerRuntimeDriver:
                 )
                 if translated is not None:
                     self._emit(translated)
+                if self._market_event_observer is not None:
+                    self._market_event_observer(event)
         except Exception as exc:
             self._publish_terminal_market_data_failure(exc)
             self._market_data_failures.put(exc)

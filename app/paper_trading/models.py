@@ -17,6 +17,7 @@ class ExecutionStatus(StrEnum):
 
 class JournalEventType(StrEnum):
     PROPOSAL = "PROPOSAL"
+    CANCELLATION = "CANCELLATION"
     REJECTION = "REJECTION"
     NOT_FILLED = "NOT_FILLED"
     FILL = "FILL"

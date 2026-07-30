@@ -143,24 +143,24 @@ def _event_order_id(event: PaperRuntimeEvent) -> str | None:
 def _event_outcome(
     event: PaperRuntimeEvent,
 ) -> DecisionExecutionOutcome | None:
+    if event.order is not None:
+        normalized = event.order.status.upper().replace(" ", "_")
+        aliases = {
+            "NEW": DecisionExecutionOutcome.PENDING,
+            "PENDING": DecisionExecutionOutcome.PENDING,
+            "SUBMITTED": DecisionExecutionOutcome.PENDING,
+            "ACCEPTED": DecisionExecutionOutcome.ACCEPTED,
+            "PARTIAL_FILL": DecisionExecutionOutcome.PARTIALLY_FILLED,
+            "PARTIALLY_FILLED": DecisionExecutionOutcome.PARTIALLY_FILLED,
+            "FILLED": DecisionExecutionOutcome.FILLED,
+            "REJECTED": DecisionExecutionOutcome.REJECTED,
+            "CANCELED": DecisionExecutionOutcome.CANCELLED,
+            "CANCELLED": DecisionExecutionOutcome.CANCELLED,
+        }
+        return aliases.get(normalized)
     if event.fill is not None:
         return DecisionExecutionOutcome.FILLED
-    if event.order is None:
-        return None
-    normalized = event.order.status.upper().replace(" ", "_")
-    aliases = {
-        "NEW": DecisionExecutionOutcome.PENDING,
-        "PENDING": DecisionExecutionOutcome.PENDING,
-        "SUBMITTED": DecisionExecutionOutcome.PENDING,
-        "ACCEPTED": DecisionExecutionOutcome.ACCEPTED,
-        "PARTIAL_FILL": DecisionExecutionOutcome.PARTIALLY_FILLED,
-        "PARTIALLY_FILLED": DecisionExecutionOutcome.PARTIALLY_FILLED,
-        "FILLED": DecisionExecutionOutcome.FILLED,
-        "REJECTED": DecisionExecutionOutcome.REJECTED,
-        "CANCELED": DecisionExecutionOutcome.CANCELLED,
-        "CANCELLED": DecisionExecutionOutcome.CANCELLED,
-    }
-    return aliases.get(normalized)
+    return None
 
 
 def _advance(

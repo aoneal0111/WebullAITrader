@@ -43,7 +43,7 @@ class PositionProjection:
         self._lock = RLock()
         self._snapshot = PositionsReadModelSnapshot.initial()
         self._processed_fill_ids: frozenset[str] = frozenset()
-        self._last_sequence = 0
+        self._last_sequence_by_source: dict[str, int] = {}
 
     @property
     def snapshot(self) -> PositionsReadModelSnapshot:
@@ -55,9 +55,13 @@ class PositionProjection:
             raise TypeError("event must be a PaperRuntimeEvent")
 
         with self._lock:
-            if event.sequence <= self._last_sequence:
+            last_sequence = self._last_sequence_by_source.get(
+                event.source,
+                0,
+            )
+            if event.sequence <= last_sequence:
                 return
-            self._last_sequence = event.sequence
+            self._last_sequence_by_source[event.source] = event.sequence
 
             fill = event.fill
             if fill is not None:

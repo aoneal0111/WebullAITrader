@@ -83,6 +83,7 @@ def test_desktop_composition_defaults_to_configured_broker_driver(
         event_sink,
         account_snapshot_sink,
         configuration_loader,
+        market_event_observer,
         source,
     ):
         driver = FakeDriver()
@@ -92,6 +93,7 @@ def test_desktop_composition_defaults_to_configured_broker_driver(
                 event_sink,
                 account_snapshot_sink,
                 configuration_loader,
+                market_event_observer,
                 source,
             )
         )
@@ -111,7 +113,8 @@ def test_desktop_composition_defaults_to_configured_broker_driver(
         assert callable(created[0][1])
         assert callable(created[0][2])
         assert callable(created[0][3])
-        assert created[0][4] == "desktop-broker-runtime:1"
+        assert callable(created[0][4])
+        assert created[0][5] == "desktop-broker-runtime:1"
 
         composition.runtime_service.stop()
         assert composition.runtime_service.wait(1.0)

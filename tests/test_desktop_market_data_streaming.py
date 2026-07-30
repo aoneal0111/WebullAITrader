@@ -293,6 +293,7 @@ def test_driver_streams_quotes_through_application_state_and_stops() -> None:
     stream = FakeStream([quote_event(), trade_event()])
     stop_event = Event()
     event_types: list[str] = []
+    observed_market_events: list[MarketEvent] = []
 
     def sink(event: PaperRuntimeEvent) -> None:
         event_types.append(event.event_type)
@@ -306,6 +307,7 @@ def test_driver_streams_quotes_through_application_state_and_stops() -> None:
         event_sink=sink,
         account_snapshot_sink=lambda snapshot: None,
         account_poller=lambda broker, *, clock: account_snapshot(),
+        market_event_observer=observed_market_events.append,
         clock=lambda: NOW + timedelta(seconds=2),
     )
 
@@ -326,6 +328,7 @@ def test_driver_streams_quotes_through_application_state_and_stops() -> None:
             "disconnect",
         ]
         assert broker.calls == ["connect", "disconnect"]
+        assert observed_market_events == [quote_event(), trade_event()]
         assert "MARKET_DATA_CONNECTING" in event_types
         assert "MARKET_DATA_CONNECTED" in event_types
         assert "MARKET_DATA_SUBSCRIBED" in event_types

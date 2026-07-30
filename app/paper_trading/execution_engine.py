@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from threading import RLock
 from typing import Callable
 
 from app.paper_trading.fill_models import Fill
@@ -64,6 +65,7 @@ class PaperExecutionEngine:
             else PaperOrderBook()
         )
         self._fill_id_factory = fill_id_factory
+        self._lock = RLock()
 
     @property
     def order_book(self) -> PaperOrderBook:
@@ -77,7 +79,8 @@ class PaperExecutionEngine:
                 "only accepted orders can be submitted"
             )
 
-        stored = self._order_book.submit(order)
+        with self._lock:
+            stored = self._order_book.submit(order)
 
         return ExecutionReport(
             order=stored,
@@ -92,56 +95,57 @@ class PaperExecutionEngine:
     ) -> tuple[ExecutionReport, ...]:
         """Process one quote against open orders for the quote's symbol only."""
 
-        reports: list[ExecutionReport] = []
+        with self._lock:
+            reports: list[ExecutionReport] = []
 
-        for order in self._order_book.open_orders_for_symbol(
-            quote.symbol
-        ):
-            result = match_order(order, quote)
+            for order in self._order_book.open_orders_for_symbol(
+                quote.symbol
+            ):
+                result = match_order(order, quote)
 
-            if not result.matched:
-                reports.append(
-                    ExecutionReport(
-                        order=order,
-                        match_result=result,
-                        fills=(),
-                        message=(
-                            f"Order {order.order_id} was not filled: "
-                            f"{result.reason}"
+                if not result.matched:
+                    reports.append(
+                        ExecutionReport(
+                            order=order,
+                            match_result=result,
+                            fills=(),
+                            message=(
+                                f"Order {order.order_id} was not filled: "
+                                f"{result.reason}"
+                            ),
                         ),
                     )
+                    continue
+
+                if result.execution_price is None:
+                    raise ExecutionEngineError(
+                        "matched result did not contain an execution price"
+                    )
+
+                updated = apply_fill(
+                    order,
+                    result.filled_quantity,
+                    result.execution_price,
+                    at=result.timestamp,
+                    slippage=result.slippage,
+                    liquidity_flag=result.liquidity_flag,
+                    fill_id_factory=self._fill_id_factory,
                 )
-                continue
 
-            if result.execution_price is None:
-                raise ExecutionEngineError(
-                    "matched result did not contain an execution price"
+                self._order_book.update(updated)
+
+                new_fill = updated.fills[-1]
+
+                reports.append(
+                    ExecutionReport(
+                        order=updated,
+                        match_result=result,
+                        fills=(new_fill,),
+                        message=_fill_message(updated, new_fill),
+                    )
                 )
 
-            updated = apply_fill(
-                order,
-                result.filled_quantity,
-                result.execution_price,
-                at=result.timestamp,
-                slippage=result.slippage,
-                liquidity_flag=result.liquidity_flag,
-                fill_id_factory=self._fill_id_factory,
-            )
-
-            self._order_book.update(updated)
-
-            new_fill = updated.fills[-1]
-
-            reports.append(
-                ExecutionReport(
-                    order=updated,
-                    match_result=result,
-                    fills=(new_fill,),
-                    message=_fill_message(updated, new_fill),
-                )
-            )
-
-        return tuple(reports)
+            return tuple(reports)
 
     def cancel(
         self,
@@ -151,10 +155,11 @@ class PaperExecutionEngine:
     ) -> ExecutionReport:
         """Cancel an open order through the authoritative order book."""
 
-        cancelled = self._order_book.cancel(
-            order_id,
-            at=at,
-        )
+        with self._lock:
+            cancelled = self._order_book.cancel(
+                order_id,
+                at=at,
+            )
 
         return ExecutionReport(
             order=cancelled,
@@ -170,7 +175,8 @@ class PaperExecutionEngine:
     ) -> tuple[ExecutionReport, ...]:
         """Expire all currently open DAY orders."""
 
-        expired = self._order_book.expire_day_orders(at=at)
+        with self._lock:
+            expired = self._order_book.expire_day_orders(at=at)
 
         return tuple(
             ExecutionReport(

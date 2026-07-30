@@ -37,6 +37,7 @@ def create_configured_desktop_broker_driver(
         [object], object
     ] = build_webull_market_data_stream,
     account_poller: Callable[..., BrokerAccountSnapshot] = poll_broker_account,
+    market_event_observer: Callable[[object], object] | None = None,
     clock: Clock = utc_now,
     source: str = "desktop-broker-runtime",
 ) -> DesktopBrokerRuntimeDriver:
@@ -54,6 +55,13 @@ def create_configured_desktop_broker_driver(
         raise TypeError("account_snapshot_sink must be callable")
     if not callable(account_poller):
         raise TypeError("account_poller must be callable")
+    if (
+        market_event_observer is not None
+        and not callable(market_event_observer)
+    ):
+        raise TypeError(
+            "market_event_observer must be callable or None"
+        )
 
     configuration = configuration_loader()
     if not isinstance(configuration, OperationalConfiguration):
@@ -74,6 +82,7 @@ def create_configured_desktop_broker_driver(
         event_sink=event_sink,
         account_snapshot_sink=account_snapshot_sink,
         account_poller=account_poller,
+        market_event_observer=market_event_observer,
         clock=clock,
         source=source,
     )
