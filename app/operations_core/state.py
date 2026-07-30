@@ -31,6 +31,7 @@ from app.operations_core.events import (
 )
 
 if TYPE_CHECKING:
+    from app.replay_workspace.models import ReplayWorkspaceState
     from app.read_models.decisions.models import DecisionsReadModelSnapshot
     from app.read_models.orders.models import OrdersReadModelSnapshot
     from app.read_models.positions.models import PositionsReadModelSnapshot
@@ -80,6 +81,12 @@ def _initial_watchlist_projection() -> "WatchlistState":
     from app.read_models.watchlist.models import WatchlistState
 
     return WatchlistState.initial()
+
+
+def _initial_replay_state() -> "ReplayWorkspaceState":
+    from app.replay_workspace.models import ReplayWorkspaceState
+
+    return ReplayWorkspaceState()
 
 
 class RuntimePhase(StrEnum):
@@ -140,6 +147,9 @@ class ApplicationState:
     )
     watchlist_projection: "WatchlistState" = field(
         default_factory=_initial_watchlist_projection
+    )
+    replay: "ReplayWorkspaceState" = field(
+        default_factory=_initial_replay_state
     )
 
 
@@ -270,6 +280,7 @@ class ApplicationStateStore:
                 portfolio_projection=portfolio_projection,
                 health_projection=health_projection,
                 watchlist_projection=watchlist_projection,
+                replay=self._state.replay,
                 timeline=timeline,
                 revision=self._state.revision + 1,
             )

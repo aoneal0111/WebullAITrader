@@ -16,6 +16,7 @@ class Sidebar(QWidget):
         "Activity",
         "Decisions",
         "Watchlist",
+        "Replay",
     )
 
     def __init__(self) -> None:

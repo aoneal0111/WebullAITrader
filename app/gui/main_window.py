@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPu
 from app.gui.design.theme import application_stylesheet
 from app.gui.pages.dashboard import DashboardPage
 from app.gui.pages.orders import OrdersPage
+from app.gui.pages.replay import ReplayPage
 from app.gui.pages.placeholder import PlaceholderPage
 from app.gui.presenters import (
     DashboardPresenter,
@@ -13,6 +14,7 @@ from app.gui.presenters import (
     PortfolioPresenter,
     HealthPresenter,
     WatchlistPresenter,
+    ReplayPresenter,
     OrdersPresenter,
     PositionsPresenter,
     PresentationCoordinator,
@@ -23,12 +25,14 @@ from app.gui.presenters import (
 )
 from app.gui.shell.sidebar import Sidebar
 from app.gui.state_bridge import QtStateBridge
+from app.gui.replay_state_bridge import QtReplayStateBridge
 from app.gui.widgets.positions_panel import PositionsPanel
 from app.gui.widgets.activity_panel import ActivityPanel
 from app.gui.widgets.decisions_panel import DecisionsPanel
 from app.gui.widgets.watchlist_panel import WatchlistPanel
 from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus
 from app.services import OrderCommandFactory, RuntimeService, TradingService
+from app.replay_workspace import ReplayWorkspace
 
 
 class MainWindow(QMainWindow):
@@ -39,6 +43,7 @@ class MainWindow(QMainWindow):
         runtime_service: RuntimeService,
         trading_service: TradingService | None = None,
         order_command_factory: OrderCommandFactory | None = None,
+        replay_workspace: ReplayWorkspace | None = None,
     ) -> None:
         super().__init__()
         self._bus = bus
@@ -46,6 +51,8 @@ class MainWindow(QMainWindow):
         self._runtime_service = runtime_service
         self._trading_service = trading_service
         self._order_command_factory = order_command_factory
+        self._replay_workspace = replay_workspace
+        self._replay_state_bridge: QtReplayStateBridge | None = None
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
         self.setWindowTitle("Atlas — WebullAITrader")
@@ -62,6 +69,7 @@ class MainWindow(QMainWindow):
                 PortfolioPresenter(self.dashboard.portfolio_panel),
                 HealthPresenter(self.dashboard.health_panel),
                 WatchlistPresenter(self.watchlist),
+                ReplayPresenter(self.replay),
                 RuntimeControlsPresenter(self.start_button, self.stop_button),
                 RuntimeStatusPresenter(self.status_label),
                 RuntimeErrorPresenter(self),
@@ -69,6 +77,9 @@ class MainWindow(QMainWindow):
         )
         self.setStyleSheet(application_stylesheet())
         self._render_state(state_store.snapshot())
+        if replay_workspace is not None:
+            self._wire_replay_workspace(replay_workspace)
+            self._render_state(replay_workspace.state)
 
     def _build(self) -> None:
         root = QWidget()
@@ -134,6 +145,8 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.decisions)
         self.watchlist = WatchlistPanel()
         self.pages.addWidget(self.watchlist)
+        self.replay = ReplayPage()
+        self.pages.addWidget(self.replay)
         content_layout.addWidget(self.pages, 1)
         outer.addWidget(content, 1)
         self.sidebar.page_requested.connect(self.pages.setCurrentIndex)
@@ -154,11 +167,28 @@ class MainWindow(QMainWindow):
     def _render_state(self, state: ApplicationState) -> None:
         self._presentation.render(state)
 
+    def _wire_replay_workspace(
+        self,
+        workspace: ReplayWorkspace,
+    ) -> None:
+        self.replay.play_requested.connect(workspace.play)
+        self.replay.pause_requested.connect(workspace.pause)
+        self.replay.step_requested.connect(workspace.step)
+        self.replay.restart_requested.connect(workspace.restart)
+        self.replay.timestamp_requested.connect(workspace.jump_to_timestamp)
+        self.replay.event_index_requested.connect(
+            workspace.jump_to_event_index
+        )
+        self._replay_state_bridge = QtReplayStateBridge(workspace, self)
+        self._replay_state_bridge.state_changed.connect(self._render_state)
+
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self._runtime_service.close(timeout_seconds=5.0):
             QMessageBox.warning(self, "Runtime Still Stopping", "Stop the runtime and wait for shutdown before closing.")
             event.ignore()
             return
+        if self._replay_state_bridge is not None:
+            self._replay_state_bridge.close()
         self._state_bridge.close()
         event.accept()
 

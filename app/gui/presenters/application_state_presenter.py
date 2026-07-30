@@ -12,6 +12,7 @@ from app.gui.formatters import format_decisions
 from app.gui.formatters import format_portfolio
 from app.gui.formatters import format_health
 from app.gui.formatters import format_watchlist
+from app.gui.formatters import format_replay
 from app.gui.projections.dashboard_projection import project_dashboard
 from app.gui.projections.activity_projection import project_timeline_activity
 from app.gui.widgets.activity_panel import ActivityPanel
@@ -125,6 +126,16 @@ class WatchlistPresenter:
         self._watchlist_view.render(
             format_watchlist(state.watchlist_projection)
         )
+
+
+class ReplayPresenter:
+    """Prepare the immutable operator replay workspace model."""
+
+    def __init__(self, replay_view) -> None:
+        self._replay_view = replay_view
+
+    def render(self, state: ApplicationState) -> None:
+        self._replay_view.render(format_replay(state.replay))
 
 
 class RuntimeControlsPresenter:

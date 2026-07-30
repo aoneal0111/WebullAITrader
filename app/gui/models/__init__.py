@@ -11,6 +11,7 @@ from .decisions import DecisionRow, DecisionsSnapshot
 from .portfolio import PortfolioDashboardSnapshot
 from .health import HealthDashboardSnapshot
 from .watchlist import WatchlistRow, WatchlistSnapshot
+from .replay import ReplayWorkspaceSnapshot
 
 __all__ = [
     "ActivityEntry",
@@ -26,4 +27,5 @@ __all__ = [
     "PositionsSnapshot",
     "RuntimeSnapshot",
     "RuntimeState",
+    "ReplayWorkspaceSnapshot",
 ]

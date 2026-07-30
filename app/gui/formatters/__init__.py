@@ -10,6 +10,7 @@ from app.gui.formatters.decisions import format_decisions
 from app.gui.formatters.portfolio import format_portfolio
 from app.gui.formatters.health import format_health
 from app.gui.formatters.watchlist import format_watchlist
+from app.gui.formatters.replay import format_replay
 
 __all__ = [
     "format_orders",
@@ -18,4 +19,5 @@ __all__ = [
     "format_portfolio",
     "format_health",
     "format_watchlist",
+    "format_replay",
 ]
