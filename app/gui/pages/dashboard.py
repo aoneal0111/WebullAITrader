@@ -1,147 +1,80 @@
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QGridLayout,
     QHBoxLayout,
     QLabel,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
 from app.gui.models import DashboardSnapshot
-from app.gui.widgets.activity_panel import ActivityPanel
-from app.gui.widgets.common import StatusBadge
-from app.gui.widgets.orders_panel import OrdersPanel
-from app.gui.widgets.panel import SectionPanel
-from app.gui.widgets.positions_panel import PositionsPanel
-from app.gui.widgets.runtime_ribbon import RuntimeRibbon
-from app.gui.widgets.portfolio_panel import PortfolioPanel
-from app.gui.widgets.health_panel import HealthPanel
-from app.gui.widgets.replay_status_panel import ReplayStatusPanel
+from app.gui.widgets.infrastructure_strip import InfrastructureStrip
+from app.gui.widgets.market_workspace import MarketWorkspace
+from app.gui.widgets.operator_workspace import OperatorWorkspace
+from app.gui.widgets.portfolio_summary_strip import PortfolioSummaryStrip
+from app.gui.widgets.runtime_control_header import RuntimeControlHeader
 
 
 class DashboardPage(QWidget):
+    """Responsive Atlas terminal dashboard composed from focused views."""
+
     def __init__(self) -> None:
         super().__init__()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        content = QWidget()
+        content.setObjectName("contentArea")
+        content.setMinimumWidth(900)
+        root = QVBoxLayout(content)
+        root.setContentsMargins(4, 4, 8, 16)
+        root.setSpacing(12)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(16)
-
-        header = QHBoxLayout()
-        heading = QVBoxLayout()
-
-        title = QLabel("Autonomous Trading Dashboard")
+        heading = QHBoxLayout()
+        titles = QVBoxLayout()
+        eyebrow = QLabel("OPERATIONS / OVERVIEW")
+        eyebrow.setObjectName("eyebrow")
+        title = QLabel("Atlas Trading Dashboard")
         title.setObjectName("pageTitle")
+        titles.addWidget(eyebrow)
+        titles.addWidget(title)
+        heading.addLayout(titles)
+        heading.addStretch()
+        root.addLayout(heading)
 
-        subtitle = QLabel(
-            "Monitor the runtime, strategy state, risk posture, and execution activity."
-        )
-        subtitle.setObjectName("muted")
+        self.runtime_header = RuntimeControlHeader()
+        self.infrastructure = InfrastructureStrip()
+        self.portfolio_summary = PortfolioSummaryStrip()
+        self.market_workspace = MarketWorkspace()
+        self.operator_workspace = OperatorWorkspace()
 
-        heading.addWidget(title)
-        heading.addWidget(subtitle)
+        root.addWidget(self.runtime_header)
+        root.addWidget(self.infrastructure)
+        root.addWidget(self.portfolio_summary)
+        root.addWidget(self.market_workspace, 3)
+        root.addWidget(self.operator_workspace, 2)
 
-        self.mode_badge = StatusBadge("PAPER")
+        # Compatibility aliases retained for existing focused presenters/tests.
+        self.positions_panel = self.operator_workspace.positions
+        self.orders_panel = self.operator_workspace.orders
+        self.activity_panel = self.operator_workspace.timeline
+        self.decisions_panel = self.operator_workspace.decisions
+        self.portfolio_panel = self.portfolio_summary
+        self.health_panel = self.infrastructure
+        self.operator_health_panel = self.operator_workspace.health
+        self.replay_status_panel = self.operator_workspace.lifecycle
 
-        header.addLayout(heading)
-        header.addStretch()
-        header.addWidget(self.mode_badge)
-
-        root.addLayout(header)
-
-        self.runtime_ribbon = RuntimeRibbon()
-        root.addWidget(self.runtime_ribbon)
-
-        body = QGridLayout()
-        body.setSpacing(12)
-
-        self.activity_panel = ActivityPanel(show_filters=False)
-        self.positions_panel = PositionsPanel()
-        self.orders_panel = OrdersPanel()
-        self.portfolio_panel = PortfolioPanel()
-        self.health_panel = HealthPanel()
-        self.replay_status_panel = ReplayStatusPanel()
-
-        body.addWidget(
-            SectionPanel(
-                "Decision & Activity Feed",
-                self.activity_panel,
-            ),
-            0,
-            0,
-            2,
-            2,
-        )
-
-        body.addWidget(
-            SectionPanel(
-                "Open Positions",
-                self.positions_panel,
-            ),
-            0,
-            2,
-        )
-
-        body.addWidget(
-            SectionPanel(
-                "Active Orders",
-                self.orders_panel,
-            ),
-            1,
-            2,
-        )
-        body.addWidget(
-            SectionPanel(
-                "Portfolio Summary",
-                self.portfolio_panel,
-            ),
-            2,
-            0,
-            1,
-            3,
-        )
-        body.addWidget(
-            SectionPanel(
-                "Infrastructure Health",
-                self.health_panel,
-            ),
-            3,
-            0,
-            1,
-            3,
-        )
-        body.addWidget(
-            SectionPanel(
-                "Replay Status",
-                self.replay_status_panel,
-            ),
-            4,
-            0,
-            1,
-            3,
-        )
-
-        body.setColumnStretch(0, 2)
-        body.setColumnStretch(1, 2)
-        body.setColumnStretch(2, 3)
-
-        root.addLayout(body, 1)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
 
     def render(self, snapshot: DashboardSnapshot) -> None:
-        self.runtime_ribbon.render(snapshot.runtime)
-
-        level = (
-            "good"
-            if snapshot.runtime.state.value == "RUNNING"
-            else "warn"
-        )
-
-        self.mode_badge.set_status(
-            snapshot.runtime.environment,
-            level,
-        )
-
+        self.runtime_header.render(snapshot.runtime)
         self.activity_panel.render(snapshot.activity)
         self.positions_panel.render(snapshot.positions)
         self.orders_panel.render(snapshot.orders)

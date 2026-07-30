@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QTableWidgetItem, QVBoxLayout, QWidget
 
 from app.gui.models import PositionsSnapshot
+from app.gui.widgets.data_table import StyledDataTable
 
 
 class PositionsPanel(QWidget):
@@ -12,12 +13,9 @@ class PositionsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self._table = QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(
+        self._table = StyledDataTable(
             ("Symbol", "Qty", "Avg Price", "P/L")
         )
-        self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.verticalHeader().setVisible(False)
 
         layout.addWidget(self._table)
 

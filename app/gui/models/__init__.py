@@ -13,6 +13,7 @@ from .portfolio import PortfolioDashboardSnapshot
 from .health import HealthDashboardSnapshot
 from .watchlist import WatchlistRow, WatchlistSnapshot
 from .replay import ReplayWorkspaceSnapshot
+from .chart import ChartViewSnapshot
 
 __all__ = [
     "ActivityEntry",
@@ -31,4 +32,5 @@ __all__ = [
     "RuntimeState",
     "TimelineFilter",
     "ReplayWorkspaceSnapshot",
+    "ChartViewSnapshot",
 ]

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from app.gui.models import WatchlistSnapshot
+from app.gui.widgets.data_table import StyledDataTable
 
 
 class WatchlistPanel(QWidget):
@@ -29,8 +29,7 @@ class WatchlistPanel(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self._table = QTableWidget(0, 10)
-        self._table.setHorizontalHeaderLabels(
+        self._table = StyledDataTable(
             (
                 "Symbol",
                 "Price",
@@ -44,8 +43,6 @@ class WatchlistPanel(QWidget):
                 "State",
             )
         )
-        self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.verticalHeader().setVisible(False)
         self._table.horizontalHeader().setSortIndicatorShown(True)
         self._table.horizontalHeader().sectionClicked.connect(
             self._request_sort

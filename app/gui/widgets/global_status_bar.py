@@ -1,0 +1,76 @@
+from __future__ import annotations
+
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
+
+from app.gui.models import (
+    DashboardSnapshot,
+    HealthDashboardSnapshot,
+)
+from app.gui.widgets.common import StatusIndicator
+
+
+class GlobalStatusBar(QWidget):
+    """Render immutable application and infrastructure status summaries."""
+
+    def __init__(self, *, version: str) -> None:
+        super().__init__()
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 0, 8, 0)
+        layout.setSpacing(18)
+        self.runtime = StatusIndicator("Runtime Unknown")
+        self.data_feed = StatusIndicator("Feed Unknown")
+        self.broker = StatusIndicator("Broker Unknown")
+        self.ai = StatusIndicator("AI Unknown")
+        for indicator in (
+            self.runtime,
+            self.data_feed,
+            self.broker,
+            self.ai,
+        ):
+            layout.addWidget(indicator)
+        layout.addStretch()
+        self.version = QLabel(f"Atlas v{version}")
+        self.version.setObjectName("muted")
+        layout.addWidget(self.version)
+
+    def render_dashboard(self, snapshot: DashboardSnapshot) -> None:
+        runtime = snapshot.runtime
+        self.runtime.set_status(
+            f"Runtime {runtime.state.value.title()}",
+            "good" if runtime.state.value == "RUNNING" else "neutral",
+        )
+
+    def render_health(self, snapshot: HealthDashboardSnapshot) -> None:
+        metrics = dict(snapshot.metrics)
+        feed = metrics.get("Market Data", "--")
+        broker = metrics.get("Broker", "--")
+        ai = metrics.get("AI", "--")
+        feed = "UNKNOWN" if feed == "--" else feed
+        broker = "UNKNOWN" if broker == "--" else broker
+        ai = "UNKNOWN" if ai == "--" else ai
+        self.data_feed.set_status(
+            f"Feed {feed.title()}",
+            _level(feed),
+        )
+        self.broker.set_status(
+            f"Broker {broker.title()}",
+            _level(broker),
+        )
+        self.ai.set_status(
+            f"AI {ai.title()}",
+            _level(ai),
+        )
+
+
+def _level(value: str) -> str:
+    normalized = value.upper()
+    if normalized in {"CONNECTED", "READY", "RUNNING", "HEALTHY"}:
+        return "good"
+    if normalized in {"FAILED", "ERROR", "DISCONNECTED", "UNAVAILABLE"}:
+        return "danger"
+    if normalized in {"DEGRADED", "STARTING", "RECONNECTING"}:
+        return "warn"
+    return "neutral"
+
+
+__all__ = ["GlobalStatusBar"]

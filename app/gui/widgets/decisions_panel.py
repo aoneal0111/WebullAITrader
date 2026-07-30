@@ -5,13 +5,13 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QLabel,
     QSplitter,
-    QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from app.gui.models import DecisionsSnapshot
+from app.gui.widgets.data_table import StyledDataTable
 
 
 class DecisionsPanel(QWidget):
@@ -24,8 +24,7 @@ class DecisionsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         splitter = QSplitter(Qt.Orientation.Vertical)
-        self._table = QTableWidget(0, 6)
-        self._table.setHorizontalHeaderLabels(
+        self._table = StyledDataTable(
             (
                 "Time",
                 "Strategy",
@@ -35,15 +34,6 @@ class DecisionsPanel(QWidget):
                 "Outcome",
             )
         )
-        self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.verticalHeader().setVisible(False)
-        self._table.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows
-        )
-        self._table.setSelectionMode(
-            QTableWidget.SelectionMode.SingleSelection
-        )
-
         inspector = QWidget()
         details = QFormLayout(inspector)
         self._title = QLabel("No decision selected")

@@ -27,7 +27,20 @@ def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
             emergency_stop_enabled=True,
             active_model=runtime.active_model,
             cycle_count=runtime.cycles_completed,
-            status_message=runtime.last_error or "Healthy",
+            status_message=(
+                runtime.last_error
+                or (
+                    "Healthy"
+                    if runtime.phase.value == "RUNNING"
+                    else runtime.phase.value.title()
+                )
+            ),
+            account=(
+                state.paper_runtime.session_id
+                if state.paper_runtime is not None
+                else "--"
+            ),
+            runtime_duration="--",
         ),
         activity=project_timeline_activity(state, limit=10),
         positions=format_positions(positions_read_model),

@@ -17,6 +17,8 @@ class RuntimeSnapshot:
     active_model: str
     cycle_count: int
     status_message: str
+    account: str = "--"
+    runtime_duration: str = "--"
 
     @classmethod
     def initial(cls) -> "RuntimeSnapshot":
@@ -30,6 +32,8 @@ class RuntimeSnapshot:
             active_model="Not loaded",
             cycle_count=0,
             status_message="Ready to start.",
+            account="--",
+            runtime_duration="--",
         )
 
 

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QVBoxLayout,
+)
 
 
 class MetricCard(QFrame):
@@ -27,6 +32,50 @@ class MetricCard(QFrame):
         self._value.setText(value)
         if note is not None:
             self._note.setText(note)
+
+
+class StatusIndicator(QLabel):
+    def __init__(self, text: str = "Unknown") -> None:
+        super().__init__()
+        self.setObjectName("statusIndicator")
+        self.set_status(text, "neutral")
+
+    def set_status(self, text: str, level: str = "neutral") -> None:
+        self.setText(f"\u25cf  {text}")
+        self.setProperty("status", level)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+
+class StatusCard(QFrame):
+    def __init__(self, title: str) -> None:
+        super().__init__()
+        self.setObjectName("statusCard")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(7)
+        title_row = QHBoxLayout()
+        title_label = QLabel(title.upper())
+        title_label.setObjectName("metricTitle")
+        title_label.setWordWrap(True)
+        self._indicator = StatusIndicator()
+        title_row.addWidget(title_label)
+        title_row.addStretch()
+        title_row.addWidget(self._indicator)
+        self._detail = QLabel("--")
+        self._detail.setObjectName("muted")
+        layout.addLayout(title_row)
+        layout.addWidget(self._detail)
+
+    def set_status(
+        self,
+        status: str,
+        *,
+        level: str = "neutral",
+        detail: str = "--",
+    ) -> None:
+        self._indicator.set_status(status, level)
+        self._detail.setText(detail)
 
 
 class StatusBadge(QLabel):

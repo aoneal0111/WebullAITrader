@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC
 
-from PySide6.QtCore import QDateTime, Qt, Signal
+from PySide6.QtCore import QDateTime, QTimeZone, Signal
 from PySide6.QtWidgets import (
     QDateTimeEdit,
     QFormLayout,
@@ -54,7 +54,7 @@ class ReplayPage(QWidget):
             QDateTime.currentDateTimeUtc()
         )
         self.timestamp_input.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
-        self.timestamp_input.setTimeSpec(Qt.TimeSpec.UTC)
+        self.timestamp_input.setTimeZone(QTimeZone.utc())
         self.timestamp_button = QPushButton("Jump to Timestamp")
         self.event_index_input = QSpinBox()
         self.event_index_input.setRange(0, 0)

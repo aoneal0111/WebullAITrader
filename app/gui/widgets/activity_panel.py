@@ -5,13 +5,13 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLineEdit,
-    QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from app.gui.models import ActivitySnapshot, TimelineFilter
+from app.gui.widgets.data_table import StyledDataTable
 
 
 class ActivityPanel(QWidget):
@@ -42,12 +42,9 @@ class ActivityPanel(QWidget):
         filter_bar.setVisible(show_filters)
         layout.addWidget(filter_bar)
 
-        self._table = QTableWidget(0, 6)
-        self._table.setHorizontalHeaderLabels(
+        self._table = StyledDataTable(
             ("Time", "Severity", "Category", "Symbol", "Source", "Event")
         )
-        self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.verticalHeader().setVisible(False)
         layout.addWidget(self._table)
 
         self._severity.currentTextChanged.connect(self._emit_filters)
