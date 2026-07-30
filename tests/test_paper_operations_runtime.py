@@ -20,8 +20,22 @@ from app.operations import (
     PaperRuntimeCycleResult,
     PaperRuntimeStatus,
 )
-from app.order_compliance.models import OrderSide, OrderType, TradingSession
+from app.order_compliance.models import (
+    OrderSide,
+    OrderType,
+    ProposedOrder,
+    TradingSession,
+)
 from app.paper_session import PaperSessionStatus
+from app.paper_trading.metrics import calculate_metrics
+from app.paper_trading.models import (
+    EquityPoint,
+    ExecutionStatus,
+    PaperExecutionResult,
+    PaperFill,
+    SimulationResult,
+)
+from app.paper_trading.portfolio import apply_fill
 from app.strategy_engine import (
     StrategyDecision,
     StrategyDecisionAction,
@@ -247,6 +261,135 @@ def test_event_sink_receives_ordered_events() -> None:
         "CYCLE_COMPLETED",
         "STOPPED",
     ]
+
+
+def test_executable_decision_event_exposes_explicit_order_fact() -> None:
+    events = []
+    engine = make_engine(
+        action=StrategyDecisionAction.ENTER_LONG,
+        events=events,
+    )
+
+    engine.start()
+    engine.run_cycle()
+
+    decision_event = next(
+        event
+        for event in events
+        if event.event_type == "DECISION_PROCESSED"
+    )
+    assert decision_event.order is not None
+    assert decision_event.order.order_id == "paper-1-1-1"
+    assert decision_event.order.symbol == "AAPL"
+    assert decision_event.order.side == "BUY"
+    assert decision_event.order.quantity == "1"
+    assert decision_event.order.status == "REJECTED"
+    assert decision_event.decision is not None
+    assert decision_event.decision.decision_id == "paper-1-1-1"
+    assert decision_event.decision.strategy_id == "1.0"
+    assert decision_event.decision.symbol == "AAPL"
+    assert decision_event.decision.action == "BUY"
+    assert decision_event.decision.requested_quantity == Decimal("1")
+    assert decision_event.decision.resulting_order_id == "paper-1-1-1"
+
+
+def test_filled_decision_event_exposes_fill_and_available_mark() -> None:
+    class FillingCoordinator:
+        def coordinate(self, decision, request):
+            intent = request.order_intent
+            proposal = ProposedOrder(
+                request_id=intent.request_id,
+                symbol=intent.symbol,
+                side=intent.side,
+                order_type=intent.order_type,
+                quantity=intent.quantity,
+                limit_price=intent.limit_price,
+                stop_price=intent.stop_price,
+                requested_session=intent.requested_session,
+                created_timestamp=intent.timestamp,
+            )
+            portfolio, realized_pnl = apply_fill(
+                request.portfolio,
+                intent.symbol,
+                intent.side,
+                intent.quantity,
+                Decimal("100"),
+                Decimal("105"),
+                intent.timestamp,
+            )
+            fill = PaperFill(
+                request_id=intent.request_id,
+                symbol=intent.symbol,
+                side=intent.side.value,
+                quantity=intent.quantity,
+                fill_price=Decimal("100"),
+                notional=intent.quantity * Decimal("100"),
+                realized_pnl=realized_pnl,
+                timestamp=intent.timestamp,
+            )
+            execution = PaperExecutionResult(
+                status=ExecutionStatus.FILLED,
+                reason="filled",
+                original_proposal=proposal,
+                fill=fill,
+                portfolio_before=request.portfolio,
+                portfolio_after=portfolio,
+            )
+            equity_curve = (
+                *request.equity_curve,
+                EquityPoint(intent.timestamp, portfolio.equity),
+            )
+            simulation = SimulationResult(
+                execution=execution,
+                portfolio=portfolio,
+                journal=request.journal,
+                equity_curve=equity_curve,
+                metrics=calculate_metrics(request.journal, equity_curve),
+            )
+            return ExecutionCoordinationResult(
+                status=CoordinationStatus.EXECUTED,
+                final_stage=CoordinationStage.COMPLETE,
+                strategy_decision=decision,
+                order_intent=intent,
+                proposal=proposal,
+                risk_decision=object(),
+                compliance_decision=object(),
+                execution_result=simulation,
+                trace=(
+                    CoordinationTrace(
+                        CoordinationStage.COMPLETE,
+                        True,
+                        "filled",
+                    ),
+                ),
+            )
+
+    events = []
+    engine = PaperOperationsEngine(
+        session_id="paper-1",
+        initial_cash=Decimal("10000"),
+        snapshot_source=lambda timestamp: (Snapshot("AAPL"),),
+        strategy_engine=StubStrategy(
+            StrategyDecisionAction.ENTER_LONG
+        ),
+        coordinator=FillingCoordinator(),
+        request_builder=request_builder,
+        clock=Clock(),
+        event_sink=events.append,
+    )
+
+    engine.start()
+    engine.run_cycle()
+
+    decision_event = next(
+        event
+        for event in events
+        if event.event_type == "DECISION_PROCESSED"
+    )
+    assert decision_event.fill is not None
+    assert decision_event.fill.request_id == "paper-1-1-1"
+    assert decision_event.fill.fill_price == Decimal("100")
+    assert decision_event.mark_price == Decimal("105")
 
 
 def test_checkpoint_sink_runs_after_transitions() -> None:

@@ -3,11 +3,13 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from threading import Event
 from typing import Protocol
 
 from app.execution_coordinator import CoordinationRequest, ExecutionCoordinator
+from app.operations_core import OperationsOrder
 from app.operations.learning_runtime import (
     RuntimeInferenceAdapter,
     RuntimeInferenceAudit,
@@ -17,6 +19,7 @@ from app.paper_session import (
     PaperTradingSession,
     process_decision,
 )
+from app.paper_trading.models import PaperFill
 from app.strategy_engine import StrategyDecision, StrategyEngine, StrategyPosition
 
 
@@ -45,6 +48,224 @@ WaitFunction = Callable[[float], bool]
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeDecision:
+    """Structured decision facts exposed at the runtime event boundary."""
+
+    decision_id: str
+    timestamp: datetime
+    strategy_id: str
+    symbol: str
+    action: str
+    confidence: int
+    reasoning_summary: str
+    risk_assessment: str | None = None
+    requested_quantity: Decimal | None = None
+    resulting_order_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_aware(self.timestamp)
+        for field_name in (
+            "decision_id",
+            "strategy_id",
+            "symbol",
+            "action",
+            "reasoning_summary",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"runtime decision {field_name} is required")
+            object.__setattr__(self, field_name, value.strip())
+        object.__setattr__(self, "symbol", self.symbol.upper())
+        object.__setattr__(self, "action", self.action.upper())
+        if isinstance(self.confidence, bool) or not isinstance(
+            self.confidence,
+            int,
+        ):
+            raise TypeError("runtime decision confidence must be an integer")
+        if not 0 <= self.confidence <= 100:
+            raise ValueError(
+                "runtime decision confidence must be between 0 and 100"
+            )
+        for field_name in ("risk_assessment", "resulting_order_id"):
+            value = getattr(self, field_name)
+            if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(
+                        f"runtime decision {field_name} must be non-empty text"
+                    )
+                object.__setattr__(self, field_name, value.strip())
+        if self.requested_quantity is not None:
+            if (
+                not isinstance(self.requested_quantity, Decimal)
+                or not self.requested_quantity.is_finite()
+                or self.requested_quantity <= 0
+            ):
+                raise ValueError(
+                    "runtime decision requested quantity must be positive"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeHealthUpdate:
+    """Optional structured infrastructure facts carried by runtime events."""
+
+    runtime_status: str | None = None
+    broker_status: str | None = None
+    market_data_status: str | None = None
+    ai_status: str | None = None
+    risk_status: str | None = None
+    persistence_status: str | None = None
+    last_error: str | None = None
+    last_warning: str | None = None
+    heartbeat_at: datetime | None = None
+    connection_latency: Decimal | None = None
+    reconnect_attempts: int | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "runtime_status",
+            "broker_status",
+            "market_data_status",
+            "ai_status",
+            "risk_status",
+            "persistence_status",
+            "last_error",
+            "last_warning",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(
+                        f"runtime health {field_name} must be non-empty text"
+                    )
+                object.__setattr__(self, field_name, value.strip())
+        if self.heartbeat_at is not None:
+            _require_aware(self.heartbeat_at)
+        if self.connection_latency is not None and (
+            not isinstance(self.connection_latency, Decimal)
+            or not self.connection_latency.is_finite()
+            or self.connection_latency < 0
+        ):
+            raise ValueError(
+                "runtime health connection latency must be nonnegative"
+            )
+        if self.reconnect_attempts is not None and (
+            isinstance(self.reconnect_attempts, bool)
+            or not isinstance(self.reconnect_attempts, int)
+            or self.reconnect_attempts < 0
+        ):
+            raise ValueError(
+                "runtime health reconnect attempts must be nonnegative"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeWatchlistQuote:
+    timestamp: datetime
+    latest_price: Decimal | None = None
+    change: Decimal | None = None
+    change_percent: Decimal | None = None
+    bid: Decimal | None = None
+    ask: Decimal | None = None
+    volume: int | None = None
+    stale: bool | None = None
+
+    def __post_init__(self) -> None:
+        _require_aware(self.timestamp)
+        for field_name in (
+            "latest_price",
+            "change",
+            "change_percent",
+            "bid",
+            "ask",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and (
+                not isinstance(value, Decimal)
+                or not value.is_finite()
+            ):
+                raise ValueError(
+                    f"watchlist quote {field_name} must be a finite Decimal"
+                )
+        for field_name in ("latest_price", "bid", "ask"):
+            value = getattr(self, field_name)
+            if value is not None and value < 0:
+                raise ValueError(
+                    f"watchlist quote {field_name} must be nonnegative"
+                )
+        if self.volume is not None and (
+            isinstance(self.volume, bool)
+            or not isinstance(self.volume, int)
+            or self.volume < 0
+        ):
+            raise ValueError("watchlist quote volume must be nonnegative")
+        if self.stale is not None and not isinstance(self.stale, bool):
+            raise TypeError("watchlist quote stale must be a bool or None")
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeWatchlistUpdate:
+    symbol: str | None = None
+    subscribed: bool | None = None
+    quote: RuntimeWatchlistQuote | None = None
+    market_status: str | None = None
+    selection_changed: bool = False
+    selected_symbol: str | None = None
+    metadata: tuple[tuple[str, str], ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.symbol is not None:
+            symbol = self.symbol.strip().upper()
+            if not symbol:
+                raise ValueError("watchlist update symbol cannot be blank")
+            object.__setattr__(self, "symbol", symbol)
+        if self.subscribed is not None and not isinstance(
+            self.subscribed,
+            bool,
+        ):
+            raise TypeError("watchlist subscribed must be a bool or None")
+        if self.quote is not None and not isinstance(
+            self.quote,
+            RuntimeWatchlistQuote,
+        ):
+            raise TypeError("watchlist quote must be a RuntimeWatchlistQuote")
+        if self.market_status is not None:
+            status = self.market_status.strip().upper()
+            if not status:
+                raise ValueError("watchlist market status cannot be blank")
+            object.__setattr__(self, "market_status", status)
+        if not isinstance(self.selection_changed, bool):
+            raise TypeError("selection_changed must be a bool")
+        if self.selected_symbol is not None:
+            selected = self.selected_symbol.strip().upper()
+            if not selected:
+                raise ValueError("selected symbol cannot be blank")
+            object.__setattr__(self, "selected_symbol", selected)
+        if self.metadata is not None:
+            if not isinstance(self.metadata, tuple):
+                raise TypeError("watchlist metadata must be an immutable tuple")
+            normalized = tuple(
+                (_required_metadata(key), _required_metadata(value))
+                for key, value in self.metadata
+            )
+            if len({key for key, _ in normalized}) != len(normalized):
+                raise ValueError("watchlist metadata keys must be unique")
+            object.__setattr__(self, "metadata", normalized)
+        has_symbol_fact = any(
+            value is not None
+            for value in (
+                self.subscribed,
+                self.quote,
+                self.metadata,
+            )
+        )
+        if has_symbol_fact and self.symbol is None:
+            raise ValueError(
+                "watchlist membership, quote, and metadata require a symbol"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class PaperRuntimeEvent:
     sequence: int
     timestamp: datetime
@@ -52,6 +273,13 @@ class PaperRuntimeEvent:
     message: str
     cycle: int
     symbol: str | None = None
+    order: OperationsOrder | None = None
+    fill: PaperFill | None = None
+    mark_price: Decimal | None = None
+    source: str = "paper-runtime"
+    decision: RuntimeDecision | None = None
+    health: RuntimeHealthUpdate | None = None
+    watchlist: RuntimeWatchlistUpdate | None = None
 
     def __post_init__(self) -> None:
         if self.sequence < 1:
@@ -61,6 +289,10 @@ class PaperRuntimeEvent:
             raise ValueError("runtime event type is required")
         if not self.message.strip():
             raise ValueError("runtime event message is required")
+        if not self.source.strip() or self.source != self.source.strip():
+            raise ValueError(
+                "runtime event source must be non-empty stripped text"
+            )
         if self.cycle < 0:
             raise ValueError("runtime event cycle cannot be negative")
         if self.symbol is not None:
@@ -68,6 +300,62 @@ class PaperRuntimeEvent:
             if not normalized:
                 raise ValueError("runtime event symbol cannot be blank")
             object.__setattr__(self, "symbol", normalized)
+        if self.order is not None:
+            if not isinstance(self.order, OperationsOrder):
+                raise TypeError("runtime event order must be an OperationsOrder")
+            if self.symbol is not None and self.order.symbol != self.symbol:
+                raise ValueError(
+                    "runtime event order symbol must match event symbol"
+                )
+        if self.fill is not None:
+            if not isinstance(self.fill, PaperFill):
+                raise TypeError("runtime event fill must be a PaperFill")
+            if self.symbol is not None and self.fill.symbol != self.symbol:
+                raise ValueError(
+                    "runtime event fill symbol must match event symbol"
+                )
+        if self.mark_price is not None:
+            if (
+                not isinstance(self.mark_price, Decimal)
+                or not self.mark_price.is_finite()
+                or self.mark_price <= 0
+            ):
+                raise ValueError(
+                    "runtime event mark price must be a positive finite Decimal"
+                )
+            if self.fill is None and self.symbol is None:
+                raise ValueError(
+                    "runtime event mark price requires a fill or symbol"
+                )
+        if self.decision is not None:
+            if not isinstance(self.decision, RuntimeDecision):
+                raise TypeError(
+                    "runtime event decision must be a RuntimeDecision"
+                )
+            if self.symbol is not None and self.decision.symbol != self.symbol:
+                raise ValueError(
+                    "runtime event decision symbol must match event symbol"
+                )
+        if self.health is not None and not isinstance(
+            self.health,
+            RuntimeHealthUpdate,
+        ):
+            raise TypeError(
+                "runtime event health must be a RuntimeHealthUpdate"
+            )
+        if self.watchlist is not None and not isinstance(
+            self.watchlist,
+            RuntimeWatchlistUpdate,
+        ):
+            raise TypeError(
+                "runtime event watchlist must be a RuntimeWatchlistUpdate"
+            )
+
+
+def _required_metadata(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("watchlist metadata must be non-empty text")
+    return value.strip()
 
 
 @dataclass(frozen=True, slots=True)
@@ -377,12 +665,30 @@ class PaperOperationsEngine:
                     request=request,
                 )
                 decisions.append(decision)
+                order = _project_runtime_order(
+                    session.last_coordination_result,
+                    timestamp,
+                )
+                fill, mark_price = _project_runtime_fill(
+                    session.last_coordination_result,
+                )
+                runtime_decision = _project_runtime_decision(
+                    session.last_coordination_result,
+                    decision,
+                    decision_id=(
+                        f"{self._state.session_id}:{cycle}:{index}:{symbol}"
+                    ),
+                )
                 self._append_event(
                     timestamp,
                     "DECISION_PROCESSED",
                     f"Processed {decision.action.value} for {symbol}.",
                     cycle,
                     symbol,
+                    order,
+                    fill,
+                    mark_price,
+                    runtime_decision,
                 )
             result = PaperRuntimeCycleResult(
                 cycle=cycle,
@@ -504,6 +810,10 @@ class PaperOperationsEngine:
         message: str,
         cycle: int,
         symbol: str | None = None,
+        order: OperationsOrder | None = None,
+        fill: PaperFill | None = None,
+        mark_price: Decimal | None = None,
+        decision: RuntimeDecision | None = None,
     ) -> None:
         event = PaperRuntimeEvent(
             sequence=len(self._state.events) + 1,
@@ -512,6 +822,10 @@ class PaperOperationsEngine:
             message=message,
             cycle=cycle,
             symbol=symbol,
+            order=order,
+            fill=fill,
+            mark_price=mark_price,
+            decision=decision,
         )
         self._state = replace(
             self._state,
@@ -551,6 +865,120 @@ def _veto_to_hold(decision: StrategyDecision) -> StrategyDecision:
             "inference-vetoed strategy decision remained executable"
         )
     return vetoed
+
+
+def _project_runtime_order(
+    coordination,
+    timestamp: datetime,
+) -> OperationsOrder | None:
+    """Expose explicit immutable order facts on the runtime event boundary."""
+
+    if coordination is None or coordination.order_intent is None:
+        return None
+
+    intent = coordination.order_intent
+    status = coordination.status.value
+    execution_result = coordination.execution_result
+    execution = getattr(execution_result, "execution", None)
+    execution_status = getattr(execution, "status", None)
+    if execution_status is not None:
+        status = execution_status.value
+
+    return OperationsOrder(
+        order_id=intent.request_id,
+        symbol=intent.symbol,
+        side=intent.side.value,
+        quantity=format(intent.quantity, "f"),
+        status=status,
+        updated_at=timestamp,
+    )
+
+
+def _project_runtime_decision(
+    coordination,
+    decision: StrategyDecision,
+    *,
+    decision_id: str,
+) -> RuntimeDecision:
+    """Expose explicit strategy and risk facts without parsing event text."""
+
+    intent = (
+        coordination.order_intent
+        if coordination is not None
+        else None
+    )
+    risk_decision = (
+        coordination.risk_decision
+        if coordination is not None
+        else None
+    )
+    risk_assessment = None
+    primary_reason = getattr(risk_decision, "primary_reason", None)
+    approval_reason = getattr(risk_decision, "approval_reason", None)
+    if primary_reason is not None:
+        risk_assessment = getattr(primary_reason, "value", str(primary_reason))
+    elif isinstance(approval_reason, str) and approval_reason.strip():
+        risk_assessment = approval_reason.strip()
+
+    action = (
+        intent.side.value
+        if intent is not None
+        else decision.action.value
+    )
+    reasons = "; ".join(decision.reasons)
+    return RuntimeDecision(
+        decision_id=(
+            intent.request_id
+            if intent is not None
+            else decision_id
+        ),
+        timestamp=decision.timestamp,
+        strategy_id=decision.strategy_version,
+        symbol=decision.symbol,
+        action=action,
+        confidence=decision.confidence,
+        reasoning_summary=reasons,
+        risk_assessment=risk_assessment,
+        requested_quantity=(
+            intent.quantity
+            if intent is not None
+            else None
+        ),
+        resulting_order_id=(
+            intent.request_id
+            if intent is not None
+            else None
+        ),
+    )
+
+
+def _project_runtime_fill(
+    coordination,
+) -> tuple[PaperFill | None, Decimal | None]:
+    """Expose fill and available post-fill mark on the event boundary."""
+
+    if coordination is None:
+        return None, None
+
+    execution_result = coordination.execution_result
+    execution = getattr(execution_result, "execution", None)
+    fill = getattr(execution, "fill", None)
+    if fill is None:
+        return None, None
+    if not isinstance(fill, PaperFill):
+        raise TypeError("paper execution fill must be a PaperFill")
+
+    portfolio = getattr(execution, "portfolio_after", None)
+    positions = getattr(portfolio, "positions", ())
+    mark_price = next(
+        (
+            position.current_mark
+            for position in positions
+            if position.symbol == fill.symbol
+        ),
+        None,
+    )
+    return fill, mark_price
 
 
 def _validate_recovery(

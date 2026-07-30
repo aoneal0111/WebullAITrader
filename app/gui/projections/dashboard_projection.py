@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from app.gui.formatters import format_orders, format_positions
 from app.gui.models import (
-    ActivityEntry,
-    ActivitySnapshot,
     DashboardSnapshot,
     RuntimeSnapshot,
     RuntimeState,
@@ -11,6 +9,7 @@ from app.gui.models import (
 from app.operations_core import ApplicationState
 from app.read_models.orders import project_orders_read_model
 from app.read_models.positions import project_positions_read_model
+from app.gui.projections.activity_projection import project_timeline_activity
 
 
 def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
@@ -28,17 +27,22 @@ def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
             emergency_stop_enabled=True,
             active_model=runtime.active_model,
             cycle_count=runtime.cycles_completed,
-            status_message=runtime.last_error or "Healthy",
-        ),
-        activity=ActivitySnapshot(
-            entries=tuple(
-                ActivityEntry(
-                    occurred_at=entry.occurred_at,
-                    message=entry.message,
+            status_message=(
+                runtime.last_error
+                or (
+                    "Healthy"
+                    if runtime.phase.value == "RUNNING"
+                    else runtime.phase.value.title()
                 )
-                for entry in state.timeline[-10:][::-1]
-            )
+            ),
+            account=(
+                state.paper_runtime.session_id
+                if state.paper_runtime is not None
+                else "--"
+            ),
+            runtime_duration="--",
         ),
+        activity=project_timeline_activity(state, limit=10),
         positions=format_positions(positions_read_model),
         orders=format_orders(orders_read_model),
     )

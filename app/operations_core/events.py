@@ -69,11 +69,12 @@ class OperationsPosition:
     asset_type: str
     quantity: str
     average_cost: str
-    market_value: str
-    unrealized_gain_loss: str
+    market_value: str | None
+    unrealized_gain_loss: str | None
     realized_gain_loss: str | None
     currency: str
     updated_at: datetime
+    exposure: str | None = None
 
     def __post_init__(self) -> None:
         required_text_fields = (
@@ -82,8 +83,6 @@ class OperationsPosition:
             "asset_type",
             "quantity",
             "average_cost",
-            "market_value",
-            "unrealized_gain_loss",
             "currency",
         )
 
@@ -107,6 +106,20 @@ class OperationsPosition:
 
             if self.realized_gain_loss != self.realized_gain_loss.strip():
                 raise ValueError("realized_gain_loss must be stripped")
+
+        for field_name in (
+            "market_value",
+            "unrealized_gain_loss",
+            "exposure",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(
+                        f"{field_name} must be None or non-empty text"
+                    )
+                if value != value.strip():
+                    raise ValueError(f"{field_name} must be stripped")
 
         if self.updated_at.tzinfo is None:
             raise ValueError("updated_at must be timezone-aware")
@@ -153,6 +166,405 @@ class PositionsUpdated(OperationsEvent):
             raise TypeError(
                 "positions must contain only OperationsPosition instances"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class OperationsTimelineEntry:
+    """Backend-neutral immutable timeline entry for state consumers."""
+
+    timestamp: datetime
+    category: str
+    severity: str
+    source: str
+    title: str
+    description: str
+    related_symbol: str | None = None
+    related_order_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.timestamp.tzinfo is None:
+            raise ValueError("timeline timestamp must be timezone-aware")
+        for field_name in (
+            "category",
+            "severity",
+            "source",
+            "title",
+            "description",
+        ):
+            value = getattr(self, field_name)
+            if (
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+            ):
+                raise ValueError(
+                    f"timeline {field_name} must be non-empty stripped text"
+                )
+        for field_name in (
+            "related_symbol",
+            "related_order_id",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and (
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+            ):
+                raise ValueError(
+                    f"timeline {field_name} must be None or stripped text"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class OperationsDecisionRecord:
+    """Backend-neutral immutable trading-decision lifecycle."""
+
+    decision_id: str
+    timestamp: datetime
+    strategy_id: str
+    symbol: str
+    action: str
+    confidence: int
+    reasoning_summary: str
+    risk_assessment: str | None
+    requested_quantity: str | None
+    resulting_order_id: str | None
+    execution_outcome: str
+
+    def __post_init__(self) -> None:
+        if self.timestamp.tzinfo is None:
+            raise ValueError("decision timestamp must be timezone-aware")
+        for name in (
+            "decision_id",
+            "strategy_id",
+            "symbol",
+            "action",
+            "reasoning_summary",
+            "execution_outcome",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"decision {name} must be non-empty text")
+        if not 0 <= self.confidence <= 100:
+            raise ValueError("decision confidence must be between 0 and 100")
+        for name in (
+            "risk_assessment",
+            "requested_quantity",
+            "resulting_order_id",
+        ):
+            value = getattr(self, name)
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()
+            ):
+                raise ValueError(
+                    f"decision {name} must be None or non-empty text"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class OperationsPortfolioHighlight:
+    symbol: str
+    value: str
+
+    def __post_init__(self) -> None:
+        for field_name in ("symbol", "value"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"portfolio highlight {field_name} is required"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class OperationsPortfolioSummary:
+    total_market_value: str | None
+    total_cost_basis: str
+    realized_pnl: str | None
+    unrealized_pnl: str | None
+    total_pnl: str | None
+    gross_exposure: str | None
+    long_exposure: str | None
+    short_exposure: str | None
+    open_positions: int
+    working_orders: int
+    winning_positions: int | None
+    losing_positions: int | None
+    largest_position: OperationsPortfolioHighlight | None
+    largest_unrealized_gain: OperationsPortfolioHighlight | None
+    largest_unrealized_loss: OperationsPortfolioHighlight | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.total_cost_basis, str) or not (
+            self.total_cost_basis.strip()
+        ):
+            raise ValueError("portfolio total_cost_basis is required")
+        for value in (
+            self.total_market_value,
+            self.realized_pnl,
+            self.unrealized_pnl,
+            self.total_pnl,
+            self.gross_exposure,
+            self.long_exposure,
+            self.short_exposure,
+        ):
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()
+            ):
+                raise ValueError(
+                    "portfolio values must be None or non-empty text"
+                )
+        for value in (
+            self.open_positions,
+            self.working_orders,
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+            ):
+                raise ValueError(
+                    "portfolio counts must be nonnegative integers"
+                )
+        for value in (self.winning_positions, self.losing_positions):
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+            ):
+                raise ValueError(
+                    "portfolio win/loss counts must be nonnegative or None"
+                )
+        for value in (
+            self.largest_position,
+            self.largest_unrealized_gain,
+            self.largest_unrealized_loss,
+        ):
+            if value is not None and not isinstance(
+                value,
+                OperationsPortfolioHighlight,
+            ):
+                raise TypeError(
+                    "portfolio highlights must be immutable highlights"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class OperationsHealthState:
+    runtime_status: str | None = None
+    broker_status: str | None = None
+    market_data_status: str | None = None
+    ai_status: str | None = None
+    risk_status: str | None = None
+    persistence_status: str | None = None
+    last_error: str | None = None
+    last_warning: str | None = None
+    last_heartbeat: datetime | None = None
+    connection_latency: str | None = None
+    reconnect_attempts: int = 0
+    degraded: bool = False
+    healthy: bool = False
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "runtime_status",
+            "broker_status",
+            "market_data_status",
+            "ai_status",
+            "risk_status",
+            "persistence_status",
+            "last_error",
+            "last_warning",
+            "connection_latency",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and (
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+            ):
+                raise ValueError(
+                    f"health {field_name} must be None or stripped text"
+                )
+        if (
+            self.last_heartbeat is not None
+            and self.last_heartbeat.tzinfo is None
+        ):
+            raise ValueError("health heartbeat must be timezone-aware")
+        if (
+            isinstance(self.reconnect_attempts, bool)
+            or not isinstance(self.reconnect_attempts, int)
+            or self.reconnect_attempts < 0
+        ):
+            raise ValueError("health reconnect attempts must be nonnegative")
+        if not isinstance(self.degraded, bool) or not isinstance(
+            self.healthy,
+            bool,
+        ):
+            raise TypeError("health flags must be bools")
+        if self.degraded and self.healthy:
+            raise ValueError("health cannot be healthy and degraded")
+
+
+@dataclass(frozen=True, slots=True)
+class OperationsWatchlistEntry:
+    symbol: str
+    latest_price: str | None = None
+    change: str | None = None
+    change_percent: str | None = None
+    bid: str | None = None
+    ask: str | None = None
+    volume: int | None = None
+    market_status: str | None = None
+    last_update: datetime | None = None
+    stale: bool | None = None
+    metadata: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.symbol, str)
+            or not self.symbol.strip()
+            or self.symbol != self.symbol.strip().upper()
+        ):
+            raise ValueError("watchlist symbol must be normalized")
+        for field_name in (
+            "latest_price",
+            "change",
+            "change_percent",
+            "bid",
+            "ask",
+            "market_status",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and (
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+            ):
+                raise ValueError(
+                    f"watchlist {field_name} must be None or stripped text"
+                )
+        if self.volume is not None and (
+            isinstance(self.volume, bool)
+            or not isinstance(self.volume, int)
+            or self.volume < 0
+        ):
+            raise ValueError("watchlist volume must be nonnegative")
+        if self.last_update is not None and self.last_update.tzinfo is None:
+            raise ValueError("watchlist last update must be timezone-aware")
+        if self.stale is not None and not isinstance(self.stale, bool):
+            raise TypeError("watchlist stale must be a bool or None")
+        if not isinstance(self.metadata, tuple):
+            raise TypeError("watchlist metadata must be an immutable tuple")
+
+
+@dataclass(frozen=True, slots=True)
+class OperationsWatchlistState:
+    ordered_symbols: tuple[str, ...] = ()
+    entries: tuple[OperationsWatchlistEntry, ...] = ()
+    selected_symbol: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.ordered_symbols, tuple):
+            raise TypeError("watchlist symbols must be an immutable tuple")
+        if not isinstance(self.entries, tuple):
+            raise TypeError("watchlist entries must be an immutable tuple")
+        if any(
+            not isinstance(entry, OperationsWatchlistEntry)
+            for entry in self.entries
+        ):
+            raise TypeError(
+                "watchlist entries must contain immutable entries"
+            )
+        if tuple(entry.symbol for entry in self.entries) != (
+            self.ordered_symbols
+        ):
+            raise ValueError("watchlist entries must follow symbol order")
+        if (
+            self.selected_symbol is not None
+            and self.selected_symbol not in self.ordered_symbols
+        ):
+            raise ValueError(
+                "watchlist selected symbol must belong to the watchlist"
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WatchlistUpdated(OperationsEvent):
+    state: OperationsWatchlistState
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        if not isinstance(self.state, OperationsWatchlistState):
+            raise TypeError("state must be an OperationsWatchlistState")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HealthUpdated(OperationsEvent):
+    state: OperationsHealthState
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        if not isinstance(self.state, OperationsHealthState):
+            raise TypeError("state must be an OperationsHealthState")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PortfolioUpdated(OperationsEvent):
+    summary: OperationsPortfolioSummary
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        if not isinstance(self.summary, OperationsPortfolioSummary):
+            raise TypeError(
+                "summary must be an OperationsPortfolioSummary"
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DecisionsUpdated(OperationsEvent):
+    """Replace the projected decision slice with an immutable snapshot."""
+
+    decisions: tuple[OperationsDecisionRecord, ...] = ()
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        if not isinstance(self.decisions, tuple):
+            raise TypeError("decisions must be an immutable tuple")
+        if any(
+            not isinstance(item, OperationsDecisionRecord)
+            for item in self.decisions
+        ):
+            raise TypeError(
+                "decisions must contain OperationsDecisionRecord instances"
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TimelineUpdated(OperationsEvent):
+    """Replace the projected runtime timeline with a bounded snapshot."""
+
+    entries: tuple[OperationsTimelineEntry, ...] = ()
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        if not isinstance(self.entries, tuple):
+            raise TypeError("timeline entries must be an immutable tuple")
+        if any(
+            not isinstance(entry, OperationsTimelineEntry)
+            for entry in self.entries
+        ):
+            raise TypeError(
+                "timeline entries must contain only "
+                "OperationsTimelineEntry instances"
+            )
+        if any(
+            first.timestamp < second.timestamp
+            for first, second in zip(
+                self.entries,
+                self.entries[1:],
+            )
+        ):
+            raise ValueError("timeline entries must be newest-first")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -21,6 +21,14 @@ from app.operations.runtime import (
     PaperRuntimeCycleResult,
     RuntimeEventSink,
 )
+from app.operations_core import OperationsBus
+from app.read_models.order_projection import OrderProjection
+from app.read_models.position_projection import PositionProjection
+from app.read_models.timeline_projection import TimelineProjection
+from app.read_models.decision_projection import DecisionProjection
+from app.read_models.portfolio_projection import PortfolioProjection
+from app.read_models.health_projection import HealthProjection
+from app.read_models.watchlist_projection import WatchlistProjection
 from app.operations.scanner_runtime import SnapshotResolver
 from app.realtime_scanner.protocols import (
     ReferenceLoader,
@@ -41,6 +49,8 @@ from .desktop_infrastructure import (
 )
 from .paper_dependencies import PaperRuntimeDependencies
 from .paper_runtime_composition import create_paper_runtime_driver_factory
+from .runtime_event_sink import CompositeRuntimeEventSink
+from .runtime_projection_pipeline import create_runtime_projection_pipeline
 
 
 Clock = Callable[[], datetime]
@@ -53,6 +63,13 @@ class DesktopRuntimeBootstrap:
     scanner_infrastructure: DesktopScannerInfrastructure
     runtime_dependencies: PaperRuntimeDependencies
     driver_factory: DriverFactory
+    order_projection: OrderProjection | None = None
+    position_projection: PositionProjection | None = None
+    timeline_projection: TimelineProjection | None = None
+    decision_projection: DecisionProjection | None = None
+    portfolio_projection: PortfolioProjection | None = None
+    health_projection: HealthProjection | None = None
+    watchlist_projection: WatchlistProjection | None = None
 
 
 def create_desktop_runtime_bootstrap(
@@ -80,6 +97,11 @@ def create_desktop_runtime_bootstrap(
     strategy_engine: Any | None = None,
     inference_adapter: Any | None = None,
     event_sink: RuntimeEventSink | None = None,
+    event_sinks: Iterable[RuntimeEventSink | None] = (),
+    operations_bus: OperationsBus | None = None,
+    timeline_history_limit: int = 500,
+    watchlist_maximum_symbols: int = 100,
+    watchlist_stale_after: timedelta = timedelta(seconds=30),
     checkpoint_sink: CheckpointSink | None = None,
     runtime_result_sink: Callable[[PaperRuntimeCycleResult], None] | None = None,
     interval_seconds: float = 1.0,
@@ -122,11 +144,67 @@ def create_desktop_runtime_bootstrap(
         maximum_events_per_cycle=maximum_events_per_cycle,
     )
 
+    projection_pipeline = (
+        create_runtime_projection_pipeline(
+            operations_bus=operations_bus,
+            account_id=session_id,
+            timeline_history_limit=timeline_history_limit,
+            watchlist_maximum_symbols=watchlist_maximum_symbols,
+            watchlist_stale_after=watchlist_stale_after,
+        )
+        if operations_bus is not None
+        else None
+    )
+    order_projection = (
+        projection_pipeline.order_projection
+        if projection_pipeline is not None
+        else None
+    )
+    position_projection = (
+        projection_pipeline.position_projection
+        if projection_pipeline is not None
+        else None
+    )
+    portfolio_projection = (
+        projection_pipeline.portfolio_projection
+        if projection_pipeline is not None
+        else None
+    )
+    health_projection = (
+        projection_pipeline.health_projection
+        if projection_pipeline is not None
+        else None
+    )
+    watchlist_projection = (
+        projection_pipeline.watchlist_projection
+        if projection_pipeline is not None
+        else None
+    )
+    timeline_projection = (
+        projection_pipeline.timeline_projection
+        if projection_pipeline is not None
+        else None
+    )
+    decision_projection = (
+        projection_pipeline.decision_projection
+        if projection_pipeline is not None
+        else None
+    )
+    composed_event_sinks = (
+        *(projection_pipeline.sinks if projection_pipeline is not None else ()),
+        *tuple(event_sinks),
+    )
+    resolved_event_sink: RuntimeEventSink | None = event_sink
+    if any(sink is not None for sink in composed_event_sinks):
+        resolved_event_sink = CompositeRuntimeEventSink(
+            (event_sink, *composed_event_sinks)
+        )
+
     driver_factory = create_paper_runtime_driver_factory(
         session_id=session_id,
         initial_cash=initial_cash,
         dependencies=runtime_dependencies,
-        event_sink=event_sink,
+        event_sink=resolved_event_sink,
         checkpoint_sink=checkpoint_sink,
         runtime_result_sink=runtime_result_sink,
         interval_seconds=interval_seconds,
@@ -138,6 +216,13 @@ def create_desktop_runtime_bootstrap(
         scanner_infrastructure=scanner_infrastructure,
         runtime_dependencies=runtime_dependencies,
         driver_factory=driver_factory,
+        order_projection=order_projection,
+        position_projection=position_projection,
+        timeline_projection=timeline_projection,
+        decision_projection=decision_projection,
+        portfolio_projection=portfolio_projection,
+        health_projection=health_projection,
+        watchlist_projection=watchlist_projection,
     )
 
 

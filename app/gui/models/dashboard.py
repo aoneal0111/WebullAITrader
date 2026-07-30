@@ -17,6 +17,8 @@ class RuntimeSnapshot:
     active_model: str
     cycle_count: int
     status_message: str
+    account: str = "--"
+    runtime_duration: str = "--"
 
     @classmethod
     def initial(cls) -> "RuntimeSnapshot":
@@ -30,6 +32,8 @@ class RuntimeSnapshot:
             active_model="Not loaded",
             cycle_count=0,
             status_message="Ready to start.",
+            account="--",
+            runtime_duration="--",
         )
 
 
@@ -37,11 +41,28 @@ class RuntimeSnapshot:
 class ActivityEntry:
     occurred_at: datetime
     message: str
+    category: str = "SYSTEM"
+    severity: str = "INFO"
+    source: str = "operations"
+    related_symbol: str | None = None
+    related_order_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineFilter:
+    severity: str = "ALL"
+    category: str = "ALL"
+    symbol: str = "ALL"
+    search: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class ActivitySnapshot:
     entries: tuple[ActivityEntry, ...]
+    filters: TimelineFilter = TimelineFilter()
+    severity_options: tuple[str, ...] = ("ALL",)
+    category_options: tuple[str, ...] = ("ALL",)
+    symbol_options: tuple[str, ...] = ("ALL",)
 
     @classmethod
     def initial(cls) -> "ActivitySnapshot":

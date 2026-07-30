@@ -36,11 +36,12 @@ class PositionReadModel:
     asset_type: str
     quantity: str
     average_cost: str
-    market_value: str
-    unrealized_gain_loss: str
+    market_value: str | None
+    unrealized_gain_loss: str | None
     realized_gain_loss: str | None
     currency: str
     updated_at: datetime
+    exposure: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -49,8 +50,6 @@ class PositionReadModel:
             "asset_type",
             "quantity",
             "average_cost",
-            "market_value",
-            "unrealized_gain_loss",
             "currency",
         ):
             _required_text(
@@ -59,8 +58,20 @@ class PositionReadModel:
             )
 
         _optional_text(
+            self.market_value,
+            "market_value",
+        )
+        _optional_text(
+            self.unrealized_gain_loss,
+            "unrealized_gain_loss",
+        )
+        _optional_text(
             self.realized_gain_loss,
             "realized_gain_loss",
+        )
+        _optional_text(
+            self.exposure,
+            "exposure",
         )
 
         if not isinstance(self.updated_at, datetime):

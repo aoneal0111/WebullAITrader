@@ -104,3 +104,7 @@ project_tree_clean.txt
 *.before-*.py
 # Generated repository inventories
 app_tree.txt
+
+.atlas_recordings/
+
+recording_committed_full/

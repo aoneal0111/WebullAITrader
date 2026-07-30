@@ -5,10 +5,15 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
 from threading import RLock
+from typing import TYPE_CHECKING
 
 from app.operations_core.bus import OperationsBus, Subscription
 from app.operations_core.events import (
     OperationsEvent,
+    DecisionsUpdated,
+    PortfolioUpdated,
+    HealthUpdated,
+    WatchlistUpdated,
     OperationsOrder,
     OperationsPosition,
     OrdersUpdated,
@@ -22,7 +27,66 @@ from app.operations_core.events import (
     RuntimeStarting,
     RuntimeStopped,
     RuntimeStopping,
+    TimelineUpdated,
 )
+
+if TYPE_CHECKING:
+    from app.replay_workspace.models import ReplayWorkspaceState
+    from app.read_models.decisions.models import DecisionsReadModelSnapshot
+    from app.read_models.orders.models import OrdersReadModelSnapshot
+    from app.read_models.positions.models import PositionsReadModelSnapshot
+    from app.read_models.timeline.models import TimelineReadModelSnapshot
+    from app.read_models.portfolio.models import PortfolioSummary
+    from app.read_models.health.models import HealthState
+    from app.read_models.watchlist.models import WatchlistState
+
+
+def _initial_order_projection() -> "OrdersReadModelSnapshot":
+    from app.read_models.orders.models import OrdersReadModelSnapshot
+
+    return OrdersReadModelSnapshot.initial()
+
+
+def _initial_position_projection() -> "PositionsReadModelSnapshot":
+    from app.read_models.positions.models import PositionsReadModelSnapshot
+
+    return PositionsReadModelSnapshot.initial()
+
+
+def _initial_timeline_projection() -> "TimelineReadModelSnapshot":
+    from app.read_models.timeline.models import TimelineReadModelSnapshot
+
+    return TimelineReadModelSnapshot.initial()
+
+
+def _initial_decision_projection() -> "DecisionsReadModelSnapshot":
+    from app.read_models.decisions.models import DecisionsReadModelSnapshot
+
+    return DecisionsReadModelSnapshot.initial()
+
+
+def _initial_portfolio_projection() -> "PortfolioSummary":
+    from app.read_models.portfolio.models import PortfolioSummary
+
+    return PortfolioSummary.initial()
+
+
+def _initial_health_projection() -> "HealthState":
+    from app.read_models.health.models import HealthState
+
+    return HealthState.initial()
+
+
+def _initial_watchlist_projection() -> "WatchlistState":
+    from app.read_models.watchlist.models import WatchlistState
+
+    return WatchlistState.initial()
+
+
+def _initial_replay_state() -> "ReplayWorkspaceState":
+    from app.replay_workspace.models import ReplayWorkspaceState
+
+    return ReplayWorkspaceState()
 
 
 class RuntimePhase(StrEnum):
@@ -63,6 +127,30 @@ class ApplicationState:
 
     timeline: tuple[TimelineEntry, ...] = ()
     revision: int = 0
+    order_projection: "OrdersReadModelSnapshot" = field(
+        default_factory=_initial_order_projection
+    )
+    position_projection: "PositionsReadModelSnapshot" = field(
+        default_factory=_initial_position_projection
+    )
+    timeline_projection: "TimelineReadModelSnapshot" = field(
+        default_factory=_initial_timeline_projection
+    )
+    decision_projection: "DecisionsReadModelSnapshot" = field(
+        default_factory=_initial_decision_projection
+    )
+    portfolio_projection: "PortfolioSummary" = field(
+        default_factory=_initial_portfolio_projection
+    )
+    health_projection: "HealthState" = field(
+        default_factory=_initial_health_projection
+    )
+    watchlist_projection: "WatchlistState" = field(
+        default_factory=_initial_watchlist_projection
+    )
+    replay: "ReplayWorkspaceState" = field(
+        default_factory=_initial_replay_state
+    )
 
 
 StateListener = Callable[[ApplicationState], None]
@@ -130,8 +218,36 @@ class ApplicationStateStore:
                 event,
             )
             orders = self._reduce_orders(self._state.orders, event)
+            order_projection = self._reduce_order_projection(
+                self._state.order_projection,
+                event,
+            )
             positions = self._reduce_positions(
                 self._state.positions,
+                event,
+            )
+            position_projection = self._reduce_position_projection(
+                self._state.position_projection,
+                event,
+            )
+            timeline_projection = self._reduce_timeline_projection(
+                self._state.timeline_projection,
+                event,
+            )
+            decision_projection = self._reduce_decision_projection(
+                self._state.decision_projection,
+                event,
+            )
+            portfolio_projection = self._reduce_portfolio_projection(
+                self._state.portfolio_projection,
+                event,
+            )
+            health_projection = self._reduce_health_projection(
+                self._state.health_projection,
+                event,
+            )
+            watchlist_projection = self._reduce_watchlist_projection(
+                self._state.watchlist_projection,
                 event,
             )
 
@@ -139,7 +255,15 @@ class ApplicationStateStore:
 
             if not isinstance(
                 event,
-                (RuntimeCycleCompleted, PaperRuntimeUpdated),
+                (
+                    RuntimeCycleCompleted,
+                    PaperRuntimeUpdated,
+                    TimelineUpdated,
+                    DecisionsUpdated,
+                    PortfolioUpdated,
+                    HealthUpdated,
+                    WatchlistUpdated,
+                ),
             ):
                 timeline = timeline + (self._timeline_entry(event),)
                 timeline = timeline[-self._timeline_limit :]
@@ -148,7 +272,15 @@ class ApplicationStateStore:
                 runtime=runtime,
                 paper_runtime=paper_runtime,
                 orders=orders,
+                order_projection=order_projection,
                 positions=positions,
+                position_projection=position_projection,
+                timeline_projection=timeline_projection,
+                decision_projection=decision_projection,
+                portfolio_projection=portfolio_projection,
+                health_projection=health_projection,
+                watchlist_projection=watchlist_projection,
+                replay=self._state.replay,
                 timeline=timeline,
                 revision=self._state.revision + 1,
             )
@@ -244,12 +376,110 @@ class ApplicationStateStore:
         return current
 
     @staticmethod
+    def _reduce_order_projection(
+        current: "OrdersReadModelSnapshot",
+        event: OperationsEvent,
+    ) -> "OrdersReadModelSnapshot":
+        if isinstance(event, OrdersUpdated):
+            from app.read_models.orders.projector import (
+                project_operational_orders,
+            )
+
+            return project_operational_orders(event.orders)
+
+        return current
+
+    @staticmethod
     def _reduce_positions(
         current: tuple[OperationsPosition, ...],
         event: OperationsEvent,
     ) -> tuple[OperationsPosition, ...]:
         if isinstance(event, PositionsUpdated):
             return event.positions
+
+        return current
+
+    @staticmethod
+    def _reduce_position_projection(
+        current: "PositionsReadModelSnapshot",
+        event: OperationsEvent,
+    ) -> "PositionsReadModelSnapshot":
+        if isinstance(event, PositionsUpdated):
+            from app.read_models.positions.projector import (
+                project_operational_positions,
+            )
+
+            return project_operational_positions(event.positions)
+
+        return current
+
+    @staticmethod
+    def _reduce_timeline_projection(
+        current: "TimelineReadModelSnapshot",
+        event: OperationsEvent,
+    ) -> "TimelineReadModelSnapshot":
+        if isinstance(event, TimelineUpdated):
+            from app.read_models.timeline.projector import (
+                project_operational_timeline,
+            )
+
+            return project_operational_timeline(event.entries)
+
+        return current
+
+    @staticmethod
+    def _reduce_decision_projection(
+        current: "DecisionsReadModelSnapshot",
+        event: OperationsEvent,
+    ) -> "DecisionsReadModelSnapshot":
+        if isinstance(event, DecisionsUpdated):
+            from app.read_models.decisions.projector import (
+                project_operational_decisions,
+            )
+
+            return project_operational_decisions(event.decisions)
+
+        return current
+
+    @staticmethod
+    def _reduce_portfolio_projection(
+        current: "PortfolioSummary",
+        event: OperationsEvent,
+    ) -> "PortfolioSummary":
+        if isinstance(event, PortfolioUpdated):
+            from app.read_models.portfolio.projector import (
+                project_operational_portfolio,
+            )
+
+            return project_operational_portfolio(event.summary)
+
+        return current
+
+    @staticmethod
+    def _reduce_health_projection(
+        current: "HealthState",
+        event: OperationsEvent,
+    ) -> "HealthState":
+        if isinstance(event, HealthUpdated):
+            from app.read_models.health.projector import (
+                project_operational_health,
+            )
+
+            return project_operational_health(event.state)
+
+        return current
+
+    @staticmethod
+    def _reduce_watchlist_projection(
+        current: "WatchlistState",
+        event: OperationsEvent,
+    ) -> "WatchlistState":
+        if isinstance(event, WatchlistUpdated):
+            from app.read_models.watchlist.projector import (
+                project_operational_watchlist,
+            )
+
+            return project_operational_watchlist(event.state)
 
         return current
 

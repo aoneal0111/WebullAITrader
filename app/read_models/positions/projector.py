@@ -15,6 +15,11 @@ def project_positions_read_model(
     if not isinstance(state, ApplicationState):
         raise TypeError("state must be an ApplicationState")
 
+    if state.position_projection.positions or not state.positions:
+        return state.position_projection
+
+    # Compatibility for callers constructing ApplicationState with the
+    # pre-projection ``positions`` field directly.
     return project_operational_positions(state.positions)
 
 
@@ -56,4 +61,5 @@ def _project_position(
         realized_gain_loss=position.realized_gain_loss,
         currency=position.currency,
         updated_at=position.updated_at,
+        exposure=position.exposure,
     )
