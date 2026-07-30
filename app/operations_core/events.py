@@ -168,6 +168,81 @@ class PositionsUpdated(OperationsEvent):
             )
 
 
+@dataclass(frozen=True, slots=True)
+class OperationsTimelineEntry:
+    """Backend-neutral immutable timeline entry for state consumers."""
+
+    timestamp: datetime
+    category: str
+    severity: str
+    source: str
+    title: str
+    description: str
+    related_symbol: str | None = None
+    related_order_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.timestamp.tzinfo is None:
+            raise ValueError("timeline timestamp must be timezone-aware")
+        for field_name in (
+            "category",
+            "severity",
+            "source",
+            "title",
+            "description",
+        ):
+            value = getattr(self, field_name)
+            if (
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+            ):
+                raise ValueError(
+                    f"timeline {field_name} must be non-empty stripped text"
+                )
+        for field_name in (
+            "related_symbol",
+            "related_order_id",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and (
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+            ):
+                raise ValueError(
+                    f"timeline {field_name} must be None or stripped text"
+                )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TimelineUpdated(OperationsEvent):
+    """Replace the projected runtime timeline with a bounded snapshot."""
+
+    entries: tuple[OperationsTimelineEntry, ...] = ()
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        if not isinstance(self.entries, tuple):
+            raise TypeError("timeline entries must be an immutable tuple")
+        if any(
+            not isinstance(entry, OperationsTimelineEntry)
+            for entry in self.entries
+        ):
+            raise TypeError(
+                "timeline entries must contain only "
+                "OperationsTimelineEntry instances"
+            )
+        if any(
+            first.timestamp < second.timestamp
+            for first, second in zip(
+                self.entries,
+                self.entries[1:],
+            )
+        ):
+            raise ValueError("timeline entries must be newest-first")
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RuntimeStarting(OperationsEvent):
     environment: str = "PAPER"

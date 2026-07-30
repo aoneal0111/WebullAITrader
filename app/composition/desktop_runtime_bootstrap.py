@@ -24,6 +24,7 @@ from app.operations.runtime import (
 from app.operations_core import OperationsBus
 from app.read_models.order_projection import OrderProjection
 from app.read_models.position_projection import PositionProjection
+from app.read_models.timeline_projection import TimelineProjection
 from app.operations.scanner_runtime import SnapshotResolver
 from app.realtime_scanner.protocols import (
     ReferenceLoader,
@@ -59,6 +60,7 @@ class DesktopRuntimeBootstrap:
     driver_factory: DriverFactory
     order_projection: OrderProjection | None = None
     position_projection: PositionProjection | None = None
+    timeline_projection: TimelineProjection | None = None
 
 
 def create_desktop_runtime_bootstrap(
@@ -88,6 +90,7 @@ def create_desktop_runtime_bootstrap(
     event_sink: RuntimeEventSink | None = None,
     event_sinks: Iterable[RuntimeEventSink | None] = (),
     operations_bus: OperationsBus | None = None,
+    timeline_history_limit: int = 500,
     checkpoint_sink: CheckpointSink | None = None,
     runtime_result_sink: Callable[[PaperRuntimeCycleResult], None] | None = None,
     interval_seconds: float = 1.0,
@@ -143,9 +146,18 @@ def create_desktop_runtime_bootstrap(
         if operations_bus is not None
         else None
     )
+    timeline_projection = (
+        TimelineProjection(
+            operations_bus,
+            maximum_entries=timeline_history_limit,
+        )
+        if operations_bus is not None
+        else None
+    )
     composed_event_sinks = (
         order_projection,
         position_projection,
+        timeline_projection,
         *tuple(event_sinks),
     )
     resolved_event_sink: RuntimeEventSink | None = event_sink
@@ -172,6 +184,7 @@ def create_desktop_runtime_bootstrap(
         driver_factory=driver_factory,
         order_projection=order_projection,
         position_projection=position_projection,
+        timeline_projection=timeline_projection,
     )
 
 

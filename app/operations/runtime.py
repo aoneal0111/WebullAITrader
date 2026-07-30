@@ -58,6 +58,7 @@ class PaperRuntimeEvent:
     order: OperationsOrder | None = None
     fill: PaperFill | None = None
     mark_price: Decimal | None = None
+    source: str = "paper-runtime"
 
     def __post_init__(self) -> None:
         if self.sequence < 1:
@@ -67,6 +68,10 @@ class PaperRuntimeEvent:
             raise ValueError("runtime event type is required")
         if not self.message.strip():
             raise ValueError("runtime event message is required")
+        if not self.source.strip() or self.source != self.source.strip():
+            raise ValueError(
+                "runtime event source must be non-empty stripped text"
+            )
         if self.cycle < 0:
             raise ValueError("runtime event cycle cannot be negative")
         if self.symbol is not None:

@@ -5,6 +5,7 @@ from app.operations_core.events import (
     OperationsEvent,
     OperationsOrder,
     OperationsPosition,
+    OperationsTimelineEntry,
     OrdersUpdated,
     PositionsUpdated,
     PaperRuntimeSnapshot,
@@ -15,6 +16,7 @@ from app.operations_core.events import (
     RuntimeStarting,
     RuntimeStopped,
     RuntimeStopping,
+    TimelineUpdated,
 )
 from app.operations_core.state import (
     ApplicationState,
@@ -31,6 +33,7 @@ __all__ = [
     "OperationsEvent",
     "OperationsOrder",
     "OperationsPosition",
+    "OperationsTimelineEntry",
     "OrdersUpdated",
     "PositionsUpdated",
     "PaperRuntimeSnapshot",
@@ -45,4 +48,5 @@ __all__ = [
     "RuntimeStopping",
     "Subscription",
     "TimelineEntry",
+    "TimelineUpdated",
 ]

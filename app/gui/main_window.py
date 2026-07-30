@@ -15,10 +15,12 @@ from app.gui.presenters import (
     RuntimeControlsPresenter,
     RuntimeErrorPresenter,
     RuntimeStatusPresenter,
+    TimelinePresenter,
 )
 from app.gui.shell.sidebar import Sidebar
 from app.gui.state_bridge import QtStateBridge
 from app.gui.widgets.positions_panel import PositionsPanel
+from app.gui.widgets.activity_panel import ActivityPanel
 from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus
 from app.services import OrderCommandFactory, RuntimeService, TradingService
 
@@ -49,6 +51,7 @@ class MainWindow(QMainWindow):
                 DashboardPresenter(self.dashboard),
                 OrdersPresenter(self.orders),
                 PositionsPresenter(self.positions),
+                TimelinePresenter(self.activity),
                 RuntimeControlsPresenter(self.start_button, self.stop_button),
                 RuntimeStatusPresenter(self.status_label),
                 RuntimeErrorPresenter(self),
@@ -115,12 +118,8 @@ class MainWindow(QMainWindow):
             )
         )
 
-        self.pages.addWidget(
-            PlaceholderPage(
-                "Activity",
-                "Auditable system events, decisions, warnings, and execution records will appear here.",
-            )
-        )
+        self.activity = ActivityPanel()
+        self.pages.addWidget(self.activity)
         content_layout.addWidget(self.pages, 1)
         outer.addWidget(content, 1)
         self.sidebar.page_requested.connect(self.pages.setCurrentIndex)

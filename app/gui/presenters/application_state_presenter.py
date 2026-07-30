@@ -9,6 +9,8 @@ from app.gui.pages.dashboard import DashboardPage
 from app.gui.pages.orders import OrdersPage
 from app.gui.formatters import format_positions
 from app.gui.projections.dashboard_projection import project_dashboard
+from app.gui.projections.activity_projection import project_timeline_activity
+from app.gui.widgets.activity_panel import ActivityPanel
 from app.gui.widgets.positions_panel import PositionsPanel
 from app.operations_core import ApplicationState, RuntimePhase
 from app.read_models.positions import project_positions_read_model
@@ -63,6 +65,16 @@ class PositionsPresenter:
     def render(self, state: ApplicationState) -> None:
         read_model = project_positions_read_model(state)
         self._positions_panel.render(format_positions(read_model))
+
+
+class TimelinePresenter:
+    """Prepare and render the immutable timeline activity view model."""
+
+    def __init__(self, activity_panel: ActivityPanel) -> None:
+        self._activity_panel = activity_panel
+
+    def render(self, state: ApplicationState) -> None:
+        self._activity_panel.render(project_timeline_activity(state))
 
 
 class RuntimeControlsPresenter:

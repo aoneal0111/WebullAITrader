@@ -7,6 +7,7 @@ from app.gui.presenters.application_state_presenter import (
     RuntimeControlsPresenter,
     RuntimeErrorPresenter,
     RuntimeStatusPresenter,
+    TimelinePresenter,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "RuntimeControlsPresenter",
     "RuntimeErrorPresenter",
     "RuntimeStatusPresenter",
+    "TimelinePresenter",
 ]

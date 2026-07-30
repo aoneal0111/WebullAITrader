@@ -23,11 +23,13 @@ from app.operations_core.events import (
     RuntimeStarting,
     RuntimeStopped,
     RuntimeStopping,
+    TimelineUpdated,
 )
 
 if TYPE_CHECKING:
     from app.read_models.orders.models import OrdersReadModelSnapshot
     from app.read_models.positions.models import PositionsReadModelSnapshot
+    from app.read_models.timeline.models import TimelineReadModelSnapshot
 
 
 def _initial_order_projection() -> "OrdersReadModelSnapshot":
@@ -40,6 +42,12 @@ def _initial_position_projection() -> "PositionsReadModelSnapshot":
     from app.read_models.positions.models import PositionsReadModelSnapshot
 
     return PositionsReadModelSnapshot.initial()
+
+
+def _initial_timeline_projection() -> "TimelineReadModelSnapshot":
+    from app.read_models.timeline.models import TimelineReadModelSnapshot
+
+    return TimelineReadModelSnapshot.initial()
 
 
 class RuntimePhase(StrEnum):
@@ -85,6 +93,9 @@ class ApplicationState:
     )
     position_projection: "PositionsReadModelSnapshot" = field(
         default_factory=_initial_position_projection
+    )
+    timeline_projection: "TimelineReadModelSnapshot" = field(
+        default_factory=_initial_timeline_projection
     )
 
 
@@ -165,12 +176,20 @@ class ApplicationStateStore:
                 self._state.position_projection,
                 event,
             )
+            timeline_projection = self._reduce_timeline_projection(
+                self._state.timeline_projection,
+                event,
+            )
 
             timeline = self._state.timeline
 
             if not isinstance(
                 event,
-                (RuntimeCycleCompleted, PaperRuntimeUpdated),
+                (
+                    RuntimeCycleCompleted,
+                    PaperRuntimeUpdated,
+                    TimelineUpdated,
+                ),
             ):
                 timeline = timeline + (self._timeline_entry(event),)
                 timeline = timeline[-self._timeline_limit :]
@@ -182,6 +201,7 @@ class ApplicationStateStore:
                 order_projection=order_projection,
                 positions=positions,
                 position_projection=position_projection,
+                timeline_projection=timeline_projection,
                 timeline=timeline,
                 revision=self._state.revision + 1,
             )
@@ -311,6 +331,20 @@ class ApplicationStateStore:
             )
 
             return project_operational_positions(event.positions)
+
+        return current
+
+    @staticmethod
+    def _reduce_timeline_projection(
+        current: "TimelineReadModelSnapshot",
+        event: OperationsEvent,
+    ) -> "TimelineReadModelSnapshot":
+        if isinstance(event, TimelineUpdated):
+            from app.read_models.timeline.projector import (
+                project_operational_timeline,
+            )
+
+            return project_operational_timeline(event.entries)
 
         return current
 

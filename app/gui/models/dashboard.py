@@ -37,6 +37,11 @@ class RuntimeSnapshot:
 class ActivityEntry:
     occurred_at: datetime
     message: str
+    category: str = "SYSTEM"
+    severity: str = "INFO"
+    source: str = "operations"
+    related_symbol: str | None = None
+    related_order_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
