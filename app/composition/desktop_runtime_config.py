@@ -11,7 +11,7 @@ from .runtime_mode import RuntimeMode
 class DesktopRuntimeConfiguration:
     """Select the desktop runtime without constructing its dependencies."""
 
-    runtime_mode: RuntimeMode = RuntimeMode.SIMULATED
+    runtime_mode: RuntimeMode = RuntimeMode.PAPER
 
 
 __all__ = ["DesktopRuntimeConfiguration"]

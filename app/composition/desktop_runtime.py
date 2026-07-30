@@ -3,14 +3,32 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from itertools import count
 
 from app.operations_core import OperationsBus
+from app.read_models.health_projection import HealthProjection
 from app.services import RuntimeService, SimulatedPaperRuntimeDriver
 
+from .desktop_broker_runtime import create_configured_desktop_broker_driver
 from .runtime_mode import RuntimeMode
 
 
-def _default_driver_factory() -> SimulatedPaperRuntimeDriver:
+def _broker_driver_factory(
+    bus: OperationsBus,
+) -> Callable[[], object]:
+    health_projection = HealthProjection(bus)
+    session_numbers = count(1)
+
+    def create_driver() -> object:
+        return create_configured_desktop_broker_driver(
+            event_sink=health_projection,
+            source=f"desktop-broker-runtime:{next(session_numbers)}",
+        )
+
+    return create_driver
+
+
+def _simulated_driver_factory() -> SimulatedPaperRuntimeDriver:
     return SimulatedPaperRuntimeDriver(
         interval_seconds=1.0,
         environment="PAPER",
@@ -20,6 +38,7 @@ def _default_driver_factory() -> SimulatedPaperRuntimeDriver:
 
 def _resolve_driver_factory(
     *,
+    bus: OperationsBus,
     runtime_mode: RuntimeMode,
     driver_factory: Callable[[], object] | None,
 ) -> Callable[[], object]:
@@ -27,24 +46,23 @@ def _resolve_driver_factory(
         return driver_factory
 
     if runtime_mode is RuntimeMode.SIMULATED:
-        return _default_driver_factory
+        return _simulated_driver_factory
 
-    raise ValueError(
-        "PAPER desktop runtime requires an explicit real driver factory"
-    )
+    return _broker_driver_factory(bus)
 
 
 def create_desktop_runtime_service(
     bus: OperationsBus,
     driver_factory: Callable[[], object] | None = None,
     *,
-    runtime_mode: RuntimeMode = RuntimeMode.SIMULATED,
+    runtime_mode: RuntimeMode = RuntimeMode.PAPER,
 ) -> RuntimeService:
     """Create the runtime service used by the desktop composition root."""
 
     return RuntimeService(
         bus,
         _resolve_driver_factory(
+            bus=bus,
             runtime_mode=runtime_mode,
             driver_factory=driver_factory,
         ),

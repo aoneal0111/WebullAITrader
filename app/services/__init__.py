@@ -1,6 +1,7 @@
 """Application service boundaries used by presentation clients."""
 
 from app.services.runtime_drivers import (
+    DesktopBrokerRuntimeDriver,
     PaperRuntimeDriver,
     SimulatedPaperRuntimeDriver,
 )
@@ -12,6 +13,7 @@ from app.services.runtime_service import (
 )
 
 __all__ = [
+    "DesktopBrokerRuntimeDriver",
     "PaperRuntimeDriver",
     "RuntimeDriver",
     "OrderCommandFactory",
