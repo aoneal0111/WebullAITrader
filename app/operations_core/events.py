@@ -348,6 +348,73 @@ class OperationsPortfolioSummary:
                 )
 
 
+@dataclass(frozen=True, slots=True)
+class OperationsHealthState:
+    runtime_status: str | None = None
+    broker_status: str | None = None
+    market_data_status: str | None = None
+    ai_status: str | None = None
+    risk_status: str | None = None
+    persistence_status: str | None = None
+    last_error: str | None = None
+    last_warning: str | None = None
+    last_heartbeat: datetime | None = None
+    connection_latency: str | None = None
+    reconnect_attempts: int = 0
+    degraded: bool = False
+    healthy: bool = False
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "runtime_status",
+            "broker_status",
+            "market_data_status",
+            "ai_status",
+            "risk_status",
+            "persistence_status",
+            "last_error",
+            "last_warning",
+            "connection_latency",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and (
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+            ):
+                raise ValueError(
+                    f"health {field_name} must be None or stripped text"
+                )
+        if (
+            self.last_heartbeat is not None
+            and self.last_heartbeat.tzinfo is None
+        ):
+            raise ValueError("health heartbeat must be timezone-aware")
+        if (
+            isinstance(self.reconnect_attempts, bool)
+            or not isinstance(self.reconnect_attempts, int)
+            or self.reconnect_attempts < 0
+        ):
+            raise ValueError("health reconnect attempts must be nonnegative")
+        if not isinstance(self.degraded, bool) or not isinstance(
+            self.healthy,
+            bool,
+        ):
+            raise TypeError("health flags must be bools")
+        if self.degraded and self.healthy:
+            raise ValueError("health cannot be healthy and degraded")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HealthUpdated(OperationsEvent):
+    state: OperationsHealthState
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        if not isinstance(self.state, OperationsHealthState):
+            raise TypeError("state must be an OperationsHealthState")
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PortfolioUpdated(OperationsEvent):
     summary: OperationsPortfolioSummary

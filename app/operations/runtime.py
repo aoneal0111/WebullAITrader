@@ -106,6 +106,60 @@ class RuntimeDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeHealthUpdate:
+    """Optional structured infrastructure facts carried by runtime events."""
+
+    runtime_status: str | None = None
+    broker_status: str | None = None
+    market_data_status: str | None = None
+    ai_status: str | None = None
+    risk_status: str | None = None
+    persistence_status: str | None = None
+    last_error: str | None = None
+    last_warning: str | None = None
+    heartbeat_at: datetime | None = None
+    connection_latency: Decimal | None = None
+    reconnect_attempts: int | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "runtime_status",
+            "broker_status",
+            "market_data_status",
+            "ai_status",
+            "risk_status",
+            "persistence_status",
+            "last_error",
+            "last_warning",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(
+                        f"runtime health {field_name} must be non-empty text"
+                    )
+                object.__setattr__(self, field_name, value.strip())
+        if self.heartbeat_at is not None:
+            _require_aware(self.heartbeat_at)
+        if self.connection_latency is not None and (
+            not isinstance(self.connection_latency, Decimal)
+            or not self.connection_latency.is_finite()
+            or self.connection_latency < 0
+        ):
+            raise ValueError(
+                "runtime health connection latency must be nonnegative"
+            )
+        if self.reconnect_attempts is not None and (
+            isinstance(self.reconnect_attempts, bool)
+            or not isinstance(self.reconnect_attempts, int)
+            or self.reconnect_attempts < 0
+        ):
+            raise ValueError(
+                "runtime health reconnect attempts must be nonnegative"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class PaperRuntimeEvent:
     sequence: int
     timestamp: datetime
@@ -118,6 +172,7 @@ class PaperRuntimeEvent:
     mark_price: Decimal | None = None
     source: str = "paper-runtime"
     decision: RuntimeDecision | None = None
+    health: RuntimeHealthUpdate | None = None
 
     def __post_init__(self) -> None:
         if self.sequence < 1:
@@ -174,6 +229,13 @@ class PaperRuntimeEvent:
                 raise ValueError(
                     "runtime event decision symbol must match event symbol"
                 )
+        if self.health is not None and not isinstance(
+            self.health,
+            RuntimeHealthUpdate,
+        ):
+            raise TypeError(
+                "runtime event health must be a RuntimeHealthUpdate"
+            )
 
 
 @dataclass(frozen=True, slots=True)

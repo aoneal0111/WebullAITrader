@@ -12,6 +12,7 @@ from app.operations_core.events import (
     OperationsEvent,
     DecisionsUpdated,
     PortfolioUpdated,
+    HealthUpdated,
     OperationsOrder,
     OperationsPosition,
     OrdersUpdated,
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
     from app.read_models.positions.models import PositionsReadModelSnapshot
     from app.read_models.timeline.models import TimelineReadModelSnapshot
     from app.read_models.portfolio.models import PortfolioSummary
+    from app.read_models.health.models import HealthState
 
 
 def _initial_order_projection() -> "OrdersReadModelSnapshot":
@@ -64,6 +66,12 @@ def _initial_portfolio_projection() -> "PortfolioSummary":
     from app.read_models.portfolio.models import PortfolioSummary
 
     return PortfolioSummary.initial()
+
+
+def _initial_health_projection() -> "HealthState":
+    from app.read_models.health.models import HealthState
+
+    return HealthState.initial()
 
 
 class RuntimePhase(StrEnum):
@@ -118,6 +126,9 @@ class ApplicationState:
     )
     portfolio_projection: "PortfolioSummary" = field(
         default_factory=_initial_portfolio_projection
+    )
+    health_projection: "HealthState" = field(
+        default_factory=_initial_health_projection
     )
 
 
@@ -210,6 +221,10 @@ class ApplicationStateStore:
                 self._state.portfolio_projection,
                 event,
             )
+            health_projection = self._reduce_health_projection(
+                self._state.health_projection,
+                event,
+            )
 
             timeline = self._state.timeline
 
@@ -221,6 +236,7 @@ class ApplicationStateStore:
                     TimelineUpdated,
                     DecisionsUpdated,
                     PortfolioUpdated,
+                    HealthUpdated,
                 ),
             ):
                 timeline = timeline + (self._timeline_entry(event),)
@@ -236,6 +252,7 @@ class ApplicationStateStore:
                 timeline_projection=timeline_projection,
                 decision_projection=decision_projection,
                 portfolio_projection=portfolio_projection,
+                health_projection=health_projection,
                 timeline=timeline,
                 revision=self._state.revision + 1,
             )
@@ -407,6 +424,20 @@ class ApplicationStateStore:
             )
 
             return project_operational_portfolio(event.summary)
+
+        return current
+
+    @staticmethod
+    def _reduce_health_projection(
+        current: "HealthState",
+        event: OperationsEvent,
+    ) -> "HealthState":
+        if isinstance(event, HealthUpdated):
+            from app.read_models.health.projector import (
+                project_operational_health,
+            )
+
+            return project_operational_health(event.state)
 
         return current
 

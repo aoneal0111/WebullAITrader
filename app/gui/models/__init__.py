@@ -9,6 +9,7 @@ from .dashboard import (
 from .runtime import RuntimeState
 from .decisions import DecisionRow, DecisionsSnapshot
 from .portfolio import PortfolioDashboardSnapshot
+from .health import HealthDashboardSnapshot
 
 __all__ = [
     "ActivityEntry",
@@ -17,6 +18,7 @@ __all__ = [
     "DecisionRow",
     "DecisionsSnapshot",
     "PortfolioDashboardSnapshot",
+    "HealthDashboardSnapshot",
     "OrdersSnapshot",
     "PositionsSnapshot",
     "RuntimeSnapshot",

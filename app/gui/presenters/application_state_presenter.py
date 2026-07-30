@@ -10,6 +10,7 @@ from app.gui.pages.orders import OrdersPage
 from app.gui.formatters import format_positions
 from app.gui.formatters import format_decisions
 from app.gui.formatters import format_portfolio
+from app.gui.formatters import format_health
 from app.gui.projections.dashboard_projection import project_dashboard
 from app.gui.projections.activity_projection import project_timeline_activity
 from app.gui.widgets.activity_panel import ActivityPanel
@@ -101,6 +102,16 @@ class PortfolioPresenter:
         self._portfolio_view.render(
             format_portfolio(state.portfolio_projection)
         )
+
+
+class HealthPresenter:
+    """Prepare the immutable infrastructure health dashboard model."""
+
+    def __init__(self, health_view) -> None:
+        self._health_view = health_view
+
+    def render(self, state: ApplicationState) -> None:
+        self._health_view.render(format_health(state.health_projection))
 
 
 class RuntimeControlsPresenter:
