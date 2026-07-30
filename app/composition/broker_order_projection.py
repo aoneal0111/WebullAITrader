@@ -5,10 +5,13 @@ from datetime import datetime
 
 from app.broker_protocol.models import BrokerOrder
 from app.composition.operations_order_mapper import map_broker_orders
-from app.operations_core import OperationsBus, OrdersUpdated
+from app.operations_core import OperationsBus, OperationsOrder, OrdersUpdated
 
 
-BrokerOrdersSink = Callable[[tuple[BrokerOrder, ...], datetime], None]
+BrokerOrdersSink = Callable[
+    [tuple[BrokerOrder, ...], datetime],
+    tuple[OperationsOrder, ...],
+]
 
 
 def create_broker_orders_publisher(
@@ -27,14 +30,16 @@ def create_broker_orders_publisher(
     def publish_orders(
         orders: tuple[BrokerOrder, ...],
         occurred_at: datetime,
-    ) -> None:
+    ) -> tuple[OperationsOrder, ...]:
+        mapped = map_broker_orders(orders)
         bus.publish(
             OrdersUpdated(
                 source=normalized_source,
-                orders=map_broker_orders(orders),
+                orders=mapped,
                 occurred_at=occurred_at,
             )
         )
+        return mapped
 
     return publish_orders
 

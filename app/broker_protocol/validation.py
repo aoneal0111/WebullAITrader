@@ -36,6 +36,8 @@ def validate_position(value):
 def validate_cash(value):
     _finite(value.settled_cash,"settled_cash")
     if value.unsettled_cash is not None:_finite(value.unsettled_cash,"unsettled_cash")
+    if value.buying_power is not None:_finite(value.buying_power,"buying_power")
+    if value.equity is not None:_finite(value.equity,"equity")
     if not value.currency.strip():raise ValueError("currency is required")
     return value
 def _positive(value,name):

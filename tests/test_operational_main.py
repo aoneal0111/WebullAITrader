@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.broker_protocol.models import BrokerAccount, BrokerCash
 from app.configuration.models import OperationalConfiguration, TradingEnvironment
 from app import operational_main
 from app.composition.operational_runtime import (
@@ -50,10 +51,10 @@ class FakeBroker:
         self.disconnected = True
 
     def get_account(self):
-        return "account"
+        return BrokerAccount("****acct", "CASH", "ACTIVE")
 
     def get_cash(self):
-        return "cash"
+        return BrokerCash(Decimal("1000"), Decimal("0"), "USD")
 
     def get_positions(self):
         return ()

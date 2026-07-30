@@ -74,9 +74,11 @@ def test_desktop_composition_defaults_to_configured_broker_driver(
 ) -> None:
     created = []
 
-    def create_broker_driver(*, event_sink, source):
+    def create_broker_driver(*, event_sink, account_snapshot_sink, source):
         driver = FakeDriver()
-        created.append((driver, event_sink, source))
+        created.append(
+            (driver, event_sink, account_snapshot_sink, source)
+        )
         return driver
 
     monkeypatch.setattr(
@@ -91,7 +93,8 @@ def test_desktop_composition_defaults_to_configured_broker_driver(
         assert composition.runtime_service.wait(0.05) is False
         assert len(created) == 1
         assert callable(created[0][1])
-        assert created[0][2] == "desktop-broker-runtime:1"
+        assert callable(created[0][2])
+        assert created[0][3] == "desktop-broker-runtime:1"
 
         composition.runtime_service.stop()
         assert composition.runtime_service.wait(1.0)

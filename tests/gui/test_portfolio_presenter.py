@@ -3,6 +3,7 @@ from app.gui.presenters import PortfolioPresenter
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from app.account_information.models import BrokerNeutralAccountInformation
 from app.operations_core import ApplicationState, PaperRuntimeSnapshot
 from app.read_models.portfolio import PortfolioHighlight, PortfolioSummary
 
@@ -73,3 +74,25 @@ def test_portfolio_presenter_prepares_immutable_dashboard_model() -> None:
         "Largest Position",
         "AAPL $1,200.00",
     ) in view.snapshot.highlights
+
+
+def test_portfolio_presenter_uses_live_broker_account_values() -> None:
+    view = View()
+    presenter = PortfolioPresenter(view)
+    state = ApplicationState(
+        broker_account=BrokerNeutralAccountInformation(
+            account_id="******ount",
+            account_type="CASH",
+            account_status="ACTIVE",
+            buying_power=Decimal("9000"),
+            cash_balance=Decimal("8000"),
+            equity=Decimal("10500"),
+            currency="USD",
+        )
+    )
+
+    presenter.render(state)
+
+    assert ("Equity", "$10,500.00") in view.snapshot.metrics
+    assert ("Buying Power", "$9,000.00") in view.snapshot.metrics
+    assert ("Cash", "$8,000.00") in view.snapshot.metrics

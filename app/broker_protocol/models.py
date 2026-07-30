@@ -112,6 +112,8 @@ class BrokerCash:
     settled_cash: Decimal
     unsettled_cash: Decimal | None
     currency: str
+    buying_power: Decimal | None = None
+    equity: Decimal | None = None
 
     def __post_init__(self):
         from app.broker_protocol.validation import validate_cash

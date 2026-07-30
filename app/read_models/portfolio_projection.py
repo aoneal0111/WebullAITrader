@@ -20,6 +20,7 @@ ZERO = Decimal("0")
 _WORKING_STATUSES = frozenset(
     {
         "ACCEPTED",
+        "ACKNOWLEDGED",
         "NEW",
         "OPEN",
         "PARTIAL_FILL",
@@ -78,7 +79,7 @@ class PortfolioProjection:
                 "order projection must expose OrdersReadModelSnapshot"
             )
 
-        projected = _aggregate(positions, orders)
+        projected = aggregate_portfolio(positions, orders)
         with self._lock:
             if projected == self._snapshot:
                 return
@@ -88,12 +89,12 @@ class PortfolioProjection:
             PortfolioUpdated(
                 occurred_at=event.timestamp,
                 source="paper-runtime-portfolio-projection",
-                summary=_to_operations(projected),
+                summary=to_operations_portfolio(projected),
             )
         )
 
 
-def _aggregate(
+def aggregate_portfolio(
     positions: PositionsReadModelSnapshot,
     orders: OrdersReadModelSnapshot,
 ) -> PortfolioSummary:
@@ -280,7 +281,7 @@ def _text_or_none(value: Decimal | None) -> str | None:
     return _text(value) if value is not None else None
 
 
-def _to_operations(
+def to_operations_portfolio(
     summary: PortfolioSummary,
 ) -> OperationsPortfolioSummary:
     return OperationsPortfolioSummary(
@@ -319,4 +320,8 @@ def _to_operations_highlight(
     )
 
 
-__all__ = ["PortfolioProjection"]
+__all__ = [
+    "PortfolioProjection",
+    "aggregate_portfolio",
+    "to_operations_portfolio",
+]

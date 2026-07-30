@@ -5,12 +5,16 @@ from datetime import datetime
 
 from app.broker_protocol.models import BrokerAccount, BrokerCash, BrokerPosition
 from app.composition.operations_position_mapper import map_broker_positions
-from app.operations_core import OperationsBus, PositionsUpdated
+from app.operations_core import (
+    OperationsBus,
+    OperationsPosition,
+    PositionsUpdated,
+)
 
 
 BrokerPositionsSink = Callable[
     [tuple[BrokerPosition, ...], BrokerAccount, BrokerCash, datetime],
-    None,
+    tuple[OperationsPosition, ...],
 ]
 
 
@@ -32,24 +36,26 @@ def create_broker_positions_publisher(
         account: BrokerAccount,
         cash: BrokerCash,
         occurred_at: datetime,
-    ) -> None:
+    ) -> tuple[OperationsPosition, ...]:
         if not isinstance(account, BrokerAccount):
             raise TypeError("account must be a BrokerAccount")
         if not isinstance(cash, BrokerCash):
             raise TypeError("cash must be a BrokerCash")
 
+        mapped = map_broker_positions(
+            positions,
+            account_id=account.account_id_redacted,
+            currency=cash.currency,
+            updated_at=occurred_at,
+        )
         bus.publish(
             PositionsUpdated(
                 source=normalized_source,
-                positions=map_broker_positions(
-                    positions,
-                    account_id=account.account_id_redacted,
-                    currency=cash.currency,
-                    updated_at=occurred_at,
-                ),
+                positions=mapped,
                 occurred_at=occurred_at,
             )
         )
+        return mapped
 
     return publish_positions
 

@@ -5,6 +5,8 @@ from decimal import Decimal
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
+from app.account_information.models import BrokerNeutralAccountInformation
+
 
 def utc_now() -> datetime:
     """Return the current timezone-aware UTC timestamp."""
@@ -165,6 +167,23 @@ class PositionsUpdated(OperationsEvent):
         ):
             raise TypeError(
                 "positions must contain only OperationsPosition instances"
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BrokerAccountUpdated(OperationsEvent):
+    """Replace the broker account information with an immutable snapshot."""
+
+    account: BrokerNeutralAccountInformation
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        if not isinstance(
+            self.account,
+            BrokerNeutralAccountInformation,
+        ):
+            raise TypeError(
+                "account must be BrokerNeutralAccountInformation"
             )
 
 

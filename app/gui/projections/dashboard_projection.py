@@ -36,7 +36,9 @@ def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
                 )
             ),
             account=(
-                state.paper_runtime.session_id
+                state.broker_account.account_id
+                if state.broker_account is not None
+                else state.paper_runtime.session_id
                 if state.paper_runtime is not None
                 else "--"
             ),

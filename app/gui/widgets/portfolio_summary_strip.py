@@ -66,14 +66,16 @@ class PortfolioSummaryStrip(QWidget):
         total_pnl = MetricCard("Total P&L", emphasis="primary")
         exposure = MetricCard("Exposure", emphasis="medium")
         buying_power = MetricCard("Buying Power", emphasis="medium")
+        cash = MetricCard("Cash", emphasis="medium")
         compact = _CompactMetricGroup()
 
         layout.addWidget(net_liquidity, 0, 0, 1, 3)
         layout.addWidget(total_pnl, 0, 3, 1, 3)
         layout.addWidget(exposure, 0, 6, 1, 2)
         layout.addWidget(buying_power, 0, 8, 1, 2)
-        layout.addWidget(compact, 0, 10, 1, 4)
-        for column in range(14):
+        layout.addWidget(cash, 0, 10, 1, 2)
+        layout.addWidget(compact, 0, 12, 1, 4)
+        for column in range(16):
             layout.setColumnStretch(column, 1)
 
         self._cards = {
@@ -81,6 +83,7 @@ class PortfolioSummaryStrip(QWidget):
             "Total P/L": total_pnl,
             "Gross Exposure": exposure,
             "Buying Power": buying_power,
+            "Cash": cash,
             **compact.metrics,
         }
 

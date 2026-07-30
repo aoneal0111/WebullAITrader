@@ -9,6 +9,7 @@ from app.operations_core import OperationsBus
 from app.read_models.health_projection import HealthProjection
 from app.services import RuntimeService, SimulatedPaperRuntimeDriver
 
+from .broker_account_projection import create_broker_account_publisher
 from .desktop_broker_runtime import create_configured_desktop_broker_driver
 from .runtime_mode import RuntimeMode
 
@@ -17,11 +18,13 @@ def _broker_driver_factory(
     bus: OperationsBus,
 ) -> Callable[[], object]:
     health_projection = HealthProjection(bus)
+    account_publisher = create_broker_account_publisher(bus)
     session_numbers = count(1)
 
     def create_driver() -> object:
         return create_configured_desktop_broker_driver(
             event_sink=health_projection,
+            account_snapshot_sink=account_publisher,
             source=f"desktop-broker-runtime:{next(session_numbers)}",
         )
 

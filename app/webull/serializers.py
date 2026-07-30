@@ -278,6 +278,24 @@ def parse_cash(value) -> BrokerCash:
                 currency=str(
                     asset.get("currency", "USD")
                 ).upper(),
+                buying_power=_optional_decimal(
+                    value,
+                    asset,
+                    "buying_power",
+                    "buyingPower",
+                    "available_funds",
+                    "availableFunds",
+                ),
+                equity=_optional_decimal(
+                    value,
+                    asset,
+                    "equity",
+                    "net_liquidation",
+                    "netLiquidation",
+                    "total_asset",
+                    "totalAsset",
+                    "total_value",
+                ),
             )
 
         return BrokerCash(
@@ -299,6 +317,22 @@ def parse_cash(value) -> BrokerCash:
                     ),
                 )
             ).upper(),
+            buying_power=_optional_decimal(
+                value,
+                "buying_power",
+                "buyingPower",
+                "available_funds",
+                "availableFunds",
+            ),
+            equity=_optional_decimal(
+                value,
+                "equity",
+                "net_liquidation",
+                "netLiquidation",
+                "total_asset",
+                "totalAsset",
+                "total_value",
+            ),
         )
 
     except Exception as exc:
@@ -316,6 +350,20 @@ def _d(value):
     if not result.is_finite(): raise SerializationError("non-finite broker Decimal")
     return result
 def _optional(value): return None if value is None or value == "" else _d(value)
+
+
+def _optional_decimal(value, *keys):
+    sources = (value,)
+    if keys and isinstance(keys[0], dict):
+        sources = (value, keys[0])
+        keys = keys[1:]
+    for source in sources:
+        for key in keys:
+            if key in source:
+                return _optional(source[key])
+    return None
+
+
 def _dt(value):
     result = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     if result.tzinfo is None: raise SerializationError("broker timestamp is naive")

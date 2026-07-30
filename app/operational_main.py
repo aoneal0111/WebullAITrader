@@ -24,6 +24,7 @@ from app.composition.operational_runtime import (
 )
 from app.configuration.loader import load_configuration
 from app.configuration.models import TradingEnvironment
+from app.live_execution.account_polling import poll_broker_account
 from app.live_execution.broker_factory import build_webull_broker
 from app.live_execution.recovery import reconcile_startup
 from app.operations_core import OperationsBus
@@ -155,10 +156,11 @@ def check_startup() -> int:
 
         session.connect()
 
-        account = broker.get_account()
-        cash = broker.get_cash()
-        positions = broker.get_positions()
-        orders = broker.get_orders()
+        snapshot = poll_broker_account(broker, clock=utc_now)
+        account = snapshot.account
+        cash = snapshot.cash
+        positions = snapshot.positions
+        orders = snapshot.orders
 
         print(f"Account: {account}", flush=True)
         print(f"Cash: {cash}", flush=True)
@@ -319,12 +321,12 @@ def run_observation(
         while max_cycles is None or cycle < max_cycles:
             _validate_observation_mode(configuration, emergency_stop)
 
-            account = broker.get_account()
-            cash = broker.get_cash()
-            positions = broker.get_positions()
-            orders = broker.get_orders()
-
-            observed_at = utc_now()
+            snapshot = poll_broker_account(broker, clock=utc_now)
+            account = snapshot.account
+            cash = snapshot.cash
+            positions = snapshot.positions
+            orders = snapshot.orders
+            observed_at = snapshot.observed_at
             if publish_orders is not None:
                 publish_orders(orders, observed_at)
             if publish_positions is not None:

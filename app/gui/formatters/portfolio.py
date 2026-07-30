@@ -11,6 +11,7 @@ def format_portfolio(
     *,
     equity: Decimal | None = None,
     buying_power: Decimal | None = None,
+    cash: Decimal | None = None,
 ) -> PortfolioDashboardSnapshot:
     if not isinstance(summary, PortfolioSummary):
         raise TypeError("summary must be a PortfolioSummary")
@@ -18,6 +19,7 @@ def format_portfolio(
         metrics=(
             ("Equity", _decimal_money(equity)),
             ("Buying Power", _decimal_money(buying_power)),
+            ("Cash", _decimal_money(cash)),
             ("Market Value", _money(summary.total_market_value)),
             ("Cost Basis", _money(summary.total_cost_basis)),
             ("Total P/L", _money(summary.total_pnl, signed=True)),

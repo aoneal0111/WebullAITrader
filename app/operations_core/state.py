@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from app.operations_core.bus import OperationsBus, Subscription
 from app.operations_core.events import (
+    BrokerAccountUpdated,
     OperationsEvent,
     DecisionsUpdated,
     PortfolioUpdated,
@@ -31,6 +32,7 @@ from app.operations_core.events import (
 )
 
 if TYPE_CHECKING:
+    from app.account_information.models import BrokerNeutralAccountInformation
     from app.replay_workspace.models import ReplayWorkspaceState
     from app.read_models.decisions.models import DecisionsReadModelSnapshot
     from app.read_models.orders.models import OrdersReadModelSnapshot
@@ -122,6 +124,7 @@ class TimelineEntry:
 class ApplicationState:
     runtime: RuntimeState = field(default_factory=RuntimeState)
     paper_runtime: PaperRuntimeSnapshot | None = None
+    broker_account: "BrokerNeutralAccountInformation | None" = None
     orders: tuple[OperationsOrder, ...] = ()
     positions: tuple[OperationsPosition, ...] = ()
 
@@ -217,6 +220,10 @@ class ApplicationStateStore:
                 self._state.paper_runtime,
                 event,
             )
+            broker_account = self._reduce_broker_account(
+                self._state.broker_account,
+                event,
+            )
             orders = self._reduce_orders(self._state.orders, event)
             order_projection = self._reduce_order_projection(
                 self._state.order_projection,
@@ -271,6 +278,7 @@ class ApplicationStateStore:
             self._state = ApplicationState(
                 runtime=runtime,
                 paper_runtime=paper_runtime,
+                broker_account=broker_account,
                 orders=orders,
                 order_projection=order_projection,
                 positions=positions,
@@ -290,6 +298,16 @@ class ApplicationStateStore:
 
         for listener in listeners:
             listener(state)
+
+    @staticmethod
+    def _reduce_broker_account(
+        current: "BrokerNeutralAccountInformation | None",
+        event: OperationsEvent,
+    ) -> "BrokerNeutralAccountInformation | None":
+        if isinstance(event, BrokerAccountUpdated):
+            return event.account
+
+        return current
 
     @staticmethod
     def _reduce_paper_runtime(

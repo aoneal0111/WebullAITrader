@@ -133,11 +133,24 @@ class PortfolioPresenter:
         self._portfolio_views = (portfolio_view, *additional_views)
 
     def render(self, state: ApplicationState) -> None:
+        account = state.broker_account
         snapshot = format_portfolio(
             state.portfolio_projection,
             equity=(
-                state.paper_runtime.current_equity
+                account.equity
+                if account is not None
+                else state.paper_runtime.current_equity
                 if state.paper_runtime is not None
+                else None
+            ),
+            buying_power=(
+                account.buying_power
+                if account is not None
+                else None
+            ),
+            cash=(
+                account.cash_balance
+                if account is not None
                 else None
             ),
         )

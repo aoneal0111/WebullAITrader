@@ -8,6 +8,10 @@ from threading import Event
 import pytest
 
 from app.broker_plugins import BrokerCapabilities, BrokerRuntime
+from app.broker_protocol.models import (
+    BrokerAccount,
+    BrokerCash,
+)
 from app.composition.desktop_broker_runtime import (
     create_configured_desktop_broker_driver,
 )
@@ -83,19 +87,29 @@ class FakeBroker:
 
     def get_positions(self):
         self.calls.append("get_positions")
-        raise AssertionError("account polling is outside Milestone 1")
+        return ()
 
     def get_orders(self):
         self.calls.append("get_orders")
-        raise AssertionError("account polling is outside Milestone 1")
+        return ()
 
     def get_cash(self):
         self.calls.append("get_cash")
-        raise AssertionError("account polling is outside Milestone 1")
+        return BrokerCash(
+            settled_cash=Decimal("1000"),
+            unsettled_cash=Decimal("0"),
+            currency="USD",
+            buying_power=Decimal("900"),
+            equity=Decimal("1000"),
+        )
 
     def get_account(self):
         self.calls.append("get_account")
-        raise AssertionError("account polling is outside Milestone 1")
+        return BrokerAccount(
+            account_id_redacted="******ount",
+            account_type="CASH",
+            status="ACTIVE",
+        )
 
     def get_fills(self):
         self.calls.append("get_fills")
@@ -129,6 +143,7 @@ def test_configured_driver_resolves_selected_broker_plugin() -> None:
 
     driver = create_configured_desktop_broker_driver(
         event_sink=events.append,
+        account_snapshot_sink=lambda snapshot: None,
         configuration_loader=lambda: configured,
         broker_runtime_factory=runtime_factory,
         webull_broker_factory=webull_factory,
@@ -155,6 +170,7 @@ def test_driver_authenticates_owns_lifecycle_and_does_no_other_broker_work() -> 
         configuration=configuration(),
         broker_runtime=broker_runtime(broker),
         event_sink=events.append,
+        account_snapshot_sink=lambda snapshot: None,
         clock=lambda: NOW,
         source="test-broker-session",
     )
@@ -181,6 +197,7 @@ def test_authentication_failure_is_published_and_fails_closed() -> None:
         configuration=configuration(),
         broker_runtime=broker_runtime(broker),
         event_sink=events.append,
+        account_snapshot_sink=lambda snapshot: None,
         clock=lambda: NOW,
     )
 
@@ -212,6 +229,7 @@ def test_broker_health_events_flow_through_existing_health_projection() -> None:
         configuration=configuration(),
         broker_runtime=broker_runtime(broker),
         event_sink=projection,
+        account_snapshot_sink=lambda snapshot: None,
         clock=lambda: NOW,
     )
 
@@ -226,5 +244,50 @@ def test_broker_health_events_flow_through_existing_health_projection() -> None:
             "DISCONNECTED"
         )
         assert store.snapshot().health_projection.runtime_status == "STOPPED"
+    finally:
+        store.close()
+
+
+def test_driver_polls_account_until_stopped_and_reports_cycles() -> None:
+    broker = FakeBroker()
+    snapshots = []
+    cycles = []
+    stop_event = Event()
+    bus = OperationsBus()
+    store = ApplicationStateStore(bus)
+    health_projection = HealthProjection(bus)
+    broker_health_during_poll = []
+
+    def receive_snapshot(snapshot) -> None:
+        snapshots.append(snapshot)
+        broker_health_during_poll.append(
+            store.snapshot().health_projection.broker_status
+        )
+        stop_event.set()
+
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=configuration(),
+        broker_runtime=broker_runtime(broker),
+        event_sink=health_projection,
+        account_snapshot_sink=receive_snapshot,
+        clock=lambda: NOW,
+    )
+
+    try:
+        driver.run(stop_event=stop_event, cycle_sink=cycles.append)
+
+        assert broker.calls == [
+            "connect",
+            "get_account",
+            "get_cash",
+            "get_positions",
+            "get_orders",
+            "disconnect",
+        ]
+        assert len(snapshots) == 1
+        assert snapshots[0].observed_at == NOW
+        assert broker_health_during_poll == ["CONNECTED"]
+        assert cycles == [1]
+        assert driver.cycles_completed == 1
     finally:
         store.close()

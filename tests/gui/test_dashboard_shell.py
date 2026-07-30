@@ -1,4 +1,5 @@
 import os
+from decimal import Decimal
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -6,6 +7,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QScrollArea
 
+from app.account_information.models import BrokerNeutralAccountInformation
 from app.composition import create_desktop_composition
 from app.gui.main_window import MainWindow
 from app.gui.models import (
@@ -126,6 +128,7 @@ def test_portfolio_summary_exposes_visual_metric_hierarchy(window) -> None:
     assert cards["Total P/L"].property("emphasis") == "primary"
     assert cards["Gross Exposure"].property("emphasis") == "medium"
     assert cards["Buying Power"].property("emphasis") == "medium"
+    assert cards["Cash"].property("emphasis") == "medium"
     assert cards["Open Positions"]._value.objectName() == (
         "compactMetricValue"
     )
@@ -215,6 +218,15 @@ def test_existing_projection_snapshots_populate_dashboard_surfaces(
 ) -> None:
     window._render_state(
         ApplicationState(
+            broker_account=BrokerNeutralAccountInformation(
+                account_id="******ount",
+                account_type="CASH",
+                account_status="ACTIVE",
+                buying_power=Decimal("9000"),
+                cash_balance=Decimal("8000"),
+                equity=Decimal("10500"),
+                currency="USD",
+            ),
             health_projection=HealthState(
                 runtime_status="RUNNING",
                 broker_status="CONNECTED",
@@ -262,6 +274,18 @@ def test_existing_projection_snapshots_populate_dashboard_surfaces(
         window.dashboard.portfolio_summary._cards["Total P/L"]
         ._value.text()
         == "+$250.00"
+    )
+    assert (
+        window.dashboard.portfolio_summary._cards["Equity"]._value.text()
+        == "$10,500.00"
+    )
+    assert (
+        window.dashboard.portfolio_summary._cards["Buying Power"]._value.text()
+        == "$9,000.00"
+    )
+    assert (
+        window.dashboard.portfolio_summary._cards["Cash"]._value.text()
+        == "$8,000.00"
     )
     assert window.dashboard.market_workspace.chart_view._symbol.text() == "AAPL"
     assert window.global_status.broker.text() == "\u25cf  Broker Connected"
