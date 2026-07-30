@@ -7,10 +7,16 @@ from app.gui.design.theme import application_stylesheet
 from app.gui.pages.dashboard import DashboardPage
 from app.gui.pages.orders import OrdersPage
 from app.gui.pages.placeholder import PlaceholderPage
-from app.gui.projections.dashboard_projection import project_dashboard
+from app.gui.presenters import (
+    DashboardPresenter,
+    PresentationCoordinator,
+    RuntimeControlsPresenter,
+    RuntimeErrorPresenter,
+    RuntimeStatusPresenter,
+)
 from app.gui.shell.sidebar import Sidebar
 from app.gui.state_bridge import QtStateBridge
-from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus, RuntimePhase
+from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus
 from app.services import OrderCommandFactory, RuntimeService, TradingService
 
 
@@ -29,13 +35,20 @@ class MainWindow(QMainWindow):
         self._runtime_service = runtime_service
         self._trading_service = trading_service
         self._order_command_factory = order_command_factory
-        self._last_error = ""
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
         self.setWindowTitle("Atlas — WebullAITrader")
         self.setMinimumSize(1180, 760)
         self.resize(1440, 900)
         self._build()
+        self._presentation = PresentationCoordinator(
+            (
+                DashboardPresenter(self.dashboard),
+                RuntimeControlsPresenter(self.start_button, self.stop_button),
+                RuntimeStatusPresenter(self.status_label),
+                RuntimeErrorPresenter(self),
+            )
+        )
         self.setStyleSheet(application_stylesheet())
         self._render_state(state_store.snapshot())
 
@@ -125,19 +138,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Emergency stop requested. Runtime shutdown in progress.", 5000)
 
     def _render_state(self, state: ApplicationState) -> None:
-        dashboard_snapshot = project_dashboard(state)
-        self.dashboard.render(dashboard_snapshot)
-        phase = state.runtime.phase
-        active = phase in {RuntimePhase.STARTING, RuntimePhase.RUNNING, RuntimePhase.STOPPING}
-        self.start_button.setEnabled(not active)
-        self.stop_button.setEnabled(phase in {RuntimePhase.STARTING, RuntimePhase.RUNNING})
-        self.status_label.setText(
-            f"{state.runtime.environment}  |  Runtime {phase.value}  |  "
-            f"Feed {state.runtime.market_feed_status}  |  Cycles {state.runtime.cycles_completed}"
-        )
-        if phase is RuntimePhase.FAILED and state.runtime.last_error and state.runtime.last_error != self._last_error:
-            self._last_error = state.runtime.last_error
-            QMessageBox.critical(self, "Runtime Error", state.runtime.last_error)
+        self._presentation.render(state)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self._runtime_service.close(timeout_seconds=5.0):
