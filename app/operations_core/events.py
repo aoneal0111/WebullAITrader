@@ -405,6 +405,99 @@ class OperationsHealthState:
             raise ValueError("health cannot be healthy and degraded")
 
 
+@dataclass(frozen=True, slots=True)
+class OperationsWatchlistEntry:
+    symbol: str
+    latest_price: str | None = None
+    change: str | None = None
+    change_percent: str | None = None
+    bid: str | None = None
+    ask: str | None = None
+    volume: int | None = None
+    market_status: str | None = None
+    last_update: datetime | None = None
+    stale: bool | None = None
+    metadata: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.symbol, str)
+            or not self.symbol.strip()
+            or self.symbol != self.symbol.strip().upper()
+        ):
+            raise ValueError("watchlist symbol must be normalized")
+        for field_name in (
+            "latest_price",
+            "change",
+            "change_percent",
+            "bid",
+            "ask",
+            "market_status",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and (
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+            ):
+                raise ValueError(
+                    f"watchlist {field_name} must be None or stripped text"
+                )
+        if self.volume is not None and (
+            isinstance(self.volume, bool)
+            or not isinstance(self.volume, int)
+            or self.volume < 0
+        ):
+            raise ValueError("watchlist volume must be nonnegative")
+        if self.last_update is not None and self.last_update.tzinfo is None:
+            raise ValueError("watchlist last update must be timezone-aware")
+        if self.stale is not None and not isinstance(self.stale, bool):
+            raise TypeError("watchlist stale must be a bool or None")
+        if not isinstance(self.metadata, tuple):
+            raise TypeError("watchlist metadata must be an immutable tuple")
+
+
+@dataclass(frozen=True, slots=True)
+class OperationsWatchlistState:
+    ordered_symbols: tuple[str, ...] = ()
+    entries: tuple[OperationsWatchlistEntry, ...] = ()
+    selected_symbol: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.ordered_symbols, tuple):
+            raise TypeError("watchlist symbols must be an immutable tuple")
+        if not isinstance(self.entries, tuple):
+            raise TypeError("watchlist entries must be an immutable tuple")
+        if any(
+            not isinstance(entry, OperationsWatchlistEntry)
+            for entry in self.entries
+        ):
+            raise TypeError(
+                "watchlist entries must contain immutable entries"
+            )
+        if tuple(entry.symbol for entry in self.entries) != (
+            self.ordered_symbols
+        ):
+            raise ValueError("watchlist entries must follow symbol order")
+        if (
+            self.selected_symbol is not None
+            and self.selected_symbol not in self.ordered_symbols
+        ):
+            raise ValueError(
+                "watchlist selected symbol must belong to the watchlist"
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WatchlistUpdated(OperationsEvent):
+    state: OperationsWatchlistState
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        if not isinstance(self.state, OperationsWatchlistState):
+            raise TypeError("state must be an OperationsWatchlistState")
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class HealthUpdated(OperationsEvent):
     state: OperationsHealthState

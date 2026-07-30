@@ -13,6 +13,7 @@ from app.operations_core.events import (
     DecisionsUpdated,
     PortfolioUpdated,
     HealthUpdated,
+    WatchlistUpdated,
     OperationsOrder,
     OperationsPosition,
     OrdersUpdated,
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from app.read_models.timeline.models import TimelineReadModelSnapshot
     from app.read_models.portfolio.models import PortfolioSummary
     from app.read_models.health.models import HealthState
+    from app.read_models.watchlist.models import WatchlistState
 
 
 def _initial_order_projection() -> "OrdersReadModelSnapshot":
@@ -72,6 +74,12 @@ def _initial_health_projection() -> "HealthState":
     from app.read_models.health.models import HealthState
 
     return HealthState.initial()
+
+
+def _initial_watchlist_projection() -> "WatchlistState":
+    from app.read_models.watchlist.models import WatchlistState
+
+    return WatchlistState.initial()
 
 
 class RuntimePhase(StrEnum):
@@ -129,6 +137,9 @@ class ApplicationState:
     )
     health_projection: "HealthState" = field(
         default_factory=_initial_health_projection
+    )
+    watchlist_projection: "WatchlistState" = field(
+        default_factory=_initial_watchlist_projection
     )
 
 
@@ -225,6 +236,10 @@ class ApplicationStateStore:
                 self._state.health_projection,
                 event,
             )
+            watchlist_projection = self._reduce_watchlist_projection(
+                self._state.watchlist_projection,
+                event,
+            )
 
             timeline = self._state.timeline
 
@@ -237,6 +252,7 @@ class ApplicationStateStore:
                     DecisionsUpdated,
                     PortfolioUpdated,
                     HealthUpdated,
+                    WatchlistUpdated,
                 ),
             ):
                 timeline = timeline + (self._timeline_entry(event),)
@@ -253,6 +269,7 @@ class ApplicationStateStore:
                 decision_projection=decision_projection,
                 portfolio_projection=portfolio_projection,
                 health_projection=health_projection,
+                watchlist_projection=watchlist_projection,
                 timeline=timeline,
                 revision=self._state.revision + 1,
             )
@@ -438,6 +455,20 @@ class ApplicationStateStore:
             )
 
             return project_operational_health(event.state)
+
+        return current
+
+    @staticmethod
+    def _reduce_watchlist_projection(
+        current: "WatchlistState",
+        event: OperationsEvent,
+    ) -> "WatchlistState":
+        if isinstance(event, WatchlistUpdated):
+            from app.read_models.watchlist.projector import (
+                project_operational_watchlist,
+            )
+
+            return project_operational_watchlist(event.state)
 
         return current
 

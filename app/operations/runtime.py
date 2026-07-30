@@ -160,6 +160,112 @@ class RuntimeHealthUpdate:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeWatchlistQuote:
+    timestamp: datetime
+    latest_price: Decimal | None = None
+    change: Decimal | None = None
+    change_percent: Decimal | None = None
+    bid: Decimal | None = None
+    ask: Decimal | None = None
+    volume: int | None = None
+    stale: bool | None = None
+
+    def __post_init__(self) -> None:
+        _require_aware(self.timestamp)
+        for field_name in (
+            "latest_price",
+            "change",
+            "change_percent",
+            "bid",
+            "ask",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and (
+                not isinstance(value, Decimal)
+                or not value.is_finite()
+            ):
+                raise ValueError(
+                    f"watchlist quote {field_name} must be a finite Decimal"
+                )
+        for field_name in ("latest_price", "bid", "ask"):
+            value = getattr(self, field_name)
+            if value is not None and value < 0:
+                raise ValueError(
+                    f"watchlist quote {field_name} must be nonnegative"
+                )
+        if self.volume is not None and (
+            isinstance(self.volume, bool)
+            or not isinstance(self.volume, int)
+            or self.volume < 0
+        ):
+            raise ValueError("watchlist quote volume must be nonnegative")
+        if self.stale is not None and not isinstance(self.stale, bool):
+            raise TypeError("watchlist quote stale must be a bool or None")
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeWatchlistUpdate:
+    symbol: str | None = None
+    subscribed: bool | None = None
+    quote: RuntimeWatchlistQuote | None = None
+    market_status: str | None = None
+    selection_changed: bool = False
+    selected_symbol: str | None = None
+    metadata: tuple[tuple[str, str], ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.symbol is not None:
+            symbol = self.symbol.strip().upper()
+            if not symbol:
+                raise ValueError("watchlist update symbol cannot be blank")
+            object.__setattr__(self, "symbol", symbol)
+        if self.subscribed is not None and not isinstance(
+            self.subscribed,
+            bool,
+        ):
+            raise TypeError("watchlist subscribed must be a bool or None")
+        if self.quote is not None and not isinstance(
+            self.quote,
+            RuntimeWatchlistQuote,
+        ):
+            raise TypeError("watchlist quote must be a RuntimeWatchlistQuote")
+        if self.market_status is not None:
+            status = self.market_status.strip().upper()
+            if not status:
+                raise ValueError("watchlist market status cannot be blank")
+            object.__setattr__(self, "market_status", status)
+        if not isinstance(self.selection_changed, bool):
+            raise TypeError("selection_changed must be a bool")
+        if self.selected_symbol is not None:
+            selected = self.selected_symbol.strip().upper()
+            if not selected:
+                raise ValueError("selected symbol cannot be blank")
+            object.__setattr__(self, "selected_symbol", selected)
+        if self.metadata is not None:
+            if not isinstance(self.metadata, tuple):
+                raise TypeError("watchlist metadata must be an immutable tuple")
+            normalized = tuple(
+                (_required_metadata(key), _required_metadata(value))
+                for key, value in self.metadata
+            )
+            if len({key for key, _ in normalized}) != len(normalized):
+                raise ValueError("watchlist metadata keys must be unique")
+            object.__setattr__(self, "metadata", normalized)
+        has_symbol_fact = any(
+            value is not None
+            for value in (
+                self.subscribed,
+                self.quote,
+                self.metadata,
+            )
+        )
+        if has_symbol_fact and self.symbol is None:
+            raise ValueError(
+                "watchlist membership, quote, and metadata require a symbol"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class PaperRuntimeEvent:
     sequence: int
     timestamp: datetime
@@ -173,6 +279,7 @@ class PaperRuntimeEvent:
     source: str = "paper-runtime"
     decision: RuntimeDecision | None = None
     health: RuntimeHealthUpdate | None = None
+    watchlist: RuntimeWatchlistUpdate | None = None
 
     def __post_init__(self) -> None:
         if self.sequence < 1:
@@ -236,6 +343,19 @@ class PaperRuntimeEvent:
             raise TypeError(
                 "runtime event health must be a RuntimeHealthUpdate"
             )
+        if self.watchlist is not None and not isinstance(
+            self.watchlist,
+            RuntimeWatchlistUpdate,
+        ):
+            raise TypeError(
+                "runtime event watchlist must be a RuntimeWatchlistUpdate"
+            )
+
+
+def _required_metadata(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("watchlist metadata must be non-empty text")
+    return value.strip()
 
 
 @dataclass(frozen=True, slots=True)

@@ -9,6 +9,7 @@ from app.gui.formatters.positions import format_positions
 from app.gui.formatters.decisions import format_decisions
 from app.gui.formatters.portfolio import format_portfolio
 from app.gui.formatters.health import format_health
+from app.gui.formatters.watchlist import format_watchlist
 
 __all__ = [
     "format_orders",
@@ -16,4 +17,5 @@ __all__ = [
     "format_decisions",
     "format_portfolio",
     "format_health",
+    "format_watchlist",
 ]

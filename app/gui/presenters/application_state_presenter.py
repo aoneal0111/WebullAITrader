@@ -11,6 +11,7 @@ from app.gui.formatters import format_positions
 from app.gui.formatters import format_decisions
 from app.gui.formatters import format_portfolio
 from app.gui.formatters import format_health
+from app.gui.formatters import format_watchlist
 from app.gui.projections.dashboard_projection import project_dashboard
 from app.gui.projections.activity_projection import project_timeline_activity
 from app.gui.widgets.activity_panel import ActivityPanel
@@ -112,6 +113,18 @@ class HealthPresenter:
 
     def render(self, state: ApplicationState) -> None:
         self._health_view.render(format_health(state.health_projection))
+
+
+class WatchlistPresenter:
+    """Prepare the immutable event-driven watchlist UI model."""
+
+    def __init__(self, watchlist_view) -> None:
+        self._watchlist_view = watchlist_view
+
+    def render(self, state: ApplicationState) -> None:
+        self._watchlist_view.render(
+            format_watchlist(state.watchlist_projection)
+        )
 
 
 class RuntimeControlsPresenter:

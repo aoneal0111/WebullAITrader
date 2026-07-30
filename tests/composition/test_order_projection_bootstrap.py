@@ -11,6 +11,7 @@ from app.read_models.timeline_projection import TimelineProjection
 from app.read_models.decision_projection import DecisionProjection
 from app.read_models.portfolio_projection import PortfolioProjection
 from app.read_models.health_projection import HealthProjection
+from app.read_models.watchlist_projection import WatchlistProjection
 
 
 def test_desktop_bootstrap_composes_order_projection_with_runtime_sinks(
@@ -64,12 +65,14 @@ def test_desktop_bootstrap_composes_order_projection_with_runtime_sinks(
     assert isinstance(result.decision_projection, DecisionProjection)
     assert isinstance(result.portfolio_projection, PortfolioProjection)
     assert isinstance(result.health_projection, HealthProjection)
+    assert isinstance(result.watchlist_projection, WatchlistProjection)
     assert composed.sinks == (
         existing_sink,
         result.order_projection,
         result.position_projection,
         result.portfolio_projection,
         result.health_projection,
+        result.watchlist_projection,
         result.timeline_projection,
         result.decision_projection,
         additional_sink,

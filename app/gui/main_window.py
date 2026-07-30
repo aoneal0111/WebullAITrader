@@ -12,6 +12,7 @@ from app.gui.presenters import (
     DecisionsPresenter,
     PortfolioPresenter,
     HealthPresenter,
+    WatchlistPresenter,
     OrdersPresenter,
     PositionsPresenter,
     PresentationCoordinator,
@@ -25,6 +26,7 @@ from app.gui.state_bridge import QtStateBridge
 from app.gui.widgets.positions_panel import PositionsPanel
 from app.gui.widgets.activity_panel import ActivityPanel
 from app.gui.widgets.decisions_panel import DecisionsPanel
+from app.gui.widgets.watchlist_panel import WatchlistPanel
 from app.operations_core import ApplicationState, ApplicationStateStore, OperationsBus
 from app.services import OrderCommandFactory, RuntimeService, TradingService
 
@@ -59,6 +61,7 @@ class MainWindow(QMainWindow):
                 DecisionsPresenter(self.decisions),
                 PortfolioPresenter(self.dashboard.portfolio_panel),
                 HealthPresenter(self.dashboard.health_panel),
+                WatchlistPresenter(self.watchlist),
                 RuntimeControlsPresenter(self.start_button, self.stop_button),
                 RuntimeStatusPresenter(self.status_label),
                 RuntimeErrorPresenter(self),
@@ -129,6 +132,8 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.activity)
         self.decisions = DecisionsPanel()
         self.pages.addWidget(self.decisions)
+        self.watchlist = WatchlistPanel()
+        self.pages.addWidget(self.watchlist)
         content_layout.addWidget(self.pages, 1)
         outer.addWidget(content, 1)
         self.sidebar.page_requested.connect(self.pages.setCurrentIndex)
