@@ -55,3 +55,48 @@ def test_watchlist_presenter_prepares_immutable_ui_model() -> None:
     assert row.change_percent == "+1.25%"
     assert row.volume == "100,000"
     assert row.stale == "LIVE"
+
+
+def test_watchlist_presenter_sorts_raw_projected_values() -> None:
+    view = View()
+    presenter = WatchlistPresenter(view)
+    state = ApplicationState(
+        watchlist_projection=WatchlistState(
+            ordered_symbols=("AAPL", "MSFT"),
+            entries=(
+                WatchlistEntry(
+                    symbol="AAPL",
+                    latest_price="101.25",
+                    change_percent="1.25",
+                    volume=100,
+                    market_status="OPEN",
+                    stale=False,
+                ),
+                WatchlistEntry(
+                    symbol="MSFT",
+                    latest_price="450.00",
+                    change_percent="-0.50",
+                    volume=200,
+                    market_status="OPEN",
+                    stale=True,
+                ),
+            ),
+            selected_symbol="MSFT",
+        )
+    )
+    presenter.render(state)
+
+    presenter.sort_by("latest_price")
+    assert tuple(row.symbol for row in view.snapshot.rows) == (
+        "AAPL",
+        "MSFT",
+    )
+    presenter.sort_by("latest_price")
+
+    assert tuple(row.symbol for row in view.snapshot.rows) == (
+        "MSFT",
+        "AAPL",
+    )
+    assert view.snapshot.rows[0].selected is True
+    assert view.snapshot.rows[0].stale == "STALE"
+    assert view.snapshot.rows[0].market_status == "OPEN"

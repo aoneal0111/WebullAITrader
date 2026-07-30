@@ -11,8 +11,10 @@ from app.gui.formatters import format_positions
 from app.gui.formatters import format_decisions
 from app.gui.formatters import format_portfolio
 from app.gui.formatters import format_health
-from app.gui.formatters import format_watchlist
+from app.gui.formatters import format_sorted_watchlist
 from app.gui.formatters import format_replay
+from app.gui.formatters import format_timeline
+from app.gui.models import TimelineFilter
 from app.gui.projections.dashboard_projection import project_dashboard
 from app.gui.projections.activity_projection import project_timeline_activity
 from app.gui.widgets.activity_panel import ActivityPanel
@@ -77,9 +79,24 @@ class TimelinePresenter:
 
     def __init__(self, activity_panel: ActivityPanel) -> None:
         self._activity_panel = activity_panel
+        self._filters = TimelineFilter()
+        self._state: ApplicationState | None = None
 
     def render(self, state: ApplicationState) -> None:
-        self._activity_panel.render(project_timeline_activity(state))
+        self._state = state
+        self._activity_panel.render(
+            format_timeline(
+                project_timeline_activity(state),
+                self._filters,
+            )
+        )
+
+    def set_filters(self, filters: TimelineFilter) -> None:
+        if not isinstance(filters, TimelineFilter):
+            raise TypeError("filters must be a TimelineFilter")
+        self._filters = filters
+        if self._state is not None:
+            self.render(self._state)
 
 
 class DecisionsPresenter:
@@ -87,11 +104,24 @@ class DecisionsPresenter:
 
     def __init__(self, decisions_view) -> None:
         self._decisions_view = decisions_view
+        self._selected_decision_id: str | None = None
+        self._state: ApplicationState | None = None
 
     def render(self, state: ApplicationState) -> None:
+        self._state = state
         self._decisions_view.render(
-            format_decisions(state.decision_projection)
+            format_decisions(
+                state.decision_projection,
+                selected_decision_id=self._selected_decision_id,
+            )
         )
+
+    def select_decision(self, decision_id: str) -> None:
+        if not isinstance(decision_id, str) or not decision_id.strip():
+            raise ValueError("decision_id must be non-empty text")
+        self._selected_decision_id = decision_id
+        if self._state is not None:
+            self.render(self._state)
 
 
 class PortfolioPresenter:
@@ -102,7 +132,14 @@ class PortfolioPresenter:
 
     def render(self, state: ApplicationState) -> None:
         self._portfolio_view.render(
-            format_portfolio(state.portfolio_projection)
+            format_portfolio(
+                state.portfolio_projection,
+                equity=(
+                    state.paper_runtime.current_equity
+                    if state.paper_runtime is not None
+                    else None
+                ),
+            )
         )
 
 
@@ -121,21 +158,40 @@ class WatchlistPresenter:
 
     def __init__(self, watchlist_view) -> None:
         self._watchlist_view = watchlist_view
+        self._sort_field = "projection"
+        self._descending = False
+        self._state: ApplicationState | None = None
 
     def render(self, state: ApplicationState) -> None:
+        self._state = state
         self._watchlist_view.render(
-            format_watchlist(state.watchlist_projection)
+            format_sorted_watchlist(
+                state.watchlist_projection,
+                sort_field=self._sort_field,
+                descending=self._descending,
+            )
         )
+
+    def sort_by(self, field_name: str) -> None:
+        if field_name == self._sort_field:
+            self._descending = not self._descending
+        else:
+            self._sort_field = field_name
+            self._descending = False
+        if self._state is not None:
+            self.render(self._state)
 
 
 class ReplayPresenter:
     """Prepare the immutable operator replay workspace model."""
 
-    def __init__(self, replay_view) -> None:
-        self._replay_view = replay_view
+    def __init__(self, replay_view, *additional_views) -> None:
+        self._replay_views = (replay_view, *additional_views)
 
     def render(self, state: ApplicationState) -> None:
-        self._replay_view.render(format_replay(state.replay))
+        snapshot = format_replay(state.replay)
+        for view in self._replay_views:
+            view.render(snapshot)
 
 
 class RuntimeControlsPresenter:

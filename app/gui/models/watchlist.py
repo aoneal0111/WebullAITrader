@@ -21,3 +21,5 @@ class WatchlistRow:
 @dataclass(frozen=True, slots=True)
 class WatchlistSnapshot:
     rows: tuple[WatchlistRow, ...] = ()
+    sort_field: str = "projection"
+    descending: bool = False

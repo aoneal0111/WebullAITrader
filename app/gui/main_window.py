@@ -59,21 +59,37 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1180, 760)
         self.resize(1440, 900)
         self._build()
+        self._timeline_presenter = TimelinePresenter(self.activity)
+        self._decisions_presenter = DecisionsPresenter(self.decisions)
+        self._watchlist_presenter = WatchlistPresenter(self.watchlist)
+        self._replay_presenter = ReplayPresenter(
+            self.replay,
+            self.dashboard.replay_status_panel,
+        )
         self._presentation = PresentationCoordinator(
             (
                 DashboardPresenter(self.dashboard),
                 OrdersPresenter(self.orders),
                 PositionsPresenter(self.positions),
-                TimelinePresenter(self.activity),
-                DecisionsPresenter(self.decisions),
+                self._timeline_presenter,
+                self._decisions_presenter,
                 PortfolioPresenter(self.dashboard.portfolio_panel),
                 HealthPresenter(self.dashboard.health_panel),
-                WatchlistPresenter(self.watchlist),
-                ReplayPresenter(self.replay),
+                self._watchlist_presenter,
+                self._replay_presenter,
                 RuntimeControlsPresenter(self.start_button, self.stop_button),
                 RuntimeStatusPresenter(self.status_label),
                 RuntimeErrorPresenter(self),
             )
+        )
+        self.activity.filters_changed.connect(
+            self._timeline_presenter.set_filters
+        )
+        self.decisions.decision_selected.connect(
+            self._decisions_presenter.select_decision
+        )
+        self.watchlist.sort_requested.connect(
+            self._watchlist_presenter.sort_by
         )
         self.setStyleSheet(application_stylesheet())
         self._render_state(state_store.snapshot())

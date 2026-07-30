@@ -17,6 +17,7 @@ from app.gui.widgets.positions_panel import PositionsPanel
 from app.gui.widgets.runtime_ribbon import RuntimeRibbon
 from app.gui.widgets.portfolio_panel import PortfolioPanel
 from app.gui.widgets.health_panel import HealthPanel
+from app.gui.widgets.replay_status_panel import ReplayStatusPanel
 
 
 class DashboardPage(QWidget):
@@ -55,11 +56,12 @@ class DashboardPage(QWidget):
         body = QGridLayout()
         body.setSpacing(12)
 
-        self.activity_panel = ActivityPanel()
+        self.activity_panel = ActivityPanel(show_filters=False)
         self.positions_panel = PositionsPanel()
         self.orders_panel = OrdersPanel()
         self.portfolio_panel = PortfolioPanel()
         self.health_panel = HealthPanel()
+        self.replay_status_panel = ReplayStatusPanel()
 
         body.addWidget(
             SectionPanel(
@@ -105,6 +107,16 @@ class DashboardPage(QWidget):
                 self.health_panel,
             ),
             3,
+            0,
+            1,
+            3,
+        )
+        body.addWidget(
+            SectionPanel(
+                "Replay Status",
+                self.replay_status_panel,
+            ),
+            4,
             0,
             1,
             3,

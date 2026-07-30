@@ -8,11 +8,16 @@ from app.read_models.portfolio import PortfolioHighlight, PortfolioSummary
 
 def format_portfolio(
     summary: PortfolioSummary,
+    *,
+    equity: Decimal | None = None,
+    buying_power: Decimal | None = None,
 ) -> PortfolioDashboardSnapshot:
     if not isinstance(summary, PortfolioSummary):
         raise TypeError("summary must be a PortfolioSummary")
     return PortfolioDashboardSnapshot(
         metrics=(
+            ("Equity", _decimal_money(equity)),
+            ("Buying Power", _decimal_money(buying_power)),
             ("Market Value", _money(summary.total_market_value)),
             ("Cost Basis", _money(summary.total_cost_basis)),
             ("Total P/L", _money(summary.total_pnl, signed=True)),
@@ -20,6 +25,11 @@ def format_portfolio(
             ("Unrealized P/L", _money(summary.unrealized_pnl, signed=True)),
             ("Gross Exposure", _money(summary.gross_exposure)),
             ("Long / Short", _exposure(summary)),
+            (
+                "Working Orders",
+                str(summary.working_orders),
+            ),
+            ("Open Positions", str(summary.open_positions)),
             (
                 "Positions / Orders",
                 f"{summary.open_positions} / {summary.working_orders}",
@@ -77,3 +87,9 @@ def _money(value: str | None, *, signed: bool = False) -> str:
     amount = Decimal(value)
     sign = "+" if signed and amount > 0 else ""
     return f"{sign}${amount:,.2f}"
+
+
+def _decimal_money(value: Decimal | None) -> str:
+    if value is None:
+        return "--"
+    return f"${value:,.2f}"

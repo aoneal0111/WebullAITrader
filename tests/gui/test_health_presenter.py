@@ -39,5 +39,11 @@ def test_health_presenter_prepares_immutable_dashboard_model() -> None:
     assert view.snapshot.overall_status == "HEALTHY"
     assert view.snapshot.status_level == "good"
     assert ("Latency", "12.5 ms") in view.snapshot.metrics
+    assert ("Runtime", "RUNNING") in view.snapshot.metrics
+    assert ("Broker", "CONNECTED") in view.snapshot.metrics
+    assert ("Market Data", "CONNECTED") in view.snapshot.metrics
+    assert ("AI", "READY") in view.snapshot.metrics
+    assert ("Persistence", "READY") in view.snapshot.metrics
+    assert ("Heartbeat", "10:00:00") in view.snapshot.metrics
     assert ("Reconnects", "2") in view.snapshot.metrics
     assert view.snapshot.incident == "Storage nearing capacity."

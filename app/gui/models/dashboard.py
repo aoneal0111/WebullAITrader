@@ -45,8 +45,20 @@ class ActivityEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class TimelineFilter:
+    severity: str = "ALL"
+    category: str = "ALL"
+    symbol: str = "ALL"
+    search: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ActivitySnapshot:
     entries: tuple[ActivityEntry, ...]
+    filters: TimelineFilter = TimelineFilter()
+    severity_options: tuple[str, ...] = ("ALL",)
+    category_options: tuple[str, ...] = ("ALL",)
+    symbol_options: tuple[str, ...] = ("ALL",)
 
     @classmethod
     def initial(cls) -> "ActivitySnapshot":

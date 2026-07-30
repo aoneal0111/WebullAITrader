@@ -7,8 +7,47 @@ from app.read_models.watchlist import WatchlistState
 
 
 def format_watchlist(state: WatchlistState) -> WatchlistSnapshot:
+    return format_sorted_watchlist(state)
+
+
+def format_sorted_watchlist(
+    state: WatchlistState,
+    *,
+    sort_field: str = "projection",
+    descending: bool = False,
+) -> WatchlistSnapshot:
     if not isinstance(state, WatchlistState):
         raise TypeError("state must be a WatchlistState")
+    if sort_field not in {
+        "projection",
+        "symbol",
+        "latest_price",
+        "change_percent",
+        "volume",
+        "market_status",
+        "stale",
+    }:
+        raise ValueError("unsupported watchlist sort field")
+    entries = state.entries
+    if sort_field != "projection":
+        known = tuple(
+            entry
+            for entry in entries
+            if _sort_value(entry, sort_field) is not None
+        )
+        unknown = tuple(
+            entry
+            for entry in entries
+            if _sort_value(entry, sort_field) is None
+        )
+        entries = (
+            *sorted(
+                known,
+                key=lambda entry: _sort_value(entry, sort_field),
+                reverse=descending,
+            ),
+            *unknown,
+        )
     return WatchlistSnapshot(
         rows=tuple(
             WatchlistRow(
@@ -38,9 +77,20 @@ def format_watchlist(state: WatchlistState) -> WatchlistSnapshot:
                     else "--"
                 ),
             )
-            for entry in state.entries
-        )
+            for entry in entries
+        ),
+        sort_field=sort_field,
+        descending=descending,
     )
+
+
+def _sort_value(entry, sort_field: str):
+    value = getattr(entry, sort_field)
+    if sort_field in {"latest_price", "change_percent"}:
+        return Decimal(value) if value is not None else None
+    if sort_field == "stale":
+        return int(value) if value is not None else None
+    return value
 
 
 def _number(value: str | None, *, signed: bool = False) -> str:

@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from app.gui.models import ActivitySnapshot
+from app.gui.models import ActivitySnapshot, TimelineFilter
 from app.gui.presenters import TimelinePresenter
 from app.operations_core import ApplicationState, OperationsTimelineEntry
 from app.read_models.timeline import project_operational_timeline
@@ -48,3 +48,49 @@ def test_timeline_presenter_prepares_immutable_activity_view_model() -> None:
     assert snapshot.entries[0].severity == "SUCCESS"
     assert snapshot.entries[0].related_symbol == "AAPL"
     assert snapshot.entries[0].related_order_id == "order-1"
+
+
+def test_timeline_presenter_applies_structured_filters_and_search() -> None:
+    panel = ActivityPanelSpy()
+    presenter = TimelinePresenter(panel)
+    projection = project_operational_timeline(
+        (
+            OperationsTimelineEntry(
+                timestamp=NOW,
+                category="ORDER",
+                severity="SUCCESS",
+                source="paper-runtime",
+                title="Order accepted",
+                description="AAPL order accepted.",
+                related_symbol="AAPL",
+            ),
+            OperationsTimelineEntry(
+                timestamp=NOW.replace(hour=15, minute=59),
+                category="SYSTEM",
+                severity="WARNING",
+                source="risk-runtime",
+                title="Risk warning",
+                description="MSFT exposure elevated.",
+                related_symbol="MSFT",
+            ),
+        )
+    )
+    state = ApplicationState(timeline_projection=projection)
+    presenter.render(state)
+
+    presenter.set_filters(
+        TimelineFilter(
+            severity="WARNING",
+            category="SYSTEM",
+            symbol="MSFT",
+            search="exposure",
+        )
+    )
+
+    snapshot = panel.snapshots[-1]
+    assert len(snapshot.entries) == 1
+    assert snapshot.entries[0].related_symbol == "MSFT"
+    assert snapshot.filters.search == "exposure"
+    assert snapshot.severity_options == ("ALL", "SUCCESS", "WARNING")
+    assert snapshot.category_options == ("ALL", "ORDER", "SYSTEM")
+    assert snapshot.symbol_options == ("ALL", "AAPL", "MSFT")

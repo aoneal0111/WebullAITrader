@@ -16,8 +16,23 @@ class DecisionRow:
     quantity: str
     order_id: str
     outcome: str
+    decision_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionDetail:
+    decision_id: str
+    title: str
+    confidence: str
+    reasoning: str
+    risk: str
+    requested_quantity: str
+    resulting_order_id: str
+    lifecycle: tuple[str, ...]
+    execution_outcome: str
 
 
 @dataclass(frozen=True, slots=True)
 class DecisionsSnapshot:
     rows: tuple[DecisionRow, ...] = ()
+    selected: DecisionDetail | None = None

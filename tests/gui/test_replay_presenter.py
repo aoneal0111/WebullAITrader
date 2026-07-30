@@ -63,3 +63,22 @@ def test_replay_presenter_formats_playing_controls() -> None:
     assert view.snapshot.can_pause is True
     assert view.snapshot.can_step is False
     assert view.snapshot.can_seek is False
+
+
+def test_replay_presenter_renders_workspace_and_dashboard_from_one_model() -> None:
+    workspace_view = View()
+    dashboard_view = View()
+    presenter = ReplayPresenter(workspace_view, dashboard_view)
+    state = ApplicationState(
+        replay=ReplayWorkspaceState(
+            phase=ReplayWorkspacePhase.PAUSED,
+            current_event=3,
+            events_processed=3,
+            total_events=10,
+        )
+    )
+
+    presenter.render(state)
+
+    assert workspace_view.snapshot is dashboard_view.snapshot
+    assert dashboard_view.snapshot.current_position == "3 / 10"

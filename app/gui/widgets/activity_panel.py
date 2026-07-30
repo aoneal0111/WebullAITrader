@@ -1,32 +1,115 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import (
+    QComboBox,
+    QHBoxLayout,
+    QLineEdit,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
-from app.gui.models import ActivitySnapshot
+from app.gui.models import ActivitySnapshot, TimelineFilter
 
 
 class ActivityPanel(QWidget):
-    def __init__(self) -> None:
-        super().__init__()
+    """Render immutable timeline rows and emit structured filter intent."""
 
+    filters_changed = Signal(object)
+
+    def __init__(self, *, show_filters: bool = True) -> None:
+        super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self._activity = QLabel("No operations events recorded.")
-        self._activity.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._activity.setWordWrap(True)
+        filter_bar = QWidget()
+        filters = QHBoxLayout(filter_bar)
+        filters.setContentsMargins(0, 0, 0, 0)
+        self._severity = QComboBox()
+        self._category = QComboBox()
+        self._symbol = QComboBox()
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("Search timeline")
+        for widget in (
+            self._severity,
+            self._category,
+            self._symbol,
+            self._search,
+        ):
+            filters.addWidget(widget)
+        filter_bar.setVisible(show_filters)
+        layout.addWidget(filter_bar)
 
-        layout.addWidget(self._activity)
+        self._table = QTableWidget(0, 6)
+        self._table.setHorizontalHeaderLabels(
+            ("Time", "Severity", "Category", "Symbol", "Source", "Event")
+        )
+        self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.verticalHeader().setVisible(False)
+        layout.addWidget(self._table)
+
+        self._severity.currentTextChanged.connect(self._emit_filters)
+        self._category.currentTextChanged.connect(self._emit_filters)
+        self._symbol.currentTextChanged.connect(self._emit_filters)
+        self._search.textChanged.connect(self._emit_filters)
 
     def render(self, snapshot: ActivitySnapshot) -> None:
-        if not snapshot.entries:
-            self._activity.setText("No operations events recorded.")
-            return
+        self._set_options(
+            self._severity,
+            snapshot.severity_options,
+            snapshot.filters.severity,
+        )
+        self._set_options(
+            self._category,
+            snapshot.category_options,
+            snapshot.filters.category,
+        )
+        self._set_options(
+            self._symbol,
+            snapshot.symbol_options,
+            snapshot.filters.symbol,
+        )
+        self._search.blockSignals(True)
+        self._search.setText(snapshot.filters.search)
+        self._search.blockSignals(False)
 
-        self._activity.setText(
-            "\n\n".join(
-                f"{entry.occurred_at.astimezone():%H:%M:%S}   {entry.message}"
-                for entry in snapshot.entries
+        self._table.setRowCount(len(snapshot.entries))
+        for row_index, entry in enumerate(snapshot.entries):
+            values = (
+                entry.occurred_at.astimezone().strftime("%H:%M:%S"),
+                entry.severity,
+                entry.category,
+                entry.related_symbol or "--",
+                entry.source,
+                entry.message,
+            )
+            for column_index, value in enumerate(values):
+                self._table.setItem(
+                    row_index,
+                    column_index,
+                    QTableWidgetItem(value),
+                )
+
+    @staticmethod
+    def _set_options(
+        combo: QComboBox,
+        options: tuple[str, ...],
+        selected: str,
+    ) -> None:
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(options)
+        combo.setCurrentText(selected)
+        combo.blockSignals(False)
+
+    def _emit_filters(self) -> None:
+        self.filters_changed.emit(
+            TimelineFilter(
+                severity=self._severity.currentText() or "ALL",
+                category=self._category.currentText() or "ALL",
+                symbol=self._symbol.currentText() or "ALL",
+                search=self._search.text(),
             )
         )

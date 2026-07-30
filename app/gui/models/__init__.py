@@ -5,9 +5,10 @@ from .dashboard import (
     OrdersSnapshot,
     PositionsSnapshot,
     RuntimeSnapshot,
+    TimelineFilter,
 )
 from .runtime import RuntimeState
-from .decisions import DecisionRow, DecisionsSnapshot
+from .decisions import DecisionDetail, DecisionRow, DecisionsSnapshot
 from .portfolio import PortfolioDashboardSnapshot
 from .health import HealthDashboardSnapshot
 from .watchlist import WatchlistRow, WatchlistSnapshot
@@ -18,6 +19,7 @@ __all__ = [
     "ActivitySnapshot",
     "DashboardSnapshot",
     "DecisionRow",
+    "DecisionDetail",
     "DecisionsSnapshot",
     "PortfolioDashboardSnapshot",
     "HealthDashboardSnapshot",
@@ -27,5 +29,6 @@ __all__ = [
     "PositionsSnapshot",
     "RuntimeSnapshot",
     "RuntimeState",
+    "TimelineFilter",
     "ReplayWorkspaceSnapshot",
 ]
