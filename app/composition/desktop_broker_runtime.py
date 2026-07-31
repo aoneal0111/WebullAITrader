@@ -43,6 +43,7 @@ from app.webull.client_factories import (
 from app.webull.market_data_probe import MarketDataCapabilityProbe
 from app.webull.startup_validation import RuntimeStartupValidator
 from app.webull.client_factories import trading_configuration
+from app.webull.request_audit import AuditedMarketDataClient, RequestIsolationGuard
 
 
 ConfigurationLoader = Callable[[], OperationalConfiguration]
@@ -100,8 +101,15 @@ def create_configured_desktop_broker_driver(
     )
 
     market_data_configuration_value = market_data_configuration(configuration)
+    request_guard = RequestIsolationGuard(
+        trading_configuration(configuration), market_data_configuration_value
+    )
     data_client = LazyOfficialDataClient(
-        MarketDataClientFactory(market_data_configuration_value).create
+        lambda: AuditedMarketDataClient(
+            MarketDataClientFactory(market_data_configuration_value).create(),
+            request_guard,
+            market_data_configuration_value,
+        )
     )
     scanner_coordinator = None
     if broker_runtime.market_data is not None:

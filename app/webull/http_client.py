@@ -88,7 +88,16 @@ def create_official_trade_client(
 class WebullHttpClient:
     """Path-compatible adapter whose operations are all official SDK calls."""
 
-    def __init__(self, trade_client: WebullTradeClient, limiter, logger) -> None:
+    def __init__(
+        self,
+        trade_client: WebullTradeClient,
+        limiter,
+        logger,
+        *,
+        request_guard=None,
+        request_identity=None,
+        endpoint: str = "",
+    ) -> None:
         if trade_client is None:
             raise ValidationError("official Webull trade client is required")
         if not hasattr(limiter, "acquire"):
@@ -98,6 +107,9 @@ class WebullHttpClient:
         self._trade = trade_client
         self._limiter = limiter
         self._logger = logger
+        self._request_guard = request_guard
+        self._request_identity = request_identity
+        self._endpoint = endpoint.rstrip("/")
 
     def get(self, path: str, *, query=None):
         query = dict(query or {})
@@ -163,6 +175,13 @@ class WebullHttpClient:
     def _execute(self, method: str, path: str, operation):
         if operation is None:
             raise ValidationError("unsupported Webull SDK operation")
+        endpoint = f"{self._endpoint}{path}" if self._endpoint else path
+        if self._request_guard is not None:
+            self._request_guard.record(
+                self._request_identity,
+                endpoint=endpoint,
+                capability_result="REQUESTED",
+            )
         self._logger.log(
             "sdk_request",
             "started",
@@ -173,6 +192,12 @@ class WebullHttpClient:
             self._limiter.acquire()
             result = _decode_sdk_response(operation())
         except Exception as exc:
+            if self._request_guard is not None:
+                self._request_guard.record(
+                    self._request_identity,
+                    endpoint=endpoint,
+                    capability_result="FAILED",
+                )
             error = _map_sdk_error(exc)
             self._logger.log(
                 "sdk_request",
@@ -184,6 +209,12 @@ class WebullHttpClient:
             if error is exc:
                 raise
             raise error from exc
+        if self._request_guard is not None:
+            self._request_guard.record(
+                self._request_identity,
+                endpoint=endpoint,
+                capability_result="SUCCEEDED",
+            )
         self._logger.log(
             "sdk_request",
             "succeeded",

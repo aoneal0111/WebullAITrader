@@ -23,6 +23,10 @@ from app.webull.client_factories import (
     market_data_configuration,
     trading_configuration,
 )
+from app.webull.request_audit import (
+    RequestIsolationGuard,
+    RequestService,
+)
 from app.webull.logging import StructuredLogger
 from app.webull.rate_limits import DeterministicRateLimiter, RateLimit
 from app.webull.market_event_parser import WebullMarketEventParser
@@ -58,12 +62,17 @@ def _cfg(section, legacy):
 
 
 
-def build_webull_broker(configuration) -> WebullAdapter:
+def build_webull_broker(
+    configuration, *, request_guard: RequestIsolationGuard | None = None
+) -> WebullAdapter:
     """Build the existing Webull execution broker."""
 
     transport_logger = StructuredLogger(ConsoleSink())
 
     trading = trading_configuration(configuration)
+    isolation = request_guard or RequestIsolationGuard(
+        trading, market_data_configuration(configuration)
+    )
     webull_configuration = WebullConfiguration(
         api_endpoint=trading.api_base_url.rstrip("/"),
         account_id=trading.account_id,
@@ -102,6 +111,9 @@ def build_webull_broker(configuration) -> WebullAdapter:
         trade_client=trade_client,
         limiter=limiter,
         logger=transport_logger,
+        request_guard=isolation,
+        request_identity=isolation.identity(RequestService.TRADING),
+        endpoint=trading.api_base_url,
     )
 
     transport = WebullBrokerTransport(
@@ -118,6 +130,7 @@ def build_webull_broker(configuration) -> WebullAdapter:
 def build_webull_market_data_stream(
     configuration,
     *,
+    request_guard: RequestIsolationGuard | None = None,
     subscription_factory: Callable[
         [], WebullMarketSubscription
     ] = create_official_market_subscription,
@@ -134,6 +147,15 @@ def build_webull_market_data_stream(
     market_data = market_data_configuration(configuration)
     if not market_data.api_key.strip() or not market_data.api_secret.strip():
         return None
+    isolation = request_guard or RequestIsolationGuard(
+        trading_configuration(configuration), market_data
+    )
+    stream_identity = isolation.identity(RequestService.MARKET_DATA)
+    isolation.record(
+        stream_identity,
+        endpoint=market_data.stream_url,
+        capability_result="STREAM_CLIENT_REQUESTED",
+    )
     credentials = WebullStreamingCredentials(
         app_key=market_data.api_key,
         app_secret=market_data.api_secret,
@@ -154,16 +176,29 @@ def build_webull_market_data_stream(
         market_data_environment=market_data.environment.value,
         trading_environment=configuration.environment.value,
     )
-    backend = backend_factory(
-        credentials,
-        subscription_factory(),
-        receive_timeout_seconds=1.0,
-        http_host=api_endpoint.hostname,
-        mqtt_host=stream_endpoint.mqtt_host,
-        mqtt_port=stream_endpoint.mqtt_port,
-        tls_enable=stream_endpoint.tls_enable,
-        transport=stream_endpoint.transport,
-        websocket_path=stream_endpoint.websocket_path,
+    try:
+        backend = backend_factory(
+            credentials,
+            subscription_factory(),
+            receive_timeout_seconds=1.0,
+            http_host=api_endpoint.hostname,
+            mqtt_host=stream_endpoint.mqtt_host,
+            mqtt_port=stream_endpoint.mqtt_port,
+            tls_enable=stream_endpoint.tls_enable,
+            transport=stream_endpoint.transport,
+            websocket_path=stream_endpoint.websocket_path,
+        )
+    except Exception:
+        isolation.record(
+            stream_identity,
+            endpoint=market_data.stream_url,
+            capability_result="STREAM_CLIENT_FAILED",
+        )
+        raise
+    isolation.record(
+        stream_identity,
+        endpoint=market_data.stream_url,
+        capability_result="STREAM_CLIENT_CREATED",
     )
     client = client_factory(
         backend,

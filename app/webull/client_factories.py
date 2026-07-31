@@ -49,7 +49,7 @@ def trading_configuration(configuration: object) -> TradingConfiguration:
         return scoped
     return TradingConfiguration(
         environment=configuration.environment,
-        account_id=configuration.account_id,
+        account_id=getattr(configuration, "account_id", ""),
         api_key=configuration.api_key,
         api_secret=configuration.api_secret,
         api_base_url=configuration.api_base_url,
