@@ -3,11 +3,32 @@ from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
 
+
 class TradingEnvironment(StrEnum):
     TEST = "TEST"
     PAPER = "PAPER"
     SANDBOX = "SANDBOX"
     LIVE = "LIVE"
+
+
+@dataclass(frozen=True, slots=True)
+class TradingConfiguration:
+    environment: TradingEnvironment
+    account_id: str
+    api_key: str
+    api_secret: str
+    api_base_url: str
+    stream_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class MarketDataConfiguration:
+    environment: TradingEnvironment
+    api_key: str
+    api_secret: str
+    api_base_url: str
+    stream_url: str
+
 
 @dataclass(frozen=True, slots=True)
 class OperationalConfiguration:
@@ -50,3 +71,6 @@ class OperationalConfiguration:
     market_data_symbols: tuple[str, ...] = ()
     stream_reconnect_attempts: int = 3
     stream_reconnect_backoff_seconds: Decimal = Decimal("1")
+
+    trading: TradingConfiguration | None = None
+    market_data: MarketDataConfiguration | None = None

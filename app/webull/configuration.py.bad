@@ -53,41 +53,26 @@ class MarketDataConfiguration:
 
 @dataclass(frozen=True, slots=True)
 class WebullConfiguration:
-    # ----- legacy fields -----
-    api_endpoint: str
-    account_id: str
+    trading: TradingConfiguration
+    market_data: MarketDataConfiguration
     timeout_seconds: Decimal
     retry_policy: RetryPolicy
     reconnect_policy: ReconnectPolicy
-    websocket: WebSocketSettings
     logging: LoggingConfiguration = LoggingConfiguration()
-
-    # ----- new optional fields -----
-    trading: TradingConfiguration | None = None
-    market_data: MarketDataConfiguration | None = None
 
 
 def validate_configuration(value: WebullConfiguration) -> WebullConfiguration:
     if not isinstance(value, WebullConfiguration):
         raise ValueError("WebullConfiguration is required")
 
-    trading = value.trading
-    market = value.market_data
+    _validate_endpoint(value.trading.api_endpoint)
+    _validate_endpoint(value.market_data.api_endpoint)
 
-    if trading is not None:
-        _validate_endpoint(trading.api_endpoint)
-        parse_webull_stream_url(trading.stream_endpoint)
-        if not trading.account_id.strip():
-            raise ValueError("trading account_id is required")
-    else:
-        _validate_endpoint(value.api_endpoint)
-        parse_webull_stream_url(value.websocket.endpoint)
-        if not value.account_id.strip():
-            raise ValueError("account_id is required")
+    parse_webull_stream_url(value.trading.stream_endpoint)
+    parse_webull_stream_url(value.market_data.stream_endpoint)
 
-    if market is not None:
-        _validate_endpoint(market.api_endpoint)
-        parse_webull_stream_url(market.stream_endpoint)
+    if not value.trading.account_id.strip():
+        raise ValueError("trading account_id is required")
 
     _positive(value.timeout_seconds, "timeout")
 
@@ -106,16 +91,17 @@ def validate_configuration(value: WebullConfiguration) -> WebullConfiguration:
     if value.reconnect_policy.maximum_attempts <= 0:
         raise ValueError("reconnect attempts must be positive")
 
-    _positive(value.reconnect_policy.backoff_seconds, "reconnect backoff")
-
-    if value.websocket.heartbeat_timeout_seconds <= 0:
-        raise ValueError("heartbeat timeout must be positive")
+    _positive(
+        value.reconnect_policy.backoff_seconds,
+        "reconnect backoff",
+    )
 
     return value
 
 
 def _validate_endpoint(endpoint: str) -> None:
     parsed = urlparse(endpoint)
+
     if parsed.scheme != "https" or not parsed.netloc:
         raise ValueError("Webull API endpoint must use HTTPS")
 

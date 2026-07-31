@@ -51,6 +51,10 @@ class ConsoleSink:
     def emit(self, record: object) -> None:
         print(record, flush=True)
 
+def _cfg(section, legacy):
+    return section if section is not None else legacy
+
+
 
 def build_webull_broker(configuration) -> WebullAdapter:
     """Build the existing Webull execution broker."""
@@ -58,8 +62,8 @@ def build_webull_broker(configuration) -> WebullAdapter:
     transport_logger = StructuredLogger(ConsoleSink())
 
     webull_configuration = WebullConfiguration(
-        api_endpoint=configuration.api_base_url.rstrip("/"),
-        account_id=configuration.account_id,
+        api_endpoint=configuration.trading.api_base_url.rstrip("/"),
+        account_id=configuration.trading.account_id,
         timeout_seconds=Decimal("10"),
         retry_policy=RetryPolicy(
             maximum_attempts=3,
@@ -72,7 +76,7 @@ def build_webull_broker(configuration) -> WebullAdapter:
             backoff_seconds=Decimal("1"),
         ),
         websocket=WebSocketSettings(
-            endpoint=configuration.stream_url,
+            endpoint=configuration.trading.stream_url,
         ),
     )
 
@@ -86,8 +90,8 @@ def build_webull_broker(configuration) -> WebullAdapter:
     )
 
     trade_client = create_official_trade_client(
-        app_key=configuration.api_key,
-        app_secret=configuration.api_secret,
+        app_key=getattr(getattr(configuration,"trading",configuration),"app_key",configuration.api_key),
+        app_secret=getattr(getattr(configuration,"trading",configuration),"app_secret",configuration.api_secret),
         endpoint=webull_configuration.api_endpoint,
         timeout_seconds=webull_configuration.timeout_seconds,
     )
@@ -126,12 +130,12 @@ def build_webull_market_data_stream(
     if not configuration.market_data_streaming_enabled:
         return None
     credentials = WebullStreamingCredentials(
-        app_key=configuration.api_key,
-        app_secret=configuration.api_secret,
+        app_key=getattr(getattr(configuration,"trading",configuration),"app_key",configuration.api_key),
+        app_secret=getattr(getattr(configuration,"trading",configuration),"app_secret",configuration.api_secret),
         session_id=session_id_factory(),
     )
-    stream_endpoint = parse_webull_stream_url(configuration.stream_url)
-    api_endpoint = urlparse(configuration.api_base_url)
+    stream_endpoint = parse_webull_stream_url(getattr(getattr(configuration,"trading",configuration),"stream_url",configuration.stream_url))
+    api_endpoint = urlparse(getattr(getattr(configuration,"trading",configuration),"api_base_url",configuration.api_base_url))
     stream_logger = StructuredLogger(ConsoleSink())
     stream_logger.log(
         "stream_configuration",
@@ -174,3 +178,14 @@ __all__ = [
     "build_webull_broker",
     "build_webull_market_data_stream",
 ]
+
+
+
+
+
+
+
+
+
+
+

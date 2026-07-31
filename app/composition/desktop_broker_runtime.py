@@ -1,4 +1,4 @@
-"""Configuration-aware broker composition for the desktop runtime."""
+﻿"""Configuration-aware broker composition for the desktop runtime."""
 
 from __future__ import annotations
 
@@ -96,9 +96,9 @@ def create_configured_desktop_broker_driver(
     if broker_runtime.market_data is not None:
         data_client = LazyOfficialDataClient(
             lambda: create_official_data_client(
-                app_key=configuration.api_key,
-                app_secret=configuration.api_secret,
-                endpoint=configuration.api_base_url,
+                app_key=getattr(getattr(configuration,"market_data",configuration),"app_key",configuration.api_key),
+                app_secret=getattr(getattr(configuration,"market_data",configuration),"app_secret",configuration.api_secret),
+                endpoint=getattr(getattr(configuration,"market_data",configuration),"api_base_url",configuration.api_base_url),
             )
         )
         universe_provider = WebullScannerUniverseProvider(
@@ -153,3 +153,6 @@ __all__ = [
     "DesktopBrokerRuntimeDriver",
     "create_configured_desktop_broker_driver",
 ]
+
+
+
