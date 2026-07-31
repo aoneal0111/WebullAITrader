@@ -44,3 +44,15 @@ class ReceiveTransportAdapter:
                 "market-data client does not support lifecycle events"
             )
         setter(sink)
+
+    @property
+    def heartbeat_ok(self) -> bool:
+        return bool(getattr(self._client, "heartbeat_ok", False))
+
+    @property
+    def subscription_acknowledged(self) -> bool:
+        return bool(getattr(self._client, "subscription_acknowledged", False))
+
+    @property
+    def reconnect_ready(self) -> bool:
+        return bool(getattr(self._client, "reconnect_ready", False))

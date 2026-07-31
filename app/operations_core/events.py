@@ -374,12 +374,21 @@ class OperationsHealthState:
     market_data_status: str | None = None
     trading_environment: str | None = None
     trading_rest_status: str | None = None
+    account_status: str | None = None
+    buying_power_status: str | None = None
+    positions_status: str | None = None
     orders_status: str | None = None
     balances_status: str | None = None
     market_data_environment: str | None = None
     market_data_rest_status: str | None = None
     streaming_status: str | None = None
+    subscription_status: str | None = None
+    heartbeat_status: str | None = None
+    reconnect_status: str | None = None
     entitlement_status: str | None = None
+    probe_aapl_status: str | None = None
+    probe_spy_status: str | None = None
+    probe_tsla_status: str | None = None
     scanner_status: str | None = None
     supported_symbols: int | None = None
     ai_status: str | None = None
@@ -400,12 +409,21 @@ class OperationsHealthState:
             "market_data_status",
             "trading_environment",
             "trading_rest_status",
+            "account_status",
+            "buying_power_status",
+            "positions_status",
             "orders_status",
             "balances_status",
             "market_data_environment",
             "market_data_rest_status",
             "streaming_status",
+            "subscription_status",
+            "heartbeat_status",
+            "reconnect_status",
             "entitlement_status",
+            "probe_aapl_status",
+            "probe_spy_status",
+            "probe_tsla_status",
             "scanner_status",
             "ai_status",
             "risk_status",

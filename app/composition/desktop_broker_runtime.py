@@ -41,6 +41,8 @@ from app.webull.client_factories import (
     market_data_configuration,
 )
 from app.webull.market_data_probe import MarketDataCapabilityProbe
+from app.webull.startup_validation import RuntimeStartupValidator
+from app.webull.client_factories import trading_configuration
 
 
 ConfigurationLoader = Callable[[], OperationalConfiguration]
@@ -97,12 +99,12 @@ def create_configured_desktop_broker_driver(
         webull_market_data_factory=webull_market_data_factory,
     )
 
+    market_data_configuration_value = market_data_configuration(configuration)
+    data_client = LazyOfficialDataClient(
+        MarketDataClientFactory(market_data_configuration_value).create
+    )
     scanner_coordinator = None
     if broker_runtime.market_data is not None:
-        market_data_configuration_value = market_data_configuration(configuration)
-        data_client = LazyOfficialDataClient(
-            MarketDataClientFactory(market_data_configuration_value).create
-        )
         universe_provider = WebullScannerUniverseProvider(
             data_client,
             clock=clock,
@@ -148,13 +150,16 @@ def create_configured_desktop_broker_driver(
             clock=clock,
         ).coordinator
 
-    market_data_probe = None
-    if scanner_coordinator is not None:
-        market_data_probe = MarketDataCapabilityProbe(
-            market_data_configuration_value,
-            data_client,
-            scanner_coordinator,
-        )
+    market_data_probe = MarketDataCapabilityProbe(
+        market_data_configuration_value,
+        data_client,
+        scanner_coordinator or broker_runtime.market_data,
+    )
+    startup_validator = RuntimeStartupValidator(
+        broker_runtime.execution,
+        trading_configuration(configuration),
+        market_data_probe,
+    )
 
     return DesktopBrokerRuntimeDriver(
         configuration=configuration,
@@ -165,6 +170,7 @@ def create_configured_desktop_broker_driver(
         market_event_observer=market_event_observer,
         scanner_coordinator=scanner_coordinator,
         market_data_probe=market_data_probe,
+        startup_validator=startup_validator,
         clock=clock,
         source=source,
     )

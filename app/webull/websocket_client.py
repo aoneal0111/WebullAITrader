@@ -52,6 +52,7 @@ class OfficialSdkStreamBackend:
         self._connect_timeout_seconds = connect_timeout_seconds
         self._messages: Queue[object] = Queue()
         self._connected = Event()
+        self._subscription_acknowledged = Event()
         self._lifecycle_sink: StreamLifecycleSink | None = None
         self._deliberate_shutdown = False
         self._consumption_started = False
@@ -87,6 +88,7 @@ class OfficialSdkStreamBackend:
 
     def connect(self) -> None:
         self._connected.clear()
+        self._subscription_acknowledged.clear()
         self._deliberate_shutdown = False
         self._consumption_started = False
         connect_and_loop_start = getattr(self.client, "connect_and_loop_start", None)
@@ -110,6 +112,7 @@ class OfficialSdkStreamBackend:
     def disconnect(self) -> None:
         self._deliberate_shutdown = True
         self._connected.clear()
+        self._subscription_acknowledged.clear()
         loop_stop = getattr(self.client, "loop_stop", None)
         if callable(loop_stop):
             loop_stop()
@@ -125,21 +128,33 @@ class OfficialSdkStreamBackend:
             raise TypeError("official SDK streaming client has no subscribe method")
 
         self._notify("rest_subscription_requested")
+        self._subscription_acknowledged.clear()
         if self._subscription_mapper is None:
             subscribe(channels)
+            self._subscription_acknowledged.set()
             self._notify("rest_subscription_active")
             return
 
         mapped = self._subscription_mapper(channels)
         if isinstance(mapped, dict):
             subscribe(**mapped)
+            self._subscription_acknowledged.set()
             self._notify("rest_subscription_active")
             return
         if isinstance(mapped, tuple):
             subscribe(*mapped)
+            self._subscription_acknowledged.set()
             self._notify("rest_subscription_active")
             return
         raise TypeError("subscription_mapper must return a tuple or dict")
+
+    @property
+    def heartbeat_ok(self) -> bool:
+        return self._connected.is_set()
+
+    @property
+    def subscription_acknowledged(self) -> bool:
+        return self._subscription_acknowledged.is_set()
 
     def receive(self) -> object | None:
         try:
@@ -231,6 +246,18 @@ class WebullWebSocketClient:
 
     def subscribe(self, channels):
         self.channels = tuple(sorted(set(channels))); self.backend.subscribe(self.channels); self.logger.log("stream_subscribe", "succeeded", channel_count=len(self.channels))
+
+    @property
+    def heartbeat_ok(self):
+        return bool(getattr(self.backend, "heartbeat_ok", self.health.connected))
+
+    @property
+    def subscription_acknowledged(self):
+        return bool(getattr(self.backend, "subscription_acknowledged", False))
+
+    @property
+    def reconnect_ready(self):
+        return self.policy.maximum_attempts > 0
 
     def receive(self):
         for attempt in range(self.policy.maximum_attempts + 1):

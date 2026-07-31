@@ -29,7 +29,13 @@ def test_health_presenter_prepares_immutable_dashboard_model() -> None:
             market_data_environment="PRODUCTION",
             market_data_rest_status="CONNECTED",
             streaming_status="CONNECTED",
+            subscription_status="ACCEPTED",
+            heartbeat_status="OK",
+            reconnect_status="READY",
             entitlement_status="GRANTED",
+            probe_aapl_status="SUPPORTED",
+            probe_spy_status="SUPPORTED",
+            probe_tsla_status="SUPPORTED",
             scanner_status="ACTIVE",
             supported_symbols=7300,
             ai_status="READY",
@@ -56,6 +62,8 @@ def test_health_presenter_prepares_immutable_dashboard_model() -> None:
     assert ("Orders", "ENABLED") in view.snapshot.metrics
     assert ("Market Data Environment", "PRODUCTION") in view.snapshot.metrics
     assert ("Entitlement", "GRANTED") in view.snapshot.metrics
+    assert ("Subscription", "ACCEPTED") in view.snapshot.metrics
+    assert ("Probe AAPL", "SUPPORTED") in view.snapshot.metrics
     assert ("Supported Symbols", "7300") in view.snapshot.metrics
     assert ("Scanner", "ACTIVE") in view.snapshot.metrics
     assert ("AI", "READY") in view.snapshot.metrics

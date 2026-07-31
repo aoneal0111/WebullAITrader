@@ -4,6 +4,7 @@ from app.configuration import MarketDataConfiguration, TradingEnvironment
 from app.webull.market_data_probe import (
     MarketDataCapabilityProbe,
     ProbeState,
+    SymbolProbeState,
 )
 from app.webull.sdk_market_data import LazyOfficialDataClient
 from app.webull.sdk_market_data import EnvironmentSupportCache
@@ -33,8 +34,11 @@ class RestClient:
 
 
 class Stream:
-    def __init__(self):
+    def __init__(self, *, acknowledged=True, reconnect_ready=True):
         self.calls = []
+        self.heartbeat_ok = True
+        self.subscription_acknowledged = acknowledged
+        self.reconnect_ready = reconnect_ready
 
     def connect(self):
         self.calls.append("connect")
@@ -78,7 +82,19 @@ def test_probe_validates_rest_stream_subscription_and_entitlement():
     assert result.streaming.state is ProbeState.AVAILABLE
     assert result.subscription.state is ProbeState.AVAILABLE
     assert result.entitlement.state is ProbeState.AVAILABLE
-    assert stream.calls == ["connect", ("subscribe", ("AAPL", "SPY", "TSLA"))]
+    assert result.heartbeat.state is ProbeState.AVAILABLE
+    assert result.reconnect.state is ProbeState.AVAILABLE
+    assert [item.result for item in result.symbol_results] == [
+        SymbolProbeState.SUPPORTED,
+        SymbolProbeState.SUPPORTED,
+        SymbolProbeState.SUPPORTED,
+    ]
+    assert stream.calls == [
+        "connect",
+        ("subscribe", ("AAPL",)),
+        ("subscribe", ("SPY",)),
+        ("subscribe", ("TSLA",)),
+    ]
     assert result.credential_fingerprint.startswith("fp_")
     assert "data-key" not in result.credential_fingerprint
 
@@ -102,6 +118,39 @@ def test_all_unsupported_bars_differs_from_missing_entitlement():
     assert denied.entitlement.state is ProbeState.NOT_ENTITLED
     assert denied.reason == "Production market-data entitlement is not granted."
     assert "secret header" not in denied.quotes.detail
+    assert all(
+        item.result is SymbolProbeState.UNSUPPORTED
+        for item in unsupported.symbol_results
+    )
+    assert all(
+        item.result is SymbolProbeState.NO_ENTITLEMENT
+        for item in denied.symbol_results
+    )
+
+
+def test_connected_stream_requires_subscription_acknowledgement():
+    result = MarketDataCapabilityProbe(
+        configuration(), LazyOfficialDataClient(RestClient),
+        Stream(acknowledged=False),
+    ).run()
+
+    assert result.streaming.state is ProbeState.AVAILABLE
+    assert result.subscription.state is ProbeState.UNAVAILABLE
+    assert result.scanner_ready is False
+    assert result.reason == "STREAM_CONNECTED_SUBSCRIPTION_DENIED"
+    assert all(
+        item.result is SymbolProbeState.UNKNOWN
+        for item in result.symbol_results
+    )
+
+
+def test_reconnect_capability_is_a_scanner_prerequisite():
+    result = MarketDataCapabilityProbe(
+        configuration(), LazyOfficialDataClient(RestClient),
+        Stream(reconnect_ready=False),
+    ).run()
+    assert result.reconnect.state is ProbeState.UNAVAILABLE
+    assert result.scanner_ready is False
 
 
 def test_missing_credentials_disables_probe_without_constructing_clients():

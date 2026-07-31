@@ -28,6 +28,13 @@ class ProbeState(StrEnum):
     NOT_TESTED = "NOT_TESTED"
 
 
+class SymbolProbeState(StrEnum):
+    SUPPORTED = "SUPPORTED"
+    UNSUPPORTED = "UNSUPPORTED"
+    NO_ENTITLEMENT = "NO_ENTITLEMENT"
+    UNKNOWN = "UNKNOWN"
+
+
 @dataclass(frozen=True, slots=True)
 class CapabilityStatus:
     state: ProbeState
@@ -36,6 +43,17 @@ class CapabilityStatus:
     @property
     def available(self) -> bool:
         return self.state is ProbeState.AVAILABLE
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolCapabilityResult:
+    symbol: str
+    bars: CapabilityStatus
+    quote: CapabilityStatus
+    snapshot: CapabilityStatus
+    reference: CapabilityStatus
+    streaming_subscription: CapabilityStatus
+    result: SymbolProbeState
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,8 +67,11 @@ class MarketDataProbeResult:
     snapshots: CapabilityStatus
     streaming: CapabilityStatus
     subscription: CapabilityStatus
+    heartbeat: CapabilityStatus
+    reconnect: CapabilityStatus
     entitlement: CapabilityStatus
     reference: CapabilityStatus
+    symbol_results: tuple[SymbolCapabilityResult, ...]
     probe_symbols: tuple[str, ...] = PROBE_SYMBOLS
 
     @property
@@ -63,6 +84,8 @@ class MarketDataProbeResult:
             self.snapshots.available,
             self.streaming.available,
             self.subscription.available,
+            self.heartbeat.available,
+            self.reconnect.available,
             self.entitlement.available,
             self.reference.available,
         ))
@@ -75,6 +98,11 @@ class MarketDataProbeResult:
             return "Production market-data credentials are missing."
         if self.entitlement.state is ProbeState.NOT_ENTITLED:
             return "Production market-data entitlement is not granted."
+        if (
+            self.streaming.available
+            and self.subscription.state is ProbeState.UNAVAILABLE
+        ):
+            return "STREAM_CONNECTED_SUBSCRIPTION_DENIED"
         if self.bars.state is ProbeState.UNSUPPORTED:
             if self.environment in {"TEST", "PAPER", "SANDBOX"}:
                 return "Sandbox market-data catalog does not contain scanner-compatible symbols."
@@ -107,6 +135,7 @@ class MarketDataCapabilityProbe:
                 cfg.environment.value, fingerprint,
                 not_tested, missing_status, not_tested, not_tested,
                 not_tested, not_tested, not_tested, not_tested, not_tested,
+                not_tested, not_tested, (),
             )
 
         try:
@@ -121,33 +150,54 @@ class MarketDataCapabilityProbe:
             return MarketDataProbeResult(
                 cfg.environment.value, fingerprint, status, status,
                 not_tested, not_tested, not_tested, not_tested, not_tested,
-                status if denied else not_tested, not_tested,
+                not_tested, not_tested, status if denied else not_tested,
+                not_tested, (),
             )
 
         market_data = getattr(client, "market_data")
         instrument = getattr(client, "instrument")
-        bars = _probe_symbols(lambda symbol: market_data.get_history_bar(
-            symbol, "US_STOCK", "D1", count="1", real_time_required=False
-        ))
-        quotes = _probe_symbols(
-            lambda symbol: market_data.get_quotes(symbol, "US_STOCK")
-        )
-        snapshots = _probe_symbols(
-            lambda symbol: market_data.get_snapshot((symbol,), "US_STOCK")
-        )
-        reference = _probe_symbols(
-            lambda symbol: instrument.get_instrument(
-                symbols=symbol, category="US_STOCK", page_size=1
-            )
-        )
-
         stream_status = _call(self._stream.connect)
-        subscription = (
-            _call(lambda: self._stream.subscribe(PROBE_SYMBOLS))
-            if stream_status.available
-            else CapabilityStatus(ProbeState.NOT_TESTED)
+        heartbeat = (
+            _reported_capability(self._stream, "heartbeat_ok", "stream heartbeat unavailable")
+            if stream_status.available else CapabilityStatus(ProbeState.NOT_TESTED)
         )
-        statuses = (bars, quotes, snapshots, reference, stream_status, subscription)
+        reconnect = (
+            _reported_capability(self._stream, "reconnect_ready", "stream reconnect unavailable")
+            if stream_status.available else CapabilityStatus(ProbeState.NOT_TESTED)
+        )
+        symbol_results = []
+        for symbol in PROBE_SYMBOLS:
+            bar = _probe_one(lambda: market_data.get_history_bar(
+                symbol, "US_STOCK", "D1", count="1", real_time_required=False
+            ))
+            quote = _probe_one(lambda: market_data.get_quotes(symbol, "US_STOCK"))
+            snapshot = _probe_one(
+                lambda: market_data.get_snapshot((symbol,), "US_STOCK")
+            )
+            reference_status = _probe_one(lambda: instrument.get_instrument(
+                symbols=symbol, category="US_STOCK", page_size=1
+            ))
+            subscription_status = (
+                _probe_subscription(self._stream, symbol)
+                if stream_status.available else CapabilityStatus(ProbeState.NOT_TESTED)
+            )
+            capabilities = (bar, quote, snapshot, reference_status, subscription_status)
+            symbol_results.append(SymbolCapabilityResult(
+                symbol, bar, quote, snapshot, reference_status,
+                subscription_status, _symbol_state(capabilities),
+            ))
+
+        bars = _aggregate(tuple(item.bars for item in symbol_results))
+        quotes = _aggregate(tuple(item.quote for item in symbol_results))
+        snapshots = _aggregate(tuple(item.snapshot for item in symbol_results))
+        reference = _aggregate(tuple(item.reference for item in symbol_results))
+        subscription = _aggregate(
+            tuple(item.streaming_subscription for item in symbol_results)
+        )
+        statuses = (
+            bars, quotes, snapshots, reference, stream_status, subscription,
+            heartbeat, reconnect,
+        )
         entitlement = (
             CapabilityStatus(ProbeState.NOT_ENTITLED, "market-data permission denied")
             if any(item.state is ProbeState.NOT_ENTITLED for item in statuses)
@@ -159,7 +209,7 @@ class MarketDataCapabilityProbe:
             CapabilityStatus(ProbeState.AVAILABLE),
             CapabilityStatus(ProbeState.AVAILABLE),
             bars, quotes, snapshots, stream_status, subscription,
-            entitlement, reference,
+            heartbeat, reconnect, entitlement, reference, tuple(symbol_results),
         )
 
 
@@ -186,6 +236,67 @@ def _probe_symbols(operation: Callable[[str], object]) -> CapabilityStatus:
     )
 
 
+def _probe_one(operation: Callable[[], object]) -> CapabilityStatus:
+    try:
+        _response_rows(operation())
+        return CapabilityStatus(ProbeState.AVAILABLE)
+    except Exception as exc:
+        if _permission_failure(exc):
+            return CapabilityStatus(ProbeState.NOT_ENTITLED, _safe_error(exc))
+        if _unsupported_symbol_failure(exc):
+            return CapabilityStatus(ProbeState.UNSUPPORTED, _safe_error(exc))
+        return CapabilityStatus(ProbeState.UNAVAILABLE, _safe_error(exc))
+
+
+def _probe_subscription(stream: object, symbol: str) -> CapabilityStatus:
+    attempted = _call(lambda: stream.subscribe((symbol,)))
+    if not attempted.available:
+        return attempted
+    return _reported_capability(
+        stream,
+        "subscription_acknowledged",
+        "stream subscription acknowledgement was not received",
+    )
+
+
+def _reported_capability(
+    source: object, name: str, failure_detail: str
+) -> CapabilityStatus:
+    value = getattr(source, name, None)
+    if value is None:
+        # Compatibility transports expose synchronous success by returning
+        # from connect/subscribe. Official transport exposes explicit state.
+        return CapabilityStatus(ProbeState.AVAILABLE)
+    try:
+        accepted = value() if callable(value) else value
+    except Exception as exc:
+        return CapabilityStatus(ProbeState.UNAVAILABLE, _safe_error(exc))
+    return CapabilityStatus(
+        ProbeState.AVAILABLE if accepted else ProbeState.UNAVAILABLE,
+        "" if accepted else failure_detail,
+    )
+
+
+def _aggregate(values: tuple[CapabilityStatus, ...]) -> CapabilityStatus:
+    if any(value.state is ProbeState.NOT_ENTITLED for value in values):
+        return CapabilityStatus(ProbeState.NOT_ENTITLED, "permission denied")
+    if values and all(value.state is ProbeState.UNSUPPORTED for value in values):
+        return CapabilityStatus(ProbeState.UNSUPPORTED, "all probe symbols unsupported")
+    if values and all(value.available for value in values):
+        return CapabilityStatus(ProbeState.AVAILABLE)
+    return CapabilityStatus(ProbeState.UNAVAILABLE, "one or more probe symbols failed")
+
+
+def _symbol_state(values: tuple[CapabilityStatus, ...]) -> SymbolProbeState:
+    if any(value.state is ProbeState.NOT_ENTITLED for value in values):
+        return SymbolProbeState.NO_ENTITLEMENT
+    if any(value.state is ProbeState.UNSUPPORTED for value in values):
+        return SymbolProbeState.UNSUPPORTED
+    if all(value.available for value in values):
+        return SymbolProbeState.SUPPORTED
+    return SymbolProbeState.UNKNOWN
+
+
 def _call(operation: Callable[[], object]) -> CapabilityStatus:
     try:
         operation()
@@ -204,5 +315,5 @@ def _safe_error(exc: Exception) -> str:
 
 __all__ = [
     "CapabilityStatus", "MarketDataCapabilityProbe", "MarketDataProbeResult",
-    "PROBE_SYMBOLS", "ProbeState",
+    "PROBE_SYMBOLS", "ProbeState", "SymbolCapabilityResult", "SymbolProbeState",
 ]

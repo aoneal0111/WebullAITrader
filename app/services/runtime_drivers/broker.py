@@ -54,6 +54,7 @@ class DesktopBrokerRuntimeDriver:
         market_event_observer: MarketEventObserver | None = None,
         scanner_coordinator: object | None = None,
         market_data_probe: object | None = None,
+        startup_validator: object | None = None,
         clock: Clock = utc_now,
         source: str = "desktop-broker-runtime",
     ) -> None:
@@ -97,6 +98,8 @@ class DesktopBrokerRuntimeDriver:
         self._market_event_observer = market_event_observer
         self._scanner = scanner_coordinator
         self._market_data_probe = market_data_probe
+        self._startup_validator = startup_validator
+        self._startup_validation = None
         self._market_data = broker_runtime.market_data
         self._clock = clock
         self._source = source.strip()
@@ -141,6 +144,9 @@ class DesktopBrokerRuntimeDriver:
         if not callable(cycle_sink):
             raise TypeError("cycle_sink must be callable")
 
+        if self._startup_validator is not None:
+            self._startup_validation = self._startup_validator.run()
+
         self._publish(
             "BROKER_CONNECTING",
             "Connecting to the configured broker.",
@@ -157,7 +163,7 @@ class DesktopBrokerRuntimeDriver:
                 "Configured broker authentication failed.",
                 runtime_status="FAILED",
                 broker_status="DISCONNECTED",
-                last_error=f"{type(exc).__name__}: {exc}",
+                last_error=_safe_runtime_error(exc),
             )
             raise
 
@@ -166,8 +172,14 @@ class DesktopBrokerRuntimeDriver:
             "Configured broker connected and authenticated.",
             runtime_status="RUNNING",
             broker_status="CONNECTED",
-            trading_ready=True,
+            trading_ready=(
+                self._startup_validation.trading.ready
+                if self._startup_validation is not None
+                else True
+            ),
         )
+        if self._startup_validation is not None:
+            self._publish_startup_validation(self._startup_validation)
 
         try:
             self._start_market_data(stop_event)
@@ -183,6 +195,15 @@ class DesktopBrokerRuntimeDriver:
                 self._disconnect()
 
     def _start_market_data(self, stop_event: Event) -> None:
+        if (
+            self._startup_validation is not None
+            and not self._startup_validation.scanner_ready
+        ):
+            if self._scanner is not None:
+                self._scanner.disconnect()
+            elif self._market_data is not None:
+                self._market_data.disconnect()
+            return
         if self._market_data is None:
             if self._configuration.market_data_streaming_enabled:
                 cfg = market_data_configuration(self._configuration)
@@ -221,7 +242,10 @@ class DesktopBrokerRuntimeDriver:
 
         try:
             if self._scanner is not None:
-                if self._market_data_probe is not None:
+                if (
+                    self._market_data_probe is not None
+                    and self._startup_validation is None
+                ):
                     result = self._market_data_probe.run()
                     self._publish_probe_result(result)
                     if not result.scanner_ready:
@@ -279,6 +303,45 @@ class DesktopBrokerRuntimeDriver:
             name="desktop-market-data",
         )
         self._market_data_thread.start()
+
+    def _publish_startup_validation(self, result: object) -> None:
+        trading = result.trading
+        market_data = result.market_data
+        self._publish_health(
+            "TRADING_STARTUP_VALIDATED",
+            "Trading startup validation completed.",
+            RuntimeHealthUpdate(
+                trading_environment=trading.environment,
+                trading_rest_status=str(trading.authentication),
+                account_status=str(trading.account),
+                buying_power_status=str(trading.buying_power),
+                positions_status=str(trading.positions),
+                orders_status=str(trading.paper_trading),
+                balances_status=str(trading.buying_power),
+                scanner_status=(
+                    "VALIDATING" if trading.ready else "DISABLED"
+                ),
+                last_warning=None if trading.ready else result.reason,
+            ),
+        )
+        self._scanner_log(
+            "trading_capabilities",
+            f"Trading({trading.environment}) "
+            f"fingerprint={trading.fingerprint} "
+            f"REST={trading.authentication} account={trading.account} "
+            f"buying_power={trading.buying_power} "
+            f"positions={trading.positions} orders={trading.paper_trading}",
+        )
+        self._publish_probe_result(market_data)
+        if not result.scanner_ready:
+            self._publish_health(
+                "STARTUP_VALIDATION_FAILED",
+                result.reason or "Startup validation failed.",
+                RuntimeHealthUpdate(
+                    scanner_status="DISABLED",
+                    last_warning=result.reason or "Startup validation failed.",
+                ),
+            )
 
     def _start_scanner(self) -> bool:
         scanner = self._scanner
@@ -379,12 +442,33 @@ class DesktopBrokerRuntimeDriver:
         streaming = getattr(
             getattr(result, "streaming", None), "state", "UNKNOWN"
         )
+        subscription = getattr(
+            getattr(result, "subscription", None), "state", "UNKNOWN"
+        )
+        heartbeat = getattr(
+            getattr(result, "heartbeat", None), "state", "UNKNOWN"
+        )
+        reconnect = getattr(
+            getattr(result, "reconnect", None), "state", "UNKNOWN"
+        )
+        bars = getattr(getattr(result, "bars", None), "state", "UNKNOWN")
+        symbol_results = {
+            item.symbol: str(item.result)
+            for item in getattr(result, "symbol_results", ())
+        }
         self._publish_health(
             "MARKET_DATA_PROBE_COMPLETED",
             "Market-data startup capability probe completed."
             if ready else str(reason),
             RuntimeHealthUpdate(
-                market_data_status="PROBED" if ready else "DISABLED",
+                market_data_status=(
+                    "PROBED" if ready
+                    else "NO_SUPPORTED_SYMBOLS" if str(bars) == "UNSUPPORTED"
+                    else "STREAM_CONNECTED_SUBSCRIPTION_DENIED"
+                    if str(streaming) == "AVAILABLE"
+                    and str(subscription) == "UNAVAILABLE"
+                    else "DISABLED"
+                ),
                 market_data_environment=getattr(result, "environment", "UNKNOWN"),
                 market_data_rest_status=(
                     "CONNECTED" if str(endpoint) == "AVAILABLE" else str(endpoint)
@@ -392,10 +476,30 @@ class DesktopBrokerRuntimeDriver:
                 streaming_status=(
                     "CONNECTED" if str(streaming) == "AVAILABLE" else str(streaming)
                 ),
+                subscription_status=(
+                    "ACCEPTED" if str(subscription) == "AVAILABLE"
+                    else "DENIED"
+                    if str(streaming) == "AVAILABLE"
+                    and str(subscription) == "UNAVAILABLE"
+                    else str(subscription)
+                ),
+                heartbeat_status=(
+                    "OK" if str(heartbeat) == "AVAILABLE" else str(heartbeat)
+                ),
+                reconnect_status=(
+                    "READY" if str(reconnect) == "AVAILABLE" else str(reconnect)
+                ),
                 entitlement_status=(
                     "GRANTED" if str(entitlement) == "AVAILABLE" else str(entitlement)
                 ),
-                scanner_status="WARMING" if ready else "DISABLED",
+                scanner_status=(
+                    "WARMING" if ready
+                    else "NO_SUPPORTED_SYMBOLS" if str(bars) == "UNSUPPORTED"
+                    else "DISABLED"
+                ),
+                probe_aapl_status=symbol_results.get("AAPL", "NOT_TESTED"),
+                probe_spy_status=symbol_results.get("SPY", "NOT_TESTED"),
+                probe_tsla_status=symbol_results.get("TSLA", "NOT_TESTED"),
                 last_warning=None if ready else str(reason),
             ),
         )
@@ -403,7 +507,8 @@ class DesktopBrokerRuntimeDriver:
             "market_data_capabilities",
             f"REST={endpoint} "
             f"streaming={streaming} "
-            f"subscription={getattr(getattr(result, 'subscription', None), 'state', 'UNKNOWN')} "
+            f"subscription={subscription} heartbeat={heartbeat} "
+            f"reconnect={reconnect} "
             f"entitlement={entitlement} "
             f"fingerprint={getattr(result, 'credential_fingerprint', 'fp_missing')}",
         )
@@ -472,7 +577,7 @@ class DesktopBrokerRuntimeDriver:
         detail = (
             None
             if error is None
-            else f"{type(error).__name__}: {error}"
+            else type(error).__name__
         )
         if lifecycle == "reconnecting":
             self._publish_health(
@@ -520,7 +625,7 @@ class DesktopBrokerRuntimeDriver:
             RuntimeHealthUpdate(
                 runtime_status="FAILED",
                 market_data_status="FAILED",
-                last_error=f"{type(error).__name__}: {error}",
+                last_error=type(error).__name__,
             ),
         )
 
@@ -640,7 +745,7 @@ class DesktopBrokerRuntimeDriver:
                 "Configured broker disconnect failed.",
                 runtime_status="FAILED",
                 broker_status="ERROR",
-                last_error=f"{type(exc).__name__}: {exc}",
+                last_error=type(exc).__name__,
             )
             raise
         finally:
@@ -726,3 +831,17 @@ class DesktopBrokerRuntimeDriver:
 
 
 __all__ = ["DesktopBrokerRuntimeDriver", "utc_now"]
+
+
+def _safe_runtime_error(error: Exception) -> str:
+    detail = str(error).strip()
+    upper = detail.upper()
+    if any(
+        marker in upper
+        for marker in (
+            "APP KEY", "APP_KEY", "SECRET", "TOKEN", "SIGNATURE",
+            "AUTHORIZATION HEADER", "SESSION ID",
+        )
+    ):
+        return type(error).__name__
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__

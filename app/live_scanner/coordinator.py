@@ -284,6 +284,20 @@ class LiveScannerCoordinator:
     def channels(self) -> tuple[str, ...]:
         return self._channels
 
+    @property
+    def heartbeat_ok(self) -> bool:
+        return bool(getattr(self._transport, "heartbeat_ok", False))
+
+    @property
+    def subscription_acknowledged(self) -> bool:
+        return bool(
+            getattr(self._transport, "subscription_acknowledged", False)
+        )
+
+    @property
+    def reconnect_ready(self) -> bool:
+        return bool(getattr(self._transport, "reconnect_ready", False))
+
     def _require_connected(self) -> None:
         if not self._connected:
             raise RuntimeError(
