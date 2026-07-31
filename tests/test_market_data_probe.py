@@ -52,9 +52,11 @@ def _raise(error):
     raise error
 
 
-def configuration(key="data-key", secret="data-secret"):
+def configuration(
+    key="data-key", secret="data-secret", environment=TradingEnvironment.LIVE
+):
     return MarketDataConfiguration(
-        TradingEnvironment.LIVE,
+        environment,
         key,
         secret,
         "https://data.example",
@@ -83,7 +85,7 @@ def test_probe_validates_rest_stream_subscription_and_entitlement():
 
 def test_all_unsupported_bars_differs_from_missing_entitlement():
     unsupported = MarketDataCapabilityProbe(
-        configuration(),
+        configuration(environment=TradingEnvironment.TEST),
         LazyOfficialDataClient(lambda: RestClient(bars_error=Unsupported())),
         Stream(),
     ).run()

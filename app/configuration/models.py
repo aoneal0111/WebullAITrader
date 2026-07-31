@@ -9,6 +9,7 @@ class TradingEnvironment(StrEnum):
     PAPER = "PAPER"
     SANDBOX = "SANDBOX"
     LIVE = "LIVE"
+    PRODUCTION = "PRODUCTION"
 
 
 @dataclass(frozen=True, slots=True)

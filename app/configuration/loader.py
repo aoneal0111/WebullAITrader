@@ -157,17 +157,24 @@ def load_configuration(env=None):
         account_id=_env(e,"WEBULL_TRADING_ACCOUNT_ID","WEBULL_ACCOUNT_ID"),
         api_key=_env(e,"WEBULL_TRADING_APP_KEY","WEBULL_API_KEY"),
         api_secret=_env(e,"WEBULL_TRADING_APP_SECRET","WEBULL_API_SECRET"),
-        api_base_url=_env(e,"WEBULL_TRADING_API_BASE_URL","WEBULL_API_BASE_URL"),
-        stream_url=_env(e,"WEBULL_TRADING_STREAM_URL","WEBULL_STREAM_URL"),
+        api_base_url=_env(e,"WEBULL_TRADING_API_BASE_URL","WEBULL_API_BASE_URL") or api,
+        stream_url=_env(e,"WEBULL_TRADING_STREAM_URL","WEBULL_STREAM_URL") or stream,
     )
 
     market_data_configuration = MarketDataConfiguration(
         environment=_scoped_environment(e, "MARKET_DATA_ENVIRONMENT", mode),
         api_key=_env(e,"WEBULL_MARKET_DATA_APP_KEY","WEBULL_API_KEY"),
         api_secret=_env(e,"WEBULL_MARKET_DATA_APP_SECRET","WEBULL_API_SECRET"),
-        api_base_url=_env(e,"WEBULL_MARKET_DATA_API_BASE_URL","WEBULL_API_BASE_URL"),
-        stream_url=_env(e,"WEBULL_MARKET_DATA_STREAM_URL","WEBULL_STREAM_URL"),
+        api_base_url=_env(e,"WEBULL_MARKET_DATA_API_BASE_URL","WEBULL_API_BASE_URL") or api,
+        stream_url=_env(e,"WEBULL_MARKET_DATA_STREAM_URL","WEBULL_STREAM_URL") or stream,
     )
+    for section_name, section in (
+        ("trading", trading_configuration),
+        ("market-data", market_data_configuration),
+    ):
+        if urlparse(section.api_base_url).scheme != "https":
+            raise ValueError(f"secure Webull {section_name} API endpoint is required")
+        parse_webull_stream_url(section.stream_url)
     return OperationalConfiguration(
         mode,
         provider,

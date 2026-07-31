@@ -112,6 +112,16 @@ class RuntimeHealthUpdate:
     runtime_status: str | None = None
     broker_status: str | None = None
     market_data_status: str | None = None
+    trading_environment: str | None = None
+    trading_rest_status: str | None = None
+    orders_status: str | None = None
+    balances_status: str | None = None
+    market_data_environment: str | None = None
+    market_data_rest_status: str | None = None
+    streaming_status: str | None = None
+    entitlement_status: str | None = None
+    scanner_status: str | None = None
+    supported_symbols: int | None = None
     ai_status: str | None = None
     risk_status: str | None = None
     persistence_status: str | None = None
@@ -126,6 +136,15 @@ class RuntimeHealthUpdate:
             "runtime_status",
             "broker_status",
             "market_data_status",
+            "trading_environment",
+            "trading_rest_status",
+            "orders_status",
+            "balances_status",
+            "market_data_environment",
+            "market_data_rest_status",
+            "streaming_status",
+            "entitlement_status",
+            "scanner_status",
             "ai_status",
             "risk_status",
             "persistence_status",
@@ -139,6 +158,12 @@ class RuntimeHealthUpdate:
                         f"runtime health {field_name} must be non-empty text"
                     )
                 object.__setattr__(self, field_name, value.strip())
+        if self.supported_symbols is not None and (
+            isinstance(self.supported_symbols, bool)
+            or not isinstance(self.supported_symbols, int)
+            or self.supported_symbols < 0
+        ):
+            raise ValueError("runtime health supported symbols must be nonnegative")
         if self.heartbeat_at is not None:
             _require_aware(self.heartbeat_at)
         if self.connection_latency is not None and (

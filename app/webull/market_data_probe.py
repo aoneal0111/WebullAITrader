@@ -76,7 +76,9 @@ class MarketDataProbeResult:
         if self.entitlement.state is ProbeState.NOT_ENTITLED:
             return "Production market-data entitlement is not granted."
         if self.bars.state is ProbeState.UNSUPPORTED:
-            return "Sandbox market-data catalog does not contain scanner-compatible symbols."
+            if self.environment in {"TEST", "PAPER", "SANDBOX"}:
+                return "Sandbox market-data catalog does not contain scanner-compatible symbols."
+            return "Production market-data bars do not support the probe symbols."
         return "Market-data startup capability probe failed."
 
 

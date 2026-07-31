@@ -166,6 +166,7 @@ class DesktopBrokerRuntimeDriver:
             "Configured broker connected and authenticated.",
             runtime_status="RUNNING",
             broker_status="CONNECTED",
+            trading_ready=True,
         )
 
         try:
@@ -195,6 +196,11 @@ class DesktopBrokerRuntimeDriver:
                     reason,
                     RuntimeHealthUpdate(
                         market_data_status="DISABLED",
+                        market_data_environment=cfg.environment.value,
+                        market_data_rest_status="DISABLED",
+                        streaming_status="DISABLED",
+                        entitlement_status="UNKNOWN",
+                        scanner_status="DISABLED",
                         last_warning=reason,
                     ),
                 )
@@ -316,6 +322,8 @@ class DesktopBrokerRuntimeDriver:
                 reason,
                 health=RuntimeHealthUpdate(
                     market_data_status="NO_SUPPORTED_SYMBOLS",
+                    scanner_status="NO_SUPPORTED_SYMBOLS",
+                    supported_symbols=0,
                     last_warning=reason,
                 ),
             )
@@ -341,13 +349,21 @@ class DesktopBrokerRuntimeDriver:
         self._scanner_log(
             "market_data_connected",
             "Official Webull market-data transport connected.",
-            health=RuntimeHealthUpdate(market_data_status="CONNECTED"),
+            health=RuntimeHealthUpdate(
+                market_data_status="CONNECTED",
+                streaming_status="CONNECTED",
+            ),
         )
         self._scanner_log(
             "channels_subscribed",
             f"Subscribed quote and trade channels for "
             f"{len(active_symbols)} symbols.",
-            health=RuntimeHealthUpdate(market_data_status="SUBSCRIBED"),
+            health=RuntimeHealthUpdate(
+                market_data_status="SUBSCRIBED",
+                streaming_status="CONNECTED",
+                scanner_status="ACTIVE",
+                supported_symbols=len(active_symbols),
+            ),
         )
         return True
 
@@ -357,19 +373,36 @@ class DesktopBrokerRuntimeDriver:
         entitlement = getattr(
             getattr(result, "entitlement", None), "state", "UNKNOWN"
         )
+        endpoint = getattr(
+            getattr(result, "endpoint", None), "state", "UNKNOWN"
+        )
+        streaming = getattr(
+            getattr(result, "streaming", None), "state", "UNKNOWN"
+        )
         self._publish_health(
             "MARKET_DATA_PROBE_COMPLETED",
             "Market-data startup capability probe completed."
             if ready else str(reason),
             RuntimeHealthUpdate(
                 market_data_status="PROBED" if ready else "DISABLED",
+                market_data_environment=getattr(result, "environment", "UNKNOWN"),
+                market_data_rest_status=(
+                    "CONNECTED" if str(endpoint) == "AVAILABLE" else str(endpoint)
+                ),
+                streaming_status=(
+                    "CONNECTED" if str(streaming) == "AVAILABLE" else str(streaming)
+                ),
+                entitlement_status=(
+                    "GRANTED" if str(entitlement) == "AVAILABLE" else str(entitlement)
+                ),
+                scanner_status="WARMING" if ready else "DISABLED",
                 last_warning=None if ready else str(reason),
             ),
         )
         self._scanner_log(
             "market_data_capabilities",
-            f"REST={getattr(getattr(result, 'endpoint', None), 'state', 'UNKNOWN')} "
-            f"streaming={getattr(getattr(result, 'streaming', None), 'state', 'UNKNOWN')} "
+            f"REST={endpoint} "
+            f"streaming={streaming} "
             f"subscription={getattr(getattr(result, 'subscription', None), 'state', 'UNKNOWN')} "
             f"entitlement={entitlement} "
             f"fingerprint={getattr(result, 'credential_fingerprint', 'fp_missing')}",
@@ -570,7 +603,8 @@ class DesktopBrokerRuntimeDriver:
             message,
             health=RuntimeHealthUpdate(
                 market_data_status="FAILED",
-                last_error=f"{type(error).__name__}: {error}",
+                scanner_status="FAILED",
+                last_error=type(error).__name__,
             ),
         )
 
@@ -627,6 +661,7 @@ class DesktopBrokerRuntimeDriver:
         runtime_status: str,
         broker_status: str,
         last_error: str | None = None,
+        trading_ready: bool = False,
     ) -> None:
         timestamp = self._timestamp()
         self._emit(
@@ -640,6 +675,17 @@ class DesktopBrokerRuntimeDriver:
                 health=RuntimeHealthUpdate(
                     runtime_status=runtime_status,
                     broker_status=broker_status,
+                    trading_environment=(
+                        getattr(self._configuration, "trading", None).environment.value
+                        if trading_ready
+                        and getattr(self._configuration, "trading", None) is not None
+                        else self._configuration.environment.value
+                        if trading_ready
+                        else None
+                    ),
+                    trading_rest_status="CONNECTED" if trading_ready else None,
+                    orders_status="ENABLED" if trading_ready else None,
+                    balances_status="CONNECTED" if trading_ready else None,
                     last_error=last_error,
                 ),
             )

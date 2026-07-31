@@ -88,6 +88,15 @@ def _reduce_health(
             "runtime_status",
             "broker_status",
             "market_data_status",
+            "trading_environment",
+            "trading_rest_status",
+            "orders_status",
+            "balances_status",
+            "market_data_environment",
+            "market_data_rest_status",
+            "streaming_status",
+            "entitlement_status",
+            "scanner_status",
             "ai_status",
             "risk_status",
             "persistence_status",
@@ -99,6 +108,8 @@ def _reduce_health(
                 changes[field_name] = value.upper() if field_name.endswith(
                     "_status"
                 ) else value
+        if health.supported_symbols is not None:
+            changes["supported_symbols"] = health.supported_symbols
         if health.heartbeat_at is not None:
             changes["last_heartbeat"] = health.heartbeat_at
         if health.connection_latency is not None:
@@ -224,6 +235,16 @@ def _to_operations(state: HealthState) -> OperationsHealthState:
         runtime_status=state.runtime_status,
         broker_status=state.broker_status,
         market_data_status=state.market_data_status,
+        trading_environment=state.trading_environment,
+        trading_rest_status=state.trading_rest_status,
+        orders_status=state.orders_status,
+        balances_status=state.balances_status,
+        market_data_environment=state.market_data_environment,
+        market_data_rest_status=state.market_data_rest_status,
+        streaming_status=state.streaming_status,
+        entitlement_status=state.entitlement_status,
+        scanner_status=state.scanner_status,
+        supported_symbols=state.supported_symbols,
         ai_status=state.ai_status,
         risk_status=state.risk_status,
         persistence_status=state.persistence_status,

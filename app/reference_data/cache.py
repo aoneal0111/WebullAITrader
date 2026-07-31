@@ -19,10 +19,14 @@ class ReferenceDataCache:
         self,
         *,
         clock: Callable[[], datetime] | None = None,
+        scope: tuple[str, str] = ("LEGACY", "fp_legacy"),
     ) -> None:
         self._clock = clock or _utc_now
+        self._scope = tuple(str(value).strip() for value in scope)
+        if len(self._scope) != 2 or not all(self._scope):
+            raise ValueError("cache scope requires environment and credential fingerprint")
         self._entries: dict[
-            tuple[AssetClass, str],
+            tuple[str, str, AssetClass, str],
             CacheEntry,
         ] = {}
 
@@ -31,7 +35,7 @@ class ReferenceDataCache:
         symbol: str,
         asset_class: AssetClass,
     ) -> ReferenceRecord | None:
-        key = (asset_class, _normalize_symbol(symbol))
+        key = (*self._scope, asset_class, _normalize_symbol(symbol))
         entry = self._entries.get(key)
 
         if entry is None:
@@ -52,7 +56,7 @@ class ReferenceDataCache:
         if ttl <= timedelta(0):
             raise ValueError("ttl must be positive")
 
-        key = (record.asset_class, record.symbol)
+        key = (*self._scope, record.asset_class, record.symbol)
 
         self._entries[key] = CacheEntry(
             record=record,
@@ -64,7 +68,7 @@ class ReferenceDataCache:
         symbol: str,
         asset_class: AssetClass,
     ) -> None:
-        key = (asset_class, _normalize_symbol(symbol))
+        key = (*self._scope, asset_class, _normalize_symbol(symbol))
         self._entries.pop(key, None)
 
     def clear(self) -> None:

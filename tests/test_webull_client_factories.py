@@ -55,6 +55,31 @@ def test_factory_rejects_the_other_configuration_type():
         TradingClientFactory(market_data, lambda **kwargs: object()).create()
 
 
+def test_factories_do_not_share_authentication_or_tokens():
+    class Client:
+        def __init__(self, token):
+            self.token = token
+
+    trading = TradingConfiguration(
+        TradingEnvironment.TEST, "account", "tk", "ts",
+        "https://trade.example", "wss://trade.example/mqtt",
+    )
+    market_data = MarketDataConfiguration(
+        TradingEnvironment.PRODUCTION, "mk", "ms",
+        "https://data.example", "wss://data.example/mqtt",
+    )
+    trade_client = TradingClientFactory(
+        trading, lambda **kwargs: Client("trade-token")
+    ).create()
+    data_client = MarketDataClientFactory(
+        market_data, lambda **kwargs: Client("data-token")
+    ).create()
+
+    assert trade_client.token == "trade-token"
+    assert data_client.token == "data-token"
+    assert trade_client.__dict__ is not data_client.__dict__
+
+
 def test_scoped_configuration_overrides_legacy_without_crossing():
     configuration = load_configuration({
         "TRADING_ENVIRONMENT": "TEST",

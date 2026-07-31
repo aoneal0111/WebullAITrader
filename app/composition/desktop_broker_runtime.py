@@ -18,7 +18,7 @@ from app.live_execution.broker_factory import (
     build_webull_market_data_stream,
 )
 from app.operations.runtime import RuntimeEventSink
-from app.reference_data import ReferenceDataService
+from app.reference_data import ReferenceDataCache, ReferenceDataService
 from app.scanner_adapter import (
     MarketEventScannerAdapter,
     ScannerReferenceData,
@@ -136,7 +136,18 @@ def create_configured_desktop_broker_driver(
         scanner_coordinator = create_desktop_scanner_infrastructure(
             market_data_client=broker_runtime.market_data,
             universe_service=UniverseService(universe_provider),
-            reference_data_service=ReferenceDataService(reference_provider),
+            reference_data_service=ReferenceDataService(
+                reference_provider,
+                cache=ReferenceDataCache(
+                    scope=(
+                        market_data_configuration_value.environment.value,
+                        credential_fingerprint(
+                            market_data_configuration_value.api_key,
+                            market_data_configuration_value.api_secret,
+                        ),
+                    )
+                ),
+            ),
             scanner_adapter=MarketEventScannerAdapter(reference_store),
             reference_sink=store_reference,
             clock=clock,

@@ -22,6 +22,16 @@ def test_health_presenter_prepares_immutable_dashboard_model() -> None:
             runtime_status="RUNNING",
             broker_status="CONNECTED",
             market_data_status="CONNECTED",
+            trading_environment="TEST",
+            trading_rest_status="CONNECTED",
+            orders_status="ENABLED",
+            balances_status="CONNECTED",
+            market_data_environment="PRODUCTION",
+            market_data_rest_status="CONNECTED",
+            streaming_status="CONNECTED",
+            entitlement_status="GRANTED",
+            scanner_status="ACTIVE",
+            supported_symbols=7300,
             ai_status="READY",
             risk_status=None,
             persistence_status="READY",
@@ -42,6 +52,12 @@ def test_health_presenter_prepares_immutable_dashboard_model() -> None:
     assert ("Runtime", "RUNNING") in view.snapshot.metrics
     assert ("Broker", "CONNECTED") in view.snapshot.metrics
     assert ("Market Data", "CONNECTED") in view.snapshot.metrics
+    assert ("Trading Environment", "TEST") in view.snapshot.metrics
+    assert ("Orders", "ENABLED") in view.snapshot.metrics
+    assert ("Market Data Environment", "PRODUCTION") in view.snapshot.metrics
+    assert ("Entitlement", "GRANTED") in view.snapshot.metrics
+    assert ("Supported Symbols", "7300") in view.snapshot.metrics
+    assert ("Scanner", "ACTIVE") in view.snapshot.metrics
     assert ("AI", "READY") in view.snapshot.metrics
     assert ("Persistence", "READY") in view.snapshot.metrics
     assert ("Heartbeat", "10:00:00") in view.snapshot.metrics
