@@ -115,13 +115,13 @@ class EnvironmentSupportCache:
         *,
         ttl: timedelta = timedelta(hours=6),
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
-        credential_fingerprint: str = "fp_legacy",
+        identity_scope: str = "fp_legacy",
     ) -> None:
         if ttl <= timedelta():
             raise ValueError("support cache ttl must be positive")
         self._ttl = ttl
         self._clock = clock
-        self._fingerprint = credential_fingerprint
+        self._fingerprint = identity_scope
         self._entries: dict[tuple[str, str, str, str], tuple[bool, datetime]] = {}
         self._lock = RLock()
 
@@ -131,10 +131,10 @@ class EnvironmentSupportCache:
         category: str,
         api_symbol: str,
         *,
-        credential_scope: str | None = None,
+        identity_scope: str | None = None,
     ) -> bool | None:
         key = _support_key(
-            environment, credential_scope or self._fingerprint, category, api_symbol
+            environment, identity_scope or self._fingerprint, category, api_symbol
         )
         with self._lock:
             entry = self._entries.get(key)
@@ -153,10 +153,10 @@ class EnvironmentSupportCache:
         api_symbol: str,
         supported: bool,
         *,
-        credential_scope: str | None = None,
+        identity_scope: str | None = None,
     ) -> None:
         key = _support_key(
-            environment, credential_scope or self._fingerprint, category, api_symbol
+            environment, identity_scope or self._fingerprint, category, api_symbol
         )
         with self._lock:
             self._entries[key] = (supported, self._clock() + self._ttl)
@@ -167,13 +167,13 @@ class EnvironmentSupportCache:
         category: str,
         api_symbol: str,
         *,
-        credential_scope: str | None = None,
+        identity_scope: str | None = None,
     ) -> None:
         with self._lock:
             self._entries.pop(
                 _support_key(
                     environment,
-                    credential_scope or self._fingerprint,
+                    identity_scope or self._fingerprint,
                     category,
                     api_symbol,
                 ),
@@ -270,7 +270,7 @@ class WebullScannerReferenceProvider:
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         environment: str = "UNKNOWN",
-        credential_scope: str = "fp_legacy",
+        identity_scope: str = "fp_legacy",
         support_cache: EnvironmentSupportCache | None = None,
         event_sink: Callable[[Mapping[str, object]], None] | None = None,
     ) -> None:
@@ -278,12 +278,12 @@ class WebullScannerReferenceProvider:
         self._universe = universe_provider
         self._clock = clock
         self._environment = environment.strip().upper()
-        self._credential_scope = credential_scope
+        self._identity_scope = identity_scope
         self._support_cache = (
             support_cache
             if support_cache is not None
             else EnvironmentSupportCache(
-                clock=clock, credential_fingerprint=credential_scope
+                clock=clock, identity_scope=identity_scope
             )
         )
         self._event_sink = event_sink
@@ -356,7 +356,7 @@ class WebullScannerReferenceProvider:
             self._environment,
             category,
             api_symbol,
-            credential_scope=self._credential_scope,
+            identity_scope=self._identity_scope,
         )
         if cached is False:
             raise UnsupportedReferenceSymbolError(
@@ -381,7 +381,7 @@ class WebullScannerReferenceProvider:
                         category,
                         api_symbol,
                         False,
-                        credential_scope=self._credential_scope,
+                        identity_scope=self._identity_scope,
                     )
                     self._emit_rejection(instrument)
                     raise UnsupportedReferenceSymbolError(
@@ -394,7 +394,7 @@ class WebullScannerReferenceProvider:
                 category,
                 api_symbol,
                 True,
-                credential_scope=self._credential_scope,
+                identity_scope=self._identity_scope,
             )
 
         try:
@@ -414,7 +414,7 @@ class WebullScannerReferenceProvider:
                     category,
                     api_symbol,
                     False,
-                    credential_scope=self._credential_scope,
+                    identity_scope=self._identity_scope,
                 )
                 self._emit_rejection(instrument)
                 raise UnsupportedReferenceSymbolError(

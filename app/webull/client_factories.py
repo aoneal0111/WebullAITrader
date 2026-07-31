@@ -9,6 +9,7 @@ from decimal import Decimal
 from app.configuration.models import MarketDataConfiguration, TradingConfiguration
 from app.webull.http_client import create_official_trade_client
 from app.webull.sdk_market_data import create_official_data_client
+from app.webull.credential_identity import credential_fingerprint
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,9 +70,19 @@ def market_data_configuration(configuration: object) -> MarketDataConfiguration:
     )
 
 
+def market_data_cache_scope(configuration: MarketDataConfiguration) -> tuple[str, str]:
+    if not isinstance(configuration, MarketDataConfiguration):
+        raise TypeError("market-data configuration is required")
+    return (
+        configuration.environment.value,
+        credential_fingerprint(configuration.api_key, configuration.api_secret),
+    )
+
+
 __all__ = [
     "MarketDataClientFactory",
     "TradingClientFactory",
     "market_data_configuration",
+    "market_data_cache_scope",
     "trading_configuration",
 ]

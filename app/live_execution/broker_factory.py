@@ -17,7 +17,7 @@ from app.webull.configuration import (
     WebSocketSettings,
     WebullConfiguration,
 )
-from app.webull.http_client import WebullHttpClient
+from app.webull.http_client import WebullHttpClient, create_official_trade_client
 from app.webull.client_factories import (
     TradingClientFactory,
     market_data_configuration,
@@ -92,7 +92,9 @@ def build_webull_broker(configuration) -> WebullAdapter:
         sleep_decimal,
     )
 
-    trade_client = TradingClientFactory(trading).create(
+    trade_client = TradingClientFactory(
+        trading, create_official_trade_client
+    ).create(
         timeout_seconds=webull_configuration.timeout_seconds
     )
 
@@ -150,6 +152,7 @@ def build_webull_market_data_stream(
         tls_enable=stream_endpoint.tls_enable,
         websocket_path=stream_endpoint.websocket_path,
         market_data_environment=market_data.environment.value,
+        trading_environment=configuration.environment.value,
     )
     backend = backend_factory(
         credentials,

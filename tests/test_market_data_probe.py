@@ -117,18 +117,18 @@ def test_missing_credentials_disables_probe_without_constructing_clients():
 def test_support_cache_isolated_by_environment_credentials_and_asset_category():
     cache = EnvironmentSupportCache()
     cache.put(
-        "TEST", "US_STOCK", "AAPL", False, credential_scope="fp_sandbox"
+        "TEST", "US_STOCK", "AAPL", False, identity_scope="fp_sandbox"
     )
 
     assert cache.get(
-        "TEST", "US_STOCK", "AAPL", credential_scope="fp_sandbox"
+        "TEST", "US_STOCK", "AAPL", identity_scope="fp_sandbox"
     ) is False
     assert cache.get(
-        "LIVE", "US_STOCK", "AAPL", credential_scope="fp_sandbox"
+        "LIVE", "US_STOCK", "AAPL", identity_scope="fp_sandbox"
     ) is None
     assert cache.get(
-        "TEST", "US_STOCK", "AAPL", credential_scope="fp_production"
+        "TEST", "US_STOCK", "AAPL", identity_scope="fp_production"
     ) is None
     assert cache.get(
-        "TEST", "US_OPTION", "AAPL", credential_scope="fp_sandbox"
+        "TEST", "US_OPTION", "AAPL", identity_scope="fp_sandbox"
     ) is None
