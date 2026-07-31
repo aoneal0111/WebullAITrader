@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QScrollArea,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -31,7 +32,7 @@ class DashboardPage(QWidget):
         )
         content = QWidget()
         content.setObjectName("contentArea")
-        content.setMinimumWidth(900)
+        content.setMinimumWidth(860)
         root = QVBoxLayout(content)
         root.setContentsMargins(4, 2, 6, 2)
         root.setSpacing(7)
@@ -55,8 +56,21 @@ class DashboardPage(QWidget):
         self.operator_workspace = OperatorWorkspace()
 
         root.addWidget(self.runtime_header)
-        root.addWidget(self.infrastructure)
-        root.addWidget(self.portfolio_summary)
+        self.summary_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.summary_splitter.setHandleWidth(2)
+        infrastructure_group = _section_group(
+            "Infrastructure", self.infrastructure
+        )
+        portfolio_group = _section_group(
+            "Portfolio Summary", self.portfolio_summary
+        )
+        self.summary_splitter.addWidget(infrastructure_group)
+        self.summary_splitter.addWidget(portfolio_group)
+        self.summary_splitter.setCollapsible(0, False)
+        self.summary_splitter.setCollapsible(1, False)
+        self.summary_splitter.setStretchFactor(0, 1)
+        self.summary_splitter.setStretchFactor(1, 2)
+        root.addWidget(self.summary_splitter)
         root.addWidget(self.market_workspace, 3)
         root.addWidget(self.operator_workspace, 2)
 
@@ -72,7 +86,16 @@ class DashboardPage(QWidget):
         self.paper_validation_panel = self.operator_workspace.paper_validation
 
         scroll.setWidget(content)
+        self._scroll = scroll
         outer.addWidget(scroll)
+
+    def resizeEvent(self, event) -> None:
+        self.summary_splitter.setOrientation(
+            Qt.Orientation.Horizontal
+            if event.size().width() >= 1380
+            else Qt.Orientation.Vertical
+        )
+        super().resizeEvent(event)
 
     def render(self, snapshot: DashboardSnapshot) -> None:
         self.runtime_header.render(snapshot.runtime)
@@ -80,3 +103,15 @@ class DashboardPage(QWidget):
         self.positions_panel.render(snapshot.positions)
         self.orders_panel.render(snapshot.orders)
         self.paper_validation_panel.render(snapshot.paper_validation)
+
+
+def _section_group(title: str, content: QWidget) -> QWidget:
+    group = QWidget()
+    layout = QVBoxLayout(group)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(4)
+    heading = QLabel(title.upper())
+    heading.setObjectName("sectionEyebrow")
+    layout.addWidget(heading)
+    layout.addWidget(content)
+    return group

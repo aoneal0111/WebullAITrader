@@ -126,12 +126,9 @@ def test_portfolio_summary_exposes_visual_metric_hierarchy(window) -> None:
 
     assert cards["Equity"].property("emphasis") == "primary"
     assert cards["Total P/L"].property("emphasis") == "primary"
-    assert cards["Gross Exposure"].property("emphasis") == "medium"
+    assert cards["Exposure"].property("emphasis") == "standard"
     assert cards["Buying Power"].property("emphasis") == "medium"
-    assert cards["Cash"].property("emphasis") == "medium"
-    assert cards["Open Positions"]._value.objectName() == (
-        "compactMetricValue"
-    )
+    assert cards["Open Positions"]._value.objectName() == "metricValue"
 
 
 def test_operator_workspace_exposes_projection_backed_tabs(
@@ -284,8 +281,8 @@ def test_existing_projection_snapshots_populate_dashboard_surfaces(
         == "$9,000.00"
     )
     assert (
-        window.dashboard.portfolio_summary._cards["Cash"]._value.text()
-        == "$8,000.00"
+        window.dashboard.portfolio_summary._cards["Exposure"]._value.text()
+        == "11.4%"
     )
     assert window.dashboard.market_workspace.chart_view._symbol.text() == "AAPL"
     assert window.global_status.broker.text() == "\u25cf  Broker Connected"

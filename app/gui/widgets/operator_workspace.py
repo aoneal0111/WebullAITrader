@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QHBoxLayout, QSizePolicy, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QHBoxLayout, QSizePolicy, QSplitter, QTabWidget, QVBoxLayout, QWidget
 
 from app.gui.widgets.activity_panel import ActivityPanel
 from app.gui.widgets.decisions_panel import DecisionsPanel
@@ -39,8 +40,12 @@ class OperatorWorkspace(QWidget):
         health_workspace = QWidget()
         health_layout = QHBoxLayout(health_workspace)
         health_layout.setContentsMargins(0, 0, 0, 0)
-        health_layout.addWidget(self.health, 1)
-        health_layout.addWidget(self.paper_validation, 2)
+        self.health_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.health_splitter.addWidget(self.health)
+        self.health_splitter.addWidget(self.paper_validation)
+        self.health_splitter.setStretchFactor(0, 3)
+        self.health_splitter.setStretchFactor(1, 2)
+        health_layout.addWidget(self.health_splitter)
         self.tabs.addTab(self.positions, "Positions")
         self.tabs.addTab(self.orders, "Orders")
         self.tabs.addTab(self.decisions, "Decisions")
@@ -48,6 +53,14 @@ class OperatorWorkspace(QWidget):
         self.tabs.addTab(self.lifecycle, "Lifecycle")
         self.tabs.addTab(health_workspace, "Health")
         layout.addWidget(self.tabs)
+
+    def resizeEvent(self, event) -> None:
+        self.health_splitter.setOrientation(
+            Qt.Orientation.Vertical
+            if event.size().width() < 850
+            else Qt.Orientation.Horizontal
+        )
+        super().resizeEvent(event)
 
 
 __all__ = ["OperatorWorkspace"]

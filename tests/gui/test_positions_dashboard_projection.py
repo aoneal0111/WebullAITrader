@@ -60,18 +60,24 @@ def test_positions_event_flows_to_dashboard_snapshot() -> None:
         dashboard = project_dashboard(store.snapshot())
 
         assert dashboard.positions.rows == (
-            (
-                "AAPL",
-                "10",
-                "$185.25",
-                "+$47.50",
-            ),
-            (
-                "MSFT",
-                "5",
-                "$410.00",
-                "-$25.00",
-            ),
+                (
+                    "AAPL",
+                    "LONG",
+                    "10",
+                    "$185.25",
+                    "$190.00",
+                    "+$47.50",
+                    "+2.56%",
+                ),
+                (
+                    "MSFT",
+                    "LONG",
+                    "5",
+                    "$410.00",
+                    "$380.00",
+                    "-$25.00",
+                    "-1.22%",
+                ),
         )
     finally:
         store.close()

@@ -68,13 +68,10 @@ def test_format_orders_creates_dashboard_rows() -> None:
         )
     )
 
-    assert snapshot.rows[0][0] == "BUY 10 AAPL"
-    assert snapshot.rows[0][1] == "ACCEPTED"
-    assert snapshot.rows[1][0] == "SELL 5 MSFT"
-    assert snapshot.rows[1][1] == "PARTIALLY_FILLED"
-
-    assert snapshot.rows[0][2]
-    assert snapshot.rows[1][2]
+    assert snapshot.rows[0] == ("AAPL", "BUY", "--", "--", "10", "ACCEPTED")
+    assert snapshot.rows[1] == (
+        "MSFT", "SELL", "--", "--", "5", "PARTIALLY_FILLED"
+    )
 
 
 def test_format_orders_preserves_immutable_rows() -> None:
@@ -103,6 +100,6 @@ def test_dashboard_projects_orders_through_read_model() -> None:
 
     snapshot = project_dashboard(state)
 
-    assert snapshot.orders.rows[0][0] == "BUY 10 AAPL"
-    assert snapshot.orders.rows[0][1] == "ACCEPTED"
-    assert snapshot.orders.rows[0][2]
+    assert snapshot.orders.rows[0] == (
+        "AAPL", "BUY", "--", "--", "10", "ACCEPTED"
+    )

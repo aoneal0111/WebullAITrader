@@ -7,12 +7,12 @@ from app.live_execution.paper_validation import PaperValidationReport
 
 @dataclass(frozen=True, slots=True)
 class PaperValidationDashboardSnapshot:
-    account: str = "RUNNING"
-    orders: str = "RUNNING"
-    buying_power: str = "RUNNING"
-    positions: str = "RUNNING"
-    reconciliation: str = "RUNNING"
-    overall: str = "RUNNING"
+    account: str = "NOT RUN"
+    orders: str = "NOT RUN"
+    buying_power: str = "NOT RUN"
+    positions: str = "NOT RUN"
+    reconciliation: str = "NOT RUN"
+    overall: str = "NOT RUN"
     message: str = "Not started"
 
     @classmethod

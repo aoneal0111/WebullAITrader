@@ -15,7 +15,9 @@ class OrdersPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self._table = StyledDataTable(("Order", "Status", "Updated"))
+        self._table = StyledDataTable(
+            ("Symbol", "Side", "Type", "Price", "Size", "Status")
+        )
         self._table.set_empty_state(
             "No active orders",
             "Submitted orders will appear here.",
@@ -33,6 +35,16 @@ class OrdersPanel(QWidget):
             for column_index, value in enumerate(row):
                 item = QTableWidgetItem(value)
                 if column_index == 1:
+                    item.setForeground(
+                        QBrush(QColor(
+                            Colors.SUCCESS
+                            if value.upper() in {"BUY", "COVER"}
+                            else Colors.DANGER
+                            if value.upper() in {"SELL", "SHORT"}
+                            else Colors.TEXT_MUTED
+                        ))
+                    )
+                if column_index == 5:
                     item.setForeground(
                         QBrush(QColor(_status_color(value)))
                     )

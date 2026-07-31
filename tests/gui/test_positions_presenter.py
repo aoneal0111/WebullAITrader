@@ -41,7 +41,10 @@ def test_positions_presenter_prepares_immutable_view_model() -> None:
 
     assert panel.snapshots == [
         PositionsSnapshot(
-            rows=(("AAPL", "10", "$100.00", "+$100.00"),)
+            rows=((
+                "AAPL", "LONG", "10", "$100.00", "$110.00",
+                "+$100.00", "+10.00%",
+            ),)
         )
     ]
     assert isinstance(panel.snapshots[0].rows, tuple)
@@ -70,4 +73,4 @@ def test_positions_presenter_formats_unknown_unrealized_pnl() -> None:
         ApplicationState(position_projection=projection)
     )
 
-    assert panel.snapshots[0].rows[0][3] == "--"
+    assert panel.snapshots[0].rows[0][4:] == ("--", "--", "--")

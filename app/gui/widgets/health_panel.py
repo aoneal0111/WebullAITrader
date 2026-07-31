@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QGridLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
 
 from app.gui.models import HealthDashboardSnapshot
 from app.gui.widgets.common import StatusBadge
@@ -14,11 +14,16 @@ class HealthPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self._badge = StatusBadge("UNKNOWN")
-        self._metrics = QGridLayout()
+        metrics_widget = QWidget()
+        self._metrics = QGridLayout(metrics_widget)
+        self._metrics.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(metrics_widget)
         self._incident = QLabel()
         self._incident.setWordWrap(True)
         layout.addWidget(self._badge)
-        layout.addLayout(self._metrics)
+        layout.addWidget(scroll, 1)
         layout.addWidget(self._incident)
 
     def render(self, snapshot: HealthDashboardSnapshot) -> None:

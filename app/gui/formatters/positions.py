@@ -22,6 +22,7 @@ def format_positions(
                 symbol=position.symbol,
                 quantity=position.quantity,
                 average_cost=position.average_cost,
+                market_value=position.market_value,
                 unrealized_gain_loss=position.unrealized_gain_loss,
                 currency=position.currency,
             )
@@ -35,10 +36,12 @@ def _format_position(
     symbol: str,
     quantity: str,
     average_cost: str,
+    market_value: str | None,
     unrealized_gain_loss: str | None,
     currency: str,
 ) -> tuple[str, str, str, str]:
-    quantity_label = _format_quantity(quantity)
+    quantity_value = _decimal(quantity, "quantity")
+    quantity_label = _format_quantity(str(abs(quantity_value)))
     average_cost_label = _format_money(
         average_cost,
         currency=currency,
@@ -53,12 +56,27 @@ def _format_position(
         if unrealized_gain_loss is not None
         else "--"
     )
+    mark_label = "--"
+    if market_value is not None and quantity_value != 0:
+        mark_label = _format_money(
+            str(abs(_decimal(market_value, "market value") / quantity_value)),
+            currency=currency,
+            include_sign=False,
+        )
+    pnl_percent = "--"
+    if unrealized_gain_loss is not None:
+        cost = abs(quantity_value * _decimal(average_cost, "average cost"))
+        if cost:
+            pnl_percent = f"{(_decimal(unrealized_gain_loss, 'profit/loss') / cost * Decimal('100')):+.2f}%"
 
     return (
         symbol,
+        "LONG" if quantity_value > 0 else "SHORT" if quantity_value < 0 else "FLAT",
         quantity_label,
         average_cost_label,
+        mark_label,
         profit_loss_label,
+        pnl_percent,
     )
 
 

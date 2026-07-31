@@ -13,14 +13,14 @@ class PaperValidationPanel(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
-        self.overall_badge = StatusBadge("RUNNING")
+        self.overall_badge = StatusBadge("NOT RUN")
         self.status_badges: dict[str, StatusBadge] = {}
         grid = QGridLayout()
         for column, label in enumerate(
             ("Account", "Orders", "Buying Power", "Positions", "Reconciliation")
         ):
             grid.addWidget(QLabel(label), 0, column)
-            badge = StatusBadge("RUNNING")
+            badge = StatusBadge("NOT RUN")
             self.status_badges[label] = badge
             grid.addWidget(badge, 1, column)
         self.message_label = QLabel("Not started")
@@ -45,7 +45,7 @@ class PaperValidationPanel(QWidget):
 
 
 def _tone(status: str) -> str:
-    return {"PASS": "success", "FAIL": "danger", "RUNNING": "warning"}.get(
+    return {"PASS": "good", "FAIL": "danger", "RUNNING": "warn"}.get(
         status.upper(), "neutral"
     )
 

@@ -42,7 +42,7 @@ class RuntimeControlHeader(QFrame):
 
         self._metrics: dict[str, QLabel] = {}
         for label, emphasis in (
-            ("Total P&L", "primary"),
+            ("Daily PnL", "primary"),
             ("System Health", "primary"),
             ("Mode", "standard"),
             ("Account", "standard"),
@@ -97,8 +97,20 @@ class RuntimeControlHeader(QFrame):
             snapshot.state.value.title(),
             levels[snapshot.state],
         )
-        self._metrics["Mode"].setText(snapshot.environment)
-        self._metrics["Account"].setText(snapshot.account)
+        mode = snapshot.environment.upper()
+        self._metrics["Mode"].setText(mode)
+        self._metrics["Mode"].setProperty(
+            "status",
+            "danger" if mode in {"LIVE", "PRODUCTION"} else
+            "warn" if mode == "PAPER" else "good" if mode == "TEST" else "neutral",
+        )
+        self._metrics["Mode"].style().unpolish(self._metrics["Mode"])
+        self._metrics["Mode"].style().polish(self._metrics["Mode"])
+        account = snapshot.account
+        self._metrics["Account"].setText(
+            account if len(account) <= 16 else f"{account[:6]}…{account[-6:]}"
+        )
+        self._metrics["Account"].setToolTip(account)
         self._metrics["Duration"].setText(snapshot.runtime_duration)
         self.resume_button.setText(
             "Running"
@@ -112,9 +124,9 @@ class RuntimeControlHeader(QFrame):
     ) -> None:
         values = dict(snapshot.metrics)
         value = values.get("Total P/L", "--")
-        self._metrics["Total P&L"].setText(value)
+        self._metrics["Daily PnL"].setText(value)
         self._set_metric_status(
-            "Total P&L",
+            "Daily PnL",
             "good"
             if value.startswith("+")
             else "danger"

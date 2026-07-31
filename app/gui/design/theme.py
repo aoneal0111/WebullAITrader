@@ -23,7 +23,7 @@ def application_stylesheet() -> str:
     QFrame#panel, QFrame#metricCard, QFrame#statusCard {{
         background: {Colors.SURFACE};
         border: 1px solid {Colors.BORDER};
-        border-radius: 8px;
+        border-radius: 5px;
     }}
     QFrame#metricCard:hover, QFrame#statusCard:hover {{ border-color: {Colors.BORDER_STRONG}; background: {Colors.SURFACE_ALT}; }}
     QFrame#metricCard[emphasis='primary'] {{ border-color: {Colors.BORDER_STRONG}; background: {Colors.SURFACE_ALT}; }}
@@ -37,7 +37,8 @@ def application_stylesheet() -> str:
     QLabel#metricValue[tone='danger'], QLabel#compactMetricValue[tone='danger'], QLabel#monoValue[status='danger'] {{ color: {Colors.DANGER}; }}
     QLabel#metricValue[tone='warn'], QLabel#compactMetricValue[tone='warn'], QLabel#monoValue[status='warn'] {{ color: {Colors.WARNING}; }}
     QLabel#metricValue[tone='neutral'], QLabel#compactMetricValue[tone='neutral'], QLabel#monoValue[status='neutral'] {{ color: {Colors.TEXT_MUTED}; }}
-    QPushButton {{ border: 0; border-radius: 6px; padding: 7px 11px; font-weight: 650; }}
+    QPushButton {{ border: 0; border-radius: 4px; padding: 6px 10px; min-height: 20px; font-weight: 650; }}
+    QPushButton:focus, QComboBox:focus, QLineEdit:focus, QTableWidget:focus {{ border: 1px solid {Colors.CYAN}; }}
     QPushButton#primaryButton {{ background: {Colors.ACCENT}; color: white; }}
     QPushButton#primaryButton:hover {{ background: {Colors.ACCENT_HOVER}; }}
     QPushButton#secondaryButton {{ background: {Colors.SURFACE_RAISED}; color: {Colors.TEXT}; border: 1px solid {Colors.BORDER}; }}
@@ -48,9 +49,9 @@ def application_stylesheet() -> str:
     QPushButton#dangerButton:hover {{ background: {Colors.DANGER}; color: white; }}
     QPushButton#dangerButton:disabled {{ color: {Colors.TEXT_FAINT}; background: {Colors.SURFACE}; border-color: {Colors.BORDER}; }}
     QPushButton:disabled {{ color: {Colors.TEXT_FAINT}; background: {Colors.SURFACE}; border-color: {Colors.BORDER}; }}
-    QPushButton#navButton {{ text-align: left; padding: 10px 12px; color: {Colors.TEXT_MUTED}; background: transparent; border-left: 3px solid transparent; }}
+    QPushButton#navButton {{ text-align: left; padding: 9px 10px; min-height: 24px; color: {Colors.TEXT_MUTED}; background: transparent; border-left: 3px solid transparent; }}
     QPushButton#navButton:hover {{ color: {Colors.TEXT_STRONG}; background: {Colors.SURFACE_HOVER}; border-left-color: {Colors.BORDER_STRONG}; }}
-    QPushButton#navButton:checked {{ color: {Colors.TEXT_STRONG}; background: {Colors.ACCENT_SOFT}; border-left-color: {Colors.ACCENT}; }}
+    QPushButton#navButton:checked {{ color: {Colors.ACCENT_HOVER}; background: {Colors.ACCENT_SOFT}; border-left-color: {Colors.ACCENT}; }}
     QLabel#statusBadge {{ border-radius: 7px; padding: 4px 8px; background: {Colors.SURFACE_RAISED}; color: {Colors.TEXT_MUTED}; font-weight: 750; }}
     QLabel#statusBadge[status='good'] {{ color: {Colors.SUCCESS}; }}
     QLabel#statusBadge[status='warn'] {{ color: {Colors.WARNING}; }}
@@ -78,6 +79,9 @@ def application_stylesheet() -> str:
     QScrollBar::handle:vertical {{ background: {Colors.BORDER_STRONG}; min-height: 28px; border-radius: 4px; }}
     QScrollBar::handle:vertical:hover {{ background: {Colors.TEXT_FAINT}; }}
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+    QScrollBar:horizontal {{ background: {Colors.BACKGROUND}; height: 9px; margin: 0; }}
+    QScrollBar::handle:horizontal {{ background: {Colors.BORDER_STRONG}; min-width: 28px; border-radius: 4px; }}
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
     QSplitter::handle {{ background: {Colors.BORDER_SOFT}; }}
     QSplitter::handle:hover {{ background: {Colors.BORDER_STRONG}; }}
     QStatusBar {{ background: {Colors.SIDEBAR}; color: {Colors.TEXT}; border-top: 1px solid {Colors.BORDER_STRONG}; min-height: {Dimensions.STATUS_HEIGHT}px; max-height: {Dimensions.STATUS_HEIGHT}px; }}

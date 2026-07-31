@@ -29,6 +29,7 @@ class Sidebar(QWidget):
         "Experiments",
         "Settings",
     )
+    ICONS = ("▦", "▶", "≡", "⌁", "◇", "⚙")
     ROUTES = (0, 8, 5, 1, 3, 4)
 
     def __init__(self) -> None:
@@ -45,9 +46,9 @@ class Sidebar(QWidget):
         mark.setFixedSize(36, 36)
         mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
         brand_text = QVBoxLayout()
-        brand = QLabel("ATLAS")
+        brand = QLabel("ATLAS X")
         brand.setObjectName("brand")
-        subtitle = QLabel("OPERATOR TERMINAL")
+        subtitle = QLabel("TRADING TERMINAL")
         subtitle.setObjectName("muted")
         brand_text.addWidget(brand)
         brand_text.addWidget(subtitle)
@@ -63,10 +64,13 @@ class Sidebar(QWidget):
         group = QButtonGroup(self)
         group.setExclusive(True)
         self.buttons: dict[str, QPushButton] = {}
-        for label, page_index in zip(self.ITEMS, self.ROUTES):
-            button = QPushButton(label)
+        for label, icon, page_index in zip(
+            self.ITEMS, self.ICONS, self.ROUTES
+        ):
+            button = QPushButton(f"{icon}   {label}")
             button.setObjectName("navButton")
             button.setCheckable(True)
+            button.setToolTip(label)
             button.clicked.connect(
                 lambda checked=False, route=page_index: (
                     self.page_requested.emit(route)

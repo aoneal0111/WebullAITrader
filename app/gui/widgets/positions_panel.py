@@ -17,7 +17,7 @@ class PositionsPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self._table = StyledDataTable(
-            ("Symbol", "Qty", "Avg Price", "P/L")
+            ("Symbol", "Side", "Size", "Average Price", "Mark", "PnL", "PnL %")
         )
         self._table.set_empty_state(
             "No positions",
@@ -35,12 +35,20 @@ class PositionsPanel(QWidget):
         for row_index, row in enumerate(rows):
             for column_index, value in enumerate(row):
                 item = QTableWidgetItem(value)
-                if column_index:
+                if column_index >= 2:
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight
                         | Qt.AlignmentFlag.AlignVCenter
                     )
-                if column_index == 3:
+                if column_index == 1:
+                    item.setForeground(
+                        QBrush(QColor(
+                            Colors.SUCCESS if value == "LONG" else
+                            Colors.DANGER if value == "SHORT" else
+                            Colors.TEXT_MUTED
+                        ))
+                    )
+                if column_index in (5, 6):
                     item.setForeground(
                         QBrush(QColor(_financial_color(value)))
                     )

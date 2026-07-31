@@ -1,27 +1,28 @@
 from __future__ import annotations
 
 class Colors:
-    BACKGROUND = "#070a0f"
-    SIDEBAR = "#090e15"
-    SURFACE = "#0e141d"
-    SURFACE_ALT = "#121a25"
-    SURFACE_RAISED = "#182332"
-    SURFACE_HOVER = "#1c293a"
-    BORDER = "#243144"
-    BORDER_SOFT = "#192435"
-    BORDER_STRONG = "#3a4d68"
-    TEXT = "#edf2f8"
+    BACKGROUND = "#07111f"
+    SIDEBAR = "#081321"
+    SURFACE = "#0b1626"
+    SURFACE_ALT = "#0e1b2d"
+    SURFACE_RAISED = "#122137"
+    SURFACE_HOVER = "#142742"
+    BORDER = "#1c2a3d"
+    BORDER_SOFT = "#142238"
+    BORDER_STRONG = "#2b405c"
+    TEXT = "#f3f7fc"
     TEXT_STRONG = "#ffffff"
-    TEXT_MUTED = "#9aa9bb"
-    TEXT_FAINT = "#68778b"
-    ACCENT = "#3b8cff"
-    ACCENT_SOFT = "#172f50"
-    ACCENT_HOVER = "#62a3ff"
-    SUCCESS = "#36d399"
+    TEXT_MUTED = "#aab6c5"
+    TEXT_FAINT = "#718096"
+    ACCENT = "#1677ff"
+    CYAN = "#20b8ff"
+    ACCENT_SOFT = "#102c50"
+    ACCENT_HOVER = "#4093ff"
+    SUCCESS = "#23d18b"
     SUCCESS_SOFT = "#102b24"
-    WARNING = "#f4bd4f"
+    WARNING = "#f7c843"
     WARNING_SOFT = "#302612"
-    DANGER = "#ff6470"
+    DANGER = "#ff4d5a"
     DANGER_SOFT = "#34171d"
     CHART_GRID = "#172231"
 
@@ -34,9 +35,9 @@ class Spacing:
     XXL = 32
 
 class Radius:
-    SM = 6
-    MD = 10
-    LG = 14
+    SM = 4
+    MD = 6
+    LG = 8
 
 
 class Typography:
@@ -46,17 +47,17 @@ class Typography:
     SM = 11
     MD = 12
     LG = 15
-    XL = 22
-    XXL = 26
-    PANEL_TITLE = 16
-    PRIMARY_METRIC = 25
+    XL = 18
+    XXL = 20
+    PANEL_TITLE = 14
+    PRIMARY_METRIC = 20
 
 
 class Dimensions:
-    NAV_WIDTH = 208
+    NAV_WIDTH = 184
     HEADER_HEIGHT = 72
     STATUS_HEIGHT = 24
     TABLE_ROW_HEIGHT = 26
-    CHART_MIN_HEIGHT = 140
+    CHART_MIN_HEIGHT = 135
     OPERATOR_MIN_HEIGHT = 158
     WATCHLIST_MIN_WIDTH = 320

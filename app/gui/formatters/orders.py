@@ -36,13 +36,13 @@ def _format_order(
     status: str,
     updated_at,
 ) -> tuple[str, str, str]:
-    order_label = f"{side} {quantity} {symbol}"
-    updated_label = updated_at.astimezone().strftime(
-        "%Y-%m-%d %H:%M:%S %Z"
-    )
+    del updated_at
 
     return (
-        order_label,
+        symbol,
+        side,
+        "--",
+        "--",
+        quantity,
         status,
-        updated_label,
     )

@@ -26,6 +26,7 @@ def format_portfolio(
             ("Realized P/L", _money(summary.realized_pnl, signed=True)),
             ("Unrealized P/L", _money(summary.unrealized_pnl, signed=True)),
             ("Gross Exposure", _money(summary.gross_exposure)),
+            ("Exposure", _exposure_percent(summary.gross_exposure, equity)),
             ("Long / Short", _exposure(summary)),
             (
                 "Working Orders",
@@ -65,6 +66,12 @@ def _exposure(summary: PortfolioSummary) -> str:
         f"{_money(summary.long_exposure)} / "
         f"{_money(summary.short_exposure)}"
     )
+
+
+def _exposure_percent(value: str | None, equity: Decimal | None) -> str:
+    if value is None or equity is None or equity == 0:
+        return "--"
+    return f"{(Decimal(value) / equity * Decimal('100')):.1f}%"
 
 
 def _counts(first: int | None, second: int | None) -> str:

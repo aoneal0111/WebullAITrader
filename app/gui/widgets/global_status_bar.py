@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PySide6.QtCore import QDateTime, QTimer
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QWidget
 
 from app.gui.models import (
@@ -38,6 +39,19 @@ class GlobalStatusBar(QWidget):
         self.version = QLabel(f"Atlas v{version}")
         self.version.setObjectName("muted")
         layout.addWidget(self.version)
+        self.local_time = QLabel()
+        self.local_time.setObjectName("muted")
+        self.local_time.setToolTip("Current local time")
+        layout.addWidget(self.local_time)
+        self._clock = QTimer(self)
+        self._clock.timeout.connect(self._update_time)
+        self._clock.start(1000)
+        self._update_time()
+
+    def _update_time(self) -> None:
+        self.local_time.setText(
+            QDateTime.currentDateTime().toString("yyyy-MM-dd  hh:mm:ss AP")
+        )
 
     def render_dashboard(self, snapshot: DashboardSnapshot) -> None:
         runtime = snapshot.runtime

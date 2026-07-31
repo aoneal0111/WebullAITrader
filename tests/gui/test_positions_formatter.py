@@ -67,15 +67,21 @@ def test_format_positions_creates_dashboard_rows() -> None:
     assert snapshot.rows == (
         (
             "AAPL",
+            "LONG",
             "10",
             "$185.25",
+            "$190.00",
             "+$47.50",
+            "+2.56%",
         ),
         (
             "MSFT",
+            "LONG",
             "5",
             "$410.00",
+            "$405.00",
             "-$25.00",
+            "-1.22%",
         ),
     )
 
@@ -91,7 +97,7 @@ def test_format_positions_preserves_fractional_quantity() -> None:
         )
     )
 
-    assert snapshot.rows[0][1] == "10.5"
+    assert snapshot.rows[0][2] == "10.5"
 
 
 def test_format_positions_formats_zero_profit_loss_without_sign() -> None:
@@ -105,7 +111,8 @@ def test_format_positions_formats_zero_profit_loss_without_sign() -> None:
         )
     )
 
-    assert snapshot.rows[0][3] == "$0.00"
+    assert snapshot.rows[0][5] == "$0.00"
+    assert snapshot.rows[0][6] == "+0.00%"
 
 
 def test_format_positions_formats_non_usd_currency() -> None:
@@ -121,8 +128,8 @@ def test_format_positions_formats_non_usd_currency() -> None:
         )
     )
 
-    assert snapshot.rows[0][2] == "EUR 1,000.50"
-    assert snapshot.rows[0][3] == "+EUR 25.00"
+    assert snapshot.rows[0][3] == "EUR 1,000.50"
+    assert snapshot.rows[0][5] == "+EUR 25.00"
 
 
 def test_format_positions_preserves_source_ordering() -> None:
