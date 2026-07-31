@@ -69,6 +69,7 @@ class DashboardPage(QWidget):
         self.health_panel = self.infrastructure
         self.operator_health_panel = self.operator_workspace.health
         self.replay_status_panel = self.operator_workspace.lifecycle
+        self.paper_validation_panel = self.operator_workspace.paper_validation
 
         scroll.setWidget(content)
         outer.addWidget(scroll)
@@ -78,3 +79,4 @@ class DashboardPage(QWidget):
         self.activity_panel.render(snapshot.activity)
         self.positions_panel.render(snapshot.positions)
         self.orders_panel.render(snapshot.orders)
+        self.paper_validation_panel.render(snapshot.paper_validation)

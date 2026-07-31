@@ -14,6 +14,7 @@ from app.gui.presenters.application_state_presenter import (
     RuntimeStatusPresenter,
     TimelinePresenter,
 )
+from app.gui.presenters.paper_validation_presenter import PaperValidationPresenter
 
 __all__ = [
     "ApplicationStatePresenter",
@@ -30,4 +31,5 @@ __all__ = [
     "RuntimeErrorPresenter",
     "RuntimeStatusPresenter",
     "TimelinePresenter",
+    "PaperValidationPresenter",
 ]

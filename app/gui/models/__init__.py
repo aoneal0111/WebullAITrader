@@ -14,6 +14,7 @@ from .health import HealthDashboardSnapshot
 from .watchlist import WatchlistRow, WatchlistSnapshot
 from .replay import ReplayWorkspaceSnapshot
 from .chart import ChartViewSnapshot
+from .paper_validation import PaperValidationDashboardSnapshot
 
 __all__ = [
     "ActivityEntry",
@@ -33,4 +34,5 @@ __all__ = [
     "TimelineFilter",
     "ReplayWorkspaceSnapshot",
     "ChartViewSnapshot",
+    "PaperValidationDashboardSnapshot",
 ]

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QSizePolicy, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QSizePolicy, QTabWidget, QVBoxLayout, QWidget
 
 from app.gui.widgets.activity_panel import ActivityPanel
 from app.gui.widgets.decisions_panel import DecisionsPanel
 from app.gui.widgets.health_panel import HealthPanel
 from app.gui.widgets.orders_panel import OrdersPanel
 from app.gui.widgets.positions_panel import PositionsPanel
+from app.gui.widgets.paper_validation_panel import PaperValidationPanel
 from app.gui.widgets.replay_status_panel import ReplayStatusPanel
 from app.gui.design.tokens import Dimensions
 
@@ -34,12 +35,18 @@ class OperatorWorkspace(QWidget):
         self.timeline = ActivityPanel()
         self.lifecycle = ReplayStatusPanel()
         self.health = HealthPanel()
+        self.paper_validation = PaperValidationPanel()
+        health_workspace = QWidget()
+        health_layout = QHBoxLayout(health_workspace)
+        health_layout.setContentsMargins(0, 0, 0, 0)
+        health_layout.addWidget(self.health, 1)
+        health_layout.addWidget(self.paper_validation, 2)
         self.tabs.addTab(self.positions, "Positions")
         self.tabs.addTab(self.orders, "Orders")
         self.tabs.addTab(self.decisions, "Decisions")
         self.tabs.addTab(self.timeline, "Timeline")
         self.tabs.addTab(self.lifecycle, "Lifecycle")
-        self.tabs.addTab(self.health, "Health")
+        self.tabs.addTab(health_workspace, "Health")
         layout.addWidget(self.tabs)
 
 

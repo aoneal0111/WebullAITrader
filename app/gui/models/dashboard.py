@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .runtime import RuntimeState
+from .paper_validation import PaperValidationDashboardSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +94,7 @@ class DashboardSnapshot:
     activity: ActivitySnapshot
     positions: PositionsSnapshot
     orders: OrdersSnapshot
+    paper_validation: PaperValidationDashboardSnapshot = PaperValidationDashboardSnapshot()
 
     @classmethod
     def initial(cls) -> "DashboardSnapshot":
@@ -101,4 +103,5 @@ class DashboardSnapshot:
             activity=ActivitySnapshot.initial(),
             positions=PositionsSnapshot.initial(),
             orders=OrdersSnapshot.initial(),
+            paper_validation=PaperValidationDashboardSnapshot.initial(),
         )
