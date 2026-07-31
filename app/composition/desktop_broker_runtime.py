@@ -34,7 +34,10 @@ from app.webull.sdk_market_data import (
     LazyOfficialDataClient,
     WebullScannerReferenceProvider,
     WebullScannerUniverseProvider,
-    create_official_data_client,
+)
+from app.webull.client_factories import (
+    MarketDataClientFactory,
+    market_data_configuration,
 )
 
 
@@ -94,12 +97,9 @@ def create_configured_desktop_broker_driver(
 
     scanner_coordinator = None
     if broker_runtime.market_data is not None:
+        market_data_configuration_value = market_data_configuration(configuration)
         data_client = LazyOfficialDataClient(
-            lambda: create_official_data_client(
-                app_key=getattr(getattr(configuration,"market_data",configuration),"app_key",configuration.api_key),
-                app_secret=getattr(getattr(configuration,"market_data",configuration),"app_secret",configuration.api_secret),
-                endpoint=getattr(getattr(configuration,"market_data",configuration),"api_base_url",configuration.api_base_url),
-            )
+            MarketDataClientFactory(market_data_configuration_value).create
         )
         universe_provider = WebullScannerUniverseProvider(
             data_client,
@@ -109,7 +109,7 @@ def create_configured_desktop_broker_driver(
             data_client,
             universe_provider,
             clock=clock,
-            environment=configuration.environment.value,
+            environment=market_data_configuration_value.environment.value,
         )
         reference_store = ScannerReferenceStore()
 

@@ -7,11 +7,32 @@ from urllib.parse import urlparse
 from app.broker_plugins import normalize_provider
 from app.configuration.models import *
 from app.webull.stream_endpoint import parse_webull_stream_url
+
+
 def _env(values: dict[str, str], primary: str, legacy: str) -> str:
     value = values.get(primary, "").strip()
     if value:
         return value
     return values.get(legacy, "").strip()
+
+
+def _scoped_environment(
+    values: dict[str, str], primary: str, fallback: TradingEnvironment
+) -> TradingEnvironment:
+    value = values.get(primary, "").strip()
+    return TradingEnvironment(value.upper()) if value else fallback
+
+
+def _reject_partial_scope(
+    values: dict[str, str], *, scope: str, required: tuple[str, ...]
+) -> None:
+    present = tuple(name for name in required if values.get(name, "").strip())
+    if present and len(present) != len(required):
+        missing = sorted(set(required) - set(present))
+        raise ValueError(
+            f"ambiguous mixed {scope} configuration; missing scoped settings: "
+            + ",".join(missing)
+        )
 
 
 
@@ -109,8 +130,30 @@ def load_configuration(env=None):
             )
 
 
+    _reject_partial_scope(
+        e,
+        scope="trading",
+        required=(
+            "WEBULL_TRADING_ACCOUNT_ID",
+            "WEBULL_TRADING_APP_KEY",
+            "WEBULL_TRADING_APP_SECRET",
+            "WEBULL_TRADING_API_BASE_URL",
+            "WEBULL_TRADING_STREAM_URL",
+        ),
+    )
+    _reject_partial_scope(
+        e,
+        scope="market-data",
+        required=(
+            "WEBULL_MARKET_DATA_APP_KEY",
+            "WEBULL_MARKET_DATA_APP_SECRET",
+            "WEBULL_MARKET_DATA_API_BASE_URL",
+            "WEBULL_MARKET_DATA_STREAM_URL",
+        ),
+    )
+
     trading_configuration = TradingConfiguration(
-        environment=mode,
+        environment=_scoped_environment(e, "TRADING_ENVIRONMENT", mode),
         account_id=_env(e,"WEBULL_TRADING_ACCOUNT_ID","WEBULL_ACCOUNT_ID"),
         api_key=_env(e,"WEBULL_TRADING_APP_KEY","WEBULL_API_KEY"),
         api_secret=_env(e,"WEBULL_TRADING_APP_SECRET","WEBULL_API_SECRET"),
@@ -119,7 +162,7 @@ def load_configuration(env=None):
     )
 
     market_data_configuration = MarketDataConfiguration(
-        environment=mode,
+        environment=_scoped_environment(e, "MARKET_DATA_ENVIRONMENT", mode),
         api_key=_env(e,"WEBULL_MARKET_DATA_APP_KEY","WEBULL_API_KEY"),
         api_secret=_env(e,"WEBULL_MARKET_DATA_APP_SECRET","WEBULL_API_SECRET"),
         api_base_url=_env(e,"WEBULL_MARKET_DATA_API_BASE_URL","WEBULL_API_BASE_URL"),
@@ -158,6 +201,8 @@ def load_configuration(env=None):
         ),
         _int(e, "STREAM_RECONNECT_ATTEMPTS", 3),
         _decimal(e, "STREAM_RECONNECT_BACKOFF_SECONDS", "1"),
+        trading_configuration,
+        market_data_configuration,
     )
 
 
