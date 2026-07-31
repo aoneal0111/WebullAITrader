@@ -65,3 +65,23 @@ def test_balance_parser_preserves_account_buying_power_and_equity():
     assert cash.settled_cash == Decimal("8000")
     assert cash.buying_power == Decimal("9000")
     assert cash.equity == Decimal("10500")
+
+
+def test_balance_parser_maps_official_currency_asset_buying_power():
+    cash = parse_cash(
+        {
+            "total_net_liquidation_value": "10500",
+            "total_cash_balance": "8000",
+            "account_currency_assets": [
+                {
+                    "currency": "USD",
+                    "cash_balance": "8000",
+                    "day_buying_power": "9000",
+                    "net_liquidation_value": "10500",
+                }
+            ],
+        }
+    )
+
+    assert cash.buying_power == Decimal("9000")
+    assert cash.equity == Decimal("10500")
