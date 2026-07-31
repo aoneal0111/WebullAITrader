@@ -68,6 +68,7 @@ __pycache__/
 .pytest-temp/
 
 # Temporary test/verification directories
+/.pytest_*/
 *_full_temp/
 architecture_verification_temp_*/
 
