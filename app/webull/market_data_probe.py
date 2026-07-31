@@ -97,7 +97,12 @@ class MarketDataProbeResult:
         if self.credentials.state is ProbeState.CREDENTIALS_MISSING:
             return "Production market-data credentials are missing."
         if self.entitlement.state is ProbeState.NOT_ENTITLED:
-            return "Production market-data entitlement is not granted."
+            label = (
+                "Production"
+                if self.environment in {"LIVE", "PRODUCTION"}
+                else "Sandbox"
+            )
+            return f"{label} market-data entitlement is not granted."
         if (
             self.streaming.available
             and self.subscription.state is ProbeState.UNAVAILABLE
@@ -203,6 +208,19 @@ class MarketDataCapabilityProbe:
             if any(item.state is ProbeState.NOT_ENTITLED for item in statuses)
             else CapabilityStatus(ProbeState.AVAILABLE)
         )
+        if entitlement.state is ProbeState.NOT_ENTITLED:
+            symbol_results = [
+                SymbolCapabilityResult(
+                    item.symbol,
+                    item.bars,
+                    item.quote,
+                    item.snapshot,
+                    item.reference,
+                    item.streaming_subscription,
+                    SymbolProbeState.NO_ENTITLEMENT,
+                )
+                for item in symbol_results
+            ]
         return MarketDataProbeResult(
             cfg.environment.value,
             fingerprint,

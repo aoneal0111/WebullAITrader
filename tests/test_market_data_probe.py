@@ -144,6 +144,33 @@ def test_connected_stream_requires_subscription_acknowledgement():
     )
 
 
+def test_entitlement_failure_takes_precedence_over_unsupported_symbols():
+    class MixedRestClient:
+        def __init__(self):
+            self.market_data = SimpleNamespace(
+                get_history_bar=lambda *args, **kwargs: _raise(Unsupported()),
+                get_quotes=lambda symbol, *args, **kwargs: (
+                    _raise(PermissionError("403"))
+                    if symbol == "AAPL" else Response()
+                ),
+                get_snapshot=lambda *args, **kwargs: Response(),
+            )
+            self.instrument = SimpleNamespace(
+                get_instrument=lambda *args, **kwargs: Response()
+            )
+
+    result = MarketDataCapabilityProbe(
+        configuration(environment=TradingEnvironment.TEST),
+        LazyOfficialDataClient(MixedRestClient),
+        Stream(),
+    ).run()
+    assert result.reason == "Sandbox market-data entitlement is not granted."
+    assert all(
+        item.result is SymbolProbeState.NO_ENTITLEMENT
+        for item in result.symbol_results
+    )
+
+
 def test_reconnect_capability_is_a_scanner_prerequisite():
     result = MarketDataCapabilityProbe(
         configuration(), LazyOfficialDataClient(RestClient),
