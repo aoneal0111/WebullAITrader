@@ -19,12 +19,9 @@ class WatchlistPanel(QWidget):
     sort_requested = Signal(str)
 
     _SORT_FIELDS = {
-        0: "symbol",
-        1: "latest_price",
-        3: "change_percent",
-        6: "volume",
-        7: "market_status",
-        9: "stale",
+        1: "symbol",
+        3: "latest_price",
+        4: "change_percent",
     }
 
     def __init__(self) -> None:
@@ -33,21 +30,24 @@ class WatchlistPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         self._table = StyledDataTable(
             (
+                "Rank",
                 "Symbol",
+                "Score",
                 "Price",
-                "Change",
                 "Change %",
-                "Bid",
-                "Ask",
-                "Volume",
-                "Market",
-                "Updated",
-                "State",
+                "Rel Vol",
+                "Dollar Vol",
+                "Spread",
+                "Catalyst",
+                "Passed Rules",
+                "Failed Rules",
+                "Freshness",
+                "Session",
             )
         )
         self._table.set_empty_state(
             "No symbols",
-            "Subscribe to a symbol to build your watchlist.",
+            "Start the runtime to populate ranked scanner candidates.",
             icon="\u2606",
         )
         self._table.horizontalHeader().setSortIndicatorShown(True)
@@ -61,20 +61,23 @@ class WatchlistPanel(QWidget):
         self._table.setRowCount(len(snapshot.rows))
         for row_index, row in enumerate(snapshot.rows):
             values = (
+                row.rank,
                 f"\u25cf {row.symbol}" if row.selected else row.symbol,
+                row.score,
                 row.latest_price,
-                row.change,
                 row.change_percent,
-                row.bid,
-                row.ask,
-                row.volume,
-                row.market_status,
-                row.last_update,
-                row.stale,
+                row.relative_volume,
+                row.dollar_volume,
+                row.spread,
+                row.catalyst,
+                row.passed_rules,
+                row.failed_rules,
+                row.freshness,
+                row.session,
             )
             for column_index, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if column_index in (1, 2, 3, 4, 5, 6):
+                if column_index in (0, 2, 3, 4, 5, 6, 7):
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight
                         | Qt.AlignmentFlag.AlignVCenter
@@ -107,14 +110,14 @@ class WatchlistPanel(QWidget):
 
 def _semantic_color(column: int, value: str) -> str | None:
     normalized = value.upper()
-    if column in (2, 3):
+    if column == 4:
         if value.startswith("+"):
             return Colors.SUCCESS
         if value.startswith("-"):
             return Colors.DANGER
         return Colors.TEXT_MUTED
-    if column in (7, 9):
-        if normalized in {"OPEN", "LIVE"}:
+    if column in (11, 12):
+        if normalized in {"OPEN", "LIVE", "REGULAR", "PREMARKET", "AFTER_HOURS", "OVERNIGHT"}:
             return Colors.SUCCESS
         if normalized in {"CLOSED", "STALE", "DISCONNECTED"}:
             return Colors.DANGER

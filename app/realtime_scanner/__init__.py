@@ -3,6 +3,7 @@
 )
 from app.realtime_scanner.models import (
     ReferenceWarmupFailure,
+    ReferenceWarmupResult,
     ScannerSnapshot,
 )
 from app.realtime_scanner.protocols import (
@@ -18,6 +19,7 @@ __all__ = [
     "ReferenceLoader",
     "ReferenceSink",
     "ReferenceWarmupFailure",
+    "ReferenceWarmupResult",
     "ScannerSnapshot",
     "UniverseSelector",
 ]

@@ -15,6 +15,7 @@ from app.operations.scanner_runtime import (
     LiveScannerSnapshotSource,
     ScannerRuntimeCycle,
 )
+from app.operations.scanner_snapshot_publisher import ScannerSnapshotPublisher
 from app.operations.runtime import (
     PaperOperationsEngine,
     PaperRuntimeCycleResult,
@@ -41,6 +42,7 @@ __all__ = [
     "PaperRuntimeState",
     "PaperRuntimeStatus",
     "LiveScannerSnapshotSource",
+    "ScannerSnapshotPublisher",
     "ScannerRuntimeCycle",
     "redact",
 ]

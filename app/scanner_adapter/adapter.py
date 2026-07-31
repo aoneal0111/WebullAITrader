@@ -112,7 +112,9 @@ class MarketEventScannerAdapter:
                 timestamp=event.timestamp,
                 last_price=event.payload.price,
                 cumulative_volume=(
-                    state.cumulative_volume + event.payload.size
+                    event.payload.size
+                    if event.payload.trade_id.startswith("snapshot")
+                    else state.cumulative_volume + event.payload.size
                 ),
             )
 
@@ -211,7 +213,7 @@ class MarketEventScannerAdapter:
                 ),
                 float_shares=reference.float_shares,
                 catalyst=reference.catalyst,
-                catalyst_headline="",
+                catalyst_headline=reference.catalyst_headline,
                 bid=state.bid,
                 ask=state.ask,
                 tradable=reference.tradable,

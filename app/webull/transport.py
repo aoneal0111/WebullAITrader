@@ -8,7 +8,7 @@ from app.webull.serializers import order_request_payload, parse_cash, parse_fill
 
 class WebullBrokerTransport:
     def __init__(self, configuration, http_client, auth, logger, clock=lambda: datetime.now(timezone.utc)):
-        self.configuration = validate_configuration(configuration); self.http = http_client; self.auth = auth
+        self.configuration = validate_configuration(configuration); self.http = http_client
         self.logger, self.clock = logger, clock; self.health = ConnectionHealth(); self._known = {}; self.__mutation_capability = None
     def bind_mutation_capability(self, capability):
         from app.broker_protocol.capability import BrokerMutationCapability
@@ -17,9 +17,6 @@ class WebullBrokerTransport:
         self.__mutation_capability = capability
     def connect(self):
         try:
-            if not self.auth.verify():
-                raise ValueError("connection verification failed")
-
             values = _items(
                 self.http.get("/openapi/account/list")
             )
@@ -56,7 +53,10 @@ class WebullBrokerTransport:
             known.stop_price, known.time_in_force, LiveOrderStatus.CANCELLED, self.clock())
         self._known[client_order_id] = result; return result
     def dispatch_replace(self, capability, client_order_id, order):
-        self._authorize_mutation(capability); self._connected(); result = parse_order(self.http.post("/openapi/trade/order/replace", payload=order_request_payload(order, self.configuration.account_id, self.clock())), order); self._known[client_order_id] = result; return result
+        self._authorize_mutation(capability); self._connected()
+        payload = order_request_payload(order, self.configuration.account_id, self.clock())
+        payload["modify_orders"] = payload.pop("new_orders")
+        result = parse_order(self.http.post("/openapi/trade/order/replace", payload=payload), order); self._known[client_order_id] = result; return result
     def get_positions(self):
         self._connected(); values = self.http.get("/openapi/assets/positions", query={"account_id": self.configuration.account_id}); return tuple(sorted((parse_position(item) for item in _items(values)), key=lambda item: item.symbol))
     def get_orders(self):

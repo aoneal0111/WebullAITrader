@@ -13,6 +13,7 @@ from app.reference_data.provider import (
     ReferenceDataNotFoundError,
     ReferenceDataProvider,
     ReferenceDataProviderUnavailableError,
+    UnsupportedReferenceSymbolError,
 )
 from app.reference_data.service import ReferenceDataService
 
@@ -26,6 +27,7 @@ __all__ = [
     "ReferenceDataPolicy",
     "ReferenceDataProvider",
     "ReferenceDataProviderUnavailableError",
+    "UnsupportedReferenceSymbolError",
     "ReferenceDataService",
     "ReferenceRecord",
 ]

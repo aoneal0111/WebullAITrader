@@ -64,7 +64,11 @@ def create_desktop_scanner_infrastructure(
 ) -> DesktopScannerInfrastructure:
     """Assemble the live scanner infrastructure used by the desktop runtime."""
 
-    transport = ReceiveTransportAdapter(market_data_client)
+    transport = (
+        market_data_client
+        if isinstance(market_data_client, ReceiveTransportAdapter)
+        else ReceiveTransportAdapter(market_data_client)
+    )
 
     pipeline = MomentumScannerPipeline(
         scanner_adapter,

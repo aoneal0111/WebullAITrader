@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import time
 import uuid
 from collections.abc import Callable
@@ -12,17 +11,18 @@ from urllib.parse import urlparse
 
 from app.live_execution.webull_adapter import WebullAdapter
 from app.live_scanner.transport import ReceiveTransportAdapter
-from app.operations.credentials import EnvironmentCredentialProvider
 from app.webull.configuration import (
     ReconnectPolicy,
     RetryPolicy,
     WebSocketSettings,
     WebullConfiguration,
 )
-from app.webull.http_client import UrllibHttpBackend, WebullHttpClient
+from app.webull.http_client import (
+    WebullHttpClient,
+    create_official_trade_client,
+)
 from app.webull.logging import StructuredLogger
 from app.webull.rate_limits import DeterministicRateLimiter, RateLimit
-from app.webull.signing import WebullRequestSigner
 from app.webull.market_event_parser import WebullMarketEventParser
 from app.webull.sdk_streaming_adapter import (
     WebullMarketSubscription,
@@ -30,6 +30,7 @@ from app.webull.sdk_streaming_adapter import (
     create_official_market_subscription,
     create_official_stream_backend,
 )
+from app.webull.stream_endpoint import parse_webull_stream_url
 from app.webull.transport import WebullBrokerTransport
 from app.webull.websocket_client import WebullWebSocketClient
 
@@ -51,30 +52,9 @@ class ConsoleSink:
         print(record, flush=True)
 
 
-class SignedAuthentication:
-    """Authentication interface expected by WebullBrokerTransport."""
-
-    def __init__(self, signer: WebullRequestSigner) -> None:
-        self.signer = signer
-
-    def headers(
-        self,
-        method: str,
-        path: str,
-        query: tuple[tuple[str, object], ...],
-        body: bytes | None,
-    ) -> dict[str, str]:
-        return self.signer.headers(method, path, query, body)
-
-    def verify(self) -> bool:
-        # The authenticated account-list request verifies the credentials.
-        return True
-
-
 def build_webull_broker(configuration) -> WebullAdapter:
     """Build the existing Webull execution broker."""
 
-    credentials = EnvironmentCredentialProvider(os.environ)
     transport_logger = StructuredLogger(ConsoleSink())
 
     webull_configuration = WebullConfiguration(
@@ -96,15 +76,6 @@ def build_webull_broker(configuration) -> WebullAdapter:
         ),
     )
 
-    signer = WebullRequestSigner(
-        credentials=credentials,
-        host=webull_configuration.api_endpoint,
-        clock=utc_now,
-        nonce_provider=lambda: uuid.uuid4().hex,
-    )
-
-    authentication = SignedAuthentication(signer)
-
     limiter = DeterministicRateLimiter(
         RateLimit(
             requests=10,
@@ -114,21 +85,23 @@ def build_webull_broker(configuration) -> WebullAdapter:
         sleep_decimal,
     )
 
-    http_client = WebullHttpClient(
+    trade_client = create_official_trade_client(
+        app_key=configuration.api_key,
+        app_secret=configuration.api_secret,
         endpoint=webull_configuration.api_endpoint,
-        timeout=webull_configuration.timeout_seconds,
-        retry_policy=webull_configuration.retry_policy,
-        backend=UrllibHttpBackend(),
-        auth=authentication,
+        timeout_seconds=webull_configuration.timeout_seconds,
+    )
+
+    http_client = WebullHttpClient(
+        trade_client=trade_client,
         limiter=limiter,
-        sleeper=sleep_decimal,
         logger=transport_logger,
     )
 
     transport = WebullBrokerTransport(
         webull_configuration,
         http_client,
-        authentication,
+        None,
         transport_logger,
         utc_now,
     )
@@ -152,26 +125,35 @@ def build_webull_market_data_stream(
 
     if not configuration.market_data_streaming_enabled:
         return None
-    if not configuration.market_data_symbols:
-        raise ValueError(
-            "market-data streaming requires subscription symbols"
-        )
-
     credentials = WebullStreamingCredentials(
         app_key=configuration.api_key,
         app_secret=configuration.api_secret,
         session_id=session_id_factory(),
     )
-    stream_endpoint = urlparse(configuration.stream_url)
+    stream_endpoint = parse_webull_stream_url(configuration.stream_url)
     api_endpoint = urlparse(configuration.api_base_url)
+    stream_logger = StructuredLogger(ConsoleSink())
+    stream_logger.log(
+        "stream_configuration",
+        "selected",
+        configured_stream_url=stream_endpoint.configured_stream_url,
+        mqtt_host=stream_endpoint.mqtt_host,
+        mqtt_port=stream_endpoint.mqtt_port,
+        transport=stream_endpoint.transport,
+        tls_enable=stream_endpoint.tls_enable,
+        websocket_path=stream_endpoint.websocket_path,
+        trading_environment=configuration.environment.value,
+    )
     backend = backend_factory(
         credentials,
         subscription_factory(),
         receive_timeout_seconds=1.0,
         http_host=api_endpoint.hostname,
-        mqtt_host=stream_endpoint.hostname,
-        mqtt_port=stream_endpoint.port or 1883,
-        tls_enable=True,
+        mqtt_host=stream_endpoint.mqtt_host,
+        mqtt_port=stream_endpoint.mqtt_port,
+        tls_enable=stream_endpoint.tls_enable,
+        transport=stream_endpoint.transport,
+        websocket_path=stream_endpoint.websocket_path,
     )
     client = client_factory(
         backend,
@@ -183,7 +165,7 @@ def build_webull_market_data_stream(
             ),
         ),
         sleep_decimal,
-        StructuredLogger(ConsoleSink()),
+        stream_logger,
     )
     return ReceiveTransportAdapter(client)
 

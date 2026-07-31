@@ -7,11 +7,9 @@ import pytest
 
 from app.live_execution.models import BrokerOrderRequest, LiveOrderType, LiveSide, TimeInForce
 from app.market_data.models import HeartbeatPayload, MarketEvent, MarketEventType, QuotePayload
-from app.webull.auth import AuthenticationManager, OAuthToken
 from app.webull.configuration import *
 from app.webull.errors import *
 from app.webull.health import ConnectionHealth, update_health
-from app.webull.http_client import HttpResponse, WebullHttpClient
 from app.webull.logging import StructuredLogger
 from app.webull.rate_limits import DeterministicRateLimiter, RateLimit
 from app.webull.transport import WebullBrokerTransport
@@ -19,74 +17,27 @@ from app.webull.websocket_client import WebullWebSocketClient
 from app.live_execution.webull_adapter import WebullAdapter
 
 D=Decimal; NOW=datetime(2026,7,18,tzinfo=UTC)
-class Store:
-    def __init__(self): self.value=None
-    def load(self): return self.value
-    def save(self,v): self.value=v
-    def clear(self): self.value=None
-class Tokens:
-    def __init__(self): self.refreshes=0
-    def exchange_code(self,c): return {"access_token":"secret-access","refresh_token":"secret-refresh","expires_in":"10","rt_expires_in":"100"}
-    def refresh(self,t): self.refreshes+=1; return {"access_token":"new-access","refresh_token":"new-refresh","expires_in":"10","rt_expires_in":"100"}
-    def verify(self,t): return True
 class Sink:
     def __init__(self): self.records=[]
     def emit(self,r): self.records.append(r)
-class Auth:
-    def token(self): return OAuthToken("access", "refresh", NOW+timedelta(days=1), NOW+timedelta(days=2))
-    def verify(self): return True
 class Clock:
     def __init__(self): self.value=D(0)
     def __call__(self): return self.value
-class Backend:
-    def __init__(self,responses): self.responses=list(responses); self.calls=[]
-    def send(self,*args): self.calls.append(args); value=self.responses.pop(0); 
-    
 def config(): return WebullConfiguration("https://api.sandbox.webull.com","account-secret",D("5"),RetryPolicy(3,D("1"),D("2"),D("4")),ReconnectPolicy(2,D("1")),WebSocketSettings("wss://data-api.sandbox.webull.com/mqtt"))
-
-def test_authentication_lifecycle_and_refresh():
-    now=[NOW]; store=Store(); endpoint=Tokens(); manager=AuthenticationManager(endpoint,store,lambda:now[0])
-    token=manager.login("code"); assert token.access_token=="secret-access" and manager.verify()
-    now[0]=NOW+timedelta(seconds=11); assert manager.token().access_token=="new-access" and endpoint.refreshes==1
-    now[0]=NOW+timedelta(seconds=200)
-    with pytest.raises(AuthenticationError): manager.token()
 
 def test_configuration_validation():
     assert validate_configuration(config())==config()
+    assert validate_configuration(
+        replace_config(
+            websocket=WebSocketSettings(
+                "mqtts://data-api.sandbox.webull.com:1883"
+            )
+        )
+    ).websocket.endpoint.startswith("mqtts://")
     with pytest.raises(ValueError): validate_configuration(replace_config(api_endpoint="http://unsafe"))
 def replace_config(**changes):
     from dataclasses import replace
     return replace(config(),**changes)
-
-def make_http(responses):
-    class B:
-        def __init__(self): self.responses=list(responses); self.calls=[]
-        def send(self,*args):
-            self.calls.append(args); value=self.responses.pop(0)
-            if isinstance(value,Exception): raise value
-            return value
-    backend=B(); clock=Clock(); sleeps=[]; limiter=DeterministicRateLimiter(RateLimit(100,D("60")),clock,lambda v:sleeps.append(v))
-    sink=Sink(); client=WebullHttpClient(config().api_endpoint,D("5"),config().retry_policy,backend,Auth(),limiter,lambda v:sleeps.append(v),StructuredLogger(sink))
-    return client,backend,sleeps,sink
-
-def test_http_methods_and_deterministic_serialization():
-    responses=[HttpResponse(200,(),b'{"ok":true}') for _ in range(4)]; client,backend,_,_=make_http(responses)
-    assert client.get("/x",query={"b":"2","a":"1"})=={"ok":True}; client.post("/x",payload={"b":2,"a":1}); client.put("/x",payload={}); client.delete("/x")
-    assert backend.calls[0][1].endswith("?a=1&b=2") and backend.calls[1][3]==b'{"a":1,"b":2}'
-
-def test_http_retry_transient_only_and_retry_after():
-    client,backend,sleeps,_=make_http((HttpResponse(503,(),b''),HttpResponse(200,(),b'{}')))
-    assert client.get("/x")=={} and sleeps==[D("1")]
-    client,_,sleeps,_=make_http((HttpResponse(429,(("Retry-After","3"),),b''),HttpResponse(200,(),b'{}')))
-    client.get("/x"); assert sleeps==[D("3")]
-    client,backend,sleeps,_=make_http((HttpResponse(401,(),b''),))
-    with pytest.raises(AuthenticationError): client.get("/x")
-    assert not sleeps
-
-@pytest.mark.parametrize(("status","error"),((400,BrokerRejectionError),(401,AuthenticationError),(429,RateLimitError),(503,NetworkError),(520,UnknownBrokerError)))
-def test_error_mapping(status,error):
-    client,_,_,_=make_http(tuple(HttpResponse(status,(),b'') for _ in range(3)))
-    with pytest.raises(error): client.get("/x")
 
 def test_rate_limiter_queues_without_busy_wait():
     clock=Clock(); sleeps=[]
@@ -136,7 +87,7 @@ class FakeHttp:
         if path.endswith("open"): return []
         return []
 def test_broker_protocol_transport_and_account_redaction():
-    transport=WebullBrokerTransport(config(),FakeHttp(),Auth(),StructuredLogger(Sink()),lambda:NOW); transport.connect()
+    transport=WebullBrokerTransport(config(),FakeHttp(),None,StructuredLogger(Sink()),lambda:NOW); transport.connect()
     request=BrokerOrderRequest("r1","XYZ",LiveSide.BUY,LiveOrderType.LIMIT,D("2"),D("10"),None,TimeInForce.DAY)
     assert not hasattr(transport,"submit_order")
     with pytest.raises(PermissionError): transport.dispatch_submit(object(),request)

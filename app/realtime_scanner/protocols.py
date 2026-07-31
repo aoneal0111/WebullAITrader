@@ -8,6 +8,7 @@ from app.momentum_scanner.models import (
 )
 from app.reference_data.models import ReferenceRecord
 from app.universe.models import UniverseSelection
+from app.universe.models import UniverseSymbol
 
 
 @runtime_checkable
@@ -32,6 +33,14 @@ class ReferenceLoader(Protocol):
         force_refresh: bool = False,
     ) -> ReferenceRecord:
         """Return reference data for a symbol."""
+
+    def get_for_instrument(
+        self,
+        instrument: UniverseSymbol,
+        *,
+        force_refresh: bool = False,
+    ) -> ReferenceRecord:
+        """Return reference data using the canonical Webull identity."""
 
 
 @runtime_checkable

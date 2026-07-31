@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from app.broker_plugins import normalize_provider
 from app.configuration.models import *
+from app.webull.stream_endpoint import parse_webull_stream_url
 
 
 def load_configuration(env=None):
@@ -70,13 +71,11 @@ def load_configuration(env=None):
         "wss://data-api.sandbox.webull.com:8883/mqtt",
     )
 
-    if (
-        urlparse(api).scheme != "https"
-        or urlparse(stream).scheme != "wss"
-    ):
+    if urlparse(api).scheme != "https":
         raise ValueError(
-            "secure Webull endpoints are required"
+            "secure Webull API endpoint is required"
         )
+    parse_webull_stream_url(stream)
 
     paths = tuple(
         Path(
@@ -127,7 +126,7 @@ def load_configuration(env=None):
         _int(e, "RECONCILIATION_INTERVAL_SECONDS", 30),
         _int(e, "MAXIMUM_RECONCILIATION_AGE_SECONDS", 60),
         _int(e, "MAXIMUM_UNRESOLVED_MUTATIONS", 0),
-        _bool(e.get("MARKET_DATA_STREAMING_ENABLED", "false")),
+        _bool(e.get("MARKET_DATA_STREAMING_ENABLED", "true")),
         _symbols(
             e.get(
                 "MARKET_DATA_SYMBOLS",

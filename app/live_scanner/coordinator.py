@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from app.live_scanner.models import (
@@ -35,6 +35,7 @@ class LiveScannerCoordinator:
         *,
         default_channels: Iterable[str] = (),
         maximum_events_per_cycle: int = 1000,
+        event_observer: Callable[[Any], object] | None = None,
     ) -> None:
         if maximum_events_per_cycle <= 0:
             raise ValueError(
@@ -49,6 +50,9 @@ class LiveScannerCoordinator:
         self._maximum_events_per_cycle = (
             maximum_events_per_cycle
         )
+        if event_observer is not None and not callable(event_observer):
+            raise TypeError("event_observer must be callable or None")
+        self._event_observer = event_observer
 
         self._channels: tuple[str, ...] = ()
         self._connected = False
@@ -123,14 +127,29 @@ class LiveScannerCoordinator:
         force_reference_refresh: bool = False,
     ) -> tuple[str, ...]:
         self.connect()
-        self.subscribe(channels)
-
         active_symbols = self.refresh_universe(
             asset_classes,
             force_reference_refresh=(
                 force_reference_refresh
             ),
         )
+        if not active_symbols:
+            # Keep the connected runtime responsive and publish the engine's
+            # explicit empty fail-closed snapshot. No subscription is sent.
+            self._channels = ()
+            self._running = True
+            return ()
+        selected_channels = (
+            self._default_channels
+            or getattr(
+                self._engine,
+                "subscription_symbols",
+                active_symbols,
+            )
+            if channels is None
+            else channels
+        )
+        self.subscribe(selected_channels)
 
         self._running = True
         return active_symbols
@@ -152,7 +171,7 @@ class LiveScannerCoordinator:
                 running=self._running,
             )
 
-        decision = self._engine.consume(event)
+        decision = self._consume(event)
 
         self._events_read += 1
         self._cycles_completed += 1
@@ -196,7 +215,7 @@ class LiveScannerCoordinator:
                 stream_exhausted = True
                 break
 
-            decision = self._engine.consume(event)
+            decision = self._consume(event)
             events_read += 1
 
             if decision is not None:
@@ -232,6 +251,14 @@ class LiveScannerCoordinator:
 
     def close(self) -> None:
         self.disconnect()
+
+    def set_event_observer(
+        self,
+        observer: Callable[[Any], object] | None,
+    ) -> None:
+        if observer is not None and not callable(observer):
+            raise TypeError("event observer must be callable or None")
+        self._event_observer = observer
 
     def __enter__(self) -> LiveScannerCoordinator:
         self.connect()
@@ -273,6 +300,12 @@ class LiveScannerCoordinator:
             raise RuntimeError(
                 "live scanner is not running"
             )
+
+    def _consume(self, event: Any) -> Any:
+        decision = self._engine.consume(event)
+        if self._event_observer is not None:
+            self._event_observer(event)
+        return decision
 
 
 def _normalize_channels(

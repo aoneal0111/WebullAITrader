@@ -178,11 +178,11 @@ class CompactWatchlistPanel(QWidget):
         controls.addStretch()
         layout.addLayout(controls)
         self._table = StyledDataTable(
-            ("Symbol", "Last", "Change", "Change %", "State")
+            ("Symbol", "Last", "Score", "Change %", "Rank / State")
         )
         self._table.set_empty_state(
             "No symbols",
-            "Subscribe to a symbol to begin.",
+            "Start the runtime to discover scanner candidates.",
             icon="\u2606",
         )
         header = self._table.horizontalHeader()
@@ -211,9 +211,9 @@ class CompactWatchlistPanel(QWidget):
             values = (
                 f"\u25cf {row.symbol}" if row.selected else row.symbol,
                 row.latest_price,
-                row.change,
+                row.score,
                 row.change_percent,
-                state,
+                f"#{row.rank} \u00b7 {row.freshness}",
             )
             for column_index, value in enumerate(values):
                 item = QTableWidgetItem(value)

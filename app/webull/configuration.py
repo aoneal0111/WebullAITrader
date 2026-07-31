@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from urllib.parse import urlparse
 
+from app.webull.stream_endpoint import parse_webull_stream_url
+
 @dataclass(frozen=True, slots=True)
 class RetryPolicy:
     maximum_attempts: int = 3
@@ -37,9 +39,9 @@ class WebullConfiguration:
 
 def validate_configuration(value: WebullConfiguration) -> WebullConfiguration:
     if not isinstance(value, WebullConfiguration): raise ValueError("WebullConfiguration is required")
-    api, stream = urlparse(value.api_endpoint), urlparse(value.websocket.endpoint)
+    api = urlparse(value.api_endpoint)
     if api.scheme != "https" or not api.netloc: raise ValueError("Webull API endpoint must use HTTPS")
-    if stream.scheme != "wss" or not stream.netloc: raise ValueError("Webull stream endpoint must use WSS")
+    parse_webull_stream_url(value.websocket.endpoint)
     if not value.account_id.strip(): raise ValueError("account_id is required")
     _positive(value.timeout_seconds, "timeout")
     retry = value.retry_policy

@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from app.broker_plugins import BrokerRuntime, create_broker_runtime
+from app.composition.desktop_infrastructure import (
+    create_desktop_scanner_infrastructure,
+)
 from app.configuration import OperationalConfiguration, load_configuration
 from app.live_execution.account_polling import (
     BrokerAccountSnapshot,
@@ -15,10 +18,23 @@ from app.live_execution.broker_factory import (
     build_webull_market_data_stream,
 )
 from app.operations.runtime import RuntimeEventSink
+from app.reference_data import ReferenceDataService
+from app.scanner_adapter import (
+    MarketEventScannerAdapter,
+    ScannerReferenceData,
+    ScannerReferenceStore,
+)
 from app.services.runtime_drivers.broker import (
     Clock,
     DesktopBrokerRuntimeDriver,
     utc_now,
+)
+from app.universe import UniverseService
+from app.webull.sdk_market_data import (
+    LazyOfficialDataClient,
+    WebullScannerReferenceProvider,
+    WebullScannerUniverseProvider,
+    create_official_data_client,
 )
 
 
@@ -76,6 +92,50 @@ def create_configured_desktop_broker_driver(
         webull_market_data_factory=webull_market_data_factory,
     )
 
+    scanner_coordinator = None
+    if broker_runtime.market_data is not None:
+        data_client = LazyOfficialDataClient(
+            lambda: create_official_data_client(
+                app_key=configuration.api_key,
+                app_secret=configuration.api_secret,
+                endpoint=configuration.api_base_url,
+            )
+        )
+        universe_provider = WebullScannerUniverseProvider(
+            data_client,
+            clock=clock,
+        )
+        reference_provider = WebullScannerReferenceProvider(
+            data_client,
+            universe_provider,
+            clock=clock,
+            environment=configuration.environment.value,
+        )
+        reference_store = ScannerReferenceStore()
+
+        def store_reference(record) -> None:
+            reference_store.put(
+                ScannerReferenceData(
+                    symbol=record.symbol,
+                    previous_close=record.previous_close,
+                    average_30_day_volume=record.average_30_day_volume,
+                    float_shares=record.float_shares,
+                    catalyst=record.catalyst,
+                    catalyst_headline=record.catalyst_headline,
+                    tradable=record.tradable,
+                    updated_at=record.as_of,
+                )
+            )
+
+        scanner_coordinator = create_desktop_scanner_infrastructure(
+            market_data_client=broker_runtime.market_data,
+            universe_service=UniverseService(universe_provider),
+            reference_data_service=ReferenceDataService(reference_provider),
+            scanner_adapter=MarketEventScannerAdapter(reference_store),
+            reference_sink=store_reference,
+            clock=clock,
+        ).coordinator
+
     return DesktopBrokerRuntimeDriver(
         configuration=configuration,
         broker_runtime=broker_runtime,
@@ -83,6 +143,7 @@ def create_configured_desktop_broker_driver(
         account_snapshot_sink=account_snapshot_sink,
         account_poller=account_poller,
         market_event_observer=market_event_observer,
+        scanner_coordinator=scanner_coordinator,
         clock=clock,
         source=source,
     )

@@ -129,6 +129,11 @@ def evaluate_candidate(
         metrics=metrics,
         passed_rules=tuple(passed),
         failed_rules=tuple(failed),
+        timestamp=observation.timestamp,
+        price=observation.price,
+        current_volume=observation.current_volume,
+        catalyst=observation.catalyst,
+        catalyst_headline=observation.catalyst_headline,
     )
 
 

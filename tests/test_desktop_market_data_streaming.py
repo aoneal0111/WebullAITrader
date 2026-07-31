@@ -238,6 +238,8 @@ def test_stream_is_constructed_through_existing_dependency_boundaries() -> None:
         "mqtt_host": "data-api.sandbox.webull.com",
         "mqtt_port": 8883,
         "tls_enable": True,
+        "transport": "websockets",
+        "websocket_path": "/mqtt",
     }
     assert captured["client_args"][0] is backend
     assert isinstance(captured["client_args"][1], WebullMarketEventParser)

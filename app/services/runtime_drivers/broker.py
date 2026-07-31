@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from queue import Empty, Queue
 from threading import Event, RLock, Thread
 
@@ -14,12 +14,14 @@ from app.live_execution.account_polling import (
     poll_broker_account,
 )
 from app.market_data.models import MarketEvent
+from app.momentum_scanner import AssetClass
 from app.operations.runtime import (
     PaperRuntimeEvent,
     RuntimeEventSink,
     RuntimeHealthUpdate,
     RuntimeWatchlistUpdate,
 )
+from app.operations.scanner_snapshot_publisher import ScannerSnapshotPublisher
 from app.services.market_event_translation import translate_market_event
 
 
@@ -49,6 +51,7 @@ class DesktopBrokerRuntimeDriver:
             translate_market_event
         ),
         market_event_observer: MarketEventObserver | None = None,
+        scanner_coordinator: object | None = None,
         clock: Clock = utc_now,
         source: str = "desktop-broker-runtime",
     ) -> None:
@@ -90,6 +93,7 @@ class DesktopBrokerRuntimeDriver:
         self._account_poller = account_poller
         self._market_event_translator = market_event_translator
         self._market_event_observer = market_event_observer
+        self._scanner = scanner_coordinator
         self._market_data = broker_runtime.market_data
         self._clock = clock
         self._source = source.strip()
@@ -102,6 +106,14 @@ class DesktopBrokerRuntimeDriver:
         self._market_data_failures: Queue[Exception] = Queue()
         self._terminal_stream_failure_published = False
         self._cycles_completed = 0
+        self._scanner_publisher = ScannerSnapshotPublisher(
+            self._event_sink,
+            self._next_sequence,
+            source=self._source,
+            stale_after=timedelta(
+                seconds=configuration.maximum_market_data_age_seconds
+            ),
+        )
 
     @property
     def environment(self) -> str:
@@ -188,6 +200,17 @@ class DesktopBrokerRuntimeDriver:
             lifecycle_setter(self._on_market_data_lifecycle)
 
         try:
+            if self._scanner is not None:
+                scanner_active = self._start_scanner()
+                if scanner_active:
+                    self._market_data_stop.clear()
+                    self._market_data_thread = Thread(
+                        target=self._receive_market_data,
+                        args=(stop_event,),
+                        name="desktop-market-data",
+                    )
+                    self._market_data_thread.start()
+                return
             self._market_data.connect()
             self._market_data_connected = True
             self._publish_health(
@@ -231,12 +254,118 @@ class DesktopBrokerRuntimeDriver:
         )
         self._market_data_thread.start()
 
+    def _start_scanner(self) -> bool:
+        scanner = self._scanner
+        assert scanner is not None
+        self._scanner_log(
+            "scanner_initialized",
+            "Autonomous scanner components initialized.",
+        )
+        observer_setter = getattr(scanner, "set_event_observer", None)
+        if callable(observer_setter):
+            observer_setter(self._handle_market_event)
+        try:
+            active_symbols = scanner.start(
+                asset_classes=(AssetClass.STOCK,),
+                force_reference_refresh=True,
+            )
+        except Exception as exc:
+            try:
+                scanner.disconnect()
+            finally:
+                self._scanner_error(
+                    "Scanner initialization failed.",
+                    exc,
+                )
+            raise
+
+        self._market_data_connected = True
+        warmup_snapshot = scanner.snapshot()
+        if not active_symbols:
+            reason = (
+                getattr(warmup_snapshot, "health_reason", None)
+                or "No symbols survived scanner reference warmup."
+            )
+            self._scanner_publisher.publish(
+                warmup_snapshot,
+                cycle=self._cycles_completed,
+                now=self._timestamp(),
+            )
+            self._scanner_log(
+                "scanner_empty_fail_closed",
+                reason,
+                health=RuntimeHealthUpdate(
+                    market_data_status="NO_SUPPORTED_SYMBOLS",
+                    last_warning=reason,
+                ),
+            )
+            return False
+        if warmup_snapshot.reference_failures:
+            details = "; ".join(
+                f"{failure.symbol}: {failure.reason}"
+                for failure in warmup_snapshot.reference_failures
+            )
+            self._scanner_log(
+                "scanner_error",
+                "Some scanner reference data could not be loaded.",
+                health=RuntimeHealthUpdate(last_warning=details),
+            )
+        self._scanner_log(
+            "universe_refreshed",
+            "Eligible US-stock universe refreshed.",
+        )
+        self._scanner_log(
+            "symbols_eligible",
+            f"{len(active_symbols)} symbols are eligible.",
+        )
+        self._scanner_log(
+            "market_data_connected",
+            "Official Webull market-data transport connected.",
+            health=RuntimeHealthUpdate(market_data_status="CONNECTED"),
+        )
+        self._scanner_log(
+            "channels_subscribed",
+            f"Subscribed quote and trade channels for "
+            f"{len(active_symbols)} symbols.",
+            health=RuntimeHealthUpdate(market_data_status="SUBSCRIBED"),
+        )
+        return True
+
     def _receive_market_data(self, stop_event: Event) -> None:
         try:
             while (
                 not stop_event.is_set()
                 and not self._market_data_stop.is_set()
             ):
+                if self._scanner is not None:
+                    cycle = self._scanner.run_available()
+                    snapshot = self._scanner.snapshot()
+                    now = self._timestamp()
+                    stale = self._scanner_publisher.publish(
+                        snapshot,
+                        cycle=self._cycles_completed,
+                        now=now,
+                    )
+                    self._scanner_log(
+                        "scanner_cycle",
+                        "Autonomous scanner cycle completed.",
+                    )
+                    self._scanner_log(
+                        "events_consumed",
+                        f"Consumed {cycle.events_read} market events.",
+                    )
+                    self._scanner_log(
+                        "scanner_snapshot_published",
+                        f"Published {len(snapshot.ranked_candidates)} "
+                        "ranked candidates.",
+                    )
+                    if stale:
+                        self._scanner_error(
+                            "Scanner quotes became stale: "
+                            + ", ".join(stale),
+                            RuntimeError("stale scanner quotes"),
+                        )
+                    continue
                 event = self._market_data.read_event()
                 if event is None:
                     self._publish_health(
@@ -251,16 +380,7 @@ class DesktopBrokerRuntimeDriver:
                     raise TypeError(
                         "market-data transport returned a non-MarketEvent"
                     )
-                translated = self._market_event_translator(
-                    event,
-                    sequence=self._next_sequence(),
-                    source=self._source,
-                    cycle=self._cycles_completed,
-                )
-                if translated is not None:
-                    self._emit(translated)
-                if self._market_event_observer is not None:
-                    self._market_event_observer(event)
+                self._handle_market_event(event)
         except Exception as exc:
             self._publish_terminal_market_data_failure(exc)
             self._market_data_failures.put(exc)
@@ -350,7 +470,11 @@ class DesktopBrokerRuntimeDriver:
         if not self._market_data_connected:
             return
         try:
-            self._market_data.disconnect()
+            if self._scanner is not None:
+                self._scanner.stop()
+                self._scanner.disconnect()
+            else:
+                self._market_data.disconnect()
         except Exception as exc:
             self._publish_terminal_market_data_failure(exc)
             raise
@@ -361,6 +485,49 @@ class DesktopBrokerRuntimeDriver:
             "MARKET_DATA_DISCONNECTED",
             "Webull market data disconnected.",
             RuntimeHealthUpdate(market_data_status="DISCONNECTED"),
+        )
+
+    def _handle_market_event(self, event: MarketEvent) -> None:
+        if not isinstance(event, MarketEvent):
+            raise TypeError("market-data transport returned a non-MarketEvent")
+        translated = self._market_event_translator(
+            event,
+            sequence=self._next_sequence(),
+            source=self._source,
+            cycle=self._cycles_completed,
+        )
+        if translated is not None:
+            self._emit(translated)
+        if self._market_event_observer is not None:
+            self._market_event_observer(event)
+
+    def _scanner_log(
+        self,
+        event_type: str,
+        message: str,
+        *,
+        health: RuntimeHealthUpdate | None = None,
+    ) -> None:
+        self._emit(
+            PaperRuntimeEvent(
+                sequence=self._next_sequence(),
+                timestamp=self._timestamp(),
+                event_type=event_type,
+                message=message,
+                cycle=self._cycles_completed,
+                source=self._source,
+                health=health,
+            )
+        )
+
+    def _scanner_error(self, message: str, error: Exception) -> None:
+        self._scanner_log(
+            "scanner_error",
+            message,
+            health=RuntimeHealthUpdate(
+                market_data_status="FAILED",
+                last_error=f"{type(error).__name__}: {error}",
+            ),
         )
 
     def _poll_accounts(

@@ -9,10 +9,13 @@ from app.momentum_scanner import (
     ScannerDecision,
     rank_candidates,
 )
+from app.live_scanner.session import scanner_session
 from app.realtime_scanner.models import (
     ReferenceWarmupFailure,
+    ReferenceWarmupResult,
     ScannerSnapshot,
 )
+from app.reference_data.provider import UnsupportedReferenceSymbolError
 from app.realtime_scanner.protocols import (
     EventPipeline,
     ReferenceLoader,
@@ -46,8 +49,10 @@ class RealtimeScannerEngine:
 
         self._active_symbols: set[str] = set()
         self._active_asset_classes: dict[str, AssetClass] = {}
+        self._subscription_symbols: dict[str, str] = {}
         self._decisions: dict[str, ScannerDecision] = {}
         self._reference_failures: list[ReferenceWarmupFailure] = []
+        self._warmup_result = ReferenceWarmupResult()
 
         self._processed_events = 0
         self._ignored_events = 0
@@ -67,31 +72,59 @@ class RealtimeScannerEngine:
 
         active_symbols: set[str] = set()
         active_asset_classes: dict[str, AssetClass] = {}
+        subscription_symbols: dict[str, str] = {}
         failures: list[ReferenceWarmupFailure] = []
+        unsupported: list[ReferenceWarmupFailure] = []
+        temporary: list[ReferenceWarmupFailure] = []
+        missing: list[ReferenceWarmupFailure] = []
+        successful_records = []
 
         for item in selection.included:
             symbol = item.symbol.strip().upper()
 
             try:
-                record = self._reference_data_service.get(
-                    symbol,
-                    item.asset_class,
-                    force_refresh=force_reference_refresh,
+                get_for_instrument = getattr(
+                    self._reference_data_service,
+                    "get_for_instrument",
+                    None,
                 )
-            except Exception as exc:
-                failures.append(
-                    ReferenceWarmupFailure(
-                        symbol=symbol,
-                        reason=f"{type(exc).__name__}: {exc}",
+                if callable(get_for_instrument):
+                    record = get_for_instrument(
+                        item,
+                        force_refresh=force_reference_refresh,
                     )
-                )
+                else:
+                    record = self._reference_data_service.get(
+                        symbol,
+                        item.asset_class,
+                        force_refresh=force_reference_refresh,
+                    )
+            except Exception as exc:
+                failure = _warmup_failure(symbol, exc)
+                failures.append(failure)
+                if failure.failure_type == "unsupported_symbol":
+                    unsupported.append(failure)
+                elif failure.failure_type == "missing_data":
+                    missing.append(failure)
+                else:
+                    temporary.append(failure)
                 continue
 
+            successful_records.append(record)
             active_symbols.add(symbol)
             active_asset_classes[symbol] = item.asset_class
+            subscription_symbols[symbol] = item.api_symbol or symbol
 
             if self._reference_sink is not None:
                 self._reference_sink(record)
+
+        self._warmup_result = ReferenceWarmupResult(
+            active_symbols=tuple(sorted(active_symbols)),
+            unsupported_rejections=tuple(unsupported),
+            temporary_failures=tuple(temporary),
+            missing_data_failures=tuple(missing),
+            successful_records=tuple(successful_records),
+        )
 
         removed_symbols = (
             self._active_symbols - active_symbols
@@ -102,6 +135,7 @@ class RealtimeScannerEngine:
 
         self._active_symbols = active_symbols
         self._active_asset_classes = active_asset_classes
+        self._subscription_symbols = subscription_symbols
         self._reference_failures = failures
 
         return self.active_symbols
@@ -179,6 +213,14 @@ class RealtimeScannerEngine:
             reference_failures=tuple(
                 self._reference_failures
             ),
+            session=scanner_session(timestamp).value,
+            warmup_result=self._warmup_result,
+            healthy=bool(self._active_symbols),
+            health_reason=(
+                None
+                if self._active_symbols
+                else _empty_universe_reason(self._warmup_result)
+            ),
         )
 
     def clear_decisions(self) -> None:
@@ -187,6 +229,16 @@ class RealtimeScannerEngine:
     @property
     def active_symbols(self) -> tuple[str, ...]:
         return tuple(sorted(self._active_symbols))
+
+    @property
+    def warmup_result(self) -> ReferenceWarmupResult:
+        return self._warmup_result
+
+    @property
+    def subscription_symbols(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(set(self._subscription_symbols.values()))
+        )
 
     @property
     def processed_events(self) -> int:
@@ -217,3 +269,45 @@ def _event_symbol(event: Any) -> str | None:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _warmup_failure(symbol: str, exc: Exception) -> ReferenceWarmupFailure:
+    environment = str(getattr(exc, "environment", "UNKNOWN")).upper()
+    endpoint = str(getattr(exc, "endpoint", "stock_bars"))
+    reason = f"{type(exc).__name__}: {exc}"
+    if isinstance(exc, UnsupportedReferenceSymbolError):
+        return ReferenceWarmupFailure(
+            symbol=symbol,
+            reason="unsupported_symbol",
+            failure_type="unsupported_symbol",
+            environment=environment,
+            endpoint=endpoint,
+            retryable=False,
+        )
+    if isinstance(exc, (LookupError, ValueError)):
+        return ReferenceWarmupFailure(
+            symbol=symbol,
+            reason=reason,
+            failure_type="missing_data",
+            environment=environment,
+            endpoint=endpoint,
+            retryable=False,
+        )
+    return ReferenceWarmupFailure(
+        symbol=symbol,
+        reason=reason,
+        failure_type="temporary",
+        environment=environment,
+        endpoint=endpoint,
+        retryable=True,
+    )
+
+
+def _empty_universe_reason(result: ReferenceWarmupResult) -> str:
+    if result.unsupported_rejections:
+        return "No scanner symbols are supported by the selected market-data environment."
+    if result.temporary_failures:
+        return "Scanner reference warmup is temporarily unavailable."
+    if result.missing_data_failures:
+        return "Scanner reference warmup returned no complete records."
+    return "No eligible scanner symbols were discovered."

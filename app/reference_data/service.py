@@ -7,6 +7,7 @@ from app.reference_data.models import (
     ReferenceRecord,
 )
 from app.reference_data.provider import ReferenceDataProvider
+from app.universe.models import UniverseSymbol
 
 
 class ReferenceDataService:
@@ -67,6 +68,41 @@ class ReferenceDataService:
             asset_class,
             force_refresh=True,
         )
+
+    def get_for_instrument(
+        self,
+        instrument: UniverseSymbol,
+        *,
+        force_refresh: bool = False,
+    ) -> ReferenceRecord:
+        normalized_symbol = _normalize_symbol(instrument.display_symbol)
+        if not force_refresh:
+            cached = self._cache.get(normalized_symbol, instrument.asset_class)
+            if cached is not None:
+                return cached
+
+        load = getattr(self._provider, "get_reference_data_for_instrument", None)
+        if callable(load):
+            record = load(
+                instrument,
+                force_validation_refresh=force_refresh,
+            )
+        else:
+            record = self._provider.get_reference_data(
+                normalized_symbol,
+                instrument.asset_class,
+            )
+
+        self._validate_provider_response(
+            requested_symbol=normalized_symbol,
+            requested_asset_class=instrument.asset_class,
+            record=record,
+        )
+        self._cache.put(
+            record,
+            ttl=self._policy.ttl_for(instrument.asset_class),
+        )
+        return record
 
     def invalidate(
         self,

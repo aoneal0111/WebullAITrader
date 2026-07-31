@@ -58,4 +58,9 @@ class ScannerDecision:
     metrics: ScannerMetrics
     passed_rules: tuple[str, ...]
     failed_rules: tuple[str, ...]
+    timestamp: datetime | None = None
+    price: Decimal | None = None
+    current_volume: Decimal | None = None
+    catalyst: CatalystType = CatalystType.NONE
+    catalyst_headline: str | None = None
 

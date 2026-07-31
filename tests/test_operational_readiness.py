@@ -1,12 +1,10 @@
-from datetime import UTC,datetime,timedelta
+from datetime import UTC,datetime
 from decimal import Decimal
 import json,pytest
 from app.configuration import load_configuration,TradingEnvironment
-from app.operations.credentials import EnvironmentCredentialProvider
 from app.operations.redaction import redact
 from app.operations.emergency_stop import EmergencyStopStore
 from app.operations.health import ReadinessInputs,liveness,readiness
-from app.webull.signing import WebullRequestSigner
 from app.market_data.durable_store import DurableMarketEventStore
 from app.market_data.models import MarketEvent,MarketEventType,TradePayload
 NOW=datetime(2026,7,18,tzinfo=UTC)
@@ -19,15 +17,14 @@ def test_live_configuration_fails_closed(tmp_path):
 def test_recursive_redaction():
  value=redact({"headers":{"Authorization":"Bearer secret","x-signature":"abc"},"items":[{"api_secret":"x"}],"url":"https://user:pass@example.com/x?token=x"})
  text=json.dumps(value);assert "Bearer secret" not in text and '"x"' not in text and "pass" not in text and "token=x" not in text
-def test_official_signature_vector_and_changed_inputs():
- creds=EnvironmentCredentialProvider({"WEBULL_API_KEY":"776da210ab4a452795d74e726ebd74b6","WEBULL_API_SECRET":"0f50a2e853334a9aae1a783bee120c1f","WEBULL_ACCOUNT_ID":"x"})
- clock=lambda:datetime(2022,1,4,3,55,31,tzinfo=UTC);nonce=lambda:"48ef5afed43d4d91ae514aaeafbc29ba"
- signer=WebullRequestSigner(creds,"api.webull.com",clock,nonce)
- body=b'{"k1":123,"k2":"this is the api request body","k3":true,"k4":{"foo":[1,2]}}'
- headers=signer.headers("POST","/trade/place_order",(("a1","webull"),("a2","123"),("a3","xxx"),("q1","yyy")),body)
- assert headers["x-signature"]=="kvlS6opdZDhEBo5jq40nHYXaLvM="
- assert signer.headers("POST","/trade/place_order",(),body)["x-signature"]!=signer.headers("POST","/trade/place_order",(),b'{}')["x-signature"]
- with pytest.raises(ValueError,match="skew"):WebullRequestSigner(creds,"api.webull.com",clock,nonce,reference_clock=lambda:clock()+timedelta(minutes=1)).headers("GET","/x",(),None)
+def test_live_rest_runtime_uses_official_sdk_without_custom_signer():
+ from pathlib import Path
+ source="\n".join((Path("app/webull")/name).read_text(encoding="utf-8").lower() for name in ("http_client.py","transport.py"))
+ factory=Path("app/live_execution/broker_factory.py").read_text(encoding="utf-8").lower()
+ assert "from webull.core.client import apiclient" in source
+ assert "tradeclient" in source and "create_official_trade_client" in factory
+ assert "webullrequestsigner" not in source+factory
+ assert "hmac" not in source+factory
 def test_durable_event_restart_duplicates_conflicts_and_corruption(tmp_path):
  path=tmp_path/"events.db";event=MarketEvent(1,NOW,"AAPL","feed",MarketEventType.TRADE,TradePayload(Decimal("10"),Decimal("1"),"t1"));store=DurableMarketEventStore(path)
  assert store.append(event,NOW) and not store.append(event,NOW);store.close();reopened=DurableMarketEventStore(path);assert reopened.replay().events==(event,)

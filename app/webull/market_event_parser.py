@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 import json
@@ -24,6 +24,9 @@ def decode_json_payload(payload: object) -> Mapping[str, object]:
     a schema here.
     """
 
+    if isinstance(payload, tuple) and len(payload) == 2:
+        topic, value = payload
+        return _decode_sdk_result(topic, value)
     if isinstance(payload, Mapping):
         return payload
     if isinstance(payload, bytes):
@@ -39,6 +42,59 @@ def decode_json_payload(payload: object) -> Mapping[str, object]:
         if isinstance(value, Mapping):
             return value
     raise SerializationError("Webull stream payload must decode to an object")
+
+
+def _decode_sdk_result(topic: object, value: object) -> Mapping[str, object]:
+    """Normalize official SDK Quote/Snapshot/Tick result objects."""
+
+    topic_name = str(topic).rsplit("/", 1)[-1].upper()
+    basic = getattr(value, "basic", None)
+    symbol = getattr(basic, "symbol", None)
+    timestamp = getattr(basic, "timestamp", None)
+    if not symbol:
+        raise SerializationError("Webull SDK result is missing symbol")
+
+    if "QUOTE" in topic_name:
+        bids = getattr(value, "bids", ())
+        asks = getattr(value, "asks", ())
+        if not bids or not asks:
+            raise SerializationError("Webull SDK quote has no bid/ask")
+        bid = bids[0]
+        ask = asks[0]
+        return {
+            "event_type": "QUOTE",
+            "symbol": symbol,
+            "timestamp": timestamp,
+            "bid": getattr(bid, "price", None),
+            "ask": getattr(ask, "price", None),
+            "bid_size": getattr(bid, "size", None),
+            "ask_size": getattr(ask, "size", None),
+        }
+
+    if "TICK" in topic_name:
+        return {
+            "event_type": "TICK",
+            "symbol": symbol,
+            "timestamp": getattr(value, "time", None) or timestamp,
+            "last_price": getattr(value, "price", None),
+            "size": getattr(value, "volume", None),
+        }
+
+    if "SNAPSHOT" in topic_name:
+        return {
+            "event_type": "TICK",
+            "symbol": symbol,
+            "timestamp": (
+                getattr(value, "last_trade_time", None) or timestamp
+            ),
+            "last_price": getattr(value, "price", None),
+            "size": getattr(value, "volume", None),
+            "trade_id": "snapshot",
+        }
+
+    raise SerializationError(
+        f"unsupported Webull SDK streaming topic: {topic_name or 'unknown'}"
+    )
 
 
 def _first(message: Mapping[str, object], *names: str) -> object | None:

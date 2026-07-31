@@ -16,6 +16,16 @@ class WatchlistRow:
     market_status: str
     last_update: str
     stale: str
+    rank: str = "--"
+    score: str = "--"
+    relative_volume: str = "--"
+    dollar_volume: str = "--"
+    spread: str = "--"
+    catalyst: str = "--"
+    passed_rules: str = "--"
+    failed_rules: str = "--"
+    freshness: str = "--"
+    session: str = "--"
 
 
 @dataclass(frozen=True, slots=True)

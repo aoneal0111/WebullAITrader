@@ -22,6 +22,26 @@ class ReferenceDataProviderUnavailableError(ReferenceDataError):
     """Raised when a provider cannot currently serve data."""
 
 
+class UnsupportedReferenceSymbolError(ReferenceDataError):
+    """Raised when the selected environment permanently rejects a symbol."""
+
+    retryable = False
+
+    def __init__(
+        self,
+        symbol: str,
+        *,
+        environment: str,
+        endpoint: str = "stock_bars",
+    ) -> None:
+        self.symbol = _normalize_symbol(symbol)
+        self.environment = environment.strip().upper()
+        self.endpoint = endpoint.strip()
+        super().__init__(
+            f"{self.symbol} is unsupported by {self.environment} {self.endpoint}"
+        )
+
+
 @runtime_checkable
 class ReferenceDataProvider(Protocol):
     def get_reference_data(

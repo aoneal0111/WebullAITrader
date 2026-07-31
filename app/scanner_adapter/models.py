@@ -14,6 +14,7 @@ class ScannerReferenceData:
     average_30_day_volume: Decimal
     float_shares: Decimal | None
     catalyst: CatalystType = CatalystType.NONE
+    catalyst_headline: str | None = None
     tradable: bool = True
     updated_at: datetime | None = None
 
@@ -36,6 +37,13 @@ class ScannerReferenceData:
             raise ValueError("updated_at must be timezone-aware")
 
         object.__setattr__(self, "symbol", symbol)
+        if self.catalyst_headline is not None:
+            headline = self.catalyst_headline.strip()
+            object.__setattr__(
+                self,
+                "catalyst_headline",
+                headline or None,
+            )
 
 
 @dataclass(frozen=True, slots=True)

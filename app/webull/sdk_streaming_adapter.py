@@ -14,6 +14,7 @@ from typing import Callable, Mapping, Sequence
 from uuid import uuid4
 
 from app.webull.websocket_client import OfficialSdkStreamBackend
+from app.webull.sdk_market_data import configure_official_sdk_logging
 
 
 SDKClientFactory = Callable[..., object]
@@ -134,13 +135,25 @@ def create_official_stream_backend(
     mqtt_port: int = 1883,
     tls_enable: bool = True,
     transport: str = "tcp",
+    websocket_path: str | None = None,
 ) -> OfficialSdkStreamBackend:
     """Construct the official SDK client behind the runtime stream protocol."""
 
-    if mqtt_port <= 0:
-        raise ValueError("mqtt_port must be positive")
+    if not isinstance(mqtt_port, int) or isinstance(mqtt_port, bool):
+        raise ValueError("mqtt_port must be an integer")
+    if not 1 <= mqtt_port <= 65535:
+        raise ValueError("mqtt_port must be between 1 and 65535")
+    if transport not in ("tcp", "websockets"):
+        raise ValueError("transport must be 'tcp' or 'websockets'")
+    if transport == "tcp" and websocket_path is not None:
+        raise ValueError("TCP transport must not include a WebSocket path")
+    if transport == "websockets":
+        websocket_path = websocket_path or "/mqtt"
+        if not websocket_path.startswith("/"):
+            raise ValueError("websocket_path must start with '/'")
 
     factory = _official_client_factory if client_factory is None else client_factory
+    configure_official_sdk_logging()
     client_arguments: dict[str, object] = {
         "app_key": credentials.app_key,
         "app_secret": credentials.app_secret,
@@ -156,6 +169,14 @@ def create_official_stream_backend(
         client_arguments["mqtt_host"] = mqtt_host
 
     client = factory(**client_arguments)
+    if transport == "websockets":
+        set_websocket_options = getattr(client, "ws_set_options", None)
+        if not callable(set_websocket_options):
+            raise TypeError(
+                "official SDK streaming client does not support "
+                "WebSocket path configuration"
+            )
+        set_websocket_options(path=websocket_path)
     return OfficialSdkStreamBackend(
         client,
         subscription_mapper=subscription.sdk_arguments,
@@ -180,6 +201,7 @@ def create_official_market_subscription() -> WebullMarketSubscription:
             SubscribeType.SNAPSHOT.name,
             SubscribeType.TICK.name,
         ),
+        overnight_required=True,
     )
 
 

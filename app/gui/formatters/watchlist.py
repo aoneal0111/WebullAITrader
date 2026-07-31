@@ -29,7 +29,18 @@ def format_sorted_watchlist(
     }:
         raise ValueError("unsupported watchlist sort field")
     entries = state.entries
-    if sort_field != "projection":
+    if sort_field == "projection" and any(
+        dict(entry.metadata).get("scanner_rank") for entry in entries
+    ):
+        entries = tuple(
+            sorted(
+                entries,
+                key=lambda entry: int(
+                    dict(entry.metadata).get("scanner_rank", "999999")
+                ),
+            )
+        )
+    elif sort_field != "projection":
         known = tuple(
             entry
             for entry in entries
@@ -50,9 +61,23 @@ def format_sorted_watchlist(
         )
     return WatchlistSnapshot(
         rows=tuple(
-            WatchlistRow(
+            _row(entry, state.selected_symbol)
+            for entry in entries
+        ),
+        sort_field=sort_field,
+        descending=descending,
+    )
+
+
+def _row(entry, selected_symbol: str | None) -> WatchlistRow:
+    metadata = dict(entry.metadata)
+    catalyst = metadata.get("scanner_catalyst", "--")
+    headline = metadata.get("scanner_catalyst_headline", "--")
+    if catalyst != "--" and headline != "--":
+        catalyst = f"{catalyst}: {headline}"
+    return WatchlistRow(
                 symbol=entry.symbol,
-                selected=entry.symbol == state.selected_symbol,
+                selected=entry.symbol == selected_symbol,
                 latest_price=_number(entry.latest_price),
                 change=_number(entry.change, signed=True),
                 change_percent=_percent(entry.change_percent),
@@ -76,11 +101,22 @@ def format_sorted_watchlist(
                     if entry.stale is False
                     else "--"
                 ),
-            )
-            for entry in entries
-        ),
-        sort_field=sort_field,
-        descending=descending,
+                rank=metadata.get("scanner_rank", "--"),
+                score=metadata.get("scanner_score", "--"),
+                relative_volume=_multiple(
+                    metadata.get("scanner_relative_volume")
+                ),
+                dollar_volume=_money(
+                    metadata.get("scanner_dollar_volume")
+                ),
+                spread=_percent(
+                    metadata.get("scanner_spread")
+                ),
+                catalyst=catalyst,
+                passed_rules=metadata.get("scanner_passed_rules", "--"),
+                failed_rules=metadata.get("scanner_failed_rules", "--"),
+                freshness=metadata.get("scanner_freshness", "--"),
+                session=metadata.get("scanner_session", "--"),
     )
 
 
@@ -102,8 +138,16 @@ def _number(value: str | None, *, signed: bool = False) -> str:
 
 
 def _percent(value: str | None) -> str:
-    if value is None:
+    if value is None or value == "--":
         return "--"
     number = Decimal(value)
     prefix = "+" if number > 0 else ""
     return f"{prefix}{number:.2f}%"
+
+
+def _multiple(value: str | None) -> str:
+    return "--" if value is None else f"{Decimal(value):,.2f}x"
+
+
+def _money(value: str | None) -> str:
+    return "--" if value is None else f"${Decimal(value):,.0f}"

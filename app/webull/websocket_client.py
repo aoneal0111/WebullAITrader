@@ -52,6 +52,9 @@ class OfficialSdkStreamBackend:
         self._connect_timeout_seconds = connect_timeout_seconds
         self._messages: Queue[object] = Queue()
         self._connected = Event()
+        self._lifecycle_sink: StreamLifecycleSink | None = None
+        self._deliberate_shutdown = False
+        self._consumption_started = False
 
         self._original_on_quotes_message = getattr(sdk_client, "on_quotes_message", None)
         self._original_on_connect_success = getattr(sdk_client, "on_connect_success", None)
@@ -63,7 +66,7 @@ class OfficialSdkStreamBackend:
             setattr(sdk_client, "on_disconnect", self._on_disconnect)
 
     def _on_quotes_message(self, client: object, topic: object, quotes: object) -> None:
-        self._messages.put(quotes)
+        self._messages.put((topic, quotes))
         if callable(self._original_on_quotes_message):
             self._original_on_quotes_message(client, topic, quotes)
 
@@ -74,16 +77,29 @@ class OfficialSdkStreamBackend:
 
     def _on_disconnect(self, *args: object, **kwargs: object) -> None:
         self._connected.clear()
+        self._notify(
+            "deliberate_shutdown"
+            if self._deliberate_shutdown
+            else "unexpected_stream_termination",
+        )
         if callable(self._original_on_disconnect):
             self._original_on_disconnect(*args, **kwargs)
 
     def connect(self) -> None:
         self._connected.clear()
+        self._deliberate_shutdown = False
+        self._consumption_started = False
         connect_and_loop_start = getattr(self.client, "connect_and_loop_start", None)
         if callable(connect_and_loop_start):
-            connect_and_loop_start()
+            try:
+                connect_and_loop_start(logger_enable=False)
+            except TypeError:
+                connect_and_loop_start()
             if not self._connected.wait(timeout=self._connect_timeout_seconds):
                 raise TimeoutError("official SDK streaming connection timed out")
+            if self.actual_transport == "websockets":
+                self._notify("websocket_http_upgrade")
+            self._notify("mqtt_connack")
             return
 
         connect = getattr(self.client, "connect", None)
@@ -92,6 +108,7 @@ class OfficialSdkStreamBackend:
         connect()
 
     def disconnect(self) -> None:
+        self._deliberate_shutdown = True
         self._connected.clear()
         loop_stop = getattr(self.client, "loop_stop", None)
         if callable(loop_stop):
@@ -107,24 +124,52 @@ class OfficialSdkStreamBackend:
         if not callable(subscribe):
             raise TypeError("official SDK streaming client has no subscribe method")
 
+        self._notify("rest_subscription_requested")
         if self._subscription_mapper is None:
             subscribe(channels)
+            self._notify("rest_subscription_active")
             return
 
         mapped = self._subscription_mapper(channels)
         if isinstance(mapped, dict):
             subscribe(**mapped)
+            self._notify("rest_subscription_active")
             return
         if isinstance(mapped, tuple):
             subscribe(*mapped)
+            self._notify("rest_subscription_active")
             return
         raise TypeError("subscription_mapper must return a tuple or dict")
 
     def receive(self) -> object | None:
         try:
-            return self._messages.get(timeout=self._receive_timeout_seconds)
+            message = self._messages.get(timeout=self._receive_timeout_seconds)
+            if not self._consumption_started:
+                self._consumption_started = True
+                self._notify("active_event_consumption")
+            return message
         except Empty:
             return None
+
+    @property
+    def actual_transport(self) -> str:
+        return str(getattr(self.client, "_transport", "unknown"))
+
+    def set_lifecycle_sink(
+        self,
+        sink: StreamLifecycleSink | None,
+    ) -> None:
+        if sink is not None and not callable(sink):
+            raise TypeError("stream lifecycle sink must be callable")
+        self._lifecycle_sink = sink
+
+    def _notify(
+        self,
+        event: str,
+        error: Exception | None = None,
+    ) -> None:
+        if self._lifecycle_sink is not None:
+            self._lifecycle_sink(event, 0, error)
 
 
 class WebullWebSocketClient:
@@ -151,6 +196,9 @@ class WebullWebSocketClient:
         if sink is not None and not callable(sink):
             raise TypeError("stream lifecycle sink must be callable")
         self.lifecycle_sink = sink
+        backend_setter = getattr(self.backend, "set_lifecycle_sink", None)
+        if callable(backend_setter):
+            backend_setter(sink)
 
     def _notify(
         self,
@@ -163,11 +211,23 @@ class WebullWebSocketClient:
 
     def connect(self):
         try:
+            self.logger.log(
+                "paho_transport_selected",
+                "selected",
+                transport=getattr(self.backend, "actual_transport", "unknown"),
+            )
             self.backend.connect(); self.health = update_health(self.health, websocket_connected=True, connected=True); self.logger.log("stream_connect", "succeeded")
         except Exception as exc:
             self.logger.log("stream_connect", "failed", error_type=type(exc).__name__); raise NetworkError("Webull stream connection failed", retryable=True) from exc
 
-    def disconnect(self): self.backend.disconnect(); self.health = update_health(self.health, websocket_connected=False); self.logger.log("stream_disconnect", "succeeded")
+    def disconnect(self):
+        self.backend.disconnect()
+        self.health = update_health(
+            self.health,
+            websocket_connected=False,
+            connected=False,
+        )
+        self.logger.log("stream_disconnect", "deliberate")
 
     def subscribe(self, channels):
         self.channels = tuple(sorted(set(channels))); self.backend.subscribe(self.channels); self.logger.log("stream_subscribe", "succeeded", channel_count=len(self.channels))

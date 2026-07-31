@@ -130,18 +130,24 @@ def test_watchlist_panel_emits_sort_field_and_renders_selection(
                     market_status="OPEN",
                     last_update="10:00:00",
                     stale="LIVE",
+                    rank="1",
+                    score="91",
+                    freshness="LIVE",
+                    session="REGULAR",
                 ),
             ),
             sort_field="latest_price",
         )
     )
 
-    panel._table.horizontalHeader().sectionClicked.emit(1)
+    panel._table.horizontalHeader().sectionClicked.emit(3)
 
     assert requested == ["latest_price"]
-    assert panel._table.item(0, 0).text() == "\u25cf AAPL"
-    assert panel._table.item(0, 7).text() == "OPEN"
-    assert panel._table.item(0, 9).text() == "LIVE"
+    assert panel._table.item(0, 0).text() == "1"
+    assert panel._table.item(0, 1).text() == "\u25cf AAPL"
+    assert panel._table.item(0, 2).text() == "91"
+    assert panel._table.item(0, 11).text() == "LIVE"
+    assert panel._table.item(0, 12).text() == "REGULAR"
 
 
 def test_dashboard_replay_status_renders_presenter_model(application) -> None:

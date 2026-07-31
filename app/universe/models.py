@@ -27,6 +27,12 @@ class UniverseSymbol:
     exchange: str
     security_type: SecurityType
     tradable: bool
+    api_symbol: str | None = None
+    instrument_id: str | None = None
+    category: str | None = None
+    source: str = "UNKNOWN"
+    region: str | None = None
+    tradable_status: str | None = None
     halted: bool = False
     price: Decimal | None = None
     average_30_day_volume: Decimal | None = None
@@ -34,6 +40,11 @@ class UniverseSymbol:
 
     def __post_init__(self) -> None:
         symbol = self.symbol.strip().upper()
+        api_symbol = (
+            self.api_symbol.strip().upper()
+            if self.api_symbol and self.api_symbol.strip()
+            else symbol
+        )
         exchange = self.exchange.strip().upper()
 
         if not symbol:
@@ -59,14 +70,39 @@ class UniverseSymbol:
             and self.quote_currency.strip()
             else None
         )
+        instrument_id = _optional_text(self.instrument_id)
+        category = _optional_upper(self.category)
+        source = self.source.strip().upper()
+        region = _optional_lower(self.region)
+        tradable_status = _optional_upper(self.tradable_status)
+
+        if not api_symbol:
+            raise ValueError("api_symbol is required")
+
+        if not source:
+            raise ValueError("source is required")
 
         object.__setattr__(self, "symbol", symbol)
+        object.__setattr__(self, "api_symbol", api_symbol)
+        object.__setattr__(self, "instrument_id", instrument_id)
+        object.__setattr__(self, "category", category)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "region", region)
+        object.__setattr__(self, "tradable_status", tradable_status)
         object.__setattr__(self, "exchange", exchange)
         object.__setattr__(
             self,
             "quote_currency",
             quote_currency,
         )
+
+    @property
+    def display_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def request_key(self) -> tuple[str, str]:
+        return (self.category or self.asset_class.value, self.api_symbol or self.symbol)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,3 +117,20 @@ class UniverseSelection:
     @property
     def excluded_symbols(self) -> tuple[str, ...]:
         return tuple(item.symbol for item in self.excluded)
+
+
+def _optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _optional_upper(value: str | None) -> str | None:
+    normalized = _optional_text(value)
+    return normalized.upper() if normalized is not None else None
+
+
+def _optional_lower(value: str | None) -> str | None:
+    normalized = _optional_text(value)
+    return normalized.lower() if normalized is not None else None
