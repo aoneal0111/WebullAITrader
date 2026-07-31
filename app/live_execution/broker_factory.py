@@ -130,6 +130,8 @@ def build_webull_market_data_stream(
     if not configuration.market_data_streaming_enabled:
         return None
     market_data = market_data_configuration(configuration)
+    if not market_data.api_key.strip() or not market_data.api_secret.strip():
+        return None
     credentials = WebullStreamingCredentials(
         app_key=market_data.api_key,
         app_secret=market_data.api_secret,

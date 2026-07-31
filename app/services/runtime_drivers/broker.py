@@ -23,6 +23,7 @@ from app.operations.runtime import (
 )
 from app.operations.scanner_snapshot_publisher import ScannerSnapshotPublisher
 from app.services.market_event_translation import translate_market_event
+from app.webull.client_factories import market_data_configuration
 
 
 Clock = Callable[[], datetime]
@@ -52,6 +53,7 @@ class DesktopBrokerRuntimeDriver:
         ),
         market_event_observer: MarketEventObserver | None = None,
         scanner_coordinator: object | None = None,
+        market_data_probe: object | None = None,
         clock: Clock = utc_now,
         source: str = "desktop-broker-runtime",
     ) -> None:
@@ -94,6 +96,7 @@ class DesktopBrokerRuntimeDriver:
         self._market_event_translator = market_event_translator
         self._market_event_observer = market_event_observer
         self._scanner = scanner_coordinator
+        self._market_data_probe = market_data_probe
         self._market_data = broker_runtime.market_data
         self._clock = clock
         self._source = source.strip()
@@ -181,8 +184,19 @@ class DesktopBrokerRuntimeDriver:
     def _start_market_data(self, stop_event: Event) -> None:
         if self._market_data is None:
             if self._configuration.market_data_streaming_enabled:
-                raise RuntimeError(
-                    "configured broker runtime has no market-data service"
+                cfg = market_data_configuration(self._configuration)
+                reason = (
+                    "Production market-data credentials are missing."
+                    if not cfg.api_key.strip() or not cfg.api_secret.strip()
+                    else "Configured broker runtime has no market-data service."
+                )
+                self._publish_health(
+                    "MARKET_DATA_STARTUP_ERROR",
+                    reason,
+                    RuntimeHealthUpdate(
+                        market_data_status="DISABLED",
+                        last_warning=reason,
+                    ),
                 )
             return
 
@@ -201,6 +215,12 @@ class DesktopBrokerRuntimeDriver:
 
         try:
             if self._scanner is not None:
+                if self._market_data_probe is not None:
+                    result = self._market_data_probe.run()
+                    self._publish_probe_result(result)
+                    if not result.scanner_ready:
+                        self._scanner.disconnect()
+                        return
                 scanner_active = self._start_scanner()
                 if scanner_active:
                     self._market_data_stop.clear()
@@ -330,6 +350,30 @@ class DesktopBrokerRuntimeDriver:
             health=RuntimeHealthUpdate(market_data_status="SUBSCRIBED"),
         )
         return True
+
+    def _publish_probe_result(self, result: object) -> None:
+        reason = getattr(result, "reason", None)
+        ready = bool(getattr(result, "scanner_ready", False))
+        entitlement = getattr(
+            getattr(result, "entitlement", None), "state", "UNKNOWN"
+        )
+        self._publish_health(
+            "MARKET_DATA_PROBE_COMPLETED",
+            "Market-data startup capability probe completed."
+            if ready else str(reason),
+            RuntimeHealthUpdate(
+                market_data_status="PROBED" if ready else "DISABLED",
+                last_warning=None if ready else str(reason),
+            ),
+        )
+        self._scanner_log(
+            "market_data_capabilities",
+            f"REST={getattr(getattr(result, 'endpoint', None), 'state', 'UNKNOWN')} "
+            f"streaming={getattr(getattr(result, 'streaming', None), 'state', 'UNKNOWN')} "
+            f"subscription={getattr(getattr(result, 'subscription', None), 'state', 'UNKNOWN')} "
+            f"entitlement={entitlement} "
+            f"fingerprint={getattr(result, 'credential_fingerprint', 'fp_missing')}",
+        )
 
     def _receive_market_data(self, stop_event: Event) -> None:
         try:

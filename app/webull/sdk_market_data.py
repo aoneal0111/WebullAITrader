@@ -115,12 +115,14 @@ class EnvironmentSupportCache:
         *,
         ttl: timedelta = timedelta(hours=6),
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        credential_fingerprint: str = "fp_legacy",
     ) -> None:
         if ttl <= timedelta():
             raise ValueError("support cache ttl must be positive")
         self._ttl = ttl
         self._clock = clock
-        self._entries: dict[tuple[str, str, str], tuple[bool, datetime]] = {}
+        self._fingerprint = credential_fingerprint
+        self._entries: dict[tuple[str, str, str, str], tuple[bool, datetime]] = {}
         self._lock = RLock()
 
     def get(
@@ -128,8 +130,12 @@ class EnvironmentSupportCache:
         environment: str,
         category: str,
         api_symbol: str,
+        *,
+        credential_scope: str | None = None,
     ) -> bool | None:
-        key = _support_key(environment, category, api_symbol)
+        key = _support_key(
+            environment, credential_scope or self._fingerprint, category, api_symbol
+        )
         with self._lock:
             entry = self._entries.get(key)
             if entry is None:
@@ -146,8 +152,12 @@ class EnvironmentSupportCache:
         category: str,
         api_symbol: str,
         supported: bool,
+        *,
+        credential_scope: str | None = None,
     ) -> None:
-        key = _support_key(environment, category, api_symbol)
+        key = _support_key(
+            environment, credential_scope or self._fingerprint, category, api_symbol
+        )
         with self._lock:
             self._entries[key] = (supported, self._clock() + self._ttl)
 
@@ -156,10 +166,17 @@ class EnvironmentSupportCache:
         environment: str,
         category: str,
         api_symbol: str,
+        *,
+        credential_scope: str | None = None,
     ) -> None:
         with self._lock:
             self._entries.pop(
-                _support_key(environment, category, api_symbol),
+                _support_key(
+                    environment,
+                    credential_scope or self._fingerprint,
+                    category,
+                    api_symbol,
+                ),
                 None,
             )
 
@@ -253,6 +270,7 @@ class WebullScannerReferenceProvider:
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         environment: str = "UNKNOWN",
+        credential_scope: str = "fp_legacy",
         support_cache: EnvironmentSupportCache | None = None,
         event_sink: Callable[[Mapping[str, object]], None] | None = None,
     ) -> None:
@@ -260,10 +278,13 @@ class WebullScannerReferenceProvider:
         self._universe = universe_provider
         self._clock = clock
         self._environment = environment.strip().upper()
+        self._credential_scope = credential_scope
         self._support_cache = (
             support_cache
             if support_cache is not None
-            else EnvironmentSupportCache(clock=clock)
+            else EnvironmentSupportCache(
+                clock=clock, credential_fingerprint=credential_scope
+            )
         )
         self._event_sink = event_sink
 
@@ -335,6 +356,7 @@ class WebullScannerReferenceProvider:
             self._environment,
             category,
             api_symbol,
+            credential_scope=self._credential_scope,
         )
         if cached is False:
             raise UnsupportedReferenceSymbolError(
@@ -359,6 +381,7 @@ class WebullScannerReferenceProvider:
                         category,
                         api_symbol,
                         False,
+                        credential_scope=self._credential_scope,
                     )
                     self._emit_rejection(instrument)
                     raise UnsupportedReferenceSymbolError(
@@ -371,6 +394,7 @@ class WebullScannerReferenceProvider:
                 category,
                 api_symbol,
                 True,
+                credential_scope=self._credential_scope,
             )
 
         try:
@@ -390,6 +414,7 @@ class WebullScannerReferenceProvider:
                     category,
                     api_symbol,
                     False,
+                    credential_scope=self._credential_scope,
                 )
                 self._emit_rejection(instrument)
                 raise UnsupportedReferenceSymbolError(
@@ -663,11 +688,13 @@ def _unsupported_symbol_failure(exc: Exception) -> bool:
 
 def _support_key(
     environment: str,
+    fingerprint: str,
     category: str,
     api_symbol: str,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str]:
     return (
         environment.strip().upper(),
+        fingerprint.strip().lower(),
         category.strip().upper(),
         api_symbol.strip().upper(),
     )

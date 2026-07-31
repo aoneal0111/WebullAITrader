@@ -39,6 +39,8 @@ from app.webull.client_factories import (
     MarketDataClientFactory,
     market_data_configuration,
 )
+from app.webull.credential_identity import credential_fingerprint
+from app.webull.market_data_probe import MarketDataCapabilityProbe
 
 
 ConfigurationLoader = Callable[[], OperationalConfiguration]
@@ -110,6 +112,10 @@ def create_configured_desktop_broker_driver(
             universe_provider,
             clock=clock,
             environment=market_data_configuration_value.environment.value,
+            credential_scope=credential_fingerprint(
+                market_data_configuration_value.api_key,
+                market_data_configuration_value.api_secret,
+            ),
         )
         reference_store = ScannerReferenceStore()
 
@@ -136,6 +142,14 @@ def create_configured_desktop_broker_driver(
             clock=clock,
         ).coordinator
 
+    market_data_probe = None
+    if scanner_coordinator is not None:
+        market_data_probe = MarketDataCapabilityProbe(
+            market_data_configuration_value,
+            data_client,
+            scanner_coordinator,
+        )
+
     return DesktopBrokerRuntimeDriver(
         configuration=configuration,
         broker_runtime=broker_runtime,
@@ -144,6 +158,7 @@ def create_configured_desktop_broker_driver(
         account_poller=account_poller,
         market_event_observer=market_event_observer,
         scanner_coordinator=scanner_coordinator,
+        market_data_probe=market_data_probe,
         clock=clock,
         source=source,
     )
