@@ -60,10 +60,18 @@ class Scanner:
 
     def start(self, **kwargs):
         self.order.append("scanner.start")
-        return ("AAPL", "SPY", "TSLA")
+        return ("AAPL", "SPY", "TSLA", "MSFT", "NVDA")
 
     def snapshot(self):
-        return ScannerSnapshot(NOW, ("AAPL", "SPY", "TSLA"), (), (), 0, 0, ())
+        return ScannerSnapshot(
+            NOW,
+            ("AAPL", "SPY", "TSLA", "MSFT", "NVDA"),
+            (),
+            (),
+            0,
+            0,
+            (),
+        )
 
     def stop(self):
         self.order.append("scanner.stop")
@@ -138,7 +146,7 @@ def market_result(
             symbol, bars, AVAILABLE, AVAILABLE, AVAILABLE, subscription,
             symbol_state,
         )
-        for symbol in ("AAPL", "SPY", "TSLA")
+        for symbol in ("AAPL", "SPY", "TSLA", "MSFT", "NVDA")
     )
     return MarketDataProbeResult(
         environment, "fp_data", AVAILABLE, credentials, bars, AVAILABLE,
@@ -195,12 +203,17 @@ def test_sandbox_trading_and_production_market_data_validate_before_scanner():
     assert probe_event.health.market_data_environment == "PRODUCTION"
     assert probe_event.health.subscription_status == "ACCEPTED"
     assert probe_event.health.probe_aapl_status == "SUPPORTED"
+    assert probe_event.health.probe_spy_status == "SUPPORTED"
+    assert probe_event.health.probe_tsla_status == "SUPPORTED"
+    assert probe_event.health.probe_msft_status == "SUPPORTED"
+    assert probe_event.health.probe_nvda_status == "SUPPORTED"
     ready_event = next(e for e in events if e.event_type == "channels_subscribed")
     assert ready_event.health.scanner_status == "READY"
     assert ready_event.health.universe_status == "LOADED"
     assert ready_event.health.symbols_status == "VALIDATED"
     assert ready_event.health.reference_cache_status == "WARM"
     assert ready_event.health.ranking_status == "ACTIVE"
+    assert ready_event.health.supported_symbols == 5
 
 
 def test_sandbox_market_data_can_validate_without_crossing_trading_state():

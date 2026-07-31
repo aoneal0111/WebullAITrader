@@ -128,3 +128,78 @@ def test_forged_service_identity_aborts_before_request_dispatch():
     with pytest.raises(RequestIsolationError):
         client.get("/openapi/account/list")
     assert calls == []
+
+
+def test_production_signal_can_only_submit_sandbox_paper_orders():
+    trading, market = configurations()
+    guard = RequestIsolationGuard(trading, market)
+    market_calls = []
+    market_client = AuditedMarketDataClient(
+        SimpleNamespace(
+            market_data=SimpleNamespace(
+                get_quotes=lambda symbol, category: (
+                    market_calls.append((symbol, category))
+                    or [{"symbol": symbol, "price": "200.00"}]
+                )
+            )
+        ),
+        guard,
+        market,
+    )
+    submitted = []
+    trading_client = WebullHttpClient(
+        SimpleNamespace(
+            account_v2=SimpleNamespace(),
+            order_v3=SimpleNamespace(
+                place_order=lambda account_id, orders, **kwargs: (
+                    submitted.append((account_id, orders[0]["side"]))
+                    or {"client_order_id": f"paper-{len(submitted)}"}
+                )
+            ),
+        ),
+        SimpleNamespace(acquire=lambda: None),
+        SimpleNamespace(log=lambda *args, **kwargs: None),
+        request_guard=guard,
+        request_identity=guard.identity(RequestService.TRADING),
+        endpoint=trading.api_base_url,
+    )
+
+    production_quote = market_client.market_data.get_quotes(
+        "NVDA", "US_STOCK"
+    )
+    assert production_quote[0]["price"] == "200.00"
+    for side in ("BUY", "SELL"):
+        trading_client.post(
+            "/openapi/trade/order/place",
+            payload={
+                "account_id": trading.account_id,
+                "new_orders": [{"symbol": "NVDA", "side": side}],
+            },
+        )
+
+    assert market_calls == [("NVDA", "US_STOCK")]
+    assert submitted == [
+        ("paper-account", "BUY"),
+        ("paper-account", "SELL"),
+    ]
+    records = guard.records
+    assert any(
+        record.service == "MARKET_DATA"
+        and record.environment == "PRODUCTION"
+        and record.endpoint.startswith("https://api.webull.com/")
+        for record in records
+    )
+    order_records = [
+        record
+        for record in records
+        if "/openapi/trade/order/place" in record.endpoint
+    ]
+    assert order_records
+    assert all(record.service == "TRADING" for record in order_records)
+    assert all(record.environment == "TEST" for record in order_records)
+    assert all("api.sandbox.webull.com" in record.endpoint for record in order_records)
+    assert not any(
+        record.service == "TRADING"
+        and record.endpoint.startswith("https://api.webull.com/")
+        for record in records
+    )
