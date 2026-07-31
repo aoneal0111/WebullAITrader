@@ -88,12 +88,16 @@ def test_probe_validates_rest_stream_subscription_and_entitlement():
         SymbolProbeState.SUPPORTED,
         SymbolProbeState.SUPPORTED,
         SymbolProbeState.SUPPORTED,
+        SymbolProbeState.SUPPORTED,
+        SymbolProbeState.SUPPORTED,
     ]
     assert stream.calls == [
         "connect",
         ("subscribe", ("AAPL",)),
         ("subscribe", ("SPY",)),
         ("subscribe", ("TSLA",)),
+        ("subscribe", ("MSFT",)),
+        ("subscribe", ("NVDA",)),
     ]
     assert result.credential_fingerprint.startswith("fp_")
     assert "data-key" not in result.credential_fingerprint

@@ -505,6 +505,8 @@ class DesktopBrokerRuntimeDriver:
                 probe_aapl_status=symbol_results.get("AAPL", "NOT_TESTED"),
                 probe_spy_status=symbol_results.get("SPY", "NOT_TESTED"),
                 probe_tsla_status=symbol_results.get("TSLA", "NOT_TESTED"),
+                probe_msft_status=symbol_results.get("MSFT", "NOT_TESTED"),
+                probe_nvda_status=symbol_results.get("NVDA", "NOT_TESTED"),
                 last_warning=None if ready else str(reason),
             ),
         )

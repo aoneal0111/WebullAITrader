@@ -116,3 +116,28 @@ def test_legacy_configuration_populates_both_compatibility_sections():
     })
     assert configuration.trading.api_key == "legacy-key"
     assert configuration.market_data.api_key == "legacy-key"
+
+
+def test_phase_four_scoped_environment_names_override_compatibility_names():
+    configuration = load_configuration({
+        "WEBULL_TRADING_ENVIRONMENT": "TEST",
+        "TRADING_ENVIRONMENT": "LIVE",
+        "WEBULL_MARKET_DATA_ENVIRONMENT": "PRODUCTION",
+        "MARKET_DATA_ENVIRONMENT": "TEST",
+        "WEBULL_TRADING_ACCOUNT_ID": "paper-account",
+        "WEBULL_TRADING_APP_KEY": "trade-key",
+        "WEBULL_TRADING_APP_SECRET": "trade-secret",
+        "WEBULL_TRADING_API_BASE_URL": "https://api.sandbox.webull.com",
+        "WEBULL_TRADING_STREAM_URL": "wss://data-api.sandbox.webull.com:8883/mqtt",
+        "WEBULL_MARKET_DATA_APP_KEY": "data-key",
+        "WEBULL_MARKET_DATA_APP_SECRET": "data-secret",
+        "WEBULL_MARKET_DATA_API_BASE_URL": "https://api.webull.com",
+        "WEBULL_MARKET_DATA_STREAM_URL": "wss://data-api.webull.com:8883/mqtt",
+    })
+
+    assert configuration.trading.environment is TradingEnvironment.TEST
+    assert configuration.market_data.environment is TradingEnvironment.PRODUCTION
+    assert configuration.trading.api_base_url == "https://api.sandbox.webull.com"
+    assert configuration.market_data.api_base_url == "https://api.webull.com"
+    assert configuration.trading.api_key == "trade-key"
+    assert configuration.market_data.api_key == "data-key"

@@ -43,6 +43,8 @@ def format_health(state: HealthState) -> HealthDashboardSnapshot:
             ("Probe AAPL", state.probe_aapl_status or "--"),
             ("Probe SPY", state.probe_spy_status or "--"),
             ("Probe TSLA", state.probe_tsla_status or "--"),
+            ("Probe MSFT", state.probe_msft_status or "--"),
+            ("Probe NVDA", state.probe_nvda_status or "--"),
             ("Supported Symbols", str(state.supported_symbols) if state.supported_symbols is not None else "--"),
             ("Scanner", state.scanner_status or "--"),
             ("Universe", state.universe_status or "--"),

@@ -26,6 +26,8 @@ class HealthState:
     probe_aapl_status: str | None = None
     probe_spy_status: str | None = None
     probe_tsla_status: str | None = None
+    probe_msft_status: str | None = None
+    probe_nvda_status: str | None = None
     scanner_status: str | None = None
     universe_status: str | None = None
     symbols_status: str | None = None
@@ -65,6 +67,8 @@ class HealthState:
             "probe_aapl_status",
             "probe_spy_status",
             "probe_tsla_status",
+            "probe_msft_status",
+            "probe_nvda_status",
             "scanner_status",
             "universe_status",
             "symbols_status",

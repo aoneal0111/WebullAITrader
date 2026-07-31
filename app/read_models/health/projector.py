@@ -28,6 +28,8 @@ def project_operational_health(state: OperationsHealthState) -> HealthState:
         probe_aapl_status=state.probe_aapl_status,
         probe_spy_status=state.probe_spy_status,
         probe_tsla_status=state.probe_tsla_status,
+        probe_msft_status=state.probe_msft_status,
+        probe_nvda_status=state.probe_nvda_status,
         scanner_status=state.scanner_status,
         universe_status=state.universe_status,
         symbols_status=state.symbols_status,

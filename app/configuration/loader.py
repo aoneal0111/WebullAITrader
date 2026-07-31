@@ -17,9 +17,15 @@ def _env(values: dict[str, str], primary: str, legacy: str) -> str:
 
 
 def _scoped_environment(
-    values: dict[str, str], primary: str, fallback: TradingEnvironment
+    values: dict[str, str],
+    primary: str,
+    compatibility: str,
+    fallback: TradingEnvironment,
 ) -> TradingEnvironment:
-    value = values.get(primary, "").strip()
+    value = (
+        values.get(primary, "").strip()
+        or values.get(compatibility, "").strip()
+    )
     return TradingEnvironment(value.upper()) if value else fallback
 
 
@@ -41,8 +47,11 @@ def load_configuration(env=None):
 
     e = dict(os.environ if env is None else env)
 
-    mode = TradingEnvironment(
-        e.get("TRADING_ENVIRONMENT", "TEST").upper()
+    mode = _scoped_environment(
+        e,
+        "WEBULL_TRADING_ENVIRONMENT",
+        "TRADING_ENVIRONMENT",
+        TradingEnvironment.TEST,
     )
 
     provider = normalize_provider(
@@ -153,7 +162,9 @@ def load_configuration(env=None):
     )
 
     trading_configuration = TradingConfiguration(
-        environment=_scoped_environment(e, "TRADING_ENVIRONMENT", mode),
+        environment=_scoped_environment(
+            e, "WEBULL_TRADING_ENVIRONMENT", "TRADING_ENVIRONMENT", mode
+        ),
         account_id=_env(e,"WEBULL_TRADING_ACCOUNT_ID","WEBULL_ACCOUNT_ID"),
         api_key=_env(e,"WEBULL_TRADING_APP_KEY","WEBULL_API_KEY"),
         api_secret=_env(e,"WEBULL_TRADING_APP_SECRET","WEBULL_API_SECRET"),
@@ -162,7 +173,12 @@ def load_configuration(env=None):
     )
 
     market_data_configuration = MarketDataConfiguration(
-        environment=_scoped_environment(e, "MARKET_DATA_ENVIRONMENT", mode),
+        environment=_scoped_environment(
+            e,
+            "WEBULL_MARKET_DATA_ENVIRONMENT",
+            "MARKET_DATA_ENVIRONMENT",
+            mode,
+        ),
         api_key=_env(e,"WEBULL_MARKET_DATA_APP_KEY","WEBULL_API_KEY"),
         api_secret=_env(e,"WEBULL_MARKET_DATA_APP_SECRET","WEBULL_API_SECRET"),
         api_base_url=_env(e,"WEBULL_MARKET_DATA_API_BASE_URL","WEBULL_API_BASE_URL") or api,

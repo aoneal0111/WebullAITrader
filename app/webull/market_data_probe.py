@@ -16,7 +16,7 @@ from app.webull.sdk_market_data import (
 )
 
 
-PROBE_SYMBOLS = ("AAPL", "SPY", "TSLA")
+PROBE_SYMBOLS = ("AAPL", "SPY", "TSLA", "MSFT", "NVDA")
 
 
 class ProbeState(StrEnum):
@@ -247,7 +247,7 @@ def _probe_symbols(operation: Callable[[str], object]) -> CapabilityStatus:
                 failures.append(_safe_error(exc))
     if unsupported == len(PROBE_SYMBOLS):
         return CapabilityStatus(
-            ProbeState.UNSUPPORTED, "AAPL, SPY, and TSLA are unsupported"
+            ProbeState.UNSUPPORTED, "all production probe symbols are unsupported"
         )
     return CapabilityStatus(
         ProbeState.UNAVAILABLE, failures[0] if failures else "endpoint unavailable"
