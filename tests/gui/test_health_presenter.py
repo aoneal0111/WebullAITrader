@@ -37,6 +37,10 @@ def test_health_presenter_prepares_immutable_dashboard_model() -> None:
             probe_spy_status="SUPPORTED",
             probe_tsla_status="SUPPORTED",
             scanner_status="ACTIVE",
+            universe_status="LOADED",
+            symbols_status="VALIDATED",
+            reference_cache_status="WARM",
+            ranking_status="ACTIVE",
             supported_symbols=7300,
             ai_status="READY",
             risk_status=None,
@@ -66,6 +70,8 @@ def test_health_presenter_prepares_immutable_dashboard_model() -> None:
     assert ("Probe AAPL", "SUPPORTED") in view.snapshot.metrics
     assert ("Supported Symbols", "7300") in view.snapshot.metrics
     assert ("Scanner", "ACTIVE") in view.snapshot.metrics
+    assert ("Universe", "LOADED") in view.snapshot.metrics
+    assert ("Reference Cache", "WARM") in view.snapshot.metrics
     assert ("AI", "READY") in view.snapshot.metrics
     assert ("Persistence", "READY") in view.snapshot.metrics
     assert ("Heartbeat", "10:00:00") in view.snapshot.metrics

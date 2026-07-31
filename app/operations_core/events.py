@@ -390,6 +390,10 @@ class OperationsHealthState:
     probe_spy_status: str | None = None
     probe_tsla_status: str | None = None
     scanner_status: str | None = None
+    universe_status: str | None = None
+    symbols_status: str | None = None
+    reference_cache_status: str | None = None
+    ranking_status: str | None = None
     supported_symbols: int | None = None
     ai_status: str | None = None
     risk_status: str | None = None
@@ -425,6 +429,10 @@ class OperationsHealthState:
             "probe_spy_status",
             "probe_tsla_status",
             "scanner_status",
+            "universe_status",
+            "symbols_status",
+            "reference_cache_status",
+            "ranking_status",
             "ai_status",
             "risk_status",
             "persistence_status",

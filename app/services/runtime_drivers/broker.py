@@ -144,9 +144,6 @@ class DesktopBrokerRuntimeDriver:
         if not callable(cycle_sink):
             raise TypeError("cycle_sink must be callable")
 
-        if self._startup_validator is not None:
-            self._startup_validation = self._startup_validator.run()
-
         self._publish(
             "BROKER_CONNECTING",
             "Connecting to the configured broker.",
@@ -164,8 +161,12 @@ class DesktopBrokerRuntimeDriver:
                 runtime_status="FAILED",
                 broker_status="DISCONNECTED",
                 last_error=_safe_runtime_error(exc),
+                trading_auth_failed=True,
             )
             raise
+
+        if self._startup_validator is not None:
+            self._startup_validation = self._startup_validator.run()
 
         self._publish(
             "BROKER_AUTHENTICATED",
@@ -424,7 +425,11 @@ class DesktopBrokerRuntimeDriver:
             health=RuntimeHealthUpdate(
                 market_data_status="SUBSCRIBED",
                 streaming_status="CONNECTED",
-                scanner_status="ACTIVE",
+                scanner_status="READY",
+                universe_status="LOADED",
+                symbols_status="VALIDATED",
+                reference_cache_status="WARM",
+                ranking_status="ACTIVE",
                 supported_symbols=len(active_symbols),
             ),
         )
@@ -767,8 +772,19 @@ class DesktopBrokerRuntimeDriver:
         broker_status: str,
         last_error: str | None = None,
         trading_ready: bool = False,
+        trading_auth_failed: bool = False,
     ) -> None:
         timestamp = self._timestamp()
+        trading_section = getattr(self._configuration, "trading", None)
+        trading_environment = (
+            (
+                trading_section.environment.value
+                if trading_section is not None
+                else self._configuration.environment.value
+            )
+            if trading_ready or trading_auth_failed
+            else None
+        )
         self._emit(
             PaperRuntimeEvent(
                 sequence=self._next_sequence(),
@@ -780,15 +796,12 @@ class DesktopBrokerRuntimeDriver:
                 health=RuntimeHealthUpdate(
                     runtime_status=runtime_status,
                     broker_status=broker_status,
-                    trading_environment=(
-                        getattr(self._configuration, "trading", None).environment.value
-                        if trading_ready
-                        and getattr(self._configuration, "trading", None) is not None
-                        else self._configuration.environment.value
-                        if trading_ready
+                    trading_environment=trading_environment,
+                    trading_rest_status=(
+                        "CONNECTED" if trading_ready
+                        else "AUTH_FAILED" if trading_auth_failed
                         else None
                     ),
-                    trading_rest_status="CONNECTED" if trading_ready else None,
                     orders_status="ENABLED" if trading_ready else None,
                     balances_status="CONNECTED" if trading_ready else None,
                     last_error=last_error,
