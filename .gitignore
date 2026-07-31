@@ -109,3 +109,5 @@ app_tree.txt
 
 recording_committed_full/
 API keys.txt
+atlas_symbol_pytest_temp/
+*.bad

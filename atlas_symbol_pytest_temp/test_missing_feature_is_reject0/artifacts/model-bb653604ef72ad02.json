@@ -1,1 +1,0 @@
-{"algorithm":"deterministic-nearest-centroid-linear","dataset_id":"dataset-test","evaluation":{"max_drawdown":"0","sample_count":10,"stress_score":"1","walk_forward_score":"1"},"feature_names":["feature_a","feature_b"],"positive_rate":"0.5","schema_version":"1","threshold":"0","weights":["1","-1"]}
