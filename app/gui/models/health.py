@@ -9,6 +9,8 @@ class HealthDashboardSnapshot:
     status_level: str
     metrics: tuple[tuple[str, str], ...]
     incident: str
+    capabilities: tuple[tuple[str, str], ...] = ()
+    sessions: tuple[tuple[str, str], ...] = ()
 
     @classmethod
     def initial(cls) -> "HealthDashboardSnapshot":

@@ -1,5 +1,8 @@
 # Webull AI Trader — Deterministic Trading Architecture
 
+Dashboard terminology and broker-independent runtime capability presentation
+are documented in [Atlas capability awareness](docs/atlas_capabilities.md).
+
 Webull AI Trader is a layered Python 3.13 system for deterministic research,
 safety validation, broker-neutral runtime orchestration, paper execution, and
 strictly capability-gated live execution. Broker-specific protocol code is

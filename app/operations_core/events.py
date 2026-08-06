@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from app.account_information.models import BrokerNeutralAccountInformation
+from app.capabilities import CapabilitySnapshot
 
 
 def utc_now() -> datetime:
@@ -409,6 +410,9 @@ class OperationsHealthState:
     reconnect_attempts: int = 0
     degraded: bool = False
     healthy: bool = False
+    capabilities: CapabilitySnapshot = field(
+        default_factory=CapabilitySnapshot.unknown
+    )
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -481,6 +485,8 @@ class OperationsHealthState:
             raise TypeError("health flags must be bools")
         if self.degraded and self.healthy:
             raise ValueError("health cannot be healthy and degraded")
+        if not isinstance(self.capabilities, CapabilitySnapshot):
+            raise TypeError("health capabilities must be a snapshot")
 
 
 @dataclass(frozen=True, slots=True)

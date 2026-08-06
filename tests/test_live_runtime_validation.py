@@ -6,6 +6,7 @@ from threading import Event
 import pytest
 
 from app.broker_plugins import BrokerCapabilities, BrokerRuntime
+from app.capabilities import CapabilityAvailability, SessionCapability
 from app.broker_protocol.models import BrokerAccount, BrokerCash
 from app.configuration import (
     MarketDataConfiguration,
@@ -165,7 +166,9 @@ def runtime(order, validation):
         BrokerCapabilities(
             "webull", "test", supports_execution=True,
             supports_account_data=True, supports_market_data=True,
-            supports_streaming=True,
+            supports_streaming=True, supports_stocks=True,
+            supports_regular_session=True, supports_premarket_session=True,
+            supports_after_hours_session=True, supports_overnight_session=True,
         ),
         broker,
         Boundary(),
@@ -278,7 +281,7 @@ def test_sandbox_market_data_can_validate_without_crossing_trading_state():
                 subscription=CapabilityStatus(ProbeState.NOT_ENTITLED),
                 current_session=MarketDataSession.OVERNIGHT,
             ),
-            "DEGRADED",
+            "CONNECTED",
             "OVERNIGHT_ENTITLEMENT_REQUIRED",
         ),
     ),
@@ -316,6 +319,7 @@ def test_market_failures_disable_scanner_but_keep_account_polling(
         assert probe.health.market_data_rest_status == "CONNECTED"
         assert probe.health.streaming_status == "CONNECTED"
         assert probe.health.entitlement_status == "NOT_SUBSCRIBED"
+        assert probe.health.subscription_status == "SUBSCRIPTION_REQUIRED"
         assert probe.health.scanner_status == "PAUSED_UNTIL_PREMARKET"
 
 
@@ -333,3 +337,51 @@ def test_missing_reconnect_capability_prevents_scanner_start():
         clock=lambda: NOW,
     ).run(stop_event=stop, cycle_sink=lambda cycle: None)
     assert "scanner.start" not in order
+
+
+def test_reconnect_refreshes_capabilities_and_resumes_paused_scanner() -> None:
+    class Probe:
+        def __init__(self):
+            self.calls = 0
+            self.invalidations = 0
+
+        def configuration_changed(self):
+            self.invalidations += 1
+
+        def run(self):
+            self.calls += 1
+            return market_result(current_session=MarketDataSession.OVERNIGHT)
+
+    order = []
+    _, broker_runtime, _ = runtime(
+        order,
+        StartupValidationResult(trading_result(), market_result()),
+    )
+    probe = Probe()
+    events = []
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=configuration(),
+        broker_runtime=broker_runtime,
+        event_sink=events.append,
+        account_snapshot_sink=lambda value: None,
+        scanner_coordinator=Scanner(order),
+        market_data_probe=probe,
+        clock=lambda: NOW,
+    )
+    driver._scanner_pause_session = MarketDataSession.OVERNIGHT
+    stop = Event()
+    stop.set()
+
+    driver._on_market_data_lifecycle("reconnected", 1, None)
+    driver._retry_scanner_after_session_transition(stop)
+
+    capability_events = [
+        item for item in events
+        if item.event_type == "MARKET_DATA_PROBE_COMPLETED"
+    ]
+    assert probe.invalidations == 1
+    assert probe.calls == 2
+    assert "scanner.start" in order
+    assert capability_events[-1].health.capabilities.availability_for(
+        SessionCapability.OVERNIGHT
+    ) is CapabilityAvailability.AVAILABLE

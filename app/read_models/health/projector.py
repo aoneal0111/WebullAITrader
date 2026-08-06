@@ -48,4 +48,5 @@ def project_operational_health(state: OperationsHealthState) -> HealthState:
         reconnect_attempts=state.reconnect_attempts,
         degraded=state.degraded,
         healthy=state.healthy,
+        capabilities=state.capabilities,
     )

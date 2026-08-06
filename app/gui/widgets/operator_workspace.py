@@ -52,7 +52,7 @@ class OperatorWorkspace(QWidget):
         self.tabs.addTab(self.decisions, "Decisions")
         self.tabs.addTab(self.timeline, "Timeline")
         self.tabs.addTab(self.lifecycle, "Lifecycle")
-        self.tabs.addTab(health_workspace, "Health")
+        self.tabs.addTab(health_workspace, "System Health")
         layout.addWidget(self.tabs)
 
     def resizeEvent(self, event) -> None:

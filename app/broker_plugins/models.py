@@ -42,6 +42,14 @@ class BrokerCapabilities:
     supports_live_trading: bool = False
     supports_streaming: bool = False
     supports_options: bool = False
+    supports_stocks: bool = False
+    supports_crypto: bool = False
+    supports_futures: bool = False
+    supports_forex: bool = False
+    supports_regular_session: bool = False
+    supports_premarket_session: bool = False
+    supports_after_hours_session: bool = False
+    supports_overnight_session: bool = False
     supports_shorting: bool = False
 
     def __post_init__(self) -> None:
@@ -60,6 +68,14 @@ class BrokerCapabilities:
             "supports_live_trading",
             "supports_streaming",
             "supports_options",
+            "supports_stocks",
+            "supports_crypto",
+            "supports_futures",
+            "supports_forex",
+            "supports_regular_session",
+            "supports_premarket_session",
+            "supports_after_hours_session",
+            "supports_overnight_session",
             "supports_shorting",
         )
 

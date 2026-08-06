@@ -4,6 +4,13 @@ from decimal import Decimal
 
 import pytest
 
+from app.capabilities import (
+    AssetCapability,
+    CapabilityAvailability,
+    CapabilityEntry,
+    CapabilitySnapshot,
+    SessionCapability,
+)
 from app.operations.runtime import (
     PaperRuntimeEvent,
     RuntimeHealthUpdate,
@@ -242,3 +249,47 @@ def test_application_state_exposes_health_projection() -> None:
     make_healthy(projection)
 
     assert store.snapshot().health_projection == projection.snapshot
+
+
+def test_capability_refresh_replaces_snapshot_and_clears_pause_warning() -> None:
+    projection = HealthProjection(OperationsBus())
+    unavailable = CapabilitySnapshot(
+        assets=(CapabilityEntry(
+            AssetCapability.STOCKS,
+            CapabilityAvailability.AVAILABLE,
+        ),),
+        sessions=(CapabilityEntry(
+            SessionCapability.OVERNIGHT,
+            CapabilityAvailability.SUBSCRIPTION_REQUIRED,
+        ),),
+    )
+    available = CapabilitySnapshot(
+        assets=unavailable.assets,
+        sessions=(CapabilityEntry(
+            SessionCapability.OVERNIGHT,
+            CapabilityAvailability.AVAILABLE,
+        ),),
+    )
+
+    projection(event(
+        1,
+        "MARKET_DATA_PROBE_COMPLETED",
+        health=RuntimeHealthUpdate(
+            scanner_status="PAUSED_UNTIL_PREMARKET",
+            last_warning="Overnight market-data subscription unavailable.",
+            capabilities=unavailable,
+        ),
+    ))
+    assert projection.snapshot.capabilities == unavailable
+    assert projection.snapshot.last_warning is not None
+
+    projection(event(
+        2,
+        "MARKET_DATA_PROBE_COMPLETED",
+        health=RuntimeHealthUpdate(
+            scanner_status="WARMING",
+            capabilities=available,
+        ),
+    ))
+    assert projection.snapshot.capabilities == available
+    assert projection.snapshot.last_warning is None

@@ -185,6 +185,7 @@ class WatchlistPresenter:
             state.watchlist_projection,
             sort_field=self._sort_field,
             descending=self._descending,
+            health=state.health_projection,
         )
         for view in self._watchlist_views:
             view.render(snapshot)

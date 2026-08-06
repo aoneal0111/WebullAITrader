@@ -24,7 +24,15 @@ WEBULL_CAPABILITIES = BrokerCapabilities(
     supports_account_data=True,
     supports_live_trading=True,
     supports_streaming=True,
+    supports_stocks=True,
     supports_options=False,
+    supports_crypto=False,
+    supports_futures=False,
+    supports_forex=False,
+    supports_regular_session=True,
+    supports_premarket_session=True,
+    supports_after_hours_session=True,
+    supports_overnight_session=True,
     supports_shorting=False,
 )
 

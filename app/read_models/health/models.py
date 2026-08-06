@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+
+from app.capabilities import CapabilitySnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +48,9 @@ class HealthState:
     reconnect_attempts: int = 0
     degraded: bool = False
     healthy: bool = False
+    capabilities: CapabilitySnapshot = field(
+        default_factory=CapabilitySnapshot.unknown
+    )
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -117,6 +122,8 @@ class HealthState:
             raise TypeError("healthy must be a bool")
         if self.healthy and self.degraded:
             raise ValueError("health cannot be healthy and degraded")
+        if not isinstance(self.capabilities, CapabilitySnapshot):
+            raise TypeError("health capabilities must be a snapshot")
 
     @classmethod
     def initial(cls) -> "HealthState":

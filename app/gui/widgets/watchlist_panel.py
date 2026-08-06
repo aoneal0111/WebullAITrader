@@ -46,8 +46,8 @@ class WatchlistPanel(QWidget):
             )
         )
         self._table.set_empty_state(
-            "No symbols",
-            "Start the runtime to populate ranked scanner candidates.",
+            "Atlas is not currently monitoring any eligible symbols.",
+            "Atlas is waiting for the next scan cycle.",
             icon="\u2606",
         )
         self._table.horizontalHeader().setSortIndicatorShown(True)
@@ -57,6 +57,11 @@ class WatchlistPanel(QWidget):
         layout.addWidget(self._table)
 
     def render(self, snapshot: WatchlistSnapshot) -> None:
+        self._table.set_empty_state(
+            snapshot.empty_title,
+            snapshot.empty_detail,
+            icon="\u2606",
+        )
         self._table.clearSelection()
         self._table.setRowCount(len(snapshot.rows))
         for row_index, row in enumerate(snapshot.rows):

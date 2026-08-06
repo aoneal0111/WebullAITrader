@@ -146,7 +146,7 @@ def test_operator_workspace_exposes_projection_backed_tabs(
         "Decisions",
         "Timeline",
         "Lifecycle",
-        "Health",
+        "System Health",
     )
 
 

@@ -48,7 +48,7 @@ def format_health(state: HealthState) -> HealthDashboardSnapshot:
             ("Probe MSFT", state.probe_msft_status or "--"),
             ("Probe NVDA", state.probe_nvda_status or "--"),
             ("Supported Symbols", str(state.supported_symbols) if state.supported_symbols is not None else "--"),
-            ("Scanner", state.scanner_status or "--"),
+            ("AI Scanner", state.scanner_status or "--"),
             ("Universe", state.universe_status or "--"),
             ("Symbols", state.symbols_status or "--"),
             ("Reference Cache", state.reference_cache_status or "--"),
@@ -61,6 +61,14 @@ def format_health(state: HealthState) -> HealthDashboardSnapshot:
             ("Reconnects", str(state.reconnect_attempts)),
         ),
         incident=incident,
+        capabilities=tuple(
+            (entry.name.value, entry.availability.value)
+            for entry in state.capabilities.assets
+        ),
+        sessions=tuple(
+            (entry.name.value, entry.availability.value)
+            for entry in state.capabilities.sessions
+        ),
     )
 
 

@@ -35,6 +35,9 @@ class GlobalStatusBar(QWidget):
                 separator.setObjectName("statusSeparator")
                 separator.setFrameShape(QFrame.Shape.VLine)
                 layout.addWidget(separator)
+        self.capabilities = QLabel("Capabilities: Unknown")
+        self.capabilities.setObjectName("muted")
+        layout.addWidget(self.capabilities)
         layout.addStretch()
         self.version = QLabel(f"Atlas v{version}")
         self.version.setObjectName("muted")
@@ -80,6 +83,21 @@ class GlobalStatusBar(QWidget):
             f"AI {ai.title()}",
             _level(ai),
         )
+        capability_values = dict(snapshot.capabilities)
+        session_values = dict(snapshot.sessions)
+        concise = (
+            ("Stocks", capability_values.get("Stocks", "Unknown")),
+            ("Options", capability_values.get("Options", "Unknown")),
+            ("Crypto", capability_values.get("Crypto", "Unknown")),
+            ("Overnight", session_values.get("Overnight", "Unknown")),
+        )
+        self.capabilities.setText(
+            "Capabilities: "
+            + "  ".join(
+                f"{name} {_capability_indicator(value)}"
+                for name, value in concise
+            )
+        )
 
 
 def _level(value: str) -> str:
@@ -91,6 +109,14 @@ def _level(value: str) -> str:
     if normalized in {"DEGRADED", "STARTING", "RECONNECTING"}:
         return "warn"
     return "neutral"
+
+
+def _capability_indicator(value: str) -> str:
+    if value == "Available":
+        return "✓"
+    if value == "Unknown":
+        return "?"
+    return "✗"
 
 
 __all__ = ["GlobalStatusBar"]

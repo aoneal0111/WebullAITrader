@@ -27,6 +27,7 @@ from app.gui.widgets.paper_validation_panel import PaperValidationPanel
 from app.gui.widgets.portfolio_summary_strip import PortfolioSummaryStrip
 from app.gui.widgets.positions_panel import PositionsPanel
 from app.gui.widgets.runtime_control_header import RuntimeControlHeader
+from app.gui.widgets.global_status_bar import GlobalStatusBar
 
 
 @pytest.fixture(scope="module")
@@ -206,3 +207,37 @@ def test_production_gui_contains_no_reference_sample_values() -> None:
             with open(os.path.join(directory, filename), encoding="utf-8") as source:
                 contents = source.read()
             assert not any(value in contents for value in forbidden)
+
+
+def test_dashboard_uses_atlas_operator_terminology(application) -> None:
+    del application
+    dashboard = DashboardPage()
+    labels = {label.text() for label in dashboard.findChildren(QLabel)}
+
+    assert "Atlas Focus" in labels
+    assert "PORTFOLIO OVERVIEW" in labels
+    assert "Watchlist" not in labels
+    assert "PORTFOLIO SUMMARY" not in labels
+    assert dashboard.operator_workspace.tabs.tabText(5) == "System Health"
+
+
+def test_status_bar_summarizes_capabilities(application) -> None:
+    del application
+    status = GlobalStatusBar(version="test")
+    status.render_health(HealthDashboardSnapshot(
+        overall_status="HEALTHY",
+        status_level="good",
+        metrics=(),
+        incident="No incidents.",
+        capabilities=(
+            ("Stocks", "Available"),
+            ("Options", "Unavailable (Broker Not Supported)"),
+            ("Crypto", "Unknown"),
+        ),
+        sessions=(("Overnight", "Unavailable (Subscription Required)"),),
+    ))
+
+    assert "Stocks \u2713" in status.capabilities.text()
+    assert "Options \u2717" in status.capabilities.text()
+    assert "Crypto ?" in status.capabilities.text()
+    assert "Overnight \u2717" in status.capabilities.text()

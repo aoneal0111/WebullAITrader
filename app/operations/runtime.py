@@ -8,6 +8,7 @@ from enum import StrEnum
 from threading import Event
 from typing import Protocol
 
+from app.capabilities import CapabilitySnapshot
 from app.execution_coordinator import CoordinationRequest, ExecutionCoordinator
 from app.operations_core import OperationsOrder
 from app.operations.learning_runtime import (
@@ -147,6 +148,7 @@ class RuntimeHealthUpdate:
     heartbeat_at: datetime | None = None
     connection_latency: Decimal | None = None
     reconnect_attempts: int | None = None
+    capabilities: CapabilitySnapshot | None = None
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -198,6 +200,11 @@ class RuntimeHealthUpdate:
             or self.supported_symbols < 0
         ):
             raise ValueError("runtime health supported symbols must be nonnegative")
+        if self.capabilities is not None and not isinstance(
+            self.capabilities,
+            CapabilitySnapshot,
+        ):
+            raise TypeError("runtime health capabilities must be a snapshot")
         if self.heartbeat_at is not None:
             _require_aware(self.heartbeat_at)
         if self.connection_latency is not None and (

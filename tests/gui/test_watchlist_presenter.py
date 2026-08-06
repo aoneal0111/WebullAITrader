@@ -4,6 +4,7 @@ from app.gui.models import WatchlistSnapshot
 from app.gui.presenters import WatchlistPresenter
 from app.operations_core import ApplicationState
 from app.read_models.watchlist import WatchlistEntry, WatchlistState
+from app.read_models.health import HealthState
 
 
 class View:
@@ -100,3 +101,24 @@ def test_watchlist_presenter_sorts_raw_projected_values() -> None:
     assert view.snapshot.rows[0].selected is True
     assert view.snapshot.rows[0].stale == "STALE"
     assert view.snapshot.rows[0].market_status == "OPEN"
+
+
+def test_empty_atlas_focus_explains_overnight_capability_pause() -> None:
+    view = View()
+    presenter = WatchlistPresenter(view)
+
+    presenter.render(ApplicationState(
+        health_projection=HealthState(
+            entitlement_status="NOT_SUBSCRIBED",
+            scanner_status="PAUSED_UNTIL_PREMARKET",
+        )
+    ))
+
+    assert view.snapshot.empty_title == (
+        "Atlas is not currently monitoring any eligible symbols."
+    )
+    assert "AI Scanner Status: Paused" in view.snapshot.empty_detail
+    assert "Overnight market-data subscription unavailable." in (
+        view.snapshot.empty_detail
+    )
+    assert "automatically resume" in view.snapshot.empty_detail

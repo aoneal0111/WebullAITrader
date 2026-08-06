@@ -54,4 +54,23 @@ class HealthPanel(QWidget):
             value_label.setObjectName("monoValue")
             self._metrics.addWidget(name, row, column)
             self._metrics.addWidget(value_label, row + 1, column)
+        next_row = ((len(snapshot.metrics) + 2) // 3) * 2
+        for section, entries in (
+            ("CAPABILITIES", snapshot.capabilities),
+            ("SESSIONS", snapshot.sessions),
+        ):
+            heading = QLabel(section)
+            heading.setObjectName("sectionEyebrow")
+            self._metrics.addWidget(heading, next_row, 0, 1, 3)
+            next_row += 1
+            for index, (label, value) in enumerate(entries):
+                column = index % 3
+                row = next_row + (index // 3) * 2
+                name = QLabel(label)
+                name.setObjectName("muted")
+                value_label = QLabel(value)
+                value_label.setObjectName("monoValue")
+                self._metrics.addWidget(name, row, column)
+                self._metrics.addWidget(value_label, row + 1, column)
+            next_row += ((len(entries) + 2) // 3) * 2
         self._incident.setText(snapshot.incident)

@@ -136,6 +136,18 @@ def _reduce_health(
             )
         if health.reconnect_attempts is not None:
             changes["reconnect_attempts"] = health.reconnect_attempts
+        if health.capabilities is not None:
+            changes["capabilities"] = health.capabilities
+            if (
+                (current.last_warning or "").startswith(
+                    "Overnight market-data subscription unavailable."
+                )
+                and any(
+                    entry.availability.value == "Available"
+                    for entry in health.capabilities.sessions
+                )
+            ):
+                changes["last_warning"] = None
 
     candidate = replace(current, **changes)
     healthy, degraded = _derive_flags(candidate)
@@ -289,6 +301,7 @@ def _to_operations(state: HealthState) -> OperationsHealthState:
         reconnect_attempts=state.reconnect_attempts,
         degraded=state.degraded,
         healthy=state.healthy,
+        capabilities=state.capabilities,
     )
 
 

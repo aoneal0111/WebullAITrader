@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from app.gui.models.watchlist import WatchlistRow, WatchlistSnapshot
 from app.read_models.watchlist import WatchlistState
+from app.read_models.health import HealthState
 
 
 def format_watchlist(state: WatchlistState) -> WatchlistSnapshot:
@@ -15,6 +16,7 @@ def format_sorted_watchlist(
     *,
     sort_field: str = "projection",
     descending: bool = False,
+    health: HealthState | None = None,
 ) -> WatchlistSnapshot:
     if not isinstance(state, WatchlistState):
         raise TypeError("state must be a WatchlistState")
@@ -66,6 +68,25 @@ def format_sorted_watchlist(
         ),
         sort_field=sort_field,
         descending=descending,
+        empty_title=(
+            "Atlas is not currently monitoring any eligible symbols."
+        ),
+        empty_detail=_empty_detail(health),
+    )
+
+
+def _empty_detail(health: HealthState | None) -> str:
+    if health is None or not (health.scanner_status or "").startswith("PAUSED"):
+        return "Atlas is waiting for the next scan cycle."
+    reason = (
+        "Overnight market-data subscription unavailable."
+        if health.entitlement_status == "NOT_SUBSCRIBED"
+        else health.last_warning or "A required capability is unavailable."
+    )
+    return (
+        "AI Scanner Status: Paused\n\n"
+        f"Reason: {reason}\n\n"
+        "Atlas will automatically resume when the capability becomes available."
     )
 
 

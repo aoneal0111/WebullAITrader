@@ -8,6 +8,7 @@ from queue import Empty, Queue
 from threading import Event, RLock, Thread
 
 from app.broker_plugins import BrokerRuntime
+from app.broker_plugins.webull.capabilities import map_webull_capabilities
 from app.configuration import OperationalConfiguration
 from app.live_execution.account_polling import (
     BrokerAccountSnapshot,
@@ -117,6 +118,7 @@ class DesktopBrokerRuntimeDriver:
         self._terminal_stream_failure_published = False
         self._scanner_pause_session: MarketDataSession | None = None
         self._scanner_configuration_changed = False
+        self._capability_refresh_requested = False
         self._cycles_completed = 0
         self._scanner_publisher = ScannerSnapshotPublisher(
             self._event_sink,
@@ -500,7 +502,7 @@ class DesktopBrokerRuntimeDriver:
                     else "STREAM_CONNECTED_SUBSCRIPTION_DENIED"
                     if str(streaming) == "AVAILABLE"
                     and str(subscription) == "UNAVAILABLE"
-                    else "DEGRADED"
+                    else "CONNECTED"
                     if str(reason) == "OVERNIGHT_ENTITLEMENT_REQUIRED"
                     else "DISABLED"
                 ),
@@ -513,6 +515,8 @@ class DesktopBrokerRuntimeDriver:
                 ),
                 subscription_status=(
                     "ACCEPTED" if str(subscription) == "AVAILABLE"
+                    else "SUBSCRIPTION_REQUIRED"
+                    if overnight_paused
                     else "DENIED"
                     if str(streaming) == "AVAILABLE" and str(subscription) in {
                         "UNAVAILABLE", "NOT_ENTITLED"
@@ -551,9 +555,14 @@ class DesktopBrokerRuntimeDriver:
                 probe_nvda_status=symbol_results.get("NVDA", "NOT_TESTED"),
                 last_warning=(
                     None if ready
-                    else f"{reason}; next retry: {retry_detail}"
+                    else "Overnight market-data subscription unavailable. "
+                    f"Automatic capability refresh: {retry_detail}."
                     if overnight_paused
                     else str(reason)
+                ),
+                capabilities=map_webull_capabilities(
+                    self._broker_runtime.capabilities,
+                    result,
                 ),
             ),
         )
@@ -644,6 +653,7 @@ class DesktopBrokerRuntimeDriver:
                 ),
             )
         elif lifecycle == "reconnected":
+            self._capability_refresh_requested = True
             self._publish_health(
                 "MARKET_DATA_RECONNECTED",
                 "Reconnected to Webull market data.",
@@ -789,22 +799,36 @@ class DesktopBrokerRuntimeDriver:
                 break
 
     def _retry_scanner_after_session_transition(self, stop_event: Event) -> None:
-        if self._scanner_pause_session is None or self._market_data_probe is None:
+        if self._market_data_probe is None:
             return
         session = current_market_data_session(self._clock)
-        if (
-            session is self._scanner_pause_session
-            and not self._scanner_configuration_changed
+        session_changed = (
+            self._scanner_pause_session is not None
+            and session is not self._scanner_pause_session
+        )
+        if not (
+            session_changed
+            or self._scanner_configuration_changed
+            or self._capability_refresh_requested
         ):
             return
-        # A session transition is the only automatic release of an overnight
-        # entitlement pause. The probe itself also gates duplicate calls.
-        self._scanner_pause_session = None
+        invalidate = getattr(
+            self._market_data_probe,
+            "configuration_changed",
+            None,
+        )
+        if callable(invalidate) and (
+            self._scanner_configuration_changed
+            or self._capability_refresh_requested
+        ):
+            invalidate()
         self._scanner_configuration_changed = False
+        self._capability_refresh_requested = False
         result = self._market_data_probe.run()
         self._publish_probe_result(result)
-        if not result.scanner_ready:
+        if not result.scanner_ready or self._scanner_pause_session is None:
             return
+        self._scanner_pause_session = None
         self._startup_validation = None
         self._start_market_data(stop_event)
 

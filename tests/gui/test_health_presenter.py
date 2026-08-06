@@ -69,7 +69,9 @@ def test_health_presenter_prepares_immutable_dashboard_model() -> None:
     assert ("Subscription", "ACCEPTED") in view.snapshot.metrics
     assert ("Probe AAPL", "SUPPORTED") in view.snapshot.metrics
     assert ("Supported Symbols", "7300") in view.snapshot.metrics
-    assert ("Scanner", "ACTIVE") in view.snapshot.metrics
+    assert ("AI Scanner", "ACTIVE") in view.snapshot.metrics
+    assert dict(view.snapshot.capabilities)["Stocks"] == "Unknown"
+    assert dict(view.snapshot.sessions)["Overnight"] == "Unknown"
     assert ("Universe", "LOADED") in view.snapshot.metrics
     assert ("Reference Cache", "WARM") in view.snapshot.metrics
     assert ("AI", "READY") in view.snapshot.metrics

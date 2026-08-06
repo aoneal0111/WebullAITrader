@@ -62,7 +62,7 @@ class DashboardPage(QWidget):
             "Infrastructure", self.infrastructure
         )
         portfolio_group = _section_group(
-            "Portfolio Summary", self.portfolio_summary
+            "Portfolio Overview", self.portfolio_summary
         )
         self.summary_splitter.addWidget(infrastructure_group)
         self.summary_splitter.addWidget(portfolio_group)
