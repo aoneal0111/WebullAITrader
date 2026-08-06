@@ -18,7 +18,11 @@ def project_mission_status(state: ApplicationState) -> MissionStatusSnapshot:
         ("AI Scanner", health.scanner_status),
         ("Decision Engine", health.ai_status or runtime.inference_status),
         ("Risk Engine", health.risk_status),
-        ("System Health", health.runtime_status or runtime.phase.value),
+        (
+            "System Health",
+            "HEALTHY (RUNNING)" if health.healthy else "DEGRADED" if health.degraded
+            else health.runtime_status or runtime.phase.value,
+        ),
     )
     return MissionStatusSnapshot(rows=tuple(
         MissionStatusRow(label, _display(value), _tone(value))

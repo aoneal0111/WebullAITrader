@@ -150,3 +150,18 @@ def test_chart_presenter_uses_configured_symbol_without_stream_or_watchlist(capl
         "snapshot", "quote", "bars"
     ]
     presenter.close()
+
+
+def test_successful_rest_bars_publish_authoritative_observation():
+    observations = []
+    service = ChartMarketDataService(
+        LazyOfficialDataClient(
+            lambda: SimpleNamespace(market_data=MarketData())
+        ),
+        observation_sink=lambda *values: observations.append(values),
+    )
+
+    result = service.load("AAPL")
+
+    assert result.bars
+    assert observations == [("HISTORICAL_BARS_LOADED", "AAPL", 1)]

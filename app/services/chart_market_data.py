@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from app.webull.sdk_market_data import LazyOfficialDataClient
 
@@ -44,6 +44,7 @@ class ChartMarketDataService:
         *,
         category: str = "US_STOCK",
         bar_count: int = 120,
+        observation_sink: Callable[[str, str, int], None] | None = None,
     ) -> None:
         if not isinstance(client, LazyOfficialDataClient):
             raise TypeError("client must be a LazyOfficialDataClient")
@@ -52,6 +53,9 @@ class ChartMarketDataService:
         self._client = client
         self._category = category
         self._bar_count = bar_count
+        if observation_sink is not None and not callable(observation_sink):
+            raise TypeError("observation_sink must be callable or None")
+        self._observation_sink = observation_sink
 
     def load(self, symbol: str, timeframe: str = "1D") -> ChartMarketData:
         normalized = symbol.strip().upper() if isinstance(symbol, str) else ""
@@ -112,6 +116,8 @@ class ChartMarketDataService:
                 key=lambda item: item.timestamp,
             )
         )
+        if bars and self._observation_sink is not None:
+            self._observation_sink("HISTORICAL_BARS_LOADED", normalized, len(bars))
         errors = []
         if bars_response is None:
             errors.append("historical bar request failed")

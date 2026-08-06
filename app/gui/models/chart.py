@@ -26,6 +26,9 @@ class ChartViewSnapshot:
     high: Decimal | None = None
     low: Decimal | None = None
     close: Decimal | None = None
+    change: Decimal | None = None
+    change_percent: Decimal | None = None
+    volume: Decimal | None = None
 
 
 __all__ = ["ChartCandle", "ChartViewSnapshot"]

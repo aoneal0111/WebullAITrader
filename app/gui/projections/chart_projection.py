@@ -51,18 +51,15 @@ def project_chart_model(data: ChartMarketData) -> ChartViewSnapshot:
         for item in data.bars
     )
     latest = candles[-1] if candles else None
-    quote = data.quote or data.snapshot or {}
-    opened = _number(quote, "open", "openPrice") or (
-        latest.open if latest else None
-    )
-    high = _number(quote, "high", "highPrice") or (
-        latest.high if latest else None
-    )
-    low = _number(quote, "low", "lowPrice") or (
-        latest.low if latest else None
-    )
-    close = _number(quote, "close", "price", "lastPrice") or (
-        latest.close if latest else None
+    opened = latest.open if latest else None
+    high = latest.high if latest else None
+    low = latest.low if latest else None
+    close = latest.close if latest else None
+    previous = candles[-2].close if len(candles) > 1 else opened
+    change = close - previous if close is not None and previous is not None else None
+    change_percent = (
+        change / previous * Decimal("100")
+        if change is not None and previous not in (None, Decimal("0")) else None
     )
     if candles:
         message = f"Loaded {len(candles)} historical candles through REST."
@@ -78,6 +75,9 @@ def project_chart_model(data: ChartMarketData) -> ChartViewSnapshot:
         high=high,
         low=low,
         close=close,
+        change=change,
+        change_percent=change_percent,
+        volume=latest.volume if latest else None,
     )
 
 

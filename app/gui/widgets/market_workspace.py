@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Protocol
 
 from PySide6.QtCore import QDateTime, QRectF, QSize, Qt, QTimer, Signal
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.design.tokens import Colors, Dimensions
+from app.gui.chart_geometry import NEW_YORK, calculate_chart_geometry
 from app.gui.models import (
     AIThinkingSnapshot,
     AtlasActivitySnapshot,
@@ -39,21 +41,38 @@ class ChartView(Protocol):
 class EmptyChartCanvas(QFrame):
     """Honest chart empty state with terminal-style grid treatment."""
 
+    candle_selected = Signal(object)
+
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("chartCanvas")
         self.setMinimumHeight(Dimensions.CHART_MIN_HEIGHT)
         self._message = "No market series available."
         self._candles = ()
+        self._symbol = "--"
+        self._geometry = calculate_chart_geometry((), self.width(), self.height())
+        self._selected_index = None
+        self._pointer_price = None
+        self._render_signature = None
+        self.setMouseTracking(True)
 
     def set_model(self, snapshot: ChartViewSnapshot) -> None:
         self._candles = snapshot.candles
+        self._symbol = snapshot.symbol
         self._message = snapshot.message
+        self._selected_index = None
+        self._pointer_price = None
+        self._recalculate_geometry()
+        self.candle_selected.emit(None)
         self.update()
 
     def set_message(self, message: str) -> None:
         self._message = message
         self._candles = ()
+        self._selected_index = None
+        self._pointer_price = None
+        self._recalculate_geometry()
+        self.candle_selected.emit(None)
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -61,6 +80,9 @@ class EmptyChartCanvas(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor(Colors.BACKGROUND))
+        if self._candles:
+            self._paint_candles(painter)
+            return
         painter.setPen(QPen(QColor(Colors.CHART_GRID), 1))
         step_x = max(56, self.width() // 12)
         step_y = max(44, self.height() // 8)
@@ -68,9 +90,6 @@ class EmptyChartCanvas(QFrame):
             painter.drawLine(x, 0, x, self.height())
         for y in range(0, self.height(), step_y):
             painter.drawLine(0, y, self.width(), y)
-        if self._candles:
-            self._paint_candles(painter)
-            return
         center_x = self.width() / 2
         center_y = self.height() / 2 - 28
         icon_pen = QPen(QColor(Colors.TEXT_FAINT), 2)
@@ -146,34 +165,141 @@ class EmptyChartCanvas(QFrame):
         )
 
     def _paint_candles(self, painter: QPainter) -> None:
-        candles = self._candles[-120:]
-        highest = max(candle.high for candle in candles)
-        lowest = min(candle.low for candle in candles)
-        spread = highest - lowest
-        if spread <= 0:
-            return
-        left, top, right, bottom = 18, 14, 18, 22
-        width = max(1, self.width() - left - right)
-        height = max(1, self.height() - top - bottom)
-        step = width / max(1, len(candles))
-        body_width = max(2.0, min(9.0, step * 0.62))
+        geometry = self._geometry
+        candles = geometry.candles
+        painter.setPen(QPen(QColor(Colors.CHART_GRID), 1))
+        for tick in geometry.price_ticks:
+            painter.drawLine(int(geometry.plot_left), int(tick.position), int(geometry.plot_right), int(tick.position))
+        for tick in geometry.time_ticks:
+            painter.drawLine(int(tick.position), int(geometry.plot_top), int(tick.position), int(geometry.plot_bottom))
+        painter.setPen(QColor(Colors.TEXT_MUTED))
+        label_font = painter.font()
+        label_font.setPixelSize(10)
+        painter.setFont(label_font)
+        for tick in geometry.price_ticks:
+            painter.drawText(
+                QRectF(geometry.plot_right + 5, tick.position - 9, max(1, self.width() - geometry.plot_right - 7), 18),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                tick.label,
+            )
+        for tick in geometry.time_ticks:
+            label_left = min(
+                max(geometry.plot_left, tick.position - 39),
+                max(geometry.plot_left, geometry.plot_right - 78),
+            )
+            painter.drawText(
+                QRectF(label_left, geometry.plot_bottom + 4, min(78, geometry.plot_right - label_left), 28),
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+                tick.label,
+            )
 
-        def y(value) -> float:
-            return top + float((highest - value) / spread) * height
-
-        for index, candle in enumerate(candles):
-            x = left + (index + 0.5) * step
+        painter.save()
+        painter.setClipRect(QRectF(
+            geometry.plot_left, geometry.plot_top,
+            geometry.plot_right - geometry.plot_left,
+            geometry.plot_bottom - geometry.plot_top,
+        ))
+        for x, candle in zip(geometry.candle_centers, candles):
             rising = candle.close >= candle.open
             color = QColor(Colors.SUCCESS if rising else Colors.DANGER)
             painter.setPen(QPen(color, 1))
-            painter.drawLine(int(x), int(y(candle.high)), int(x), int(y(candle.low)))
-            opened, closed = y(candle.open), y(candle.close)
+            painter.drawLine(int(x), int(geometry.y_for_price(candle.high)), int(x), int(geometry.y_for_price(candle.low)))
+            opened, closed = geometry.y_for_price(candle.open), geometry.y_for_price(candle.close)
             body_top = min(opened, closed)
             body_height = max(1.0, abs(opened - closed))
             painter.fillRect(
-                QRectF(x - body_width / 2, body_top, body_width, body_height),
+                QRectF(x - geometry.candle_width / 2, body_top, geometry.candle_width, body_height),
                 color,
             )
+        if self._selected_index is not None:
+            local = self._selected_index - geometry.source_offset
+            if 0 <= local < len(candles):
+                x = geometry.candle_centers[local]
+                candle = candles[local]
+                y = geometry.y_for_price(self._pointer_price or candle.close)
+                crosshair = QPen(QColor(Colors.TEXT_MUTED), 1, Qt.PenStyle.DashLine)
+                painter.setPen(crosshair)
+                painter.drawLine(int(x), int(geometry.plot_top), int(x), int(geometry.plot_bottom))
+                painter.drawLine(int(geometry.plot_left), int(y), int(geometry.plot_right), int(y))
+        painter.restore()
+        if self._selected_index is not None:
+            local = self._selected_index - geometry.source_offset
+            if 0 <= local < len(candles):
+                candle = candles[local]
+                x = geometry.candle_centers[local]
+                box_width, box_height = 174.0, 118.0
+                box_x = x + 12 if x + 12 + box_width < geometry.plot_right else x - box_width - 12
+                box_y = geometry.plot_top + 8
+                box = QRectF(max(geometry.plot_left + 2, box_x), box_y, box_width, box_height)
+                painter.fillRect(box, QColor(Colors.SURFACE))
+                painter.setPen(QPen(QColor(Colors.CHART_GRID), 1))
+                painter.drawRect(box)
+                tooltip_volume = "\u2014" if candle.volume is None else f"{candle.volume:,.0f}"
+                tooltip = (
+                    f"{candle.timestamp.astimezone(NEW_YORK):%Y-%m-%d %H:%M %Z}\n"
+                    f"O {candle.open:,.2f}   H {candle.high:,.2f}\n"
+                    f"L {candle.low:,.2f}   C {candle.close:,.2f}\n"
+                    f"Volume {tooltip_volume}"
+                )
+                painter.setPen(QColor(Colors.TEXT))
+                painter.drawText(
+                    box.adjusted(8, 7, -8, -7),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                    tooltip,
+                )
+        self._log_render("success")
+
+    def _recalculate_geometry(self) -> None:
+        self._geometry = calculate_chart_geometry(
+            self._candles, self.width(), self.height()
+        )
+        self._log_render("success" if self._candles else "skipped:no_bars")
+
+    def _log_render(self, status: str) -> None:
+        geometry = self._geometry
+        signature = (self._symbol, len(self._candles), self.width(), self.height(), self._selected_index, status)
+        if signature == self._render_signature:
+            return
+        self._render_signature = signature
+        logging.getLogger("atlas.gui.chart").info(
+            "operation=chart_render symbol=%s bars=%d earliest=%s latest=%s visible_min=%s visible_max=%s price_ticks=%d time_ticks=%d selected_index=%s status=%s",
+            self._symbol,
+            len(self._candles),
+            self._candles[0].timestamp.isoformat() if self._candles else "--",
+            self._candles[-1].timestamp.isoformat() if self._candles else "--",
+            geometry.visible_min if geometry.visible_min is not None else "--",
+            geometry.visible_max if geometry.visible_max is not None else "--",
+            len(geometry.price_ticks), len(geometry.time_ticks),
+            self._selected_index if self._selected_index is not None else "--",
+            status,
+        )
+
+    def mouseMoveEvent(self, event) -> None:
+        index = self._geometry.nearest_candle(event.position().x())
+        inside = (
+            index is not None
+            and self._geometry.plot_top <= event.position().y() <= self._geometry.plot_bottom
+        )
+        selected = index if inside else None
+        self._pointer_price = self._geometry.price_for_y(event.position().y()) if inside else None
+        if selected != self._selected_index:
+            self._selected_index = selected
+            self.candle_selected.emit(None if selected is None else self._candles[selected])
+            self._log_render("success")
+        self.update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._selected_index = None
+        self._pointer_price = None
+        self.candle_selected.emit(None)
+        self._log_render("success")
+        self.update()
+        super().leaveEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        self._recalculate_geometry()
+        super().resizeEvent(event)
 
 
 class ChartPlaceholder(QWidget):
@@ -225,6 +351,8 @@ class ChartPlaceholder(QWidget):
         quote_row.addStretch()
         layout.addLayout(quote_row)
         self._canvas = EmptyChartCanvas()
+        self._chart_snapshot = ChartViewSnapshot()
+        self._canvas.candle_selected.connect(self._show_candle)
         layout.addWidget(self._canvas, 1)
         footer = QHBoxLayout()
         self._range_buttons = []
@@ -284,6 +412,7 @@ class ChartPlaceholder(QWidget):
         )
 
     def render(self, snapshot: ChartViewSnapshot) -> None:
+        self._chart_snapshot = snapshot
         if snapshot.symbol != "--":
             self.select_symbol(snapshot.symbol)
         self._symbol.setText(snapshot.symbol)
@@ -296,20 +425,37 @@ class ChartPlaceholder(QWidget):
             ),
         )
         self._timeframe.setCurrentText(snapshot.timeframe)
-        self._ohlc.setText(
-            "O {0}   H {1}   L {2}   C {3}".format(
-                *(
-                    "--" if value is None else f"{value:,.2f}"
-                    for value in (
-                        snapshot.open,
-                        snapshot.high,
-                        snapshot.low,
-                        snapshot.close,
-                    )
-                )
-            )
-        )
         self._canvas.set_model(snapshot)
+        self._show_candle(None)
+
+    def _show_candle(self, selected) -> None:
+        candles = self._chart_snapshot.candles
+        candle = selected or (candles[-1] if candles else None)
+        if candle is None:
+            self._ohlc.setText(
+                "O \u2014   H \u2014   L \u2014   C \u2014   Change \u2014   Change % \u2014   Volume \u2014"
+            )
+            self._ohlc.setToolTip("")
+            return
+        index = next((i for i, item in enumerate(candles) if item is candle), len(candles) - 1)
+        previous = candles[index - 1].close if index > 0 else candle.open
+        change = candle.close - previous
+        percent = change / previous * 100 if previous else None
+        value = lambda item: "\u2014" if item is None else f"{item:,.2f}"
+        volume = "\u2014" if candle.volume is None else f"{candle.volume:,.0f}"
+        sign_change = "\u2014" if change is None else f"{change:+,.2f}"
+        sign_percent = "\u2014" if percent is None else f"{percent:+.2f}%"
+        stamp = candle.timestamp.astimezone(NEW_YORK).strftime(
+            "%Y-%m-%d %H:%M %Z"
+        )
+        self._ohlc.setText(
+            f"O {value(candle.open)}   H {value(candle.high)}   L {value(candle.low)}   "
+            f"C {value(candle.close)}   Change {sign_change}   Change % {sign_percent}   Volume {volume}"
+        )
+        self._ohlc.setToolTip(
+            f"{stamp}\nOpen {value(candle.open)}\nHigh {value(candle.high)}\n"
+            f"Low {value(candle.low)}\nClose {value(candle.close)}\nVolume {volume}"
+        )
 
 
 class CompactWatchlistPanel(QWidget):

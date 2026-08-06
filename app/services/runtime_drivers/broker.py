@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from threading import Event, RLock, Thread
 
@@ -13,7 +14,7 @@ from app.live_execution.account_polling import (
     BrokerAccountSnapshot,
     poll_broker_account,
 )
-from app.market_data.models import MarketEvent
+from app.market_data.models import MarketEvent, MarketEventType
 from app.momentum_scanner import AssetClass
 from app.operations.runtime import (
     PaperRuntimeEvent,
@@ -358,11 +359,20 @@ class DesktopBrokerRuntimeDriver:
         )
         self._publish_probe_result(market_data)
         if not result.scanner_ready:
+            partial = (
+                str(getattr(market_data, "capability_state", ""))
+                == "PARTIAL_CAPABILITY"
+                and str(getattr(
+                    getattr(market_data, "entitlement", None), "state", ""
+                )) == "AVAILABLE"
+            )
             self._publish_health(
                 "STARTUP_VALIDATION_FAILED",
                 result.reason or "Startup validation failed.",
                 RuntimeHealthUpdate(
-                    scanner_status="DISABLED",
+                    scanner_status=(
+                        "CAPABILITY_PAUSED" if partial else "DISABLED"
+                    ),
                     last_warning=result.reason or "Startup validation failed.",
                 ),
             )
@@ -480,6 +490,8 @@ class DesktopBrokerRuntimeDriver:
             getattr(result, "reconnect", None), "state", "UNKNOWN"
         )
         bars = getattr(getattr(result, "bars", None), "state", "UNKNOWN")
+        quotes = getattr(getattr(result, "quotes", None), "state", "UNKNOWN")
+        capability_state = str(getattr(result, "capability_state", "UNKNOWN"))
         current_session = str(getattr(result, "current_session", "CLOSED"))
         retry_at = getattr(result, "next_retry_at", None)
         overnight_paused = str(reason) == "OVERNIGHT_ENTITLEMENT_REQUIRED"
@@ -496,13 +508,18 @@ class DesktopBrokerRuntimeDriver:
             item.symbol: str(item.result)
             for item in getattr(result, "symbol_results", ())
         }
+        partial = (
+            capability_state == "PARTIAL_CAPABILITY"
+            and str(entitlement) == "AVAILABLE"
+        )
         self._publish_health(
             "MARKET_DATA_PROBE_COMPLETED",
             "Market-data startup capability probe completed."
             if ready else str(reason),
             RuntimeHealthUpdate(
                 market_data_status=(
-                    "READY" if ready
+                    "PARTIAL_CAPABILITY" if partial
+                    else "READY" if ready
                     else "NO_SUPPORTED_SYMBOLS" if no_supported_symbols
                     else "STREAM_CONNECTED_SUBSCRIPTION_DENIED"
                     if str(streaming) == "AVAILABLE"
@@ -513,7 +530,15 @@ class DesktopBrokerRuntimeDriver:
                 ),
                 market_data_environment=getattr(result, "environment", "UNKNOWN"),
                 market_data_rest_status=(
-                    "CONNECTED" if str(endpoint) == "AVAILABLE" else str(endpoint)
+                    "CONNECTED"
+                    if str(endpoint) == "AVAILABLE" and str(bars) == "AVAILABLE"
+                    else str(endpoint)
+                ),
+                historical_bars_status=(
+                    "AVAILABLE" if str(bars) == "AVAILABLE" else str(bars)
+                ),
+                quotes_status=(
+                    "AVAILABLE" if str(quotes) == "AVAILABLE" else str(quotes)
                 ),
                 streaming_status=(
                     "CONNECTED" if str(streaming) == "AVAILABLE" else str(streaming)
@@ -549,6 +574,7 @@ class DesktopBrokerRuntimeDriver:
                 ),
                 scanner_status=(
                     "WARMING" if ready
+                    else "CAPABILITY_PAUSED" if partial
                     else "NO_SUPPORTED_SYMBOLS" if no_supported_symbols
                     else "PAUSED_UNTIL_PREMARKET" if overnight_paused
                     else "DISABLED"
@@ -658,11 +684,13 @@ class DesktopBrokerRuntimeDriver:
             )
         elif lifecycle == "reconnected":
             self._capability_refresh_requested = True
+            self._observe_probe_success("STREAM_RECONNECT")
             self._publish_health(
                 "MARKET_DATA_RECONNECTED",
                 "Reconnected to Webull market data.",
                 RuntimeHealthUpdate(
                     market_data_status="CONNECTED",
+                    streaming_status="CONNECTED",
                     reconnect_attempts=attempt,
                 ),
             )
@@ -742,10 +770,33 @@ class DesktopBrokerRuntimeDriver:
             source=self._source,
             cycle=self._cycles_completed,
         )
+        if translated is not None and event.event_type is MarketEventType.QUOTE:
+            translated = replace(
+                translated,
+                event_type="MARKET_DATA_QUOTE_RECEIVED",
+                health=RuntimeHealthUpdate(
+                    market_data_status="CONNECTED",
+                    streaming_status="CONNECTED",
+                    subscription_status="ACCEPTED",
+                    quotes_status="AVAILABLE",
+                    last_warning=None,
+                ),
+            )
+            self._observe_probe_success("STREAM_QUOTE")
+        elif event.event_type is MarketEventType.SESSION_CHANGE:
+            self._observe_probe_success("SESSION_TRANSITION")
+            self._capability_refresh_requested = True
         if translated is not None:
             self._emit(translated)
         if self._market_event_observer is not None:
             self._market_event_observer(event)
+
+    def _observe_probe_success(self, capability: str) -> None:
+        if self._market_data_probe is None:
+            return
+        observer = getattr(self._market_data_probe, "observation_succeeded", None)
+        if callable(observer):
+            observer(capability)
 
     def _scanner_log(
         self,

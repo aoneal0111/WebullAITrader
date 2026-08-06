@@ -59,6 +59,16 @@ class ProbeState(StrEnum):
     NOT_TESTED = "NOT_TESTED"
 
 
+class MarketDataCapabilityState(StrEnum):
+    AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
+    REST_UNAVAILABLE = "REST_UNAVAILABLE"
+    STREAM_UNAVAILABLE = "STREAM_UNAVAILABLE"
+    SUBSCRIPTION_REQUIRED = "SUBSCRIPTION_REQUIRED"
+    PROTOCOL_UNSUPPORTED = "PROTOCOL_UNSUPPORTED"
+    PARTIAL_CAPABILITY = "PARTIAL_CAPABILITY"
+    AVAILABLE = "AVAILABLE"
+
+
 class SymbolProbeState(StrEnum):
     SUPPORTED = "SUPPORTED"
     UNSUPPORTED = "UNSUPPORTED"
@@ -169,19 +179,48 @@ class MarketDataProbeResult:
             self.endpoint.available,
             self.credentials.available,
             self.bars.available,
-            self.quotes.available,
-            self.snapshots.available,
             self.streaming.available,
             self.subscription.available,
-            self.heartbeat.available,
             self.reconnect.available,
             self.entitlement.available,
             self.reference.available,
         ))
 
     @property
+    def capability_state(self) -> MarketDataCapabilityState:
+        if self.credentials.state in {
+            ProbeState.CREDENTIALS_MISSING,
+            ProbeState.NOT_ENTITLED,
+        }:
+            return MarketDataCapabilityState.AUTHENTICATION_FAILED
+        if not self.endpoint.available or not self.bars.available:
+            return MarketDataCapabilityState.REST_UNAVAILABLE
+        if not self.streaming.available:
+            detail = self.streaming.detail.upper()
+            if "PROTOCOL" in detail and "UNSUPPORTED" in detail:
+                return MarketDataCapabilityState.PROTOCOL_UNSUPPORTED
+            return MarketDataCapabilityState.STREAM_UNAVAILABLE
+        if not self.subscription.available:
+            detail = self.subscription.detail.upper()
+            if "PROTOCOL" in detail and "UNSUPPORTED" in detail:
+                return MarketDataCapabilityState.PROTOCOL_UNSUPPORTED
+            return MarketDataCapabilityState.SUBSCRIPTION_REQUIRED
+        optional = (
+            self.quotes,
+            self.snapshots,
+            self.heartbeat,
+            self.reconnect,
+            self.entitlement,
+            self.reference,
+        )
+        if any(not status.available for status in optional):
+            return MarketDataCapabilityState.PARTIAL_CAPABILITY
+        return MarketDataCapabilityState.AVAILABLE
+
+    @property
     def reason(self) -> str | None:
-        if self.scanner_ready:
+        state = self.capability_state
+        if state is MarketDataCapabilityState.AVAILABLE:
             return None
         if self.credentials.state is ProbeState.CREDENTIALS_MISSING:
             return "Production market-data credentials are missing."
@@ -211,7 +250,21 @@ class MarketDataProbeResult:
             if self.environment in {"TEST", "PAPER", "SANDBOX"}:
                 return "Sandbox market-data catalog does not contain scanner-compatible symbols."
             return "Production market-data bars do not support the probe symbols."
-        return "Market-data startup capability probe failed."
+        details = {
+            MarketDataCapabilityState.AUTHENTICATION_FAILED:
+                "Market-data authentication failed.",
+            MarketDataCapabilityState.REST_UNAVAILABLE:
+                "Market-data REST historical bars are unavailable.",
+            MarketDataCapabilityState.STREAM_UNAVAILABLE:
+                "Market-data streaming transport is unavailable.",
+            MarketDataCapabilityState.SUBSCRIPTION_REQUIRED:
+                "Market-data stream subscription is required.",
+            MarketDataCapabilityState.PROTOCOL_UNSUPPORTED:
+                "Market-data streaming protocol is unsupported.",
+            MarketDataCapabilityState.PARTIAL_CAPABILITY:
+                "Market data is partially available; an optional capability is unavailable.",
+        }
+        return details[state]
 
 
 class MarketDataCapabilityProbe:
@@ -233,6 +286,14 @@ class MarketDataCapabilityProbe:
         """Allow an explicit operator configuration change to re-run the probe."""
 
         self._blocked_result = None
+
+    def observation_succeeded(self, capability: str) -> None:
+        """Invalidate a cached denial after an authoritative runtime success."""
+
+        if capability.strip().upper() in {
+            "REST_BARS", "STREAM_RECONNECT", "STREAM_QUOTE", "SESSION_TRANSITION"
+        }:
+            self._blocked_result = None
 
     def run(self) -> MarketDataProbeResult:
         cfg = self._configuration
@@ -577,7 +638,8 @@ def _redact_url(match: re.Match[str]) -> str:
 
 
 __all__ = [
-    "CapabilityStatus", "MarketDataCapabilityProbe", "MarketDataProbeResult",
+    "CapabilityStatus", "MarketDataCapabilityProbe", "MarketDataCapabilityState",
+    "MarketDataProbeResult",
     "PROBE_SYMBOLS", "SANDBOX_OPTIONAL_SYMBOLS", "SANDBOX_REQUIRED_SYMBOLS",
     "ProbeState", "SymbolCapabilityResult", "SymbolProbeState",
 ]

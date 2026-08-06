@@ -13,6 +13,7 @@ from app.order_placement import OrderPlacementRuntime
 from app.paper_trading.order_book import PaperOrderBook
 from app.paper_trading.execution_engine import PaperExecutionEngine
 from app.services import OrderCommandFactory, RuntimeService, TradingService
+from app.operations.runtime import PaperRuntimeEvent, RuntimeHealthUpdate
 from app.webull.client_factories import (
     MarketDataClientFactory,
     market_data_configuration,
@@ -20,6 +21,7 @@ from app.webull.client_factories import (
 )
 from app.webull.request_audit import AuditedMarketDataClient, RequestIsolationGuard
 from app.webull.sdk_market_data import LazyOfficialDataClient
+from app.webull.market_data_session import utc_now
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -87,15 +89,6 @@ def create_desktop_composition(
         trading_configuration(operational_configuration),
         chart_market_configuration,
     )
-    chart_market_data_service = ChartMarketDataService(
-        LazyOfficialDataClient(
-            lambda: AuditedMarketDataClient(
-                MarketDataClientFactory(chart_market_configuration).create(),
-                chart_request_guard,
-                chart_market_configuration,
-            )
-        )
-    )
     chart_default_symbol = next(
         iter(
             operational_configuration.market_data_symbols
@@ -114,6 +107,36 @@ def create_desktop_composition(
                 operational_configuration.maximum_market_data_age_seconds
             )
         ),
+    )
+    chart_observation_sequence = 0
+
+    def publish_chart_observation(event_type: str, symbol: str, count: int) -> None:
+        nonlocal chart_observation_sequence
+        chart_observation_sequence += 1
+        runtime_projections.sink(PaperRuntimeEvent(
+            sequence=chart_observation_sequence,
+            timestamp=utc_now(),
+            event_type=event_type,
+            message=f"Loaded {count} historical bars for {symbol} through REST.",
+            cycle=0,
+            symbol=symbol,
+            source="atlas-chart-rest",
+            health=RuntimeHealthUpdate(
+                market_data_status="CONNECTED",
+                market_data_rest_status="CONNECTED",
+                historical_bars_status="AVAILABLE",
+            ),
+        ))
+
+    chart_market_data_service = ChartMarketDataService(
+        LazyOfficialDataClient(
+            lambda: AuditedMarketDataClient(
+                MarketDataClientFactory(chart_market_configuration).create(),
+                chart_request_guard,
+                chart_market_configuration,
+            )
+        ),
+        observation_sink=publish_chart_observation,
     )
 
     def position_average_cost(symbol: str) -> Decimal | None:
@@ -198,8 +221,6 @@ def create_desktop_composition(
         chart_market_data_service=chart_market_data_service,
         chart_default_symbol=chart_default_symbol,
     )
-
-
 __all__ = [
     "DesktopComposition",
     "create_desktop_composition",

@@ -382,6 +382,8 @@ class OperationsHealthState:
     balances_status: str | None = None
     market_data_environment: str | None = None
     market_data_rest_status: str | None = None
+    historical_bars_status: str | None = None
+    quotes_status: str | None = None
     streaming_status: str | None = None
     subscription_status: str | None = None
     heartbeat_status: str | None = None
@@ -428,6 +430,8 @@ class OperationsHealthState:
             "balances_status",
             "market_data_environment",
             "market_data_rest_status",
+            "historical_bars_status",
+            "quotes_status",
             "streaming_status",
             "subscription_status",
             "heartbeat_status",

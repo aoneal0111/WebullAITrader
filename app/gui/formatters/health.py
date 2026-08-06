@@ -35,6 +35,8 @@ def format_health(state: HealthState) -> HealthDashboardSnapshot:
             ("Balances", state.balances_status or "--"),
             ("Market Data Environment", state.market_data_environment or "--"),
             ("Market Data REST", state.market_data_rest_status or "--"),
+            ("Historical Bars", state.historical_bars_status or "--"),
+            ("Quotes", state.quotes_status or "--"),
             ("Streaming", state.streaming_status or state.market_data_status or "--"),
             ("Subscription", state.subscription_status or "--"),
             ("Stream Heartbeat", state.heartbeat_status or "--"),

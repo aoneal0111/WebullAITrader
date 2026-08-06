@@ -20,6 +20,8 @@ def project_operational_health(state: OperationsHealthState) -> HealthState:
         balances_status=state.balances_status,
         market_data_environment=state.market_data_environment,
         market_data_rest_status=state.market_data_rest_status,
+        historical_bars_status=state.historical_bars_status,
+        quotes_status=state.quotes_status,
         streaming_status=state.streaming_status,
         subscription_status=state.subscription_status,
         heartbeat_status=state.heartbeat_status,

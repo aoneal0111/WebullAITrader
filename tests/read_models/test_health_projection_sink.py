@@ -293,3 +293,56 @@ def test_capability_refresh_replaces_snapshot_and_clears_pause_warning() -> None
     ))
     assert projection.snapshot.capabilities == available
     assert projection.snapshot.last_warning is None
+
+
+def test_successful_bars_and_quote_supersede_failed_startup_probe() -> None:
+    projection = HealthProjection(OperationsBus())
+    projection(event(1, "STARTED"))
+    projection(event(2, "BROKER_CONNECTED"))
+    projection(event(
+        3,
+        "MARKET_DATA_PROBE_COMPLETED",
+        health=RuntimeHealthUpdate(
+            market_data_status="FAILED",
+            market_data_rest_status="UNAVAILABLE",
+            streaming_status="UNAVAILABLE",
+            historical_bars_status="UNAVAILABLE",
+            quotes_status="UNAVAILABLE",
+            scanner_status="DISABLED",
+        ),
+    ))
+    projection(event(4, "HISTORICAL_BARS_LOADED"))
+    projection(event(5, "MARKET_DATA_QUOTE_RECEIVED"))
+
+    state = projection.snapshot
+    assert state.market_data_rest_status == "CONNECTED"
+    assert state.historical_bars_status == "AVAILABLE"
+    assert state.streaming_status == "CONNECTED"
+    assert state.subscription_status == "ACCEPTED"
+    assert state.quotes_status == "AVAILABLE"
+    assert state.market_data_status == "CONNECTED"
+    assert state.healthy is True
+    assert state.degraded is False
+
+
+def test_optional_scanner_entitlement_does_not_fail_system_health() -> None:
+    projection = HealthProjection(OperationsBus())
+    projection(event(
+        1,
+        "HEALTH_SNAPSHOT",
+        health=RuntimeHealthUpdate(
+            runtime_status="RUNNING",
+            broker_status="CONNECTED",
+            market_data_status="CONNECTED",
+            market_data_rest_status="CONNECTED",
+            historical_bars_status="AVAILABLE",
+            streaming_status="CONNECTED",
+            subscription_status="ACCEPTED",
+            quotes_status="AVAILABLE",
+            scanner_status="CAPABILITY_PAUSED",
+            entitlement_status="NOT_ENTITLED",
+        ),
+    ))
+
+    assert projection.snapshot.healthy is True
+    assert projection.snapshot.degraded is False

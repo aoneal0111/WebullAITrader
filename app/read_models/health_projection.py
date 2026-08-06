@@ -76,6 +76,14 @@ def _reduce_health(
         changes["last_heartbeat"] = event.timestamp
     if "RECONNECT_ATTEMPT" in event_type:
         changes["reconnect_attempts"] = current.reconnect_attempts + 1
+    if event_type == "HISTORICAL_BARS_LOADED" and _market_data_warning(
+        current.last_warning, rest_only=True
+    ):
+        changes["last_warning"] = None
+    if event_type in {"MARKET_DATA_QUOTE_RECEIVED", "QUOTE_RECEIVED"} and (
+        _market_data_warning(current.last_warning)
+    ):
+        changes["last_warning"] = None
     if _is_warning(event_type):
         changes["last_warning"] = event.message
     if _is_error(event_type):
@@ -97,6 +105,8 @@ def _reduce_health(
             "balances_status",
             "market_data_environment",
             "market_data_rest_status",
+            "historical_bars_status",
+            "quotes_status",
             "streaming_status",
             "subscription_status",
             "heartbeat_status",
@@ -205,12 +215,31 @@ def _apply_inferred_statuses(
     update = exact.get(event_type)
     if update is not None:
         changes[update[0]] = update[1]
+    if event_type == "HISTORICAL_BARS_LOADED":
+        changes.update(
+            market_data_status="CONNECTED",
+            market_data_rest_status="CONNECTED",
+            historical_bars_status="AVAILABLE",
+        )
+    elif event_type in {"MARKET_DATA_QUOTE_RECEIVED", "QUOTE_RECEIVED"}:
+        changes.update(
+            market_data_status="CONNECTED",
+            streaming_status="CONNECTED",
+            subscription_status="ACCEPTED",
+            quotes_status="AVAILABLE",
+        )
+    elif event_type == "MARKET_DATA_RECONNECTED":
+        changes["streaming_status"] = "CONNECTED"
 
 
 def _apply_error_status(
     changes: dict[str, object],
     event_type: str,
 ) -> None:
+    if event_type == "STARTUP_VALIDATION_FAILED":
+        # Scanner capability validation is not a runtime/infrastructure failure.
+        changes.setdefault("scanner_status", "DISABLED")
+        return
     prefixes = (
         ("BROKER_", "broker_status"),
         ("MARKET_DATA_", "market_data_status"),
@@ -230,11 +259,14 @@ def _apply_error_status(
 def _derive_flags(state: HealthState) -> tuple[bool, bool]:
     if state.runtime_status != "RUNNING":
         return False, state.runtime_status == "FAILED"
-    required = (
-        state.broker_status,
-        state.market_data_status,
-        state.ai_status,
+    market_data_authoritative = (
+        state.market_data_rest_status in {"CONNECTED", "AVAILABLE"}
+        and state.historical_bars_status == "AVAILABLE"
+        and state.streaming_status == "CONNECTED"
+        and state.quotes_status == "AVAILABLE"
     )
+    market_status = "CONNECTED" if market_data_authoritative else state.market_data_status
+    required = (state.broker_status, market_status)
     optional = (state.risk_status, state.persistence_status)
     unhealthy = any(value in _UNHEALTHY for value in (*required, *optional))
     complete = all(value in _HEALTHY for value in required)
@@ -250,7 +282,16 @@ def _is_warning(event_type: str) -> bool:
     return "WARNING" in event_type or event_type.endswith("_WARN")
 
 
+def _market_data_warning(value: str | None, *, rest_only: bool = False) -> bool:
+    normalized = (value or "").upper()
+    if rest_only:
+        return "MARKET-DATA REST" in normalized or "HISTORICAL BAR" in normalized
+    return "MARKET-DATA" in normalized or "MARKET DATA" in normalized
+
+
 def _is_error(event_type: str) -> bool:
+    if event_type == "STARTUP_VALIDATION_FAILED":
+        return False
     return (
         "ERROR" in event_type
         or event_type in {"FAILED", "RUNTIME_FAILED"}
@@ -273,6 +314,8 @@ def _to_operations(state: HealthState) -> OperationsHealthState:
         balances_status=state.balances_status,
         market_data_environment=state.market_data_environment,
         market_data_rest_status=state.market_data_rest_status,
+        historical_bars_status=state.historical_bars_status,
+        quotes_status=state.quotes_status,
         streaming_status=state.streaming_status,
         subscription_status=state.subscription_status,
         heartbeat_status=state.heartbeat_status,
