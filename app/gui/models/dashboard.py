@@ -5,6 +5,8 @@ from datetime import datetime
 
 from .runtime import RuntimeState
 from .paper_validation import PaperValidationDashboardSnapshot
+from .atlas_activity import AtlasActivitySnapshot
+from .mission_control import AIThinkingSnapshot, MissionStatusSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +97,9 @@ class DashboardSnapshot:
     positions: PositionsSnapshot
     orders: OrdersSnapshot
     paper_validation: PaperValidationDashboardSnapshot = PaperValidationDashboardSnapshot()
+    atlas_activity: AtlasActivitySnapshot = AtlasActivitySnapshot()
+    mission_status: MissionStatusSnapshot = MissionStatusSnapshot()
+    ai_thinking: AIThinkingSnapshot = AIThinkingSnapshot()
 
     @classmethod
     def initial(cls) -> "DashboardSnapshot":
@@ -104,4 +109,7 @@ class DashboardSnapshot:
             positions=PositionsSnapshot.initial(),
             orders=OrdersSnapshot.initial(),
             paper_validation=PaperValidationDashboardSnapshot.initial(),
+            atlas_activity=AtlasActivitySnapshot.initial(),
+            mission_status=MissionStatusSnapshot.initial(),
+            ai_thinking=AIThinkingSnapshot.initial(),
         )

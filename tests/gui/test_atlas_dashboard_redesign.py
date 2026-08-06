@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QWidget
 from app.gui.models import (
     AtlasActivityRow,
     AtlasActivitySnapshot,
+    AIThinkingSnapshot,
     HealthDashboardSnapshot,
     OrdersSnapshot,
     PaperValidationDashboardSnapshot,
@@ -23,6 +24,7 @@ from app.gui.pages.dashboard import DashboardPage
 from app.gui.design.theme import application_stylesheet
 from app.gui.design.tokens import Colors
 from app.gui.widgets.infrastructure_strip import InfrastructureStrip
+from app.gui.widgets.ai_thinking_panel import AIThinkingPanel
 from app.gui.widgets.market_workspace import MarketWorkspace
 from app.gui.widgets.orders_panel import OrdersPanel
 from app.gui.widgets.paper_validation_panel import PaperValidationPanel
@@ -102,16 +104,57 @@ def test_compact_atlas_focus_and_activity_use_projection_snapshots(application) 
     )
     workspace.render(snapshot)
     workspace.render_activity(AtlasActivitySnapshot(rows=(
-        AtlasActivityRow("Universe Size", "7300", "good"),
-        AtlasActivityRow("Symbols Evaluated", "Unknown"),
+        AtlasActivityRow("Universe", "7300", "good"),
+        AtlasActivityRow("Evaluating", "Unknown"),
     )))
 
     assert workspace.watchlist._table.columnCount() == 4
     assert workspace.watchlist._table.item(0, 2).text() == "+2.00"
-    assert workspace.atlas_activity._rows["Universe Size"].text() == "●  7300"
-    assert workspace.atlas_activity._rows["Symbols Evaluated"].text() == (
+    assert workspace.atlas_activity._rows["Universe"].text() == "●  7300"
+    assert workspace.atlas_activity._rows["Evaluating"].text() == (
         "●  Unknown"
     )
+
+
+def test_chart_preserves_professional_empty_state_without_active_symbol(
+    application,
+) -> None:
+    del application
+    workspace = MarketWorkspace()
+    workspace.render(WatchlistSnapshot(rows=(WatchlistRow(
+        symbol="XYZ", selected=False, latest_price="500.00",
+        change="+2.00", change_percent="+0.40%", bid="499.99",
+        ask="500.01", volume="100", market_status="OPEN",
+        last_update="10:00:00", stale="LIVE",
+    ),)))
+
+    assert workspace.chart_view._symbol.text() == "--"
+    assert workspace.chart_view._symbol_selector.currentText() == (
+        "No active symbol"
+    )
+    assert "No active symbol" in workspace.chart_view._canvas._message
+
+
+def test_ai_thinking_panel_displays_only_projected_decision_facts(
+    application,
+) -> None:
+    del application
+    panel = AIThinkingPanel()
+    panel.render(AIThinkingSnapshot(
+        objective="Searching for Opportunities",
+        operational_state="Evaluating high-confidence candidates.",
+        reasoning="Projected decision explanation.",
+        last_decision="BUY XYZ",
+        confidence="91%",
+        next_evaluation="Unknown",
+        tone="good",
+    ))
+
+    assert panel.objective.text() == "Searching for Opportunities"
+    assert panel.reasoning.text() == "Projected decision explanation."
+    assert panel.last_decision.text() == "BUY XYZ"
+    assert panel.confidence.text() == "91%"
+    assert panel.next_evaluation.text() == "Unknown"
 
 
 def test_operator_tables_expose_reference_columns_and_real_rows(application) -> None:
@@ -202,6 +245,41 @@ def test_dashboard_and_market_workspace_switch_responsive_orientation(applicatio
     market.resize(700, 700)
     application.processEvents()
     assert market.splitter.orientation() == Qt.Orientation.Vertical
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    ((1366, 768), (1920, 1080), (2560, 1440)),
+)
+def test_commercial_dashboard_preserves_panels_at_target_viewports(
+    application, width, height,
+) -> None:
+    page = DashboardPage()
+    page.market_workspace.render_activity(AtlasActivitySnapshot(rows=tuple(
+        AtlasActivityRow(label, "Unknown")
+        for label in (
+            "Universe", "Evaluating", "Candidates", "Open Positions",
+            "Pending Orders", "Market Data", "Broker",
+        )
+    )))
+    page.resize(width, height)
+    page.show()
+    application.processEvents()
+
+    assert page._scroll.horizontalScrollBar().maximum() == 0
+    assert page.summary_splitter.orientation() == Qt.Orientation.Horizontal
+    assert page.market_workspace.splitter.orientation() == (
+        Qt.Orientation.Horizontal
+    )
+    assert page.summary_splitter.sizes()[1] >= 320
+    assert page.market_workspace.height() >= 650
+
+    ai = page.market_workspace.ai_thinking_section
+    focus = page.market_workspace.focus_section
+    activity = page.market_workspace.activity_section
+    assert ai.geometry().bottom() < focus.geometry().top()
+    assert focus.geometry().bottom() < activity.geometry().top()
+    assert activity.geometry().bottom() <= page.market_workspace.height()
 
 
 def test_production_gui_contains_no_reference_sample_values() -> None:

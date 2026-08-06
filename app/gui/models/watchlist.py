@@ -33,5 +33,8 @@ class WatchlistSnapshot:
     rows: tuple[WatchlistRow, ...] = ()
     sort_field: str = "projection"
     descending: bool = False
-    empty_title: str = "Atlas is not currently monitoring any eligible symbols."
-    empty_detail: str = "Atlas is waiting for the next scan cycle."
+    empty_title: str = "Atlas is scanning the market."
+    empty_detail: str = (
+        "High-confidence opportunities\n"
+        "will appear here automatically."
+    )

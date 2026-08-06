@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import QGridLayout, QWidget
 
 from app.gui.models import PortfolioDashboardSnapshot
@@ -12,10 +12,10 @@ class PortfolioSummaryStrip(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        layout = QGridLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setHorizontalSpacing(8)
-        layout.setVerticalSpacing(0)
+        self._layout = QGridLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setHorizontalSpacing(8)
+        self._layout.setVerticalSpacing(8)
 
         specifications = (
             ("Equity", "Net Liquidity", "primary"),
@@ -27,13 +27,25 @@ class PortfolioSummaryStrip(QWidget):
             ("Exposure", "Exposure", "standard"),
         )
         self._cards = {}
+        self._card_order = []
         for column, (source, title, emphasis) in enumerate(specifications):
             card = MetricCard(title, emphasis=emphasis)
             if source == "Open Positions":
                 card._value.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(card, 0, column)
+            self._layout.addWidget(card, 0, column)
             self._cards[source] = card
-            layout.setColumnStretch(column, 1)
+            self._card_order.append(card)
+            self._layout.setColumnStretch(column, 1)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 176)
+
+    def resizeEvent(self, event) -> None:
+        width = event.size().width()
+        columns = 2 if width < 620 else 4 if width < 1100 else 7
+        for index, card in enumerate(self._card_order):
+            self._layout.addWidget(card, index // columns, index % columns)
+        super().resizeEvent(event)
 
     def render(self, snapshot: PortfolioDashboardSnapshot) -> None:
         metrics = dict(snapshot.metrics)

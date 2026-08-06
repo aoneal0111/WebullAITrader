@@ -5,22 +5,28 @@ than storage concepts:
 
 - **Atlas Focus** is the actual active scanner universe supplied by the
   existing `WatchlistProjection`. It never inserts sample or placeholder
-  symbols. Its empty state explains whether Atlas is evaluating, waiting for
-  the next scan cycle, or paused for a missing capability.
+  symbols. Its scanning, idle, and capability-pause empty states are distinct;
+  a pause includes the projected reason and automatic-resume expectation.
 - **Atlas Activity** replaces the former static market-summary panel. It is a
-  compact view of facts already present in runtime and application read
-  models, including universe size, projected candidates, positions, pending
-  orders, market-data connectivity, and broker connectivity.
+  grouped metric-card view of facts already present in runtime and application
+  read models: Universe, Evaluating, Candidates, Open Positions, Pending
+  Orders, Market Data, and Broker.
   Unavailable facts display as `Unknown`; the view never estimates statistics.
-- **Mission Status** summarizes the objective, runtime mode, market session,
-  AI Scanner, decision engine, risk engine, and runtime health. The objective
-  remains `Unknown` until an objective is supplied by a runtime read model.
-- **AI Thinking** shows the latest projected decision reasoning when it exists.
-  Without reasoning, it uses descriptive operational states such as
-  `Searching`, `Waiting for next scan`, or `Managing active positions`; those
-  labels do not claim or synthesize model reasoning.
+- **Mission Status** is a vertically spaced status card for Objective,
+  Runtime, Market Session, AI Scanner, Decision Engine, Risk Engine, and
+  System Health. Values wrap instead of clipping. Objective wording is derived
+  only from projected runtime and open-position state; otherwise it is
+  `Unknown`.
+- **AI Thinking** is the primary context panel. It displays Current Objective,
+  Operational State, projected Reasoning, Last Decision, Confidence, and Next
+  Evaluation. Reasoning and confidence appear only when a decision projection
+  supplies them. Next Evaluation remains `Unknown` because the current runtime
+  read models do not publish that fact. Operational descriptions are state
+  labels, not synthesized reasoning.
 - **Mission Timeline** is the existing immutable runtime/timeline projection
-  with its filters and event details preserved under mission-control naming.
+  with filters, event details, and ordering preserved. Trade, risk, scanner,
+  broker, market-data, and system categories receive presentation-only color
+  cues for faster triage.
 - **AI Scanner** reports scanner readiness or a capability-aware pause.
 - **System Health** separates infrastructure failures from unavailable broker,
   subscription, configuration, and market-session capabilities.
@@ -77,3 +83,21 @@ projections over the existing immutable application state. They do not add
 logging, runtime instrumentation, market subscriptions, scanner work, or
 execution behavior. Missing metrics and reasoning are rendered as `Unknown`
 rather than inferred or fabricated.
+
+## Commercial operator workflow
+
+1. Start with Mission Status to confirm the runtime, market session, scanner,
+   decision engine, risk engine, and overall health are in an expected state.
+2. Use AI Thinking as the primary operational narrative. Treat Reasoning,
+   Last Decision, and Confidence as projected facts; `Unknown` means the
+   runtime has not supplied the value.
+3. Check Atlas Activity for available scale and connectivity facts, then use
+   Atlas Focus to inspect projected opportunities. Empty Focus states explain
+   whether Atlas is scanning, idle, or capability-paused.
+4. When no symbol is active, the Market panel remains informational. It does
+   not select a placeholder security or fabricate a price series.
+5. Use Mission Timeline for chronological investigation. Category colors help
+   locate important events, while existing filters and event ordering remain
+   authoritative.
+6. Use Positions, Orders, Decisions, Lifecycle, and System Health for deeper
+   review after the overview identifies an item requiring attention.

@@ -33,7 +33,7 @@ class RuntimeControlHeader(QFrame):
         layout.setSpacing(10)
 
         identity = _metric_group()
-        eyebrow = QLabel("ATLAS RUNTIME")
+        eyebrow = QLabel("RUNTIME CONTROLS")
         eyebrow.setObjectName("eyebrow")
         self.runtime_indicator = StatusIndicator("Stopped")
         identity.addWidget(eyebrow)

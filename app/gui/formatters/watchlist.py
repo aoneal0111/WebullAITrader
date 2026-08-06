@@ -61,6 +61,7 @@ def format_sorted_watchlist(
             ),
             *unknown,
         )
+    empty_title, empty_detail = _empty_state(health)
     return WatchlistSnapshot(
         rows=tuple(
             _row(entry, state.selected_symbol)
@@ -68,25 +69,32 @@ def format_sorted_watchlist(
         ),
         sort_field=sort_field,
         descending=descending,
-        empty_title=(
-            "Atlas is not currently monitoring any eligible symbols."
-        ),
-        empty_detail=_empty_detail(health),
+        empty_title=empty_title,
+        empty_detail=empty_detail,
     )
 
 
-def _empty_detail(health: HealthState | None) -> str:
-    if health is None or not (health.scanner_status or "").startswith("PAUSED"):
-        return "Atlas is waiting for the next scan cycle."
-    reason = (
-        "Overnight market-data subscription unavailable."
-        if health.entitlement_status == "NOT_SUBSCRIBED"
-        else health.last_warning or "A required capability is unavailable."
-    )
+def _empty_state(health: HealthState | None) -> tuple[str, str]:
+    scanner_status = (health.scanner_status or "") if health else ""
+    if scanner_status.startswith("PAUSED"):
+        reason = (
+            "Overnight subscription required."
+            if health and health.entitlement_status == "NOT_SUBSCRIBED"
+            else (health.last_warning if health else None)
+            or "A required capability is unavailable."
+        )
+        return (
+            "AI Scanner paused.",
+            f"Reason:\n\n{reason}\n\n"
+            "Atlas will resume automatically\n"
+            "when the capability becomes available.",
+        )
+    if scanner_status in {"IDLE", "READY", "WAITING"}:
+        return "Waiting for the next scan cycle.", ""
     return (
-        "AI Scanner Status: Paused\n\n"
-        f"Reason: {reason}\n\n"
-        "Atlas will automatically resume when the capability becomes available."
+        "Atlas is scanning the market.",
+        "High-confidence opportunities\n"
+        "will appear here automatically.",
     )
 
 

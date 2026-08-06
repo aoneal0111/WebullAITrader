@@ -23,9 +23,9 @@ def project_atlas_activity(state: ApplicationState) -> AtlasActivitySnapshot:
         else "Unknown"
     )
     values = (
-        ("Universe Size", health.supported_symbols),
-        ("Symbols Evaluated", None),
-        ("AI Candidates", candidates),
+        ("Universe", health.supported_symbols),
+        ("Evaluating", None),
+        ("Candidates", candidates),
         ("Open Positions", state.portfolio_projection.open_positions),
         ("Pending Orders", state.portfolio_projection.working_orders),
         ("Market Data", health.market_data_status or runtime.market_feed_status),

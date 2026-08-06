@@ -21,11 +21,25 @@ class MissionStatusSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class AIThinkingSnapshot:
-    state: str = "Waiting for next scan"
-    detail: str = "Runtime reasoning is unavailable."
+    objective: str = "Unknown"
+    operational_state: str = "Waiting for the next scan cycle."
     reasoning: str = "Unknown"
     last_decision: str = "Unknown"
+    next_evaluation: str = "Unknown"
+    confidence: str = "Unknown"
     tone: str = "neutral"
+
+    @property
+    def state(self) -> str:
+        """Compatibility alias for the former compact panel model."""
+
+        return self.operational_state
+
+    @property
+    def detail(self) -> str:
+        """Compatibility alias retained for presentation consumers."""
+
+        return self.objective
 
     @classmethod
     def initial(cls) -> "AIThinkingSnapshot":

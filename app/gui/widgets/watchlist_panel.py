@@ -46,8 +46,9 @@ class WatchlistPanel(QWidget):
             )
         )
         self._table.set_empty_state(
-            "Atlas is not currently monitoring any eligible symbols.",
-            "Atlas is waiting for the next scan cycle.",
+            "Atlas is scanning the market.",
+            "High-confidence opportunities\n"
+            "will appear here automatically.",
             icon="\u2606",
         )
         self._table.horizontalHeader().setSortIndicatorShown(True)

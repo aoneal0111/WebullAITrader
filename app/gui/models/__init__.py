@@ -15,6 +15,12 @@ from .watchlist import WatchlistRow, WatchlistSnapshot
 from .replay import ReplayWorkspaceSnapshot
 from .chart import ChartViewSnapshot
 from .paper_validation import PaperValidationDashboardSnapshot
+from .atlas_activity import AtlasActivityRow, AtlasActivitySnapshot
+from .mission_control import (
+    AIThinkingSnapshot,
+    MissionStatusRow,
+    MissionStatusSnapshot,
+)
 
 __all__ = [
     "ActivityEntry",
@@ -35,4 +41,9 @@ __all__ = [
     "ReplayWorkspaceSnapshot",
     "ChartViewSnapshot",
     "PaperValidationDashboardSnapshot",
+    "AtlasActivityRow",
+    "AtlasActivitySnapshot",
+    "AIThinkingSnapshot",
+    "MissionStatusRow",
+    "MissionStatusSnapshot",
 ]

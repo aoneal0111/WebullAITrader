@@ -12,13 +12,13 @@ def project_mission_status(state: ApplicationState) -> MissionStatusSnapshot:
     health = state.health_projection
     runtime = state.runtime
     values = (
-        ("Objective", None),
-        ("Runtime Mode", runtime.environment),
+        ("Objective", _objective(state)),
+        ("Runtime", runtime.phase.value),
         ("Market Session", health.market_session_status),
         ("AI Scanner", health.scanner_status),
         ("Decision Engine", health.ai_status or runtime.inference_status),
         ("Risk Engine", health.risk_status),
-        ("Runtime Health", health.runtime_status or runtime.phase.value),
+        ("System Health", health.runtime_status or runtime.phase.value),
     )
     return MissionStatusSnapshot(rows=tuple(
         MissionStatusRow(label, _display(value), _tone(value))
@@ -32,47 +32,68 @@ def project_ai_thinking(state: ApplicationState) -> AIThinkingSnapshot:
         key=lambda decision: decision.timestamp,
         default=None,
     )
-    if latest is not None:
-        return AIThinkingSnapshot(
-            state="Decision recorded",
-            detail=(
-                f"{latest.action} {latest.symbol} · "
-                f"{latest.confidence}% confidence"
-            ),
-            reasoning=latest.reasoning_summary,
-            last_decision=f"{latest.action} {latest.symbol}",
-            tone="good",
-        )
-
     runtime = state.runtime
     scanner = (state.health_projection.scanner_status or "").upper()
     positions = state.portfolio_projection.open_positions
     if positions > 0:
-        thinking_state = "Managing active positions"
-        detail = f"{positions} active position{'s' if positions != 1 else ''}."
+        operational_state = "Managing active positions."
         tone = "good"
     elif runtime.phase is RuntimePhase.RUNNING and not scanner.startswith("PAUSED"):
-        thinking_state = "Searching"
-        detail = "Waiting for a runtime decision."
+        has_ranked_candidates = any(
+            dict(entry.metadata).get("scanner_rank") is not None
+            for entry in state.watchlist_projection.entries
+        )
+        operational_state = (
+            "Evaluating high-confidence candidates."
+            if has_ranked_candidates
+            else "Searching for opportunities."
+        )
         tone = "good"
+    elif scanner.startswith("PAUSED"):
+        operational_state = "AI Scanner paused."
+        tone = "warn"
     else:
-        thinking_state = "Waiting for next scan"
-        detail = "No runtime decision reasoning is available."
-        tone = "warn" if scanner.startswith("PAUSED") else "neutral"
+        operational_state = "Waiting for the next scan cycle."
+        tone = "neutral"
     return AIThinkingSnapshot(
-        state=thinking_state,
-        detail=detail,
-        reasoning="Unknown",
-        last_decision="Unknown",
+        objective=_objective(state),
+        operational_state=operational_state,
+        reasoning=(
+            latest.reasoning_summary
+            if latest is not None and latest.reasoning_summary
+            else "Unknown"
+        ),
+        last_decision=(
+            f"{latest.action} {latest.symbol}"
+            if latest is not None
+            else "Unknown"
+        ),
+        next_evaluation="Unknown",
+        confidence=(
+            f"{latest.confidence}%" if latest is not None else "Unknown"
+        ),
         tone=tone,
     )
+
+
+def _objective(state: ApplicationState) -> str:
+    if state.portfolio_projection.open_positions > 0:
+        return "Managing Active Positions"
+    scanner = (state.health_projection.scanner_status or "").upper()
+    if (
+        state.runtime.phase is RuntimePhase.RUNNING
+        and not scanner.startswith("PAUSED")
+    ):
+        return "Searching for Opportunities"
+    return "Unknown"
 
 
 def _display(value: object | None) -> str:
     if value is None or value == "" or value == "--":
         return "Unknown"
     if isinstance(value, str):
-        return value.replace("_", " ").title()
+        normalized = value.replace("_", " ")
+        return normalized.title() if value == value.upper() else normalized
     return str(value)
 
 

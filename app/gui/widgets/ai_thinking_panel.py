@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QLabel, QVBoxLayout, QWidget
 
 from app.gui.models import AIThinkingSnapshot
 from app.gui.widgets.common import StatusIndicator
@@ -13,31 +13,55 @@ class AIThinkingPanel(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        self.state = StatusIndicator("Waiting for next scan")
-        self.detail = QLabel("No runtime decision reasoning is available.")
-        self.detail.setObjectName("muted")
-        self.detail.setWordWrap(True)
+        layout.setSpacing(10)
+        objective_title = QLabel("CURRENT OBJECTIVE")
+        objective_title.setObjectName("metricTitle")
+        self.objective = QLabel("Unknown")
+        self.objective.setObjectName("aiObjective")
+        self.objective.setWordWrap(True)
+        state_title = QLabel("OPERATIONAL STATE")
+        state_title.setObjectName("metricTitle")
+        self.state = StatusIndicator("Waiting for the next scan cycle.")
+        self.state.setWordWrap(True)
         reasoning_title = QLabel("REASONING")
         reasoning_title.setObjectName("metricTitle")
         self.reasoning = QLabel("Unknown")
+        self.reasoning.setObjectName("aiReasoning")
         self.reasoning.setWordWrap(True)
-        self.last_decision = QLabel("Last decision · Unknown")
-        self.last_decision.setObjectName("muted")
+        facts = QGridLayout()
+        facts.setHorizontalSpacing(12)
+        facts.setVerticalSpacing(6)
+        self.last_decision = _fact(facts, 0, "LAST DECISION")
+        self.confidence = _fact(facts, 1, "CONFIDENCE")
+        self.next_evaluation = _fact(facts, 2, "NEXT EVALUATION")
+        layout.addWidget(objective_title)
+        layout.addWidget(self.objective)
+        layout.addWidget(state_title)
         layout.addWidget(self.state)
-        layout.addWidget(self.detail)
         layout.addWidget(reasoning_title)
         layout.addWidget(self.reasoning)
-        layout.addWidget(self.last_decision)
+        layout.addLayout(facts)
         layout.addStretch()
 
     def render(self, snapshot: AIThinkingSnapshot) -> None:
         self.state.set_status(snapshot.state, snapshot.tone)
-        self.detail.setText(snapshot.detail)
+        self.objective.setText(snapshot.objective)
         self.reasoning.setText(snapshot.reasoning)
-        self.last_decision.setText(
-            f"Last decision · {snapshot.last_decision}"
-        )
+        self.last_decision.setText(snapshot.last_decision)
+        self.confidence.setText(snapshot.confidence)
+        self.next_evaluation.setText(snapshot.next_evaluation)
+
+
+def _fact(layout: QGridLayout, row: int, title: str) -> QLabel:
+    title_label = QLabel(title)
+    title_label.setObjectName("metricTitle")
+    value = QLabel("Unknown")
+    value.setObjectName("aiFact")
+    value.setWordWrap(True)
+    layout.addWidget(title_label, row, 0)
+    layout.addWidget(value, row, 1)
+    layout.setColumnStretch(1, 1)
+    return value
 
 
 __all__ = ["AIThinkingPanel"]

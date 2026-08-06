@@ -188,7 +188,6 @@ class MainWindow(QMainWindow):
                     ),
                 ),
                 HealthPresenter(
-                    self.dashboard.health_panel,
                     self.dashboard.operator_health_panel,
                     self.sidebar,
                     RenderAdapter(

@@ -34,8 +34,8 @@ class DashboardPage(QWidget):
         content.setObjectName("contentArea")
         content.setMinimumWidth(860)
         root = QVBoxLayout(content)
-        root.setContentsMargins(4, 2, 6, 2)
-        root.setSpacing(7)
+        root.setContentsMargins(8, 6, 10, 10)
+        root.setSpacing(10)
 
         heading = QHBoxLayout()
         titles = QVBoxLayout()
@@ -67,8 +67,9 @@ class DashboardPage(QWidget):
         self.summary_splitter.addWidget(mission_status_group)
         self.summary_splitter.setCollapsible(0, False)
         self.summary_splitter.setCollapsible(1, False)
-        self.summary_splitter.setStretchFactor(0, 1)
-        self.summary_splitter.setStretchFactor(1, 2)
+        self.summary_splitter.setStretchFactor(0, 2)
+        self.summary_splitter.setStretchFactor(1, 1)
+        self.summary_splitter.setSizes((880, 440))
         root.addWidget(self.summary_splitter)
         root.addWidget(self.runtime_header)
         root.addWidget(self.market_workspace, 3)
@@ -92,7 +93,7 @@ class DashboardPage(QWidget):
     def resizeEvent(self, event) -> None:
         self.summary_splitter.setOrientation(
             Qt.Orientation.Horizontal
-            if event.size().width() >= 1380
+            if event.size().width() >= 1120
             else Qt.Orientation.Vertical
         )
         super().resizeEvent(event)

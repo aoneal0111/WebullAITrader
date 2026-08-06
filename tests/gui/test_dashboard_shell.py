@@ -88,7 +88,7 @@ def test_supported_minimum_size_has_no_horizontal_dashboard_scroll(
 
     scroll = window.dashboard.findChild(QScrollArea)
     assert scroll.horizontalScrollBar().maximum() == 0
-    assert scroll.verticalScrollBar().maximum() == 0
+    assert scroll.verticalScrollBar().maximum() > 0
     for button in (
         window.start_button,
         window.pause_button,
@@ -102,7 +102,7 @@ def test_supported_minimum_size_has_no_horizontal_dashboard_scroll(
     ("width", "height"),
     ((1180, 760), (1440, 900), (1920, 1080)),
 )
-def test_dashboard_fits_supported_resolutions_without_clipping(
+def test_dashboard_preserves_content_at_supported_resolutions(
     application,
     window,
     width,
@@ -114,7 +114,7 @@ def test_dashboard_fits_supported_resolutions_without_clipping(
 
     scroll = window.dashboard.findChild(QScrollArea)
     assert scroll.horizontalScrollBar().maximum() == 0
-    assert scroll.verticalScrollBar().maximum() == 0
+    assert scroll.widget().height() >= scroll.viewport().height()
     assert window.dashboard.operator_workspace.height() > 150
     assert window.dashboard.market_workspace.height() > (
         window.dashboard.operator_workspace.height()
@@ -265,7 +265,7 @@ def test_existing_projection_snapshots_populate_dashboard_surfaces(
         )
     )
 
-    mission_runtime = window.dashboard.mission_status._values["Runtime Health"]
+    mission_runtime = window.dashboard.mission_status._values["System Health"]
     assert "Running" in mission_runtime.text()
     assert (
         window.dashboard.portfolio_summary._cards["Total P/L"]

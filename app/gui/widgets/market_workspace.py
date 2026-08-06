@@ -89,15 +89,25 @@ class EmptyChartCanvas(QFrame):
             int(center_y - 14),
         )
         lowered = self._message.lower()
-        if "select" in lowered:
+        if "no active symbol" in lowered:
+            title = "Atlas is currently scanning."
+            detail = "No active trade is being visualized."
+            hint = (
+                "The chart will automatically display the highest-priority "
+                "candidate or managed position."
+            )
+        elif "select" in lowered:
             title, detail = "Symbol not selected", "Select a symbol to initialize the chart"
+            hint = "No market series has been fabricated."
         elif "subscription" in lowered:
             title, detail = "Waiting for subscription", self._message
+            hint = "No market series has been fabricated."
         elif "entitlement" in lowered:
             title, detail = "Entitlement required", self._message
+            hint = "No market series has been fabricated."
         else:
             title, detail = "Market data unavailable", self._message
-        hint = "No market series has been fabricated."
+            hint = "No market series has been fabricated."
         title_font = painter.font()
         title_font.setPixelSize(16)
         title_font.setBold(True)
@@ -114,14 +124,14 @@ class EmptyChartCanvas(QFrame):
         painter.setFont(detail_font)
         painter.setPen(QColor(Colors.TEXT_MUTED))
         painter.drawText(
-            QRectF(0, center_y + 56, self.width(), 20),
-            Qt.AlignmentFlag.AlignHCenter,
+            QRectF(40, center_y + 56, self.width() - 80, 36),
+            Qt.AlignmentFlag.AlignHCenter | Qt.TextFlag.TextWordWrap,
             detail,
         )
         painter.setPen(QColor(Colors.TEXT_FAINT))
         painter.drawText(
-            QRectF(0, center_y + 78, self.width(), 20),
-            Qt.AlignmentFlag.AlignHCenter,
+            QRectF(50, center_y + 88, self.width() - 100, 44),
+            Qt.AlignmentFlag.AlignHCenter | Qt.TextFlag.TextWordWrap,
             hint,
         )
 
@@ -201,13 +211,22 @@ class ChartPlaceholder(QWidget):
         self._clock.start(1000)
         self._update_time()
 
-    def set_symbols(self, symbols: tuple[str, ...]) -> None:
+    def set_symbols(
+        self,
+        symbols: tuple[str, ...],
+        selected_symbol: str | None = None,
+    ) -> None:
         current = self._symbol_selector.currentText()
         self._symbol_selector.blockSignals(True)
         self._symbol_selector.clear()
+        self._symbol_selector.addItem("No active symbol")
         self._symbol_selector.addItems(symbols)
-        if current in symbols:
+        if selected_symbol in symbols:
+            self._symbol_selector.setCurrentText(selected_symbol)
+        elif current in symbols:
             self._symbol_selector.setCurrentText(current)
+        else:
+            self._symbol_selector.setCurrentIndex(0)
         self._symbol_selector.setEnabled(bool(symbols))
         self._symbol_selector.blockSignals(False)
 
@@ -240,10 +259,9 @@ class CompactWatchlistPanel(QWidget):
             ("Symbol", "Last", "Change", "Change %")
         )
         self._table.set_empty_state(
-            "Atlas is currently evaluating the market.",
-            "Eligible symbols will appear here\n"
-            "when AI confidence exceeds\n"
-            "configured thresholds.",
+            "Atlas is scanning the market.",
+            "High-confidence opportunities\n"
+            "will appear here automatically.",
             icon="\u2606",
         )
         header = self._table.horizontalHeader()
@@ -315,26 +333,28 @@ class MarketWorkspace(QWidget):
         self.watchlist = CompactWatchlistPanel()
         self.atlas_activity = AtlasActivityPanel()
         self.ai_thinking = AIThinkingPanel()
+        self.ai_thinking.setMinimumHeight(210)
         sidebar = QWidget()
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(7)
-        sidebar_layout.addWidget(
-            SectionPanel("Atlas Focus", self.watchlist), 3
+        self.ai_thinking_section = SectionPanel(
+            "AI Thinking", self.ai_thinking
         )
-        sidebar_layout.addWidget(
-            SectionPanel("Atlas Activity", self.atlas_activity), 2
+        self.focus_section = SectionPanel("Atlas Focus", self.watchlist)
+        self.activity_section = SectionPanel(
+            "Atlas Activity", self.atlas_activity
         )
-        sidebar_layout.addWidget(
-            SectionPanel("AI Thinking", self.ai_thinking), 2
-        )
+        sidebar_layout.addWidget(self.ai_thinking_section, 4)
+        sidebar_layout.addWidget(self.focus_section, 3)
+        sidebar_layout.addWidget(self.activity_section, 3)
         self.splitter.addWidget(
             SectionPanel("Market", self.chart_view)
         )
         self.splitter.addWidget(sidebar)
-        self.splitter.setStretchFactor(0, 7)
-        self.splitter.setStretchFactor(1, 3)
-        self.splitter.setSizes((780, 360))
+        self.splitter.setStretchFactor(0, 13)
+        self.splitter.setStretchFactor(1, 7)
+        self.splitter.setSizes((740, 400))
         self.splitter.setCollapsible(0, False)
         self.splitter.setCollapsible(1, False)
         layout.addWidget(self.splitter)
@@ -343,12 +363,13 @@ class MarketWorkspace(QWidget):
         self.watchlist.render(snapshot)
         selected = next(
             (row for row in snapshot.rows if row.selected),
-            snapshot.rows[0] if snapshot.rows else None,
+            None,
         )
         if isinstance(self.chart_view, ChartPlaceholder):
-            self.chart_view.set_symbols(tuple(row.symbol for row in snapshot.rows))
-            if selected is not None:
-                self.chart_view._symbol_selector.setCurrentText(selected.symbol)
+            self.chart_view.set_symbols(
+                tuple(row.symbol for row in snapshot.rows),
+                selected.symbol if selected is not None else None,
+            )
         chart_snapshot = ChartViewSnapshot(
             symbol=selected.symbol if selected is not None else "--",
             timeframe="1D",
@@ -360,7 +381,7 @@ class MarketWorkspace(QWidget):
             message=(
                 "Chart engine is not configured; market data is unavailable for this symbol."
                 if selected is not None
-                else "Select a symbol to initialize the market chart."
+                else "No active symbol is available for the market chart."
             ),
         )
         self.chart_view.render(chart_snapshot)
@@ -372,9 +393,9 @@ class MarketWorkspace(QWidget):
         self.ai_thinking.render(snapshot)
 
     def minimumSizeHint(self) -> QSize:
-        # The splitter reflows vertically before dense chart controls can
-        # impose their horizontal aggregate size on the dashboard shell.
-        return QSize(0, 280)
+        # Preserve complete primary-panel content. The dashboard scroll area
+        # handles shorter screens without allowing sidebar cards to overlap.
+        return QSize(0, 650)
 
     def resizeEvent(self, event) -> None:
         self.splitter.setOrientation(

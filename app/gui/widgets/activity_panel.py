@@ -33,7 +33,7 @@ class ActivityPanel(QWidget):
         self._category = QComboBox()
         self._symbol = QComboBox()
         self._search = QLineEdit()
-        self._search.setPlaceholderText("Search timeline")
+        self._search.setPlaceholderText("Search mission timeline")
         for widget in (
             self._severity,
             self._category,
@@ -48,8 +48,8 @@ class ActivityPanel(QWidget):
             ("Time", "Severity", "Category", "Symbol", "Source", "Event")
         )
         self._table.set_empty_state(
-            "No runtime events",
-            "Runtime activity will appear here.",
+            "No mission events",
+            "Projected runtime activity will appear here.",
             icon="\u25f7",
         )
         layout.addWidget(self._table)
@@ -95,6 +95,10 @@ class ActivityPanel(QWidget):
                     item.setForeground(
                         QBrush(QColor(_severity_color(value)))
                     )
+                elif column_index == 2:
+                    item.setForeground(
+                        QBrush(QColor(_category_color(value)))
+                    )
                 self._table.setItem(row_index, column_index, item)
 
     @staticmethod
@@ -128,4 +132,17 @@ def _severity_color(value: str) -> str:
         return Colors.DANGER
     if normalized in {"WARNING", "WARN"}:
         return Colors.WARNING
+    return Colors.TEXT_MUTED
+
+
+def _category_color(value: str) -> str:
+    normalized = value.upper()
+    if normalized in {"ORDER", "EXECUTION", "TRADE"}:
+        return Colors.SUCCESS
+    if normalized == "RISK":
+        return Colors.WARNING
+    if normalized in {"AI", "SCANNER"}:
+        return Colors.CYAN
+    if normalized in {"BROKER", "MARKET_DATA"}:
+        return Colors.ACCENT_HOVER
     return Colors.TEXT_MUTED

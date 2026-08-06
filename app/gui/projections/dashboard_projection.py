@@ -10,6 +10,11 @@ from app.operations_core import ApplicationState
 from app.read_models.orders import project_orders_read_model
 from app.read_models.positions import project_positions_read_model
 from app.gui.projections.activity_projection import project_timeline_activity
+from app.gui.projections.atlas_activity_projection import project_atlas_activity
+from app.gui.projections.mission_control_projection import (
+    project_ai_thinking,
+    project_mission_status,
+)
 
 
 def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
@@ -47,4 +52,7 @@ def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
         activity=project_timeline_activity(state, limit=10),
         positions=format_positions(positions_read_model),
         orders=format_orders(orders_read_model),
+        atlas_activity=project_atlas_activity(state),
+        mission_status=project_mission_status(state),
+        ai_thinking=project_ai_thinking(state),
     )

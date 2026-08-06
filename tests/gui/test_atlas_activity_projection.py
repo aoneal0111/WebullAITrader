@@ -61,27 +61,29 @@ def test_atlas_activity_projects_only_existing_runtime_facts() -> None:
         row.label: row.value for row in project_atlas_activity(state).rows
     }
 
-    assert values["Universe Size"] == "7300"
-    assert values["AI Candidates"] == "1"
+    assert values["Universe"] == "7300"
+    assert values["Candidates"] == "1"
     assert values["Market Data"] == "Connected"
     assert values["Broker"] == "Connected"
-    assert values["Symbols Evaluated"] == "Unknown"
+    assert values["Evaluating"] == "Unknown"
 
     mission = {
         row.label: row.value for row in project_mission_status(state).rows
     }
-    assert mission["Objective"] == "Unknown"
-    assert mission["Runtime Mode"] == "Paper"
+    assert mission["Objective"] == "Searching for Opportunities"
+    assert mission["Runtime"] == "Running"
     assert mission["Market Session"] == "Premarket"
     assert mission["AI Scanner"] == "Running"
     assert mission["Decision Engine"] == "Running"
     assert mission["Risk Engine"] == "Running"
-    assert mission["Runtime Health"] == "Running"
+    assert mission["System Health"] == "Running"
 
     thinking = project_ai_thinking(state)
-    assert thinking.state == "Decision recorded"
+    assert thinking.state == "Evaluating high-confidence candidates."
     assert thinking.reasoning == "Threshold passed."
     assert thinking.last_decision == "BUY XYZ"
+    assert thinking.confidence == "90%"
+    assert thinking.next_evaluation == "Unknown"
 
 
 def test_atlas_activity_does_not_invent_unavailable_statistics() -> None:
@@ -90,9 +92,9 @@ def test_atlas_activity_does_not_invent_unavailable_statistics() -> None:
         for row in project_atlas_activity(ApplicationState()).rows
     }
 
-    assert values["Universe Size"] == "Unknown"
-    assert values["Symbols Evaluated"] == "Unknown"
-    assert values["AI Candidates"] == "Unknown"
+    assert values["Universe"] == "Unknown"
+    assert values["Evaluating"] == "Unknown"
+    assert values["Candidates"] == "Unknown"
 
 
 def test_ai_thinking_uses_descriptive_state_without_inventing_reasoning() -> None:
@@ -100,6 +102,7 @@ def test_ai_thinking_uses_descriptive_state_without_inventing_reasoning() -> Non
         phase=RuntimePhase.RUNNING,
     )))
 
-    assert thinking.state == "Searching"
+    assert thinking.state == "Searching for opportunities."
     assert thinking.reasoning == "Unknown"
-    assert "reasoning" not in thinking.detail.lower()
+    assert thinking.confidence == "Unknown"
+    assert thinking.next_evaluation == "Unknown"

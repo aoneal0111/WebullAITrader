@@ -25,10 +25,19 @@ def application_stylesheet() -> str:
         border: 1px solid {Colors.BORDER};
         border-radius: 5px;
     }}
+    QFrame#missionStatusCard, QFrame#activityMetric {{
+        background: {Colors.SURFACE_ALT};
+        border: 1px solid {Colors.BORDER_SOFT};
+        border-radius: 6px;
+    }}
+    QFrame#activityMetric:hover {{ border-color: {Colors.BORDER_STRONG}; }}
     QFrame#metricCard:hover, QFrame#statusCard:hover {{ border-color: {Colors.BORDER_STRONG}; background: {Colors.SURFACE_ALT}; }}
     QFrame#metricCard[emphasis='primary'] {{ border-color: {Colors.BORDER_STRONG}; background: {Colors.SURFACE_ALT}; }}
     QFrame#metricCard[emphasis='compact'] {{ background: {Colors.SURFACE}; border-color: {Colors.BORDER_SOFT}; }}
     QLabel#metricTitle {{ color: {Colors.TEXT_MUTED}; font-size: {Typography.SM}px; font-weight: 700; letter-spacing: 0.35px; }}
+    QLabel#aiObjective {{ color: {Colors.TEXT_STRONG}; font-size: {Typography.XL}px; font-weight: 750; }}
+    QLabel#aiReasoning {{ color: {Colors.TEXT}; font-size: {Typography.MD}px; }}
+    QLabel#aiFact {{ color: {Colors.TEXT_STRONG}; font-weight: 650; }}
     QLabel#metricValue {{ font-family: "{Typography.MONO}"; font-size: {Typography.LG}px; font-weight: 700; color: {Colors.TEXT_STRONG}; }}
     QLabel#metricValue[emphasis='primary'] {{ font-size: {Typography.PRIMARY_METRIC}px; font-weight: 750; }}
     QLabel#metricValue[emphasis='medium'] {{ font-size: {Typography.XL}px; }}
