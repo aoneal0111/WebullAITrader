@@ -147,6 +147,7 @@ def test_operator_workspace_exposes_projection_backed_tabs(
         "Mission Timeline",
         "Lifecycle",
         "System Health",
+        "Portfolio Intelligence",
     )
 
 

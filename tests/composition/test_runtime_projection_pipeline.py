@@ -20,4 +20,5 @@ def test_shared_projection_pipeline_exposes_production_sink_order() -> None:
         pipeline.watchlist_projection,
         pipeline.timeline_projection,
         pipeline.decision_projection,
+        pipeline.portfolio_intelligence_projection,
     )
