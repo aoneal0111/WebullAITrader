@@ -8,6 +8,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from app.gui.models import (
+    AtlasActivityRow,
+    AtlasActivitySnapshot,
     HealthDashboardSnapshot,
     OrdersSnapshot,
     PaperValidationDashboardSnapshot,
@@ -85,13 +87,13 @@ def test_portfolio_pnl_uses_directional_color(application, value, tone) -> None:
     assert strip._cards["Total P/L"]._value.property("tone") == tone
 
 
-def test_compact_watchlist_and_market_summary_use_same_snapshot(application) -> None:
+def test_compact_atlas_focus_and_activity_use_projection_snapshots(application) -> None:
     del application
     workspace = MarketWorkspace()
     snapshot = WatchlistSnapshot(
         rows=(
             WatchlistRow(
-                symbol="SPY", selected=True, latest_price="500.00",
+                symbol="XYZ", selected=True, latest_price="500.00",
                 change="+2.00", change_percent="+0.40%", bid="499.99",
                 ask="500.01", volume="100", market_status="OPEN",
                 last_update="10:00:00", stale="LIVE",
@@ -99,12 +101,17 @@ def test_compact_watchlist_and_market_summary_use_same_snapshot(application) -> 
         )
     )
     workspace.render(snapshot)
+    workspace.render_activity(AtlasActivitySnapshot(rows=(
+        AtlasActivityRow("Universe Size", "7300", "good"),
+        AtlasActivityRow("Symbols Evaluated", "Unknown"),
+    )))
 
     assert workspace.watchlist._table.columnCount() == 4
     assert workspace.watchlist._table.item(0, 2).text() == "+2.00"
-    value, change = workspace.market_summary._rows["SPY"]
-    assert (value.text(), change.text()) == ("500.00", "+0.40%")
-    assert workspace.market_summary._rows["QQQ"][0].text() == "—"
+    assert workspace.atlas_activity._rows["Universe Size"].text() == "●  7300"
+    assert workspace.atlas_activity._rows["Symbols Evaluated"].text() == (
+        "●  Unknown"
+    )
 
 
 def test_operator_tables_expose_reference_columns_and_real_rows(application) -> None:
@@ -137,7 +144,7 @@ def test_health_diagnostics_and_paper_validation_remain_visible(application) -> 
             ("Streaming", "DEGRADED"),
             ("Subscription", "ACCEPTED"),
             ("Entitlement", "GRANTED"),
-            ("Probe SPY", "SUPPORTED"),
+            ("Market Data Probe", "SUPPORTED"),
             ("Scanner", "READY"),
         ),
         incident="Stream reconnecting.",
@@ -215,8 +222,14 @@ def test_dashboard_uses_atlas_operator_terminology(application) -> None:
     labels = {label.text() for label in dashboard.findChildren(QLabel)}
 
     assert "Atlas Focus" in labels
+    assert "Atlas Activity" in labels
     assert "PORTFOLIO OVERVIEW" in labels
+    assert "MISSION STATUS" in labels
+    assert "RUNTIME CONTROLS" in labels
     assert "Watchlist" not in labels
+    assert "Market Summary" not in labels
+    assert "AI Thinking" in labels
+    assert dashboard.operator_workspace.tabs.tabText(3) == "Mission Timeline"
     assert "PORTFOLIO SUMMARY" not in labels
     assert dashboard.operator_workspace.tabs.tabText(5) == "System Health"
 

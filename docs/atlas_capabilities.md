@@ -5,7 +5,22 @@ than storage concepts:
 
 - **Atlas Focus** is the actual active scanner universe supplied by the
   existing `WatchlistProjection`. It never inserts sample or placeholder
-  symbols.
+  symbols. Its empty state explains whether Atlas is evaluating, waiting for
+  the next scan cycle, or paused for a missing capability.
+- **Atlas Activity** replaces the former static market-summary panel. It is a
+  compact view of facts already present in runtime and application read
+  models, including universe size, projected candidates, positions, pending
+  orders, market-data connectivity, and broker connectivity.
+  Unavailable facts display as `Unknown`; the view never estimates statistics.
+- **Mission Status** summarizes the objective, runtime mode, market session,
+  AI Scanner, decision engine, risk engine, and runtime health. The objective
+  remains `Unknown` until an objective is supplied by a runtime read model.
+- **AI Thinking** shows the latest projected decision reasoning when it exists.
+  Without reasoning, it uses descriptive operational states such as
+  `Searching`, `Waiting for next scan`, or `Managing active positions`; those
+  labels do not claim or synthesize model reasoning.
+- **Mission Timeline** is the existing immutable runtime/timeline projection
+  with its filters and event details preserved under mission-control naming.
 - **AI Scanner** reports scanner readiness or a capability-aware pause.
 - **System Health** separates infrastructure failures from unavailable broker,
   subscription, configuration, and market-session capabilities.
@@ -46,3 +61,19 @@ scanner startup path resumes automatically.
 
 Atlas Focus's empty state distinguishes a capability pause from an ordinary
 idle scan cycle and does not manufacture symbols.
+
+## Runtime-only dashboard activity
+
+The dashboard no longer carries a benchmark-symbol market summary. Atlas
+Activity receives the same immutable application-state snapshots as the other
+presentation surfaces and does not subscribe to quotes or introduce runtime
+work. No default ETFs, benchmark tickers, sample symbols, or placeholder market
+symbols are supplied by Atlas Activity or Atlas Focus.
+
+## Mission Control presentation boundary
+
+Mission Status, Atlas Activity, AI Thinking, and Mission Timeline are GUI
+projections over the existing immutable application state. They do not add
+logging, runtime instrumentation, market subscriptions, scanner work, or
+execution behavior. Missing metrics and reasoning are rendered as `Unknown`
+rather than inferred or fabricated.

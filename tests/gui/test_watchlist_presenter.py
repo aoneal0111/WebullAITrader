@@ -114,11 +114,9 @@ def test_empty_atlas_focus_explains_overnight_capability_pause() -> None:
         )
     ))
 
-    assert view.snapshot.empty_title == (
-        "Atlas is not currently monitoring any eligible symbols."
-    )
-    assert "AI Scanner Status: Paused" in view.snapshot.empty_detail
-    assert "Overnight market-data subscription unavailable." in (
+    assert view.snapshot.empty_title == "AI Scanner paused."
+    assert "Reason:" in view.snapshot.empty_detail
+    assert "Overnight subscription required." in (
         view.snapshot.empty_detail
     )
-    assert "automatically resume" in view.snapshot.empty_detail
+    assert "resume automatically" in view.snapshot.empty_detail

@@ -67,7 +67,7 @@ def test_health_presenter_prepares_immutable_dashboard_model() -> None:
     assert ("Market Data Environment", "PRODUCTION") in view.snapshot.metrics
     assert ("Entitlement", "GRANTED") in view.snapshot.metrics
     assert ("Subscription", "ACCEPTED") in view.snapshot.metrics
-    assert ("Probe AAPL", "SUPPORTED") in view.snapshot.metrics
+    assert ("Market Data Probe 1", "SUPPORTED") in view.snapshot.metrics
     assert ("Supported Symbols", "7300") in view.snapshot.metrics
     assert ("AI Scanner", "ACTIVE") in view.snapshot.metrics
     assert dict(view.snapshot.capabilities)["Stocks"] == "Unknown"

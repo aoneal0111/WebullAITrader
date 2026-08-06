@@ -11,8 +11,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.models import DashboardSnapshot
-from app.gui.widgets.infrastructure_strip import InfrastructureStrip
 from app.gui.widgets.market_workspace import MarketWorkspace
+from app.gui.widgets.mission_status_panel import MissionStatusPanel
 from app.gui.widgets.operator_workspace import OperatorWorkspace
 from app.gui.widgets.portfolio_summary_strip import PortfolioSummaryStrip
 from app.gui.widgets.runtime_control_header import RuntimeControlHeader
@@ -41,7 +41,7 @@ class DashboardPage(QWidget):
         titles = QVBoxLayout()
         eyebrow = QLabel("OPERATIONS / OVERVIEW")
         eyebrow.setObjectName("eyebrow")
-        title = QLabel("Atlas Trading Dashboard")
+        title = QLabel("Atlas Mission Control")
         title.setObjectName("pageTitle")
         titles.addWidget(eyebrow)
         titles.addWidget(title)
@@ -50,27 +50,27 @@ class DashboardPage(QWidget):
         root.addLayout(heading)
 
         self.runtime_header = RuntimeControlHeader()
-        self.infrastructure = InfrastructureStrip()
+        self.mission_status = MissionStatusPanel()
         self.portfolio_summary = PortfolioSummaryStrip()
         self.market_workspace = MarketWorkspace()
         self.operator_workspace = OperatorWorkspace()
 
-        root.addWidget(self.runtime_header)
         self.summary_splitter = QSplitter(Qt.Orientation.Vertical)
         self.summary_splitter.setHandleWidth(2)
-        infrastructure_group = _section_group(
-            "Infrastructure", self.infrastructure
-        )
         portfolio_group = _section_group(
             "Portfolio Overview", self.portfolio_summary
         )
-        self.summary_splitter.addWidget(infrastructure_group)
+        mission_status_group = _section_group(
+            "Mission Status", self.mission_status
+        )
         self.summary_splitter.addWidget(portfolio_group)
+        self.summary_splitter.addWidget(mission_status_group)
         self.summary_splitter.setCollapsible(0, False)
         self.summary_splitter.setCollapsible(1, False)
         self.summary_splitter.setStretchFactor(0, 1)
         self.summary_splitter.setStretchFactor(1, 2)
         root.addWidget(self.summary_splitter)
+        root.addWidget(self.runtime_header)
         root.addWidget(self.market_workspace, 3)
         root.addWidget(self.operator_workspace, 2)
 
@@ -80,8 +80,8 @@ class DashboardPage(QWidget):
         self.activity_panel = self.operator_workspace.timeline
         self.decisions_panel = self.operator_workspace.decisions
         self.portfolio_panel = self.portfolio_summary
-        self.health_panel = self.infrastructure
         self.operator_health_panel = self.operator_workspace.health
+        self.health_panel = self.operator_health_panel
         self.replay_status_panel = self.operator_workspace.lifecycle
         self.paper_validation_panel = self.operator_workspace.paper_validation
 
@@ -103,6 +103,9 @@ class DashboardPage(QWidget):
         self.positions_panel.render(snapshot.positions)
         self.orders_panel.render(snapshot.orders)
         self.paper_validation_panel.render(snapshot.paper_validation)
+        self.market_workspace.render_activity(snapshot.atlas_activity)
+        self.mission_status.render(snapshot.mission_status)
+        self.market_workspace.render_ai_thinking(snapshot.ai_thinking)
 
 
 def _section_group(title: str, content: QWidget) -> QWidget:

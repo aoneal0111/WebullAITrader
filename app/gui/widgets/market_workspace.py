@@ -20,9 +20,13 @@ from PySide6.QtWidgets import (
 
 from app.gui.design.tokens import Colors, Dimensions
 from app.gui.models import (
+    AIThinkingSnapshot,
+    AtlasActivitySnapshot,
     ChartViewSnapshot,
     WatchlistSnapshot,
 )
+from app.gui.widgets.atlas_activity_panel import AtlasActivityPanel
+from app.gui.widgets.ai_thinking_panel import AIThinkingPanel
 from app.gui.widgets.common import StatusIndicator
 from app.gui.widgets.data_table import StyledDataTable
 from app.gui.widgets.panel import SectionPanel
@@ -232,21 +236,14 @@ class CompactWatchlistPanel(QWidget):
         self.setMinimumWidth(Dimensions.WATCHLIST_MIN_WIDTH)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        controls = QHBoxLayout()
-        for label in ("+", "\u22ef"):
-            button = QPushButton(label)
-            button.setObjectName("ghostButton")
-            button.setEnabled(False)
-            button.setToolTip("No watchlist command boundary is configured.")
-            controls.addWidget(button)
-        controls.addStretch()
-        layout.addLayout(controls)
         self._table = StyledDataTable(
             ("Symbol", "Last", "Change", "Change %")
         )
         self._table.set_empty_state(
-            "Atlas is not currently monitoring any eligible symbols.",
-            "Atlas is waiting for the next scan cycle.",
+            "Atlas is currently evaluating the market.",
+            "Eligible symbols will appear here\n"
+            "when AI confidence exceeds\n"
+            "configured thresholds.",
             icon="\u2606",
         )
         header = self._table.horizontalHeader()
@@ -316,7 +313,8 @@ class MarketWorkspace(QWidget):
         self.splitter.setHandleWidth(2)
         self.chart_view = chart_view or ChartPlaceholder()
         self.watchlist = CompactWatchlistPanel()
-        self.market_summary = MarketSummaryPanel()
+        self.atlas_activity = AtlasActivityPanel()
+        self.ai_thinking = AIThinkingPanel()
         sidebar = QWidget()
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
@@ -324,7 +322,12 @@ class MarketWorkspace(QWidget):
         sidebar_layout.addWidget(
             SectionPanel("Atlas Focus", self.watchlist), 3
         )
-        sidebar_layout.addWidget(SectionPanel("Market Summary", self.market_summary), 2)
+        sidebar_layout.addWidget(
+            SectionPanel("Atlas Activity", self.atlas_activity), 2
+        )
+        sidebar_layout.addWidget(
+            SectionPanel("AI Thinking", self.ai_thinking), 2
+        )
         self.splitter.addWidget(
             SectionPanel("Market", self.chart_view)
         )
@@ -338,7 +341,6 @@ class MarketWorkspace(QWidget):
 
     def render(self, snapshot: WatchlistSnapshot) -> None:
         self.watchlist.render(snapshot)
-        self.market_summary.render(snapshot)
         selected = next(
             (row for row in snapshot.rows if row.selected),
             snapshot.rows[0] if snapshot.rows else None,
@@ -363,6 +365,12 @@ class MarketWorkspace(QWidget):
         )
         self.chart_view.render(chart_snapshot)
 
+    def render_activity(self, snapshot: AtlasActivitySnapshot) -> None:
+        self.atlas_activity.render(snapshot)
+
+    def render_ai_thinking(self, snapshot: AIThinkingSnapshot) -> None:
+        self.ai_thinking.render(snapshot)
+
     def minimumSizeHint(self) -> QSize:
         # The splitter reflows vertically before dense chart controls can
         # impose their horizontal aggregate size on the dashboard shell.
@@ -375,44 +383,6 @@ class MarketWorkspace(QWidget):
             else Qt.Orientation.Horizontal
         )
         super().resizeEvent(event)
-
-
-class MarketSummaryPanel(QWidget):
-    """Show benchmark quotes only when supplied by the watchlist projection."""
-
-    SYMBOLS = ("SPY", "QQQ", "VIX", "DXY")
-
-    def __init__(self) -> None:
-        super().__init__()
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        self._rows: dict[str, tuple[QLabel, QLabel]] = {}
-        for symbol in self.SYMBOLS:
-            row = QHBoxLayout()
-            name = QLabel(symbol)
-            name.setObjectName("monoValue")
-            value = QLabel("—")
-            value.setObjectName("monoValue")
-            change = QLabel("—")
-            change.setObjectName("muted")
-            row.addWidget(name)
-            row.addStretch()
-            row.addWidget(value)
-            row.addWidget(change)
-            layout.addLayout(row)
-            self._rows[symbol] = (value, change)
-        layout.addStretch()
-
-    def render(self, snapshot: WatchlistSnapshot) -> None:
-        by_symbol = {row.symbol.upper(): row for row in snapshot.rows}
-        for symbol, (value, change) in self._rows.items():
-            quote = by_symbol.get(symbol)
-            value.setText(quote.latest_price if quote is not None else "—")
-            change_text = quote.change_percent if quote is not None else "—"
-            change.setText(change_text)
-            tone = _watchlist_color(3, change_text)
-            change.setStyleSheet(f"color: {tone};" if tone else "")
 
 
 def _watchlist_color(column: int, value: str) -> str | None:
@@ -437,5 +407,4 @@ __all__ = [
     "ChartView",
     "CompactWatchlistPanel",
     "MarketWorkspace",
-    "MarketSummaryPanel",
 ]

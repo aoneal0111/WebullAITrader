@@ -180,11 +180,11 @@ def test_dashboard_replay_status_renders_presenter_model(application) -> None:
     (
         (PositionsPanel, PositionsSnapshot.initial(), "No positions"),
         (OrdersPanel, OrdersSnapshot.initial(), "No active orders"),
-        (ActivityPanel, ActivitySnapshot.initial(), "No runtime events"),
+        (ActivityPanel, ActivitySnapshot.initial(), "No mission events"),
         (
             WatchlistPanel,
             WatchlistSnapshot(),
-            "Atlas is not currently monitoring any eligible symbols.",
+                "Atlas is currently evaluating the market.",
         ),
     ),
 )

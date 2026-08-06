@@ -144,7 +144,7 @@ def test_operator_workspace_exposes_projection_backed_tabs(
         "Positions",
         "Orders",
         "Decisions",
-        "Timeline",
+        "Mission Timeline",
         "Lifecycle",
         "System Health",
     )
@@ -265,8 +265,8 @@ def test_existing_projection_snapshots_populate_dashboard_surfaces(
         )
     )
 
-    broker_card = window.dashboard.infrastructure._cards["Broker"]
-    assert "CONNECTED" in broker_card._indicator.text()
+    mission_runtime = window.dashboard.mission_status._values["Runtime Health"]
+    assert "Running" in mission_runtime.text()
     assert (
         window.dashboard.portfolio_summary._cards["Total P/L"]
         ._value.text()
