@@ -18,13 +18,17 @@ class PortfolioSummaryStrip(QWidget):
         self._layout.setVerticalSpacing(8)
 
         specifications = (
-            ("Equity", "Net Liquidity", "primary"),
+            ("Equity", "Net Equity", "primary"),
+            ("Cash", "Cash", "medium"),
             ("Buying Power", "Buying Power", "medium"),
             ("Total P/L", "Total PnL (Day)", "primary"),
             ("Unrealized P/L", "Unrealized PnL", "standard"),
             ("Realized P/L", "Realized PnL", "standard"),
             ("Open Positions", "Positions", "standard"),
             ("Exposure", "Exposure", "standard"),
+            ("Gross Exposure", "Gross Exposure", "standard"),
+            ("Net Exposure", "Net Exposure", "standard"),
+            ("Current Drawdown", "Current Drawdown", "standard"),
         )
         self._cards = {}
         self._card_order = []

@@ -78,6 +78,9 @@ symbols are supplied by Atlas Activity or Atlas Focus.
 
 ## Mission Control presentation boundary
 
+The projection-backed Portfolio Intelligence tab and deterministic portfolio
+observations are described in [Portfolio intelligence](portfolio_intelligence.md).
+
 Mission Status, Atlas Activity, AI Thinking, and Mission Timeline are GUI
 projections over the existing immutable application state. They do not add
 logging, runtime instrumentation, market subscriptions, scanner work, or

@@ -63,7 +63,9 @@ def project_ai_thinking(state: ApplicationState) -> AIThinkingSnapshot:
         objective=_objective(state),
         operational_state=operational_state,
         reasoning=(
-            latest.reasoning_summary
+            " ".join(state.portfolio_intelligence.observations)
+            if state.portfolio_intelligence is not None and state.portfolio_intelligence.observations
+            else latest.reasoning_summary
             if latest is not None and latest.reasoning_summary
             else "Unknown"
         ),

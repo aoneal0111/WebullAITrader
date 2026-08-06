@@ -27,6 +27,7 @@ from app.read_models.position_projection import PositionProjection
 from app.read_models.timeline_projection import TimelineProjection
 from app.read_models.decision_projection import DecisionProjection
 from app.read_models.portfolio_projection import PortfolioProjection
+from app.portfolio_intelligence.projection import PortfolioIntelligenceProjection
 from app.read_models.health_projection import HealthProjection
 from app.read_models.watchlist_projection import WatchlistProjection
 from app.operations.scanner_runtime import SnapshotResolver
@@ -68,6 +69,7 @@ class DesktopRuntimeBootstrap:
     timeline_projection: TimelineProjection | None = None
     decision_projection: DecisionProjection | None = None
     portfolio_projection: PortfolioProjection | None = None
+    portfolio_intelligence_projection: PortfolioIntelligenceProjection | None = None
     health_projection: HealthProjection | None = None
     watchlist_projection: WatchlistProjection | None = None
 
@@ -170,6 +172,11 @@ def create_desktop_runtime_bootstrap(
         if projection_pipeline is not None
         else None
     )
+    portfolio_intelligence_projection = (
+        projection_pipeline.portfolio_intelligence_projection
+        if projection_pipeline is not None
+        else None
+    )
     health_projection = (
         projection_pipeline.health_projection
         if projection_pipeline is not None
@@ -221,6 +228,7 @@ def create_desktop_runtime_bootstrap(
         timeline_projection=timeline_projection,
         decision_projection=decision_projection,
         portfolio_projection=portfolio_projection,
+        portfolio_intelligence_projection=portfolio_intelligence_projection,
         health_projection=health_projection,
         watchlist_projection=watchlist_projection,
     )

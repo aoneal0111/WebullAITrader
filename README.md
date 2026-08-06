@@ -1,5 +1,9 @@
 # Webull AI Trader — Deterministic Trading Architecture
 
+Portfolio-level exposure, concentration, correlation, performance, attribution,
+risk-budget observation, replay behavior, and Mission Control presentation are
+documented in [Portfolio intelligence](docs/portfolio_intelligence.md).
+
 Dashboard terminology and broker-independent runtime capability presentation
 are documented in [Atlas capability awareness](docs/atlas_capabilities.md).
 

@@ -197,6 +197,7 @@ class MainWindow(QMainWindow):
                 self._decisions_presenter,
                 PortfolioPresenter(
                     self.dashboard.portfolio_panel,
+                    self.dashboard.operator_workspace.portfolio_intelligence,
                     RenderAdapter(
                         self.dashboard.runtime_header.render_portfolio
                     ),

@@ -13,6 +13,8 @@ from app.operations_core.events import (
     OperationsEvent,
     DecisionsUpdated,
     PortfolioUpdated,
+    PortfolioIntelligenceUpdated,
+    PortfolioObservationPublished,
     HealthUpdated,
     WatchlistUpdated,
     OperationsOrder,
@@ -32,6 +34,7 @@ from app.operations_core.events import (
 )
 
 if TYPE_CHECKING:
+    from app.portfolio_intelligence.models import PortfolioIntelligenceSnapshot
     from app.account_information.models import BrokerNeutralAccountInformation
     from app.replay_workspace.models import ReplayWorkspaceState
     from app.read_models.decisions.models import DecisionsReadModelSnapshot
@@ -145,6 +148,7 @@ class ApplicationState:
     portfolio_projection: "PortfolioSummary" = field(
         default_factory=_initial_portfolio_projection
     )
+    portfolio_intelligence: "PortfolioIntelligenceSnapshot | None" = None
     health_projection: "HealthState" = field(
         default_factory=_initial_health_projection
     )
@@ -249,6 +253,10 @@ class ApplicationStateStore:
                 self._state.portfolio_projection,
                 event,
             )
+            portfolio_intelligence = self._reduce_portfolio_intelligence(
+                self._state.portfolio_intelligence,
+                event,
+            )
             health_projection = self._reduce_health_projection(
                 self._state.health_projection,
                 event,
@@ -268,6 +276,7 @@ class ApplicationStateStore:
                     TimelineUpdated,
                     DecisionsUpdated,
                     PortfolioUpdated,
+                    PortfolioIntelligenceUpdated,
                     HealthUpdated,
                     WatchlistUpdated,
                 ),
@@ -286,6 +295,7 @@ class ApplicationStateStore:
                 timeline_projection=timeline_projection,
                 decision_projection=decision_projection,
                 portfolio_projection=portfolio_projection,
+                portfolio_intelligence=portfolio_intelligence,
                 health_projection=health_projection,
                 watchlist_projection=watchlist_projection,
                 replay=self._state.replay,
@@ -474,6 +484,15 @@ class ApplicationStateStore:
         return current
 
     @staticmethod
+    def _reduce_portfolio_intelligence(
+        current: "PortfolioIntelligenceSnapshot | None",
+        event: OperationsEvent,
+    ) -> "PortfolioIntelligenceSnapshot | None":
+        if isinstance(event, PortfolioIntelligenceUpdated):
+            return event.snapshot
+        return current
+
+    @staticmethod
     def _reduce_health_projection(
         current: "HealthState",
         event: OperationsEvent,
@@ -529,6 +548,8 @@ class ApplicationStateStore:
             message = (
                 f"Position state updated: {position_count} {noun}."
             )
+        elif isinstance(event, PortfolioObservationPublished):
+            message = event.observation.message
         else:
             message = type(event).__name__
 

@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from app.account_information.models import BrokerNeutralAccountInformation
+from app.portfolio_intelligence.models import PortfolioIntelligenceSnapshot
+from app.portfolio_intelligence.events import PortfolioObservationEvent
 from app.capabilities import CapabilitySnapshot
 
 
@@ -606,6 +608,28 @@ class PortfolioUpdated(OperationsEvent):
             raise TypeError(
                 "summary must be an OperationsPortfolioSummary"
             )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PortfolioIntelligenceUpdated(OperationsEvent):
+    """Replace the observational portfolio-intelligence read model."""
+
+    snapshot: PortfolioIntelligenceSnapshot
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        if not isinstance(self.snapshot, PortfolioIntelligenceSnapshot):
+            raise TypeError("snapshot must be PortfolioIntelligenceSnapshot")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PortfolioObservationPublished(OperationsEvent):
+    observation: PortfolioObservationEvent
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        if not isinstance(self.observation, PortfolioObservationEvent):
+            raise TypeError("observation must be PortfolioObservationEvent")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

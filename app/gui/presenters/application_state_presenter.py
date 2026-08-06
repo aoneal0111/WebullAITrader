@@ -153,6 +153,12 @@ class PortfolioPresenter:
                 if account is not None
                 else None
             ),
+            intelligence=state.portfolio_intelligence,
+            current_drawdown=(
+                state.paper_runtime.current_drawdown
+                if state.paper_runtime is not None
+                else None
+            ),
         )
         for view in self._portfolio_views:
             view.render(snapshot)

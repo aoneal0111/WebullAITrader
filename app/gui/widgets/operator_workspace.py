@@ -8,6 +8,7 @@ from app.gui.widgets.decisions_panel import DecisionsPanel
 from app.gui.widgets.health_panel import HealthPanel
 from app.gui.widgets.orders_panel import OrdersPanel
 from app.gui.widgets.positions_panel import PositionsPanel
+from app.gui.widgets.portfolio_panel import PortfolioPanel
 from app.gui.widgets.paper_validation_panel import PaperValidationPanel
 from app.gui.widgets.replay_status_panel import ReplayStatusPanel
 from app.gui.design.tokens import Dimensions
@@ -31,6 +32,7 @@ class OperatorWorkspace(QWidget):
             QSizePolicy.Policy.Ignored,
         )
         self.positions = PositionsPanel()
+        self.portfolio_intelligence = PortfolioPanel()
         self.orders = OrdersPanel()
         self.decisions = DecisionsPanel()
         self.timeline = ActivityPanel()
@@ -53,6 +55,7 @@ class OperatorWorkspace(QWidget):
         self.tabs.addTab(self.timeline, "Mission Timeline")
         self.tabs.addTab(self.lifecycle, "Lifecycle")
         self.tabs.addTab(health_workspace, "System Health")
+        self.tabs.addTab(self.portfolio_intelligence, "Portfolio Intelligence")
         layout.addWidget(self.tabs)
 
     def resizeEvent(self, event) -> None:

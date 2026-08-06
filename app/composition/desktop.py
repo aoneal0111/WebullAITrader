@@ -34,6 +34,7 @@ from app.paper_trading.command_composition import (
     PaperTradingCommandComposition,
     create_paper_trading_command_composition,
 )
+from app.portfolio_intelligence import PortfolioAccount, PortfolioIntelligenceService, PortfolioRiskLimits, load_portfolio_intelligence_configuration
 
 
 @dataclass(slots=True)
@@ -96,6 +97,19 @@ def create_desktop_composition(
         ),
         None,
     )
+    def portfolio_account_source() -> PortfolioAccount:
+        state = state_store.snapshot()
+        account = state.broker_account
+        if account is not None:
+            return PortfolioAccount(account.account_id, account.equity, account.cash_balance, account.buying_power, account.currency)
+        paper = state.paper_runtime
+        return PortfolioAccount(
+            operational_configuration.account_id or PAPER_ACCOUNT_ID,
+            paper.current_equity if paper is not None else None,
+            None,
+            None,
+        )
+
     runtime_projections = create_runtime_projection_pipeline(
         operations_bus=bus,
         account_id=(
@@ -105,6 +119,13 @@ def create_desktop_composition(
         watchlist_stale_after=timedelta(
             seconds=(
                 operational_configuration.maximum_market_data_age_seconds
+            )
+        ),
+        portfolio_account_source=portfolio_account_source,
+        portfolio_intelligence_service=PortfolioIntelligenceService(
+            configuration=load_portfolio_intelligence_configuration(),
+            limits=PortfolioRiskLimits(
+                maximum_open_positions=operational_configuration.max_open_positions,
             )
         ),
     )
