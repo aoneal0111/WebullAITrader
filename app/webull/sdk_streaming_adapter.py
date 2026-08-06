@@ -22,6 +22,9 @@ from app.webull.market_data_session import (
 )
 
 
+MQTT_V311 = 4
+
+
 SDKClientFactory = Callable[..., object]
 SessionIdFactory = Callable[[], str]
 
@@ -178,6 +181,16 @@ def create_official_stream_backend(
         client_arguments["mqtt_host"] = mqtt_host
 
     client = factory(**client_arguments)
+    actual_protocol = getattr(client, "_protocol", MQTT_V311)
+    if actual_protocol != MQTT_V311:
+        raise TypeError(
+            "official SDK streaming client must use MQTTv3.1.1"
+        )
+    # QuotesClient 2.0.14 ignores logger_enable when it starts its worker and
+    # otherwise installs handlers that dump signed requests. Atlas owns SDK
+    # logging and deliberately keeps those credential-bearing dumps disabled.
+    if hasattr(client, "_init_logger"):
+        setattr(client, "_init_logger", lambda *args, **kwargs: None)
     if transport == "websockets":
         set_websocket_options = getattr(client, "ws_set_options", None)
         if not callable(set_websocket_options):
@@ -217,6 +230,7 @@ def create_official_market_subscription(
 
 
 __all__ = [
+    "MQTT_V311",
     "WebullMarketSubscription",
     "WebullStreamingCredentials",
     "create_official_market_subscription",

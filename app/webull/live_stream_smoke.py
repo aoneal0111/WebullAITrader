@@ -76,7 +76,7 @@ def run(symbol: str, timeout_seconds: float) -> int:
 
     print(
         f"Connecting to Webull stream: symbol={normalized_symbol} "
-        f"region={credentials.region_id} session={credentials.session_id}"
+        f"region={credentials.region_id} client_id=<redacted>"
     )
     try:
         backend.connect()

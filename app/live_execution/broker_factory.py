@@ -36,7 +36,7 @@ from app.webull.sdk_streaming_adapter import (
     create_official_market_subscription,
     create_official_stream_backend,
 )
-from app.webull.stream_endpoint import parse_webull_stream_url
+from app.webull.stream_endpoint import select_official_sdk_stream_endpoint
 from app.webull.transport import WebullBrokerTransport
 from app.webull.websocket_client import WebullWebSocketClient
 
@@ -162,7 +162,9 @@ def build_webull_market_data_stream(
         app_secret=market_data.api_secret,
         session_id=session_id_factory(),
     )
-    stream_endpoint = parse_webull_stream_url(market_data.stream_url)
+    stream_endpoint = select_official_sdk_stream_endpoint(
+        market_data.stream_url
+    )
     api_endpoint = urlparse(market_data.api_base_url)
     stream_logger = StructuredLogger(ConsoleSink())
     stream_logger.log(
@@ -174,6 +176,11 @@ def build_webull_market_data_stream(
         transport=stream_endpoint.transport,
         tls_enable=stream_endpoint.tls_enable,
         websocket_path=stream_endpoint.websocket_path,
+        mqtt_protocol="MQTTv3.1.1",
+        callback_api="legacy-v1",
+        clean_session=True,
+        keepalive_seconds=60,
+        selection="official-sdk-2.0.14-default",
         market_data_environment=market_data.environment.value,
         trading_environment=configuration.environment.value,
     )

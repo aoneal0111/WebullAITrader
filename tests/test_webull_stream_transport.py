@@ -17,6 +17,11 @@ from app.webull.sdk_streaming_adapter import (
 from app.webull.stream_endpoint import (
     WebullStreamEndpoint,
     parse_webull_stream_url,
+    select_official_sdk_stream_endpoint,
+)
+from app.webull.stream_diagnostic import (
+    DIAGNOSTIC_MATRIX,
+    run_until_conclusive,
 )
 
 
@@ -86,6 +91,21 @@ def test_websocket_path_is_preserved_and_defaults_to_mqtt():
     assert custom.websocket_path == "/custom/quotes"
     assert default.websocket_path == "/mqtt"
     assert default.mqtt_port == 8883
+
+
+def test_official_sdk_selection_converts_websocket_override_to_raw_tls():
+    endpoint = select_official_sdk_stream_endpoint(
+        f"wss://{SANDBOX_HOST}:8883/mqtt"
+    )
+
+    assert endpoint.configured_stream_url == (
+        f"wss://{SANDBOX_HOST}:8883/mqtt"
+    )
+    assert endpoint.mqtt_host == SANDBOX_HOST
+    assert endpoint.mqtt_port == 1883
+    assert endpoint.transport == "tcp"
+    assert endpoint.tls_enable is True
+    assert endpoint.websocket_path is None
 
 
 @pytest.mark.parametrize(
@@ -216,6 +236,46 @@ def test_data_streaming_client_receives_websockets_and_path_before_connect():
     ]
 
 
+def test_official_sdk_client_protocol_is_mqtt311():
+    class ProtocolClient(FakeSdkClient):
+        _protocol = 4
+
+    observed = {}
+
+    def factory(**kwargs):
+        observed["client"] = ProtocolClient(kwargs)
+        return observed["client"]
+
+    backend = create_official_stream_backend(
+        credentials(), subscription(), client_factory=factory
+    )
+
+    assert backend.client._protocol == 4
+    assert backend.client.arguments["transport"] == "tcp"
+    assert backend.client.arguments["mqtt_port"] == 1883
+    assert backend.client.arguments["tls_enable"] is True
+
+
+def test_diagnostic_matrix_is_safe_and_stops_after_first_conclusive_case():
+    calls = []
+
+    def probe(case, symbol):
+        calls.append((case, symbol))
+        return "PAYLOAD_RECEIVED"
+
+    results = run_until_conclusive(probe)
+
+    assert len(DIAGNOSTIC_MATRIX) == 5
+    assert DIAGNOSTIC_MATRIX[0].name == "sdk-default"
+    assert DIAGNOSTIC_MATRIX[1].websocket_path == "/mqtt"
+    assert DIAGNOSTIC_MATRIX[2].mqtt_protocol == 5
+    assert DIAGNOSTIC_MATRIX[3].transport == "tcp"
+    assert DIAGNOSTIC_MATRIX[4].sdk_supported is True
+    assert results == (("sdk-default", "PAYLOAD_RECEIVED"),)
+    assert len(calls) == 1
+    assert calls[0][1] == "AAPL"
+
+
 def test_existing_tcp_sdk_configuration_remains_valid():
     observed = {}
 
@@ -263,14 +323,16 @@ def test_stream_configuration_log_contains_transport_but_no_secrets(capsys):
 
     output = capsys.readouterr().out
     assert "configured_stream_url" in output
-    assert "'transport': 'websockets'" in output
-    assert "'websocket_path': '/mqtt'" in output
+    assert "'transport': 'tcp'" in output
+    assert "'websocket_path': None" in output
+    assert "'mqtt_protocol': 'MQTTv3.1.1'" in output
+    assert "'clean_session': True" in output
     assert "'trading_environment': 'SANDBOX'" in output
     assert "never-log-this-app-secret" not in output
     assert "safe-app-key" not in output
 
 
-def test_wss_regression_connects_and_reaches_scanner_subscription_stage():
+def test_wss_configuration_uses_sdk_default_and_reaches_subscription_stage():
     observed = {}
 
     def sdk_factory(**kwargs):
@@ -301,15 +363,10 @@ def test_wss_regression_connects_and_reaches_scanner_subscription_stage():
     scanner = LiveScannerCoordinator(stream, Engine())
     assert scanner.start() == ("AAPL",)
 
-    assert observed["backend_kwargs"]["transport"] == "websockets"
-    assert observed["backend_kwargs"]["transport"] != "tcp"
+    assert observed["backend_kwargs"]["transport"] == "tcp"
     assert observed["backend_kwargs"]["tls_enable"] is True
-    assert observed["backend_kwargs"]["mqtt_port"] == 8883
-    assert observed["backend_kwargs"]["websocket_path"] == "/mqtt"
-    assert observed["sdk_client"].calls[0] == (
-        "ws_set_options",
-        "/mqtt",
-    )
-    assert observed["sdk_client"].calls[1] == "connect"
-    assert observed["sdk_client"].calls[2][0] == "subscribe"
-    assert observed["sdk_client"].calls[2][1]["symbols"] == ("AAPL",)
+    assert observed["backend_kwargs"]["mqtt_port"] == 1883
+    assert observed["backend_kwargs"]["websocket_path"] is None
+    assert observed["sdk_client"].calls[0] == "connect"
+    assert observed["sdk_client"].calls[1][0] == "subscribe"
+    assert observed["sdk_client"].calls[1][1]["symbols"] == ("AAPL",)

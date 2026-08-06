@@ -236,10 +236,10 @@ def test_stream_is_constructed_through_existing_dependency_boundaries() -> None:
         "receive_timeout_seconds": 1.0,
         "http_host": "api.sandbox.webull.com",
         "mqtt_host": "data-api.sandbox.webull.com",
-        "mqtt_port": 8883,
+        "mqtt_port": 1883,
         "tls_enable": True,
-        "transport": "websockets",
-        "websocket_path": "/mqtt",
+        "transport": "tcp",
+        "websocket_path": None,
     }
     assert captured["client_args"][0] is backend
     assert isinstance(captured["client_args"][1], WebullMarketEventParser)
@@ -443,10 +443,13 @@ def test_malformed_payload_publishes_parse_and_terminal_health() -> None:
         failure=SerializationError("malformed payload"),
     )
     events: list[PaperRuntimeEvent] = []
+    stop_event = Event()
 
     def sink(event: PaperRuntimeEvent) -> None:
         events.append(event)
         projections.sink(event)
+        if event.event_type == "MARKET_DATA_TERMINAL_FAILURE":
+            stop_event.set()
 
     driver = DesktopBrokerRuntimeDriver(
         configuration=configuration(),
@@ -458,8 +461,7 @@ def test_malformed_payload_publishes_parse_and_terminal_health() -> None:
     )
 
     try:
-        with pytest.raises(SerializationError, match="malformed payload"):
-            driver.run(stop_event=Event(), cycle_sink=lambda cycle: None)
+        driver.run(stop_event=stop_event, cycle_sink=lambda cycle: None)
 
         event_types = [event.event_type for event in events]
         assert "MARKET_DATA_PARSE_FAILED" in event_types
@@ -469,14 +471,55 @@ def test_malformed_payload_publishes_parse_and_terminal_health() -> None:
             for event in events
             if event.event_type == "MARKET_DATA_TERMINAL_FAILURE"
         )
-        assert terminal.health.runtime_status == "FAILED"
-        assert terminal.health.market_data_status == "FAILED"
+        assert terminal.health.runtime_status == "DEGRADED"
+        assert terminal.health.market_data_status == "REST_ONLY"
+        assert terminal.health.market_data_rest_status == "AVAILABLE"
+        assert terminal.health.streaming_status == "UNAVAILABLE"
         assert not any(
             call in broker.calls
             for call in ("submit_order", "cancel_order", "replace_order")
         )
     finally:
         store.close()
+
+
+def test_protocol_failure_is_nonfatal_and_classified_as_rest_only() -> None:
+    class ProtocolFailureStream(FakeStream):
+        def connect(self) -> None:
+            self.calls.append("connect")
+            raise RuntimeError("loop ack code: 1, msg: Protocol not supported")
+
+    stop_event = Event()
+    events: list[PaperRuntimeEvent] = []
+    broker = FakeBroker()
+    stream = ProtocolFailureStream([])
+
+    def poller(broker_value, *, clock):
+        stop_event.set()
+        return account_snapshot()
+
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=configuration(),
+        broker_runtime=runtime(broker, stream),
+        event_sink=events.append,
+        account_snapshot_sink=lambda snapshot: None,
+        account_poller=poller,
+        clock=lambda: NOW,
+    )
+
+    driver.run(stop_event=stop_event, cycle_sink=lambda cycle: None)
+
+    terminal = next(
+        event
+        for event in events
+        if event.event_type == "MARKET_DATA_TERMINAL_FAILURE"
+    )
+    assert terminal.health.runtime_status == "DEGRADED"
+    assert terminal.health.market_data_status == "REST_ONLY"
+    assert terminal.health.market_data_rest_status == "AVAILABLE"
+    assert terminal.health.streaming_status == "PROTOCOL_UNSUPPORTED"
+    assert broker.calls == ["connect", "disconnect"]
+    assert stream.calls == ["connect", "disconnect"]
 
 
 def test_websocket_client_reconnects_and_resubscribes() -> None:

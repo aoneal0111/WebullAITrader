@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from queue import Empty, Queue
 from threading import Event, RLock, Thread
 
 from app.broker_plugins import BrokerRuntime
@@ -114,7 +113,6 @@ class DesktopBrokerRuntimeDriver:
         self._market_data_connected = False
         self._market_data_thread: Thread | None = None
         self._market_data_stop = Event()
-        self._market_data_failures: Queue[Exception] = Queue()
         self._terminal_stream_failure_published = False
         self._scanner_pause_session: MarketDataSession | None = None
         self._scanner_configuration_changed = False
@@ -196,7 +194,6 @@ class DesktopBrokerRuntimeDriver:
                 stop_event=stop_event,
                 cycle_sink=cycle_sink,
             )
-            self._raise_market_data_failure()
         finally:
             try:
                 self._stop_market_data()
@@ -313,7 +310,15 @@ class DesktopBrokerRuntimeDriver:
             )
         except Exception as exc:
             self._publish_terminal_market_data_failure(exc)
-            raise
+            try:
+                if self._scanner is not None:
+                    self._scanner.disconnect()
+                elif self._market_data is not None:
+                    self._market_data.disconnect()
+            except Exception:
+                pass
+            self._market_data_connected = False
+            return
 
         self._market_data_stop.clear()
         self._market_data_thread = Thread(
@@ -628,8 +633,7 @@ class DesktopBrokerRuntimeDriver:
                 self._handle_market_event(event)
         except Exception as exc:
             self._publish_terminal_market_data_failure(exc)
-            self._market_data_failures.put(exc)
-            stop_event.set()
+            self._market_data_stop.set()
 
     def _on_market_data_lifecycle(
         self,
@@ -685,20 +689,16 @@ class DesktopBrokerRuntimeDriver:
             self._terminal_stream_failure_published = True
         self._publish_health(
             "MARKET_DATA_TERMINAL_FAILURE",
-            "Webull market-data streaming failed.",
+            "Webull market-data streaming failed; REST market data remains available.",
             RuntimeHealthUpdate(
-                runtime_status="FAILED",
-                market_data_status="FAILED",
-                last_error=type(error).__name__,
+                runtime_status="DEGRADED",
+                market_data_status="REST_ONLY",
+                market_data_rest_status="AVAILABLE",
+                streaming_status=_stream_failure_classification(error),
+                scanner_status="DISABLED",
+                last_warning=type(error).__name__,
             ),
         )
-
-    def _raise_market_data_failure(self) -> None:
-        try:
-            failure = self._market_data_failures.get_nowait()
-        except Empty:
-            return
-        raise failure
 
     def _stop_market_data(self) -> None:
         if self._market_data is None:
@@ -964,3 +964,18 @@ def _safe_runtime_error(error: Exception) -> str:
     ):
         return type(error).__name__
     return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
+
+
+def _stream_failure_classification(error: Exception) -> str:
+    current: BaseException | None = error
+    for _ in range(8):
+        if current is None:
+            break
+        detail = str(current).upper()
+        if (
+            "PROTOCOL NOT SUPPORTED" in detail
+            or "UNACCEPTABLE PROTOCOL VERSION" in detail
+        ):
+            return "PROTOCOL_UNSUPPORTED"
+        current = current.__cause__ or current.__context__
+    return "UNAVAILABLE"

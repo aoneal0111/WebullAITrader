@@ -109,4 +109,31 @@ def parse_webull_stream_url(value: str) -> WebullStreamEndpoint:
     return WebullStreamEndpoint.parse(value)
 
 
-__all__ = ["WebullStreamEndpoint", "parse_webull_stream_url"]
+def select_official_sdk_stream_endpoint(value: str) -> WebullStreamEndpoint:
+    """Select the transport supported by the official Python SDK defaults.
+
+    Webull documents both MQTT-over-WebSocket and raw MQTT/TLS endpoints, but
+    ``webull-openapi-python-sdk==2.0.14`` constructs Paho for raw TCP on port
+    1883.  Preserve the configured host while avoiding an Atlas WebSocket
+    override when the official SDK owns the connection.
+    """
+
+    configured = parse_webull_stream_url(value)
+    if configured.scheme != "wss":
+        return configured
+    return WebullStreamEndpoint(
+        configured_stream_url=configured.configured_stream_url,
+        scheme="mqtts",
+        mqtt_host=configured.mqtt_host,
+        mqtt_port=1883,
+        transport="tcp",
+        tls_enable=True,
+        websocket_path=None,
+    )
+
+
+__all__ = [
+    "WebullStreamEndpoint",
+    "parse_webull_stream_url",
+    "select_official_sdk_stream_endpoint",
+]
