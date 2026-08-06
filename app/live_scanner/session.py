@@ -32,9 +32,10 @@ def scanner_session(value: datetime) -> ScannerSession:
         if schedule.market_close.time() <= current_time < time(20):
             return ScannerSession.AFTER_HOURS
         if current_time < time(4):
-            previous_date = current.date() - timedelta(days=1)
-            if is_trading_day(previous_date) or current.weekday() == 0:
-                return ScannerSession.OVERNIGHT
+            # The overnight session belongs to the current NYSE trading date.
+            # Requiring a schedule prevents weekends and exchange holidays from
+            # being classified as overnight (notably Monday holidays).
+            return ScannerSession.OVERNIGHT
 
     if current_time >= time(20):
         next_date = current.date() + timedelta(days=1)

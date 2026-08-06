@@ -133,12 +133,13 @@ def build_webull_market_data_stream(
     request_guard: RequestIsolationGuard | None = None,
     subscription_factory: Callable[
         [], WebullMarketSubscription
-    ] = create_official_market_subscription,
+    ] | None = None,
     backend_factory: Callable[..., object] = create_official_stream_backend,
     client_factory: Callable[..., object] = WebullWebSocketClient,
     session_id_factory: Callable[[], str] = lambda: (
         f"atlas-{uuid.uuid4().hex}"
     ),
+    clock: Callable[[], datetime] = utc_now,
 ) -> ReceiveTransportAdapter | None:
     """Build the existing official Webull streaming stack when enabled."""
 
@@ -179,7 +180,11 @@ def build_webull_market_data_stream(
     try:
         backend = backend_factory(
             credentials,
-            subscription_factory(),
+            (
+                create_official_market_subscription(clock=clock)
+                if subscription_factory is None
+                else subscription_factory()
+            ),
             receive_timeout_seconds=1.0,
             http_host=api_endpoint.hostname,
             mqtt_host=stream_endpoint.mqtt_host,

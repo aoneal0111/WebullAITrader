@@ -40,6 +40,8 @@ def format_health(state: HealthState) -> HealthDashboardSnapshot:
             ("Stream Heartbeat", state.heartbeat_status or "--"),
             ("Reconnect", state.reconnect_status or "--"),
             ("Entitlement", state.entitlement_status or "--"),
+            ("Current Session", state.market_session_status or "--"),
+            ("Scanner Retry", state.scanner_retry_status or "--"),
             ("Probe AAPL", state.probe_aapl_status or "--"),
             ("Probe SPY", state.probe_spy_status or "--"),
             ("Probe TSLA", state.probe_tsla_status or "--"),

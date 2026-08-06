@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,7 @@ from app.webull.sdk_streaming_adapter import (
     WebullMarketSubscription,
     WebullStreamingCredentials,
     create_official_stream_backend,
+    create_official_market_subscription,
 )
 from app.webull.stream_endpoint import (
     WebullStreamEndpoint,
@@ -126,6 +128,22 @@ def test_endpoint_model_rejects_scheme_transport_mismatches():
             tls_enable=True,
             websocket_path="/mqtt",
         )
+
+
+def test_official_subscription_is_session_aware_with_injected_clock():
+    regular = create_official_market_subscription(
+        clock=lambda: datetime(2026, 7, 30, 15, tzinfo=UTC)
+    )
+    overnight = create_official_market_subscription(
+        clock=lambda: datetime(2026, 7, 31, 1, tzinfo=UTC)
+    )
+    weekend = create_official_market_subscription(
+        clock=lambda: datetime(2026, 8, 1, 15, tzinfo=UTC)
+    )
+
+    assert regular.sdk_arguments(("AAPL",))["overnight_required"] is False
+    assert overnight.sdk_arguments(("AAPL",))["overnight_required"] is True
+    assert weekend.sdk_arguments(("AAPL",))["overnight_required"] is False
 
 
 class FakeSdkClient:

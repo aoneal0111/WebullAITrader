@@ -23,6 +23,7 @@ from app.webull.market_data_probe import (
     SymbolCapabilityResult,
     SymbolProbeState,
 )
+from app.webull.market_data_session import MarketDataSession
 from app.webull.startup_validation import (
     StartupValidationResult,
     TradingProbeResult,
@@ -131,6 +132,7 @@ def market_result(
     subscription=AVAILABLE,
     reconnect=AVAILABLE,
     credentials=AVAILABLE,
+    current_session=MarketDataSession.CLOSED,
 ):
     symbol_state = (
         SymbolProbeState.NO_ENTITLEMENT
@@ -152,6 +154,7 @@ def market_result(
         environment, "fp_data", AVAILABLE, credentials, bars, AVAILABLE,
         AVAILABLE, AVAILABLE, subscription, AVAILABLE, reconnect,
         entitlement, AVAILABLE, symbols,
+        current_session=current_session,
     )
 
 
@@ -201,6 +204,7 @@ def test_sandbox_trading_and_production_market_data_validate_before_scanner():
     assert validator.calls == 1
     probe_event = next(e for e in events if e.event_type == "MARKET_DATA_PROBE_COMPLETED")
     assert probe_event.health.market_data_environment == "PRODUCTION"
+    assert probe_event.health.market_data_status == "READY"
     assert probe_event.health.subscription_status == "ACCEPTED"
     assert probe_event.health.probe_aapl_status == "SUPPORTED"
     assert probe_event.health.probe_spy_status == "SUPPORTED"
@@ -266,7 +270,16 @@ def test_sandbox_market_data_can_validate_without_crossing_trading_state():
                 bars=CapabilityStatus(ProbeState.UNSUPPORTED),
             ),
             "NO_SUPPORTED_SYMBOLS",
-            "Sandbox market-data catalog does not contain scanner-compatible symbols.",
+            "NO_SUPPORTED_SYMBOLS",
+        ),
+        (
+            market_result(
+                entitlement=CapabilityStatus(ProbeState.NOT_ENTITLED),
+                subscription=CapabilityStatus(ProbeState.NOT_ENTITLED),
+                current_session=MarketDataSession.OVERNIGHT,
+            ),
+            "DEGRADED",
+            "OVERNIGHT_ENTITLEMENT_REQUIRED",
         ),
     ),
 )
@@ -299,6 +312,11 @@ def test_market_failures_disable_scanner_but_keep_account_polling(
     probe = next(e for e in events if e.event_type == "MARKET_DATA_PROBE_COMPLETED")
     assert probe.health.market_data_status == expected_status
     assert any(reason in e.message for e in events)
+    if reason == "OVERNIGHT_ENTITLEMENT_REQUIRED":
+        assert probe.health.market_data_rest_status == "CONNECTED"
+        assert probe.health.streaming_status == "CONNECTED"
+        assert probe.health.entitlement_status == "NOT_SUBSCRIBED"
+        assert probe.health.scanner_status == "PAUSED_UNTIL_PREMARKET"
 
 
 def test_missing_reconnect_capability_prevents_scanner_start():

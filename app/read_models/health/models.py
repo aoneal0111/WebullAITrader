@@ -23,6 +23,8 @@ class HealthState:
     heartbeat_status: str | None = None
     reconnect_status: str | None = None
     entitlement_status: str | None = None
+    market_session_status: str | None = None
+    scanner_retry_status: str | None = None
     probe_aapl_status: str | None = None
     probe_spy_status: str | None = None
     probe_tsla_status: str | None = None
@@ -64,6 +66,8 @@ class HealthState:
             "heartbeat_status",
             "reconnect_status",
             "entitlement_status",
+            "market_session_status",
+            "scanner_retry_status",
             "probe_aapl_status",
             "probe_spy_status",
             "probe_tsla_status",

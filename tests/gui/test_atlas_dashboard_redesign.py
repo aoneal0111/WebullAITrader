@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from app.gui.models import (
     HealthDashboardSnapshot,
@@ -18,6 +18,8 @@ from app.gui.models import (
     WatchlistSnapshot,
 )
 from app.gui.pages.dashboard import DashboardPage
+from app.gui.design.theme import application_stylesheet
+from app.gui.design.tokens import Colors
 from app.gui.widgets.infrastructure_strip import InfrastructureStrip
 from app.gui.widgets.market_workspace import MarketWorkspace
 from app.gui.widgets.orders_panel import OrdersPanel
@@ -151,6 +153,26 @@ def test_health_diagnostics_and_paper_validation_remain_visible(application) -> 
     ))
     assert panel.overall_badge.text() == "OVERALL: PASS"
     assert panel.status_badges["Orders"].text() == "PASS"
+
+
+def test_health_panel_and_item_views_use_atlas_theme(application) -> None:
+    del application
+    dashboard = DashboardPage()
+    health = dashboard.operator_health_panel
+
+    assert health.objectName() == "healthPanel"
+    assert health.findChild(QWidget, "healthMetrics") is not None
+    assert health.findChild(QWidget, "healthScrollViewport") is not None
+
+    stylesheet = application_stylesheet()
+    for selector in (
+        "QAbstractItemView", "QTreeView", "QTableView", "QTableWidget",
+        "QWidget#healthPanel", "QWidget#healthMetrics",
+        "QWidget#healthScrollViewport",
+    ):
+        assert selector in stylesheet
+    assert f"background: {Colors.SURFACE};" in stylesheet
+    assert f"selection-background-color: {Colors.ACCENT_SOFT};" in stylesheet
 
 
 def test_dashboard_and_market_workspace_switch_responsive_orientation(application) -> None:

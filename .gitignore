@@ -6,6 +6,7 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv311-auth-diagnostic/
 venv/
 
 # Environment files

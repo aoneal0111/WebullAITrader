@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import atexit
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -28,17 +29,39 @@ class _UnsupportedSymbolResponse(RuntimeError):
 
 _SDK_LOGGER_NAME = "webull.core"
 _ATLAS_LOGGER = logging.getLogger("atlas.webull.market_data")
+_SDK_LOG_LOCK = RLock()
+_SDK_LOGGERS = ("webull", "webull.core", "webull.data")
+_SDK_LOGGING_CONFIGURED = False
 
 
 def configure_official_sdk_logging() -> logging.Logger:
-    """Keep the SDK from registering duplicate credential-bearing handlers."""
+    """Disable SDK request dumps with one process-owned handler per logger."""
 
-    logger = logging.getLogger(_SDK_LOGGER_NAME)
-    logger.handlers.clear()
-    logger.addHandler(logging.NullHandler())
-    logger.propagate = False
-    logger.setLevel(logging.CRITICAL)
-    return logger
+    global _SDK_LOGGING_CONFIGURED
+    with _SDK_LOG_LOCK:
+        for name in _SDK_LOGGERS:
+            logger = logging.getLogger(name)
+            for handler in tuple(logger.handlers):
+                logger.removeHandler(handler)
+                handler.close()
+            logger.addHandler(logging.NullHandler())
+            logger.propagate = False
+            logger.setLevel(logging.CRITICAL)
+        if not _SDK_LOGGING_CONFIGURED:
+            atexit.register(shutdown_official_sdk_logging)
+            _SDK_LOGGING_CONFIGURED = True
+        return logging.getLogger(_SDK_LOGGER_NAME)
+
+
+def shutdown_official_sdk_logging() -> None:
+    """Close Atlas-owned SDK handlers deterministically during shutdown."""
+
+    with _SDK_LOG_LOCK:
+        for name in _SDK_LOGGERS:
+            logger = logging.getLogger(name)
+            for handler in tuple(logger.handlers):
+                logger.removeHandler(handler)
+                handler.close()
 
 
 def create_official_data_client(
@@ -50,6 +73,34 @@ def create_official_data_client(
 ) -> object:
     """Create the official SDK DataClient lazily at scanner startup."""
 
+    api_client = build_official_data_api_client(
+        app_key=app_key,
+        app_secret=app_secret,
+        endpoint=endpoint,
+        region_id=region_id,
+    )
+
+    from webull.data.data_client import DataClient
+
+    try:
+        return DataClient(api_client)
+    except Exception as exc:
+        if _permission_failure(exc):
+            raise WebullMarketDataPermissionError(
+                "Webull OpenAPI market-data permission is unavailable"
+            ) from exc
+        raise
+
+
+def build_official_data_api_client(
+    *,
+    app_key: str,
+    app_secret: str,
+    endpoint: str,
+    region_id: str = "us",
+) -> object:
+    """Build Atlas's configured SDK client without initializing DataClient."""
+
     if not app_key.strip() or not app_secret.strip():
         raise WebullMarketDataPermissionError(
             "Webull OpenAPI market-data credentials are required"
@@ -60,7 +111,6 @@ def create_official_data_client(
 
     try:
         from webull.core.client import ApiClient
-        from webull.data.data_client import DataClient
     except ImportError as exc:
         raise RuntimeError(
             "Webull OpenAPI SDK is unavailable; install "
@@ -82,14 +132,7 @@ def create_official_data_client(
     # include the complete signed request on an API failure.
     api_client._stream_logger_set = True
     api_client._file_logger_set = True
-    try:
-        return DataClient(api_client)
-    except Exception as exc:
-        if _permission_failure(exc):
-            raise WebullMarketDataPermissionError(
-                "Webull OpenAPI market-data permission is unavailable"
-            ) from exc
-        raise
+    return api_client
 
 
 class LazyOfficialDataClient:
@@ -369,7 +412,7 @@ class WebullScannerReferenceProvider:
                     market_data.get_history_bar(
                         api_symbol,
                         category,
-                        "D1",
+                        "D",
                         count="1",
                         real_time_required=False,
                     )
@@ -402,7 +445,7 @@ class WebullScannerReferenceProvider:
                 market_data.get_history_bar(
                     api_symbol,
                     category,
-                    "D1",
+                    "D",
                     count="30",
                     real_time_required=False,
                 )
@@ -719,6 +762,8 @@ __all__ = [
     "WebullMarketDataPermissionError",
     "WebullScannerReferenceProvider",
     "WebullScannerUniverseProvider",
+    "build_official_data_api_client",
     "create_official_data_client",
     "configure_official_sdk_logging",
+    "shutdown_official_sdk_logging",
 ]

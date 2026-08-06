@@ -93,11 +93,16 @@ def create_configured_desktop_broker_driver(
             "configuration_loader must return OperationalConfiguration"
         )
 
+    runtime_market_data_factory = webull_market_data_factory
+    if webull_market_data_factory is build_webull_market_data_stream:
+        runtime_market_data_factory = lambda value: build_webull_market_data_stream(
+            value, clock=clock
+        )
     broker_runtime = broker_runtime_factory(
         provider=configuration.broker_provider,
         configuration=configuration,
         webull_broker_factory=webull_broker_factory,
-        webull_market_data_factory=webull_market_data_factory,
+        webull_market_data_factory=runtime_market_data_factory,
     )
 
     market_data_configuration_value = market_data_configuration(configuration)
@@ -162,6 +167,7 @@ def create_configured_desktop_broker_driver(
         market_data_configuration_value,
         data_client,
         scanner_coordinator or broker_runtime.market_data,
+        clock=clock,
     )
     startup_validator = RuntimeStartupValidator(
         broker_runtime.execution,

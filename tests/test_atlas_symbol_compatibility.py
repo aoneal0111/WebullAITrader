@@ -221,7 +221,7 @@ def test_unsupported_is_rejected_once_and_does_not_abort_other_candidates():
     assert rejection.retryable is False
     assert rejection.environment == "SANDBOX"
     assert [call for call in market_data.calls if call[0] == "BAD"] == [
-        ("BAD", "US_STOCK", "D1", "1")
+        ("BAD", "US_STOCK", "D", "1")
     ]
     assert events == [
         {
@@ -297,6 +297,17 @@ def test_sdk_logger_configuration_is_single_and_non_propagating():
     assert logger.propagate is False
     assert len(logger.handlers) == 1
     assert isinstance(logger.handlers[0], logging.NullHandler)
+
+
+def test_official_sdk_request_dump_is_suppressed_from_captured_logs(caplog):
+    caplog.set_level(logging.DEBUG)
+    logger = configure_official_sdk_logging()
+    logger.error(
+        "app_key=complete-key signature=complete-signature "
+        "Authorization=Bearer-complete-token nonce=complete-nonce"
+    )
+
+    assert "complete-" not in caplog.text
 
 
 def test_atlas_logs_redact_keys_signatures_secrets_and_signed_headers():

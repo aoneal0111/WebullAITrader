@@ -38,6 +38,7 @@ class OperatorWorkspace(QWidget):
         self.health = HealthPanel()
         self.paper_validation = PaperValidationPanel()
         health_workspace = QWidget()
+        health_workspace.setObjectName("healthWorkspace")
         health_layout = QHBoxLayout(health_workspace)
         health_layout.setContentsMargins(0, 0, 0, 0)
         self.health_splitter = QSplitter(Qt.Orientation.Horizontal)

@@ -24,6 +24,10 @@ from app.operations.runtime import (
 from app.operations.scanner_snapshot_publisher import ScannerSnapshotPublisher
 from app.services.market_event_translation import translate_market_event
 from app.webull.client_factories import market_data_configuration
+from app.webull.market_data_session import (
+    MarketDataSession,
+    current_market_data_session,
+)
 
 
 Clock = Callable[[], datetime]
@@ -111,6 +115,8 @@ class DesktopBrokerRuntimeDriver:
         self._market_data_stop = Event()
         self._market_data_failures: Queue[Exception] = Queue()
         self._terminal_stream_failure_published = False
+        self._scanner_pause_session: MarketDataSession | None = None
+        self._scanner_configuration_changed = False
         self._cycles_completed = 0
         self._scanner_publisher = ScannerSnapshotPublisher(
             self._event_sink,
@@ -200,6 +206,16 @@ class DesktopBrokerRuntimeDriver:
             self._startup_validation is not None
             and not self._startup_validation.scanner_ready
         ):
+            market_result = self._startup_validation.market_data
+            if (
+                getattr(market_result, "reason", None)
+                == "OVERNIGHT_ENTITLEMENT_REQUIRED"
+            ):
+                self._scanner_pause_session = MarketDataSession.OVERNIGHT
+                # The capability probe connected the transport. Keep it up for
+                # health visibility, but remember to close it at shutdown.
+                self._market_data_connected = True
+                return
             if self._scanner is not None:
                 self._scanner.disconnect()
             elif self._market_data is not None:
@@ -457,6 +473,18 @@ class DesktopBrokerRuntimeDriver:
             getattr(result, "reconnect", None), "state", "UNKNOWN"
         )
         bars = getattr(getattr(result, "bars", None), "state", "UNKNOWN")
+        current_session = str(getattr(result, "current_session", "CLOSED"))
+        retry_at = getattr(result, "next_retry_at", None)
+        overnight_paused = str(reason) == "OVERNIGHT_ENTITLEMENT_REQUIRED"
+        retry_detail = (
+            retry_at.isoformat()
+            if isinstance(retry_at, datetime)
+            else "the next premarket session"
+        )
+        no_supported_symbols = (
+            str(reason) == "NO_SUPPORTED_SYMBOLS"
+            or str(bars) == "UNSUPPORTED"
+        )
         symbol_results = {
             item.symbol: str(item.result)
             for item in getattr(result, "symbol_results", ())
@@ -467,11 +495,13 @@ class DesktopBrokerRuntimeDriver:
             if ready else str(reason),
             RuntimeHealthUpdate(
                 market_data_status=(
-                    "PROBED" if ready
-                    else "NO_SUPPORTED_SYMBOLS" if str(bars) == "UNSUPPORTED"
+                    "READY" if ready
+                    else "NO_SUPPORTED_SYMBOLS" if no_supported_symbols
                     else "STREAM_CONNECTED_SUBSCRIPTION_DENIED"
                     if str(streaming) == "AVAILABLE"
                     and str(subscription) == "UNAVAILABLE"
+                    else "DEGRADED"
+                    if str(reason) == "OVERNIGHT_ENTITLEMENT_REQUIRED"
                     else "DISABLED"
                 ),
                 market_data_environment=getattr(result, "environment", "UNKNOWN"),
@@ -484,8 +514,9 @@ class DesktopBrokerRuntimeDriver:
                 subscription_status=(
                     "ACCEPTED" if str(subscription) == "AVAILABLE"
                     else "DENIED"
-                    if str(streaming) == "AVAILABLE"
-                    and str(subscription) == "UNAVAILABLE"
+                    if str(streaming) == "AVAILABLE" and str(subscription) in {
+                        "UNAVAILABLE", "NOT_ENTITLED"
+                    }
                     else str(subscription)
                 ),
                 heartbeat_status=(
@@ -495,11 +526,22 @@ class DesktopBrokerRuntimeDriver:
                     "READY" if str(reconnect) == "AVAILABLE" else str(reconnect)
                 ),
                 entitlement_status=(
-                    "GRANTED" if str(entitlement) == "AVAILABLE" else str(entitlement)
+                    "NOT_SUBSCRIBED"
+                    if current_session == "OVERNIGHT"
+                    and str(entitlement) == "NOT_ENTITLED"
+                    else "CURRENT_SESSION_GRANTED"
+                    if str(entitlement) == "AVAILABLE"
+                    else str(entitlement)
+                ),
+                market_session_status=current_session,
+                scanner_retry_status=(
+                    retry_detail if overnight_paused else "ON_SESSION_CHANGE"
+                    if not ready else "NOT_REQUIRED"
                 ),
                 scanner_status=(
                     "WARMING" if ready
-                    else "NO_SUPPORTED_SYMBOLS" if str(bars) == "UNSUPPORTED"
+                    else "NO_SUPPORTED_SYMBOLS" if no_supported_symbols
+                    else "PAUSED_UNTIL_PREMARKET" if overnight_paused
                     else "DISABLED"
                 ),
                 probe_aapl_status=symbol_results.get("AAPL", "NOT_TESTED"),
@@ -507,7 +549,12 @@ class DesktopBrokerRuntimeDriver:
                 probe_tsla_status=symbol_results.get("TSLA", "NOT_TESTED"),
                 probe_msft_status=symbol_results.get("MSFT", "NOT_TESTED"),
                 probe_nvda_status=symbol_results.get("NVDA", "NOT_TESTED"),
-                last_warning=None if ready else str(reason),
+                last_warning=(
+                    None if ready
+                    else f"{reason}; next retry: {retry_detail}"
+                    if overnight_paused
+                    else str(reason)
+                ),
             ),
         )
         self._scanner_log(
@@ -737,8 +784,41 @@ class DesktopBrokerRuntimeDriver:
             self._account_snapshot_sink(snapshot)
             self._cycles_completed += 1
             cycle_sink(self._cycles_completed)
+            self._retry_scanner_after_session_transition(stop_event)
             if stop_event.wait(interval_seconds):
                 break
+
+    def _retry_scanner_after_session_transition(self, stop_event: Event) -> None:
+        if self._scanner_pause_session is None or self._market_data_probe is None:
+            return
+        session = current_market_data_session(self._clock)
+        if (
+            session is self._scanner_pause_session
+            and not self._scanner_configuration_changed
+        ):
+            return
+        # A session transition is the only automatic release of an overnight
+        # entitlement pause. The probe itself also gates duplicate calls.
+        self._scanner_pause_session = None
+        self._scanner_configuration_changed = False
+        result = self._market_data_probe.run()
+        self._publish_probe_result(result)
+        if not result.scanner_ready:
+            return
+        self._startup_validation = None
+        self._start_market_data(stop_event)
+
+    def market_data_configuration_changed(self) -> None:
+        """Request one scanner capability retry after an operator config edit."""
+
+        if self._market_data_probe is None:
+            return
+        invalidate = getattr(
+            self._market_data_probe, "configuration_changed", None
+        )
+        if callable(invalidate):
+            invalidate()
+        self._scanner_configuration_changed = True
 
     def _disconnect(self) -> None:
         if not self._connected:

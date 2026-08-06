@@ -38,7 +38,7 @@ def application_stylesheet() -> str:
     QLabel#metricValue[tone='warn'], QLabel#compactMetricValue[tone='warn'], QLabel#monoValue[status='warn'] {{ color: {Colors.WARNING}; }}
     QLabel#metricValue[tone='neutral'], QLabel#compactMetricValue[tone='neutral'], QLabel#monoValue[status='neutral'] {{ color: {Colors.TEXT_MUTED}; }}
     QPushButton {{ border: 0; border-radius: 4px; padding: 6px 10px; min-height: 20px; font-weight: 650; }}
-    QPushButton:focus, QComboBox:focus, QLineEdit:focus, QTableWidget:focus {{ border: 1px solid {Colors.CYAN}; }}
+    QPushButton:focus, QComboBox:focus, QLineEdit:focus, QTreeView:focus, QTableView:focus, QTableWidget:focus {{ border: 1px solid {Colors.CYAN}; }}
     QPushButton#primaryButton {{ background: {Colors.ACCENT}; color: white; }}
     QPushButton#primaryButton:hover {{ background: {Colors.ACCENT_HOVER}; }}
     QPushButton#secondaryButton {{ background: {Colors.SURFACE_RAISED}; color: {Colors.TEXT}; border: 1px solid {Colors.BORDER}; }}
@@ -61,9 +61,20 @@ def application_stylesheet() -> str:
     QLabel#statusIndicator[status='danger'] {{ color: {Colors.DANGER}; }}
     QLabel#statusIndicator[status='neutral'] {{ color: {Colors.TEXT_FAINT}; }}
     QFrame#statusSeparator {{ color: {Colors.BORDER_STRONG}; max-height: 12px; }}
-    QTableWidget {{ background: {Colors.SURFACE}; alternate-background-color: {Colors.SURFACE_ALT}; border: 0; gridline-color: {Colors.BORDER_SOFT}; selection-background-color: {Colors.ACCENT_SOFT}; selection-color: {Colors.TEXT_STRONG}; }}
-    QTableWidget::item {{ padding: 3px 7px; border-bottom: 1px solid {Colors.BORDER_SOFT}; }}
-    QTableWidget::item:selected {{ border-top: 1px solid {Colors.ACCENT}; border-bottom: 1px solid {Colors.ACCENT}; }}
+    QAbstractItemView, QTreeView, QTableView, QTableWidget {{
+        background: {Colors.SURFACE};
+        alternate-background-color: {Colors.SURFACE_ALT};
+        color: {Colors.TEXT};
+        border: 0;
+        gridline-color: {Colors.BORDER_SOFT};
+        selection-background-color: {Colors.ACCENT_SOFT};
+        selection-color: {Colors.TEXT_STRONG};
+        outline: 0;
+    }}
+    QTreeView::item, QTableView::item, QTableWidget::item {{ padding: 3px 7px; border-bottom: 1px solid {Colors.BORDER_SOFT}; }}
+    QTreeView::item:selected, QTableView::item:selected, QTableWidget::item:selected {{ border-top: 1px solid {Colors.ACCENT}; border-bottom: 1px solid {Colors.ACCENT}; }}
+    QTreeView::branch {{ background: {Colors.SURFACE}; }}
+    QTableCornerButton::section {{ background: {Colors.SURFACE_RAISED}; border: 0; border-bottom: 1px solid {Colors.BORDER_STRONG}; }}
     QHeaderView::section {{ background: {Colors.SURFACE_RAISED}; color: {Colors.TEXT}; border: 0; border-bottom: 1px solid {Colors.BORDER_STRONG}; padding: 6px 7px; font-size: {Typography.SM}px; font-weight: 700; }}
     QLabel#emptyState {{ color: {Colors.TEXT_MUTED}; font-size: {Typography.MD}px; background: transparent; }}
     QTabWidget::pane {{ border: 1px solid {Colors.BORDER}; background: {Colors.SURFACE}; border-radius: 7px; top: -1px; }}
@@ -73,8 +84,13 @@ def application_stylesheet() -> str:
     QComboBox, QLineEdit, QSpinBox, QDateTimeEdit {{ background: {Colors.SURFACE_ALT}; color: {Colors.TEXT}; border: 1px solid {Colors.BORDER}; border-radius: 5px; padding: 6px 8px; }}
     QComboBox:hover, QLineEdit:hover, QSpinBox:hover, QDateTimeEdit:hover {{ border-color: {Colors.BORDER_STRONG}; }}
     QComboBox::drop-down {{ border: 0; width: 22px; }}
-    QAbstractItemView {{ background: {Colors.SURFACE_ALT}; color: {Colors.TEXT}; selection-background-color: {Colors.ACCENT_SOFT}; border: 1px solid {Colors.BORDER}; }}
     QScrollArea {{ border: 0; background: transparent; }}
+    QWidget#healthWorkspace, QWidget#healthPanel, QWidget#healthMetrics,
+    QScrollArea#healthScrollArea, QWidget#healthScrollViewport {{
+        background: {Colors.SURFACE};
+        color: {Colors.TEXT};
+        border: 0;
+    }}
     QScrollBar:vertical {{ background: {Colors.BACKGROUND}; width: 9px; margin: 0; }}
     QScrollBar::handle:vertical {{ background: {Colors.BORDER_STRONG}; min-height: 28px; border-radius: 4px; }}
     QScrollBar::handle:vertical:hover {{ background: {Colors.TEXT_FAINT}; }}

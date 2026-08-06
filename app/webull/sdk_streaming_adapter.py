@@ -15,6 +15,11 @@ from uuid import uuid4
 
 from app.webull.websocket_client import OfficialSdkStreamBackend
 from app.webull.sdk_market_data import configure_official_sdk_logging
+from app.webull.market_data_session import (
+    Clock,
+    requires_overnight_entitlement,
+    utc_now,
+)
 
 
 SDKClientFactory = Callable[..., object]
@@ -87,6 +92,7 @@ class WebullMarketSubscription:
     sub_types: tuple[object, ...]
     depth: int | None = None
     overnight_required: bool | None = None
+    clock: Clock = utc_now
 
     def __post_init__(self) -> None:
         if not self.category.strip():
@@ -109,8 +115,11 @@ class WebullMarketSubscription:
         }
         if self.depth is not None:
             arguments["depth"] = self.depth
-        if self.overnight_required is not None:
-            arguments["overnight_required"] = self.overnight_required
+        arguments["overnight_required"] = (
+            self.overnight_required
+            if self.overnight_required is not None
+            else requires_overnight_entitlement(self.clock)
+        )
         return arguments
 
 
@@ -184,7 +193,9 @@ def create_official_stream_backend(
     )
 
 
-def create_official_market_subscription() -> WebullMarketSubscription:
+def create_official_market_subscription(
+    *, clock: Clock = utc_now
+) -> WebullMarketSubscription:
     """Build the supported US quote/trade subscription using official enums."""
 
     try:
@@ -201,7 +212,7 @@ def create_official_market_subscription() -> WebullMarketSubscription:
             SubscribeType.SNAPSHOT.name,
             SubscribeType.TICK.name,
         ),
-        overnight_required=True,
+        clock=clock,
     )
 
 

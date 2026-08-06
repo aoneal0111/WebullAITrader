@@ -18,7 +18,11 @@ SENSITIVE = frozenset(
         "authorization",
         "signature",
         "x-app-key",
+        "x-access-token",
         "x-signature",
+        "x-signature-nonce",
+        "api_secret",
+        "cookie",
         "signed_headers",
     )
 )
@@ -31,3 +35,29 @@ class StructuredLogger:
         record = {"operation": operation, "status": status}
         record.update(redact(fields))
         self.sink.emit(dict(sorted(record.items())))
+
+
+def sanitized_sdk_event(
+    *,
+    status: str,
+    http_status: int | None = None,
+    error_code: str | None = None,
+    endpoint_path: str | None = None,
+    capability: str | None = None,
+    environment: str | None = None,
+    request_id: str | None = None,
+) -> dict[str, object]:
+    """Build an allow-listed SDK diagnostic without accepting request dumps."""
+
+    event: dict[str, object] = {"operation": "webull_sdk", "status": status}
+    for key, value in (
+        ("http_status", http_status),
+        ("error_code", error_code),
+        ("endpoint_path", endpoint_path),
+        ("capability", capability),
+        ("environment", environment),
+        ("request_id", request_id),
+    ):
+        if value is not None:
+            event[key] = value
+    return dict(sorted(event.items()))

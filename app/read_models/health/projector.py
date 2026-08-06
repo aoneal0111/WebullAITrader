@@ -25,6 +25,8 @@ def project_operational_health(state: OperationsHealthState) -> HealthState:
         heartbeat_status=state.heartbeat_status,
         reconnect_status=state.reconnect_status,
         entitlement_status=state.entitlement_status,
+        market_session_status=state.market_session_status,
+        scanner_retry_status=state.scanner_retry_status,
         probe_aapl_status=state.probe_aapl_status,
         probe_spy_status=state.probe_spy_status,
         probe_tsla_status=state.probe_tsla_status,

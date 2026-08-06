@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from app.broker_plugins import normalize_provider
+from app.configuration.environment import resolve_runtime_environment
 from app.configuration.models import *
 from app.webull.stream_endpoint import parse_webull_stream_url
 
@@ -43,9 +44,7 @@ def _reject_partial_scope(
 
 
 def load_configuration(env=None):
-    import os
-
-    e = dict(os.environ if env is None else env)
+    e = resolve_runtime_environment() if env is None else dict(env)
 
     mode = _scoped_environment(
         e,
