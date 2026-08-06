@@ -5,15 +5,16 @@ Usage from the repository root::
     python -m app.webull.live_stream_smoke --symbol AAPL
 
 The command never prints credentials. It connects through the official SDK,
-subscribes to one US stock, prints the first decoded SDK payload, and exits.
+subscribes to one US stock, prints sanitized decoder metadata, remains connected
+for the requested duration, and exits deliberately. It never submits orders.
 """
 
 from __future__ import annotations
 
 import argparse
 from os import environ
-from pprint import pformat
 import sys
+from time import monotonic
 from urllib.parse import urlparse
 
 from app.webull.sdk_streaming_adapter import (
@@ -21,6 +22,7 @@ from app.webull.sdk_streaming_adapter import (
     WebullStreamingCredentials,
     create_official_stream_backend,
 )
+from app.webull.market_event_parser import WebullMarketEventParser, payload_metadata
 
 
 def _host_from_environment(name: str) -> str | None:
@@ -55,7 +57,13 @@ def _subscription_types() -> tuple[object, ...]:
     return (SubscribeType.QUOTE.name, SubscribeType.SNAPSHOT.name, SubscribeType.TICK.name)
 
 
-def run(symbol: str, timeout_seconds: float) -> int:
+def run(
+    symbol: str,
+    timeout_seconds: float,
+    *,
+    summary_only: bool = False,
+    require_zero_errors: bool = False,
+) -> int:
     normalized_symbol = symbol.strip().upper()
     if not normalized_symbol:
         raise ValueError("symbol must not be blank")
@@ -69,9 +77,12 @@ def run(symbol: str, timeout_seconds: float) -> int:
     backend = create_official_stream_backend(
         credentials,
         subscription,
-        receive_timeout_seconds=timeout_seconds,
+        receive_timeout_seconds=min(1.0, timeout_seconds),
         http_host=_host_from_environment("WEBULL_API_BASE_URL"),
-        mqtt_host=_host_from_environment("WEBULL_DATA_API_HOST"),
+        mqtt_host=(
+            _host_from_environment("WEBULL_STREAM_URL")
+            or _host_from_environment("WEBULL_DATA_API_HOST")
+        ),
     )
 
     print(
@@ -80,15 +91,82 @@ def run(symbol: str, timeout_seconds: float) -> int:
     )
     try:
         backend.connect()
+        if not backend.registration_ready:
+            raise RuntimeError("Webull streaming session registration is not ready")
         print("Connected. Subscribing to QUOTE, SNAPSHOT, and TICK...")
         backend.subscribe((normalized_symbol,))
-        payload = backend.receive()
-        if payload is None:
-            print(f"No market-data payload arrived within {timeout_seconds:g} seconds.")
-            return 2
-        print("First Webull payload received:")
-        print(pformat(payload, sort_dicts=False))
-        return 0
+        parser = WebullMarketEventParser()
+        deadline = monotonic() + timeout_seconds
+        decoded = 0
+        decode_errors = 0
+        decoded_by_class = {"QUOTE": 0, "SNAPSHOT": 0, "TRADE": 0}
+        while monotonic() < deadline:
+            payload = backend.receive()
+            if payload is None:
+                continue
+            metadata = payload_metadata(payload)
+            try:
+                event = parser(payload)
+            except Exception as exc:
+                decode_errors += 1
+                tick_fields = ""
+                if metadata["message_classification"] == "TRADE":
+                    value = payload[1]
+                    tick_fields = (
+                        f" tick_price_type={type(getattr(value, 'price', None)).__name__}"
+                        f" tick_price={getattr(value, 'price', None)}"
+                        f" tick_volume_type={type(getattr(value, 'volume', None)).__name__}"
+                        f" tick_volume={getattr(value, 'volume', None)}"
+                        f" tick_time_type={type(getattr(value, 'time', None)).__name__}"
+                        f" tick_time={getattr(value, 'time', None)}"
+                        f" tick_side={getattr(value, 'side', None)}"
+                        f" tick_error={exc}"
+                    )
+                if not summary_only:
+                    print(
+                        "Payload classification: "
+                        f"topic={metadata['topic']} "
+                        f"payload_type={metadata['payload_type']} "
+                        f"payload_length={metadata['payload_length']} "
+                        f"class={metadata['message_classification']} "
+                        f"error_type={type(exc).__name__}"
+                        f"{tick_fields}"
+                    )
+                continue
+            if event is None:
+                print(
+                    "Payload skipped: "
+                    f"topic={metadata['topic']} "
+                    f"class={metadata['message_classification']}"
+                )
+                continue
+            decoded += 1
+            classification = str(metadata["message_classification"])
+            if classification in decoded_by_class:
+                decoded_by_class[classification] += 1
+            if not summary_only:
+                print(
+                    "Payload decoded: "
+                    f"topic={metadata['topic']} "
+                    f"class={classification} "
+                    f"payload_type={metadata['payload_type']} "
+                    f"payload_length={metadata['payload_length']} "
+                    f"protobuf_message_type={type(payload[1]).__name__} "
+                    f"symbol={event.symbol} sequence={event.sequence} "
+                    f"timestamp={event.timestamp.isoformat()} "
+                    f"price={getattr(event.payload, 'price', None) or getattr(event.payload, 'bid', None)}"
+                )
+        print(
+            f"Connected for {timeout_seconds:g} seconds; "
+            f"decoded_events={decoded} "
+            f"quotes={decoded_by_class['QUOTE']} "
+            f"snapshots={decoded_by_class['SNAPSHOT']} "
+            f"ticks={decoded_by_class['TRADE']} "
+            f"decode_errors={decode_errors}. Disconnecting deliberately."
+        )
+        if require_zero_errors and decode_errors:
+            return 3
+        return 0 if decoded else 2
     finally:
         try:
             backend.disconnect()
@@ -105,18 +183,42 @@ def main(argv: list[str] | None = None) -> int:
         default=30.0,
         help="seconds to wait for the first payload (default: 30)",
     )
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="print aggregate decoder counts instead of every payload",
+    )
+    parser.add_argument(
+        "--require-zero-errors",
+        action="store_true",
+        help="return a failure status if any payload fails decoding",
+    )
     args = parser.parse_args(argv)
     if args.timeout < 0:
         parser.error("--timeout must be non-negative")
 
     try:
-        return run(args.symbol, args.timeout)
+        return run(
+            args.symbol,
+            args.timeout,
+            summary_only=args.summary_only,
+            require_zero_errors=args.require_zero_errors,
+        )
     except (RuntimeError, TypeError, ValueError, TimeoutError) as exc:
-        print(f"Webull streaming smoke test failed: {exc}", file=sys.stderr)
+        print(
+            "Webull streaming smoke test failed: "
+            f"error_type={type(exc).__name__} "
+            f"rejection_code={getattr(exc, 'error_code', None)} "
+            f"request_id={getattr(exc, 'request_id', None)}",
+            file=sys.stderr,
+        )
         return 1
     except Exception as exc:
         print(
-            f"Webull streaming smoke test failed: {type(exc).__name__}: {exc}",
+            "Webull streaming smoke test failed: "
+            f"error_type={type(exc).__name__} "
+            f"rejection_code={getattr(exc, 'error_code', None)} "
+            f"request_id={getattr(exc, 'request_id', None)}",
             file=sys.stderr,
         )
         return 1
