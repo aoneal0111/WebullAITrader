@@ -21,6 +21,7 @@ from app.gui.pages.placeholder import PlaceholderPage
 from app.gui.pages.replay import ReplayPage
 from app.gui.presenters import (
     DashboardPresenter,
+    ChartPresenter,
     DecisionsPresenter,
     HealthPresenter,
     OrdersPresenter,
@@ -50,6 +51,8 @@ from app.operations_core import (
 )
 from app.replay_workspace import ReplayWorkspace
 from app.services import OrderCommandFactory, RuntimeService, TradingService
+from app.gui.projections.chart_projection import ChartProjection
+from app.services.chart_market_data import ChartMarketDataService
 
 
 class MainWindow(QMainWindow):
@@ -61,6 +64,8 @@ class MainWindow(QMainWindow):
         trading_service: TradingService | None = None,
         order_command_factory: OrderCommandFactory | None = None,
         replay_workspace: ReplayWorkspace | None = None,
+        chart_market_data_service: ChartMarketDataService | None = None,
+        chart_default_symbol: str | None = None,
     ) -> None:
         super().__init__()
         self._bus = bus
@@ -70,6 +75,9 @@ class MainWindow(QMainWindow):
         self._order_command_factory = order_command_factory
         self._replay_workspace = replay_workspace
         self._replay_state_bridge: QtReplayStateBridge | None = None
+        self._chart_market_data_service = chart_market_data_service
+        self._chart_default_symbol = chart_default_symbol
+        self._chart_presenter: ChartPresenter | None = None
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
         self.setWindowTitle("Atlas \u2014 WebullAITrader")
@@ -166,6 +174,12 @@ class MainWindow(QMainWindow):
             self.watchlist,
             self.dashboard.market_workspace,
         )
+        if self._chart_market_data_service is not None:
+            self._chart_presenter = ChartPresenter(
+                self.dashboard.market_workspace,
+                ChartProjection(self._chart_market_data_service),
+                default_symbol=self._chart_default_symbol,
+            )
         self._replay_presenter = ReplayPresenter(
             self.replay,
             self.dashboard.replay_status_panel,
@@ -196,6 +210,11 @@ class MainWindow(QMainWindow):
                     RenderAdapter(self.global_status.render_health),
                 ),
                 self._watchlist_presenter,
+                *(
+                    (self._chart_presenter,)
+                    if self._chart_presenter is not None
+                    else ()
+                ),
                 self._replay_presenter,
                 RuntimeControlsPresenter(self.start_button, self.stop_button),
                 RuntimeStatusPresenter(self.status_label),
@@ -260,6 +279,8 @@ class MainWindow(QMainWindow):
             )
             event.ignore()
             return
+        if self._chart_presenter is not None:
+            self._chart_presenter.close()
         if self._replay_state_bridge is not None:
             self._replay_state_bridge.close()
         self._state_bridge.close()

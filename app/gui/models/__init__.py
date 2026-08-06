@@ -13,7 +13,7 @@ from .portfolio import PortfolioDashboardSnapshot
 from .health import HealthDashboardSnapshot
 from .watchlist import WatchlistRow, WatchlistSnapshot
 from .replay import ReplayWorkspaceSnapshot
-from .chart import ChartViewSnapshot
+from .chart import ChartCandle, ChartViewSnapshot
 from .paper_validation import PaperValidationDashboardSnapshot
 from .atlas_activity import AtlasActivityRow, AtlasActivitySnapshot
 from .mission_control import (
@@ -40,6 +40,7 @@ __all__ = [
     "TimelineFilter",
     "ReplayWorkspaceSnapshot",
     "ChartViewSnapshot",
+    "ChartCandle",
     "PaperValidationDashboardSnapshot",
     "AtlasActivityRow",
     "AtlasActivitySnapshot",

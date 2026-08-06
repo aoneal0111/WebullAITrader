@@ -39,6 +39,7 @@ class BrokerOrderStatus(StrEnum):
     FILLED = "FILLED"
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
 
 
 @dataclass(frozen=True, slots=True)

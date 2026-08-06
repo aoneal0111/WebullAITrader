@@ -21,6 +21,8 @@ def main() -> int:
         composition.runtime_service,
         composition.trading_service,
         composition.order_command_factory,
+        chart_market_data_service=composition.chart_market_data_service,
+        chart_default_symbol=composition.chart_default_symbol,
     )
     window.show()
 
