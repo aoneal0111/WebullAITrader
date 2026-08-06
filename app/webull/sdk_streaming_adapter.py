@@ -180,29 +180,36 @@ def create_official_stream_backend(
     if mqtt_host is not None:
         client_arguments["mqtt_host"] = mqtt_host
 
-    client = factory(**client_arguments)
-    actual_protocol = getattr(client, "_protocol", MQTT_V311)
-    if actual_protocol != MQTT_V311:
-        raise TypeError(
-            "official SDK streaming client must use MQTTv3.1.1"
-        )
-    # QuotesClient 2.0.14 ignores logger_enable when it starts its worker and
-    # otherwise installs handlers that dump signed requests. Atlas owns SDK
-    # logging and deliberately keeps those credential-bearing dumps disabled.
-    if hasattr(client, "_init_logger"):
-        setattr(client, "_init_logger", lambda *args, **kwargs: None)
-    if transport == "websockets":
-        set_websocket_options = getattr(client, "ws_set_options", None)
-        if not callable(set_websocket_options):
+    def build_client(session_id: str) -> object:
+        arguments = dict(client_arguments)
+        arguments["session_id"] = session_id
+        result = factory(**arguments)
+        actual_protocol = getattr(result, "_protocol", MQTT_V311)
+        if actual_protocol != MQTT_V311:
             raise TypeError(
-                "official SDK streaming client does not support "
-                "WebSocket path configuration"
+                "official SDK streaming client must use MQTTv3.1.1"
             )
-        set_websocket_options(path=websocket_path)
+        # QuotesClient 2.0.14 ignores logger_enable when it starts its worker and
+        # otherwise installs handlers that dump signed requests. Atlas owns SDK
+        # logging and deliberately keeps those credential-bearing dumps disabled.
+        if hasattr(result, "_init_logger"):
+            setattr(result, "_init_logger", lambda *args, **kwargs: None)
+        if transport == "websockets":
+            set_websocket_options = getattr(result, "ws_set_options", None)
+            if not callable(set_websocket_options):
+                raise TypeError(
+                    "official SDK streaming client does not support "
+                    "WebSocket path configuration"
+                )
+            set_websocket_options(path=websocket_path)
+        return result
+
+    client = build_client(credentials.session_id)
     return OfficialSdkStreamBackend(
         client,
         subscription_mapper=subscription.sdk_arguments,
         receive_timeout_seconds=receive_timeout_seconds,
+        sdk_client_factory=lambda: build_client(f"atlas-{uuid4().hex}"),
     )
 
 

@@ -699,7 +699,32 @@ class DesktopBrokerRuntimeDriver:
                 "MARKET_DATA_PARSE_FAILED",
                 "Webull market-data payload could not be decoded.",
                 RuntimeHealthUpdate(
-                    market_data_status="ERROR",
+                    market_data_status="STREAM_PARTIALLY_DEGRADED",
+                    streaming_status="STREAM_PARTIALLY_DEGRADED",
+                    market_data_rest_status="AVAILABLE",
+                    last_error=detail,
+                    reconnect_attempts=attempt,
+                ),
+            )
+        elif lifecycle == "decode_recovered":
+            self._publish_health(
+                "MARKET_DATA_DECODER_RECOVERED",
+                "Webull market-data payload decoding recovered.",
+                RuntimeHealthUpdate(
+                    market_data_status="STREAM_CONNECTED",
+                    streaming_status="STREAM_CONNECTED",
+                    market_data_rest_status="AVAILABLE",
+                    last_warning=None,
+                ),
+            )
+        elif lifecycle == "decode_threshold_exceeded":
+            self._publish_health(
+                "MARKET_DATA_DECODE_THRESHOLD_EXCEEDED",
+                "Webull market-data decode failure threshold was exceeded.",
+                RuntimeHealthUpdate(
+                    market_data_status="STREAM_FAILED",
+                    streaming_status="STREAM_FAILED",
+                    market_data_rest_status="AVAILABLE",
                     last_error=detail,
                     reconnect_attempts=attempt,
                 ),

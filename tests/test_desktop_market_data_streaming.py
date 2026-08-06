@@ -466,6 +466,14 @@ def test_malformed_payload_publishes_parse_and_terminal_health() -> None:
         event_types = [event.event_type for event in events]
         assert "MARKET_DATA_PARSE_FAILED" in event_types
         assert "MARKET_DATA_TERMINAL_FAILURE" in event_types
+        degraded = next(
+            event
+            for event in events
+            if event.event_type == "MARKET_DATA_PARSE_FAILED"
+        )
+        assert degraded.health.market_data_status == "STREAM_PARTIALLY_DEGRADED"
+        assert degraded.health.streaming_status == "STREAM_PARTIALLY_DEGRADED"
+        assert degraded.health.market_data_rest_status == "AVAILABLE"
         terminal = next(
             event
             for event in events
@@ -520,6 +528,44 @@ def test_protocol_failure_is_nonfatal_and_classified_as_rest_only() -> None:
     assert terminal.health.streaming_status == "PROTOCOL_UNSUPPORTED"
     assert broker.calls == ["connect", "disconnect"]
     assert stream.calls == ["connect", "disconnect"]
+
+
+def test_session_registration_failure_keeps_rest_available() -> None:
+    class RegistrationFailureStream(FakeStream):
+        def subscribe(self, symbols: tuple[str, ...]) -> None:
+            self.calls.append(("subscribe", symbols))
+            raise RuntimeError("INVALID_SESSION")
+
+    stop_event = Event()
+    events: list[PaperRuntimeEvent] = []
+    broker = FakeBroker()
+    stream = RegistrationFailureStream([])
+
+    def poller(broker_value, *, clock):
+        stop_event.set()
+        return account_snapshot()
+
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=configuration(),
+        broker_runtime=runtime(broker, stream),
+        event_sink=events.append,
+        account_snapshot_sink=lambda snapshot: None,
+        account_poller=poller,
+        clock=lambda: NOW,
+    )
+
+    driver.run(stop_event=stop_event, cycle_sink=lambda cycle: None)
+
+    terminal = next(
+        event for event in events
+        if event.event_type == "MARKET_DATA_TERMINAL_FAILURE"
+    )
+    assert terminal.health.market_data_status == "REST_ONLY"
+    assert terminal.health.market_data_rest_status == "AVAILABLE"
+    assert not any(
+        call in broker.calls
+        for call in ("submit_order", "cancel_order", "replace_order")
+    )
 
 
 def test_websocket_client_reconnects_and_resubscribes() -> None:

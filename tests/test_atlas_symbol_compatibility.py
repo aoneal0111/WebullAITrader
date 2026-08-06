@@ -339,13 +339,15 @@ def test_atlas_logs_redact_keys_signatures_secrets_and_signed_headers():
 
 class StreamClient:
     def __init__(self):
+        self._client_id = "session"
+        self.api_client = object()
         self._transport = "websockets"
         self.on_quotes_message = None
         self.on_connect_success = None
         self.on_disconnect = None
 
     def connect_and_loop_start(self, **kwargs):
-        self.on_connect_success(self, object(), "session")
+        self.on_connect_success(self, self.api_client, "session")
 
     def subscribe(self, **kwargs):
         return None
