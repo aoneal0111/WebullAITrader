@@ -6,12 +6,20 @@ from datetime import timedelta
 from decimal import Decimal
 
 from app.configuration import load_configuration
+from app.services.chart_market_data import ChartMarketDataService
 from app.operations_core import ApplicationStateStore, OperationsBus
 from app.order_cancellation import OrderCancellationRuntime
 from app.order_placement import OrderPlacementRuntime
 from app.paper_trading.order_book import PaperOrderBook
 from app.paper_trading.execution_engine import PaperExecutionEngine
 from app.services import OrderCommandFactory, RuntimeService, TradingService
+from app.webull.client_factories import (
+    MarketDataClientFactory,
+    market_data_configuration,
+    trading_configuration,
+)
+from app.webull.request_audit import AuditedMarketDataClient, RequestIsolationGuard
+from app.webull.sdk_market_data import LazyOfficialDataClient
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -37,6 +45,8 @@ class DesktopComposition:
     paper_execution_engine: PaperExecutionEngine | None = None
     paper_trading_commands: PaperTradingCommandComposition | None = None
     runtime_projections: RuntimeProjectionPipeline | None = None
+    chart_market_data_service: ChartMarketDataService | None = None
+    chart_default_symbol: str | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         """Close composed resources in lifecycle order."""
@@ -70,6 +80,29 @@ def create_desktop_composition(
         )
 
     operational_configuration = load_configuration()
+    chart_market_configuration = market_data_configuration(
+        operational_configuration
+    )
+    chart_request_guard = RequestIsolationGuard(
+        trading_configuration(operational_configuration),
+        chart_market_configuration,
+    )
+    chart_market_data_service = ChartMarketDataService(
+        LazyOfficialDataClient(
+            lambda: AuditedMarketDataClient(
+                MarketDataClientFactory(chart_market_configuration).create(),
+                chart_request_guard,
+                chart_market_configuration,
+            )
+        )
+    )
+    chart_default_symbol = next(
+        iter(
+            operational_configuration.market_data_symbols
+            or operational_configuration.allowed_symbols
+        ),
+        None,
+    )
     runtime_projections = create_runtime_projection_pipeline(
         operations_bus=bus,
         account_id=(
@@ -162,6 +195,8 @@ def create_desktop_composition(
         ),
         paper_trading_commands=paper_trading_commands,
         runtime_projections=runtime_projections,
+        chart_market_data_service=chart_market_data_service,
+        chart_default_symbol=chart_default_symbol,
     )
 
 

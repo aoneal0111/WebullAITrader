@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from PySide6.QtCore import QDateTime, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QDateTime, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QComboBox,
@@ -44,9 +44,16 @@ class EmptyChartCanvas(QFrame):
         self.setObjectName("chartCanvas")
         self.setMinimumHeight(Dimensions.CHART_MIN_HEIGHT)
         self._message = "No market series available."
+        self._candles = ()
+
+    def set_model(self, snapshot: ChartViewSnapshot) -> None:
+        self._candles = snapshot.candles
+        self._message = snapshot.message
+        self.update()
 
     def set_message(self, message: str) -> None:
         self._message = message
+        self._candles = ()
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -61,6 +68,9 @@ class EmptyChartCanvas(QFrame):
             painter.drawLine(x, 0, x, self.height())
         for y in range(0, self.height(), step_y):
             painter.drawLine(0, y, self.width(), y)
+        if self._candles:
+            self._paint_candles(painter)
+            return
         center_x = self.width() / 2
         center_y = self.height() / 2 - 28
         icon_pen = QPen(QColor(Colors.TEXT_FAINT), 2)
@@ -134,6 +144,36 @@ class EmptyChartCanvas(QFrame):
             Qt.AlignmentFlag.AlignHCenter | Qt.TextFlag.TextWordWrap,
             hint,
         )
+
+    def _paint_candles(self, painter: QPainter) -> None:
+        candles = self._candles[-120:]
+        highest = max(candle.high for candle in candles)
+        lowest = min(candle.low for candle in candles)
+        spread = highest - lowest
+        if spread <= 0:
+            return
+        left, top, right, bottom = 18, 14, 18, 22
+        width = max(1, self.width() - left - right)
+        height = max(1, self.height() - top - bottom)
+        step = width / max(1, len(candles))
+        body_width = max(2.0, min(9.0, step * 0.62))
+
+        def y(value) -> float:
+            return top + float((highest - value) / spread) * height
+
+        for index, candle in enumerate(candles):
+            x = left + (index + 0.5) * step
+            rising = candle.close >= candle.open
+            color = QColor(Colors.SUCCESS if rising else Colors.DANGER)
+            painter.setPen(QPen(color, 1))
+            painter.drawLine(int(x), int(y(candle.high)), int(x), int(y(candle.low)))
+            opened, closed = y(candle.open), y(candle.close)
+            body_top = min(opened, closed)
+            body_height = max(1.0, abs(opened - closed))
+            painter.fillRect(
+                QRectF(x - body_width / 2, body_top, body_width, body_height),
+                color,
+            )
 
 
 class ChartPlaceholder(QWidget):
@@ -211,6 +251,14 @@ class ChartPlaceholder(QWidget):
         self._clock.start(1000)
         self._update_time()
 
+    def select_symbol(self, symbol: str) -> None:
+        self._symbol_selector.blockSignals(True)
+        if self._symbol_selector.findText(symbol) < 0:
+            self._symbol_selector.addItem(symbol)
+        self._symbol_selector.setCurrentText(symbol)
+        self._symbol_selector.setEnabled(True)
+        self._symbol_selector.blockSignals(False)
+
     def set_symbols(
         self,
         symbols: tuple[str, ...],
@@ -236,6 +284,8 @@ class ChartPlaceholder(QWidget):
         )
 
     def render(self, snapshot: ChartViewSnapshot) -> None:
+        if snapshot.symbol != "--":
+            self.select_symbol(snapshot.symbol)
         self._symbol.setText(snapshot.symbol)
         self._status.set_status(
             snapshot.market_status.title(),
@@ -246,7 +296,20 @@ class ChartPlaceholder(QWidget):
             ),
         )
         self._timeframe.setCurrentText(snapshot.timeframe)
-        self._canvas.set_message(snapshot.message)
+        self._ohlc.setText(
+            "O {0}   H {1}   L {2}   C {3}".format(
+                *(
+                    "--" if value is None else f"{value:,.2f}"
+                    for value in (
+                        snapshot.open,
+                        snapshot.high,
+                        snapshot.low,
+                        snapshot.close,
+                    )
+                )
+            )
+        )
+        self._canvas.set_model(snapshot)
 
 
 class CompactWatchlistPanel(QWidget):
@@ -320,6 +383,9 @@ class CompactWatchlistPanel(QWidget):
 class MarketWorkspace(QWidget):
     """Compose chart adapter and watchlist from one immutable snapshot."""
 
+    chart_symbol_selected = Signal(str)
+    chart_timeframe_selected = Signal(str)
+
     def __init__(self, chart_view: ChartView | None = None) -> None:
         super().__init__()
         if chart_view is not None and not isinstance(chart_view, QWidget):
@@ -330,6 +396,15 @@ class MarketWorkspace(QWidget):
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setHandleWidth(2)
         self.chart_view = chart_view or ChartPlaceholder()
+        self._chart_managed = False
+        self._chart_snapshot = ChartViewSnapshot()
+        if isinstance(self.chart_view, ChartPlaceholder):
+            self.chart_view._symbol_selector.currentTextChanged.connect(
+                self.chart_symbol_selected.emit
+            )
+            self.chart_view._timeframe.currentTextChanged.connect(
+                self.chart_timeframe_selected.emit
+            )
         self.watchlist = CompactWatchlistPanel()
         self.atlas_activity = AtlasActivityPanel()
         self.ai_thinking = AIThinkingPanel()
@@ -370,6 +445,13 @@ class MarketWorkspace(QWidget):
                 tuple(row.symbol for row in snapshot.rows),
                 selected.symbol if selected is not None else None,
             )
+        if self._chart_managed:
+            if (
+                isinstance(self.chart_view, ChartPlaceholder)
+                and self._chart_snapshot.symbol != "--"
+            ):
+                self.chart_view.select_symbol(self._chart_snapshot.symbol)
+            return
         chart_snapshot = ChartViewSnapshot(
             symbol=selected.symbol if selected is not None else "--",
             timeframe="1D",
@@ -385,6 +467,13 @@ class MarketWorkspace(QWidget):
             ),
         )
         self.chart_view.render(chart_snapshot)
+
+    def set_chart_managed(self, managed: bool) -> None:
+        self._chart_managed = bool(managed)
+
+    def render_chart(self, snapshot: ChartViewSnapshot) -> None:
+        self._chart_snapshot = snapshot
+        self.chart_view.render(snapshot)
 
     def render_activity(self, snapshot: AtlasActivitySnapshot) -> None:
         self.atlas_activity.render(snapshot)
