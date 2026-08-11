@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
+from decimal import Decimal, InvalidOperation
 import logging
 
 from PySide6.QtCore import QObject, Signal
 
+from app.gui.chart_inspection import ChartInspectionStore
 from app.gui.models import ChartViewSnapshot
 from app.gui.projections.chart_projection import ChartProjection
 from app.operations_core import ApplicationState
@@ -29,11 +32,19 @@ class ChartPresenter:
         *,
         default_symbol: str | None = None,
         asynchronous: bool = True,
+        inspection_store: ChartInspectionStore | None = None,
     ) -> None:
         self._view = view
         self._projection = projection
-        self._default_symbol = _symbol(default_symbol)
+        # Kept in the constructor for composition compatibility.  A configured
+        # bootstrap symbol is deliberately not a presentation selection.
+        del default_symbol
         self._selected_symbol: str | None = None
+        self._inspection = inspection_store or ChartInspectionStore()
+        self._atlas_symbol: str | None = None
+        self._selection_source = "none"
+        self._state = ApplicationState()
+        self._last_model = ChartViewSnapshot()
         self._timeframe = "1D"
         self._generation = 0
         self._closed = False
@@ -45,26 +56,67 @@ class ChartPresenter:
         self._bridge = _ResultBridge(view)
         self._bridge.completed.connect(self._apply)
         view.set_chart_managed(True)
-        view.chart_symbol_selected.connect(self.select_symbol)
+        operator_signal = getattr(view, "operator_symbol_selected", None)
+        (
+            operator_signal
+            if operator_signal is not None
+            else view.chart_symbol_selected
+        ).connect(self.select_symbol)
+        if hasattr(view, "atlas_symbol_selected"):
+            view.atlas_symbol_selected.connect(self.select_atlas_symbol)
         view.chart_timeframe_selected.connect(self.select_timeframe)
 
     def render(self, state: ApplicationState) -> None:
-        projected = _symbol(state.watchlist_projection.selected_symbol)
-        symbol = projected or self._default_symbol
-        source = "watchlist" if projected else "configured fallback"
+        self._state = state
+        projected = _atlas_candidate_symbol(
+            state,
+            _symbol(state.watchlist_projection.selected_symbol),
+        )
+        atlas_focus = projected or (
+            self._atlas_symbol
+            if _atlas_candidate_symbol(state, self._atlas_symbol) is not None
+            else None
+        )
+        position = _active_position_symbol(state)
+        order = _working_order_symbol(state)
+        operator_symbol = self._inspection.snapshot().symbol
+        symbol = operator_symbol or atlas_focus or position or order
+        source = next(
+            name for value, name in (
+                (operator_symbol, "operator inspection"),
+                (atlas_focus, "atlas candidate"),
+                (position, "active position"),
+                (order, "working order"),
+                (None, "none"),
+            )
+            if value == symbol
+        )
         if symbol is None:
             _LOGGER.info(
                 "operation=selected_symbol status=skipped symbol=-- "
-                "reason=no watchlist selection or configured fallback"
+                "reason=no operator, Atlas, position, or working-order selection"
             )
-            _log_request_skips("--", "no watchlist selection or configured fallback")
-            self._view.render_chart(ChartViewSnapshot())
+            _log_request_skips("--", "no active instrument source")
+            self._generation += 1
+            self._selected_symbol = None
+            self._selection_source = "none"
+            message = (
+                "Atlas is scanning. No candidate is currently in focus."
+                if (state.health_projection.scanner_status or "").upper() == "RUNNING"
+                else "No active instrument. The market chart is idle."
+            )
+            self._last_model = ChartViewSnapshot(message=message)
+            self._view.render_chart(self._decorate(self._last_model))
             return
         _LOGGER.info(
             "operation=selected_symbol status=selected symbol=%s source=%s",
             symbol,
             source,
         )
+        self._selection_source = source
+        if symbol == self._selected_symbol:
+            self._view.render_chart(self._decorate(self._last_model))
+            return
         self._request(symbol)
 
     def select_symbol(self, symbol: str) -> None:
@@ -74,12 +126,37 @@ class ChartPresenter:
                 "operation=selected_symbol status=skipped symbol=-- "
                 "reason=empty selector value"
             )
+            self.clear_inspection()
             return
+        self._inspection.select(normalized)
+        self._atlas_symbol = None
+        self._selection_source = "operator inspection"
         _LOGGER.info(
-            "operation=selected_symbol status=selected symbol=%s source=chart selector",
+            "operation=selected_symbol status=selected symbol=%s "
+            "source=operator inspection",
             normalized,
         )
         self._request(normalized)
+
+    def clear_inspection(self) -> None:
+        """Clear only operator intent, then resume automatic priority."""
+
+        prior = self._inspection.snapshot().symbol
+        self._inspection.clear()
+        _LOGGER.info(
+            "operation=inspection_selection status=cleared symbol=%s",
+            prior or "--",
+        )
+        self.render(self._state)
+
+    def select_atlas_symbol(self, symbol: str) -> None:
+        normalized = _symbol(symbol)
+        if normalized is None:
+            return
+        self._atlas_symbol = normalized
+        # Scanner/Atlas focus updates are lower priority and can never clear or
+        # overwrite explicit operator inspection intent.
+        self.render(self._state)
 
     def select_timeframe(self, timeframe: str) -> None:
         normalized = timeframe.strip().upper()
@@ -110,17 +187,22 @@ class ChartPresenter:
                 symbol,
             )
             _log_request_skips(symbol, "selection unchanged")
+            self._last_model = replace(
+                self._last_model,
+                selection_source=self._selection_source,
+            )
+            self._view.render_chart(self._decorate(self._last_model))
             return
         self._selected_symbol = symbol
         self._generation += 1
         generation = self._generation
-        self._view.render_chart(
-            ChartViewSnapshot(
+        self._last_model = ChartViewSnapshot(
                 symbol=symbol,
                 timeframe=self._timeframe,
                 message="Loading snapshot, quote, and historical candles through REST.",
-            )
+                selection_source=self._selection_source,
         )
+        self._view.render_chart(self._decorate(self._last_model))
         if self._executor is None:
             self._apply(generation, self._projection.request(symbol, self._timeframe))
             return
@@ -159,11 +241,38 @@ class ChartPresenter:
                 model.symbol,
             )
             return
-        self._view.render_chart(model)
+        self._last_model = replace(model, selection_source=self._selection_source)
+        self._view.render_chart(self._decorate(self._last_model))
+
+    def _decorate(self, model: ChartViewSnapshot) -> ChartViewSnapshot:
+        health = self._state.health_projection
+        operator_symbol = self._inspection.snapshot().symbol
+        subscription_symbols = health.subscription_symbols
+        inspection_has_live_projection = (
+            operator_symbol is None
+            or subscription_symbols is None
+            or operator_symbol in subscription_symbols
+        )
+        return replace(
+            model,
+            selection_source=self._selection_source,
+            last_stream_update=(
+                health.last_market_data_event
+                if inspection_has_live_projection
+                else None
+            ),
+            stream_stale_after_seconds=health.market_data_stale_after_seconds,
+            historical_data_available=(
+                bool(model.candles)
+                or health.historical_bars_status == "AVAILABLE"
+                or health.market_data_rest_status in {"AVAILABLE", "CONNECTED"}
+            ),
+        )
 
     def close(self) -> None:
         self._closed = True
         self._generation += 1
+        self._inspection.clear()
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
 
@@ -173,6 +282,54 @@ def _symbol(value: str | None) -> str | None:
         return None
     normalized = value.strip().upper()
     return normalized if normalized and normalized != "--" else None
+
+
+def _active_position_symbol(state: ApplicationState) -> str | None:
+    for position in state.positions:
+        try:
+            if Decimal(position.quantity) != 0:
+                return _symbol(position.symbol)
+        except (InvalidOperation, ValueError):
+            continue
+    return None
+
+
+def _atlas_candidate_symbol(
+    state: ApplicationState,
+    symbol: str | None,
+) -> str | None:
+    if symbol is None:
+        return None
+    entry = next(
+        (
+            item
+            for item in state.watchlist_projection.entries
+            if item.symbol == symbol
+        ),
+        None,
+    )
+    return (
+        symbol
+        if entry is not None and dict(entry.metadata).get("scanner_rank") is not None
+        else None
+    )
+
+
+_WORKING_ORDER_STATUSES = frozenset({
+    "ACCEPTED", "NEW", "OPEN", "PARTIALLY_FILLED", "PENDING",
+    "PENDING_CANCEL", "SUBMITTED", "WORKING",
+})
+
+
+def _working_order_symbol(state: ApplicationState) -> str | None:
+    return next(
+        (
+            _symbol(order.symbol)
+            for order in state.orders
+            if order.status.strip().upper() in _WORKING_ORDER_STATUSES
+        ),
+        None,
+    )
 
 
 def _log_request_skips(symbol: str, reason: str) -> None:

@@ -22,6 +22,10 @@ from app.webull.client_factories import (
 from app.webull.request_audit import AuditedMarketDataClient, RequestIsolationGuard
 from app.webull.sdk_market_data import LazyOfficialDataClient
 from app.webull.market_data_session import utc_now
+from app.strategies.warrior_momentum.desktop_sidecar import (
+    CompositeMarketEventObserver, WarriorDesktopSidecar,
+)
+from app.strategies.warrior_momentum.forward_models import PaperAccountContext
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -50,6 +54,7 @@ class DesktopComposition:
     runtime_projections: RuntimeProjectionPipeline | None = None
     chart_market_data_service: ChartMarketDataService | None = None
     chart_default_symbol: str | None = None
+    warrior_forward_sidecar: WarriorDesktopSidecar | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         """Close composed resources in lifecycle order."""
@@ -59,6 +64,8 @@ class DesktopComposition:
         )
         if self.paper_trading_commands is not None:
             self.paper_trading_commands.close()
+        if self.warrior_forward_sidecar is not None:
+            self.warrior_forward_sidecar.stop()
         self.state_store.close()
         return runtime_stopped
 
@@ -90,13 +97,9 @@ def create_desktop_composition(
         trading_configuration(operational_configuration),
         chart_market_configuration,
     )
-    chart_default_symbol = next(
-        iter(
-            operational_configuration.market_data_symbols
-            or operational_configuration.allowed_symbols
-        ),
-        None,
-    )
+    # Subscriptions and execution permissions are not chart selections. Atlas
+    # candidates and explicit operator interaction own chart focus.
+    chart_default_symbol = None
     def portfolio_account_source() -> PortfolioAccount:
         state = state_store.snapshot()
         account = state.broker_account
@@ -212,6 +215,35 @@ def create_desktop_composition(
             paper_trading_commands.gateway.process_market_event
         )
 
+    def warrior_account_context() -> PaperAccountContext | None:
+        state = state_store.snapshot()
+        account = state.broker_account
+        if account is not None:
+            equity = getattr(account, "equity", None)
+            buying_power = getattr(account, "buying_power", None)
+        else:
+            paper = state.paper_runtime
+            equity = None if paper is None else paper.current_equity
+            buying_power = equity
+        if equity is None or buying_power is None:
+            return None
+        return PaperAccountContext(
+            equity=Decimal(equity), buying_power=Decimal(buying_power),
+            allowed_symbols=frozenset(operational_configuration.allowed_symbols),
+            risk_engine_approved=True, broker_restriction=False,
+        )
+
+    warrior_forward_sidecar = WarriorDesktopSidecar(
+        enabled=operational_configuration.warrior_forward_paper_enabled,
+        storage_path=operational_configuration.warrior_forward_capture_path,
+        environment=operational_configuration.environment.value,
+        account_context_source=warrior_account_context,
+    )
+    if warrior_forward_sidecar.enabled:
+        market_event_observer = CompositeMarketEventObserver(
+            market_event_observer, warrior_forward_sidecar,
+        )
+
     runtime_service = create_desktop_runtime_service(
         bus,
         driver_factory=driver_factory,
@@ -241,6 +273,7 @@ def create_desktop_composition(
         runtime_projections=runtime_projections,
         chart_market_data_service=chart_market_data_service,
         chart_default_symbol=chart_default_symbol,
+        warrior_forward_sidecar=warrior_forward_sidecar,
     )
 __all__ = [
     "DesktopComposition",

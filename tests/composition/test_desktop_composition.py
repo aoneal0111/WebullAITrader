@@ -31,6 +31,7 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
         assert composition.runtime_service.status is RuntimeServiceStatus.STOPPED
         assert composition.runtime_service.cycles_completed == 0
         assert composition.state_store.snapshot().revision == 0
+        assert composition.chart_default_symbol is None
     finally:
         composition.close(timeout_seconds=1.0)
 

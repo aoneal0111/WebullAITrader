@@ -202,6 +202,8 @@ def test_valid_candidate_reaches_probe_then_30_day_bars_warmup():
     engine, _, market_data = build(behavior={"BAD": "unsupported"})
 
     assert engine.refresh_universe() == ("GOOD",)
+    assert engine.snapshot().universe_size == 2
+    assert engine.snapshot().eligible_symbol_count == 2
     assert [call[3] for call in market_data.calls if call[0] == "GOOD"] == [
         "1",
         "30",

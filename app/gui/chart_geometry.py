@@ -70,9 +70,18 @@ def calculate_chart_geometry(
     *,
     display_timezone=NEW_YORK,
     maximum_bars: int = 120,
+    visible_start: int | None = None,
+    visible_count: int | None = None,
 ) -> ChartGeometry:
-    visible = tuple(candles[-maximum_bars:])
-    offset = len(candles) - len(visible)
+    if maximum_bars < 1:
+        raise ValueError("maximum_bars must be positive")
+    count = maximum_bars if visible_count is None else max(1, visible_count)
+    count = min(count, len(candles))
+    if visible_start is None:
+        offset = max(0, len(candles) - count)
+    else:
+        offset = min(max(0, visible_start), max(0, len(candles) - count))
+    visible = tuple(candles[offset:offset + count])
     left, top = 10.0, 12.0
     right = max(left + 1.0, float(width) - 76.0)
     bottom = max(top + 1.0, float(height) - 36.0)

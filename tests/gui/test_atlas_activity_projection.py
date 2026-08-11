@@ -32,6 +32,7 @@ def test_atlas_activity_projects_only_existing_runtime_facts() -> None:
             supported_symbols=7300,
             ai_status="RUNNING",
             risk_status="RUNNING",
+            healthy=True,
         ),
         watchlist_projection=WatchlistState(
             ordered_symbols=("XYZ",),
@@ -65,7 +66,7 @@ def test_atlas_activity_projects_only_existing_runtime_facts() -> None:
     assert values["Candidates"] == "1"
     assert values["Market Data"] == "Connected"
     assert values["Broker"] == "Connected"
-    assert values["Evaluating"] == "Unknown"
+    assert values["Evaluating"] == "Running"
 
     mission = {
         row.label: row.value for row in project_mission_status(state).rows
@@ -76,7 +77,7 @@ def test_atlas_activity_projects_only_existing_runtime_facts() -> None:
     assert mission["AI Scanner"] == "Running"
     assert mission["Decision Engine"] == "Running"
     assert mission["Risk Engine"] == "Running"
-    assert mission["System Health"] == "Running"
+    assert mission["System Health"] == "Healthy"
 
     thinking = project_ai_thinking(state)
     assert thinking.state == "Evaluating high-confidence candidates."
@@ -102,7 +103,26 @@ def test_ai_thinking_uses_descriptive_state_without_inventing_reasoning() -> Non
         phase=RuntimePhase.RUNNING,
     )))
 
-    assert thinking.state == "Searching for opportunities."
+    assert thinking.state == "Waiting for the next scan cycle."
     assert thinking.reasoning == "Unknown"
     assert thinking.confidence == "Unknown"
     assert thinking.next_evaluation == "Unknown"
+
+
+def test_running_scanner_with_zero_candidates_remains_running() -> None:
+    state = ApplicationState(
+        runtime=RuntimeState(phase=RuntimePhase.RUNNING),
+        health_projection=HealthState(scanner_status="RUNNING"),
+    )
+
+    activity = {
+        row.label: row.value for row in project_atlas_activity(state).rows
+    }
+    mission = {
+        row.label: row.value for row in project_mission_status(state).rows
+    }
+
+    assert activity["Candidates"] == "0"
+    assert activity["Evaluating"] == "Running"
+    assert mission["AI Scanner"] == "Running"
+    assert project_ai_thinking(state).state == "Searching for opportunities."

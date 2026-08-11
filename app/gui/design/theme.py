@@ -19,6 +19,7 @@ def application_stylesheet() -> str:
     QLabel#sectionEyebrow {{ font-size: {Typography.XS}px; font-weight: 750; color: {Colors.TEXT_MUTED}; letter-spacing: 0.8px; }}
     QLabel#eyebrow {{ color: {Colors.ACCENT}; font-size: {Typography.XS}px; font-weight: 800; letter-spacing: 1px; }}
     QLabel#monoValue {{ font-family: "{Typography.MONO}"; color: {Colors.TEXT_STRONG}; font-weight: 650; }}
+    QLabel#quotePrice {{ font-family: "{Typography.MONO}"; color: {Colors.TEXT_STRONG}; font-size: {Typography.PRIMARY_METRIC}px; font-weight: 800; }}
     QLabel#monoValue[emphasis='primary'] {{ font-size: {Typography.LG}px; font-weight: 750; }}
     QFrame#panel, QFrame#metricCard, QFrame#statusCard {{
         background: {Colors.SURFACE};
@@ -46,6 +47,9 @@ def application_stylesheet() -> str:
     QLabel#metricValue[tone='danger'], QLabel#compactMetricValue[tone='danger'], QLabel#monoValue[status='danger'] {{ color: {Colors.DANGER}; }}
     QLabel#metricValue[tone='warn'], QLabel#compactMetricValue[tone='warn'], QLabel#monoValue[status='warn'] {{ color: {Colors.WARNING}; }}
     QLabel#metricValue[tone='neutral'], QLabel#compactMetricValue[tone='neutral'], QLabel#monoValue[status='neutral'] {{ color: {Colors.TEXT_MUTED}; }}
+    QLabel#quotePrice[tone='good'], QLabel#monoValue[tone='good'] {{ color: {Colors.SUCCESS}; }}
+    QLabel#quotePrice[tone='danger'], QLabel#monoValue[tone='danger'] {{ color: {Colors.DANGER}; }}
+    QLabel#quotePrice[tone='neutral'], QLabel#monoValue[tone='neutral'] {{ color: {Colors.TEXT_MUTED}; }}
     QPushButton {{ border: 0; border-radius: 4px; padding: 6px 10px; min-height: 20px; font-weight: 650; }}
     QPushButton:focus, QComboBox:focus, QLineEdit:focus, QTreeView:focus, QTableView:focus, QTableWidget:focus {{ border: 1px solid {Colors.CYAN}; }}
     QPushButton#primaryButton {{ background: {Colors.ACCENT}; color: white; }}

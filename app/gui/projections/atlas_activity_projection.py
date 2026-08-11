@@ -14,9 +14,10 @@ def project_atlas_activity(state: ApplicationState) -> AtlasActivitySnapshot:
         for entry in state.watchlist_projection.entries
         if dict(entry.metadata).get("scanner_rank") is not None
     )
+    scanner_status = (health.scanner_status or "").upper()
     candidates = (
         str(candidate_count)
-        if candidate_count or any(
+        if scanner_status in {"RUNNING", "WARMING"} or any(
             dict(entry.metadata).get("scanner_rank") is not None
             for entry in state.watchlist_projection.entries
         )
@@ -24,7 +25,7 @@ def project_atlas_activity(state: ApplicationState) -> AtlasActivitySnapshot:
     )
     values = (
         ("Universe", health.supported_symbols),
-        ("Evaluating", None),
+        ("Evaluating", health.scanner_status),
         ("Candidates", candidates),
         ("Open Positions", state.portfolio_projection.open_positions),
         ("Pending Orders", state.portfolio_projection.working_orders),

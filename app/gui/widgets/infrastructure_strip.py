@@ -18,7 +18,7 @@ class InfrastructureStrip(QWidget):
             "Market Data": StatusCard("Data Feed"),
             "Broker": StatusCard("Broker"),
             "Risk": StatusCard("Risk Engine"),
-            "AI": StatusCard("AI Engine"),
+            "AI Scanner": StatusCard("AI / Scanner"),
         }
         for column, card in enumerate(self._cards.values()):
             layout.addWidget(card, 0, column)
@@ -30,7 +30,7 @@ class InfrastructureStrip(QWidget):
             "Market Data": f"Heartbeat {metrics.get('Heartbeat', '--')}",
             "Broker": f"Latency {metrics.get('Latency', '--')}",
             "Risk": snapshot.incident,
-            "AI": "Inference service",
+            "AI Scanner": "Candidate evaluation",
         }
         for key, card in self._cards.items():
             status = metrics.get(key, "--")
@@ -54,7 +54,7 @@ def _status_level(status: str) -> str:
         "UNAVAILABLE",
     }:
         return "danger"
-    if normalized in {"DEGRADED", "RECONNECTING", "STARTING"}:
+    if normalized in {"DEGRADED", "RECONNECTING", "STARTING", "WARMING", "CAPABILITY_PAUSED"}:
         return "warn"
     return "neutral"
 

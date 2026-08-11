@@ -184,7 +184,7 @@ def test_dashboard_replay_status_renders_presenter_model(application) -> None:
         (
             WatchlistPanel,
             WatchlistSnapshot(),
-            "Atlas is scanning the market.",
+            "Atlas is scanning",
         ),
     ),
 )

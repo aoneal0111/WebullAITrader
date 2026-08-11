@@ -27,10 +27,11 @@ class Sidebar(QWidget):
         "Event Store",
         "Analytics",
         "Experiments",
+        "Operations",
         "Settings",
     )
-    ICONS = ("▦", "▶", "≡", "⌁", "◇", "⚙")
-    ROUTES = (0, 8, 5, 1, 3, 4)
+    ICONS = ("▦", "▶", "≡", "⌁", "◇", "◫", "⚙")
+    ROUTES = (0, 8, 5, 1, 3, 9, 4)
 
     def __init__(self) -> None:
         super().__init__()

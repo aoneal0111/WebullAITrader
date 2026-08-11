@@ -98,7 +98,7 @@ def test_compact_atlas_focus_and_activity_use_projection_snapshots(application) 
                 symbol="XYZ", selected=True, latest_price="500.00",
                 change="+2.00", change_percent="+0.40%", bid="499.99",
                 ask="500.01", volume="100", market_status="OPEN",
-                last_update="10:00:00", stale="LIVE",
+                last_update="10:00:00", stale="LIVE", rank="1",
             ),
         )
     )
@@ -108,12 +108,56 @@ def test_compact_atlas_focus_and_activity_use_projection_snapshots(application) 
         AtlasActivityRow("Evaluating", "Unknown"),
     )))
 
-    assert workspace.watchlist._table.columnCount() == 4
-    assert workspace.watchlist._table.item(0, 2).text() == "+2.00"
+    assert workspace.watchlist._table.columnCount() == 8
+    assert workspace.watchlist._table.item(0, 1).text().endswith("XYZ")
+    assert workspace.watchlist._table.item(0, 3).text() == "+0.40%"
     assert workspace.atlas_activity._rows["Universe"].text() == "●  7300"
     assert workspace.atlas_activity._rows["Evaluating"].text() == (
         "●  Unknown"
     )
+
+
+def test_atlas_focus_exposes_rich_projection_and_selection_without_fabrication(application) -> None:
+    del application
+    workspace = MarketWorkspace()
+    selected = []
+    operator_selected = []
+    atlas_selected = []
+    workspace.chart_symbol_selected.connect(selected.append)
+    workspace.operator_symbol_selected.connect(operator_selected.append)
+    workspace.atlas_symbol_selected.connect(atlas_selected.append)
+    workspace.render(WatchlistSnapshot(
+        rows=(WatchlistRow(
+            symbol="XYZ", selected=False, latest_price="--", change="--",
+            change_percent="--", bid="--", ask="--", volume="--",
+            market_status="--", last_update="--", stale="--",
+            rank="1", score="87.5", relative_volume="2.40x",
+            catalyst="EARNINGS: Reported results", freshness="LIVE",
+            session="REGULAR",
+        ),),
+        scanner_status="RUNNING",
+        candidate_count=1,
+    ))
+
+    assert workspace.watchlist._scanner_status.text() == "Atlas Scanner: Running"
+    assert workspace.watchlist._candidate_count.text() == "Candidates: 1"
+    assert workspace.watchlist._table.item(0, 2).text() == "--"
+    assert workspace.watchlist._table.item(0, 6).text() == "EARNINGS: Reported results"
+    workspace.watchlist._select_row(0, 6)
+    assert selected == ["XYZ"]
+    assert operator_selected == ["XYZ"]
+    assert atlas_selected == []
+    assert workspace.watchlist._table.rowCount() == 1
+
+
+def test_running_scanner_with_zero_candidates_stays_truthful(application) -> None:
+    del application
+    workspace = MarketWorkspace()
+    workspace.render(WatchlistSnapshot(scanner_status="RUNNING", candidate_count=0))
+    assert workspace.watchlist._scanner_status.text() == "Atlas Scanner: Running"
+    assert workspace.watchlist._candidate_count.text() == "Candidates: 0"
+    assert workspace.watchlist._table.rowCount() == 0
+    assert "Atlas is scanning" in workspace.watchlist._table._empty_state.text()
 
 
 def test_chart_preserves_professional_empty_state_without_active_symbol(
@@ -235,16 +279,23 @@ def test_dashboard_and_market_workspace_switch_responsive_orientation(applicatio
 
     page.resize(1000, 720)
     application.processEvents()
+
+    # At compact widths the Mission / Infrastructure / Portfolio summary
+    # reflows vertically rather than shrinking its contents below readable
+    # dimensions.
     assert page.summary_splitter.orientation() == Qt.Orientation.Vertical
 
     market = MarketWorkspace()
     market.resize(1000, 500)
     market.show()
     application.processEvents()
-    assert market.splitter.orientation() == Qt.Orientation.Horizontal
+    assert market.splitter.orientation() == Qt.Orientation.Vertical
+    assert market.top_splitter.orientation() == Qt.Orientation.Vertical
+
     market.resize(700, 700)
     application.processEvents()
     assert market.splitter.orientation() == Qt.Orientation.Vertical
+    assert market.top_splitter.orientation() == Qt.Orientation.Vertical
 
 
 @pytest.mark.parametrize(
@@ -269,17 +320,30 @@ def test_commercial_dashboard_preserves_panels_at_target_viewports(
     assert page._scroll.horizontalScrollBar().maximum() == 0
     assert page.summary_splitter.orientation() == Qt.Orientation.Horizontal
     assert page.market_workspace.splitter.orientation() == (
+        Qt.Orientation.Vertical
+    )
+    assert page.market_workspace.top_splitter.orientation() == (
         Qt.Orientation.Horizontal
     )
     assert page.summary_splitter.sizes()[1] >= 320
-    assert page.market_workspace.height() >= 650
+    assert page.market_workspace.height() >= 420
 
     ai = page.market_workspace.ai_thinking_section
     focus = page.market_workspace.focus_section
     activity = page.market_workspace.activity_section
-    assert ai.geometry().bottom() < focus.geometry().top()
-    assert focus.geometry().bottom() < activity.geometry().top()
-    assert activity.geometry().bottom() <= page.market_workspace.height()
+
+    assert ai.isVisible()
+    assert activity.isVisible()
+    assert focus.isVisible()
+
+    # Atlas Focus remains the full-width lower workspace.
+    assert page.market_workspace.splitter.widget(1) is focus
+    assert focus.width() >= page.market_workspace.width() * 0.90
+
+    # Responsive layouts must preserve readable panel extents rather than
+    # relying on fixed child-coordinate ordering.
+    assert ai.height() >= 100
+    assert activity.height() >= 100
 
 
 def test_production_gui_contains_no_reference_sample_values() -> None:
@@ -332,3 +396,17 @@ def test_status_bar_summarizes_capabilities(application) -> None:
     assert "Options \u2717" in status.capabilities.text()
     assert "Crypto ?" in status.capabilities.text()
     assert "Overnight \u2717" in status.capabilities.text()
+
+
+def test_market_workspace_prioritizes_chart_focus_and_right_intelligence_rail(application) -> None:
+    del application
+    workspace = MarketWorkspace()
+
+    assert workspace.splitter.orientation() == Qt.Orientation.Vertical
+    assert workspace.top_splitter.orientation() == Qt.Orientation.Horizontal
+    assert workspace.top_splitter.widget(0) is workspace.market_section
+    rail = workspace.top_splitter.widget(1)
+    assert workspace.ai_thinking_section.parent() is not None
+    assert workspace.activity_section.parent() is not None
+    assert workspace.splitter.widget(1) is workspace.focus_section
+    assert rail is not None

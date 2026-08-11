@@ -32,6 +32,7 @@ class PortfolioSummaryStrip(QWidget):
         )
         self._cards = {}
         self._card_order = []
+        self._columns = 0
         for column, (source, title, emphasis) in enumerate(specifications):
             card = MetricCard(title, emphasis=emphasis)
             if source == "Open Positions":
@@ -42,13 +43,19 @@ class PortfolioSummaryStrip(QWidget):
             self._layout.setColumnStretch(column, 1)
 
     def minimumSizeHint(self) -> QSize:
-        return QSize(0, 176)
+        # Two compact rows on wide screens; additional rows are allowed on
+        # smaller screens instead of clipping metric text.
+        rows = max(1, (len(self._card_order) + max(1, self._columns or 6) - 1) // max(1, self._columns or 6))
+        return QSize(0, 78 * rows + 8 * max(0, rows - 1))
 
     def resizeEvent(self, event) -> None:
         width = event.size().width()
-        columns = 2 if width < 620 else 4 if width < 1100 else 7
-        for index, card in enumerate(self._card_order):
-            self._layout.addWidget(card, index // columns, index % columns)
+        columns = 2 if width < 500 else 3 if width < 720 else 4 if width < 980 else 6
+        if columns != self._columns:
+            self._columns = columns
+            for index, card in enumerate(self._card_order):
+                self._layout.addWidget(card, index // columns, index % columns)
+            self.updateGeometry()
         super().resizeEvent(event)
 
     def render(self, snapshot: PortfolioDashboardSnapshot) -> None:

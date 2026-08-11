@@ -51,11 +51,14 @@ def project_chart_model(data: ChartMarketData) -> ChartViewSnapshot:
         for item in data.bars
     )
     latest = candles[-1] if candles else None
-    opened = latest.open if latest else None
-    high = latest.high if latest else None
-    low = latest.low if latest else None
-    close = latest.close if latest else None
-    previous = candles[-2].close if len(candles) > 1 else opened
+    facts = _facts(data.snapshot, data.quote)
+    opened = _number(facts, "open", "openPrice") or (latest.open if latest else None)
+    high = _number(facts, "high", "highPrice") or (latest.high if latest else None)
+    low = _number(facts, "low", "lowPrice") or (latest.low if latest else None)
+    close = _number(facts, "last", "lastPrice", "price", "close") or (latest.close if latest else None)
+    previous = _number(facts, "prevClose", "previousClose", "preClose")
+    if previous is None:
+        previous = candles[-2].close if len(candles) > 1 else opened
     change = close - previous if close is not None and previous is not None else None
     change_percent = (
         change / previous * Decimal("100")
@@ -77,8 +80,30 @@ def project_chart_model(data: ChartMarketData) -> ChartViewSnapshot:
         close=close,
         change=change,
         change_percent=change_percent,
-        volume=latest.volume if latest else None,
+        volume=_number(facts, "volume", "totalVolume") or (latest.volume if latest else None),
+        instrument_name=_text(facts, "name", "instrumentName", "companyName", "tickerName"),
+        previous_close=previous,
+        bid=_number(facts, "bid", "bidPrice"),
+        ask=_number(facts, "ask", "askPrice"),
+        bid_size=_number(facts, "bidSize", "bidVolume"),
+        ask_size=_number(facts, "askSize", "askVolume"),
+        turnover=_number(facts, "turnover", "amount", "tradeValue"),
+        session=_text(facts, "marketStatus", "session", "status"),
     )
+
+
+def _facts(*sources: Mapping[str, object] | None) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for source in sources:
+        if source:
+            result.update(source)
+    return result
+
+
+def _text(row: Mapping[str, object], *keys: str) -> str | None:
+    lowered = {str(key).lower(): value for key, value in row.items()}
+    value = next((lowered[key.lower()] for key in keys if key.lower() in lowered), None)
+    return str(value).strip() if value not in (None, "") else None
 
 
 def _number(row: Mapping[str, object], *keys: str) -> Decimal | None:

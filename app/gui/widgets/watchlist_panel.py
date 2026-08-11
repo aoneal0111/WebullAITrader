@@ -46,7 +46,7 @@ class WatchlistPanel(QWidget):
             )
         )
         self._table.set_empty_state(
-            "Atlas is scanning the market.",
+            "Atlas is scanning",
             "High-confidence opportunities\n"
             "will appear here automatically.",
             icon="\u2606",

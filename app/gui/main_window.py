@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -53,6 +54,7 @@ from app.replay_workspace import ReplayWorkspace
 from app.services import OrderCommandFactory, RuntimeService, TradingService
 from app.gui.projections.chart_projection import ChartProjection
 from app.services.chart_market_data import ChartMarketDataService
+from app.gui.formatters.warrior_paper import format_warrior_paper
 
 
 class MainWindow(QMainWindow):
@@ -66,6 +68,7 @@ class MainWindow(QMainWindow):
         replay_workspace: ReplayWorkspace | None = None,
         chart_market_data_service: ChartMarketDataService | None = None,
         chart_default_symbol: str | None = None,
+        warrior_forward_sidecar=None,
     ) -> None:
         super().__init__()
         self._bus = bus
@@ -78,6 +81,8 @@ class MainWindow(QMainWindow):
         self._chart_market_data_service = chart_market_data_service
         self._chart_default_symbol = chart_default_symbol
         self._chart_presenter: ChartPresenter | None = None
+        self._warrior_forward_sidecar = warrior_forward_sidecar
+        self._close_requested = False
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
         self.setWindowTitle("Atlas \u2014 WebullAITrader")
@@ -87,10 +92,24 @@ class MainWindow(QMainWindow):
         self._build_presentation()
         self.setStyleSheet(application_stylesheet())
         self._render_state(state_store.snapshot())
+        self._warrior_refresh_timer = QTimer(self)
+        self._warrior_refresh_timer.setInterval(1000)
+        self._warrior_refresh_timer.timeout.connect(self._refresh_warrior_paper)
+        self._warrior_refresh_timer.start()
+        self._refresh_warrior_paper()
         if replay_workspace is not None:
             self._wire_replay_workspace(replay_workspace)
             self._render_state(replay_workspace.state)
         self.sidebar.buttons["Dashboard"].setFocus()
+
+    def _refresh_warrior_paper(self) -> None:
+        sidecar = self._warrior_forward_sidecar
+        if sidecar is None:
+            return
+        self.dashboard.market_workspace.render_warrior(
+            format_warrior_paper(sidecar.snapshot())
+        )
+        sidecar.mark_gui_refresh()
 
     def _build(self) -> None:
         root = QWidget()
@@ -136,6 +155,8 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.watchlist)  # 7
         self.replay = ReplayPage()
         self.pages.addWidget(self.replay)  # 8
+        self.operations = self.dashboard.operator_workspace
+        self.pages.addWidget(self.operations)  # 9
         content_layout.addWidget(self.pages, 1)
         outer.addWidget(content, 1)
         self.sidebar.page_requested.connect(self.pages.setCurrentIndex)
@@ -205,6 +226,7 @@ class MainWindow(QMainWindow):
                 HealthPresenter(
                     self.dashboard.operator_health_panel,
                     self.sidebar,
+                    self.dashboard.infrastructure,
                     RenderAdapter(
                         self.dashboard.runtime_header.render_health
                     ),
@@ -272,13 +294,15 @@ class MainWindow(QMainWindow):
         self._replay_state_bridge.state_changed.connect(self._render_state)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if not self._runtime_service.close(timeout_seconds=5.0):
-            QMessageBox.warning(
-                self,
-                "Runtime Still Stopping",
-                "Stop the runtime and wait for shutdown before closing.",
-            )
+        # Joining the runtime here blocks the Qt event loop exactly when a busy
+        # market-data worker most needs a responsive shutdown path. Request a
+        # cooperative stop and poll status through the event loop instead.
+        if self._runtime_service.is_active:
+            if not self._close_requested:
+                self._close_requested = True
+                self._runtime_service.stop("Application shutdown requested.")
             event.ignore()
+            QTimer.singleShot(50, self.close)
             return
         if self._chart_presenter is not None:
             self._chart_presenter.close()

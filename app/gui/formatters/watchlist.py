@@ -71,12 +71,18 @@ def format_sorted_watchlist(
         descending=descending,
         empty_title=empty_title,
         empty_detail=empty_detail,
+        scanner_status=(
+            health.scanner_status
+            if health is not None and health.scanner_status
+            else "Unknown"
+        ),
+        candidate_count=len(entries),
     )
 
 
 def _empty_state(health: HealthState | None) -> tuple[str, str]:
     scanner_status = (health.scanner_status or "") if health else ""
-    if scanner_status.startswith("PAUSED"):
+    if scanner_status == "CAPABILITY_PAUSED" or scanner_status.startswith("PAUSED"):
         reason = (
             "Overnight subscription required."
             if health and health.entitlement_status == "NOT_SUBSCRIBED"
@@ -92,7 +98,7 @@ def _empty_state(health: HealthState | None) -> tuple[str, str]:
     if scanner_status in {"IDLE", "READY", "WAITING"}:
         return "Waiting for the next scan cycle.", ""
     return (
-        "Atlas is scanning the market.",
+        "Atlas is scanning",
         "High-confidence opportunities\n"
         "will appear here automatically.",
     )
@@ -146,6 +152,12 @@ def _row(entry, selected_symbol: str | None) -> WatchlistRow:
                 failed_rules=metadata.get("scanner_failed_rules", "--"),
                 freshness=metadata.get("scanner_freshness", "--"),
                 session=metadata.get("scanner_session", "--"),
+                float_shares=_shares(metadata.get("warrior_float")),
+                setup=metadata.get("warrior_setup", "--").replace("_", " "),
+                setup_state=metadata.get("warrior_setup_state", "--").replace("_", " "),
+                distance_to_hod=_percent(metadata.get("warrior_distance_hod")),
+                strategy_status=metadata.get("warrior_status", "--").replace("_", " "),
+                explanations=metadata.get("warrior_explanations", "--"),
     )
 
 
@@ -180,3 +192,10 @@ def _multiple(value: str | None) -> str:
 
 def _money(value: str | None) -> str:
     return "--" if value is None else f"${Decimal(value):,.0f}"
+
+
+def _shares(value: str | None) -> str:
+    if value is None or value == "--":
+        return "--"
+    shares = Decimal(value)
+    return f"{shares / Decimal('1000000'):.1f}M" if shares >= Decimal("1000000") else f"{shares:,.0f}"

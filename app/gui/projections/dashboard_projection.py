@@ -19,6 +19,7 @@ from app.gui.projections.mission_control_projection import (
 
 def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
     runtime = state.runtime
+    health = state.health_projection
     orders_read_model = project_orders_read_model(state)
     positions_read_model = project_positions_read_model(state)
 
@@ -26,14 +27,17 @@ def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
         runtime=RuntimeSnapshot(
             environment=runtime.environment,
             state=RuntimeState(runtime.phase.value),
-            broker_status=runtime.broker_status,
-            market_feed_status=runtime.market_feed_status,
-            inference_status=runtime.inference_status,
+            broker_status=health.broker_status or runtime.broker_status,
+            market_feed_status=(
+                health.market_data_status or runtime.market_feed_status
+            ),
+            inference_status=health.ai_status or runtime.inference_status,
             emergency_stop_enabled=True,
             active_model=runtime.active_model,
             cycle_count=runtime.cycles_completed,
             status_message=(
-                runtime.last_error
+                health.last_error
+                or runtime.last_error
                 or (
                     "Healthy"
                     if runtime.phase.value == "RUNNING"

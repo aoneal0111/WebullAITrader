@@ -64,7 +64,10 @@ def create_runtime_projection_pipeline(
         position_projection=position_projection,
         order_projection=order_projection,
     )
-    health_projection = HealthProjection(operations_bus)
+    health_projection = HealthProjection(
+        operations_bus,
+        market_data_stale_after=watchlist_stale_after,
+    )
     watchlist_projection = WatchlistProjection(
         operations_bus,
         maximum_symbols=watchlist_maximum_symbols,

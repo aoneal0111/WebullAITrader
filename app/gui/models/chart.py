@@ -29,6 +29,18 @@ class ChartViewSnapshot:
     change: Decimal | None = None
     change_percent: Decimal | None = None
     volume: Decimal | None = None
+    instrument_name: str | None = None
+    previous_close: Decimal | None = None
+    bid: Decimal | None = None
+    ask: Decimal | None = None
+    bid_size: Decimal | None = None
+    ask_size: Decimal | None = None
+    turnover: Decimal | None = None
+    session: str | None = None
+    selection_source: str = "none"
+    last_stream_update: datetime | None = None
+    stream_stale_after_seconds: float = 30.0
+    historical_data_available: bool = False
 
 
 __all__ = ["ChartCandle", "ChartViewSnapshot"]

@@ -6,6 +6,7 @@ from app.gui.models import (
     MissionStatusSnapshot,
 )
 from app.operations_core import ApplicationState, RuntimePhase
+from app.gui.formatters.health import format_health
 
 
 def project_mission_status(state: ApplicationState) -> MissionStatusSnapshot:
@@ -20,8 +21,7 @@ def project_mission_status(state: ApplicationState) -> MissionStatusSnapshot:
         ("Risk Engine", health.risk_status),
         (
             "System Health",
-            "HEALTHY (RUNNING)" if health.healthy else "DEGRADED" if health.degraded
-            else health.runtime_status or runtime.phase.value,
+            format_health(health).overall_status,
         ),
     )
     return MissionStatusSnapshot(rows=tuple(
@@ -42,7 +42,7 @@ def project_ai_thinking(state: ApplicationState) -> AIThinkingSnapshot:
     if positions > 0:
         operational_state = "Managing active positions."
         tone = "good"
-    elif runtime.phase is RuntimePhase.RUNNING and not scanner.startswith("PAUSED"):
+    elif runtime.phase is RuntimePhase.RUNNING and scanner == "RUNNING":
         has_ranked_candidates = any(
             dict(entry.metadata).get("scanner_rank") is not None
             for entry in state.watchlist_projection.entries
@@ -53,7 +53,7 @@ def project_ai_thinking(state: ApplicationState) -> AIThinkingSnapshot:
             else "Searching for opportunities."
         )
         tone = "good"
-    elif scanner.startswith("PAUSED"):
+    elif scanner == "CAPABILITY_PAUSED":
         operational_state = "AI Scanner paused."
         tone = "warn"
     else:
@@ -88,7 +88,7 @@ def _objective(state: ApplicationState) -> str:
     scanner = (state.health_projection.scanner_status or "").upper()
     if (
         state.runtime.phase is RuntimePhase.RUNNING
-        and not scanner.startswith("PAUSED")
+        and scanner in {"RUNNING", "WARMING"}
     ):
         return "Searching for Opportunities"
     return "Unknown"

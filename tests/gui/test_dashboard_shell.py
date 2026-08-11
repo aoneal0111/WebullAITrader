@@ -62,15 +62,18 @@ def test_navigation_rail_uses_reference_routes_without_reindexing(
         "Event Store",
         "Analytics",
         "Experiments",
+        "Operations",
         "Settings",
     )
     assert requested == [8, 5]
 
 
 def test_shell_retains_existing_pages_and_command_boundaries(window) -> None:
-    assert window.pages.count() == 9
+    assert window.pages.count() == 10
     assert window.pages.widget(0) is window.dashboard
     assert window.pages.widget(8) is window.replay
+    assert window.pages.widget(9) is window.operations
+    assert window.operations is window.dashboard.operator_workspace
     assert window.start_button is (
         window.dashboard.runtime_header.resume_button
     )
@@ -115,9 +118,22 @@ def test_dashboard_preserves_content_at_supported_resolutions(
     scroll = window.dashboard.findChild(QScrollArea)
     assert scroll.horizontalScrollBar().maximum() == 0
     assert scroll.widget().height() >= scroll.viewport().height()
-    assert window.dashboard.operator_workspace.height() > 150
-    assert window.dashboard.market_workspace.height() > (
-        window.dashboard.operator_workspace.height()
+    assert window.dashboard.market_workspace.height() > 300
+    market_workspace = window.dashboard.market_workspace
+
+    # Chart / Atlas Focus always remain vertically stacked.
+    assert market_workspace.splitter.orientation() == Qt.Orientation.Vertical
+
+    # Responsive behavior is based on the workspace's actual usable width,
+    # not the outer window width. Sidebar and page margins reduce the space
+    # available to MarketWorkspace.
+    expected_top_orientation = (
+        Qt.Orientation.Horizontal
+        if market_workspace.width() >= 1240
+        else Qt.Orientation.Vertical
+    )
+    assert market_workspace.top_splitter.orientation() == (
+        expected_top_orientation
     )
 
 
@@ -171,7 +187,7 @@ def test_unknown_system_health_uses_neutral_palette(window) -> None:
     assert health.property("status") == "neutral"
 
 
-def test_market_workspace_uses_selected_watchlist_symbol_without_candles(
+def test_market_workspace_uses_selected_atlas_candidate_without_candles(
     application,
 ) -> None:
     del application
@@ -189,8 +205,9 @@ def test_market_workspace_uses_selected_watchlist_symbol_without_candles(
                     ask="101.10",
                     volume="1,000",
                     market_status="OPEN",
-                    last_update="10:00:00",
-                    stale="LIVE",
+                        last_update="10:00:00",
+                        stale="LIVE",
+                        rank="1",
                 ),
             )
         )
@@ -198,7 +215,7 @@ def test_market_workspace_uses_selected_watchlist_symbol_without_candles(
 
     assert workspace.chart_view._symbol.text() == "AAPL"
     assert "not configured" in workspace.chart_view._canvas._message
-    assert workspace.watchlist._table.item(0, 0).text() == "\u25cf AAPL"
+    assert workspace.watchlist._table.item(0, 1).text() == "\u25cf AAPL"
     assert workspace.watchlist._table.currentRow() == 0
     assert (
         workspace.watchlist._table.item(0, 3).textAlignment()
@@ -225,12 +242,14 @@ def test_existing_projection_snapshots_populate_dashboard_surfaces(
                 equity=Decimal("10500"),
                 currency="USD",
             ),
-            health_projection=HealthState(
-                runtime_status="RUNNING",
-                broker_status="CONNECTED",
-                market_data_status="CONNECTED",
-                ai_status="READY",
-                healthy=True,
+                health_projection=HealthState(
+                    runtime_status="RUNNING",
+                    broker_status="CONNECTED",
+                    market_data_status="CONNECTED",
+                    scanner_status="RUNNING",
+                    supported_symbols=7300,
+                    ai_status="READY",
+                    healthy=True,
             ),
             portfolio_projection=PortfolioSummary(
                 total_market_value="1200",
@@ -267,7 +286,23 @@ def test_existing_projection_snapshots_populate_dashboard_surfaces(
     )
 
     mission_runtime = window.dashboard.mission_status._values["System Health"]
-    assert "Running" in mission_runtime.text()
+    assert "Healthy" in mission_runtime.text()
+    assert "Running" in (
+        window.dashboard.mission_status._values["AI Scanner"].text()
+    )
+    assert window.dashboard.runtime_header._metrics["System Health"].text() == (
+        "HEALTHY"
+    )
+    assert "Feed Connected" in window.global_status.data_feed.text()
+    assert "Broker Connected" in window.global_status.broker.text()
+    assert "Running" in (
+        window.dashboard.market_workspace.atlas_activity
+        ._rows["Evaluating"].text()
+    )
+    assert "0" in (
+        window.dashboard.market_workspace.atlas_activity
+        ._rows["Candidates"].text()
+    )
     assert (
         window.dashboard.portfolio_summary._cards["Total P/L"]
         ._value.text()
@@ -285,5 +320,5 @@ def test_existing_projection_snapshots_populate_dashboard_surfaces(
         window.dashboard.portfolio_summary._cards["Exposure"]._value.text()
         == "11.4%"
     )
-    assert window.dashboard.market_workspace.chart_view._symbol.text() == "AAPL"
+    assert window.dashboard.market_workspace.chart_view._symbol.text() == "--"
     assert window.global_status.broker.text() == "\u25cf  Broker Connected"
