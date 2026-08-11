@@ -57,6 +57,71 @@ class ChartMarketDataService:
             raise TypeError("observation_sink must be callable or None")
         self._observation_sink = observation_sink
 
+    def load_historical_bars(
+        self,
+        symbol: str,
+        timeframe: str = "1M",
+    ) -> tuple[HistoricalBar, ...]:
+        """Load only historical candles without snapshot/quote requests."""
+
+        normalized = symbol.strip().upper() if isinstance(symbol, str) else ""
+        if not normalized or normalized == "--":
+            _skip(
+                "historical_bar_request",
+                normalized or "--",
+                "no selected symbol",
+            )
+            return ()
+
+        timespan = _timespan(timeframe)
+        if timespan is None:
+            _skip(
+                "historical_bar_request",
+                normalized,
+                f"unsupported timeframe {timeframe}",
+            )
+            return ()
+
+        try:
+            market_data = getattr(self._client.get(), "market_data")
+        except Exception as exc:
+            _skip(
+                "historical_bar_request",
+                normalized,
+                f"REST client unavailable ({type(exc).__name__})",
+            )
+            return ()
+
+        response = _call(
+            "historical_bar_request",
+            normalized,
+            lambda: market_data.get_history_bar(
+                normalized,
+                self._category,
+                timespan,
+                count=str(self._bar_count),
+                real_time_required=False,
+            ),
+            detail=f"timespan={timespan} count={self._bar_count}",
+        )
+
+        bars = tuple(
+            sorted(
+                filter(None, (_bar(row) for row in _rows(response))),
+                key=lambda item: item.timestamp,
+            )
+        )
+
+        if bars and self._observation_sink is not None:
+            self._observation_sink(
+                "HISTORICAL_BARS_LOADED",
+                normalized,
+                len(bars),
+            )
+
+        return bars
+
+
     def load(self, symbol: str, timeframe: str = "1D") -> ChartMarketData:
         normalized = symbol.strip().upper() if isinstance(symbol, str) else ""
         if not normalized or normalized == "--" or normalized == "NO ACTIVE SYMBOL":

@@ -75,3 +75,7 @@ class OperationalConfiguration:
 
     trading: TradingConfiguration | None = None
     market_data: MarketDataConfiguration | None = None
+    warrior_forward_paper_enabled: bool = False
+    warrior_forward_capture_path: Path = Path(
+        "data/warrior_momentum_v1_forward/forward_capture.sqlite3"
+    )

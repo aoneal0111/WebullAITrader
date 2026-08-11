@@ -36,6 +36,7 @@ class LiveScannerCoordinator:
         default_channels: Iterable[str] = (),
         maximum_events_per_cycle: int = 1000,
         event_observer: Callable[[Any], object] | None = None,
+        retained_channels_source: Callable[[], Iterable[str]] | None = None,
     ) -> None:
         if maximum_events_per_cycle <= 0:
             raise ValueError(
@@ -53,6 +54,9 @@ class LiveScannerCoordinator:
         if event_observer is not None and not callable(event_observer):
             raise TypeError("event_observer must be callable or None")
         self._event_observer = event_observer
+        if retained_channels_source is not None and not callable(retained_channels_source):
+            raise TypeError("retained channels source must be callable or None")
+        self._retained_channels_source = retained_channels_source
 
         self._channels: tuple[str, ...] = ()
         self._connected = False
@@ -90,6 +94,9 @@ class LiveScannerCoordinator:
             if channels is None
             else _normalize_channels(channels)
         )
+        if self._retained_channels_source is not None:
+            selected = (*selected, *self._retained_channels_source())
+        selected = _normalize_channels(selected)
 
         if not selected:
             raise ValueError(
@@ -239,6 +246,18 @@ class LiveScannerCoordinator:
     ) -> Any:
         return self._engine.snapshot(limit=limit)
 
+    def diagnostic_results(self, *, limit: int = 3):
+        diagnostics = getattr(self._engine, "diagnostic_results", None)
+        return () if not callable(diagnostics) else diagnostics(limit=limit)
+
+    def qualification_diagnostics(self, *, example_limit: int = 3):
+        diagnostics = getattr(self._engine, "qualification_diagnostics", None)
+        return (
+            None
+            if not callable(diagnostics)
+            else diagnostics(example_limit=example_limit)
+        )
+
     def status(self) -> LiveScannerStatus:
         return LiveScannerStatus(
             connected=self._connected,
@@ -259,6 +278,13 @@ class LiveScannerCoordinator:
         if observer is not None and not callable(observer):
             raise TypeError("event observer must be callable or None")
         self._event_observer = observer
+
+    def set_retained_channels_source(
+        self, source: Callable[[], Iterable[str]] | None,
+    ) -> None:
+        if source is not None and not callable(source):
+            raise TypeError("retained channels source must be callable or None")
+        self._retained_channels_source = source
 
     def __enter__(self) -> LiveScannerCoordinator:
         self.connect()

@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
-from app.momentum_scanner.models import CatalystType, ScannerObservation
+from app.momentum_scanner.models import (
+    CatalystStatus,
+    CatalystType,
+    ScannerObservation,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +21,8 @@ class ScannerReferenceData:
     catalyst_headline: str | None = None
     tradable: bool = True
     updated_at: datetime | None = None
+    catalyst_status: CatalystStatus = CatalystStatus.UNKNOWN
+    current_volume: Decimal | None = None
 
     def __post_init__(self) -> None:
         symbol = self.symbol.strip().upper()
@@ -32,6 +38,8 @@ class ScannerReferenceData:
 
         if self.float_shares is not None and self.float_shares <= 0:
             raise ValueError("float_shares must be positive when provided")
+        if self.current_volume is not None and self.current_volume < 0:
+            raise ValueError("current_volume must be non-negative when provided")
 
         if self.updated_at is not None and self.updated_at.tzinfo is None:
             raise ValueError("updated_at must be timezone-aware")
@@ -50,6 +58,9 @@ class ScannerReferenceData:
 class SymbolScannerState:
     symbol: str
     timestamp: datetime | None = None
+    quote_timestamp: datetime | None = None
+    trade_timestamp: datetime | None = None
+    snapshot_timestamp: datetime | None = None
     last_price: Decimal | None = None
     bid: Decimal | None = None
     ask: Decimal | None = None
@@ -62,8 +73,12 @@ class SymbolScannerState:
         if not symbol:
             raise ValueError("symbol is required")
 
-        if self.timestamp is not None and self.timestamp.tzinfo is None:
-            raise ValueError("timestamp must be timezone-aware")
+        for name in (
+            "timestamp", "quote_timestamp", "trade_timestamp", "snapshot_timestamp"
+        ):
+            value = getattr(self, name)
+            if value is not None and value.tzinfo is None:
+                raise ValueError(f"{name} must be timezone-aware")
 
         if self.last_price is not None and self.last_price <= 0:
             raise ValueError("last_price must be positive")
@@ -88,3 +103,14 @@ class AdapterResult:
     state: SymbolScannerState
     observation: ScannerObservation | None
     missing_fields: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class QualificationDiagnostics:
+    evaluated: int
+    complete: int
+    qualified: int
+    rejection_counts: tuple[tuple[str, int], ...]
+    catalyst_counts: tuple[tuple[str, int], ...]
+    otherwise_qualified_with_catalyst: int
+    near_qualified_symbols: tuple[str, ...] = ()

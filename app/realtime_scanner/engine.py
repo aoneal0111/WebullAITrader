@@ -53,6 +53,8 @@ class RealtimeScannerEngine:
         self._decisions: dict[str, ScannerDecision] = {}
         self._reference_failures: list[ReferenceWarmupFailure] = []
         self._warmup_result = ReferenceWarmupResult()
+        self._universe_size = 0
+        self._eligible_symbol_count = 0
 
         self._processed_events = 0
         self._ignored_events = 0
@@ -69,6 +71,8 @@ class RealtimeScannerEngine:
         selection = self._universe_service.select_all(
             asset_classes
         )
+        self._universe_size = len(selection.included) + len(selection.excluded)
+        self._eligible_symbol_count = len(selection.included)
 
         active_symbols: set[str] = set()
         active_asset_classes: dict[str, AssetClass] = {}
@@ -221,10 +225,24 @@ class RealtimeScannerEngine:
                 if self._active_symbols
                 else _empty_universe_reason(self._warmup_result)
             ),
+            universe_size=self._universe_size,
+            eligible_symbol_count=self._eligible_symbol_count,
         )
 
     def clear_decisions(self) -> None:
         self._decisions.clear()
+
+    def diagnostic_results(self, *, limit: int = 3):
+        diagnostics = getattr(self._pipeline, "diagnostic_results", None)
+        return () if not callable(diagnostics) else diagnostics(limit=limit)
+
+    def qualification_diagnostics(self, *, example_limit: int = 3):
+        diagnostics = getattr(self._pipeline, "qualification_diagnostics", None)
+        return (
+            None
+            if not callable(diagnostics)
+            else diagnostics(example_limit=example_limit)
+        )
 
     @property
     def active_symbols(self) -> tuple[str, ...]:

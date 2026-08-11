@@ -1,6 +1,7 @@
 from app.scanner_adapter.adapter import MarketEventScannerAdapter
 from app.scanner_adapter.models import (
     AdapterResult,
+    QualificationDiagnostics,
     ScannerReferenceData,
     SymbolScannerState,
 )
@@ -11,6 +12,7 @@ __all__ = [
     "AdapterResult",
     "MarketEventScannerAdapter",
     "MomentumScannerPipeline",
+    "QualificationDiagnostics",
     "ScannerReferenceData",
     "ScannerReferenceStore",
     "SymbolScannerState",

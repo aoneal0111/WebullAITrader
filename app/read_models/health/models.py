@@ -40,12 +40,15 @@ class HealthState:
     reference_cache_status: str | None = None
     ranking_status: str | None = None
     supported_symbols: int | None = None
+    subscription_symbols: tuple[str, ...] | None = None
     ai_status: str | None = None
     risk_status: str | None = None
     persistence_status: str | None = None
     last_error: str | None = None
     last_warning: str | None = None
     last_heartbeat: datetime | None = None
+    last_market_data_event: datetime | None = None
+    market_data_stale_after_seconds: float = 30.0
     connection_latency: str | None = None
     reconnect_attempts: int = 0
     degraded: bool = False
@@ -109,11 +112,33 @@ class HealthState:
             or self.supported_symbols < 0
         ):
             raise ValueError("health supported symbols must be nonnegative")
+        if self.subscription_symbols is not None and (
+            not isinstance(self.subscription_symbols, tuple)
+            or any(
+                not isinstance(symbol, str)
+                or not symbol
+                or symbol != symbol.strip().upper()
+                for symbol in self.subscription_symbols
+            )
+            or len(set(self.subscription_symbols)) != len(self.subscription_symbols)
+        ):
+            raise ValueError("health subscription symbols must be normalized and unique")
         if (
             self.last_heartbeat is not None
             and self.last_heartbeat.tzinfo is None
         ):
             raise ValueError("last_heartbeat must be timezone-aware")
+        if (
+            self.last_market_data_event is not None
+            and self.last_market_data_event.tzinfo is None
+        ):
+            raise ValueError("last_market_data_event must be timezone-aware")
+        if (
+            isinstance(self.market_data_stale_after_seconds, bool)
+            or not isinstance(self.market_data_stale_after_seconds, (int, float))
+            or self.market_data_stale_after_seconds <= 0
+        ):
+            raise ValueError("market data stale age must be positive")
         if (
             isinstance(self.reconnect_attempts, bool)
             or not isinstance(self.reconnect_attempts, int)

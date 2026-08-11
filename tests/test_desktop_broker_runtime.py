@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
+
+import app.composition.desktop_broker_runtime as desktop_broker_module
 
 from app.broker_plugins import BrokerCapabilities, BrokerRuntime
 from app.broker_protocol.models import (
@@ -24,6 +28,7 @@ from app.operations_core import (
 )
 from app.read_models.health_projection import HealthProjection
 from app.services.runtime_drivers import DesktopBrokerRuntimeDriver
+from app.webull.sdk_market_data import WebullScannerUniverseProvider
 
 
 NOW = datetime(2026, 7, 30, 15, 0, tzinfo=UTC)
@@ -164,6 +169,98 @@ def test_configured_driver_resolves_selected_broker_plugin() -> None:
     }
 
 
+def test_production_composition_owns_autonomous_webull_universe_provider(
+    monkeypatch,
+) -> None:
+    configured = configuration()
+    broker = FakeBroker()
+    stream = object()
+    captured = {}
+    coordinator = object()
+
+    def capture_scanner_infrastructure(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(coordinator=coordinator)
+
+    monkeypatch.setattr(
+        desktop_broker_module,
+        "create_desktop_scanner_infrastructure",
+        capture_scanner_infrastructure,
+    )
+
+    driver = create_configured_desktop_broker_driver(
+        event_sink=lambda event: None,
+        account_snapshot_sink=lambda snapshot: None,
+        configuration_loader=lambda: configured,
+        broker_runtime_factory=lambda **kwargs: BrokerRuntime(
+            provider="webull",
+            capabilities=BrokerCapabilities(
+                provider="webull",
+                version="test",
+                supports_execution=True,
+                supports_account_data=True,
+                supports_market_data=True,
+                supports_streaming=True,
+            ),
+            execution=broker,
+            market_data=stream,
+        ),
+        webull_broker_factory=lambda value: broker,
+        webull_market_data_factory=lambda value: stream,
+        clock=lambda: NOW,
+    )
+
+    provider = captured["universe_service"]._provider
+    assert isinstance(provider, WebullScannerUniverseProvider)
+    assert driver._scanner is coordinator
+    assert configured.allowed_symbols == ("AAPL",)
+    assert "default_channels" not in captured
+    assert captured["maximum_events_per_cycle"] == 100
+
+
+def test_warrior_observer_binds_shared_scanner_adapter_without_second_stream(monkeypatch) -> None:
+    configured = replace(configuration(), warrior_forward_paper_enabled=True)
+    broker = FakeBroker()
+    stream = object()
+    stream_factory_calls = []
+
+    class Coordinator:
+        def set_retained_channels_source(self, source):
+            self.retained_source = source
+
+    coordinator = Coordinator()
+    captured = {}
+    monkeypatch.setattr(
+        desktop_broker_module, "create_desktop_scanner_infrastructure",
+        lambda **kwargs: captured.update(kwargs) or SimpleNamespace(coordinator=coordinator),
+    )
+
+    class Observer:
+        def __call__(self, event): pass
+        def bind_scanner_adapter(self, value): self.adapter = value
+        def retained_symbols(self): return ("XYZ",)
+
+    observer = Observer()
+    create_configured_desktop_broker_driver(
+        event_sink=lambda event: None, account_snapshot_sink=lambda snapshot: None,
+        configuration_loader=lambda: configured,
+        broker_runtime_factory=lambda **kwargs: BrokerRuntime(
+            provider="webull", capabilities=BrokerCapabilities(
+                provider="webull", version="test", supports_execution=True,
+                supports_account_data=True, supports_market_data=True,
+                supports_streaming=True,
+            ), execution=broker, market_data=stream,
+        ),
+        webull_broker_factory=lambda value: broker,
+        webull_market_data_factory=lambda value: stream_factory_calls.append(value) or stream,
+        market_event_observer=observer, clock=lambda: NOW,
+    )
+    assert observer.adapter is captured["scanner_adapter"]
+    assert coordinator.retained_source() == ("XYZ",)
+    # The configured BrokerRuntime owns the one stream; the sidecar constructs none.
+    assert stream_factory_calls == []
+
+
 def test_driver_authenticates_owns_lifecycle_and_does_no_other_broker_work() -> None:
     broker = FakeBroker()
     events: list[PaperRuntimeEvent] = []
@@ -184,13 +281,40 @@ def test_driver_authenticates_owns_lifecycle_and_does_no_other_broker_work() -> 
     assert [event.event_type for event in events] == [
         "BROKER_CONNECTING",
         "BROKER_AUTHENTICATED",
+        "MARKET_DATA_DISABLED_BY_CONFIGURATION",
         "BROKER_DISCONNECTED",
     ]
     assert [event.health.broker_status for event in events] == [
         "CONNECTING",
         "CONNECTED",
+        None,
         "DISCONNECTED",
     ]
+
+
+def test_driver_owns_market_observer_start_and_stop_without_broker_mutation() -> None:
+    class Observer:
+        def __init__(self):
+            self.calls = []
+        def __call__(self, event):
+            self.calls.append("event")
+        def start(self, environment):
+            self.calls.append(("start", environment))
+        def stop(self):
+            self.calls.append("stop")
+
+    observer = Observer()
+    broker = FakeBroker()
+    stop_event = Event()
+    stop_event.set()
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=configuration(), broker_runtime=broker_runtime(broker),
+        event_sink=lambda event: None, account_snapshot_sink=lambda snapshot: None,
+        market_event_observer=observer, clock=lambda: NOW,
+    )
+    driver.run(stop_event=stop_event, cycle_sink=lambda cycle: None)
+    assert observer.calls == [("start", "PAPER"), "stop"]
+    assert not {"submit_order", "replace_order", "cancel_order"}.intersection(broker.calls)
 
 
 def test_authentication_failure_is_published_and_fails_closed() -> None:
@@ -242,7 +366,7 @@ def test_broker_health_events_flow_through_existing_health_projection() -> None:
         assert [
             update.state.broker_status
             for update in updates
-        ] == ["CONNECTING", "CONNECTED", "DISCONNECTED"]
+        ] == ["CONNECTING", "CONNECTED", "CONNECTED", "DISCONNECTED"]
         assert store.snapshot().health_projection.broker_status == (
             "DISCONNECTED"
         )

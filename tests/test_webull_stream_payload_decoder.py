@@ -135,6 +135,23 @@ def test_sdk_2014_tick_epoch_milliseconds_string_is_not_parsed_as_iso_date() -> 
     assert event.payload.size == Decimal("3")
 
 
+@pytest.mark.parametrize(
+    "timestamp",
+    ("1786041384.332", "1786041384332", "1786041384332000", "1786041384332000000"),
+)
+def test_parser_normalizes_epoch_seconds_milliseconds_microseconds_and_nanoseconds(
+    timestamp: str,
+) -> None:
+    event = WebullMarketEventParser(clock=lambda: NOW)(
+        {
+            "event_type": "QUOTE", "symbol": "AAPL", "timestamp": timestamp,
+            "bid": "199.90", "ask": "200.10", "bid_size": "10", "ask_size": "12",
+        }
+    )
+
+    assert event.timestamp.timestamp() == pytest.approx(1_786_041_384.332)
+
+
 def test_sdk_2014_tick_time_of_day_uses_unambiguous_basic_timestamp() -> None:
     tick = sdk_tick()
     tick.time = "12:58:19"
@@ -223,7 +240,7 @@ def test_consecutive_decode_failure_threshold_fails_only_at_bound() -> None:
     assert stream.consecutive_decode_failures == 3
     assert stream.decoder_health == "STREAM_FAILED"
     assert [item[0] for item in lifecycle] == [
-        "parse_failed", "parse_failed", "decode_threshold_exceeded"
+        "parse_failed", "decode_threshold_exceeded"
     ]
     assert stream.backend.connected is True
 
@@ -255,6 +272,66 @@ def test_sanitized_diagnostics_never_include_raw_payload_or_secrets() -> None:
     assert "top-secret" not in rendered
     assert "never-log" not in rendered
     assert repr(raw) not in rendered
+
+
+def test_sparse_sdk_snapshot_is_valid_skipped_traffic_not_a_decode_failure() -> None:
+    snapshot = SimpleNamespace(
+        basic=SimpleNamespace(symbol="AAPL", timestamp=1_786_030_200_000),
+        last_trade_time=None,
+        price=None,
+        volume=None,
+    )
+    stream, logger, lifecycle = client(
+        [("snapshot", snapshot), ("tick", sdk_tick())]
+    )
+
+    assert stream.receive() is None
+    event = stream.receive()
+
+    assert event is not None and event.event_type is MarketEventType.TRADE
+    assert stream.decoder_health == "STREAM_CONNECTED"
+    assert stream.decoder_diagnostics["decode_failures_by_event_class"] == ()
+    assert stream.decoder_diagnostics["skipped_payloads_by_event_class"] == (
+        ("SNAPSHOT", 1),
+    )
+    assert lifecycle == []
+    assert not any(args == ("stream_receive", "decode_failed") for args, _ in logger.records)
+
+
+def test_sparse_sdk_snapshot_recovers_an_isolated_decode_failure() -> None:
+    snapshot = SimpleNamespace(
+        basic=SimpleNamespace(symbol="AAPL", timestamp=1_786_030_200_000),
+        last_trade_time=None,
+        price=None,
+        volume=None,
+    )
+    stream, _logger, lifecycle = client([
+        ("quote", b"\xff"),
+        ("snapshot", snapshot),
+    ])
+
+    assert stream.receive() is None
+    assert stream.decoder_health == "STREAM_CONNECTED"
+    assert stream.consecutive_decode_failures == 0
+    assert [item[0] for item in lifecycle] == ["parse_failed", "decode_recovered"]
+
+
+def test_snapshot_volume_uses_last_valid_trade_price_when_price_is_sparse() -> None:
+    parser = WebullMarketEventParser(clock=lambda: NOW)
+    parser(("tick", sdk_tick()))
+    snapshot = SimpleNamespace(
+        basic=SimpleNamespace(symbol="AAPL", timestamp=1_786_030_202_000),
+        last_trade_time=None,
+        price=None,
+        volume=Decimal("1900000"),
+    )
+
+    event = parser(("snapshot", snapshot))
+
+    assert event is not None
+    assert event.payload.trade_id == "snapshot"
+    assert event.payload.price == Decimal("200.05")
+    assert event.payload.size == Decimal("1900000")
 
 
 def test_quote_trade_routing_remains_symbol_specific_across_subscription_set() -> None:

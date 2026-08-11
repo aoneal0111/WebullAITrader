@@ -7,11 +7,12 @@ from threading import Event, Lock
 from time import sleep
 from typing import Callable, Protocol
 
-from app.market_data.events import append_event
 from app.market_data.models import HeartbeatPayload, MarketEventLog, MarketEventType
+from app.market_data.validation import validate_event
+from app.performance_diagnostics import performance_diagnostics
 from app.webull.errors import NetworkError, SerializationError
 from app.webull.health import ConnectionHealth, update_health
-from app.webull.market_event_parser import payload_metadata
+from app.webull.market_event_parser import decoder_failure_metadata, payload_metadata
 
 
 class StreamBackend(Protocol):
@@ -396,7 +397,22 @@ class WebullWebSocketClient:
         if consecutive_decode_failure_threshold <= 0:
             raise ValueError("decode failure threshold must be positive")
         self.backend, self.parser, self.policy, self.sleeper, self.logger = backend, parser, reconnect_policy, sleeper, logger
-        self.health = ConnectionHealth(); self.log = MarketEventLog(); self.channels = ()
+        self.health = ConnectionHealth(); self.channels = ()
+        self._events = []
+        self._event_identities = set()
+        self._payload_count = 0
+        self._successful_receive_count = 0
+        self._skipped_payload_count = 0
+        self._skipped_payload_counts: dict[str, int] = {}
+        self._stale_receive_count = 0
+        self._last_event_by_ordering_key = {}
+        self._stale_counts_by_event_type: dict[str, int] = {}
+        self._stale_counts_by_symbol: dict[str, int] = {}
+        self._cross_timeline_regression_count = 0
+        self._ordering_samples: list[dict[str, object]] = []
+        self._decode_failure_counts: dict[str, int] = {}
+        self._decode_failure_samples: list[dict[str, object]] = []
+        self._decode_failure_signatures: set[tuple[str, str, str, str]] = set()
         self.lifecycle_sink = lifecycle_sink
         self.consecutive_decode_failure_threshold = consecutive_decode_failure_threshold
         self.consecutive_decode_failures = 0
@@ -418,6 +434,40 @@ class WebullWebSocketClient:
         if callable(backend_setter):
             backend_setter(sink)
 
+    @property
+    def log(self) -> MarketEventLog:
+        """Return a full-fidelity immutable diagnostic view on demand."""
+
+        return MarketEventLog(tuple(self._events))
+
+    @property
+    def ordering_diagnostics(self) -> dict[str, object]:
+        """Return bounded evidence about timestamp-order decisions."""
+
+        return {
+            "stale_total": self._stale_receive_count,
+            "stale_by_event_type": tuple(sorted(self._stale_counts_by_event_type.items())),
+            "stale_by_symbol": tuple(sorted(self._stale_counts_by_symbol.items())),
+            "cross_timeline_regressions_accepted": self._cross_timeline_regression_count,
+            "samples": tuple(dict(sample) for sample in self._ordering_samples),
+        }
+
+    @property
+    def decoder_diagnostics(self) -> dict[str, object]:
+        """Return bounded failure counts and sanitized first-seen evidence."""
+
+        return {
+            "received": self._payload_count,
+            "successfully_decoded": self._successful_receive_count,
+            "decode_failures_by_event_class": tuple(
+                sorted(self._decode_failure_counts.items())
+            ),
+            "skipped_payloads_by_event_class": tuple(
+                sorted(self._skipped_payload_counts.items())
+            ),
+            "samples": tuple(dict(sample) for sample in self._decode_failure_samples),
+        }
+
     def _notify(
         self,
         event: str,
@@ -426,6 +476,31 @@ class WebullWebSocketClient:
     ) -> None:
         if self.lifecycle_sink is not None:
             self.lifecycle_sink(event, attempt, error)
+
+    def _remember_ordering_sample(
+        self,
+        *,
+        status: str,
+        reason: str,
+        event: object,
+        previous: object,
+    ) -> None:
+        if len(self._ordering_samples) >= 12:
+            return
+        self._ordering_samples.append(
+            {
+                "status": status,
+                "reason": reason,
+                "symbol": getattr(event, "symbol", None) or "--",
+                "event_type": _timestamp_channel(event),
+                "sequence": getattr(event, "sequence"),
+                "timestamp": getattr(event, "timestamp").isoformat(),
+                "previous_symbol": getattr(previous, "symbol", None) or "--",
+                "previous_event_type": _timestamp_channel(previous),
+                "previous_sequence": getattr(previous, "sequence"),
+                "previous_timestamp": getattr(previous, "timestamp").isoformat(),
+            }
+        )
 
     def connect(self):
         try:
@@ -470,37 +545,138 @@ class WebullWebSocketClient:
                 if message is None: return None
                 diagnostic = payload_metadata(message)
                 classification = str(diagnostic["message_classification"])
+                self._payload_count += 1
                 decoder = {
                     "QUOTE": "QuoteDecoder/QuoteResult",
                     "TRADE": "TickDecoder/TickResult",
                     "SNAPSHOT": "SnapshotDecoder/SnapshotResult",
                 }.get(classification, "none")
                 self.decoder_health = "STREAM_DECODING"
-                self.logger.log(
-                    "stream_payload", "classified", **diagnostic,
-                    decoder_selected=decoder,
-                    protobuf_message_type=(
-                        type(message[1]).__name__
-                        if isinstance(message, tuple) and len(message) == 2
-                        else None
-                    ),
-                )
+                if self._payload_count == 1 or self._payload_count % 1000 == 0:
+                    self.logger.log(
+                        "stream_payload", "classified",
+                        message_classification=classification,
+                        decoder_selected=decoder,
+                        market_events_received=self._payload_count,
+                    )
                 event = self.parser(message)
                 if event is None:
+                    recognized = classification != "UNKNOWN"
+                    recovered = recognized and self.consecutive_decode_failures > 0
+                    if recognized:
+                        self.consecutive_decode_failures = 0
                     self.decoder_health = (
-                        "STREAM_PAYLOAD_UNSUPPORTED"
-                        if classification == "UNKNOWN"
-                        else "STREAM_CONNECTED"
+                        "STREAM_CONNECTED" if recognized
+                        else "STREAM_PAYLOAD_UNSUPPORTED"
                     )
-                    self.logger.log(
-                        "stream_payload", "skipped", **diagnostic,
-                        decoder_selected="none",
+                    if recovered:
+                        self._notify("decode_recovered", 0)
+                    self._skipped_payload_count += 1
+                    self._skipped_payload_counts[classification] = (
+                        self._skipped_payload_counts.get(classification, 0) + 1
                     )
+                    if self._skipped_payload_count == 1 or self._skipped_payload_count % 1000 == 0:
+                        self.logger.log(
+                            "stream_payload", "skipped",
+                            message_classification=classification,
+                            skipped_payload_count=self._skipped_payload_count,
+                            decoder_selected=decoder,
+                        )
                     return None
-                try: self.log = append_event(self.log, event)
+                performance_diagnostics.increment("market_events_received")
+                try:
+                    validate_event(event)
+                    identity = (event.source, event.sequence)
+                    if identity in self._event_identities:
+                        return None
+                    previous = self._events[-1] if self._events else None
+                    if previous is not None:
+                        if event.sequence <= previous.sequence:
+                            raise ValueError("sequence must increase monotonically")
+                    ordering_key = _timestamp_ordering_key(event)
+                    previous_on_timeline = self._last_event_by_ordering_key.get(
+                        ordering_key
+                    )
+                    if (
+                        previous_on_timeline is not None
+                        and event.timestamp < previous_on_timeline.timestamp
+                    ):
+                        raise ValueError("timestamp must not move backwards")
                 except ValueError as exc:
-                    if any(item.source == event.source and item.sequence == event.sequence for item in self.log.events): return None
-                    raise _StreamSequenceError("invalid Webull stream sequence") from exc
+                    previous = self._events[-1] if self._events else None
+                    ordering_key = _timestamp_ordering_key(event)
+                    previous_on_timeline = self._last_event_by_ordering_key.get(
+                        ordering_key
+                    )
+                    if (
+                        previous_on_timeline is not None
+                        and previous is not None
+                        and event.sequence > previous.sequence
+                        and event.timestamp < previous_on_timeline.timestamp
+                    ):
+                        # Timestamp freshness is meaningful only within one
+                        # source/symbol/channel timeline. MQTT receive order is
+                        # still enforced globally by the parser sequence.
+                        performance_diagnostics.increment("stale_events_skipped")
+                        self._stale_receive_count += 1
+                        event_type = _timestamp_channel(event)
+                        symbol = event.symbol or "--"
+                        self._stale_counts_by_event_type[event_type] = (
+                            self._stale_counts_by_event_type.get(event_type, 0) + 1
+                        )
+                        self._stale_counts_by_symbol[symbol] = (
+                            self._stale_counts_by_symbol.get(symbol, 0) + 1
+                        )
+                        self._remember_ordering_sample(
+                            status="skipped",
+                            reason="same_timeline_timestamp_regression",
+                            event=event,
+                            previous=previous_on_timeline,
+                        )
+                        # Preserve the first diagnostic and periodic aggregate
+                        # samples without turning logging into a raw tick tape.
+                        if self._stale_receive_count == 1 or self._stale_receive_count % 1000 == 0:
+                            self.logger.log(
+                                "stream_receive",
+                                "skipped",
+                                event_type=event_type,
+                                symbol=symbol,
+                                stale_events_skipped=self._stale_receive_count,
+                                stale_by_event_type=dict(
+                                    sorted(self._stale_counts_by_event_type.items())
+                                ),
+                                reason="same_timeline_timestamp_regression",
+                            )
+                        return None
+                    raise _StreamSequenceError(
+                        "invalid Webull stream sequence"
+                    ) from exc
+                previous = self._events[-1] if self._events else None
+                if previous is not None and event.timestamp < previous.timestamp:
+                    self._cross_timeline_regression_count += 1
+                    self._remember_ordering_sample(
+                        status="accepted",
+                        reason="independent_timeline_timestamp_regression",
+                        event=event,
+                        previous=previous,
+                    )
+                    if (
+                        self._cross_timeline_regression_count == 1
+                        or self._cross_timeline_regression_count % 1000 == 0
+                    ):
+                        self.logger.log(
+                            "stream_receive",
+                            "accepted",
+                            event_type=_timestamp_channel(event),
+                            symbol=event.symbol or "--",
+                            cross_timeline_regressions_accepted=(
+                                self._cross_timeline_regression_count
+                            ),
+                            reason="independent_timeline_timestamp_regression",
+                        )
+                self._events.append(event)
+                self._event_identities.add((event.source, event.sequence))
+                self._last_event_by_ordering_key[_timestamp_ordering_key(event)] = event
                 recovered = self.consecutive_decode_failures > 0
                 self.consecutive_decode_failures = 0
                 self.decoder_health = "STREAM_CONNECTED"
@@ -508,18 +684,35 @@ class WebullWebSocketClient:
                     self._notify("decode_recovered", 0)
                 if event.event_type is MarketEventType.HEARTBEAT and isinstance(event.payload, HeartbeatPayload):
                     self.health = update_health(self.health, last_successful_heartbeat=event.timestamp)
-                self.logger.log(
-                    "stream_receive", "succeeded",
-                    event_type=event.event_type.value,
-                    symbol=event.symbol,
-                    sequence=event.sequence,
-                    timestamp=event.timestamp.isoformat(),
-                    decoder_health=self.decoder_health,
-                ); return event
+                self._successful_receive_count += 1
+                if self._successful_receive_count == 1 or self._successful_receive_count % 1000 == 0:
+                    self.logger.log(
+                        "stream_receive", "succeeded",
+                        event_type=event.event_type.value,
+                        market_events_received=self._successful_receive_count,
+                        decoder_health=self.decoder_health,
+                    )
+                return event
             except _StreamSequenceError:
                 raise
             except SerializationError as exc:
                 self.consecutive_decode_failures += 1
+                failure_metadata = decoder_failure_metadata(message, exc)
+                failure_class = str(failure_metadata["message_classification"])
+                failure_signature = (
+                    failure_class,
+                    str(failure_metadata["sdk_object_type"]),
+                    str(failure_metadata["failure_field"]),
+                    str(failure_metadata["error_stage"]),
+                )
+                failure_count = self._decode_failure_counts.get(failure_class, 0) + 1
+                self._decode_failure_counts[failure_class] = failure_count
+                if (
+                    len(self._decode_failure_samples) < 12
+                    and failure_signature not in self._decode_failure_signatures
+                ):
+                    self._decode_failure_signatures.add(failure_signature)
+                    self._decode_failure_samples.append(dict(failure_metadata))
                 threshold_reached = (
                     self.consecutive_decode_failures
                     >= self.consecutive_decode_failure_threshold
@@ -528,17 +721,22 @@ class WebullWebSocketClient:
                     "STREAM_FAILED" if threshold_reached
                     else "STREAM_PARTIALLY_DEGRADED"
                 )
-                self.logger.log(
-                    "stream_receive", "decode_failed",
-                    error_type=type(exc).__name__,
-                    consecutive_decode_failures=self.consecutive_decode_failures,
-                    decoder_health=self.decoder_health,
-                )
-                self._notify(
-                    "decode_threshold_exceeded" if threshold_reached else "parse_failed",
-                    self.consecutive_decode_failures,
-                    exc,
-                )
+                if failure_count == 1 or failure_count % 100 == 0 or threshold_reached:
+                    self.logger.log(
+                        "stream_receive", "decode_failed", **failure_metadata,
+                        error_type=type(exc).__name__,
+                        decode_failure_count=failure_count,
+                        consecutive_decode_failures=self.consecutive_decode_failures,
+                        decoder_health=self.decoder_health,
+                    )
+                if threshold_reached:
+                    self._notify(
+                        "decode_threshold_exceeded",
+                        self.consecutive_decode_failures,
+                        exc,
+                    )
+                elif self.consecutive_decode_failures == 1:
+                    self._notify("parse_failed", 1, exc)
                 if threshold_reached:
                     raise
                 continue
@@ -567,3 +765,19 @@ class WebullWebSocketClient:
                     self.health.reconnect_count,
                 )
                 self.logger.log("stream_reconnect", "succeeded", reconnect_count=self.health.reconnect_count)
+
+
+def _timestamp_channel(event: object) -> str:
+    event_type = getattr(getattr(event, "event_type", None), "value", "UNKNOWN")
+    trade_id = str(getattr(getattr(event, "payload", None), "trade_id", ""))
+    if event_type == MarketEventType.TRADE.value and trade_id.startswith("snapshot"):
+        return "SNAPSHOT"
+    return str(event_type)
+
+
+def _timestamp_ordering_key(event: object) -> tuple[str, str, str]:
+    return (
+        str(getattr(event, "source", "")),
+        str(getattr(event, "symbol", None) or ""),
+        _timestamp_channel(event),
+    )

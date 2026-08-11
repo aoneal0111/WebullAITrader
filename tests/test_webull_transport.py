@@ -6,7 +6,7 @@ import json
 import pytest
 
 from app.live_execution.models import BrokerOrderRequest, LiveOrderType, LiveSide, TimeInForce
-from app.market_data.models import HeartbeatPayload, MarketEvent, MarketEventType, QuotePayload
+from app.market_data.models import HeartbeatPayload, MarketEvent, MarketEventType, QuotePayload, TradePayload
 from app.webull.configuration import *
 from app.webull.errors import *
 from app.webull.health import ConnectionHealth, update_health
@@ -66,6 +66,58 @@ def test_websocket_reconnect_duplicates_sequence_and_heartbeat_health():
 def test_websocket_rejects_out_of_order_sequence():
     stream=Stream((quote(2),quote(1))); client=WebullWebSocketClient(stream,lambda x:x,ReconnectPolicy(1,D("1")),lambda x:None,StructuredLogger(Sink())); client.connect(); client.receive()
     with pytest.raises(SerializationError): client.receive()
+
+def test_websocket_discards_delayed_same_symbol_quote_timestamp():
+    delayed = MarketEvent(
+        2, NOW, "XYZ", "webull", MarketEventType.QUOTE,
+        QuotePayload(D("1"), D("2"), D("1"), D("1")),
+    )
+    sink = Sink()
+    stream = Stream((quote(1), delayed))
+    client = WebullWebSocketClient(
+        stream, lambda x: x, ReconnectPolicy(1, D("1")), lambda x: None,
+        StructuredLogger(sink),
+    )
+    client.connect()
+
+    assert client.receive().sequence == 1
+    assert client.receive() is None
+    assert client.log.events == (quote(1),)
+    assert any(
+        record.get("reason") == "same_timeline_timestamp_regression"
+        for record in sink.records
+    )
+    assert client.ordering_diagnostics["stale_by_event_type"] == (("QUOTE", 1),)
+    assert client.ordering_diagnostics["stale_by_symbol"] == (("XYZ", 1),)
+
+
+def test_websocket_accepts_interleaved_quote_trade_and_snapshot_timelines():
+    events = (
+        quote(1),
+        MarketEvent(
+            2, NOW, "XYZ", "webull", MarketEventType.TRADE,
+            TradePayload(D("1.50"), D("10"), "tick-2"),
+        ),
+        MarketEvent(
+            3, NOW - timedelta(seconds=1), "XYZ", "webull",
+            MarketEventType.TRADE,
+            TradePayload(D("1.49"), D("1000"), "snapshot"),
+        ),
+        MarketEvent(
+            4, NOW - timedelta(seconds=2), "ABC", "webull",
+            MarketEventType.QUOTE,
+            QuotePayload(D("3"), D("3.01"), D("1"), D("1")),
+        ),
+    )
+    client = WebullWebSocketClient(
+        Stream(events), lambda x: x, ReconnectPolicy(1, D("1")),
+        lambda x: None, StructuredLogger(Sink()),
+    )
+    client.connect()
+
+    assert tuple(client.receive() for _ in events) == events
+    assert client.ordering_diagnostics["stale_total"] == 0
+    assert client.ordering_diagnostics["cross_timeline_regressions_accepted"] == 3
 
 def test_health_monitoring_validation():
     health=update_health(ConnectionHealth(),connected=True,latency_microseconds=10,last_successful_heartbeat=NOW)

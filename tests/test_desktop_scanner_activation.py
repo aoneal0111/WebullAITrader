@@ -6,8 +6,17 @@ from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 
+import pytest
+
 from app.broker_plugins import BrokerCapabilities, BrokerRuntime
-from app.broker_protocol.models import BrokerAccount, BrokerCash
+from app.broker_protocol.models import (
+    BrokerAccount,
+    BrokerCash,
+    BrokerOrderRequest,
+    BrokerOrderType,
+    BrokerSide,
+    TimeInForce,
+)
 from app.composition.runtime_projection_pipeline import (
     create_runtime_projection_pipeline,
 )
@@ -16,6 +25,7 @@ from app.gui.formatters import format_watchlist
 from app.live_execution.account_polling import BrokerAccountSnapshot
 from app.momentum_scanner import CatalystType, ScannerDecision, ScannerMetrics
 from app.operations_core import ApplicationStateStore, OperationsBus
+from app.operations.limits import OperationalState, validate_operational_limits
 from app.realtime_scanner import ScannerSnapshot
 from app.services import RuntimeService
 from app.services.runtime_drivers import DesktopBrokerRuntimeDriver
@@ -133,7 +143,7 @@ def _configuration() -> OperationalConfiguration:
         max_open_orders=1,
         max_order_rate=5,
         max_quantity_per_symbol=Decimal("1"),
-        allowed_symbols=(),
+        allowed_symbols=("AAPL",),
         blocked_symbols=(),
         maximum_market_data_age_seconds=5,
         reconciliation_interval_seconds=1,
@@ -155,6 +165,7 @@ def test_desktop_start_runs_scanner_projects_gui_and_stop_disconnects() -> None:
     scanner = FakeScanner()
     account_polled = Event()
     snapshot_published = Event()
+    repeated_cycles = Event()
     event_types: list[str] = []
 
     def event_sink(event) -> None:
@@ -162,6 +173,8 @@ def test_desktop_start_runs_scanner_projects_gui_and_stop_disconnects() -> None:
         projections.sink(event)
         if event.event_type == "scanner_snapshot_published":
             snapshot_published.set()
+        if event_types.count("scanner_cycle") >= 2:
+            repeated_cycles.set()
 
     def account_poller(broker_value, *, clock):
         account_polled.set()
@@ -208,6 +221,7 @@ def test_desktop_start_runs_scanner_projects_gui_and_stop_disconnects() -> None:
     try:
         assert service.start() is True
         assert snapshot_published.wait(2)
+        assert repeated_cycles.wait(2)
         assert account_polled.wait(2)
         assert service.stop() is True
         assert service.wait(3)
@@ -223,6 +237,7 @@ def test_desktop_start_runs_scanner_projects_gui_and_stop_disconnects() -> None:
         assert len(gui_snapshot.rows) == 1
         row = gui_snapshot.rows[0]
         assert row.symbol == "AUTO"
+        assert row.symbol not in _configuration().allowed_symbols
         assert row.rank == "1"
         assert row.score == "91"
         assert row.relative_volume == "7.00x"
@@ -234,16 +249,102 @@ def test_desktop_start_runs_scanner_projects_gui_and_stop_disconnects() -> None:
 
         assert {
             "scanner_initialized",
+            "universe_refresh_started",
             "universe_refreshed",
             "symbols_eligible",
             "market_data_connected",
             "channels_subscribed",
+            "market_data_subscriptions",
             "scanner_cycle",
             "events_consumed",
             "candidate_qualified",
             "scanner_snapshot_published",
         }.issubset(event_types)
         assert broker.calls == ["connect", "disconnect"]
+        assert scanner.calls.count("run_available") >= 2
     finally:
         service.close()
         store.close()
+
+
+def test_empty_discovery_publishes_truthful_counts_and_reason() -> None:
+    class EmptyScanner(FakeScanner):
+        def start(self, **kwargs):
+            self.calls.append(("start", kwargs))
+            return ()
+
+        def snapshot(self):
+            return ScannerSnapshot(
+                timestamp=NOW,
+                active_symbols=(),
+                decisions=(),
+                ranked_candidates=(),
+                processed_events=0,
+                ignored_events=0,
+                reference_failures=(),
+                healthy=False,
+                health_reason="No eligible scanner symbols were discovered.",
+                universe_size=12,
+                eligible_symbol_count=0,
+            )
+
+    events = []
+    scanner = EmptyScanner()
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=_configuration(),
+        broker_runtime=BrokerRuntime(
+            provider="webull",
+            capabilities=BrokerCapabilities(
+                provider="webull",
+                version="test",
+                supports_execution=True,
+                supports_account_data=True,
+                supports_market_data=True,
+                supports_streaming=True,
+            ),
+            execution=ReadOnlyBroker(),
+            market_data=MarketDataBoundary(),
+        ),
+        event_sink=events.append,
+        account_snapshot_sink=lambda snapshot: None,
+        scanner_coordinator=scanner,
+        clock=lambda: NOW,
+    )
+
+    assert driver._start_scanner() is False
+
+    by_type = {event.event_type: event for event in events}
+    assert "universe_size=12" in by_type["universe_refreshed"].message
+    assert "eligible_symbol_count=0" in by_type["symbols_eligible"].message
+    assert "subscription count=0" in by_type["market_data_subscriptions"].message
+    assert "0 ranked candidates" in by_type["scanner_snapshot_published"].message
+    assert by_type["scanner_empty_fail_closed"].health.last_warning == (
+        "No eligible scanner symbols were discovered."
+    )
+
+
+def test_discovered_symbol_remains_blocked_by_execution_allowlist() -> None:
+    order = BrokerOrderRequest(
+        client_order_id="scanner-must-not-submit",
+        symbol="AUTO",
+        side=BrokerSide.BUY,
+        order_type=BrokerOrderType.LIMIT,
+        quantity=Decimal("1"),
+        limit_price=Decimal("5"),
+        stop_price=None,
+        time_in_force=TimeInForce.DAY,
+    )
+    state = OperationalState(
+        reference_price=Decimal("5"),
+        daily_submitted_notional=Decimal("0"),
+        open_positions=0,
+        open_orders=0,
+        orders_last_minute=0,
+        market_data_timestamp=NOW,
+        reconciliation_timestamp=NOW,
+        unresolved_mutations=0,
+        regular_market_open=True,
+    )
+
+    with pytest.raises(ValueError, match="symbol is not operationally allowed"):
+        validate_operational_limits(order, state, _configuration(), NOW)

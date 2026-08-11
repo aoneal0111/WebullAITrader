@@ -14,10 +14,21 @@ from app.read_models.timeline.models import (
     TimelineReadModelSnapshot,
     TimelineSeverity,
 )
+from app.performance_diagnostics import performance_diagnostics
 
 
 _NOISY_EVENT_TYPES = frozenset(
-    {"CYCLE_COMPLETED", "MARKET_DATA_HEARTBEAT"}
+    {
+        "CYCLE_COMPLETED",
+        "MARKET_DATA_HEARTBEAT",
+        "QUOTE_UPDATED",
+        "MARK_UPDATED",
+        "MARKET_DATA_QUOTE_RECEIVED",
+        "MARKET_DATA_TRADE_RECEIVED",
+        "MARKET_DATA_SNAPSHOT_RECEIVED",
+        "SCANNER_CYCLE",
+        "EVENTS_CONSUMED",
+    }
 )
 
 
@@ -86,6 +97,7 @@ class TimelineProjection:
             )
             if self._snapshot == current:
                 return
+            performance_diagnostics.increment("event_store_rows_added")
             operations_entries = tuple(
                 _to_operations_entry(item)
                 for item in self._snapshot.entries

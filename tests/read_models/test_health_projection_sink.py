@@ -315,7 +315,7 @@ def test_successful_bars_and_quote_supersede_failed_startup_probe() -> None:
     projection(event(5, "MARKET_DATA_QUOTE_RECEIVED"))
 
     state = projection.snapshot
-    assert state.market_data_rest_status == "CONNECTED"
+    assert state.market_data_rest_status == "AVAILABLE"
     assert state.historical_bars_status == "AVAILABLE"
     assert state.streaming_status == "CONNECTED"
     assert state.subscription_status == "ACCEPTED"
@@ -346,3 +346,116 @@ def test_optional_scanner_entitlement_does_not_fail_system_health() -> None:
 
     assert projection.snapshot.healthy is True
     assert projection.snapshot.degraded is False
+
+
+def test_broker_rest_success_supersedes_an_earlier_failure() -> None:
+    projection = HealthProjection(OperationsBus())
+    projection(event(1, "STARTED"))
+    projection(event(2, "BROKER_ERROR", message="Initial REST probe failed."))
+    projection(event(
+        3,
+        "BROKER_REST_OBSERVED",
+        health=RuntimeHealthUpdate(
+            broker_status="CONNECTED",
+            trading_rest_status="CONNECTED",
+            account_status="AVAILABLE",
+            balances_status="AVAILABLE",
+            positions_status="AVAILABLE",
+            orders_status="AVAILABLE",
+        ),
+    ))
+
+    state = projection.snapshot
+    assert state.broker_status == "CONNECTED"
+    assert state.trading_rest_status == "CONNECTED"
+    assert state.account_status == "AVAILABLE"
+    assert state.last_error is None
+
+
+def test_stream_registration_and_decoded_quote_restore_stream_health() -> None:
+    projection = HealthProjection(OperationsBus())
+    projection(event(1, "STARTED"))
+    projection(event(2, "BROKER_CONNECTED"))
+    projection(event(
+        3,
+        "MARKET_DATA_TERMINAL_FAILURE",
+        message="Initial stream failed.",
+        health=RuntimeHealthUpdate(
+            runtime_status="DEGRADED",
+            market_data_status="FAILED",
+            streaming_status="UNAVAILABLE",
+        ),
+    ))
+    projection(event(4, "MARKET_DATA_SUBSCRIBED"))
+    projection(event(5, "MARKET_DATA_QUOTE_RECEIVED"))
+
+    state = projection.snapshot
+    assert state.runtime_status == "RUNNING"
+    assert state.market_data_status == "CONNECTED"
+    assert state.streaming_status == "CONNECTED"
+    assert state.subscription_status == "ACCEPTED"
+    assert state.quotes_status == "AVAILABLE"
+    assert state.last_error is None
+
+
+def test_stale_failure_event_is_rejected_after_newer_success() -> None:
+    projection = HealthProjection(OperationsBus())
+    projection(event(
+        2,
+        "BROKER_REST_OBSERVED",
+        health=RuntimeHealthUpdate(broker_status="CONNECTED"),
+    ))
+    projection(event(
+        1,
+        "BROKER_ERROR",
+        message="Delayed failure.",
+        health=RuntimeHealthUpdate(broker_status="DISCONNECTED"),
+    ))
+
+    assert projection.snapshot.broker_status == "CONNECTED"
+    assert projection.snapshot.last_error is None
+
+
+def test_older_cross_source_failure_cannot_override_newer_observation() -> None:
+    projection = HealthProjection(OperationsBus())
+    projection(event(
+        2,
+        "MARKET_DATA_QUOTE_RECEIVED",
+        source="live-stream",
+    ))
+    projection(event(
+        1,
+        "MARKET_DATA_TERMINAL_FAILURE",
+        source="startup-probe",
+        health=RuntimeHealthUpdate(
+            market_data_status="FAILED",
+            streaming_status="UNAVAILABLE",
+        ),
+    ))
+
+    assert projection.snapshot.market_data_status == "CONNECTED"
+    assert projection.snapshot.streaming_status == "CONNECTED"
+
+
+def test_live_timestamp_requires_decoded_quote_trade_or_snapshot_event() -> None:
+    projection = HealthProjection(
+        OperationsBus(),
+        market_data_stale_after=timedelta(seconds=5),
+    )
+    projection(event(1, "MARKET_DATA_CONNECTED"))
+    projection(event(2, "MARKET_DATA_SUBSCRIBED"))
+    assert projection.snapshot.last_market_data_event is None
+
+    projection(event(
+        3,
+        "MARK_UPDATED",
+        health=RuntimeHealthUpdate(streaming_status="CONNECTED"),
+    ))
+    assert projection.snapshot.last_market_data_event == NOW + timedelta(seconds=3)
+    assert projection.snapshot.market_data_stale_after_seconds == 5
+
+    projection(event(4, "MARKET_DATA_QUOTE_RECEIVED"))
+    assert projection.snapshot.last_market_data_event == NOW + timedelta(seconds=4)
+
+    projection(event(5, "MARKET_DATA_SNAPSHOT_RECEIVED"))
+    assert projection.snapshot.last_market_data_event == NOW + timedelta(seconds=5)

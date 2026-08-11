@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from decimal import Decimal
+import logging
 
 from app.live_scanner.session import scanner_session
 from app.operations.runtime import (
@@ -13,6 +14,14 @@ from app.operations.runtime import (
     RuntimeWatchlistUpdate,
 )
 from app.realtime_scanner.models import ScannerSnapshot
+from app.momentum_scanner.models import ScannerDecision
+from app.performance_diagnostics import (
+    PerformanceDiagnostics,
+    performance_diagnostics,
+)
+
+
+_LOGGER = logging.getLogger("atlas.scanner")
 
 
 class ScannerSnapshotPublisher:
@@ -23,6 +32,7 @@ class ScannerSnapshotPublisher:
         *,
         source: str,
         stale_after: timedelta,
+        diagnostics: PerformanceDiagnostics = performance_diagnostics,
     ) -> None:
         if not callable(event_sink) or not callable(sequence_source):
             raise TypeError("scanner publisher sinks must be callable")
@@ -33,6 +43,15 @@ class ScannerSnapshotPublisher:
         self._source = source
         self._stale_after = stale_after
         self._published_symbols: set[str] = set()
+        self._published_decisions: dict[str, ScannerDecision] = {}
+        self._last_decisions: dict[str, ScannerDecision] = {}
+        self._last_fingerprint: object | None = None
+        self._last_changed = False
+        self._diagnostics = diagnostics
+
+    @property
+    def last_changed(self) -> bool:
+        return self._last_changed
 
     def publish(
         self,
@@ -43,6 +62,9 @@ class ScannerSnapshotPublisher:
     ) -> tuple[str, ...]:
         ranked = snapshot.ranked_candidates
         current = {candidate.symbol for candidate in ranked}
+        decisions = {decision.symbol: decision for decision in snapshot.decisions}
+
+        self._log_candidate_transitions(ranked, decisions)
 
         for symbol in sorted(self._published_symbols - current):
             self._emit(
@@ -59,6 +81,25 @@ class ScannerSnapshotPublisher:
             if snapshot.session != "UNKNOWN"
             else scanner_session(now).value
         )
+        fingerprint = (
+            session,
+            ranked,
+            tuple(
+                now - (candidate.timestamp or snapshot.timestamp)
+                > self._stale_after
+                for candidate in ranked
+            ),
+        )
+        if fingerprint == self._last_fingerprint:
+            self._last_changed = False
+            self._diagnostics.increment(
+                "scanner_snapshots_suppressed_unchanged"
+            )
+            return ()
+
+        self._last_fingerprint = fingerprint
+        self._last_changed = True
+        self._diagnostics.increment("scanner_snapshots_published")
         stale_symbols: list[str] = []
         for rank, candidate in enumerate(ranked, 1):
             observed_at = candidate.timestamp or snapshot.timestamp
@@ -118,9 +159,65 @@ class ScannerSnapshotPublisher:
                     metadata=metadata,
                 ),
             )
+            _LOGGER.info(
+                "event_type=candidate_qualified symbol=%s rank=%d score=%d",
+                candidate.symbol,
+                rank,
+                candidate.score,
+            )
 
         self._published_symbols = current
+        self._published_decisions = {
+            candidate.symbol: candidate for candidate in ranked
+        }
+        self._last_decisions = decisions
         return tuple(stale_symbols)
+
+    def _log_candidate_transitions(
+        self,
+        ranked: tuple[ScannerDecision, ...],
+        decisions: dict[str, ScannerDecision],
+    ) -> None:
+        current = {candidate.symbol for candidate in ranked}
+        entered = current - self._published_symbols
+        exited = self._published_symbols - current
+
+        for symbol in sorted(entered):
+            prior = self._last_decisions.get(symbol)
+            candidate = decisions.get(symbol) or next(
+                item for item in ranked if item.symbol == symbol
+            )
+            _LOGGER.info(
+                "event_type=candidate_entered symbol=%s "
+                "previous_value=%s current_value=%s",
+                symbol,
+                "missing" if prior is None else "rejected",
+                f"qualified(score={candidate.score})",
+            )
+
+        for symbol in sorted(exited):
+            previous = self._published_decisions[symbol]
+            current_decision = decisions.get(symbol)
+            if current_decision is None:
+                failed_rule = "missing_decision"
+                previous_value = "present"
+                current_value = "missing"
+            elif current_decision.failed_rules:
+                failed_rule = current_decision.failed_rules[0]
+                previous_value = _rule_value(previous, failed_rule)
+                current_value = _rule_value(current_decision, failed_rule)
+            else:
+                failed_rule = "rank_limit"
+                previous_value = f"score={previous.score}"
+                current_value = f"score={current_decision.score}"
+            _LOGGER.info(
+                "event_type=candidate_exited symbol=%s failed_rule_on_exit=%s "
+                "previous_value=%s current_value=%s",
+                symbol,
+                failed_rule,
+                previous_value,
+                current_value,
+            )
 
     def _emit(
         self,
@@ -147,6 +244,26 @@ class ScannerSnapshotPublisher:
 
 def _decimal(value: Decimal) -> str:
     return format(value, "f")
+
+
+def _rule_value(decision: ScannerDecision, rule: str) -> str:
+    values = dict(decision.diagnostic_rule_values)
+    if rule in values:
+        return values[rule]
+    if rule == "percentage_change":
+        return _decimal(decision.metrics.percentage_change)
+    if rule == "relative_volume":
+        return _decimal(decision.metrics.relative_volume)
+    if rule == "dollar_volume":
+        return _decimal(decision.metrics.dollar_volume)
+    if rule == "spread":
+        value = decision.metrics.spread_percent
+        return "missing" if value is None else _decimal(value)
+    if rule == "price_range":
+        return "missing" if decision.price is None else _decimal(decision.price)
+    if rule == "news_catalyst":
+        return decision.catalyst_status.value
+    return "unavailable"
 
 
 __all__ = ["ScannerSnapshotPublisher"]

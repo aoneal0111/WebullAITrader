@@ -215,16 +215,16 @@ def load_configuration(env=None):
         _int(e, "MAXIMUM_RECONCILIATION_AGE_SECONDS", 60),
         _int(e, "MAXIMUM_UNRESOLVED_MUTATIONS", 0),
         _bool(e.get("MARKET_DATA_STREAMING_ENABLED", "true")),
-        _symbols(
-            e.get(
-                "MARKET_DATA_SYMBOLS",
-                e.get("ALLOWED_SYMBOLS", ""),
-            )
-        ),
+        _symbols(e.get("MARKET_DATA_SYMBOLS", "")),
         _int(e, "STREAM_RECONNECT_ATTEMPTS", 3),
         _decimal(e, "STREAM_RECONNECT_BACKOFF_SECONDS", "1"),
         trading_configuration,
         market_data_configuration,
+        _bool(e.get("WARRIOR_FORWARD_PAPER_ENABLED", "false")),
+        Path(e.get(
+            "WARRIOR_FORWARD_CAPTURE_PATH",
+            "data/warrior_momentum_v1_forward/forward_capture.sqlite3",
+        )).resolve(),
     )
 
 

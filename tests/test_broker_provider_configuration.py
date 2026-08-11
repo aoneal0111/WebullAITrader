@@ -31,3 +31,22 @@ def test_market_data_configuration_uses_explicit_symbols_and_reconnect():
     assert configuration.market_data_symbols == ("AAPL", "MSFT")
     assert configuration.stream_reconnect_attempts == 7
     assert str(configuration.stream_reconnect_backoff_seconds) == "2.5"
+
+
+def test_allowed_symbols_do_not_become_implicit_market_data_symbols():
+    configuration = load_configuration({"ALLOWED_SYMBOLS": "AAPL"})
+
+    assert configuration.allowed_symbols == ("AAPL",)
+    assert configuration.market_data_symbols == ()
+
+
+def test_warrior_forward_paper_is_explicit_and_never_a_live_flag(tmp_path):
+    default = load_configuration({})
+    enabled = load_configuration({
+        "WARRIOR_FORWARD_PAPER_ENABLED": "true",
+        "WARRIOR_FORWARD_CAPTURE_PATH": str(tmp_path / "forward.sqlite3"),
+    })
+    assert default.warrior_forward_paper_enabled is False
+    assert enabled.warrior_forward_paper_enabled is True
+    assert enabled.warrior_forward_capture_path == (tmp_path / "forward.sqlite3").resolve()
+    assert enabled.live_trading_enabled is False

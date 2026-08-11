@@ -24,6 +24,15 @@ class CatalystType(StrEnum):
     NONE = "NONE"
 
 
+class CatalystStatus(StrEnum):
+    """Availability of the evidence used to assign ``catalyst``."""
+
+    TRUE = "TRUE"
+    FALSE = "FALSE"
+    UNKNOWN = "UNKNOWN"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
 @dataclass(frozen=True, slots=True)
 class ScannerObservation:
     symbol: str
@@ -40,6 +49,7 @@ class ScannerObservation:
     tradable: bool
     halted: bool
     asset_class: AssetClass = AssetClass.STOCK
+    catalyst_status: CatalystStatus = CatalystStatus.UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,4 +73,6 @@ class ScannerDecision:
     current_volume: Decimal | None = None
     catalyst: CatalystType = CatalystType.NONE
     catalyst_headline: str | None = None
+    catalyst_status: CatalystStatus = CatalystStatus.UNKNOWN
+    diagnostic_rule_values: tuple[tuple[str, str], ...] = ()
 

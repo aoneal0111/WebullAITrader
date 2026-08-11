@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from app.momentum_scanner.models import AssetClass, CatalystType
+from app.momentum_scanner.models import AssetClass, CatalystStatus, CatalystType
 
 ZERO = Decimal("0")
 
@@ -22,7 +22,9 @@ class ReferenceRecord:
     tradable: bool
     catalyst: CatalystType = CatalystType.NONE
     catalyst_headline: str | None = None
+    catalyst_status: CatalystStatus = CatalystStatus.UNKNOWN
     as_of: datetime = datetime.min.replace(tzinfo=UTC)
+    current_volume: Decimal | None = None
 
     def __post_init__(self) -> None:
         normalized_symbol = self.symbol.strip().upper()
@@ -44,6 +46,8 @@ class ReferenceRecord:
         for field_name, value in optional_positive_fields.items():
             if value is not None and value <= ZERO:
                 raise ValueError(f"{field_name} must be positive when supplied")
+        if self.current_volume is not None and self.current_volume < ZERO:
+            raise ValueError("current_volume must be non-negative when supplied")
 
         if self.as_of.tzinfo is None:
             raise ValueError("as_of must be timezone-aware")

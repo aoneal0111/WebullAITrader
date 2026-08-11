@@ -22,7 +22,12 @@ from app.webull.sdk_streaming_adapter import (
     WebullStreamingCredentials,
     create_official_stream_backend,
 )
-from app.webull.market_event_parser import WebullMarketEventParser, payload_metadata
+from app.webull.errors import SerializationError
+from app.webull.market_event_parser import (
+    WebullMarketEventParser,
+    decoder_failure_metadata,
+    payload_metadata,
+)
 
 
 def _host_from_environment(name: str) -> str | None:
@@ -109,36 +114,38 @@ def run(
                 event = parser(payload)
             except Exception as exc:
                 decode_errors += 1
-                tick_fields = ""
-                if metadata["message_classification"] == "TRADE":
-                    value = payload[1]
-                    tick_fields = (
-                        f" tick_price_type={type(getattr(value, 'price', None)).__name__}"
-                        f" tick_price={getattr(value, 'price', None)}"
-                        f" tick_volume_type={type(getattr(value, 'volume', None)).__name__}"
-                        f" tick_volume={getattr(value, 'volume', None)}"
-                        f" tick_time_type={type(getattr(value, 'time', None)).__name__}"
-                        f" tick_time={getattr(value, 'time', None)}"
-                        f" tick_side={getattr(value, 'side', None)}"
-                        f" tick_error={exc}"
-                    )
+                failure = decoder_failure_metadata(
+                    payload,
+                    exc if isinstance(exc, SerializationError) else SerializationError(
+                        "unexpected parser failure"
+                    ),
+                )
                 if not summary_only:
                     print(
                         "Payload classification: "
-                        f"topic={metadata['topic']} "
-                        f"payload_type={metadata['payload_type']} "
-                        f"payload_length={metadata['payload_length']} "
-                        f"class={metadata['message_classification']} "
+                        f"topic={failure['topic']} "
+                        f"sdk_object_type={failure['sdk_object_type']} "
+                        f"result_type={failure['protobuf_result_type']} "
+                        f"class={failure['message_classification']} "
+                        f"symbol={failure['symbol']} "
+                        f"field={failure['failure_field']} "
+                        f"decoder={failure['decoder_selected']} "
+                        f"timestamp_type={failure['timestamp_field_type']} "
+                        f"price_type={failure['price_field_type']} "
+                        f"volume_type={failure['volume_field_type']} "
+                        f"payload_length={failure['payload_length']} "
+                        f"payload_hash={failure['payload_hash']} "
+                        f"error_stage={failure['error_stage']} "
                         f"error_type={type(exc).__name__}"
-                        f"{tick_fields}"
                     )
                 continue
             if event is None:
-                print(
-                    "Payload skipped: "
-                    f"topic={metadata['topic']} "
-                    f"class={metadata['message_classification']}"
-                )
+                if not summary_only:
+                    print(
+                        "Payload skipped: "
+                        f"topic={metadata['topic']} "
+                        f"class={metadata['message_classification']}"
+                    )
                 continue
             decoded += 1
             classification = str(metadata["message_classification"])

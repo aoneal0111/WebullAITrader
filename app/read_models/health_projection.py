@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timedelta
 from threading import RLock
 
 from app.operations.runtime import PaperRuntimeEvent
@@ -29,13 +30,25 @@ _UNHEALTHY = frozenset(
 class HealthProjection:
     """Fold infrastructure runtime events into one immutable health state."""
 
-    def __init__(self, bus: OperationsBus) -> None:
+    def __init__(
+        self,
+        bus: OperationsBus,
+        *,
+        market_data_stale_after: timedelta = timedelta(seconds=30),
+    ) -> None:
         if not isinstance(bus, OperationsBus):
             raise TypeError("bus must be an OperationsBus")
+        if market_data_stale_after.total_seconds() <= 0:
+            raise ValueError("market_data_stale_after must be positive")
         self._bus = bus
         self._lock = RLock()
-        self._snapshot = HealthState.initial()
+        self._snapshot = replace(
+            HealthState.initial(),
+            market_data_stale_after_seconds=market_data_stale_after.total_seconds(),
+        )
         self._seen_events: frozenset[tuple[str, int]] = frozenset()
+        self._latest_sequence: dict[str, int] = {}
+        self._field_timestamps: dict[str, datetime] = {}
 
     @property
     def snapshot(self) -> HealthState:
@@ -49,8 +62,25 @@ class HealthProjection:
         with self._lock:
             if identity in self._seen_events:
                 return
+            # Runtime sources own monotonically increasing sequences.  A
+            # delayed event from the same source must never roll a projection
+            # back after a newer observation has already been applied.
+            if event.sequence <= self._latest_sequence.get(event.source, 0):
+                self._seen_events = self._seen_events | {identity}
+                return
             self._seen_events = self._seen_events | {identity}
-            projected = _reduce_health(self._snapshot, event)
+            self._latest_sequence[event.source] = event.sequence
+            changes = _health_changes(self._snapshot, event)
+            accepted: dict[str, object] = {}
+            for field_name, value in changes.items():
+                last_timestamp = self._field_timestamps.get(field_name)
+                if last_timestamp is not None and event.timestamp < last_timestamp:
+                    continue
+                accepted[field_name] = value
+                self._field_timestamps[field_name] = event.timestamp
+            candidate = replace(self._snapshot, **accepted)
+            healthy, degraded = _derive_flags(candidate)
+            projected = replace(candidate, healthy=healthy, degraded=degraded)
             if projected == self._snapshot:
                 return
             self._snapshot = projected
@@ -68,9 +98,22 @@ def _reduce_health(
     current: HealthState,
     event: PaperRuntimeEvent,
 ) -> HealthState:
+    changes = _health_changes(current, event)
+    candidate = replace(current, **changes)
+    healthy, degraded = _derive_flags(candidate)
+    return replace(candidate, healthy=healthy, degraded=degraded)
+
+
+def _health_changes(
+    current: HealthState,
+    event: PaperRuntimeEvent,
+) -> dict[str, object]:
     event_type = event.event_type.strip().upper()
     changes: dict[str, object] = {}
     _apply_inferred_statuses(changes, event_type)
+
+    if _is_authoritative_stream_event(event):
+        changes["last_market_data_event"] = event.timestamp
 
     if "HEARTBEAT" in event_type:
         changes["last_heartbeat"] = event.timestamp
@@ -80,7 +123,7 @@ def _reduce_health(
         current.last_warning, rest_only=True
     ):
         changes["last_warning"] = None
-    if event_type in {"MARKET_DATA_QUOTE_RECEIVED", "QUOTE_RECEIVED"} and (
+    if _is_authoritative_stream_event(event) and (
         _market_data_warning(current.last_warning)
     ):
         changes["last_warning"] = None
@@ -137,6 +180,8 @@ def _reduce_health(
                 ) else value
         if health.supported_symbols is not None:
             changes["supported_symbols"] = health.supported_symbols
+        if health.subscription_symbols is not None:
+            changes["subscription_symbols"] = health.subscription_symbols
         if health.heartbeat_at is not None:
             changes["last_heartbeat"] = health.heartbeat_at
         if health.connection_latency is not None:
@@ -158,10 +203,21 @@ def _reduce_health(
                 )
             ):
                 changes["last_warning"] = None
+        if health.streaming_status is not None and health.streaming_status.upper() in {
+            "CONNECTED",
+            "STREAM_CONNECTED",
+        }:
+            if current.market_data_status in _UNHEALTHY or (
+                current.streaming_status in _UNHEALTHY
+                or (current.streaming_status or "").endswith("FAILED")
+            ):
+                changes["last_error"] = None
+            if _market_data_warning(current.last_warning):
+                changes["last_warning"] = None
+        if _successful_rest_observation(health):
+            changes["last_error"] = None
 
-    candidate = replace(current, **changes)
-    healthy, degraded = _derive_flags(candidate)
-    return replace(candidate, healthy=healthy, degraded=degraded)
+    return changes
 
 
 def _apply_inferred_statuses(
@@ -182,6 +238,8 @@ def _apply_inferred_statuses(
         "FAILED": ("runtime_status", "FAILED"),
         "RUNTIME_FAILED": ("runtime_status", "FAILED"),
         "BROKER_CONNECTED": ("broker_status", "CONNECTED"),
+        "BROKER_AUTHENTICATED": ("broker_status", "CONNECTED"),
+        "BROKER_REST_OBSERVED": ("broker_status", "CONNECTED"),
         "BROKER_RECONNECTED": ("broker_status", "CONNECTED"),
         "BROKER_RECONNECT_ATTEMPT": ("broker_status", "CONNECTING"),
         "BROKER_DISCONNECTED": ("broker_status", "DISCONNECTED"),
@@ -217,19 +275,45 @@ def _apply_inferred_statuses(
         changes[update[0]] = update[1]
     if event_type == "HISTORICAL_BARS_LOADED":
         changes.update(
+            runtime_status="RUNNING",
             market_data_status="CONNECTED",
-            market_data_rest_status="CONNECTED",
+            market_data_rest_status="AVAILABLE",
             historical_bars_status="AVAILABLE",
+            last_error=None,
         )
-    elif event_type in {"MARKET_DATA_QUOTE_RECEIVED", "QUOTE_RECEIVED"}:
+    elif event_type in {
+        "MARKET_DATA_PAYLOAD_RECEIVED",
+        "MARKET_DATA_QUOTE_RECEIVED",
+        "QUOTE_RECEIVED",
+        "MARKET_DATA_TRADE_RECEIVED",
+        "TRADE_RECEIVED",
+        "MARKET_DATA_SNAPSHOT_RECEIVED",
+        "SNAPSHOT_RECEIVED",
+    }:
         changes.update(
+            runtime_status="RUNNING",
             market_data_status="CONNECTED",
             streaming_status="CONNECTED",
             subscription_status="ACCEPTED",
-            quotes_status="AVAILABLE",
+            last_error=None,
         )
+        if "QUOTE" in event_type:
+            changes["quotes_status"] = "AVAILABLE"
     elif event_type == "MARKET_DATA_RECONNECTED":
-        changes["streaming_status"] = "CONNECTED"
+        changes.update(
+            runtime_status="RUNNING",
+            streaming_status="CONNECTED",
+            last_error=None,
+        )
+    elif event_type in {"MARKET_DATA_SUBSCRIBED", "CHANNELS_SUBSCRIBED"}:
+        changes.update(
+            runtime_status="RUNNING",
+            market_data_status="CONNECTED",
+            streaming_status="CONNECTED",
+            subscription_status="ACCEPTED",
+        )
+    elif event_type in {"BROKER_AUTHENTICATED", "BROKER_REST_OBSERVED"}:
+        changes["last_error"] = None
 
 
 def _apply_error_status(
@@ -238,7 +322,7 @@ def _apply_error_status(
 ) -> None:
     if event_type == "STARTUP_VALIDATION_FAILED":
         # Scanner capability validation is not a runtime/infrastructure failure.
-        changes.setdefault("scanner_status", "DISABLED")
+        changes.setdefault("scanner_status", "STOPPED")
         return
     prefixes = (
         ("BROKER_", "broker_status"),
@@ -280,6 +364,43 @@ def _derive_flags(state: HealthState) -> tuple[bool, bool]:
 
 def _is_warning(event_type: str) -> bool:
     return "WARNING" in event_type or event_type.endswith("_WARN")
+
+
+def _is_authoritative_stream_event(event: PaperRuntimeEvent) -> bool:
+    event_type = event.event_type.strip().upper()
+    if event_type in {
+        "MARKET_DATA_QUOTE_RECEIVED",
+        "QUOTE_RECEIVED",
+        "MARKET_DATA_TRADE_RECEIVED",
+        "TRADE_RECEIVED",
+        "MARKET_DATA_SNAPSHOT_RECEIVED",
+        "SNAPSHOT_RECEIVED",
+    }:
+        return True
+    # The broker-neutral translator keeps this name for downstream mark
+    # projections.  Its structured stream health proves it came from a
+    # decoded TRADE payload rather than a paper/replay mark.
+    return (
+        event_type == "MARK_UPDATED"
+        and event.health is not None
+        and (event.health.streaming_status or "").upper() == "CONNECTED"
+    )
+
+
+def _successful_rest_observation(health) -> bool:
+    return any(
+        (value or "").upper() in {"AVAILABLE", "CONNECTED"}
+        for value in (
+            health.trading_rest_status,
+            health.account_status,
+            health.buying_power_status,
+            health.positions_status,
+            health.orders_status,
+            health.balances_status,
+            health.market_data_rest_status,
+            health.historical_bars_status,
+        )
+    )
 
 
 def _market_data_warning(value: str | None, *, rest_only: bool = False) -> bool:
@@ -334,12 +455,15 @@ def _to_operations(state: HealthState) -> OperationsHealthState:
         reference_cache_status=state.reference_cache_status,
         ranking_status=state.ranking_status,
         supported_symbols=state.supported_symbols,
+        subscription_symbols=state.subscription_symbols,
         ai_status=state.ai_status,
         risk_status=state.risk_status,
         persistence_status=state.persistence_status,
         last_error=state.last_error,
         last_warning=state.last_warning,
         last_heartbeat=state.last_heartbeat,
+        last_market_data_event=state.last_market_data_event,
+        market_data_stale_after_seconds=state.market_data_stale_after_seconds,
         connection_latency=state.connection_latency,
         reconnect_attempts=state.reconnect_attempts,
         degraded=state.degraded,

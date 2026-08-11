@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.live_scanner.session import ScannerSession, scanner_session
-from app.momentum_scanner import AssetClass, CatalystType
+from app.momentum_scanner import AssetClass, CatalystStatus, CatalystType
 from app.reference_data.models import ReferenceRecord
 from app.reference_data.provider import UnsupportedReferenceSymbolError
 from app.universe.models import SecurityType, UniverseSymbol
@@ -367,7 +367,7 @@ class WebullScannerReferenceProvider:
         shares_upper_bound = (
             market_cap / price if market_cap is not None else None
         )
-        catalyst, headline = self._catalyst(normalized)
+        catalyst, headline, catalyst_status = self._catalyst(normalized)
 
         return ReferenceRecord(
             symbol=normalized,
@@ -383,7 +383,9 @@ class WebullScannerReferenceProvider:
             tradable=instrument.tradable,
             catalyst=catalyst,
             catalyst_headline=headline,
+            catalyst_status=catalyst_status,
             as_of=self._clock(),
+            current_volume=_positive(row, "volume"),
         )
 
     def _average_30_day_volume(
@@ -497,31 +499,87 @@ class WebullScannerReferenceProvider:
                 self._environment,
             )
 
-    def _catalyst(self, symbol: str) -> tuple[CatalystType, str | None]:
+    def _catalyst(
+        self,
+        symbol: str,
+    ) -> tuple[CatalystType, str | None, CatalystStatus]:
         fundamentals = getattr(self._client.get(), "fundamentals")
         now = self._clock()
+        unrecognized_evidence = False
         try:
-            earnings = _response_rows(
-                fundamentals.get_earnings_calendar(symbol, "US_STOCK")
+            earnings, earnings_schema_supported = _catalyst_response_rows(
+                fundamentals.get_earnings_calendar(symbol, "US_STOCK"),
+                containers=("data", "items"),
             )
             recent = _recent_row(earnings, now, days=2)
             if recent is not None:
-                return CatalystType.EARNINGS, _headline(recent, "Earnings")
+                return (
+                    CatalystType.EARNINGS,
+                    _headline(recent, "Earnings"),
+                    CatalystStatus.TRUE,
+                )
+            unrecognized_evidence = (
+                not earnings_schema_supported
+                or any(_row_date(row) is None for row in earnings)
+            )
 
-            filings = _response_rows(
-                fundamentals.get_sec_filings(symbol, "US_STOCK")
+            filings, filings_schema_supported = _catalyst_response_rows(
+                fundamentals.get_sec_filings(symbol, "US_STOCK"),
+                containers=("data", "items", "filings"),
             )
             recent = _recent_row(filings, now, days=3)
             if recent is not None:
-                return CatalystType.SEC_FILING, _headline(recent, "SEC filing")
-        except Exception as exc:
-            if _permission_failure(exc):
-                return CatalystType.NONE, None
-            return CatalystType.NONE, None
-        return CatalystType.NONE, None
+                return (
+                    CatalystType.SEC_FILING,
+                    _headline(recent, "SEC filing"),
+                    CatalystStatus.TRUE,
+                )
+            unrecognized_evidence = unrecognized_evidence or (
+                not filings_schema_supported
+                or any(_row_date(row) is None for row in filings)
+            )
+        except Exception:
+            return CatalystType.NONE, None, CatalystStatus.UNAVAILABLE
+        return (
+            CatalystType.NONE,
+            None,
+            (
+                CatalystStatus.UNKNOWN
+                if unrecognized_evidence
+                else CatalystStatus.FALSE
+            ),
+        )
 
 
 def _response_rows(response: object) -> tuple[Mapping[str, object], ...]:
+    value = _response_value(response)
+    if isinstance(value, Mapping):
+        value = value.get("data", value.get("items", ()))
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError("Webull market-data response did not contain rows")
+    return tuple(row for row in value if isinstance(row, Mapping))
+
+
+def _catalyst_response_rows(
+    response: object,
+    *,
+    containers: tuple[str, ...],
+) -> tuple[tuple[Mapping[str, object], ...], bool]:
+    """Return catalyst rows and whether the reachable schema is understood."""
+
+    value = _response_value(response)
+    if isinstance(value, Mapping):
+        selected = next((key for key in containers if key in value), None)
+        if selected is None:
+            return (), False
+        value = value[selected]
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return (), False
+    rows = tuple(row for row in value if isinstance(row, Mapping))
+    return rows, len(rows) == len(value)
+
+
+def _response_value(response: object) -> object:
     status = getattr(response, "status_code", 200)
     if status in (401, 403):
         raise WebullMarketDataPermissionError(
@@ -541,12 +599,7 @@ def _response_rows(response: object) -> tuple[Mapping[str, object], ...]:
         if status == 417 and code == "UNSUPPORTED_SYMBOL":
             raise _UnsupportedSymbolResponse("input symbol invalid")
         raise RuntimeError(f"Webull market-data request failed: HTTP {status}")
-    value = response.json() if callable(getattr(response, "json", None)) else response
-    if isinstance(value, Mapping):
-        value = value.get("data", value.get("items", ()))
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        raise ValueError("Webull market-data response did not contain rows")
-    return tuple(row for row in value if isinstance(row, Mapping))
+    return response.json() if callable(getattr(response, "json", None)) else response
 
 
 def _universe_symbol(
@@ -679,28 +732,45 @@ def _recent_row(
     days: int,
 ) -> Mapping[str, object] | None:
     for row in reversed(rows):
-        for key in (
-            "report_date",
-            "earnings_date",
-            "filing_date",
-            "filed_date",
-            "accepted_time",
-            "date",
-        ):
-            parsed = _date(row.get(key))
-            if parsed is not None and abs((parsed - now.date()).days) <= days:
-                return row
+        parsed = _row_date(row)
+        if parsed is not None and abs((parsed - now.date()).days) <= days:
+            return row
+    return None
+
+
+def _row_date(row: Mapping[str, object]) -> date | None:
+    for key in (
+        "expected_publish_date",
+        "report_date",
+        "earnings_date",
+        "publish_date",
+        "filing_date",
+        "filed_date",
+        "accepted_time",
+        "date",
+    ):
+        parsed = _date(row.get(key))
+        if parsed is not None:
+            return parsed
     return None
 
 
 def _date(value: object) -> date | None:
     if value is None:
         return None
+    text = str(value).strip()
+    if not text:
+        return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+        if len(text) == 10:
+            return date.fromisoformat(text)
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC).date()
     except ValueError:
         try:
-            return date.fromisoformat(str(value)[:10])
+            return date.fromisoformat(text[:10])
         except ValueError:
             return None
 

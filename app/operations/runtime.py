@@ -142,6 +142,7 @@ class RuntimeHealthUpdate:
     reference_cache_status: str | None = None
     ranking_status: str | None = None
     supported_symbols: int | None = None
+    subscription_symbols: tuple[str, ...] | None = None
     ai_status: str | None = None
     risk_status: str | None = None
     persistence_status: str | None = None
@@ -204,6 +205,15 @@ class RuntimeHealthUpdate:
             or self.supported_symbols < 0
         ):
             raise ValueError("runtime health supported symbols must be nonnegative")
+        if self.subscription_symbols is not None:
+            if not isinstance(self.subscription_symbols, tuple):
+                raise TypeError("runtime health subscription symbols must be a tuple")
+            normalized = tuple(
+                symbol.strip().upper() for symbol in self.subscription_symbols
+            )
+            if any(not symbol for symbol in normalized) or len(set(normalized)) != len(normalized):
+                raise ValueError("runtime health subscription symbols must be unique symbols")
+            object.__setattr__(self, "subscription_symbols", normalized)
         if self.capabilities is not None and not isinstance(
             self.capabilities,
             CapabilitySnapshot,

@@ -24,6 +24,7 @@ from app.scanner_adapter import (
     ScannerReferenceData,
     ScannerReferenceStore,
 )
+from app.services.chart_market_data import ChartMarketDataService
 from app.services.runtime_drivers.broker import (
     Clock,
     DesktopBrokerRuntimeDriver,
@@ -116,6 +117,11 @@ def create_configured_desktop_broker_driver(
             market_data_configuration_value,
         )
     )
+    warrior_history_service = ChartMarketDataService(
+        data_client,
+        bar_count=120,
+    )
+
     scanner_coordinator = None
     if broker_runtime.market_data is not None:
         universe_provider = WebullScannerUniverseProvider(
@@ -142,12 +148,37 @@ def create_configured_desktop_broker_driver(
                     float_shares=record.float_shares,
                     catalyst=record.catalyst,
                     catalyst_headline=record.catalyst_headline,
+                    catalyst_status=record.catalyst_status,
                     tradable=record.tradable,
                     updated_at=record.as_of,
+                    current_volume=record.current_volume,
                 )
             )
 
-        scanner_coordinator = create_desktop_scanner_infrastructure(
+            needs_history = getattr(
+                market_event_observer,
+                "needs_historical_preload",
+                None,
+            )
+            preload_history = getattr(
+                market_event_observer,
+                "preload_historical_bars",
+                None,
+            )
+
+            if (
+                callable(needs_history)
+                and callable(preload_history)
+                and needs_history(record.symbol)
+            ):
+                bars = warrior_history_service.load_historical_bars(
+                    record.symbol,
+                    "1M",
+                )
+                preload_history(record.symbol, bars)
+
+        scanner_adapter = MarketEventScannerAdapter(reference_store)
+        scanner_infrastructure = create_desktop_scanner_infrastructure(
             market_data_client=broker_runtime.market_data,
             universe_service=UniverseService(universe_provider),
             reference_data_service=ReferenceDataService(
@@ -158,10 +189,20 @@ def create_configured_desktop_broker_driver(
                     )
                 ),
             ),
-            scanner_adapter=MarketEventScannerAdapter(reference_store),
+            scanner_adapter=scanner_adapter,
             reference_sink=store_reference,
             clock=clock,
-        ).coordinator
+            # Bound one production drain so ranking snapshots and lifecycle
+            # telemetry are published promptly on an active multi-symbol feed.
+            maximum_events_per_cycle=100,
+        )
+        scanner_coordinator = scanner_infrastructure.coordinator
+        binder = getattr(market_event_observer, "bind_scanner_adapter", None)
+        if callable(binder):
+            binder(scanner_adapter)
+        retained = getattr(market_event_observer, "retained_symbols", None)
+        if callable(retained):
+            scanner_coordinator.set_retained_channels_source(retained)
 
     market_data_probe = MarketDataCapabilityProbe(
         market_data_configuration_value,

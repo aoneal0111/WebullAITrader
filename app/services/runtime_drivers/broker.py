@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+import logging
 from threading import Event, RLock, Thread
+from time import monotonic
 
 from app.broker_plugins import BrokerRuntime
 from app.broker_plugins.webull.capabilities import map_webull_capabilities
@@ -23,6 +25,7 @@ from app.operations.runtime import (
     RuntimeWatchlistUpdate,
 )
 from app.operations.scanner_snapshot_publisher import ScannerSnapshotPublisher
+from app.performance_diagnostics import performance_diagnostics
 from app.services.market_event_translation import translate_market_event
 from app.webull.client_factories import market_data_configuration
 from app.webull.market_data_session import (
@@ -36,6 +39,9 @@ AccountPoller = Callable[..., BrokerAccountSnapshot]
 AccountSnapshotSink = Callable[[BrokerAccountSnapshot], None]
 MarketEventTranslator = Callable[..., PaperRuntimeEvent | None]
 MarketEventObserver = Callable[[MarketEvent], object]
+
+
+_SCANNER_LOGGER = logging.getLogger("atlas.scanner")
 
 
 def utc_now() -> datetime:
@@ -119,6 +125,9 @@ class DesktopBrokerRuntimeDriver:
         self._scanner_configuration_changed = False
         self._capability_refresh_requested = False
         self._cycles_completed = 0
+        self._scanner_events_since_observation = 0
+        self._last_scanner_observation_at = 0.0
+        self._last_scanner_detail_at = 0.0
         self._scanner_publisher = ScannerSnapshotPublisher(
             self._event_sink,
             self._next_sequence,
@@ -151,6 +160,10 @@ class DesktopBrokerRuntimeDriver:
         if not callable(cycle_sink):
             raise TypeError("cycle_sink must be callable")
 
+        observer_start = getattr(self._market_event_observer, "start", None)
+        if callable(observer_start):
+            observer_start(self.environment)
+
         self._publish(
             "BROKER_CONNECTING",
             "Connecting to the configured broker.",
@@ -162,6 +175,9 @@ class DesktopBrokerRuntimeDriver:
             self._broker.connect()
             self._connected = True
         except Exception as exc:
+            observer_stop = getattr(self._market_event_observer, "stop", None)
+            if callable(observer_stop):
+                observer_stop()
             self._publish(
                 "BROKER_AUTHENTICATION_FAILED",
                 "Configured broker authentication failed.",
@@ -199,14 +215,39 @@ class DesktopBrokerRuntimeDriver:
             try:
                 self._stop_market_data()
             finally:
-                self._disconnect()
+                try:
+                    observer_stop = getattr(
+                        self._market_event_observer, "stop", None,
+                    )
+                    if callable(observer_stop):
+                        observer_stop()
+                finally:
+                    self._disconnect()
 
     def _start_market_data(self, stop_event: Event) -> None:
+        if self._scanner is not None:
+            self._scanner_log(
+                "scanner_initialized",
+                "Autonomous scanner components initialized.",
+            )
         if (
             self._startup_validation is not None
             and not self._startup_validation.scanner_ready
         ):
             market_result = self._startup_validation.market_data
+            reason = (
+                getattr(self._startup_validation, "reason", None)
+                or getattr(market_result, "reason", None)
+                or "Scanner startup capabilities are unavailable."
+            )
+            self._scanner_log(
+                "scanner_discovery_unavailable",
+                str(reason),
+                health=RuntimeHealthUpdate(
+                    scanner_status="CAPABILITY_PAUSED",
+                    last_warning=str(reason),
+                ),
+            )
             if (
                 getattr(market_result, "reason", None)
                 == "OVERNIGHT_ENTITLEMENT_REQUIRED"
@@ -222,7 +263,17 @@ class DesktopBrokerRuntimeDriver:
                 self._market_data.disconnect()
             return
         if self._market_data is None:
-            if self._configuration.market_data_streaming_enabled:
+            if not self._configuration.market_data_streaming_enabled:
+                self._publish_health(
+                    "MARKET_DATA_DISABLED_BY_CONFIGURATION",
+                    "Market-data streaming is disabled by configuration.",
+                    RuntimeHealthUpdate(
+                        market_data_status="DISABLED",
+                        streaming_status="DISABLED",
+                        scanner_status="DISABLED_BY_CONFIGURATION",
+                    ),
+                )
+            else:
                 cfg = market_data_configuration(self._configuration)
                 reason = (
                     "Production market-data credentials are missing."
@@ -238,7 +289,7 @@ class DesktopBrokerRuntimeDriver:
                         market_data_rest_status="DISABLED",
                         streaming_status="DISABLED",
                         entitlement_status="UNKNOWN",
-                        scanner_status="DISABLED",
+                        scanner_status="STOPPED",
                         last_warning=reason,
                     ),
                 )
@@ -307,10 +358,16 @@ class DesktopBrokerRuntimeDriver:
             self._publish_health(
                 "MARKET_DATA_SUBSCRIBED",
                 "Subscribed to configured Webull market-data symbols.",
-                RuntimeHealthUpdate(market_data_status="SUBSCRIBED"),
+                RuntimeHealthUpdate(
+                    runtime_status="RUNNING",
+                    market_data_status="CONNECTED",
+                    streaming_status="CONNECTED",
+                    subscription_status="ACCEPTED",
+                ),
             )
         except Exception as exc:
             self._publish_terminal_market_data_failure(exc)
+            self._market_data_stop.set()
             try:
                 if self._scanner is not None:
                     self._scanner.disconnect()
@@ -344,7 +401,7 @@ class DesktopBrokerRuntimeDriver:
                 orders_status=str(trading.paper_trading),
                 balances_status=str(trading.buying_power),
                 scanner_status=(
-                    "VALIDATING" if trading.ready else "DISABLED"
+                    "WARMING" if trading.ready else "STOPPED"
                 ),
                 last_warning=None if trading.ready else result.reason,
             ),
@@ -359,19 +416,21 @@ class DesktopBrokerRuntimeDriver:
         )
         self._publish_probe_result(market_data)
         if not result.scanner_ready:
-            partial = (
+            capability_paused = (
                 str(getattr(market_data, "capability_state", ""))
                 == "PARTIAL_CAPABILITY"
                 and str(getattr(
                     getattr(market_data, "entitlement", None), "state", ""
                 )) == "AVAILABLE"
+            ) or str(getattr(market_data, "reason", "")) == (
+                "OVERNIGHT_ENTITLEMENT_REQUIRED"
             )
             self._publish_health(
                 "STARTUP_VALIDATION_FAILED",
                 result.reason or "Startup validation failed.",
                 RuntimeHealthUpdate(
                     scanner_status=(
-                        "CAPABILITY_PAUSED" if partial else "DISABLED"
+                        "CAPABILITY_PAUSED" if capability_paused else "STOPPED"
                     ),
                     last_warning=result.reason or "Startup validation failed.",
                 ),
@@ -380,13 +439,13 @@ class DesktopBrokerRuntimeDriver:
     def _start_scanner(self) -> bool:
         scanner = self._scanner
         assert scanner is not None
-        self._scanner_log(
-            "scanner_initialized",
-            "Autonomous scanner components initialized.",
-        )
         observer_setter = getattr(scanner, "set_event_observer", None)
         if callable(observer_setter):
             observer_setter(self._handle_market_event)
+        self._scanner_log(
+            "universe_refresh_started",
+            "Autonomous scanner universe discovery started.",
+        )
         try:
             active_symbols = scanner.start(
                 asset_classes=(AssetClass.STOCK,),
@@ -396,6 +455,10 @@ class DesktopBrokerRuntimeDriver:
             try:
                 scanner.disconnect()
             finally:
+                self._scanner_log(
+                    "universe_refresh_failed",
+                    f"Scanner universe discovery failed: {type(exc).__name__}.",
+                )
                 self._scanner_error(
                     "Scanner initialization failed.",
                     exc,
@@ -404,6 +467,28 @@ class DesktopBrokerRuntimeDriver:
 
         self._market_data_connected = True
         warmup_snapshot = scanner.snapshot()
+        performance_diagnostics.increment("scanner_snapshots_generated")
+        universe_size = getattr(
+            warmup_snapshot, "universe_size", len(active_symbols)
+        )
+        eligible_count = getattr(
+            warmup_snapshot, "eligible_symbol_count", len(active_symbols)
+        )
+        # Compatibility snapshots predate the count fields and use their
+        # default zeros. Active symbols remain authoritative in that case.
+        if universe_size == 0 and active_symbols:
+            universe_size = len(active_symbols)
+        if eligible_count == 0 and active_symbols:
+            eligible_count = len(active_symbols)
+        self._scanner_log(
+            "universe_refreshed",
+            f"Scanner universe refresh completed: universe_size={universe_size}.",
+        )
+        self._scanner_log(
+            "symbols_eligible",
+            f"Scanner eligibility completed: eligible_symbol_count={eligible_count}; "
+            f"reference_ready_count={len(active_symbols)}.",
+        )
         if not active_symbols:
             reason = (
                 getattr(warmup_snapshot, "health_reason", None)
@@ -415,12 +500,21 @@ class DesktopBrokerRuntimeDriver:
                 now=self._timestamp(),
             )
             self._scanner_log(
+                "market_data_subscriptions",
+                "Scanner market-data subscription count=0.",
+            )
+            self._scanner_log(
+                "scanner_snapshot_published",
+                "Published 0 ranked candidates from an empty scanner universe.",
+            )
+            self._scanner_log(
                 "scanner_empty_fail_closed",
                 reason,
                 health=RuntimeHealthUpdate(
                     market_data_status="NO_SUPPORTED_SYMBOLS",
-                    scanner_status="NO_SUPPORTED_SYMBOLS",
+                    scanner_status="CAPABILITY_PAUSED",
                     supported_symbols=0,
+                    subscription_symbols=(),
                     last_warning=reason,
                 ),
             )
@@ -436,14 +530,6 @@ class DesktopBrokerRuntimeDriver:
                 health=RuntimeHealthUpdate(last_warning=details),
             )
         self._scanner_log(
-            "universe_refreshed",
-            "Eligible US-stock universe refreshed.",
-        )
-        self._scanner_log(
-            "symbols_eligible",
-            f"{len(active_symbols)} symbols are eligible.",
-        )
-        self._scanner_log(
             "market_data_connected",
             "Official Webull market-data transport connected.",
             health=RuntimeHealthUpdate(
@@ -458,13 +544,18 @@ class DesktopBrokerRuntimeDriver:
             health=RuntimeHealthUpdate(
                 market_data_status="SUBSCRIBED",
                 streaming_status="CONNECTED",
-                scanner_status="READY",
+                scanner_status="WARMING",
                 universe_status="LOADED",
                 symbols_status="VALIDATED",
                 reference_cache_status="WARM",
                 ranking_status="ACTIVE",
                 supported_symbols=len(active_symbols),
+                subscription_symbols=tuple(sorted(active_symbols)),
             ),
+        )
+        self._scanner_log(
+            "market_data_subscriptions",
+            f"Scanner market-data subscription count={len(active_symbols)}.",
         )
         return True
 
@@ -575,9 +666,9 @@ class DesktopBrokerRuntimeDriver:
                 scanner_status=(
                     "WARMING" if ready
                     else "CAPABILITY_PAUSED" if partial
-                    else "NO_SUPPORTED_SYMBOLS" if no_supported_symbols
-                    else "PAUSED_UNTIL_PREMARKET" if overnight_paused
-                    else "DISABLED"
+                    else "CAPABILITY_PAUSED" if no_supported_symbols
+                    else "CAPABILITY_PAUSED" if overnight_paused
+                    else "STOPPED"
                 ),
                 probe_aapl_status=symbol_results.get("AAPL", "NOT_TESTED"),
                 probe_spy_status=symbol_results.get("SPY", "NOT_TESTED"),
@@ -615,26 +706,33 @@ class DesktopBrokerRuntimeDriver:
             ):
                 if self._scanner is not None:
                     cycle = self._scanner.run_available()
+                    performance_diagnostics.increment("scanner_evaluations")
+                    self._scanner_events_since_observation += cycle.events_read
+                    if cycle.events_read == 0:
+                        self._publish_scanner_observation_if_due()
+                        # An exhausted/nonblocking transport must not create a
+                        # worker-side busy loop. This wait is interruptible and
+                        # never occurs on the Qt thread.
+                        self._market_data_stop.wait(0.01)
+                        continue
+
                     snapshot = self._scanner.snapshot()
+                    performance_diagnostics.increment(
+                        "scanner_snapshots_generated"
+                    )
                     now = self._timestamp()
                     stale = self._scanner_publisher.publish(
                         snapshot,
                         cycle=self._cycles_completed,
                         now=now,
                     )
-                    self._scanner_log(
-                        "scanner_cycle",
-                        "Autonomous scanner cycle completed.",
-                    )
-                    self._scanner_log(
-                        "events_consumed",
-                        f"Consumed {cycle.events_read} market events.",
-                    )
-                    self._scanner_log(
-                        "scanner_snapshot_published",
-                        f"Published {len(snapshot.ranked_candidates)} "
-                        "ranked candidates.",
-                    )
+                    if self._scanner_publisher.last_changed:
+                        self._scanner_log(
+                            "scanner_snapshot_published",
+                            f"Published {len(snapshot.ranked_candidates)} "
+                            "ranked candidates.",
+                        )
+                    self._publish_scanner_observation_if_due(force=False)
                     if stale:
                         self._scanner_error(
                             "Scanner quotes became stale: "
@@ -659,8 +757,109 @@ class DesktopBrokerRuntimeDriver:
                 self._handle_market_event(event)
         except Exception as exc:
             self._publish_terminal_market_data_failure(exc)
-            self._market_data_stop.set()
 
+    def _publish_scanner_observation_if_due(self, *, force: bool = False) -> None:
+        observed_at = monotonic()
+        if (
+            not force
+            and self._last_scanner_observation_at
+            and observed_at - self._last_scanner_observation_at < 1.0
+        ):
+            return
+        events = self._scanner_events_since_observation
+        self._scanner_events_since_observation = 0
+        self._last_scanner_observation_at = observed_at
+        self._scanner_log(
+            "scanner_cycle",
+            "Autonomous scanner evaluation interval completed.",
+            health=RuntimeHealthUpdate(scanner_status="RUNNING"),
+        )
+        self._scanner_log(
+            "events_consumed",
+            f"Consumed {events} market events in the bounded interval.",
+        )
+        if observed_at - self._last_scanner_detail_at >= 10.0:
+            self._last_scanner_detail_at = observed_at
+            self._log_scanner_qualification_details()
+
+    def _log_scanner_qualification_details(self) -> None:
+        diagnostics = getattr(self._scanner, "diagnostic_results", None)
+        if not callable(diagnostics):
+            return
+        aggregate = getattr(self._scanner, "qualification_diagnostics", None)
+        if callable(aggregate):
+            summary = aggregate(example_limit=3)
+            if summary is not None:
+                denominator = summary.complete
+                percentages = ",".join(
+                    f"{rule}:{(count * 100 / denominator):.1f}%"
+                    if denominator
+                    else f"{rule}:0.0%"
+                    for rule, count in summary.rejection_counts
+                )
+                _SCANNER_LOGGER.info(
+                    "event_type=scanner_qualification_summary evaluated=%s "
+                    "complete=%s qualified=%s rejection_counts=%s "
+                    "rejection_percentages=%s news_catalyst_states=%s "
+                    "otherwise_qualified_with_catalyst=%s near_symbols=%s",
+                    summary.evaluated,
+                    summary.complete,
+                    summary.qualified,
+                    ",".join(
+                        f"{rule}:{count}"
+                        for rule, count in summary.rejection_counts
+                    ),
+                    percentages,
+                    ",".join(
+                        f"{status}:{count}"
+                        for status, count in summary.catalyst_counts
+                    ),
+                    summary.otherwise_qualified_with_catalyst,
+                    ",".join(summary.near_qualified_symbols) or "--",
+                )
+        for result, decision in diagnostics(limit=3):
+            state = result.state
+            observation = result.observation
+            if observation is None:
+                _SCANNER_LOGGER.info(
+                    "event_type=scanner_qualification symbol=%s status=incomplete "
+                    "missing=%s quote_timestamp=%s trade_timestamp=%s "
+                    "snapshot_timestamp=%s",
+                    state.symbol,
+                    ",".join(result.missing_fields) or "--",
+                    _iso_or_dash(state.quote_timestamp),
+                    _iso_or_dash(state.trade_timestamp),
+                    _iso_or_dash(state.snapshot_timestamp),
+                )
+                continue
+            assert decision is not None
+            _SCANNER_LOGGER.info(
+                "event_type=scanner_qualification symbol=%s status=%s "
+                "price=%s previous_close=%s current_volume=%s "
+                "average_30_day_volume=%s float_shares=%s bid=%s ask=%s "
+                "catalyst=%s news_catalyst=%s tradable=%s halted=%s "
+                "percentage_change=%s "
+                "relative_volume=%s dollar_volume=%s spread_percent=%s "
+                "failed_rules=%s",
+                observation.symbol,
+                "qualified" if decision.qualified else "rejected",
+                observation.price,
+                observation.previous_close,
+                observation.current_volume,
+                observation.average_30_day_volume,
+                observation.float_shares,
+                observation.bid,
+                observation.ask,
+                observation.catalyst.value,
+                observation.catalyst_status.value,
+                observation.tradable,
+                observation.halted,
+                decision.metrics.percentage_change,
+                decision.metrics.relative_volume,
+                decision.metrics.dollar_volume,
+                decision.metrics.spread_percent,
+                ",".join(decision.failed_rules) or "--",
+            )
     def _on_market_data_lifecycle(
         self,
         lifecycle: str,
@@ -748,7 +947,7 @@ class DesktopBrokerRuntimeDriver:
                 market_data_status="REST_ONLY",
                 market_data_rest_status="AVAILABLE",
                 streaming_status=_stream_failure_classification(error),
-                scanner_status="DISABLED",
+                scanner_status="STOPPED",
                 last_warning=type(error).__name__,
             ),
         )
@@ -789,6 +988,7 @@ class DesktopBrokerRuntimeDriver:
     def _handle_market_event(self, event: MarketEvent) -> None:
         if not isinstance(event, MarketEvent):
             raise TypeError("market-data transport returned a non-MarketEvent")
+        performance_diagnostics.increment("market_events_processed")
         translated = self._market_event_translator(
             event,
             sequence=self._next_sequence(),
@@ -800,6 +1000,7 @@ class DesktopBrokerRuntimeDriver:
                 translated,
                 event_type="MARKET_DATA_QUOTE_RECEIVED",
                 health=RuntimeHealthUpdate(
+                    runtime_status="RUNNING",
                     market_data_status="CONNECTED",
                     streaming_status="CONNECTED",
                     subscription_status="ACCEPTED",
@@ -808,6 +1009,50 @@ class DesktopBrokerRuntimeDriver:
                 ),
             )
             self._observe_probe_success("STREAM_QUOTE")
+        elif translated is not None and event.event_type is MarketEventType.SESSION_CHANGE:
+            translated = replace(
+                translated,
+                health=RuntimeHealthUpdate(
+                    runtime_status="RUNNING",
+                    market_data_status="CONNECTED",
+                    streaming_status="CONNECTED",
+                    subscription_status="ACCEPTED",
+                    last_warning=None,
+                ),
+            )
+            self._observe_probe_success("SESSION_TRANSITION")
+            self._capability_refresh_requested = True
+        elif translated is not None:
+            # Any translated event is proof that registration, transport, and
+            # payload decoding are currently working.  Quote availability is
+            # kept quote-specific, but stream health is payload-agnostic.
+            translated = replace(
+                translated,
+                health=RuntimeHealthUpdate(
+                    runtime_status="RUNNING",
+                    market_data_status="CONNECTED",
+                    streaming_status="CONNECTED",
+                    subscription_status="ACCEPTED",
+                    last_warning=None,
+                ),
+            )
+            self._observe_probe_success("STREAM_PAYLOAD")
+        elif event.event_type is MarketEventType.BOOK_SNAPSHOT:
+            # A decoded book snapshot is authoritative stream activity even
+            # though it has no trading/read-model translation of its own.
+            self._publish_health(
+                "MARKET_DATA_SNAPSHOT_RECEIVED",
+                f"Decoded live market-data snapshot for {event.symbol or '--'}.",
+                RuntimeHealthUpdate(
+                    runtime_status="RUNNING",
+                    market_data_status="CONNECTED",
+                    streaming_status="CONNECTED",
+                    subscription_status="ACCEPTED",
+                    last_warning=None,
+                ),
+                timestamp=event.timestamp,
+            )
+            self._observe_probe_success("STREAM_PAYLOAD")
         elif event.event_type is MarketEventType.SESSION_CHANGE:
             self._observe_probe_success("SESSION_TRANSITION")
             self._capability_refresh_requested = True
@@ -830,6 +1075,12 @@ class DesktopBrokerRuntimeDriver:
         *,
         health: RuntimeHealthUpdate | None = None,
     ) -> None:
+        _SCANNER_LOGGER.info(
+            "event_type=%s cycle=%d message=%s",
+            event_type,
+            self._cycles_completed,
+            message,
+        )
         self._emit(
             PaperRuntimeEvent(
                 sequence=self._next_sequence(),
@@ -848,7 +1099,7 @@ class DesktopBrokerRuntimeDriver:
             message,
             health=RuntimeHealthUpdate(
                 market_data_status="FAILED",
-                scanner_status="FAILED",
+                scanner_status="STOPPED",
                 last_error=type(error).__name__,
             ),
         )
@@ -868,6 +1119,21 @@ class DesktopBrokerRuntimeDriver:
                 clock=self._clock,
             )
             self._account_snapshot_sink(snapshot)
+            self._publish_health(
+                "BROKER_REST_OBSERVED",
+                "Broker account, balances, positions, and orders loaded.",
+                RuntimeHealthUpdate(
+                    runtime_status="RUNNING",
+                    broker_status="CONNECTED",
+                    trading_rest_status="CONNECTED",
+                    account_status="AVAILABLE",
+                    buying_power_status="AVAILABLE",
+                    positions_status="AVAILABLE",
+                    orders_status="AVAILABLE",
+                    balances_status="AVAILABLE",
+                    last_error=None,
+                ),
+            )
             self._cycles_completed += 1
             cycle_sink(self._cycles_completed)
             self._retry_scanner_after_session_transition(stop_event)
@@ -996,11 +1262,13 @@ class DesktopBrokerRuntimeDriver:
         event_type: str,
         message: str,
         health: RuntimeHealthUpdate,
+        *,
+        timestamp: datetime | None = None,
     ) -> None:
         self._emit(
             PaperRuntimeEvent(
                 sequence=self._next_sequence(),
-                timestamp=self._timestamp(),
+                timestamp=timestamp or self._timestamp(),
                 event_type=event_type,
                 message=message,
                 cycle=self._cycles_completed,
@@ -1055,3 +1323,7 @@ def _stream_failure_classification(error: Exception) -> str:
             return "PROTOCOL_UNSUPPORTED"
         current = current.__cause__ or current.__context__
     return "UNAVAILABLE"
+
+
+def _iso_or_dash(value: datetime | None) -> str:
+    return "--" if value is None else value.isoformat()

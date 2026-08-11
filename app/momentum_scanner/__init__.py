@@ -1,5 +1,6 @@
 ﻿from app.momentum_scanner.models import (
     AssetClass,
+    CatalystStatus,
     CatalystType,
     ScannerDecision,
     ScannerMetrics,
@@ -14,6 +15,7 @@ from app.momentum_scanner.rules import (
 
 __all__ = [
     "AssetClass",
+    "CatalystStatus",
     "CatalystType",
     "MomentumScannerConfig",
     "ScannerDecision",

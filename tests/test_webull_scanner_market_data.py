@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from app.live_scanner.session import ScannerSession, scanner_session
 from app.market_data.models import MarketEventType
-from app.momentum_scanner import AssetClass, CatalystType
+from app.momentum_scanner import AssetClass, CatalystStatus, CatalystType
 from app.webull.market_event_parser import WebullMarketEventParser
 from app.webull.sdk_market_data import (
     LazyOfficialDataClient,
@@ -89,7 +89,127 @@ def test_official_sdk_providers_discover_and_load_reference_data() -> None:
     assert reference.previous_close == Decimal("4")
     assert reference.float_shares == Decimal("15000000")
     assert reference.catalyst is CatalystType.EARNINGS
+    assert reference.catalyst_status is CatalystStatus.TRUE
     assert reference.catalyst_headline == "Q2 earnings"
+
+
+def test_catalyst_failure_is_unavailable_not_a_valid_negative() -> None:
+    class UnavailableFundamentals:
+        def get_earnings_calendar(self, symbol, category):
+            raise PermissionError("fundamentals unavailable")
+
+    client = SimpleNamespace(
+        screener=Screener(),
+        fundamentals=UnavailableFundamentals(),
+        market_data=MarketData(),
+    )
+    lazy = LazyOfficialDataClient(lambda: client)
+    universe = WebullScannerUniverseProvider(lazy, clock=lambda: NOW)
+    universe.list_symbols(AssetClass.STOCK)
+
+    reference = WebullScannerReferenceProvider(
+        lazy,
+        universe,
+        clock=lambda: NOW,
+    ).get_reference_data("AUTO", AssetClass.STOCK)
+
+    assert reference.catalyst is CatalystType.NONE
+    assert reference.catalyst_status is CatalystStatus.UNAVAILABLE
+
+
+def _reference_with_fundamentals(fundamentals) -> object:
+    client = SimpleNamespace(
+        screener=Screener(),
+        fundamentals=fundamentals,
+        market_data=MarketData(),
+    )
+    lazy = LazyOfficialDataClient(lambda: client)
+    universe = WebullScannerUniverseProvider(lazy, clock=lambda: NOW)
+    universe.list_symbols(AssetClass.STOCK)
+    return WebullScannerReferenceProvider(
+        lazy,
+        universe,
+        clock=lambda: NOW,
+    ).get_reference_data("AUTO", AssetClass.STOCK)
+
+
+def test_production_earnings_expected_publish_date_is_true() -> None:
+    class ProductionEarningsFundamentals:
+        def get_earnings_calendar(self, symbol, category):
+            return Response([{
+                "expected_publish_date": "2026-07-29T23:30:00-05:00",
+                "fiscal_period": 2,
+                "fiscal_year": 2026,
+            }])
+
+        def get_sec_filings(self, symbol, category):
+            raise AssertionError("matching earnings catalyst should win")
+
+    reference = _reference_with_fundamentals(
+        ProductionEarningsFundamentals()
+    )
+
+    assert reference.catalyst is CatalystType.EARNINGS
+    assert reference.catalyst_status is CatalystStatus.TRUE
+    assert reference.catalyst_headline == "Earnings"
+
+
+def test_production_sec_filings_container_and_publish_date_are_true() -> None:
+    class ProductionFilingsFundamentals:
+        def get_earnings_calendar(self, symbol, category):
+            return Response([{"expected_publish_date": "2026-06-01"}])
+
+        def get_sec_filings(self, symbol, category):
+            return Response({
+                "category": category,
+                "filings": [{
+                    "publish_date": "2026-07-30T01:00:00Z",
+                    "title": "8-K | Material event",
+                }],
+                "symbol": symbol,
+            })
+
+    reference = _reference_with_fundamentals(
+        ProductionFilingsFundamentals()
+    )
+
+    assert reference.catalyst is CatalystType.SEC_FILING
+    assert reference.catalyst_status is CatalystStatus.TRUE
+    assert reference.catalyst_headline == "8-K | Material event"
+
+
+def test_valid_production_responses_without_recent_event_are_false() -> None:
+    class OldEvidenceFundamentals:
+        def get_earnings_calendar(self, symbol, category):
+            return Response([{"expected_publish_date": "2026-06-01"}])
+
+        def get_sec_filings(self, symbol, category):
+            return Response({
+                "category": category,
+                "filings": [{"publish_date": "2026-06-02"}],
+                "symbol": symbol,
+            })
+
+    reference = _reference_with_fundamentals(OldEvidenceFundamentals())
+
+    assert reference.catalyst is CatalystType.NONE
+    assert reference.catalyst_status is CatalystStatus.FALSE
+
+
+def test_reachable_unsupported_catalyst_schema_is_unknown() -> None:
+    class UnsupportedSchemaFundamentals:
+        def get_earnings_calendar(self, symbol, category):
+            return Response({"results": []})
+
+        def get_sec_filings(self, symbol, category):
+            return Response({"results": []})
+
+    reference = _reference_with_fundamentals(
+        UnsupportedSchemaFundamentals()
+    )
+
+    assert reference.catalyst is CatalystType.NONE
+    assert reference.catalyst_status is CatalystStatus.UNKNOWN
 
 
 def test_official_sdk_quote_and_tick_objects_parse_without_json() -> None:

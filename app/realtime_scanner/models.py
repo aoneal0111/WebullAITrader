@@ -56,6 +56,8 @@ class ScannerSnapshot:
     warmup_result: ReferenceWarmupResult = ReferenceWarmupResult()
     healthy: bool = True
     health_reason: str | None = None
+    universe_size: int = 0
+    eligible_symbol_count: int = 0
 
     @property
     def qualified_count(self) -> int:

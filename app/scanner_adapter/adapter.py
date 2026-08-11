@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 from decimal import Decimal
 
 from app.market_data.models import (
@@ -40,10 +41,17 @@ class MarketEventScannerAdapter:
         if not symbol:
             return None
 
-        previous = self._states.get(
-            symbol,
-            SymbolScannerState(symbol=symbol),
-        )
+        previous = self._states.get(symbol)
+        if previous is None:
+            reference = self.reference_store.get(symbol)
+            previous = SymbolScannerState(
+                symbol=symbol,
+                cumulative_volume=(
+                    reference.current_volume
+                    if reference is not None and reference.current_volume is not None
+                    else Decimal("0")
+                ),
+            )
 
         state = self._apply(previous, event)
         self._states[symbol] = state
@@ -84,6 +92,25 @@ class MarketEventScannerAdapter:
 
         return tuple(completed)
 
+    def observation_for(self, symbol: str) -> ScannerObservation | None:
+        state = self._states.get(symbol.strip().upper())
+        if state is None:
+            return None
+        observation, _missing = self._build_observation(state)
+        return observation
+
+    def diagnostic_results(self, *, limit: int = 3) -> tuple[AdapterResult, ...]:
+        """Return a bounded, immutable view of real per-symbol scanner inputs."""
+
+        if limit < 1:
+            raise ValueError("diagnostic limit must be positive")
+        results: list[AdapterResult] = []
+        for symbol in sorted(self._states)[:limit]:
+            state = self._states[symbol]
+            observation, missing = self._build_observation(state)
+            results.append(AdapterResult(state, observation, missing))
+        return tuple(results)
+
     def _apply(
         self,
         state: SymbolScannerState,
@@ -96,9 +123,15 @@ class MarketEventScannerAdapter:
             if not isinstance(event.payload, QuotePayload):
                 raise TypeError("QUOTE event requires QuotePayload")
 
+            if (
+                state.quote_timestamp is not None
+                and event.timestamp < state.quote_timestamp
+            ):
+                return state
             return replace(
                 state,
-                timestamp=event.timestamp,
+                timestamp=_latest_timestamp(state.timestamp, event.timestamp),
+                quote_timestamp=event.timestamp,
                 bid=event.payload.bid,
                 ask=event.payload.ask,
             )
@@ -107,14 +140,52 @@ class MarketEventScannerAdapter:
             if not isinstance(event.payload, TradePayload):
                 raise TypeError("TRADE event requires TradePayload")
 
+            if event.payload.trade_id.startswith("snapshot"):
+                if (
+                    state.snapshot_timestamp is not None
+                    and event.timestamp < state.snapshot_timestamp
+                ):
+                    return state
+                freshest_price_timestamp = _latest_timestamp(
+                    state.trade_timestamp, state.snapshot_timestamp
+                )
+                return replace(
+                    state,
+                    timestamp=_latest_timestamp(state.timestamp, event.timestamp),
+                    snapshot_timestamp=event.timestamp,
+                    last_price=(
+                        event.payload.price
+                        if freshest_price_timestamp is None
+                        or event.timestamp >= freshest_price_timestamp
+                        else state.last_price
+                    ),
+                    cumulative_volume=max(
+                        state.cumulative_volume, event.payload.size
+                    ),
+                )
+
+            if (
+                state.trade_timestamp is not None
+                and event.timestamp < state.trade_timestamp
+            ):
+                return state
+            newest_snapshot = state.snapshot_timestamp
+            is_newer_than_snapshot = (
+                newest_snapshot is None or event.timestamp > newest_snapshot
+            )
             return replace(
                 state,
-                timestamp=event.timestamp,
-                last_price=event.payload.price,
+                timestamp=_latest_timestamp(state.timestamp, event.timestamp),
+                trade_timestamp=event.timestamp,
+                last_price=(
+                    event.payload.price
+                    if is_newer_than_snapshot
+                    else state.last_price
+                ),
                 cumulative_volume=(
-                    event.payload.size
-                    if event.payload.trade_id.startswith("snapshot")
-                    else state.cumulative_volume + event.payload.size
+                    state.cumulative_volume + event.payload.size
+                    if is_newer_than_snapshot
+                    else state.cumulative_volume
                 ),
             )
 
@@ -214,6 +285,7 @@ class MarketEventScannerAdapter:
                 float_shares=reference.float_shares,
                 catalyst=reference.catalyst,
                 catalyst_headline=reference.catalyst_headline,
+                catalyst_status=reference.catalyst_status,
                 bid=state.bid,
                 ask=state.ask,
                 tradable=reference.tradable,
@@ -221,4 +293,19 @@ class MarketEventScannerAdapter:
             ),
             (),
         )
+
+    @property
+    def state_count(self) -> int:
+        return len(self._states)
+
+
+def _latest_timestamp(
+    left: datetime | None,
+    right: datetime | None,
+) -> datetime | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return max(left, right)
 

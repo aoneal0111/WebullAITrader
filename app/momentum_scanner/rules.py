@@ -134,6 +134,28 @@ def evaluate_candidate(
         current_volume=observation.current_volume,
         catalyst=observation.catalyst,
         catalyst_headline=observation.catalyst_headline,
+        catalyst_status=observation.catalyst_status,
+        diagnostic_rule_values=(
+            ("price_range", format(observation.price, "f")),
+            ("percentage_change", format(metrics.percentage_change, "f")),
+            ("relative_volume", format(metrics.relative_volume, "f")),
+            (
+                "low_float",
+                "missing"
+                if observation.float_shares is None
+                else format(observation.float_shares, "f"),
+            ),
+            ("news_catalyst", observation.catalyst_status.value),
+            ("tradable", str(observation.tradable).lower()),
+            ("not_halted", str(not observation.halted).lower()),
+            ("dollar_volume", format(metrics.dollar_volume, "f")),
+            (
+                "spread",
+                "missing"
+                if metrics.spread_percent is None
+                else format(metrics.spread_percent, "f"),
+            ),
+        ),
     )
 
 
