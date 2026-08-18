@@ -699,6 +699,7 @@ class CompactWatchlistPanel(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self._last_render_fingerprint = None
         self.setMinimumWidth(Dimensions.WATCHLIST_MIN_WIDTH)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -756,6 +757,21 @@ class CompactWatchlistPanel(QWidget):
     def render(self, snapshot: WatchlistSnapshot) -> None:
         warrior = any(row.strategy_status != "--" for row in snapshot.rows)
         columns = self._warrior_columns if warrior else self._legacy_columns
+
+        # Scanner state may be published frequently during live markets.
+        # Rebuilding the QTableWidget is expensive: clearSelection(),
+        # setRowCount(), item construction, header sizing and selectRow()
+        # all create Qt model/layout/paint work.  WatchlistSnapshot is an
+        # immutable presentation value, so an identical snapshot requires
+        # no widget mutation.
+        render_fingerprint = (
+            snapshot,
+            warrior,
+            self._mode_selector.currentText(),
+        )
+        if render_fingerprint == self._last_render_fingerprint:
+            return
+        self._last_render_fingerprint = render_fingerprint
         if self._table.columnCount() != len(columns):
             self._table.setColumnCount(len(columns))
             self._table.setHorizontalHeaderLabels(columns)
