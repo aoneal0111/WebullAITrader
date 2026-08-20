@@ -11,6 +11,11 @@ from app.catalysts.sec_edgar import (
     SECEdgarPolicy,
     log_sec_edgar_provider_state,
 )
+from app.catalysts.marketwatch import (
+    MarketWatchCatalystProvider,
+    MarketWatchNewsPolicy,
+    log_marketwatch_provider_state,
+)
 from app.catalysts.webull import WebullCatalystProvider
 from app.catalysts.yahoo_finance import (
     YahooFinanceCatalystProvider,
@@ -66,6 +71,25 @@ def build_catalyst_providers(
                     maximum_snapshot_age_seconds=cnbc.maximum_snapshot_age_seconds,
                     max_items=cnbc.max_items,
                     max_payload_bytes=cnbc.max_payload_bytes,
+                )
+            )
+        )
+    if configuration.marketwatch_news is None:
+        log_marketwatch_provider_state(enabled=False)
+    else:
+        marketwatch = configuration.marketwatch_news
+        providers.append(
+            MarketWatchCatalystProvider(
+                MarketWatchNewsPolicy(
+                    freshness_minutes=marketwatch.freshness_minutes,
+                    timeout_seconds=marketwatch.timeout_seconds,
+                    refresh_ttl_seconds=marketwatch.refresh_ttl_seconds,
+                    failure_cooldown_seconds=marketwatch.failure_cooldown_seconds,
+                    maximum_snapshot_age_seconds=(
+                        marketwatch.maximum_snapshot_age_seconds
+                    ),
+                    max_items=marketwatch.max_items,
+                    max_payload_bytes=marketwatch.max_payload_bytes,
                 )
             )
         )

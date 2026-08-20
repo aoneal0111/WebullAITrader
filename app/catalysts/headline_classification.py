@@ -190,4 +190,14 @@ def classify_cnbc_headline(headline: str) -> CatalystType | None:
     return None
 
 
-__all__ = ["classify_catalyst_headline", "classify_cnbc_headline"]
+def classify_marketwatch_headline(headline: str) -> CatalystType | None:
+    """Apply the existing strict editorial-news contract to MarketWatch RSS."""
+
+    return classify_cnbc_headline(headline)
+
+
+__all__ = [
+    "classify_catalyst_headline",
+    "classify_cnbc_headline",
+    "classify_marketwatch_headline",
+]

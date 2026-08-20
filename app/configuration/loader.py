@@ -232,6 +232,31 @@ def load_configuration(env=None):
         if _bool(e.get("CNBC_NEWS_ENABLED", "false"))
         else None
     )
+    marketwatch_news_configuration = (
+        MarketWatchNewsConfiguration(
+            freshness_minutes=_non_negative_int(
+                e, "MARKETWATCH_NEWS_FRESHNESS_MINUTES", 1_440
+            ),
+            timeout_seconds=_positive_float(
+                e, "MARKETWATCH_NEWS_TIMEOUT_SECONDS", 5.0
+            ),
+            refresh_ttl_seconds=_positive_float(
+                e, "MARKETWATCH_NEWS_REFRESH_TTL_SECONDS", 3_600.0
+            ),
+            failure_cooldown_seconds=_positive_float(
+                e, "MARKETWATCH_NEWS_FAILURE_COOLDOWN_SECONDS", 300.0
+            ),
+            maximum_snapshot_age_seconds=_positive_float(
+                e, "MARKETWATCH_NEWS_MAXIMUM_SNAPSHOT_AGE_SECONDS", 7_200.0
+            ),
+            max_items=_int(e, "MARKETWATCH_NEWS_MAX_ITEMS", 256),
+            max_payload_bytes=_int(
+                e, "MARKETWATCH_NEWS_MAX_PAYLOAD_BYTES", 250_000
+            ),
+        )
+        if _bool(e.get("MARKETWATCH_NEWS_ENABLED", "false"))
+        else None
+    )
     for section_name, section in (
         ("trading", trading_configuration),
         ("market-data", market_data_configuration),
@@ -277,6 +302,7 @@ def load_configuration(env=None):
         sec_edgar_configuration,
         yahoo_finance_news_configuration,
         cnbc_news_configuration,
+        marketwatch_news_configuration,
     )
 
 
