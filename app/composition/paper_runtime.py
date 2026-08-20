@@ -39,6 +39,7 @@ def create_paper_runtime_driver(
     interval_seconds: float = 1.0,
     environment: str = "PAPER",
     active_model: str = "Promoted model",
+    experiment_journal: object | None = None,
 ) -> PaperRuntimeDriver:
     """Create a runtime driver with a fresh engine for each runtime session."""
 
@@ -48,6 +49,14 @@ def create_paper_runtime_driver(
 
     if initial_cash < Decimal("0"):
         raise ValueError("initial_cash must be nonnegative")
+
+    if (
+        experiment_journal is not None
+        and environment.strip().upper() not in {"PAPER", "TEST"}
+    ):
+        raise ValueError(
+            "paper experiment journal requires an explicit PAPER or TEST runtime"
+        )
 
     if not callable(snapshot_source):
         raise TypeError("snapshot_source must be callable")
@@ -78,6 +87,7 @@ def create_paper_runtime_driver(
             checkpoint_sink=checkpoint_sink,
             cycle_sink=cycle_sink,
             inference_adapter=inference_adapter,
+            experiment_journal=experiment_journal,
         )
 
     return PaperRuntimeDriver(

@@ -50,6 +50,12 @@ class ScannerObservation:
     halted: bool
     asset_class: AssetClass = AssetClass.STOCK
     catalyst_status: CatalystStatus = CatalystStatus.UNKNOWN
+    catalyst_source: str | None = None
+    catalyst_published_at: datetime | None = None
+    catalyst_source_url: str | None = None
+    corroborating_sources: tuple[str, ...] = ()
+    catalyst_evidence_count: int = 0
+    catalyst_event_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,4 +81,22 @@ class ScannerDecision:
     catalyst_headline: str | None = None
     catalyst_status: CatalystStatus = CatalystStatus.UNKNOWN
     diagnostic_rule_values: tuple[tuple[str, str], ...] = ()
+    technical_qualifies_without_catalyst: bool = False
+    technical_passed_rules: tuple[str, ...] = ()
+    technical_failed_rules: tuple[str, ...] = ()
+    cohort_flags: tuple[str, ...] = ()
+    previous_close: Decimal | None = None
+    average_30_day_volume: Decimal | None = None
+    float_shares: Decimal | None = None
+    bid: Decimal | None = None
+    ask: Decimal | None = None
+    tradable: bool | None = None
+    halted: bool | None = None
+    catalyst_source: str | None = None
+    catalyst_published_at: datetime | None = None
+    catalyst_source_url: str | None = None
+    corroborating_sources: tuple[str, ...] = ()
+    catalyst_evidence_count: int = 0
+    catalyst_event_count: int = 0
+    scanner_rank: int | None = None
 

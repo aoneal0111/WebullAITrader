@@ -61,6 +61,7 @@ def create_desktop_scanner_infrastructure(
     clock: Clock | None = None,
     default_channels: Iterable[str] = (),
     maximum_events_per_cycle: int = 1000,
+    scanner_decision_sink: Callable[[Any], object] | None = None,
 ) -> DesktopScannerInfrastructure:
     """Assemble the live scanner infrastructure used by the desktop runtime."""
 
@@ -73,6 +74,7 @@ def create_desktop_scanner_infrastructure(
     pipeline = MomentumScannerPipeline(
         scanner_adapter,
         scanner_config,
+        decision_sink=scanner_decision_sink,
     )
 
     engine = RealtimeScannerEngine(

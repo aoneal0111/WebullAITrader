@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from collections.abc import Callable
+from dataclasses import replace
 
 from app.market_data.models import MarketEvent
 from app.momentum_scanner.models import ScannerDecision
@@ -31,10 +33,15 @@ class MomentumScannerPipeline:
         self,
         adapter: MarketEventScannerAdapter,
         config: MomentumScannerConfig = MomentumScannerConfig(),
+        *,
+        decision_sink: Callable[[ScannerDecision], object] | None = None,
     ) -> None:
         self.adapter = adapter
         self.config = config
         self._latest: dict[str, ScannerDecision] = {}
+        if decision_sink is not None and not callable(decision_sink):
+            raise TypeError("decision_sink must be callable or None")
+        self._decision_sink = decision_sink
 
     def consume(
         self,
@@ -49,7 +56,29 @@ class MomentumScannerPipeline:
             result.observation,
             self.config,
         )
+        ranked_all = sorted(
+            (
+                *(item for item in self._latest.values() if item.symbol != decision.symbol),
+                decision,
+            ),
+            key=lambda item: (
+                -item.score,
+                -item.metrics.relative_volume,
+                -item.metrics.percentage_change,
+                item.symbol,
+            ),
+        )
+        decision = replace(
+            decision,
+            scanner_rank=next(
+                index
+                for index, item in enumerate(ranked_all, 1)
+                if item.symbol == decision.symbol
+            ),
+        )
         self._latest[decision.symbol] = decision
+        if self._decision_sink is not None:
+            self._decision_sink(decision)
 
         return decision
 

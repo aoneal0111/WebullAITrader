@@ -25,6 +25,12 @@ class ReferenceRecord:
     catalyst_status: CatalystStatus = CatalystStatus.UNKNOWN
     as_of: datetime = datetime.min.replace(tzinfo=UTC)
     current_volume: Decimal | None = None
+    catalyst_source: str | None = None
+    catalyst_published_at: datetime | None = None
+    catalyst_source_url: str | None = None
+    corroborating_sources: tuple[str, ...] = ()
+    catalyst_evidence_count: int = 0
+    catalyst_event_count: int = 0
 
     def __post_init__(self) -> None:
         normalized_symbol = self.symbol.strip().upper()

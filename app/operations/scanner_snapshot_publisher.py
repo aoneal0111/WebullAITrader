@@ -47,6 +47,7 @@ class ScannerSnapshotPublisher:
         self._last_decisions: dict[str, ScannerDecision] = {}
         self._last_fingerprint: object | None = None
         self._last_changed = False
+        self._published_experiments: dict[str, tuple[object, ...]] = {}
         self._diagnostics = diagnostics
 
     @property
@@ -65,6 +66,7 @@ class ScannerSnapshotPublisher:
         decisions = {decision.symbol: decision for decision in snapshot.decisions}
 
         self._log_candidate_transitions(ranked, decisions)
+        self._publish_experiment_candidates(decisions, cycle=cycle, now=now)
 
         for symbol in sorted(self._published_symbols - current):
             self._emit(
@@ -132,6 +134,11 @@ class ScannerSnapshotPublisher:
                 ("scanner_failed_rules", ", ".join(candidate.failed_rules) or "--"),
                 ("scanner_freshness", "STALE" if stale else "LIVE"),
                 ("scanner_session", session),
+                (
+                    "technical_qualifies_without_catalyst",
+                    str(candidate.technical_qualifies_without_catalyst).lower(),
+                ),
+                ("experiment_cohorts", ", ".join(candidate.cohort_flags) or "--"),
             )
             self._emit(
                 now,
@@ -172,6 +179,41 @@ class ScannerSnapshotPublisher:
         }
         self._last_decisions = decisions
         return tuple(stale_symbols)
+
+    def _publish_experiment_candidates(
+        self,
+        decisions: dict[str, ScannerDecision],
+        *,
+        cycle: int,
+        now: datetime,
+    ) -> None:
+        for symbol, decision in sorted(decisions.items()):
+            if not decision.technical_qualifies_without_catalyst:
+                continue
+            fingerprint = (
+                decision.timestamp,
+                decision.qualified,
+                decision.catalyst_status,
+                decision.cohort_flags,
+                decision.failed_rules,
+            )
+            if self._published_experiments.get(symbol) == fingerprint:
+                continue
+            self._published_experiments[symbol] = fingerprint
+            outcome = "pending"
+            message = (
+                f"Experiment candidate {symbol}: normal_qualify="
+                f"{str(decision.qualified).lower()} technical_only_qualify=true "
+                f"catalyst={decision.catalyst_status.value} cohorts="
+                f"{','.join(decision.cohort_flags) or 'none'} outcome={outcome}."
+            )
+            self._sink(
+                PaperRuntimeEvent(
+                    sequence=self._sequence(), timestamp=now,
+                    event_type="EXPERIMENT_CANDIDATE", message=message,
+                    cycle=cycle, symbol=symbol, source=self._source,
+                )
+            )
 
     def _log_candidate_transitions(
         self,

@@ -531,6 +531,7 @@ class PaperOperationsEngine:
         cycle_sink: CycleSink | None = None,
         inference_adapter: RuntimeInferenceAdapter | None = None,
         session_lifecycle: PaperRuntimeSession | None = None,
+        experiment_journal: object | None = None,
     ) -> None:
         if not session_id.strip():
             raise ValueError("session ID is required")
@@ -545,6 +546,11 @@ class PaperOperationsEngine:
         self._checkpoint_sink = checkpoint_sink
         self._cycle_sink = cycle_sink
         self._inference_adapter = inference_adapter
+        if experiment_journal is not None and not callable(
+            getattr(experiment_journal, "record_coordination_result", None)
+        ):
+            raise TypeError("experiment_journal must record coordination results")
+        self._experiment_journal = experiment_journal
 
         if session_lifecycle is not None:
             if not isinstance(session_lifecycle, PaperRuntimeSession):
@@ -596,6 +602,7 @@ class PaperOperationsEngine:
         checkpoint_sink: CheckpointSink | None = None,
         cycle_sink: CycleSink | None = None,
         inference_adapter: RuntimeInferenceAdapter | None = None,
+        experiment_journal: object | None = None,
     ) -> "PaperOperationsEngine":
         _validate_recovery(state, session)
         engine = cls(
@@ -610,6 +617,7 @@ class PaperOperationsEngine:
             checkpoint_sink=checkpoint_sink,
             cycle_sink=cycle_sink,
             inference_adapter=inference_adapter,
+            experiment_journal=experiment_journal,
             session_lifecycle=PaperRuntimeSession(
                 session_id=state.session_id,
                 initial_cash=session.portfolio.initial_cash,
@@ -744,6 +752,10 @@ class PaperOperationsEngine:
                     strategy_decision=decision,
                     request=request,
                 )
+                if self._experiment_journal is not None:
+                    self._experiment_journal.record_coordination_result(
+                        session.last_coordination_result
+                    )
                 decisions.append(decision)
                 order = _project_runtime_order(
                     session.last_coordination_result,

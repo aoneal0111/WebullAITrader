@@ -45,6 +45,7 @@ class PaperRuntimeDriverFactory:
     interval_seconds: float = 1.0
     environment: str = "PAPER"
     active_model: str = "Promoted model"
+    experiment_journal: object | None = None
 
     def __call__(self) -> PaperRuntimeDriver:
         """Create a fresh composed paper-runtime driver."""
@@ -64,6 +65,11 @@ class PaperRuntimeDriverFactory:
             interval_seconds=self.interval_seconds,
             environment=self.environment,
             active_model=self.active_model,
+            **(
+                {}
+                if self.experiment_journal is None
+                else {"experiment_journal": self.experiment_journal}
+            ),
         )
 
 

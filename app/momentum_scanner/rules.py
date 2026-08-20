@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from app.momentum_scanner.models import (
     AssetClass,
+    CatalystStatus,
     CatalystType,
     ScannerDecision,
     ScannerMetrics,
@@ -121,6 +122,27 @@ def evaluate_candidate(
     )
 
     score = _score(observation, metrics)
+    technical_passed = tuple(rule for rule in passed if rule != "news_catalyst")
+    technical_failed = tuple(rule for rule in failed if rule != "news_catalyst")
+    technical_qualifies = not technical_failed
+    cohorts: list[str] = []
+    if not failed:
+        cohorts.append("A_STRICT_CATALYST")
+    if technical_qualifies:
+        cohorts.append("B_TECHNICAL_ONLY")
+        if (
+            observation.catalyst_status is CatalystStatus.FALSE
+            or observation.catalyst is CatalystType.NONE
+        ):
+            cohorts.append("C_NO_CATALYST")
+        if len(set(observation.corroborating_sources)) >= 2:
+            cohorts.append("D_CORROBORATED_CATALYST")
+        if (
+            observation.catalyst_status is CatalystStatus.TRUE
+            and observation.catalyst
+            in {CatalystType.EARNINGS, CatalystType.SEC_FILING}
+        ):
+            cohorts.append("E_STRONG_PRIMARY_CATALYST")
 
     return ScannerDecision(
         symbol=symbol,
@@ -156,6 +178,23 @@ def evaluate_candidate(
                 else format(metrics.spread_percent, "f"),
             ),
         ),
+        technical_qualifies_without_catalyst=technical_qualifies,
+        technical_passed_rules=technical_passed,
+        technical_failed_rules=technical_failed,
+        cohort_flags=tuple(cohorts),
+        previous_close=observation.previous_close,
+        average_30_day_volume=observation.average_30_day_volume,
+        float_shares=observation.float_shares,
+        bid=observation.bid,
+        ask=observation.ask,
+        tradable=observation.tradable,
+        halted=observation.halted,
+        catalyst_source=observation.catalyst_source,
+        catalyst_published_at=observation.catalyst_published_at,
+        catalyst_source_url=observation.catalyst_source_url,
+        corroborating_sources=observation.corroborating_sources,
+        catalyst_evidence_count=observation.catalyst_evidence_count,
+        catalyst_event_count=observation.catalyst_event_count,
     )
 
 

@@ -377,7 +377,19 @@ class WebullScannerReferenceProvider:
         shares_upper_bound = (
             market_cap / price if market_cap is not None else None
         )
-        catalyst, headline, catalyst_status = self._catalyst(normalized)
+        catalyst_result = self._catalyst_aggregator.aggregate_result(
+            normalized, self._clock()
+        )
+        selected = catalyst_result.selected
+        catalyst, headline, catalyst_status = selected.as_scanner_fields()
+        selected_event = next(
+            (
+                event
+                for event in catalyst_result.events
+                if event.identity == selected.event_identity
+            ),
+            None,
+        )
 
         return ReferenceRecord(
             symbol=normalized,
@@ -396,6 +408,14 @@ class WebullScannerReferenceProvider:
             catalyst_status=catalyst_status,
             as_of=self._clock(),
             current_volume=_positive(row, "volume"),
+            catalyst_source=selected.source,
+            catalyst_published_at=selected.published_at,
+            catalyst_source_url=selected.source_url,
+            corroborating_sources=(
+                selected_event.sources if selected_event is not None else ()
+            ),
+            catalyst_evidence_count=len(catalyst_result.evidence),
+            catalyst_event_count=len(catalyst_result.events),
         )
 
     def _average_30_day_volume(

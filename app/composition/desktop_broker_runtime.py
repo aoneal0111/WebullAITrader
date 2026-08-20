@@ -22,6 +22,7 @@ from app.live_execution.broker_factory import (
     build_webull_market_data_stream,
 )
 from app.operations.runtime import RuntimeEventSink
+from app.paper_trade_experiment import PaperTradeExperimentJournal
 from app.reference_data import ReferenceDataCache, ReferenceDataService
 from app.scanner_adapter import (
     MarketEventScannerAdapter,
@@ -128,6 +129,30 @@ def create_configured_desktop_broker_driver(
 
     scanner_coordinator = None
     if broker_runtime.market_data is not None:
+        experiment_decision_sink = None
+        experiment_execution_environment = trading_configuration(
+            configuration
+        ).environment.value
+        if (
+            experiment_execution_environment in {"PAPER", "TEST"}
+            and not configuration.live_trading_enabled
+        ):
+            experiment_path = configuration.execution_database_path.with_name(
+                "paper_trade_experiment.sqlite3"
+            )
+            experiment_holder: list[PaperTradeExperimentJournal] = []
+
+            def record_experiment_decision(decision) -> object:
+                if not experiment_holder:
+                    experiment_holder.append(
+                        PaperTradeExperimentJournal(experiment_path)
+                    )
+                return experiment_holder[0].record_scanner_decision(
+                    decision,
+                    execution_environment=experiment_execution_environment,
+                )
+
+            experiment_decision_sink = record_experiment_decision
         universe_provider = WebullScannerUniverseProvider(
             data_client,
             clock=clock,
@@ -161,6 +186,12 @@ def create_configured_desktop_broker_driver(
                     tradable=record.tradable,
                     updated_at=record.as_of,
                     current_volume=record.current_volume,
+                    catalyst_source=record.catalyst_source,
+                    catalyst_published_at=record.catalyst_published_at,
+                    catalyst_source_url=record.catalyst_source_url,
+                    corroborating_sources=record.corroborating_sources,
+                    catalyst_evidence_count=record.catalyst_evidence_count,
+                    catalyst_event_count=record.catalyst_event_count,
                 )
             )
 
@@ -204,6 +235,9 @@ def create_configured_desktop_broker_driver(
             # Bound one production drain so ranking snapshots and lifecycle
             # telemetry are published promptly on an active multi-symbol feed.
             maximum_events_per_cycle=100,
+            scanner_decision_sink=(
+                experiment_decision_sink
+            ),
         )
         scanner_coordinator = scanner_infrastructure.coordinator
         binder = getattr(market_event_observer, "bind_scanner_adapter", None)

@@ -26,6 +26,7 @@ def create_paper_runtime_driver_factory(
     interval_seconds: float = 1.0,
     environment: str = "PAPER",
     active_model: str = "Promoted model",
+    experiment_journal: object | None = None,
 ) -> PaperRuntimeDriverFactory:
     """Create a PaperRuntimeDriverFactory from validated dependencies."""
 
@@ -49,6 +50,11 @@ def create_paper_runtime_driver_factory(
         interval_seconds=interval_seconds,
         environment=environment,
         active_model=active_model,
+        **(
+            {}
+            if experiment_journal is None
+            else {"experiment_journal": experiment_journal}
+        ),
     )
 
 

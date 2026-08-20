@@ -109,6 +109,7 @@ def create_desktop_runtime_bootstrap(
     interval_seconds: float = 1.0,
     environment: str = "PAPER",
     active_model: str = "Promoted model",
+    experiment_journal: object | None = None,
 ) -> DesktopRuntimeBootstrap:
     """
     Assemble a configured desktop paper runtime from application authorities.
@@ -116,6 +117,14 @@ def create_desktop_runtime_bootstrap(
     This composition function wires existing services only. It does not invent
     quantities, identifiers, market data, account state, or policy decisions.
     """
+
+    if (
+        experiment_journal is not None
+        and environment.strip().upper() not in {"PAPER", "TEST"}
+    ):
+        raise ValueError(
+            "paper experiment journal requires an explicit PAPER or TEST runtime"
+        )
 
     scanner_infrastructure = create_desktop_scanner_infrastructure(
         market_data_client=market_data_client,
@@ -127,6 +136,19 @@ def create_desktop_runtime_bootstrap(
         clock=clock,
         default_channels=default_channels,
         maximum_events_per_cycle=maximum_events_per_cycle,
+        **(
+            {}
+            if experiment_journal is None
+            else {
+                "scanner_decision_sink": lambda decision: (
+                    experiment_journal.record_scanner_decision(
+                        decision,
+                        model_version=active_model,
+                        execution_environment=environment,
+                    )
+                )
+            }
+        ),
     )
 
     runtime_dependencies = create_desktop_paper_runtime_dependencies(
@@ -217,6 +239,11 @@ def create_desktop_runtime_bootstrap(
         interval_seconds=interval_seconds,
         environment=environment,
         active_model=active_model,
+        **(
+            {}
+            if experiment_journal is None
+            else {"experiment_journal": experiment_journal}
+        ),
     )
 
     return DesktopRuntimeBootstrap(
