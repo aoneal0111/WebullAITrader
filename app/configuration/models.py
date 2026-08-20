@@ -46,6 +46,17 @@ class YahooFinanceNewsConfiguration:
 
 
 @dataclass(frozen=True, slots=True)
+class CNBCNewsConfiguration:
+    freshness_minutes: int = 1_440
+    timeout_seconds: float = 5.0
+    refresh_ttl_seconds: float = 3_600.0
+    failure_cooldown_seconds: float = 60.0
+    maximum_snapshot_age_seconds: float = 7_200.0
+    max_items: int = 512
+    max_payload_bytes: int = 1_000_000
+
+
+@dataclass(frozen=True, slots=True)
 class OperationalConfiguration:
     environment: TradingEnvironment
 
@@ -95,3 +106,4 @@ class OperationalConfiguration:
     )
     sec_edgar: SECEdgarConfiguration | None = None
     yahoo_finance_news: YahooFinanceNewsConfiguration | None = None
+    cnbc_news: CNBCNewsConfiguration | None = None

@@ -1,4 +1,22 @@
 from app.catalysts.aggregator import CatalystAggregator
+from app.catalysts.cnbc import (
+    CNBCCatalystProvider,
+    CNBCFeed,
+    CNBCNewsPolicy,
+    CNBCNewsTransport,
+    CNBCRSSFeedTransport,
+    CNBCUnavailable,
+    DEFAULT_CNBC_FEEDS,
+    MalformedCNBCResponse,
+    classify_cnbc_headline,
+    log_cnbc_provider_state,
+    parse_cnbc_rss,
+)
+from app.catalysts.company_identity import (
+    CompanyIdentity,
+    CompanyIdentityRegistry,
+    CompanyIdentityResolver,
+)
 from app.catalysts.models import (
     CatalystAggregationResult,
     CatalystEvent,
@@ -29,6 +47,17 @@ from app.catalysts.yahoo_finance import (
 )
 
 __all__ = [
+    "CNBCCatalystProvider",
+    "CNBCFeed",
+    "CNBCNewsPolicy",
+    "CNBCNewsTransport",
+    "CNBCRSSFeedTransport",
+    "CNBCUnavailable",
+    "CompanyIdentity",
+    "CompanyIdentityRegistry",
+    "CompanyIdentityResolver",
+    "DEFAULT_CNBC_FEEDS",
+    "MalformedCNBCResponse",
     "DEFAULT_CATALYST_PRIORITY_POLICY",
     "CatalystAggregationResult",
     "CatalystAggregator",
@@ -46,9 +75,12 @@ __all__ = [
     "YahooFinanceUnavailable",
     "MalformedYahooFinanceResponse",
     "build_catalyst_providers",
+    "classify_cnbc_headline",
     "classify_yahoo_headline",
     "log_yahoo_finance_provider_state",
     "SECEdgarCatalystProvider",
     "SECEdgarPolicy",
     "log_sec_edgar_provider_state",
+    "log_cnbc_provider_state",
+    "parse_cnbc_rss",
 ]

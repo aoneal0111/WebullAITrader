@@ -10,21 +10,23 @@ import re
 from threading import Lock
 import time
 from typing import Protocol
-import unicodedata
 
 import httpx
 
 from app.catalysts.canonical import canonical_headline_event_id
+from app.catalysts.company_identity import (
+    CompanyIdentity,
+    company_identity_from_names,
+    headline_names_subject,
+    normalize_symbol,
+)
+from app.catalysts.headline_classification import classify_catalyst_headline
 from app.catalysts.models import CatalystEvidence
 from app.catalysts.policy import DEFAULT_CATALYST_PRIORITY_POLICY
 from app.momentum_scanner.models import CatalystStatus, CatalystType
 
 
 _SEARCH_URL = "https://query1.finance.yahoo.com/v1/finance/search"
-_SYMBOL = re.compile(r"^[A-Z0-9][A-Z0-9-]{0,19}$")
-_HEADLINE_SYMBOL_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])[A-Za-z0-9]+(?:[./-][A-Za-z0-9]+)*(?![A-Za-z0-9])"
-)
 _SEC_ACCESSION = re.compile(
     r"(?<!\d)(\d{10})-?(\d{2})-?(\d{6})(?!\d)"
 )
@@ -115,7 +117,7 @@ class YahooFinanceSearchTransport:
 @dataclass(frozen=True, slots=True)
 class _CacheEntry:
     payload: object
-    identity: _CompanyIdentity
+    identity: CompanyIdentity
     expires_at: float
 
 
@@ -126,12 +128,6 @@ class _Headline:
     source_url: str
     provider_event_id: str | None
     related_tickers: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _CompanyIdentity:
-    symbol: str
-    aliases: tuple[str, ...]
 
 
 class MalformedYahooFinanceResponse(ValueError):
@@ -172,7 +168,7 @@ class YahooFinanceCatalystProvider:
     def get_evidence(
         self, symbol: str, as_of: datetime | None = None
     ) -> CatalystEvidence:
-        normalized = _normalize_symbol(symbol)
+        normalized = normalize_symbol(symbol)
         if normalized is None:
             return self._negative(str(symbol).strip().upper() or "UNKNOWN", CatalystStatus.FALSE)
         now = _utc_as_of(as_of)
@@ -199,7 +195,7 @@ class YahooFinanceCatalystProvider:
         )
         positives: list[tuple[CatalystType, _Headline]] = []
         for item in fresh:
-            if not _headline_names_subject(item.title, identity):
+            if not headline_names_subject(item.title, identity):
                 continue
             catalyst_type = classify_yahoo_headline(item.title)
             if catalyst_type is not None:
@@ -237,7 +233,7 @@ class YahooFinanceCatalystProvider:
             ),
         )
 
-    def _payload(self, symbol: str) -> tuple[object, _CompanyIdentity]:
+    def _payload(self, symbol: str) -> tuple[object, CompanyIdentity]:
         with self._lock:
             now = self._monotonic()
             cached = self._cache.get(symbol)
@@ -290,80 +286,8 @@ class YahooFinanceCatalystProvider:
         )
 
 
-_GENERIC_OR_EDITORIAL = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"\bmarket (?:recap|summary|update|wrap)\b",
-        r"\b(?:stocks?|tickers?) to watch\b",
-        r"\bwhy .* stock (?:rose|fell|jumped|dropped|is (?:up|down))\b",
-        r"\btechnical analysis\b|\bchart analysis\b",
-        r"\b(?:top|best) \d+ .*stocks?\b",
-        r"\bshould you (?:buy|sell|invest)\b",
-        r"\bopinion\b|\bwhat investors should know\b",
-        r"\bearnings (?:preview|call|call transcript|date|scheduled)\b|"
-        r"\b(?:will|expected to) report earnings\b",
-        r"\b(?:rumou?r|reportedly|could|may|might)\b.*\b(?:acquire|acquisition|merge|merger|buyout)\b",
-    )
-)
-
-_CLASSIFIERS: tuple[tuple[CatalystType, tuple[re.Pattern[str], ...]], ...] = (
-    (CatalystType.EARNINGS, tuple(map(re.compile, (
-        r"\bearnings\b.*\b(?:reports?|results?|beats?|misses?)\b",
-        r"\b(?:reports?|announces?|posts?)\b.*\bearnings\b",
-        r"\b(?:reports?|announces?|posts?)\b.*\b(?:q[1-4]|quarter(?:ly)?|annual|full[- ]year) results?\b",
-        r"\b(?:q[1-4]|quarter(?:ly)?|annual|full[- ]year) results?\b",
-    ), (re.IGNORECASE,) * 4))),
-    (CatalystType.GUIDANCE, tuple(re.compile(p, re.IGNORECASE) for p in (
-        r"\b(?:raises?|cuts?|lowers?|reaffirms?|issues?|updates?)\b.*\b(?:guidance|outlook)\b",
-        r"\b(?:guidance|outlook)\b.*\b(?:raised|cut|lowered|reaffirmed|issued|updated)\b",
-    ))),
-    (CatalystType.FDA, tuple(re.compile(p, re.IGNORECASE) for p in (
-        r"\bFDA\b.*\b(?:approves?|grants? approval|clears?|authorizes?)\b",
-        r"\b(?:receives?|wins?|granted)\b.*\bFDA\b.*\b(?:approval|clearance|authorization)\b",
-    ))),
-    (CatalystType.CLINICAL_TRIAL, tuple(re.compile(p, re.IGNORECASE) for p in (
-        r"\b(?:clinical|phase [123]) (?:trial|study)\b.*\b(?:results?|data|meets?|achieves?|endpoint|enrollment)\b",
-        r"\b(?:results?|data|meets?|achieves?)\b.*\b(?:clinical|phase [123]) (?:trial|study)\b",
-    ))),
-    (CatalystType.ACQUISITION, tuple(re.compile(p, re.IGNORECASE) for p in (
-        r"\bto acquire\b|\bacquires?\b|\bto be acquired\b",
-        r"\b(?:announces?|agrees? to|completes?|closes?)\b.*\b(?:acquisition|merger|buyout)\b",
-        r"\bmerges? with\b",
-    ))),
-    (CatalystType.CONTRACT, tuple(re.compile(p, re.IGNORECASE) for p in (
-        r"\b(?:wins?|awarded|receives?|secures?)\b.*\b(?:contract|purchase order|order|award)\b",
-        r"\b(?:contract|purchase order)\b.*\b(?:awarded|signed|secured|received)\b",
-    ))),
-    (CatalystType.PARTNERSHIP, (re.compile(
-        r"\b(?:announces?|enters?|forms?|signs?)\b.*\b(?:partnership|collaboration|alliance)\b|"
-        r"\b(?:partners?|collaborates?) with\b",
-        re.IGNORECASE,
-    ),)),
-    (CatalystType.SEC_FILING, (re.compile(
-        r"\bSEC filing\b|\bfiles?\b.*\b(?:8-K|10-Q|10-K|S-1|S-3|13D|13G)\b",
-        re.IGNORECASE,
-    ),)),
-)
-
-_STRONG_OTHER = tuple(re.compile(p, re.IGNORECASE) for p in (
-    r"\b(?:declares?|increases?|raises?)\b.*\bdividend\b",
-    r"\b(?:patent granted|granted (?:a )?patent)\b",
-    r"\b(?:launches?|receives?)\b.*\b(?:product|certification)\b",
-))
-
-
 def classify_yahoo_headline(headline: str) -> CatalystType | None:
-    """Return a strong conservative classification, or ``None`` to reject."""
-
-    normalized = " ".join(str(headline).split())
-    if not normalized or any(pattern.search(normalized) for pattern in _GENERIC_OR_EDITORIAL):
-        return None
-    for catalyst_type, patterns in _CLASSIFIERS:
-        if any(pattern.search(normalized) for pattern in patterns):
-            return catalyst_type
-    if any(pattern.search(normalized) for pattern in _STRONG_OTHER):
-        return CatalystType.OTHER
-    return None
+    return classify_catalyst_headline(headline)
 
 
 def _parse_headlines(payload: object) -> tuple[_Headline, ...]:
@@ -399,28 +323,14 @@ def _parse_headlines(payload: object) -> tuple[_Headline, ...]:
         related = tuple(
             normalized
             for value in related_raw
-            if (normalized := _normalize_symbol(value)) is not None
+            if (normalized := normalize_symbol(value)) is not None
         )
         event_id = str(row.get("uuid", "")).strip() or None
         parsed.append(_Headline(title, published_at, source_url, event_id, related))
     return tuple(parsed)
 
 
-_COMPANY_SUFFIXES = {
-    "co",
-    "company",
-    "corp",
-    "corporation",
-    "inc",
-    "incorporated",
-    "limited",
-    "llc",
-    "ltd",
-    "plc",
-}
-
-
-def _parse_company_identity(payload: object, symbol: str) -> _CompanyIdentity:
+def _parse_company_identity(payload: object, symbol: str) -> CompanyIdentity:
     """Resolve headline aliases from quote-search metadata, conservatively.
 
     Missing or malformed identity metadata yields symbol-only matching. This lets
@@ -428,65 +338,25 @@ def _parse_company_identity(payload: object, symbol: str) -> _CompanyIdentity:
     ``relatedTickers`` association to stand in for direct subject evidence.
     """
 
-    aliases: set[str] = set()
     if not isinstance(payload, Mapping):
-        return _CompanyIdentity(symbol, ())
+        return CompanyIdentity(symbol)
     quotes = payload.get("quotes")
     if not isinstance(quotes, Sequence) or isinstance(
         quotes, (str, bytes, bytearray)
     ):
-        return _CompanyIdentity(symbol, ())
+        return CompanyIdentity(symbol)
     for quote in quotes:
         if not isinstance(quote, Mapping):
             continue
-        if _normalize_symbol(quote.get("symbol")) != symbol:
+        if normalize_symbol(quote.get("symbol")) != symbol:
             continue
+        names: list[str] = []
         for field in ("shortname", "longname"):
             value = quote.get(field)
-            if not isinstance(value, str):
-                continue
-            normalized_name = _normalize_company_text(value)
-            if not normalized_name:
-                continue
-            aliases.add(normalized_name)
-            words = normalized_name.split()
-            while words and words[-1] in _COMPANY_SUFFIXES:
-                words.pop()
-            shortened = " ".join(words)
-            if len(shortened) >= 4:
-                aliases.add(shortened)
-        break
-    return _CompanyIdentity(
-        symbol,
-        tuple(
-            sorted(
-                aliases,
-                key=lambda value: (-len(value.split()), -len(value), value),
-            )
-        ),
-    )
-
-
-def _headline_names_subject(headline: str, identity: _CompanyIdentity) -> bool:
-    for token in _HEADLINE_SYMBOL_TOKEN.findall(headline):
-        if _normalize_symbol(token) == identity.symbol:
-            return True
-    normalized_headline = _normalize_company_text(headline)
-    padded_headline = f" {normalized_headline} "
-    return any(f" {alias} " in padded_headline for alias in identity.aliases)
-
-
-def _normalize_company_text(value: str) -> str:
-    ascii_value = unicodedata.normalize("NFKD", value).encode(
-        "ascii", "ignore"
-    ).decode("ascii")
-    ascii_value = ascii_value.casefold().replace("&", " and ")
-    return " ".join(re.sub(r"[^a-z0-9]+", " ", ascii_value).split())
-
-
-def _normalize_symbol(value: object) -> str | None:
-    normalized = str(value).strip().upper().replace(".", "-").replace("/", "-")
-    return normalized if _SYMBOL.fullmatch(normalized) else None
+            if isinstance(value, str):
+                names.append(value)
+        return company_identity_from_names(symbol, names)
+    return CompanyIdentity(symbol)
 
 
 def _canonical_event_id(

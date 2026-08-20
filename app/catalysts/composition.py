@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from app.catalysts.provider import CatalystProvider
+from app.catalysts.cnbc import (
+    CNBCCatalystProvider,
+    CNBCNewsPolicy,
+    log_cnbc_provider_state,
+)
 from app.catalysts.sec_edgar import (
     SECEdgarCatalystProvider,
     SECEdgarPolicy,
@@ -44,6 +49,23 @@ def build_catalyst_providers(
                     freshness_minutes=yahoo.freshness_minutes,
                     timeout_seconds=yahoo.timeout_seconds,
                     cache_ttl_seconds=yahoo.cache_ttl_seconds,
+                )
+            )
+        )
+    if configuration.cnbc_news is None:
+        log_cnbc_provider_state(enabled=False)
+    else:
+        cnbc = configuration.cnbc_news
+        providers.append(
+            CNBCCatalystProvider(
+                CNBCNewsPolicy(
+                    freshness_minutes=cnbc.freshness_minutes,
+                    timeout_seconds=cnbc.timeout_seconds,
+                    refresh_ttl_seconds=cnbc.refresh_ttl_seconds,
+                    failure_cooldown_seconds=cnbc.failure_cooldown_seconds,
+                    maximum_snapshot_age_seconds=cnbc.maximum_snapshot_age_seconds,
+                    max_items=cnbc.max_items,
+                    max_payload_bytes=cnbc.max_payload_bytes,
                 )
             )
         )
