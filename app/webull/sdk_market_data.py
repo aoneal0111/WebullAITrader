@@ -11,6 +11,7 @@ from threading import RLock
 from typing import Any
 from urllib.parse import urlparse
 
+from app.catalysts import CatalystAggregator, WebullCatalystProvider
 from app.live_scanner.session import ScannerSession, scanner_session
 from app.momentum_scanner import AssetClass, CatalystStatus, CatalystType
 from app.reference_data.models import ReferenceRecord
@@ -316,6 +317,7 @@ class WebullScannerReferenceProvider:
         identity_scope: str = "fp_legacy",
         support_cache: EnvironmentSupportCache | None = None,
         event_sink: Callable[[Mapping[str, object]], None] | None = None,
+        catalyst_aggregator: CatalystAggregator | None = None,
     ) -> None:
         self._client = client
         self._universe = universe_provider
@@ -330,6 +332,14 @@ class WebullScannerReferenceProvider:
             )
         )
         self._event_sink = event_sink
+        self._catalyst_aggregator = (
+            catalyst_aggregator
+            if catalyst_aggregator is not None
+            else CatalystAggregator(
+                (WebullCatalystProvider(client),),
+                clock=clock,
+            )
+        )
 
     def get_reference_data(
         self,
@@ -503,52 +513,10 @@ class WebullScannerReferenceProvider:
         self,
         symbol: str,
     ) -> tuple[CatalystType, str | None, CatalystStatus]:
-        fundamentals = getattr(self._client.get(), "fundamentals")
-        now = self._clock()
-        unrecognized_evidence = False
-        try:
-            earnings, earnings_schema_supported = _catalyst_response_rows(
-                fundamentals.get_earnings_calendar(symbol, "US_STOCK"),
-                containers=("data", "items"),
-            )
-            recent = _recent_row(earnings, now, days=2)
-            if recent is not None:
-                return (
-                    CatalystType.EARNINGS,
-                    _headline(recent, "Earnings"),
-                    CatalystStatus.TRUE,
-                )
-            unrecognized_evidence = (
-                not earnings_schema_supported
-                or any(_row_date(row) is None for row in earnings)
-            )
-
-            filings, filings_schema_supported = _catalyst_response_rows(
-                fundamentals.get_sec_filings(symbol, "US_STOCK"),
-                containers=("data", "items", "filings"),
-            )
-            recent = _recent_row(filings, now, days=3)
-            if recent is not None:
-                return (
-                    CatalystType.SEC_FILING,
-                    _headline(recent, "SEC filing"),
-                    CatalystStatus.TRUE,
-                )
-            unrecognized_evidence = unrecognized_evidence or (
-                not filings_schema_supported
-                or any(_row_date(row) is None for row in filings)
-            )
-        except Exception:
-            return CatalystType.NONE, None, CatalystStatus.UNAVAILABLE
-        return (
-            CatalystType.NONE,
-            None,
-            (
-                CatalystStatus.UNKNOWN
-                if unrecognized_evidence
-                else CatalystStatus.FALSE
-            ),
-        )
+        return self._catalyst_aggregator.get_evidence(
+            symbol,
+            self._clock(),
+        ).as_scanner_fields()
 
 
 def _response_rows(response: object) -> tuple[Mapping[str, object], ...]:
