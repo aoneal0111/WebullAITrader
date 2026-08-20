@@ -17,12 +17,23 @@ The provider is disabled by default. Enable it explicitly with
 window, a five-second request timeout, a five-minute per-symbol LRU cache, a
 512-symbol bound, and a one-minute provider outage cooldown.
 
-Only fresh headlines carrying a direct Yahoo `relatedTickers` association pass
-ticker matching. A conservative gate rejects market recaps, price-move recaps,
-technical analysis, listicles, opinion pieces, previews, rumors, and vague
-headlines. Accepted headlines are mapped to existing catalyst types; strong
-specific events outside those mappings use `OTHER`. Malformed schemas produce
-`UNKNOWN`, while HTTP/network/provider failures produce `UNAVAILABLE`.
+Yahoo quote-search metadata (`symbol`, `shortname`, and `longname`) from that same
+JSON response resolves company identity for headline matching. It is cached with
+the news response and is never used for prices, bid/ask, volume, bars, or
+execution calculations; Webull remains authoritative for all trading market
+data. Missing or malformed identity metadata degrades to explicit ticker-only
+matching.
+
+Only fresh headlines that both carry the requested symbol in `relatedTickers`
+and explicitly name the symbol or a normalized company identity alias can pass.
+Thus a related but unnamed supplier, customer, or competitor does not qualify.
+Multi-company headlines may qualify each company that is explicitly named. This
+direct-subject rule is additive to the conservative gate that rejects market
+recaps, price-move recaps, technical analysis, listicles, opinion pieces,
+previews, rumors, and vague headlines. Accepted headlines are mapped to existing
+catalyst types; strong specific events outside those mappings use `OTHER`.
+Malformed news schemas produce `UNKNOWN`, while HTTP/network/provider failures
+produce `UNAVAILABLE`.
 
 Canonical event IDs use an SEC accession when one is present in a filing URL or
 headline. Otherwise they use a shared normalized symbol, catalyst type,

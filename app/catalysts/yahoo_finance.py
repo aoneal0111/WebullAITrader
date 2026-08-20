@@ -10,6 +10,7 @@ import re
 from threading import Lock
 import time
 from typing import Protocol
+import unicodedata
 
 import httpx
 
@@ -21,6 +22,9 @@ from app.momentum_scanner.models import CatalystStatus, CatalystType
 
 _SEARCH_URL = "https://query1.finance.yahoo.com/v1/finance/search"
 _SYMBOL = re.compile(r"^[A-Z0-9][A-Z0-9-]{0,19}$")
+_HEADLINE_SYMBOL_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])[A-Za-z0-9]+(?:[./-][A-Za-z0-9]+)*(?![A-Za-z0-9])"
+)
 _SEC_ACCESSION = re.compile(
     r"(?<!\d)(\d{10})-?(\d{2})-?(\d{6})(?!\d)"
 )
@@ -88,7 +92,9 @@ class YahooFinanceSearchTransport:
             _SEARCH_URL,
             params={
                 "q": symbol,
-                "quotesCount": 0,
+                # Quote search metadata is used only for company identity aliases.
+                # No quote, price, volume, or market-data field is consumed.
+                "quotesCount": 5,
                 "newsCount": self._news_count,
                 "enableFuzzyQuery": "false",
                 "region": "US",
@@ -109,6 +115,7 @@ class YahooFinanceSearchTransport:
 @dataclass(frozen=True, slots=True)
 class _CacheEntry:
     payload: object
+    identity: _CompanyIdentity
     expires_at: float
 
 
@@ -119,6 +126,12 @@ class _Headline:
     source_url: str
     provider_event_id: str | None
     related_tickers: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _CompanyIdentity:
+    symbol: str
+    aliases: tuple[str, ...]
 
 
 class MalformedYahooFinanceResponse(ValueError):
@@ -164,7 +177,7 @@ class YahooFinanceCatalystProvider:
             return self._negative(str(symbol).strip().upper() or "UNKNOWN", CatalystStatus.FALSE)
         now = _utc_as_of(as_of)
         try:
-            payload = self._payload(normalized)
+            payload, identity = self._payload(normalized)
             headlines = _parse_headlines(payload)
         except MalformedYahooFinanceResponse:
             return self._negative(normalized, CatalystStatus.UNKNOWN)
@@ -186,6 +199,8 @@ class YahooFinanceCatalystProvider:
         )
         positives: list[tuple[CatalystType, _Headline]] = []
         for item in fresh:
+            if not _headline_names_subject(item.title, identity):
+                continue
             catalyst_type = classify_yahoo_headline(item.title)
             if catalyst_type is not None:
                 positives.append((catalyst_type, item))
@@ -222,14 +237,14 @@ class YahooFinanceCatalystProvider:
             ),
         )
 
-    def _payload(self, symbol: str) -> object:
+    def _payload(self, symbol: str) -> tuple[object, _CompanyIdentity]:
         with self._lock:
             now = self._monotonic()
             cached = self._cache.get(symbol)
             if cached is not None and cached.expires_at > now:
                 self._cache.move_to_end(symbol)
                 _log_cache(symbol, hit=True)
-                return cached.payload
+                return cached.payload, cached.identity
             if cached is not None:
                 del self._cache[symbol]
             _log_cache(symbol, hit=False)
@@ -255,13 +270,16 @@ class YahooFinanceCatalystProvider:
             _LOGGER.info(
                 "yahoo_finance_event event=request_success symbol=%s", symbol
             )
+            identity = _parse_company_identity(payload, symbol)
             self._cache[symbol] = _CacheEntry(
-                payload, now + self._policy.cache_ttl_seconds
+                payload,
+                identity,
+                now + self._policy.cache_ttl_seconds,
             )
             self._cache.move_to_end(symbol)
             while len(self._cache) > self._policy.max_cache_entries:
                 self._cache.popitem(last=False)
-            return payload
+            return payload, identity
 
     def _negative(self, symbol: str, status: CatalystStatus) -> CatalystEvidence:
         return CatalystEvidence(
@@ -386,6 +404,84 @@ def _parse_headlines(payload: object) -> tuple[_Headline, ...]:
         event_id = str(row.get("uuid", "")).strip() or None
         parsed.append(_Headline(title, published_at, source_url, event_id, related))
     return tuple(parsed)
+
+
+_COMPANY_SUFFIXES = {
+    "co",
+    "company",
+    "corp",
+    "corporation",
+    "inc",
+    "incorporated",
+    "limited",
+    "llc",
+    "ltd",
+    "plc",
+}
+
+
+def _parse_company_identity(payload: object, symbol: str) -> _CompanyIdentity:
+    """Resolve headline aliases from quote-search metadata, conservatively.
+
+    Missing or malformed identity metadata yields symbol-only matching. This lets
+    an explicit ticker headline remain eligible without allowing an unrelated
+    ``relatedTickers`` association to stand in for direct subject evidence.
+    """
+
+    aliases: set[str] = set()
+    if not isinstance(payload, Mapping):
+        return _CompanyIdentity(symbol, ())
+    quotes = payload.get("quotes")
+    if not isinstance(quotes, Sequence) or isinstance(
+        quotes, (str, bytes, bytearray)
+    ):
+        return _CompanyIdentity(symbol, ())
+    for quote in quotes:
+        if not isinstance(quote, Mapping):
+            continue
+        if _normalize_symbol(quote.get("symbol")) != symbol:
+            continue
+        for field in ("shortname", "longname"):
+            value = quote.get(field)
+            if not isinstance(value, str):
+                continue
+            normalized_name = _normalize_company_text(value)
+            if not normalized_name:
+                continue
+            aliases.add(normalized_name)
+            words = normalized_name.split()
+            while words and words[-1] in _COMPANY_SUFFIXES:
+                words.pop()
+            shortened = " ".join(words)
+            if len(shortened) >= 4:
+                aliases.add(shortened)
+        break
+    return _CompanyIdentity(
+        symbol,
+        tuple(
+            sorted(
+                aliases,
+                key=lambda value: (-len(value.split()), -len(value), value),
+            )
+        ),
+    )
+
+
+def _headline_names_subject(headline: str, identity: _CompanyIdentity) -> bool:
+    for token in _HEADLINE_SYMBOL_TOKEN.findall(headline):
+        if _normalize_symbol(token) == identity.symbol:
+            return True
+    normalized_headline = _normalize_company_text(headline)
+    padded_headline = f" {normalized_headline} "
+    return any(f" {alias} " in padded_headline for alias in identity.aliases)
+
+
+def _normalize_company_text(value: str) -> str:
+    ascii_value = unicodedata.normalize("NFKD", value).encode(
+        "ascii", "ignore"
+    ).decode("ascii")
+    ascii_value = ascii_value.casefold().replace("&", " and ")
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", ascii_value).split())
 
 
 def _normalize_symbol(value: object) -> str | None:

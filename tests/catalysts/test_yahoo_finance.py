@@ -61,8 +61,23 @@ def news_item(
     }
 
 
-def payload(*items: dict[str, object]) -> dict[str, object]:
-    return {"news": list(items)}
+def quote_identity(
+    symbol: str = "AUTO",
+    *,
+    shortname: object = "Auto Corp",
+    longname: object = "Auto Corporation",
+) -> dict[str, object]:
+    return {"symbol": symbol, "shortname": shortname, "longname": longname}
+
+
+def payload(
+    *items: dict[str, object],
+    quotes: object | None = None,
+) -> dict[str, object]:
+    return {
+        "quotes": [quote_identity()] if quotes is None else quotes,
+        "news": list(items),
+    }
 
 
 def provider_for(
@@ -177,13 +192,148 @@ def test_unrelated_symbol_is_rejected_even_with_strong_headline() -> None:
     assert provider.get_evidence("AUTO", NOW).status is CatalystStatus.FALSE
 
 
+def test_live_smoke_regression_related_aapl_is_not_qualcomm_subject() -> None:
+    provider, _ = provider_for(
+        payload(
+            news_item(
+                "Qualcomm Q3 Results Put Auto Growth and Handset Weakness in Focus",
+                tickers=("QCOM", "AAPL"),
+            ),
+            quotes=[
+                quote_identity("AAPL", shortname="Apple Inc.", longname="Apple Inc.")
+            ],
+        )
+    )
+
+    result = provider.get_evidence("AAPL", NOW)
+
+    assert result.as_scanner_fields() == (
+        CatalystType.NONE,
+        None,
+        CatalystStatus.FALSE,
+    )
+
+
+@pytest.mark.parametrize(
+    "headline",
+    (
+        "Qualcomm supplier reports quarterly results as handset demand softens",
+        "Microsoft reports quarterly results as cloud demand rises",
+        "Best Buy reports quarterly results as device sales rise",
+    ),
+    ids=("supplier", "competitor", "customer"),
+)
+def test_related_but_indirect_company_article_is_rejected(headline: str) -> None:
+    provider, _ = provider_for(
+        payload(
+            news_item(headline, tickers=("AAPL", "OTHER")),
+            quotes=[
+                quote_identity("AAPL", shortname="Apple Inc.", longname="Apple Inc.")
+            ],
+        )
+    )
+
+    assert provider.get_evidence("AAPL", NOW).status is CatalystStatus.FALSE
+
+
+@pytest.mark.parametrize(
+    "headline",
+    (
+        "TSMC Raises Guidance as AI Demand Surges",
+        "5 Semiconductor Stocks to Watch After Nvidia Earnings",
+    ),
+)
+def test_related_unnamed_company_is_rejected(headline: str) -> None:
+    provider, _ = provider_for(
+        payload(
+            news_item(headline, tickers=("AAPL", "TSM", "NVDA")),
+            quotes=[
+                quote_identity("AAPL", shortname="Apple Inc.", longname="Apple Inc.")
+            ],
+        )
+    )
+
+    assert provider.get_evidence("AAPL", NOW).status is CatalystStatus.FALSE
+
+
+def test_explicit_ticker_is_eligible_without_name_metadata() -> None:
+    provider, _ = provider_for(
+        payload(
+            news_item("AAPL Reports Q3 Results", tickers=("AAPL",)),
+            quotes=[],
+        )
+    )
+
+    assert provider.get_evidence("AAPL", NOW).status is CatalystStatus.TRUE
+
+
+@pytest.mark.parametrize(
+    ("headline", "shortname", "longname"),
+    (
+        ("Apple Reports Record Quarterly Earnings", "Apple", "Apple Inc."),
+        (
+            "International Business Machines Corporation reports quarterly results",
+            "IBM",
+            "International Business Machines Corporation",
+        ),
+        ("APPLE, INC. Raises Full-Year Guidance", "Apple Inc.", "Apple Inc."),
+    ),
+    ids=("short-name", "long-name", "punctuation-and-case"),
+)
+def test_explicit_company_identity_alias_is_eligible(
+    headline: str, shortname: str, longname: str
+) -> None:
+    symbol = "AAPL" if "Apple" in longname else "IBM"
+    provider, _ = provider_for(
+        payload(
+            news_item(headline, tickers=(symbol,)),
+            quotes=[quote_identity(symbol, shortname=shortname, longname=longname)],
+        )
+    )
+
+    assert provider.get_evidence(symbol, NOW).status is CatalystStatus.TRUE
+
+
+def test_two_explicitly_named_companies_can_each_qualify() -> None:
+    story = news_item(
+        "Apple and Qualcomm Announce Partnership",
+        tickers=("AAPL", "QCOM"),
+    )
+    apple, _ = provider_for(
+        payload(
+            story,
+            quotes=[quote_identity("AAPL", shortname="Apple", longname="Apple Inc.")],
+        )
+    )
+    qualcomm, _ = provider_for(
+        payload(
+            story,
+            quotes=[
+                quote_identity(
+                    "QCOM", shortname="Qualcomm", longname="Qualcomm Incorporated"
+                )
+            ],
+        )
+    )
+
+    assert apple.get_evidence("AAPL", NOW).status is CatalystStatus.TRUE
+    assert qualcomm.get_evidence("QCOM", NOW).status is CatalystStatus.TRUE
+
+
 def test_share_class_tickers_normalize_for_direct_association() -> None:
     provider, _ = provider_for(
         payload(
             news_item(
-                "Berkshire reports quarterly results",
+                "BRK.B reports quarterly results",
                 tickers=("BRK-B",),
-            )
+            ),
+            quotes=[
+                quote_identity(
+                    "BRK-B",
+                    shortname="Berkshire Hathaway Inc.",
+                    longname="Berkshire Hathaway Inc.",
+                )
+            ],
         )
     )
 
@@ -283,7 +433,7 @@ def test_transport_uses_structured_json_endpoint_and_bounded_query() -> None:
             {
                 "params": {
                     "q": "AUTO",
-                    "quotesCount": 0,
+                    "quotesCount": 5,
                     "newsCount": 7,
                     "enableFuzzyQuery": "false",
                     "region": "US",
@@ -309,19 +459,50 @@ def test_transport_maps_non_success_http_status_to_unavailable(status: int) -> N
 def test_cache_reuse_across_scanner_cycles_and_expiry() -> None:
     elapsed = [1.0]
     provider, transport = provider_for(
-        payload(news_item("Auto Corp reports quarterly results")),
+        payload(
+            news_item("Apple reports quarterly results", tickers=("AAPL",)),
+            quotes=[quote_identity("AAPL", shortname="Apple", longname="Apple Inc.")],
+        ),
         elapsed=elapsed,
         cache_ttl_seconds=300.0,
     )
 
     for cycle in (1.0, 60.0, 299.0, 300.9):
         elapsed[0] = cycle
-        assert provider.get_evidence("AUTO", NOW).status is CatalystStatus.TRUE
-    assert transport.calls == ["AUTO"]
+        assert provider.get_evidence("AAPL", NOW).status is CatalystStatus.TRUE
+    assert transport.calls == ["AAPL"]
 
     elapsed[0] = 301.1
-    assert provider.get_evidence("AUTO", NOW).status is CatalystStatus.TRUE
-    assert transport.calls == ["AUTO", "AUTO"]
+    assert provider.get_evidence("AAPL", NOW).status is CatalystStatus.TRUE
+    assert transport.calls == ["AAPL", "AAPL"]
+
+
+@pytest.mark.parametrize(
+    "quotes",
+    (
+        None,
+        {},
+        [None],
+        [{"symbol": "AAPL", "shortname": 42, "longname": []}],
+        [quote_identity("WRONG", shortname="Apple", longname="Apple Inc.")],
+    ),
+)
+def test_missing_or_malformed_identity_metadata_fails_conservatively(
+    quotes: object,
+) -> None:
+    response = {
+        "news": [
+            news_item(
+                "Apple Reports Record Quarterly Earnings",
+                tickers=("AAPL",),
+            )
+        ]
+    }
+    if quotes is not None:
+        response["quotes"] = quotes
+    provider, _ = provider_for(response)
+
+    assert provider.get_evidence("AAPL", NOW).status is CatalystStatus.FALSE
 
 
 def test_outage_cooldown_prevents_requests_until_expiry() -> None:
