@@ -15,10 +15,7 @@ from typing import Mapping
 
 from app.catalysts import (
     CatalystAggregator,
-    SECEdgarCatalystProvider,
-    SECEdgarPolicy,
-    WebullCatalystProvider,
-    log_sec_edgar_provider_state,
+    build_catalyst_providers,
 )
 from app.configuration import load_configuration
 from app.live_scanner.session import scanner_session
@@ -50,19 +47,7 @@ def capture_once(path: Path, *, limit: int = 10) -> dict[str, object]:
     lazy = LazyOfficialDataClient(lambda: MarketDataClientFactory(market_config).create())
     universe = WebullScannerUniverseProvider(lazy, clock=lambda: now, page_size=50)
     instruments = universe.list_symbols(AssetClass.STOCK)[:limit]
-    catalyst_providers = [WebullCatalystProvider(lazy)]
-    if configuration.sec_edgar is None:
-        log_sec_edgar_provider_state(enabled=False)
-    if configuration.sec_edgar is not None:
-        catalyst_providers.append(
-            SECEdgarCatalystProvider(
-                SECEdgarPolicy(
-                    user_agent=configuration.sec_edgar.user_agent,
-                    freshness_days=configuration.sec_edgar.freshness_days,
-                    timeout_seconds=configuration.sec_edgar.timeout_seconds,
-                )
-            )
-        )
+    catalyst_providers = build_catalyst_providers(lazy, configuration)
     references = WebullScannerReferenceProvider(
         lazy, universe, clock=lambda: now,
         environment=market_config.environment.value,

@@ -194,6 +194,21 @@ def load_configuration(env=None):
         if sec_user_agent
         else None
     )
+    yahoo_finance_news_configuration = (
+        YahooFinanceNewsConfiguration(
+            freshness_minutes=_non_negative_int(
+                e, "YAHOO_FINANCE_NEWS_FRESHNESS_MINUTES", 1_440
+            ),
+            timeout_seconds=_positive_float(
+                e, "YAHOO_FINANCE_TIMEOUT_SECONDS", 5.0
+            ),
+            cache_ttl_seconds=_positive_float(
+                e, "YAHOO_FINANCE_NEWS_CACHE_TTL_SECONDS", 300.0
+            ),
+        )
+        if _bool(e.get("YAHOO_FINANCE_NEWS_ENABLED", "false"))
+        else None
+    )
     for section_name, section in (
         ("trading", trading_configuration),
         ("market-data", market_data_configuration),
@@ -237,6 +252,7 @@ def load_configuration(env=None):
             "data/warrior_momentum_v1_forward/forward_capture.sqlite3",
         )).resolve(),
         sec_edgar_configuration,
+        yahoo_finance_news_configuration,
     )
 
 

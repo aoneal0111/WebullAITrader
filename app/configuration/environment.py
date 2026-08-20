@@ -24,7 +24,18 @@ SEC_EDGAR_DOTENV_KEYS = (
     "SEC_EDGAR_TIMEOUT_SECONDS",
 )
 
-_RUNTIME_DOTENV_KEYS = MARKET_DATA_DOTENV_KEYS + SEC_EDGAR_DOTENV_KEYS
+YAHOO_FINANCE_NEWS_DOTENV_KEYS = (
+    "YAHOO_FINANCE_NEWS_ENABLED",
+    "YAHOO_FINANCE_NEWS_FRESHNESS_MINUTES",
+    "YAHOO_FINANCE_TIMEOUT_SECONDS",
+    "YAHOO_FINANCE_NEWS_CACHE_TTL_SECONDS",
+)
+
+_RUNTIME_DOTENV_KEYS = (
+    MARKET_DATA_DOTENV_KEYS
+    + SEC_EDGAR_DOTENV_KEYS
+    + YAHOO_FINANCE_NEWS_DOTENV_KEYS
+)
 
 _ASSIGNMENT = re.compile(
     r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*="
@@ -36,7 +47,7 @@ def resolve_runtime_environment(
     *,
     dotenv_path: str | Path = ".env",
 ) -> dict[str, str]:
-    """Overlay scoped market-data and SEC settings over process values.
+    """Overlay scoped market-data and catalyst settings over process values.
 
     Other operational, trading, execution, and risk settings retain normal
     process environment behavior.
@@ -73,6 +84,7 @@ def duplicate_dotenv_keys(path: str | Path) -> dict[str, int]:
 __all__ = [
     "MARKET_DATA_DOTENV_KEYS",
     "SEC_EDGAR_DOTENV_KEYS",
+    "YAHOO_FINANCE_NEWS_DOTENV_KEYS",
     "duplicate_dotenv_keys",
     "resolve_runtime_environment",
 ]

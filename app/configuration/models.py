@@ -39,6 +39,13 @@ class SECEdgarConfiguration:
 
 
 @dataclass(frozen=True, slots=True)
+class YahooFinanceNewsConfiguration:
+    freshness_minutes: int = 1_440
+    timeout_seconds: float = 5.0
+    cache_ttl_seconds: float = 300.0
+
+
+@dataclass(frozen=True, slots=True)
 class OperationalConfiguration:
     environment: TradingEnvironment
 
@@ -87,3 +94,4 @@ class OperationalConfiguration:
         "data/warrior_momentum_v1_forward/forward_capture.sqlite3"
     )
     sec_edgar: SECEdgarConfiguration | None = None
+    yahoo_finance_news: YahooFinanceNewsConfiguration | None = None

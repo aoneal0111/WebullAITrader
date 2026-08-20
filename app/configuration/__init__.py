@@ -4,6 +4,7 @@ from app.configuration.models import (
     SECEdgarConfiguration,
     TradingConfiguration,
     TradingEnvironment,
+    YahooFinanceNewsConfiguration,
 )
 from app.configuration.loader import load_configuration
 
@@ -13,5 +14,6 @@ __all__ = [
     "SECEdgarConfiguration",
     "TradingConfiguration",
     "TradingEnvironment",
+    "YahooFinanceNewsConfiguration",
     "load_configuration",
 ]

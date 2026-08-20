@@ -7,10 +7,7 @@ from collections.abc import Callable
 from app.broker_plugins import BrokerRuntime, create_broker_runtime
 from app.catalysts import (
     CatalystAggregator,
-    SECEdgarCatalystProvider,
-    SECEdgarPolicy,
-    WebullCatalystProvider,
-    log_sec_edgar_provider_state,
+    build_catalyst_providers,
 )
 from app.composition.desktop_infrastructure import (
     create_desktop_scanner_infrastructure,
@@ -135,19 +132,7 @@ def create_configured_desktop_broker_driver(
             data_client,
             clock=clock,
         )
-        catalyst_providers = [WebullCatalystProvider(data_client)]
-        if configuration.sec_edgar is None:
-            log_sec_edgar_provider_state(enabled=False)
-        if configuration.sec_edgar is not None:
-            catalyst_providers.append(
-                SECEdgarCatalystProvider(
-                    SECEdgarPolicy(
-                        user_agent=configuration.sec_edgar.user_agent,
-                        freshness_days=configuration.sec_edgar.freshness_days,
-                        timeout_seconds=configuration.sec_edgar.timeout_seconds,
-                    )
-                )
-            )
+        catalyst_providers = build_catalyst_providers(data_client, configuration)
         reference_provider = WebullScannerReferenceProvider(
             data_client,
             universe_provider,

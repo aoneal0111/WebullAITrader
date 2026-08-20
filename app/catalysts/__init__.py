@@ -10,12 +10,23 @@ from app.catalysts.policy import (
     CatalystPriorityPolicy,
 )
 from app.catalysts.webull import WebullCatalystProvider
+from app.catalysts.composition import build_catalyst_providers
 from app.catalysts.sec_edgar import (
     SECEdgarCatalystProvider,
     SECEdgarPolicy,
     log_sec_edgar_provider_state,
 )
 from app.momentum_scanner.models import CatalystStatus, CatalystType
+from app.catalysts.yahoo_finance import (
+    MalformedYahooFinanceResponse,
+    YahooFinanceCatalystProvider,
+    YahooFinanceNewsPolicy,
+    YahooFinanceNewsTransport,
+    YahooFinanceSearchTransport,
+    YahooFinanceUnavailable,
+    classify_yahoo_headline,
+    log_yahoo_finance_provider_state,
+)
 
 __all__ = [
     "DEFAULT_CATALYST_PRIORITY_POLICY",
@@ -28,6 +39,15 @@ __all__ = [
     "CatalystStatus",
     "CatalystType",
     "WebullCatalystProvider",
+    "YahooFinanceCatalystProvider",
+    "YahooFinanceNewsPolicy",
+    "YahooFinanceNewsTransport",
+    "YahooFinanceSearchTransport",
+    "YahooFinanceUnavailable",
+    "MalformedYahooFinanceResponse",
+    "build_catalyst_providers",
+    "classify_yahoo_headline",
+    "log_yahoo_finance_provider_state",
     "SECEdgarCatalystProvider",
     "SECEdgarPolicy",
     "log_sec_edgar_provider_state",
