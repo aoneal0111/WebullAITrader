@@ -32,6 +32,13 @@ class MarketDataConfiguration:
 
 
 @dataclass(frozen=True, slots=True)
+class SECEdgarConfiguration:
+    user_agent: str
+    freshness_days: int = 3
+    timeout_seconds: float = 10.0
+
+
+@dataclass(frozen=True, slots=True)
 class OperationalConfiguration:
     environment: TradingEnvironment
 
@@ -79,3 +86,4 @@ class OperationalConfiguration:
     warrior_forward_capture_path: Path = Path(
         "data/warrior_momentum_v1_forward/forward_capture.sqlite3"
     )
+    sec_edgar: SECEdgarConfiguration | None = None

@@ -18,6 +18,14 @@ MARKET_DATA_DOTENV_KEYS = (
     "WEBULL_MARKET_DATA_STREAM_URL",
 )
 
+SEC_EDGAR_DOTENV_KEYS = (
+    "SEC_EDGAR_USER_AGENT",
+    "SEC_EDGAR_FRESHNESS_DAYS",
+    "SEC_EDGAR_TIMEOUT_SECONDS",
+)
+
+_RUNTIME_DOTENV_KEYS = MARKET_DATA_DOTENV_KEYS + SEC_EDGAR_DOTENV_KEYS
+
 _ASSIGNMENT = re.compile(
     r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*="
 )
@@ -28,11 +36,10 @@ def resolve_runtime_environment(
     *,
     dotenv_path: str | Path = ".env",
 ) -> dict[str, str]:
-    """Overlay current scoped market-data settings over stale process values.
+    """Overlay scoped market-data and SEC settings over process values.
 
-    Only scoped market-data variables are loaded from ``.env``. Other
-    operational, trading, execution, and risk settings retain normal process
-    environment behavior.
+    Other operational, trading, execution, and risk settings retain normal
+    process environment behavior.
     """
 
     resolved = dict(os.environ if process_environment is None else process_environment)
@@ -40,13 +47,13 @@ def resolve_runtime_environment(
     if not path.is_file():
         return resolved
     duplicates = duplicate_dotenv_keys(path)
-    ambiguous = tuple(sorted(set(duplicates).intersection(MARKET_DATA_DOTENV_KEYS)))
+    ambiguous = tuple(sorted(set(duplicates).intersection(_RUNTIME_DOTENV_KEYS)))
     if ambiguous:
         raise ValueError(
             "duplicate scoped market-data settings in .env: " + ",".join(ambiguous)
         )
     file_values = dotenv_values(path)
-    for name in MARKET_DATA_DOTENV_KEYS:
+    for name in _RUNTIME_DOTENV_KEYS:
         value = file_values.get(name)
         if value is not None:
             resolved[name] = str(value)
@@ -65,6 +72,7 @@ def duplicate_dotenv_keys(path: str | Path) -> dict[str, int]:
 
 __all__ = [
     "MARKET_DATA_DOTENV_KEYS",
+    "SEC_EDGAR_DOTENV_KEYS",
     "duplicate_dotenv_keys",
     "resolve_runtime_environment",
 ]

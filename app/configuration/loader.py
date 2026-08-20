@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+import math
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -183,6 +184,16 @@ def load_configuration(env=None):
         api_base_url=_env(e,"WEBULL_MARKET_DATA_API_BASE_URL","WEBULL_API_BASE_URL") or api,
         stream_url=_env(e,"WEBULL_MARKET_DATA_STREAM_URL","WEBULL_STREAM_URL") or stream,
     )
+    sec_user_agent = e.get("SEC_EDGAR_USER_AGENT", "").strip()
+    sec_edgar_configuration = (
+        SECEdgarConfiguration(
+            user_agent=sec_user_agent,
+            freshness_days=_non_negative_int(e, "SEC_EDGAR_FRESHNESS_DAYS", 3),
+            timeout_seconds=_positive_float(e, "SEC_EDGAR_TIMEOUT_SECONDS", 10.0),
+        )
+        if sec_user_agent
+        else None
+    )
     for section_name, section in (
         ("trading", trading_configuration),
         ("market-data", market_data_configuration),
@@ -225,6 +236,7 @@ def load_configuration(env=None):
             "WARRIOR_FORWARD_CAPTURE_PATH",
             "data/warrior_momentum_v1_forward/forward_capture.sqlite3",
         )).resolve(),
+        sec_edgar_configuration,
     )
 
 
@@ -238,8 +250,20 @@ def _int(e, k, d):
     v = int(e.get(k, d))
     if v <= 0 and k != "MAXIMUM_UNRESOLVED_MUTATIONS":
         raise ValueError(k + " must be positive")
+    return v
+
+
+def _non_negative_int(e, k, d):
+    v = int(e.get(k, d))
     if v < 0:
-        raise ValueError(k + " must be nonnegative")
+        raise ValueError(k + " must not be negative")
+    return v
+
+
+def _positive_float(e, k, d):
+    v = float(e.get(k, d))
+    if not math.isfinite(v) or v <= 0:
+        raise ValueError(k + " must be positive")
     return v
 
 

@@ -10,6 +10,11 @@ from app.catalysts.policy import (
     CatalystPriorityPolicy,
 )
 from app.catalysts.webull import WebullCatalystProvider
+from app.catalysts.sec_edgar import (
+    SECEdgarCatalystProvider,
+    SECEdgarPolicy,
+    log_sec_edgar_provider_state,
+)
 from app.momentum_scanner.models import CatalystStatus, CatalystType
 
 __all__ = [
@@ -23,4 +28,7 @@ __all__ = [
     "CatalystStatus",
     "CatalystType",
     "WebullCatalystProvider",
+    "SECEdgarCatalystProvider",
+    "SECEdgarPolicy",
+    "log_sec_edgar_provider_state",
 ]

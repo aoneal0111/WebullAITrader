@@ -13,6 +13,13 @@ import json
 from pathlib import Path
 from typing import Mapping
 
+from app.catalysts import (
+    CatalystAggregator,
+    SECEdgarCatalystProvider,
+    SECEdgarPolicy,
+    WebullCatalystProvider,
+    log_sec_edgar_provider_state,
+)
 from app.configuration import load_configuration
 from app.live_scanner.session import scanner_session
 from app.momentum_scanner.models import AssetClass, CatalystType, ScannerObservation
@@ -38,13 +45,31 @@ def capture_once(path: Path, *, limit: int = 10) -> dict[str, object]:
     if limit <= 0 or limit > 50:
         raise ValueError("limit must be 1..50")
     now = datetime.now(UTC)
-    market_config = market_data_configuration(load_configuration())
+    configuration = load_configuration()
+    market_config = market_data_configuration(configuration)
     lazy = LazyOfficialDataClient(lambda: MarketDataClientFactory(market_config).create())
     universe = WebullScannerUniverseProvider(lazy, clock=lambda: now, page_size=50)
     instruments = universe.list_symbols(AssetClass.STOCK)[:limit]
+    catalyst_providers = [WebullCatalystProvider(lazy)]
+    if configuration.sec_edgar is None:
+        log_sec_edgar_provider_state(enabled=False)
+    if configuration.sec_edgar is not None:
+        catalyst_providers.append(
+            SECEdgarCatalystProvider(
+                SECEdgarPolicy(
+                    user_agent=configuration.sec_edgar.user_agent,
+                    freshness_days=configuration.sec_edgar.freshness_days,
+                    timeout_seconds=configuration.sec_edgar.timeout_seconds,
+                )
+            )
+        )
     references = WebullScannerReferenceProvider(
         lazy, universe, clock=lambda: now,
         environment=market_config.environment.value,
+        catalyst_aggregator=CatalystAggregator(
+            catalyst_providers,
+            clock=lambda: now,
+        ),
     )
     store = ForwardCaptureStore(path)
     capture_config = ForwardCaptureConfiguration(storage_path=path)
