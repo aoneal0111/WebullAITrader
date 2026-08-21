@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 
@@ -32,6 +32,12 @@ class ReceiveTransportAdapter:
 
     def read_event(self) -> Any | None:
         return self._client.receive()
+
+    def read_event_nowait(self) -> Any | None:
+        receiver = getattr(self._client, "receive_nowait", None)
+        if not callable(receiver):
+            return None
+        return receiver()
 
     @property
     def client(self) -> Any:

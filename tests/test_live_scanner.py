@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
@@ -243,6 +243,47 @@ def test_run_available_drains_current_events() -> None:
     assert cycle.events_read == 3
     assert cycle.decisions_created == 2
     assert cycle.stream_exhausted is True
+
+
+def test_run_available_uses_nonblocking_reads_after_first_event() -> None:
+    first = FakeEvent("AAA")
+    second = FakeEvent("BBB")
+
+    class DrainAwareTransport(FakeTransport):
+        def __init__(self) -> None:
+            super().__init__([first])
+            self.blocking_reads = 0
+            self.nonblocking_reads = 0
+            self.nowait_events = [second]
+
+        def read_event(self) -> Any | None:
+            self.blocking_reads += 1
+            return super().read_event()
+
+        def read_event_nowait(self) -> Any | None:
+            self.nonblocking_reads += 1
+            if not self.nowait_events:
+                return None
+            return self.nowait_events.pop(0)
+
+    transport = DrainAwareTransport()
+    engine = FakeEngine()
+
+    coordinator = LiveScannerCoordinator(
+        transport,
+        engine,
+        default_channels=("quotes",),
+        maximum_events_per_cycle=100,
+    )
+    coordinator.start()
+
+    cycle = coordinator.run_available()
+
+    assert cycle.events_read == 2
+    assert cycle.stream_exhausted is True
+    assert transport.blocking_reads == 1
+    assert transport.nonblocking_reads == 2
+    assert engine.events == [first, second]
 
 
 def test_run_available_respects_cycle_limit() -> None:

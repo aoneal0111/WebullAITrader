@@ -341,6 +341,16 @@ class OfficialSdkStreamBackend:
         except Empty:
             return None
 
+    def receive_nowait(self) -> object | None:
+        try:
+            message = self._messages.get_nowait()
+            if not self._consumption_started:
+                self._consumption_started = True
+                self._notify("active_event_consumption")
+            return message
+        except Empty:
+            return None
+
     @property
     def actual_transport(self) -> str:
         return str(getattr(self.client, "_transport", "unknown"))
@@ -538,10 +548,19 @@ class WebullWebSocketClient:
         return self.policy.maximum_attempts > 0
 
     def receive(self):
+        return self._receive_from(self.backend.receive)
+
+    def receive_nowait(self):
+        receive_nowait = getattr(self.backend, "receive_nowait", None)
+        if not callable(receive_nowait):
+            return None
+        return self._receive_from(receive_nowait)
+
+    def _receive_from(self, receiver):
         network_attempt = 0
         while network_attempt <= self.policy.maximum_attempts:
             try:
-                message = self.backend.receive()
+                message = receiver()
                 if message is None: return None
                 diagnostic = payload_metadata(message)
                 classification = str(diagnostic["message_classification"])

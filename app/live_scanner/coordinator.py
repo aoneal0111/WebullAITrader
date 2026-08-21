@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -216,7 +216,19 @@ class LiveScannerCoordinator:
         stream_exhausted = False
 
         while self._running and events_read < limit:
-            event = self._transport.read_event()
+            if events_read == 0:
+                event = self._transport.read_event()
+            else:
+                read_nowait = getattr(
+                    self._transport,
+                    "read_event_nowait",
+                    None,
+                )
+                event = (
+                    read_nowait()
+                    if callable(read_nowait)
+                    else self._transport.read_event()
+                )
 
             if event is None:
                 stream_exhausted = True
