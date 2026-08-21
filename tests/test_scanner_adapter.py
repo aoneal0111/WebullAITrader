@@ -325,3 +325,53 @@ def test_adapter_ignores_events_without_symbols() -> None:
     assert adapter.consume(event) is None
 
 
+
+def test_price_observer_receives_fresh_trade() -> None:
+    store = ScannerReferenceStore((reference_data(),))
+    observed = []
+
+    adapter = MarketEventScannerAdapter(
+        store,
+        price_observer=lambda symbol, timestamp, price: observed.append(
+            (symbol, timestamp, price)
+        ),
+    )
+
+    event = trade_event()
+    adapter.consume(event)
+
+    assert observed == [("TEST", event.timestamp, event.payload.price)]
+
+
+def test_price_observer_ignores_stale_trade() -> None:
+    store = ScannerReferenceStore((reference_data(),))
+    observed = []
+
+    adapter = MarketEventScannerAdapter(
+        store,
+        price_observer=lambda symbol, timestamp, price: observed.append(
+            (symbol, timestamp, price)
+        ),
+    )
+
+    current = trade_event()
+    adapter.consume(current)
+
+    stale = MarketEvent(
+        sequence=current.sequence + 1,
+        timestamp=current.timestamp - timedelta(seconds=1),
+        symbol=current.symbol,
+        source=current.source,
+        event_type=MarketEventType.TRADE,
+        payload=TradePayload(
+            price=Decimal("4.00"),
+            size=Decimal("100"),
+            trade_id="stale-trade",
+        ),
+    )
+    adapter.consume(stale)
+
+    assert observed == [
+        ("TEST", current.timestamp, current.payload.price),
+    ]
+

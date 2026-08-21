@@ -192,6 +192,10 @@ class PaperTradeExperimentJournal:
                    WHERE symbol=? AND decision_timestamp<=?
                      AND (
                        decision_timestamp>=?
+                       OR COALESCE(
+                           json_extract(labels_json, '$.outcome_status'),
+                           'PENDING'
+                       ) != 'COMPLETE'
                        OR json_extract(execution_json, '$.state') IN (?,?)
                      )""",
                 (
@@ -208,7 +212,13 @@ class PaperTradeExperimentJournal:
                 features = json.loads(row["features_json"])
                 labels = json.loads(row["labels_json"])
                 execution = json.loads(row["execution_json"])
-                counterfactual_active = elapsed <= HORIZONS_SECONDS["30m"] + 300
+                counterfactual_incomplete = (
+                    labels.get("outcome_status") != "COMPLETE"
+                )
+                counterfactual_active = (
+                    elapsed <= HORIZONS_SECONDS["30m"] + 300
+                    or counterfactual_incomplete
+                )
                 if counterfactual_active:
                     reference = Decimal(features["counterfactual_reference_price"])
                     move = (observed - reference) / reference

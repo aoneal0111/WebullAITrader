@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
@@ -29,9 +30,12 @@ class MarketEventScannerAdapter:
     def __init__(
         self,
         reference_store: ScannerReferenceStore,
+        *,
+        price_observer: Callable[[str, datetime, Decimal], object] | None = None,
     ) -> None:
         self.reference_store = reference_store
         self._states: dict[str, SymbolScannerState] = {}
+        self._price_observer = price_observer
 
     def consume(self, event: MarketEvent) -> AdapterResult | None:
         if event.symbol is None:
@@ -55,6 +59,45 @@ class MarketEventScannerAdapter:
 
         state = self._apply(previous, event)
         self._states[symbol] = state
+
+        if (
+            self._price_observer is not None
+            and event.event_type is MarketEventType.TRADE
+            and isinstance(event.payload, TradePayload)
+        ):
+            if event.payload.trade_id.startswith("snapshot"):
+                freshest_before = _latest_timestamp(
+                    previous.trade_timestamp,
+                    previous.snapshot_timestamp,
+                )
+                updates_price = (
+                    (
+                        previous.snapshot_timestamp is None
+                        or event.timestamp >= previous.snapshot_timestamp
+                    )
+                    and (
+                        freshest_before is None
+                        or event.timestamp >= freshest_before
+                    )
+                )
+            else:
+                updates_price = (
+                    (
+                        previous.trade_timestamp is None
+                        or event.timestamp >= previous.trade_timestamp
+                    )
+                    and (
+                        previous.snapshot_timestamp is None
+                        or event.timestamp > previous.snapshot_timestamp
+                    )
+                )
+
+            if updates_price:
+                self._price_observer(
+                    symbol,
+                    event.timestamp,
+                    event.payload.price,
+                )
 
         observation, missing = self._build_observation(state)
 

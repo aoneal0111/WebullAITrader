@@ -225,3 +225,26 @@ def test_analysis_command_is_read_only_for_missing_journal(tmp_path) -> None:
     with pytest.raises(FileNotFoundError):
         main(["--journal", str(missing)])
     assert not missing.exists()
+
+def test_pending_candidate_can_complete_after_old_35_minute_cutoff(tmp_path) -> None:
+    journal = PaperTradeExperimentJournal(tmp_path / "experiment.sqlite3")
+    decision = evaluate_candidate(observation())
+    record = journal.record_candidate(decision)
+
+    # Simulate a symbol that receives no usable follow-up price until well
+    # after the previous 30m + 5m query cutoff.
+    changed = journal.observe_price(
+        "BIVI",
+        NOW + timedelta(minutes=40),
+        Decimal("5.50"),
+    )
+
+    labeled = journal.get(record.candidate_id)
+
+    assert changed == 1
+    assert Decimal(labeled.labels["price_after_1m"]) == Decimal("5.50")
+    assert Decimal(labeled.labels["price_after_5m"]) == Decimal("5.50")
+    assert Decimal(labeled.labels["price_after_15m"]) == Decimal("5.50")
+    assert Decimal(labeled.labels["price_after_30m"]) == Decimal("5.50")
+    assert Decimal(labeled.labels["return_after_30m"]) == Decimal("0.1")
+    assert labeled.labels["outcome_status"] == "COMPLETE"

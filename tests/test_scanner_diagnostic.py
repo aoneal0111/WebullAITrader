@@ -44,6 +44,7 @@ from app.scanner_diagnostic import (
     DiagnosticRuntime,
     DiagnosticTimings,
     ObservedCatalystProvider,
+    RecordingCatalystAggregator,
     RequestCounters,
     _instrument_catalyst_providers,
     compose_production_runtime,
@@ -543,3 +544,33 @@ def test_cleanup_after_exception() -> None:
             monotonic=StepMonotonic(),
         )
     assert value.infrastructure.coordinator.closed is True
+
+def test_recording_catalyst_aggregator_preserves_aggregate_result_contract() -> None:
+    selected = object()
+    result = SimpleNamespace(selected=selected)
+
+    class Inner:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def aggregate_result(self, symbol, as_of=None):
+            self.calls.append((symbol, as_of))
+            return result
+
+    inner = Inner()
+    recorder = RecordingCatalystAggregator(inner)
+
+    returned = recorder.aggregate_result("test", CORE)
+
+    assert returned is result
+    assert recorder.results == {"TEST": result}
+    assert inner.calls == [("test", CORE)]
+
+    evidence = recorder.get_evidence("TEST", CORE)
+
+    assert evidence is selected
+    assert recorder.results == {"TEST": result}
+    assert inner.calls == [
+        ("test", CORE),
+        ("TEST", CORE),
+    ]

@@ -250,10 +250,17 @@ class RecordingCatalystAggregator:
         self._inner = inner
         self.results: dict[str, CatalystAggregationResult] = {}
 
-    def get_evidence(self, symbol: str, as_of: datetime | None = None):
+    def aggregate_result(
+        self,
+        symbol: str,
+        as_of: datetime | None = None,
+    ) -> CatalystAggregationResult:
         result = self._inner.aggregate_result(symbol, as_of)
         self.results[symbol.strip().upper()] = result
-        return result.selected
+        return result
+
+    def get_evidence(self, symbol: str, as_of: datetime | None = None):
+        return self.aggregate_result(symbol, as_of).selected
 
 
 class ObservedCatalystProvider:

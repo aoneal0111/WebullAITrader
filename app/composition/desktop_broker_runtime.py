@@ -217,7 +217,29 @@ def create_configured_desktop_broker_driver(
                 )
                 preload_history(record.symbol, bars)
 
-        scanner_adapter = MarketEventScannerAdapter(reference_store)
+        experiment_price_observer = None
+        if experiment_decision_sink is not None:
+            def observe_experiment_price(
+                symbol,
+                timestamp,
+                price,
+            ) -> object:
+                if not experiment_holder:
+                    experiment_holder.append(
+                        PaperTradeExperimentJournal(experiment_path)
+                    )
+                return experiment_holder[0].observe_price(
+                    symbol,
+                    timestamp,
+                    price,
+                )
+
+            experiment_price_observer = observe_experiment_price
+
+        scanner_adapter = MarketEventScannerAdapter(
+            reference_store,
+            price_observer=experiment_price_observer,
+        )
         scanner_infrastructure = create_desktop_scanner_infrastructure(
             market_data_client=broker_runtime.market_data,
             universe_service=UniverseService(universe_provider),
