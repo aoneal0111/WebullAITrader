@@ -948,7 +948,11 @@ class DesktopBrokerRuntimeDriver:
                 market_data_rest_status="AVAILABLE",
                 streaming_status=_stream_failure_classification(error),
                 scanner_status="STOPPED",
-                last_warning=type(error).__name__,
+                last_warning=(
+                    f"{type(error).__name__}: {error}"
+                    if str(error)
+                    else type(error).__name__
+                ),
             ),
         )
 
