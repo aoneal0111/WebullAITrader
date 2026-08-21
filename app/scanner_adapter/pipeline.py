@@ -19,6 +19,7 @@ _QUALIFICATION_RULES = (
     "price_range",
     "percentage_change",
     "relative_volume",
+    "float_verified",
     "low_float",
     "news_catalyst",
     "tradable",

@@ -10,7 +10,7 @@ from app.market_data.models import (
     TradePayload,
     TradingHaltPayload,
 )
-from app.momentum_scanner.models import CatalystStatus, CatalystType
+from app.momentum_scanner.models import CatalystStatus, CatalystType, FloatProvenance
 from app.scanner_adapter import (
     MarketEventScannerAdapter,
     MomentumScannerPipeline,
@@ -25,6 +25,7 @@ NOW = datetime(2026, 7, 20, 15, 0, tzinfo=timezone.utc)
 def reference_data(
     *,
     float_shares: Decimal | None = Decimal("5000000"),
+    float_provenance: FloatProvenance = FloatProvenance.AUTHORITATIVE_FLOAT,
     catalyst: CatalystType | None = None,
     catalyst_status: CatalystStatus = CatalystStatus.TRUE,
     current_volume: Decimal | None = None,
@@ -34,6 +35,7 @@ def reference_data(
         previous_close=Decimal("5"),
         average_30_day_volume=Decimal("100000"),
         float_shares=float_shares,
+        float_provenance=float_provenance,
         catalyst=(
             catalyst
             if catalyst is not None
@@ -302,6 +304,31 @@ def test_pipeline_aggregates_rejections_and_catalyst_availability() -> None:
     }
     assert diagnostics.otherwise_qualified_with_catalyst == 1
     assert diagnostics.near_qualified_symbols == ("TEST",)
+
+
+def test_qualification_diagnostics_report_unverified_float_proxy() -> None:
+    store = ScannerReferenceStore(
+        (
+            reference_data(
+                float_shares=Decimal("50000000"),
+                float_provenance=FloatProvenance.MARKET_CAP_PRICE_PROXY,
+            ),
+        )
+    )
+    pipeline = MomentumScannerPipeline(MarketEventScannerAdapter(store))
+
+    pipeline.consume(quote_event())
+    decision = pipeline.consume(trade_event(size=Decimal("1000000")))
+    diagnostics = pipeline.qualification_diagnostics()
+
+    assert decision is not None
+    assert decision.qualified is False
+    assert "float_verified" in decision.failed_rules
+    assert "low_float" not in decision.failed_rules
+
+    rejection_counts = dict(diagnostics.rejection_counts)
+    assert rejection_counts["float_verified"] == 1
+    assert rejection_counts["low_float"] == 0
 
 
 def test_adapter_ignores_events_without_symbols() -> None:

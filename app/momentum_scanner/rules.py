@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
@@ -7,6 +7,7 @@ from app.momentum_scanner.models import (
     AssetClass,
     CatalystStatus,
     CatalystType,
+    FloatProvenance,
     ScannerDecision,
     ScannerMetrics,
     ScannerObservation,
@@ -99,11 +100,29 @@ def evaluate_candidate(
         metrics.relative_volume >= config.minimum_relative_volume,
         "relative_volume",
     )
-    check(
+    float_value_is_low = (
         observation.float_shares is not None
-        and observation.float_shares <= config.maximum_float_shares,
-        "low_float",
+        and observation.float_shares <= config.maximum_float_shares
     )
+    float_is_authoritative = (
+        observation.float_provenance
+        is FloatProvenance.AUTHORITATIVE_FLOAT
+    )
+    float_is_upper_bound = observation.float_provenance in {
+        FloatProvenance.SHARES_OUTSTANDING,
+        FloatProvenance.MARKET_CAP_PRICE_PROXY,
+    }
+    float_verified = (
+        float_is_authoritative
+        or (float_is_upper_bound and float_value_is_low)
+    )
+
+    check(float_verified, "float_verified")
+
+    if float_is_authoritative:
+        check(float_value_is_low, "low_float")
+    elif float_is_upper_bound and float_value_is_low:
+        check(True, "low_float")
     check(
         not config.require_catalyst
         or observation.catalyst is not CatalystType.NONE,

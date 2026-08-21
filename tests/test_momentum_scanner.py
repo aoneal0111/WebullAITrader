@@ -1,9 +1,10 @@
-﻿from datetime import UTC, datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.momentum_scanner import (
     AssetClass,
     CatalystType,
+    FloatProvenance,
     ScannerObservation,
     evaluate_candidate,
     rank_candidates,
@@ -63,6 +64,83 @@ def test_high_float_candidate_fails() -> None:
     assert decision.qualified is False
     assert "low_float" in decision.failed_rules
 
+def test_authoritative_high_float_definitively_fails_low_float() -> None:
+    decision = evaluate_candidate(
+        observation(
+            float_shares=D("50000000"),
+            float_provenance=FloatProvenance.AUTHORITATIVE_FLOAT,
+        )
+    )
+
+    assert decision.qualified is False
+    assert "low_float" in decision.failed_rules
+
+
+def test_low_market_cap_price_proxy_safely_passes_low_float() -> None:
+    decision = evaluate_candidate(
+        observation(
+            float_shares=D("8000000"),
+            float_provenance=FloatProvenance.MARKET_CAP_PRICE_PROXY,
+        )
+    )
+
+    assert "low_float" in decision.passed_rules
+
+
+def test_high_market_cap_price_proxy_fails_closed_as_unverified() -> None:
+    decision = evaluate_candidate(
+        observation(
+            float_shares=D("50000000"),
+            float_provenance=FloatProvenance.MARKET_CAP_PRICE_PROXY,
+        )
+    )
+
+    assert decision.qualified is False
+    assert decision.technical_qualifies_without_catalyst is False
+    assert "low_float" not in decision.failed_rules
+    assert "float_verified" in decision.failed_rules
+    assert "float_verified" in decision.technical_failed_rules
+
+
+def test_unknown_float_provenance_fails_closed_as_unverified() -> None:
+    decision = evaluate_candidate(
+        observation(
+            float_shares=D("8000000"),
+            float_provenance=FloatProvenance.UNKNOWN,
+        )
+    )
+
+    assert decision.qualified is False
+    assert decision.technical_qualifies_without_catalyst is False
+    assert "low_float" not in decision.failed_rules
+    assert "float_verified" in decision.failed_rules
+    assert "float_verified" in decision.technical_failed_rules
+
+
+def test_low_shares_outstanding_upper_bound_safely_passes_low_float() -> None:
+    decision = evaluate_candidate(
+        observation(
+            float_shares=D("8000000"),
+            float_provenance=FloatProvenance.SHARES_OUTSTANDING,
+        )
+    )
+
+    assert decision.qualified is True
+    assert "low_float" in decision.passed_rules
+    assert "float_verified" in decision.passed_rules
+
+
+def test_high_shares_outstanding_upper_bound_fails_closed_as_unverified() -> None:
+    decision = evaluate_candidate(
+        observation(
+            float_shares=D("50000000"),
+            float_provenance=FloatProvenance.SHARES_OUTSTANDING,
+        )
+    )
+
+    assert decision.qualified is False
+    assert "low_float" not in decision.failed_rules
+    assert "float_verified" in decision.failed_rules
 
 def test_wide_spread_candidate_fails() -> None:
     decision = evaluate_candidate(
