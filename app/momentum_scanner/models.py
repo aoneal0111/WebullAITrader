@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,6 +22,13 @@ class CatalystType(StrEnum):
     GUIDANCE = "GUIDANCE"
     OTHER = "OTHER"
     NONE = "NONE"
+
+
+class FloatProvenance(StrEnum):
+    AUTHORITATIVE_FLOAT = "AUTHORITATIVE_FLOAT"
+    SHARES_OUTSTANDING = "SHARES_OUTSTANDING"
+    MARKET_CAP_PRICE_PROXY = "MARKET_CAP_PRICE_PROXY"
+    UNKNOWN = "UNKNOWN"
 
 
 class CatalystStatus(StrEnum):
@@ -50,6 +57,7 @@ class ScannerObservation:
     halted: bool
     asset_class: AssetClass = AssetClass.STOCK
     catalyst_status: CatalystStatus = CatalystStatus.UNKNOWN
+    float_provenance: FloatProvenance = FloatProvenance.AUTHORITATIVE_FLOAT
     catalyst_source: str | None = None
     catalyst_published_at: datetime | None = None
     catalyst_source_url: str | None = None

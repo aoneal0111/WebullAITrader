@@ -1,10 +1,15 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from app.momentum_scanner.models import AssetClass, CatalystStatus, CatalystType
+from app.momentum_scanner.models import (
+    AssetClass,
+    CatalystStatus,
+    CatalystType,
+    FloatProvenance,
+)
 
 ZERO = Decimal("0")
 
@@ -20,6 +25,7 @@ class ReferenceRecord:
     market_cap: Decimal | None
     shares_outstanding: Decimal | None
     tradable: bool
+    float_provenance: FloatProvenance = FloatProvenance.AUTHORITATIVE_FLOAT
     catalyst: CatalystType = CatalystType.NONE
     catalyst_headline: str | None = None
     catalyst_status: CatalystStatus = CatalystStatus.UNKNOWN

@@ -326,6 +326,7 @@ class MarketEventScannerAdapter:
                     reference.average_30_day_volume
                 ),
                 float_shares=reference.float_shares,
+                float_provenance=reference.float_provenance,
                 catalyst=reference.catalyst,
                 catalyst_headline=reference.catalyst_headline,
                 catalyst_status=reference.catalyst_status,

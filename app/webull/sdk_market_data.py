@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from app.catalysts import CatalystAggregator, WebullCatalystProvider
 from app.live_scanner.session import ScannerSession, scanner_session
 from app.momentum_scanner import AssetClass, CatalystStatus, CatalystType
+from app.momentum_scanner.models import FloatProvenance
 from app.reference_data.models import ReferenceRecord
 from app.reference_data.provider import UnsupportedReferenceSymbolError
 from app.universe.models import SecurityType, UniverseSymbol
@@ -403,6 +404,7 @@ class WebullScannerReferenceProvider:
             market_cap=market_cap,
             shares_outstanding=shares_upper_bound,
             tradable=instrument.tradable,
+            float_provenance=FloatProvenance.MARKET_CAP_PRICE_PROXY,
             catalyst=catalyst,
             catalyst_headline=headline,
             catalyst_status=catalyst_status,

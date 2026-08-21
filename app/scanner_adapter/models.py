@@ -8,6 +8,7 @@ from app.momentum_scanner.models import (
     CatalystStatus,
     CatalystType,
     ScannerObservation,
+    FloatProvenance,
 )
 
 
@@ -29,6 +30,7 @@ class ScannerReferenceData:
     corroborating_sources: tuple[str, ...] = ()
     catalyst_evidence_count: int = 0
     catalyst_event_count: int = 0
+    float_provenance: FloatProvenance = FloatProvenance.AUTHORITATIVE_FLOAT
 
     def __post_init__(self) -> None:
         symbol = self.symbol.strip().upper()

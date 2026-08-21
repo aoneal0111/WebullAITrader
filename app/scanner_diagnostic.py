@@ -594,6 +594,7 @@ def compose_production_runtime(
                 previous_close=record.previous_close,
                 average_30_day_volume=record.average_30_day_volume,
                 float_shares=record.float_shares,
+                float_provenance=record.float_provenance,
                 catalyst=record.catalyst,
                 catalyst_headline=record.catalyst_headline,
                 catalyst_status=record.catalyst_status,
