@@ -1,4 +1,4 @@
-﻿"""Configuration-aware broker composition for the desktop runtime."""
+"""Configuration-aware broker composition for the desktop runtime."""
 
 from __future__ import annotations
 
@@ -269,10 +269,15 @@ def create_configured_desktop_broker_driver(
         if callable(retained):
             scanner_coordinator.set_retained_channels_source(retained)
 
+    # Capability probing must not mutate the scanner's live subscription
+    # session. Use an independent stream for startup capability checks.
+    market_data_probe_stream = runtime_market_data_factory(
+        configuration
+    )
     market_data_probe = MarketDataCapabilityProbe(
         market_data_configuration_value,
         data_client,
-        scanner_coordinator or broker_runtime.market_data,
+        market_data_probe_stream,
         clock=clock,
     )
     startup_validator = RuntimeStartupValidator(
@@ -300,6 +305,3 @@ __all__ = [
     "DesktopBrokerRuntimeDriver",
     "create_configured_desktop_broker_driver",
 ]
-
-
-
