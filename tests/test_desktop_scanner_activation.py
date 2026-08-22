@@ -241,6 +241,7 @@ def test_desktop_start_runs_scanner_projects_gui_and_stop_disconnects() -> None:
         assert row.rank == "1"
         assert row.score == "91"
         assert row.relative_volume == "7.00x"
+        assert row.volume == "1,400,000"
         assert row.dollar_volume == "$7,000,000"
         assert row.catalyst.startswith("OTHER:")
         assert row.failed_rules == "--"

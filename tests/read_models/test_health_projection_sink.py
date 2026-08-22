@@ -459,3 +459,58 @@ def test_live_timestamp_requires_decoded_quote_trade_or_snapshot_event() -> None
 
     projection(event(5, "MARKET_DATA_SNAPSHOT_RECEIVED"))
     assert projection.snapshot.last_market_data_event == NOW + timedelta(seconds=5)
+
+
+def test_broker_rest_success_does_not_clear_active_market_stream_failure() -> None:
+    projection = HealthProjection(OperationsBus())
+    projection(event(1, "STARTED"))
+    projection(event(2, "BROKER_CONNECTED"))
+    projection(event(
+        3,
+        "MARKET_DATA_TERMINAL_FAILURE",
+        message="Live stream failed.",
+        health=RuntimeHealthUpdate(
+            runtime_status="DEGRADED",
+            market_data_status="REST_ONLY",
+            market_data_rest_status="AVAILABLE",
+            streaming_status="UNAVAILABLE",
+        ),
+    ))
+    projection(event(
+        4,
+        "BROKER_REST_OBSERVED",
+        health=RuntimeHealthUpdate(
+            broker_status="CONNECTED",
+            trading_rest_status="CONNECTED",
+            account_status="AVAILABLE",
+            balances_status="AVAILABLE",
+            positions_status="AVAILABLE",
+            orders_status="AVAILABLE",
+        ),
+    ))
+
+    state = projection.snapshot
+    assert state.streaming_status == "UNAVAILABLE"
+    assert state.market_data_status == "REST_ONLY"
+    assert state.last_error == "Live stream failed."
+
+
+def test_historical_rest_success_does_not_clear_active_market_stream_failure() -> None:
+    projection = HealthProjection(OperationsBus())
+    projection(event(1, "STARTED"))
+    projection(event(
+        2,
+        "MARKET_DATA_TERMINAL_FAILURE",
+        message="Live stream failed.",
+        health=RuntimeHealthUpdate(
+            runtime_status="DEGRADED",
+            market_data_status="REST_ONLY",
+            market_data_rest_status="AVAILABLE",
+            streaming_status="UNAVAILABLE",
+        ),
+    ))
+    projection(event(3, "HISTORICAL_BARS_LOADED"))
+
+    state = projection.snapshot
+    assert state.streaming_status == "UNAVAILABLE"
+    assert state.last_error == "Live stream failed."

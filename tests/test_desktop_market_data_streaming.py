@@ -280,7 +280,7 @@ def test_quote_and_trade_translate_to_existing_runtime_events() -> None:
     assert trade.event_type == "MARK_UPDATED"
     assert trade.mark_price == Decimal("200.50")
     assert trade.watchlist.quote.latest_price == Decimal("200.50")
-    assert trade.watchlist.quote.volume == 25
+    assert trade.watchlist.quote.volume is None
 
 
 def test_driver_streams_quotes_through_application_state_and_stops() -> None:
@@ -321,7 +321,7 @@ def test_driver_streams_quotes_through_application_state_and_stops() -> None:
         assert entry.latest_price == "200.50"
         assert entry.bid == "199"
         assert entry.ask == "201"
-        assert entry.volume == 25
+        assert entry.volume is None
         assert entry.last_update == NOW + timedelta(seconds=1)
         assert entry.stale is False
         assert stream.calls == [

@@ -15,9 +15,11 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
+    QLineEdit,
     QPushButton,
     QSplitter,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -28,11 +30,15 @@ from app.gui.models import (
     AIThinkingSnapshot,
     AtlasActivitySnapshot,
     ChartViewSnapshot,
+    HealthDashboardSnapshot,
+    MissionStatusSnapshot,
     WatchlistSnapshot,
 )
 from app.gui.widgets.atlas_activity_panel import AtlasActivityPanel
 from app.gui.widgets.ai_thinking_panel import AIThinkingPanel
 from app.gui.widgets.data_table import StyledDataTable
+from app.gui.widgets.infrastructure_strip import InfrastructureStrip
+from app.gui.widgets.mission_status_panel import MissionStatusPanel
 from app.gui.widgets.panel import SectionPanel
 
 
@@ -131,63 +137,29 @@ class EmptyChartCanvas(QFrame):
         for y in range(0, self.height(), step_y):
             painter.drawLine(0, y, self.width(), y)
         center_x = self.width() / 2
-        center_y = self.height() / 2 - 28
-        icon_pen = QPen(QColor(Colors.TEXT_FAINT), 2)
-        painter.setPen(icon_pen)
-        painter.drawRoundedRect(
-            QRectF(center_x - 26, center_y - 28, 52, 42),
-            6,
-            6,
-        )
-        painter.drawLine(
-            int(center_x - 16),
-            int(center_y + 4),
-            int(center_x - 5),
-            int(center_y - 7),
-        )
-        painter.drawLine(
-            int(center_x - 5),
-            int(center_y - 7),
-            int(center_x + 4),
-            int(center_y),
-        )
-        painter.drawLine(
-            int(center_x + 4),
-            int(center_y),
-            int(center_x + 16),
-            int(center_y - 14),
-        )
+        center_y = self.height() / 2 - 12
         lowered = self._message.lower()
         if self._symbol == "--" and "scanning" in lowered:
             title = "Atlas is scanning"
             detail = "Candidates: 0"
-            hint = (
-                "A chart will appear when Atlas focuses a candidate or an "
-                "active position, working order, or operator inspection exists."
-            )
         elif self._symbol == "--":
             title = "Chart idle"
             detail = self._message
-            hint = "No market series has been fabricated."
         elif "select" in lowered:
             title, detail = "Symbol not selected", "Select a symbol to initialize the chart"
-            hint = "No market series has been fabricated."
         elif "subscription" in lowered:
             title, detail = "Waiting for subscription", self._message
-            hint = "No market series has been fabricated."
         elif "entitlement" in lowered:
             title, detail = "Entitlement required", self._message
-            hint = "No market series has been fabricated."
         else:
             title, detail = "Market data unavailable", self._message
-            hint = "No market series has been fabricated."
         title_font = painter.font()
         title_font.setPixelSize(16)
         title_font.setBold(True)
         painter.setFont(title_font)
         painter.setPen(QColor(Colors.TEXT))
         painter.drawText(
-            QRectF(0, center_y + 30, self.width(), 24),
+            QRectF(0, center_y, self.width(), 24),
             Qt.AlignmentFlag.AlignHCenter,
             title,
         )
@@ -197,15 +169,9 @@ class EmptyChartCanvas(QFrame):
         painter.setFont(detail_font)
         painter.setPen(QColor(Colors.TEXT_MUTED))
         painter.drawText(
-            QRectF(40, center_y + 56, self.width() - 80, 36),
+            QRectF(40, center_y + 28, self.width() - 80, 36),
             Qt.AlignmentFlag.AlignHCenter | Qt.TextFlag.TextWordWrap,
             detail,
-        )
-        painter.setPen(QColor(Colors.TEXT_FAINT))
-        painter.drawText(
-            QRectF(50, center_y + 88, self.width() - 100, 44),
-            Qt.AlignmentFlag.AlignHCenter | Qt.TextFlag.TextWordWrap,
-            hint,
         )
 
     def _paint_candles(self, painter: QPainter) -> None:
@@ -703,19 +669,55 @@ class CompactWatchlistPanel(QWidget):
         self.setMinimumWidth(Dimensions.WATCHLIST_MIN_WIDTH)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
         status_row = QHBoxLayout()
-        self._scanner_status = QLabel("Atlas Scanner: Unknown")
-        self._scanner_status.setObjectName("muted")
+        scanner_title = QLabel("ATLAS SCANNER")
+        scanner_title.setObjectName("sectionTitle")
+        self._scanner_status = QLabel("Unknown")
+        self._scanner_status.setObjectName("statusPill")
         self._candidate_count = QLabel("Candidates: 0")
         self._candidate_count.setObjectName("monoValue")
+        status_row.addWidget(scanner_title)
         status_row.addWidget(self._scanner_status)
-        status_row.addStretch()
+        status_row.addWidget(self._candidate_count)
+        status_row.addStretch(1)
         self._mode_selector = QComboBox()
         self._mode_selector.addItems(("CURRENT ATLAS", "WARRIOR PAPER"))
         self._mode_selector.currentTextChanged.connect(self.focus_mode_changed.emit)
         status_row.addWidget(self._mode_selector)
-        status_row.addWidget(self._candidate_count)
         layout.addLayout(status_row)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(5)
+        self._view_buttons: dict[str, QPushButton] = {}
+        for label in ("All", "Qualifying", "Near Miss", "Watching"):
+            button = QPushButton(label)
+            button.setObjectName("scannerFilter")
+            button.setCheckable(True)
+            button.setChecked(label == "All")
+            button.setEnabled(label == "All")
+            if label != "All":
+                button.setToolTip("This classification is not present in the current scanner projection")
+            controls.addWidget(button)
+            self._view_buttons[label] = button
+        controls.addStretch(1)
+        self.columns_button = QPushButton("Columns")
+        self.columns_button.setObjectName("ghostButton")
+        self.columns_button.setEnabled(False)
+        self.columns_button.setToolTip("Column presets are not available in the current projection")
+        self.filters_button = QPushButton("Filters")
+        self.filters_button.setObjectName("ghostButton")
+        self.filters_button.setEnabled(False)
+        self.filters_button.setToolTip("Scanner filters are controlled by the existing scanner configuration")
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search symbols\u2026")
+        self.search.setClearButtonEnabled(True)
+        self.search.setMaximumWidth(220)
+        self.search.textChanged.connect(self._apply_search)
+        controls.addWidget(self.columns_button)
+        controls.addWidget(self.filters_button)
+        controls.addWidget(self.search)
+        layout.addLayout(controls)
         self._paper_summary = QLabel()
         self._paper_summary.setObjectName("monoValue")
         self._paper_funnel = QLabel()
@@ -726,8 +728,8 @@ class CompactWatchlistPanel(QWidget):
             label.setVisible(False)
             layout.addWidget(label)
         self._legacy_columns = (
-            "Rank", "Symbol", "Last", "Chg %", "Score", "Rel Vol",
-            "Setup / Catalyst", "State",
+            "Rank", "Symbol", "Price", "Chg %", "RVOL", "Volume",
+            "Float", "$ Volume", "Catalyst", "Score", "Status",
         )
         self._warrior_columns = (
             "Rank", "Symbol", "Last", "Chg %", "RVOL", "Float", "Volume",
@@ -742,19 +744,13 @@ class CompactWatchlistPanel(QWidget):
             "will appear here automatically.",
             icon="\u2606",
         )
-        header = self._table.horizontalHeader()
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
-        for column in (0, 1, 2, 3, 4, 5, 7):
-            header.setSectionResizeMode(
-                column,
-                QHeaderView.ResizeMode.ResizeToContents,
-            )
+        self._configure_columns(self._legacy_columns)
         self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         layout.addWidget(self._table, 1)
         self._table.cellClicked.connect(self._select_row)
 
     def render(self, snapshot: WatchlistSnapshot) -> None:
+        self._source_snapshot = snapshot
         warrior = any(row.strategy_status != "--" for row in snapshot.rows)
         columns = self._warrior_columns if warrior else self._legacy_columns
 
@@ -775,11 +771,7 @@ class CompactWatchlistPanel(QWidget):
         if self._table.columnCount() != len(columns):
             self._table.setColumnCount(len(columns))
             self._table.setHorizontalHeaderLabels(columns)
-            header = self._table.horizontalHeader()
-            stretch = 11 if warrior else 6
-            header.setSectionResizeMode(stretch, QHeaderView.ResizeMode.Stretch)
-            for column in tuple(index for index in range(len(columns)) if index != stretch):
-                header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+            self._configure_columns(columns)
         status = snapshot.scanner_status.replace("_", " ").title()
         prefix = "Warrior Capture" if self._mode_selector.currentText() == "WARRIOR PAPER" else "Atlas Scanner"
         self._scanner_status.setText(f"{prefix}: {status}")
@@ -790,8 +782,13 @@ class CompactWatchlistPanel(QWidget):
             icon="\u2606",
         )
         self._table.clearSelection()
-        self._table.setRowCount(len(snapshot.rows))
-        for row_index, row in enumerate(snapshot.rows):
+        query = self.search.text().strip().upper()
+        visible_rows = tuple(
+            row for row in snapshot.rows
+            if not query or query in row.symbol.upper()
+        )
+        self._table.setRowCount(len(visible_rows))
+        for row_index, row in enumerate(visible_rows):
             state = (
                 f"{row.market_status} \u00b7 {row.stale}"
                 if row.market_status != "--"
@@ -807,8 +804,11 @@ class CompactWatchlistPanel(QWidget):
                  row.blocking_reasons)
                 if warrior else
                 (row.rank, f"\u25cf {row.symbol}" if row.selected else row.symbol,
-                 row.latest_price, row.change_percent, row.score,
-                 row.relative_volume, row.catalyst, f"{row.session} / {row.freshness}")
+                 row.latest_price, row.change_percent, row.relative_volume,
+                 row.volume, row.float_shares, row.dollar_volume,
+                 row.catalyst, row.score,
+                 row.strategy_status if row.strategy_status != "--"
+                 else f"{row.session} / {row.freshness}")
             )
             for column_index, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -817,7 +817,7 @@ class CompactWatchlistPanel(QWidget):
                         Qt.AlignmentFlag.AlignRight
                         | Qt.AlignmentFlag.AlignVCenter
                     )
-                color = _watchlist_color(column_index, value)
+                color = _watchlist_color(columns[column_index], value)
                 if color is not None:
                     item.setForeground(QBrush(QColor(color)))
                 item.setToolTip(state)
@@ -830,6 +830,26 @@ class CompactWatchlistPanel(QWidget):
                 )
             if row.selected:
                 self._table.selectRow(row_index)
+
+    def _configure_columns(self, columns: tuple[str, ...]) -> None:
+        """Install stable, user-resizable widths without per-tick autosizing."""
+        header = self._table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        widths = {
+            "Rank": 58, "Symbol": 92, "Price": 88, "Last": 88,
+            "Chg %": 82, "RVOL": 76, "Rel Vol": 82, "Volume": 100,
+            "Float": 92, "$ Volume": 108, "Dollar Vol": 108,
+            "Catalyst": 160, "Score": 72, "Status": 110,
+        }
+        for index, name in enumerate(columns):
+            self._table.setColumnWidth(index, widths.get(name, 118))
+
+    def _apply_search(self) -> None:
+        snapshot = getattr(self, "_source_snapshot", None)
+        if snapshot is not None:
+            self._last_render_fingerprint = None
+            self.render(snapshot)
 
     def set_paper_summary(self, summary: str, funnel: str, research: str) -> None:
         visible = self._mode_selector.currentText() == "WARRIOR PAPER"
@@ -848,12 +868,13 @@ class CompactWatchlistPanel(QWidget):
 
 
 class MarketWorkspace(QWidget):
-    """Compose chart, Atlas Focus, AI thinking, and Atlas activity."""
+    """Chart and scanner workspace; secondary intelligence lives in a dock."""
 
     chart_symbol_selected = Signal(str)
     operator_symbol_selected = Signal(str)
     atlas_symbol_selected = Signal(str)
     chart_timeframe_selected = Signal(str)
+    focus_mode_changed = Signal(bool)
 
     def __init__(self, chart_view: ChartView | None = None) -> None:
         super().__init__()
@@ -885,52 +906,137 @@ class MarketWorkspace(QWidget):
 
         self.atlas_activity = AtlasActivityPanel()
         self.ai_thinking = AIThinkingPanel()
-        self.ai_thinking.setMinimumHeight(130)
+        self.mission_status = MissionStatusPanel()
+        self.infrastructure = InfrastructureStrip()
 
-        self.ai_thinking_section = SectionPanel("AI Thinking", self.ai_thinking)
-        self.activity_section = SectionPanel("Atlas Activity", self.atlas_activity)
-        self.focus_section = SectionPanel("Atlas Focus", self.watchlist)
-        self.focus_section.setMinimumHeight(260)
-        self.market_section = SectionPanel("Market", self.chart_view)
+        self.ai_thinking_section = SectionPanel(
+            "AI Thinking", self.ai_thinking, collapsible=True
+        )
+        self.activity_section = SectionPanel(
+            "Atlas Activity", self.atlas_activity, collapsible=True
+        )
+        self.mission_section = SectionPanel(
+            "Mission Status", self.mission_status, collapsible=True
+        )
+        self.infrastructure_section = SectionPanel(
+            "Infrastructure", self.infrastructure, collapsible=True
+        )
+        self.focus_section = SectionPanel("Atlas Scanner", self.watchlist)
+        self.focus_section.setMinimumHeight(180)
+        self.focus_chart_button = QToolButton()
+        self.focus_chart_button.setObjectName("focusChartButton")
+        self.focus_chart_button.setText("Focus Chart")
+        self.focus_chart_button.setToolTip("Temporarily dedicate the workspace to the chart")
+        self.focus_chart_button.clicked.connect(self.toggle_chart_focus)
+        self.market_section = SectionPanel(
+            "Market", self.chart_view, action=self.focus_chart_button
+        )
+        self.market_section.setMinimumHeight(520)
+        self._chart_focused = False
+        self._pre_focus_sizes: tuple[int, ...] = ()
+        self._layout_mode: str | None = None
+        self._responsive_width_override: int | None = None
 
-        # Top workspace: large chart on the left, narrow operator-intelligence
-        # rail on the right. AI Thinking stays above Atlas Activity.
+        # Keep market ownership stable. MainWindow places the separately-owned
+        # intelligence widget in a QDockWidget; responsive changes never move
+        # live widgets between splitters.
         top = QSplitter(Qt.Orientation.Horizontal)
-        top.setHandleWidth(2)
+        top.setObjectName("chartRailSplitter")
+        top.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
 
         intelligence_rail = QWidget()
         intelligence_rail.setMinimumWidth(340)
         self.intelligence_rail = intelligence_rail
         rail_layout = QVBoxLayout(intelligence_rail)
         rail_layout.setContentsMargins(0, 0, 0, 0)
-        rail_layout.setSpacing(7)
-        self.ai_thinking_section.setMinimumHeight(150)
-        self.activity_section.setMinimumHeight(150)
-        rail_layout.addWidget(self.ai_thinking_section, 3)
-        rail_layout.addWidget(self.activity_section, 2)
+        rail_layout.setSpacing(0)
+        self.right_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.right_splitter.setObjectName("intelligenceRailSplitter")
+        self.right_splitter.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
+        for section in (
+            self.ai_thinking_section,
+            self.activity_section,
+            self.mission_section,
+            self.infrastructure_section,
+        ):
+            self.right_splitter.addWidget(section)
+            self.right_splitter.setCollapsible(
+                self.right_splitter.indexOf(section), True
+            )
+        self.right_splitter.setSizes((230, 180, 190, 190))
+        rail_layout.addWidget(self.right_splitter)
 
         top.addWidget(self.market_section)
-        top.addWidget(intelligence_rail)
         top.setCollapsible(0, False)
-        top.setCollapsible(1, False)
-        top.setStretchFactor(0, 5)
-        top.setStretchFactor(1, 1)
-        top.setSizes((1180, 260))
+        top.setStretchFactor(0, 1)
 
-        # Atlas Focus gets a full-width workspace below the chart/rail so the
+        # Atlas Scanner gets a full-width workspace below the chart so the
         # richer Warrior Paper columns remain inspectable.
         self.splitter = QSplitter(Qt.Orientation.Vertical)
-        self.splitter.setHandleWidth(3)
+        self.splitter.setObjectName("chartScannerSplitter")
+        self.splitter.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
         self.splitter.addWidget(top)
         self.splitter.addWidget(self.focus_section)
         self.splitter.setCollapsible(0, False)
         self.splitter.setCollapsible(1, False)
-        self.splitter.setStretchFactor(0, 3)
-        self.splitter.setStretchFactor(1, 2)
-        self.splitter.setSizes((560, 330))
+        self.splitter.setStretchFactor(0, 7)
+        self.splitter.setStretchFactor(1, 3)
+        self.splitter.setSizes((560, 260))
 
         self.top_splitter = top
         layout.addWidget(self.splitter)
+
+    @property
+    def chart_focused(self) -> bool:
+        return self._chart_focused
+
+    @property
+    def layout_mode(self) -> str | None:
+        return self._layout_mode
+
+    def toggle_chart_focus(self) -> None:
+        self.set_chart_focus(not self._chart_focused)
+
+    def set_chart_focus(self, focused: bool) -> None:
+        focused = bool(focused)
+        if focused == self._chart_focused:
+            return
+        self._chart_focused = focused
+        if focused:
+            self._pre_focus_sizes = tuple(self.splitter.sizes())
+            self.focus_section.hide()
+            self.focus_chart_button.setText("Restore Layout")
+            self.focus_chart_button.setToolTip("Restore Atlas Scanner")
+        else:
+            self.focus_section.show()
+            self.focus_chart_button.setText("Focus Chart")
+            self.focus_chart_button.setToolTip(
+                "Temporarily dedicate the workspace to the chart"
+            )
+            if self._pre_focus_sizes:
+                self.splitter.setSizes(self._pre_focus_sizes)
+        self.focus_mode_changed.emit(focused)
+
+    def set_responsive_width(
+        self, width: int, *, force: bool = False, external: bool = False
+    ) -> None:
+        if external:
+            self._responsive_width_override = width
+        mode = "compact" if width <= 1366 else "wide"
+        if not force and mode == self._layout_mode:
+            return
+        self._layout_mode = mode
+        self.splitter.setStretchFactor(0, 7)
+        self.splitter.setStretchFactor(1, 3)
+        # Both modes preserve the native chart canvas. Scanner overflow belongs
+        # below it, in the dashboard's vertical scroll area.
+        self.splitter.setSizes((560 if mode == "compact" else 620, 260))
+
+    def reset_layout(self, width: int | None = None) -> None:
+        self.set_chart_focus(False)
+        self.right_splitter.setSizes((230, 180, 190, 190))
+        self._layout_mode = None
+        self.set_responsive_width(width or self.width(), force=True)
 
     def _emit_operator_symbol(self, symbol: str) -> None:
         self.chart_symbol_selected.emit(symbol)
@@ -1018,65 +1124,39 @@ class MarketWorkspace(QWidget):
     def render_ai_thinking(self, snapshot: AIThinkingSnapshot) -> None:
         self.ai_thinking.render(snapshot)
 
+    def render_mission(self, snapshot: MissionStatusSnapshot) -> None:
+        self.mission_status.render(snapshot)
+
+    def render_infrastructure(self, snapshot: HealthDashboardSnapshot) -> None:
+        self.infrastructure.render(snapshot)
+
     def minimumSizeHint(self) -> QSize:
-        # Preserve complete primary-panel content. The dashboard scroll area
-        # handles shorter screens without allowing sidebar cards to overlap.
-        return QSize(0, 420)
+        return QSize(0, 830)
 
     def resizeEvent(self, event) -> None:
-        width = event.size().width()
-        height = event.size().height()
-        self.splitter.setOrientation(Qt.Orientation.Vertical)
-
-        # Wide/medium: chart + readable intelligence rail. Compact: stack the
-        # rail below the chart. The dashboard scroll area handles total height.
-        top_orientation = (
-            Qt.Orientation.Horizontal
-            if width >= 1240
-            else Qt.Orientation.Vertical
-        )
-        if self.top_splitter.orientation() != top_orientation:
-            self.top_splitter.setOrientation(top_orientation)
-
-        if top_orientation == Qt.Orientation.Horizontal:
-            # Never allow the intelligence rail to become a decorative sliver.
-            # It must remain wide enough for AI Thinking and Atlas Activity text.
-            rail_width = 340 if width < 1600 else 380
-            self.intelligence_rail.setMinimumWidth(340)
-            self.intelligence_rail.setMaximumWidth(420)
-            self.top_splitter.setSizes((max(700, width - rail_width), rail_width))
-        else:
-            # Medium/compact mode: the chart owns the full width. Intelligence
-            # moves below it instead of shrinking beside it. The dashboard's
-            # vertical scroll area makes the extra height reachable.
-            self.intelligence_rail.setMinimumWidth(0)
-            self.intelligence_rail.setMaximumWidth(16777215)
-            chart_height = 360 if width >= 900 else 320
-            intelligence_height = 340 if width >= 900 else 380
-            self.top_splitter.setSizes((chart_height, intelligence_height))
-
-        # Atlas Focus is an operator workspace, not a footer. Preserve enough
-        # height for multiple candidate rows and let its table scroll internally.
-        focus_height = 300 if width >= 1240 else 280
-        top_height = max(420, height - focus_height)
-        self.splitter.setSizes((top_height, focus_height))
+        # Geometry changes only when crossing the real responsive breakpoint;
+        # ordinary resizes preserve the operator's splitter choices.
+        width = self._responsive_width_override or event.size().width()
+        self.set_responsive_width(width)
         super().resizeEvent(event)
 
 
-def _watchlist_color(column: int, value: str) -> str | None:
+def _watchlist_color(column: str, value: str) -> str | None:
     normalized = value.upper()
-    if column == 3:
+    if column == "Chg %":
         if value.startswith("+"):
             return Colors.SUCCESS
         if value.startswith("-"):
             return Colors.DANGER
         return Colors.TEXT_MUTED
-    if column == 7:
+    if column in {"Status", "State"}:
         if "STALE" in normalized or "CLOSED" in normalized:
             return Colors.DANGER
         if "OPEN" in normalized and "LIVE" in normalized:
             return Colors.SUCCESS
         return Colors.TEXT_MUTED
+    if column in {"Catalyst", "Setup / Catalyst"} and value != "--":
+        return "#c084fc"
     return None
 
 

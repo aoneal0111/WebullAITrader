@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QByteArray, QSettings, Qt, QTimer
+from PySide6.QtGui import QCloseEvent, QGuiApplication, QResizeEvent
 from PySide6.QtWidgets import (
+    QDockWidget,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -69,6 +70,7 @@ class MainWindow(QMainWindow):
         chart_market_data_service: ChartMarketDataService | None = None,
         chart_default_symbol: str | None = None,
         warrior_forward_sidecar=None,
+        settings: QSettings | None = None,
     ) -> None:
         super().__init__()
         self._bus = bus
@@ -82,13 +84,20 @@ class MainWindow(QMainWindow):
         self._chart_default_symbol = chart_default_symbol
         self._chart_presenter: ChartPresenter | None = None
         self._warrior_forward_sidecar = warrior_forward_sidecar
+        self._settings = settings or QSettings("Atlas", "WebullAITrader")
+        self._sidebar_user_compact = False
         self._close_requested = False
         self._state_bridge = QtStateBridge(state_store, self)
         self._state_bridge.state_changed.connect(self._render_state)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setWindowTitle("Atlas \u2014 WebullAITrader")
-        self.setMinimumSize(1180, 760)
+        # The dashboard owns vertical overflow, so laptop-height windows do not
+        # need to be artificially enlarged beyond the available screen.
+        self.setMinimumSize(1024, 640)
         self.resize(1440, 900)
         self._build()
+        self._build_intelligence_inspector()
+        self._restore_layout()
         self._build_presentation()
         self.setStyleSheet(application_stylesheet())
         self._render_state(state_store.snapshot())
@@ -99,8 +108,19 @@ class MainWindow(QMainWindow):
         self._refresh_warrior_paper()
         if replay_workspace is not None:
             self._wire_replay_workspace(replay_workspace)
-            self._render_state(replay_workspace.state)
+            self._render_replay_state(replay_workspace.state)
         self.sidebar.buttons["Dashboard"].setFocus()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        # Recover workspace width on common laptop displays while retaining
+        # every navigation destination through labeled tooltips/accessibility.
+        if hasattr(self, "sidebar"):
+            self.sidebar.set_compact(
+                event.size().width() <= 1366 or self._sidebar_user_compact
+            )
+        if hasattr(self, "dashboard"):
+            self.dashboard.set_viewport_width(event.size().width())
+        super().resizeEvent(event)
 
     def _refresh_warrior_paper(self) -> None:
         sidecar = self._warrior_forward_sidecar
@@ -160,6 +180,7 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.pages, 1)
         outer.addWidget(content, 1)
         self.sidebar.page_requested.connect(self.pages.setCurrentIndex)
+        self.sidebar.compact_toggled.connect(self._set_sidebar_compact)
         self.setCentralWidget(root)
 
         header = self.dashboard.runtime_header
@@ -173,6 +194,8 @@ class MainWindow(QMainWindow):
             lambda checked=False: self._runtime_service.stop()
         )
         self.pause_button.clicked.connect(self._toggle_replay)
+        header.reset_layout_requested.connect(self.reset_layout)
+        header.inspector_requested.connect(self._set_inspector_visible)
 
         status = QStatusBar()
         self.global_status = GlobalStatusBar(version=_application_version())
@@ -181,6 +204,40 @@ class MainWindow(QMainWindow):
         self.status_label.setVisible(False)
         status.addWidget(self.status_label)
         self.setStatusBar(status)
+
+    def _build_intelligence_inspector(self) -> None:
+        self.intelligence_inspector = QDockWidget("Atlas Inspector", self)
+        self.intelligence_inspector.setObjectName("atlasIntelligenceInspector")
+        self.intelligence_inspector.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.intelligence_inspector.setMinimumWidth(340)
+        self.intelligence_inspector.setWidget(
+            self.dashboard.market_workspace.intelligence_rail
+        )
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea,
+            self.intelligence_inspector,
+        )
+        self.intelligence_inspector.visibilityChanged.connect(
+            self._sync_inspector_toggle
+        )
+        # Secondary information is opt-in at every viewport, including large
+        # displays. Operators can dock, float, and resize it when needed.
+        self.intelligence_inspector.hide()
+
+    def _set_inspector_visible(self, visible: bool) -> None:
+        self.intelligence_inspector.setVisible(bool(visible))
+        if visible:
+            self.intelligence_inspector.raise_()
+
+    def _sync_inspector_toggle(self, visible: bool) -> None:
+        button = self.dashboard.runtime_header.inspector_button
+        if button.isChecked() != visible:
+            button.blockSignals(True)
+            button.setChecked(visible)
+            button.blockSignals(False)
 
     def _build_presentation(self) -> None:
         self._timeline_presenter = TimelinePresenter(
@@ -194,6 +251,7 @@ class MainWindow(QMainWindow):
         self._watchlist_presenter = WatchlistPresenter(
             self.watchlist,
             self.dashboard.market_workspace,
+            RenderAdapter(self.dashboard.runtime_header.render_watchlist),
         )
         if self._chart_market_data_service is not None:
             self._chart_presenter = ChartPresenter(
@@ -262,6 +320,67 @@ class MainWindow(QMainWindow):
             self._watchlist_presenter.sort_by
         )
 
+    def _set_sidebar_compact(self, compact: bool) -> None:
+        # The laptop breakpoint is mandatory; the preference applies on wider
+        # workstations where either rail style is usable.
+        self._sidebar_user_compact = bool(compact)
+        self.sidebar.set_compact(
+            self.width() <= 1366 or self._sidebar_user_compact
+        )
+
+    def _restore_layout(self) -> None:
+        settings = self._settings
+        geometry = settings.value("layout/window_geometry")
+        restored_geometry = (
+            isinstance(geometry, QByteArray)
+            and not geometry.isEmpty()
+            and self.restoreGeometry(geometry)
+        )
+        if restored_geometry:
+            restored_geometry = any(
+                screen.availableGeometry().intersects(self.frameGeometry())
+                for screen in QGuiApplication.screens()
+            )
+        if not restored_geometry:
+            self.resize(1440, 900)
+
+        self._sidebar_user_compact = _setting_bool(
+            settings.value("layout/sidebar_compact", False)
+        )
+        self.sidebar.set_compact(
+            self.width() <= 1366 or self._sidebar_user_compact
+        )
+        self.dashboard.set_viewport_width(self.width(), force=True)
+
+        workspace = self.dashboard.market_workspace
+        saved_mode = settings.value("layout/responsive_mode", "")
+        if saved_mode == workspace.layout_mode:
+            for key, splitter in (
+                ("layout/chart_scanner_splitter", workspace.splitter),
+                ("layout/right_rail_splitter", workspace.right_splitter),
+            ):
+                state = settings.value(key)
+                if isinstance(state, QByteArray) and not state.isEmpty():
+                    splitter.restoreState(state)
+
+    def _save_layout(self) -> None:
+        workspace = self.dashboard.market_workspace
+        settings = self._settings
+        settings.setValue("layout/window_geometry", self.saveGeometry())
+        settings.setValue("layout/responsive_mode", workspace.layout_mode or "")
+        settings.setValue("layout/chart_scanner_splitter", workspace.splitter.saveState())
+        settings.setValue("layout/right_rail_splitter", workspace.right_splitter.saveState())
+        settings.setValue("layout/sidebar_compact", self._sidebar_user_compact)
+        settings.sync()
+
+    def reset_layout(self) -> None:
+        self._settings.remove("layout")
+        self._sidebar_user_compact = False
+        self.resize(1440, 900)
+        self.sidebar.set_compact(False)
+        self.intelligence_inspector.hide()
+        self.dashboard.market_workspace.reset_layout(self.width())
+
     def _toggle_replay(self) -> None:
         workspace = self._replay_workspace
         if workspace is None:
@@ -281,6 +400,9 @@ class MainWindow(QMainWindow):
     def _render_state(self, state: ApplicationState) -> None:
         self._presentation.render(state)
 
+    def _render_replay_state(self, state: ApplicationState) -> None:
+        self._replay_presenter.render(state)
+
     def _wire_replay_workspace(self, workspace: ReplayWorkspace) -> None:
         self.replay.play_requested.connect(workspace.play)
         self.replay.pause_requested.connect(workspace.pause)
@@ -291,7 +413,9 @@ class MainWindow(QMainWindow):
             workspace.jump_to_event_index
         )
         self._replay_state_bridge = QtReplayStateBridge(workspace, self)
-        self._replay_state_bridge.state_changed.connect(self._render_state)
+        self._replay_state_bridge.state_changed.connect(
+            self._render_replay_state
+        )
 
     def closeEvent(self, event: QCloseEvent) -> None:
         # Joining the runtime here blocks the Qt event loop exactly when a busy
@@ -304,10 +428,12 @@ class MainWindow(QMainWindow):
             event.ignore()
             QTimer.singleShot(50, self.close)
             return
+        self._warrior_refresh_timer.stop()
         if self._chart_presenter is not None:
             self._chart_presenter.close()
         if self._replay_state_bridge is not None:
             self._replay_state_bridge.close()
+        self._save_layout()
         self._state_bridge.close()
         event.accept()
 
@@ -317,3 +443,9 @@ def _application_version() -> str:
         return version("webull-ai-trader")
     except PackageNotFoundError:
         return "0.1.0"
+
+
+def _setting_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}

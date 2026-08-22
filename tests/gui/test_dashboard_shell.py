@@ -4,12 +4,13 @@ from decimal import Decimal
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QScrollArea
+from PySide6.QtCore import QByteArray, QEvent, QSettings, Qt
+from PySide6.QtWidgets import QApplication, QHeaderView, QScrollArea
 
 from app.account_information.models import BrokerNeutralAccountInformation
 from app.composition import create_desktop_composition
 from app.gui.main_window import MainWindow
+from app.gui.design.tokens import Dimensions
 from app.gui.models import (
     HealthDashboardSnapshot,
     WatchlistRow,
@@ -31,7 +32,7 @@ def application():
 
 
 @pytest.fixture
-def window(application):
+def window(application, tmp_path):
     composition = create_desktop_composition()
     desktop = MainWindow(
         composition.bus,
@@ -39,6 +40,10 @@ def window(application):
         composition.runtime_service,
         composition.trading_service,
         composition.order_command_factory,
+        settings=QSettings(
+            str(tmp_path / "atlas-layout.ini"),
+            QSettings.Format.IniFormat,
+        ),
     )
     yield desktop
     desktop.close()
@@ -54,15 +59,17 @@ def test_navigation_rail_uses_reference_routes_without_reindexing(
     sidebar.page_requested.connect(requested.append)
 
     sidebar.buttons["Replay"].click()
-    sidebar.buttons["Event Store"].click()
+    sidebar.buttons["Activity"].click()
 
     assert sidebar.ITEMS == (
         "Dashboard",
-        "Replay",
-        "Event Store",
-        "Analytics",
-        "Experiments",
+        "Watchlist",
+        "Positions",
+        "Orders",
+        "Decisions",
+        "Activity",
         "Operations",
+        "Replay",
         "Settings",
     )
     assert requested == [8, 5]
@@ -103,7 +110,7 @@ def test_supported_minimum_size_has_no_horizontal_dashboard_scroll(
 
 @pytest.mark.parametrize(
     ("width", "height"),
-    ((1180, 760), (1440, 900), (1920, 1080)),
+    ((1280, 720), (1366, 768), (1440, 900), (1920, 1080)),
 )
 def test_dashboard_preserves_content_at_supported_resolutions(
     application,
@@ -117,7 +124,18 @@ def test_dashboard_preserves_content_at_supported_resolutions(
 
     scroll = window.dashboard.findChild(QScrollArea)
     assert scroll.horizontalScrollBar().maximum() == 0
+    assert window.size().width() == width
+    assert window.size().height() == height
     assert scroll.widget().height() >= scroll.viewport().height()
+    if height <= 768:
+        assert scroll.verticalScrollBar().maximum() > 0
+    for button in (
+        window.start_button,
+        window.pause_button,
+        window.stop_button,
+        window.flatten_button,
+    ):
+        assert button.width() >= button.minimumSizeHint().width()
     assert window.dashboard.market_workspace.height() > 300
     market_workspace = window.dashboard.market_workspace
 
@@ -127,14 +145,20 @@ def test_dashboard_preserves_content_at_supported_resolutions(
     # Responsive behavior is based on the workspace's actual usable width,
     # not the outer window width. Sidebar and page margins reduce the space
     # available to MarketWorkspace.
-    expected_top_orientation = (
-        Qt.Orientation.Horizontal
-        if market_workspace.width() >= 1240
-        else Qt.Orientation.Vertical
-    )
-    assert market_workspace.top_splitter.orientation() == (
-        expected_top_orientation
-    )
+    expected_mode = "compact" if width <= 1366 else "wide"
+    assert market_workspace.layout_mode == expected_mode
+
+    if width <= 1366:
+        assert window.sidebar.compact is True
+        assert window.sidebar.width() == Dimensions.NAV_COMPACT_WIDTH
+        assert market_workspace.splitter.indexOf(
+            market_workspace.intelligence_rail
+        ) == -1
+        assert window.intelligence_inspector.isHidden()
+        assert all(
+            button.toolTip() and button.accessibleName()
+            for button in window.sidebar.buttons.values()
+        )
 
 
 def test_portfolio_summary_exposes_visual_metric_hierarchy(window) -> None:
@@ -322,3 +346,214 @@ def test_existing_projection_snapshots_populate_dashboard_surfaces(
     )
     assert window.dashboard.market_workspace.chart_view._symbol.text() == "--"
     assert window.global_status.broker.text() == "\u25cf  Broker Connected"
+
+
+def test_laptop_chart_and_scanner_own_visible_workspace(application, window) -> None:
+    window.resize(1280, 720)
+    window.show()
+    for _ in range(3):
+        application.processEvents()
+
+    market = window.dashboard.market_workspace
+    chart_height = market.chart_view._canvas.height()
+    scanner_height = market.focus_section.height()
+    assert market.layout_mode == "compact"
+    assert chart_height >= 400
+    assert scanner_height >= 180
+    assert chart_height / (chart_height + scanner_height) >= 0.60
+    assert market.splitter.widget(0) is market.top_splitter
+    assert market.splitter.widget(1) is market.focus_section
+    assert market.splitter.count() == 2
+    assert window.intelligence_inspector.isHidden()
+
+
+def test_splitter_handles_and_user_sizes_survive_ordinary_resize(
+    application,
+) -> None:
+    workspace = MarketWorkspace()
+    workspace.resize(1700, 900)
+    workspace.show()
+    application.processEvents()
+    for splitter in (
+        workspace.splitter,
+        workspace.top_splitter,
+        workspace.right_splitter,
+    ):
+        assert splitter.handleWidth() >= 6
+
+    workspace.splitter.setSizes((430, 450))
+    chosen = workspace.splitter.sizes()
+    workspace.resize(1800, 900)
+    application.processEvents()
+    assert workspace.layout_mode == "wide"
+    assert workspace.splitter.sizes() == chosen
+    workspace.render(WatchlistSnapshot())
+    application.processEvents()
+    assert workspace.splitter.sizes() == chosen
+
+
+def test_focus_chart_hides_scanner_and_restores(application) -> None:
+    workspace = MarketWorkspace()
+    workspace.resize(1700, 900)
+    workspace.show()
+    application.processEvents()
+
+    workspace.focus_chart_button.click()
+    application.processEvents()
+    assert workspace.chart_focused is True
+    assert workspace.focus_section.isHidden()
+    assert workspace.focus_chart_button.text() == "Restore Layout"
+
+    workspace.focus_chart_button.click()
+    application.processEvents()
+    assert workspace.chart_focused is False
+    assert not workspace.focus_section.isHidden()
+    assert workspace.focus_chart_button.text() == "Focus Chart"
+
+
+def test_secondary_inspector_is_hidden_by_default_and_user_controlled(
+    application, window
+) -> None:
+    window.resize(1366, 768)
+    window.show()
+    application.processEvents()
+
+    inspector = window.intelligence_inspector
+    button = window.dashboard.runtime_header.inspector_button
+    assert inspector.isHidden()
+    assert not button.isChecked()
+    assert inspector.widget() is window.dashboard.market_workspace.intelligence_rail
+
+    button.click()
+    application.processEvents()
+    assert inspector.isVisible()
+    assert button.isChecked()
+
+    inspector.close()
+    application.processEvents()
+    assert inspector.isHidden()
+    assert not button.isChecked()
+
+
+def test_wide_scanner_uses_horizontal_scrolling(application) -> None:
+    workspace = MarketWorkspace()
+    row = WatchlistRow(
+        symbol="XYZ", selected=True, latest_price="10.00", change="+1.00",
+        change_percent="+10.00%", bid="9.99", ask="10.01", volume="100000",
+        market_status="OPEN", last_update="10:00:00", stale="LIVE", rank="1",
+        strategy_status="QUALIFYING", relative_volume="3.2", float_shares="5M",
+        dollar_volume="$1M", catalyst="EARNINGS",
+    )
+    workspace.render(WatchlistSnapshot(rows=(row,), candidate_count=1))
+    workspace.watchlist.resize(760, 240)
+    workspace.watchlist.show()
+    application.processEvents()
+
+    table = workspace.watchlist._table
+    assert table.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    assert table.horizontalScrollBar().maximum() > 0
+    assert all(
+        table.horizontalHeader().sectionResizeMode(index)
+        == QHeaderView.ResizeMode.Interactive
+        for index in range(table.columnCount())
+    )
+
+
+def test_qsettings_restores_splitters_and_sidebar(application, tmp_path) -> None:
+    settings_path = tmp_path / "persist.ini"
+    first_composition = create_desktop_composition()
+    first = MainWindow(
+        first_composition.bus,
+        first_composition.state_store,
+        first_composition.runtime_service,
+        first_composition.trading_service,
+        first_composition.order_command_factory,
+        settings=QSettings(str(settings_path), QSettings.Format.IniFormat),
+    )
+    first.resize(1280, 720)
+    first.show()
+    application.processEvents()
+    first._set_sidebar_compact(True)
+    first.dashboard.market_workspace.splitter.setSizes((360, 220, 520))
+    expected = first.dashboard.market_workspace.splitter.sizes()
+    first.dashboard.market_workspace.right_splitter.setSizes((170, 210, 130, 190))
+    expected_rail = first.dashboard.market_workspace.right_splitter.sizes()
+    first.close()
+    first_composition.close()
+
+    second_composition = create_desktop_composition()
+    second = MainWindow(
+        second_composition.bus,
+        second_composition.state_store,
+        second_composition.runtime_service,
+        second_composition.trading_service,
+        second_composition.order_command_factory,
+        settings=QSettings(str(settings_path), QSettings.Format.IniFormat),
+    )
+    second.show()
+    application.processEvents()
+    assert second.sidebar.compact is True
+    assert second.dashboard.market_workspace.splitter.sizes() == expected
+    restored_rail = second.dashboard.market_workspace.right_splitter.sizes()
+    assert len(restored_rail) == len(expected_rail)
+    assert all(abs(actual - expected) <= 5 for actual, expected in zip(
+        restored_rail, expected_rail
+    ))
+    second.close()
+    second_composition.close()
+
+
+def test_malformed_geometry_falls_back_and_reset_layout_clears_settings(
+    application, tmp_path
+) -> None:
+    settings = QSettings(
+        str(tmp_path / "malformed.ini"), QSettings.Format.IniFormat
+    )
+    settings.setValue("layout/window_geometry", QByteArray(b"not-qt-geometry"))
+    settings.setValue("layout/sidebar_compact", True)
+    composition = create_desktop_composition()
+    window = MainWindow(
+        composition.bus,
+        composition.state_store,
+        composition.runtime_service,
+        composition.trading_service,
+        composition.order_command_factory,
+        settings=settings,
+    )
+    assert window.size().toTuple() == (1440, 900)
+    window.dashboard.market_workspace.set_chart_focus(True)
+    window.reset_layout()
+    assert window.dashboard.market_workspace.chart_focused is False
+    assert window.sidebar.compact is False
+    assert not settings.contains("layout/window_geometry")
+    window.close()
+    composition.close()
+
+
+def test_repeated_window_open_close_cycles_destroy_native_widgets_cleanly(
+    application, tmp_path
+) -> None:
+    for cycle in range(8):
+        composition = create_desktop_composition()
+        window = MainWindow(
+            composition.bus,
+            composition.state_store,
+            composition.runtime_service,
+            composition.trading_service,
+            composition.order_command_factory,
+            chart_market_data_service=composition.chart_market_data_service,
+            settings=QSettings(
+                str(tmp_path / f"cycle-{cycle}.ini"),
+                QSettings.Format.IniFormat,
+            ),
+        )
+        window.resize(1280, 720)
+        window.show()
+        application.processEvents()
+        window.dashboard.runtime_header.inspector_button.click()
+        application.processEvents()
+        window.close()
+        application.processEvents()
+        application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        application.processEvents()
+        assert composition.close()

@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from threading import Event, Timer
 
 from PySide6.QtCore import QPoint, QPointF, QEvent, Qt
 from PySide6.QtGui import QMouseEvent, QWheelEvent
@@ -7,7 +8,8 @@ from PySide6.QtWidgets import QApplication
 
 from app.gui.chart_geometry import calculate_chart_geometry
 from app.gui.models.chart import ChartCandle, ChartViewSnapshot
-from app.gui.widgets.market_workspace import ChartPlaceholder
+from app.gui.presenters.chart_presenter import ChartPresenter
+from app.gui.widgets.market_workspace import ChartPlaceholder, MarketWorkspace
 
 
 def candle(minute: int, *, base: str = "100", volume="1000") -> ChartCandle:
@@ -240,3 +242,31 @@ def test_live_stale_and_rest_only_require_authoritative_stream_timestamp() -> No
         historical_data_available=True,
     ))
     assert widget._live_status.text() == "REST ONLY"
+
+
+def test_chart_presenter_waits_for_active_callback_before_widget_teardown() -> None:
+    application = QApplication.instance() or QApplication([])
+    started = Event()
+    release = Event()
+
+    class BlockingProjection:
+        def request(self, symbol: str, timeframe: str) -> ChartViewSnapshot:
+            started.set()
+            assert release.wait(2)
+            return ChartViewSnapshot(symbol=symbol, timeframe=timeframe)
+
+    workspace = MarketWorkspace()
+    presenter = ChartPresenter(workspace, BlockingProjection())
+    presenter.select_symbol("XYZ")
+    assert started.wait(1)
+
+    release_timer = Timer(0.05, release.set)
+    release_timer.start()
+    presenter.close()
+    release_timer.join()
+    assert release.is_set()
+    assert presenter._executor is None
+
+    workspace.deleteLater()
+    application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    application.processEvents()

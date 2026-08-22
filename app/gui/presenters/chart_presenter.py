@@ -270,11 +270,20 @@ class ChartPresenter:
         )
 
     def close(self) -> None:
+        if self._closed:
+            return
         self._closed = True
         self._generation += 1
         self._inspection.clear()
+        try:
+            self._bridge.completed.disconnect(self._apply)
+        except RuntimeError:
+            pass
         if self._executor is not None:
-            self._executor.shutdown(wait=False, cancel_futures=True)
+            # Do not let a callback retain or signal into Qt objects after the
+            # window's native children begin destruction.
+            self._executor.shutdown(wait=True, cancel_futures=True)
+            self._executor = None
 
 
 def _symbol(value: str | None) -> str | None:

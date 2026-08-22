@@ -29,7 +29,7 @@ class Colors:
 class Spacing:
     XS = 4
     SM = 8
-    MD = 12
+    MD = 13
     LG = 18
     XL = 24
     XXL = 32
@@ -55,9 +55,13 @@ class Typography:
 
 class Dimensions:
     NAV_WIDTH = 184
-    HEADER_HEIGHT = 72
+    NAV_COMPACT_WIDTH = 64
+    HEADER_HEIGHT = 64
     STATUS_HEIGHT = 24
-    TABLE_ROW_HEIGHT = 26
-    CHART_MIN_HEIGHT = 135
+    TABLE_ROW_HEIGHT = 30
+    SPLITTER_HANDLE_WIDTH = 7
+    # The market canvas is the primary laptop surface. The dashboard scrolls
+    # vertically instead of negotiating it down to dashboard-card size.
+    CHART_MIN_HEIGHT = 400
     OPERATOR_MIN_HEIGHT = 158
     WATCHLIST_MIN_WIDTH = 420

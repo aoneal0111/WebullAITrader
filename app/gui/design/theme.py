@@ -15,6 +15,12 @@ def application_stylesheet() -> str:
     QLabel#brand {{ font-size: {Typography.XL}px; font-weight: 800; letter-spacing: 2px; color: {Colors.TEXT_STRONG}; }}
     QLabel#brandMark {{ background: {Colors.ACCENT}; color: white; border-radius: 8px; font-size: 17px; font-weight: 900; }}
     QLabel#pageTitle {{ font-size: {Typography.XXL}px; font-weight: 750; color: {Colors.TEXT_STRONG}; }}
+    QLabel#missionTitle {{ font-size: {Typography.XL}px; font-weight: 750; color: {Colors.TEXT_STRONG}; }}
+    QLabel#headerMetricValue {{ font-family: "{Typography.MONO}"; color: {Colors.TEXT_STRONG}; font-size: 14px; font-weight: 700; }}
+    QLabel#headerMetricValue[status='good'] {{ color: {Colors.SUCCESS}; }}
+    QLabel#headerMetricValue[status='warn'] {{ color: {Colors.WARNING}; }}
+    QLabel#headerMetricValue[status='danger'] {{ color: {Colors.DANGER}; }}
+    QLabel#headerMetricValue[status='neutral'] {{ color: {Colors.TEXT_MUTED}; }}
     QLabel#sectionTitle {{ font-size: {Typography.PANEL_TITLE}px; font-weight: 700; color: {Colors.TEXT_STRONG}; }}
     QLabel#sectionEyebrow {{ font-size: {Typography.XS}px; font-weight: 750; color: {Colors.TEXT_MUTED}; letter-spacing: 0.8px; }}
     QLabel#eyebrow {{ color: {Colors.ACCENT}; font-size: {Typography.XS}px; font-weight: 800; letter-spacing: 1px; }}
@@ -26,6 +32,8 @@ def application_stylesheet() -> str:
         border: 1px solid {Colors.BORDER};
         border-radius: 5px;
     }}
+    QFrame#terminalHeader {{ background: {Colors.SIDEBAR}; border-bottom: 1px solid {Colors.BORDER_STRONG}; }}
+    QFrame#headerSeparator {{ color: {Colors.BORDER}; max-width: 1px; margin: 4px 3px; }}
     QFrame#missionStatusCard, QFrame#activityMetric {{
         background: {Colors.SURFACE_ALT};
         border: 1px solid {Colors.BORDER_SOFT};
@@ -65,6 +73,11 @@ def application_stylesheet() -> str:
     QPushButton#navButton {{ text-align: left; padding: 9px 10px; min-height: 24px; color: {Colors.TEXT_MUTED}; background: transparent; border-left: 3px solid transparent; }}
     QPushButton#navButton:hover {{ color: {Colors.TEXT_STRONG}; background: {Colors.SURFACE_HOVER}; border-left-color: {Colors.BORDER_STRONG}; }}
     QPushButton#navButton:checked {{ color: {Colors.ACCENT_HOVER}; background: {Colors.ACCENT_SOFT}; border-left-color: {Colors.ACCENT}; }}
+    QPushButton#scannerFilter {{ color: {Colors.TEXT_MUTED}; background: transparent; border: 1px solid {Colors.BORDER}; }}
+    QPushButton#scannerFilter:checked {{ color: {Colors.ACCENT_HOVER}; background: {Colors.ACCENT_SOFT}; border-color: {Colors.ACCENT}; }}
+    QPushButton#sidebarToggle {{ color: {Colors.TEXT_MUTED}; background: transparent; border: 1px solid {Colors.BORDER}; }}
+    QToolButton#focusChartButton, QToolButton#collapseButton, QToolButton#overflowButton {{ color: {Colors.TEXT_MUTED}; background: transparent; border: 1px solid {Colors.BORDER}; border-radius: 4px; padding: 5px 8px; }}
+    QToolButton#focusChartButton:hover, QToolButton#collapseButton:hover, QToolButton#overflowButton:hover {{ color: {Colors.TEXT_STRONG}; border-color: {Colors.BORDER_STRONG}; background: {Colors.SURFACE_RAISED}; }}
     QLabel#statusBadge {{ border-radius: 7px; padding: 4px 8px; background: {Colors.SURFACE_RAISED}; color: {Colors.TEXT_MUTED}; font-weight: 750; }}
     QLabel#statusBadge[status='good'] {{ color: {Colors.SUCCESS}; }}
     QLabel#statusBadge[status='warn'] {{ color: {Colors.WARNING}; }}

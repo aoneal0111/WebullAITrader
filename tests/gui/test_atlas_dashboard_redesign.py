@@ -108,7 +108,7 @@ def test_compact_atlas_focus_and_activity_use_projection_snapshots(application) 
         AtlasActivityRow("Evaluating", "Unknown"),
     )))
 
-    assert workspace.watchlist._table.columnCount() == 8
+    assert workspace.watchlist._table.columnCount() == 11
     assert workspace.watchlist._table.item(0, 1).text().endswith("XYZ")
     assert workspace.watchlist._table.item(0, 3).text() == "+0.40%"
     assert workspace.atlas_activity._rows["Universe"].text() == "●  7300"
@@ -142,7 +142,7 @@ def test_atlas_focus_exposes_rich_projection_and_selection_without_fabrication(a
     assert workspace.watchlist._scanner_status.text() == "Atlas Scanner: Running"
     assert workspace.watchlist._candidate_count.text() == "Candidates: 1"
     assert workspace.watchlist._table.item(0, 2).text() == "--"
-    assert workspace.watchlist._table.item(0, 6).text() == "EARNINGS: Reported results"
+    assert workspace.watchlist._table.item(0, 8).text() == "EARNINGS: Reported results"
     workspace.watchlist._select_row(0, 6)
     assert selected == ["XYZ"]
     assert operator_selected == ["XYZ"]
@@ -275,32 +275,30 @@ def test_dashboard_and_market_workspace_switch_responsive_orientation(applicatio
     page.resize(1600, 900)
     page.show()
     application.processEvents()
-    assert page.summary_splitter.orientation() == Qt.Orientation.Horizontal
+    assert page.market_workspace.layout_mode == "wide"
 
     page.resize(1000, 720)
     application.processEvents()
 
-    # At compact widths the Mission / Infrastructure / Portfolio summary
-    # reflows vertically rather than shrinking its contents below readable
-    # dimensions.
-    assert page.summary_splitter.orientation() == Qt.Orientation.Vertical
+    assert page.market_workspace.layout_mode == "compact"
 
     market = MarketWorkspace()
     market.resize(1000, 500)
     market.show()
     application.processEvents()
     assert market.splitter.orientation() == Qt.Orientation.Vertical
-    assert market.top_splitter.orientation() == Qt.Orientation.Vertical
+    assert market.splitter.indexOf(market.intelligence_rail) == -1
+    assert market.splitter.count() == 2
 
     market.resize(700, 700)
     application.processEvents()
     assert market.splitter.orientation() == Qt.Orientation.Vertical
-    assert market.top_splitter.orientation() == Qt.Orientation.Vertical
+    assert market.splitter.indexOf(market.intelligence_rail) == -1
 
 
 @pytest.mark.parametrize(
     ("width", "height"),
-    ((1366, 768), (1920, 1080), (2560, 1440)),
+    ((1280, 720), (1366, 768), (1920, 1080), (2560, 1440)),
 )
 def test_commercial_dashboard_preserves_panels_at_target_viewports(
     application, width, height,
@@ -318,32 +316,24 @@ def test_commercial_dashboard_preserves_panels_at_target_viewports(
     application.processEvents()
 
     assert page._scroll.horizontalScrollBar().maximum() == 0
-    assert page.summary_splitter.orientation() == Qt.Orientation.Horizontal
     assert page.market_workspace.splitter.orientation() == (
         Qt.Orientation.Vertical
     )
-    assert page.market_workspace.top_splitter.orientation() == (
-        Qt.Orientation.Horizontal
-    )
-    assert page.summary_splitter.sizes()[1] >= 320
     assert page.market_workspace.height() >= 420
 
     ai = page.market_workspace.ai_thinking_section
     focus = page.market_workspace.focus_section
     activity = page.market_workspace.activity_section
 
-    assert ai.isVisible()
-    assert activity.isVisible()
+    assert not ai.isVisible()
+    assert not activity.isVisible()
     assert focus.isVisible()
 
     # Atlas Focus remains the full-width lower workspace.
     assert page.market_workspace.splitter.widget(1) is focus
     assert focus.width() >= page.market_workspace.width() * 0.90
 
-    # Responsive layouts must preserve readable panel extents rather than
-    # relying on fixed child-coordinate ordering.
-    assert ai.height() >= 100
-    assert activity.height() >= 100
+    assert page.market_workspace.chart_view._canvas.height() >= 400
 
 
 def test_production_gui_contains_no_reference_sample_values() -> None:
@@ -361,13 +351,17 @@ def test_production_gui_contains_no_reference_sample_values() -> None:
 def test_dashboard_uses_atlas_operator_terminology(application) -> None:
     del application
     dashboard = DashboardPage()
-    labels = {label.text() for label in dashboard.findChildren(QLabel)}
+    labels = {
+        label.text()
+        for root in (dashboard, dashboard.market_workspace.intelligence_rail)
+        for label in root.findChildren(QLabel)
+    }
 
-    assert "Atlas Focus" in labels
+    assert "Atlas Scanner" in labels
     assert "Atlas Activity" in labels
-    assert "PORTFOLIO OVERVIEW" in labels
-    assert "MISSION STATUS" in labels
-    assert "RUNTIME CONTROLS" in labels
+    assert "Mission Status" in labels
+    assert "Infrastructure" in labels
+    assert "Atlas Mission Control" in labels
     assert "Watchlist" not in labels
     assert "Market Summary" not in labels
     assert "AI Thinking" in labels
@@ -398,15 +392,15 @@ def test_status_bar_summarizes_capabilities(application) -> None:
     assert "Overnight \u2717" in status.capabilities.text()
 
 
-def test_market_workspace_prioritizes_chart_focus_and_right_intelligence_rail(application) -> None:
+def test_market_workspace_keeps_intelligence_out_of_primary_splitter(application) -> None:
     del application
     workspace = MarketWorkspace()
 
     assert workspace.splitter.orientation() == Qt.Orientation.Vertical
     assert workspace.top_splitter.orientation() == Qt.Orientation.Horizontal
     assert workspace.top_splitter.widget(0) is workspace.market_section
-    rail = workspace.top_splitter.widget(1)
     assert workspace.ai_thinking_section.parent() is not None
     assert workspace.activity_section.parent() is not None
     assert workspace.splitter.widget(1) is workspace.focus_section
-    assert rail is not None
+    assert workspace.top_splitter.count() == 1
+    assert workspace.splitter.indexOf(workspace.intelligence_rail) == -1

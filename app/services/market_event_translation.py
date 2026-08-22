@@ -77,7 +77,6 @@ def translate_market_event(
                 quote=RuntimeWatchlistQuote(
                     timestamp=event.timestamp,
                     latest_price=payload.price,
-                    volume=_whole_volume(payload.size),
                     stale=False,
                 ),
             ),

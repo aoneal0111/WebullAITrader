@@ -246,9 +246,13 @@ class RuntimeStatusPresenter:
 
     def render(self, state: ApplicationState) -> None:
         runtime = state.runtime
+        health = state.health_projection
+        market_feed_status = (
+            health.market_data_status or runtime.market_feed_status
+        )
         self._status_label.setText(
             f"{runtime.environment}  |  Runtime {runtime.phase.value}  |  "
-            f"Feed {runtime.market_feed_status}  |  Cycles {runtime.cycles_completed}"
+            f"Feed {market_feed_status}  |  Cycles {runtime.cycles_completed}"
         )
 
 

@@ -726,6 +726,13 @@ class DesktopBrokerRuntimeDriver:
                         cycle=self._cycles_completed,
                         now=now,
                     )
+                    self._scanner_log(
+                        "scanner_snapshot_counters",
+                        f"ranked_candidates={len(snapshot.ranked_candidates)}; "
+                        f"processed_events={snapshot.processed_events}; "
+                        f"ignored_events={snapshot.ignored_events}; "
+                        f"active_symbols={len(snapshot.active_symbols)}.",
+                    )
                     if self._scanner_publisher.last_changed:
                         self._scanner_log(
                             "scanner_snapshot_published",
@@ -939,6 +946,16 @@ class DesktopBrokerRuntimeDriver:
             if self._terminal_stream_failure_published:
                 return
             self._terminal_stream_failure_published = True
+        _SCANNER_LOGGER.error(
+            "event_type=market_data_terminal_exception error_type=%s error=%r",
+            type(error).__name__,
+            error,
+            exc_info=(
+                type(error),
+                error,
+                error.__traceback__,
+            ),
+        )
         self._publish_health(
             "MARKET_DATA_TERMINAL_FAILURE",
             "Webull market-data streaming failed; REST market data remains available.",

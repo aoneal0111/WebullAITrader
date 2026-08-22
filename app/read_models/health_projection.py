@@ -133,6 +133,15 @@ def _health_changes(
         changes["last_error"] = event.message
         _apply_error_status(changes, event_type)
 
+    if event_type in {"BROKER_AUTHENTICATED", "BROKER_REST_OBSERVED"}:
+        stream_failed = (
+            current.market_data_status in _UNHEALTHY
+            or current.streaming_status in _UNHEALTHY
+            or (current.streaming_status or "").endswith("FAILED")
+        )
+        if current.broker_status in _UNHEALTHY and not stream_failed:
+            changes["last_error"] = None
+
     health = event.health
     if health is not None:
         for field_name in (
@@ -214,8 +223,6 @@ def _health_changes(
                 changes["last_error"] = None
             if _market_data_warning(current.last_warning):
                 changes["last_warning"] = None
-        if _successful_rest_observation(health):
-            changes["last_error"] = None
 
     return changes
 
@@ -279,7 +286,6 @@ def _apply_inferred_statuses(
             market_data_status="CONNECTED",
             market_data_rest_status="AVAILABLE",
             historical_bars_status="AVAILABLE",
-            last_error=None,
         )
     elif event_type in {
         "MARKET_DATA_PAYLOAD_RECEIVED",
@@ -312,8 +318,6 @@ def _apply_inferred_statuses(
             streaming_status="CONNECTED",
             subscription_status="ACCEPTED",
         )
-    elif event_type in {"BROKER_AUTHENTICATED", "BROKER_REST_OBSERVED"}:
-        changes["last_error"] = None
 
 
 def _apply_error_status(
