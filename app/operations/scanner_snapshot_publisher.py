@@ -43,6 +43,7 @@ class ScannerSnapshotPublisher:
         self._source = source
         self._stale_after = stale_after
         self._published_symbols: set[str] = set()
+        self._displayed_symbols: set[str] = set()
         self._published_decisions: dict[str, ScannerDecision] = {}
         self._last_decisions: dict[str, ScannerDecision] = {}
         self._last_fingerprint: object | None = None
@@ -62,13 +63,33 @@ class ScannerSnapshotPublisher:
         now: datetime,
     ) -> tuple[str, ...]:
         ranked = snapshot.ranked_candidates
-        current = {candidate.symbol for candidate in ranked}
+        ranked_symbols = {candidate.symbol for candidate in ranked}
         decisions = {decision.symbol: decision for decision in snapshot.decisions}
+        display_candidates = tuple(
+            sorted(
+                (
+                    decision
+                    for decision in decisions.values()
+                    if (
+                        decision.qualified
+                        or decision.technical_qualifies_without_catalyst
+                    )
+                ),
+                key=lambda decision: (
+                    decision.scanner_rank
+                    if decision.scanner_rank is not None
+                    else 999999,
+                    -decision.score,
+                    decision.symbol,
+                ),
+            )
+        )
+        current = {candidate.symbol for candidate in display_candidates}
 
         self._log_candidate_transitions(ranked, decisions)
         self._publish_experiment_candidates(decisions, cycle=cycle, now=now)
 
-        for symbol in sorted(self._published_symbols - current):
+        for symbol in sorted(self._displayed_symbols - current):
             self._emit(
                 now,
                 cycle,
@@ -85,11 +106,11 @@ class ScannerSnapshotPublisher:
         )
         fingerprint = (
             session,
-            ranked,
+            display_candidates,
             tuple(
                 now - (candidate.timestamp or snapshot.timestamp)
                 > self._stale_after
-                for candidate in ranked
+                for candidate in display_candidates
             ),
         )
         if fingerprint == self._last_fingerprint:
@@ -103,13 +124,13 @@ class ScannerSnapshotPublisher:
         self._last_changed = True
         self._diagnostics.increment("scanner_snapshots_published")
         stale_symbols: list[str] = []
-        for rank, candidate in enumerate(ranked, 1):
+        for display_rank, candidate in enumerate(display_candidates, 1):
             observed_at = candidate.timestamp or snapshot.timestamp
             stale = now - observed_at > self._stale_after
             if stale:
                 stale_symbols.append(candidate.symbol)
             metadata = (
-                ("scanner_rank", str(rank)),
+                ("scanner_rank", str(candidate.scanner_rank or display_rank)),
                 ("scanner_score", str(candidate.score)),
                 (
                     "scanner_relative_volume",
@@ -143,8 +164,20 @@ class ScannerSnapshotPublisher:
             self._emit(
                 now,
                 cycle,
-                "candidate_qualified",
-                f"Scanner ranked {candidate.symbol} at {rank}.",
+                (
+                    "candidate_qualified"
+                    if candidate.symbol in ranked_symbols
+                    else "SCANNER_CANDIDATE_WATCHING"
+                ),
+                (
+                    f"Scanner ranked {candidate.symbol} at "
+                    f"{candidate.scanner_rank or display_rank}."
+                    if candidate.symbol in ranked_symbols
+                    else (
+                        f"Scanner is watching {candidate.symbol}; "
+                        "technical criteria qualify without catalyst."
+                    )
+                ),
                 candidate.symbol,
                 RuntimeWatchlistUpdate(
                     symbol=candidate.symbol,
@@ -167,13 +200,19 @@ class ScannerSnapshotPublisher:
                 ),
             )
             _LOGGER.info(
-                "event_type=candidate_qualified symbol=%s rank=%d score=%d",
+                "event_type=%s symbol=%s rank=%d score=%d",
+                (
+                    "candidate_qualified"
+                    if candidate.symbol in ranked_symbols
+                    else "candidate_watching"
+                ),
                 candidate.symbol,
-                rank,
+                candidate.scanner_rank or display_rank,
                 candidate.score,
             )
 
-        self._published_symbols = current
+        self._displayed_symbols = current
+        self._published_symbols = ranked_symbols
         self._published_decisions = {
             candidate.symbol: candidate for candidate in ranked
         }

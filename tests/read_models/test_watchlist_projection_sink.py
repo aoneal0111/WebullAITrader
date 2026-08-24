@@ -93,6 +93,57 @@ def test_empty_watchlist_is_immutable_and_emits_no_empty_update() -> None:
         projection.snapshot.selected_symbol = "AAPL"  # type: ignore[misc]
 
 
+def test_scanner_watching_candidate_projects_into_watchlist() -> None:
+    projection = WatchlistProjection(OperationsBus())
+
+    projection(
+        event(
+            1,
+            event_type="SCANNER_CANDIDATE_WATCHING",
+            update=RuntimeWatchlistUpdate(
+                symbol="LUCY",
+                subscribed=True,
+                quote=RuntimeWatchlistQuote(
+                    timestamp=NOW + timedelta(seconds=1),
+                    latest_price=Decimal("4.20"),
+                    change_percent=Decimal("14"),
+                    volume=950_000,
+                    stale=False,
+                ),
+                market_status="REGULAR",
+                metadata=(
+                    ("scanner_rank", "2"),
+                    ("scanner_score", "82"),
+                    ("scanner_relative_volume", "7"),
+                    ("scanner_catalyst", "NONE"),
+                    (
+                        "technical_qualifies_without_catalyst",
+                        "true",
+                    ),
+                ),
+            ),
+        )
+    )
+
+    assert projection.snapshot.ordered_symbols == ("LUCY",)
+
+    entry = projection.snapshot.entries[0]
+    metadata = dict(entry.metadata)
+
+    assert entry.symbol == "LUCY"
+    assert entry.latest_price == "4.20"
+    assert entry.change_percent == "14"
+    assert entry.volume == 950_000
+    assert entry.market_status == "REGULAR"
+    assert entry.stale is False
+
+    assert metadata["scanner_rank"] == "2"
+    assert metadata["scanner_score"] == "82"
+    assert metadata["scanner_relative_volume"] == "7"
+    assert metadata["scanner_catalyst"] == "NONE"
+    assert metadata["technical_qualifies_without_catalyst"] == "true"
+
+
 def test_symbols_are_added_and_removed_in_subscription_order() -> None:
     projection = WatchlistProjection(OperationsBus())
 

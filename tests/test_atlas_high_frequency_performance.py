@@ -132,6 +132,159 @@ def test_identical_zero_and_candidate_snapshots_publish_only_on_change() -> None
     assert len(events) == 1
 
 
+def test_technical_only_candidate_is_visible_without_becoming_ranked() -> None:
+    events = []
+    sequences = count(1)
+    publisher = ScannerSnapshotPublisher(
+        events.append,
+        lambda: next(sequences),
+        source="display-test",
+        stale_after=timedelta(seconds=30),
+    )
+
+    watching = ScannerDecision(
+        symbol="LUCY",
+        qualified=False,
+        score=82,
+        metrics=ScannerMetrics(
+            percentage_change=Decimal("14"),
+            relative_volume=Decimal("7"),
+            dollar_volume=Decimal("4000000"),
+            spread_percent=Decimal("0.3"),
+        ),
+        passed_rules=("price_range", "relative_volume"),
+        failed_rules=("news_catalyst",),
+        timestamp=NOW,
+        price=Decimal("4.20"),
+        current_volume=Decimal("950000"),
+        catalyst=CatalystType.NONE,
+        technical_qualifies_without_catalyst=True,
+        scanner_rank=2,
+    )
+    rejected = ScannerDecision(
+        symbol="NOPE",
+        qualified=False,
+        score=40,
+        metrics=ScannerMetrics(
+            percentage_change=Decimal("2"),
+            relative_volume=Decimal("1"),
+            dollar_volume=Decimal("200000"),
+            spread_percent=Decimal("2"),
+        ),
+        passed_rules=(),
+        failed_rules=("percentage_change", "relative_volume"),
+        timestamp=NOW,
+        price=Decimal("3"),
+        technical_qualifies_without_catalyst=False,
+        scanner_rank=9,
+    )
+
+    snapshot = ScannerSnapshot(
+        timestamp=NOW,
+        active_symbols=("LUCY", "NOPE"),
+        decisions=(watching, rejected),
+        ranked_candidates=(),
+        processed_events=2,
+        ignored_events=0,
+        reference_failures=(),
+        session="REGULAR",
+    )
+
+    publisher.publish(snapshot, cycle=1, now=NOW)
+
+    watch_events = [
+        event
+        for event in events
+        if event.event_type == "SCANNER_CANDIDATE_WATCHING"
+    ]
+
+    assert len(watch_events) == 1
+    assert watch_events[0].symbol == "LUCY"
+    assert watch_events[0].watchlist is not None
+    assert watch_events[0].watchlist.subscribed is True
+
+    metadata = dict(watch_events[0].watchlist.metadata or ())
+    assert metadata["scanner_rank"] == "2"
+    assert metadata["scanner_score"] == "82"
+    assert metadata["technical_qualifies_without_catalyst"] == "true"
+
+    assert not any(
+        event.symbol == "NOPE"
+        and event.watchlist is not None
+        and event.watchlist.subscribed is True
+        for event in events
+    )
+
+
+def test_repeated_technical_only_snapshot_does_not_enter_strict_exit_lifecycle() -> None:
+    events = []
+    sequences = count(1)
+    publisher = ScannerSnapshotPublisher(
+        events.append,
+        lambda: next(sequences),
+        source="display-test",
+        stale_after=timedelta(seconds=30),
+    )
+
+    watching = ScannerDecision(
+        symbol="DAIC",
+        qualified=False,
+        score=78,
+        metrics=ScannerMetrics(
+            percentage_change=Decimal("12"),
+            relative_volume=Decimal("6"),
+            dollar_volume=Decimal("3500000"),
+            spread_percent=Decimal("0.4"),
+        ),
+        passed_rules=("price_range", "relative_volume"),
+        failed_rules=("news_catalyst",),
+        timestamp=NOW,
+        price=Decimal("3.75"),
+        current_volume=Decimal("800000"),
+        catalyst=CatalystType.NONE,
+        technical_qualifies_without_catalyst=True,
+        scanner_rank=1,
+    )
+
+    first = ScannerSnapshot(
+        timestamp=NOW,
+        active_symbols=("DAIC",),
+        decisions=(watching,),
+        ranked_candidates=(),
+        processed_events=1,
+        ignored_events=0,
+        reference_failures=(),
+        session="REGULAR",
+    )
+    second = ScannerSnapshot(
+        timestamp=NOW + timedelta(seconds=1),
+        active_symbols=("DAIC",),
+        decisions=(watching,),
+        ranked_candidates=(),
+        processed_events=2,
+        ignored_events=0,
+        reference_failures=(),
+        session="REGULAR",
+    )
+
+    publisher.publish(first, cycle=1, now=NOW)
+    publisher.publish(
+        second,
+        cycle=2,
+        now=NOW + timedelta(seconds=1),
+    )
+
+    assert publisher._displayed_symbols == {"DAIC"}
+    assert publisher._published_symbols == set()
+    assert publisher._published_decisions == {}
+
+    assert any(
+        event.event_type == "SCANNER_CANDIDATE_WATCHING"
+        and event.symbol == "DAIC"
+        for event in events
+    )
+
+
 def test_candidate_exit_logs_failed_rule_and_transition_values(caplog) -> None:
     publisher = ScannerSnapshotPublisher(
         lambda event: None,
