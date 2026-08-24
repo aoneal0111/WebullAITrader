@@ -67,6 +67,31 @@ def test_websocket_rejects_out_of_order_sequence():
     stream=Stream((quote(2),quote(1))); client=WebullWebSocketClient(stream,lambda x:x,ReconnectPolicy(1,D("1")),lambda x:None,StructuredLogger(Sink())); client.connect(); client.receive()
     with pytest.raises(SerializationError): client.receive()
 
+
+def test_websocket_discards_invalid_market_event_without_killing_stream():
+    invalid = MarketEvent(
+        2,
+        NOW + timedelta(seconds=2),
+        "XYZ",
+        "webull",
+        MarketEventType.QUOTE,
+        QuotePayload(D("3"), D("2"), D("1"), D("1")),
+    )
+    sink = Sink()
+    client = WebullWebSocketClient(
+        Stream((quote(1), invalid, quote(3))),
+        lambda x: x,
+        ReconnectPolicy(1, D("1")),
+        lambda x: None,
+        StructuredLogger(sink),
+    )
+    client.connect()
+
+    assert client.receive() == quote(1)
+    assert client.receive() is None
+    assert client.receive() == quote(3)
+    assert client.log.events == (quote(1), quote(3))
+
 def test_websocket_discards_delayed_same_symbol_quote_timestamp():
     delayed = MarketEvent(
         2, NOW, "XYZ", "webull", MarketEventType.QUOTE,

@@ -605,6 +605,18 @@ class WebullWebSocketClient:
                 performance_diagnostics.increment("market_events_received")
                 try:
                     validate_event(event)
+                except ValueError as exc:
+                    self.logger.log(
+                        "stream_receive",
+                        "skipped",
+                        event_type=event.event_type.value,
+                        symbol=event.symbol or "--",
+                        reason="invalid_market_event",
+                        error_type=type(exc).__name__,
+                    )
+                    return None
+
+                try:
                     identity = (event.source, event.sequence)
                     if identity in self._event_identities:
                         return None
