@@ -104,7 +104,6 @@ class PaperTradeExperimentJournal:
         if decision.timestamp is None or decision.price is None:
             raise ValueError("complete scanner decision timestamp and price are required")
         environment = _safe_environment(execution_environment)
-        candidate_id = _candidate_id(decision, strategy_version)
         features = _decision_features(
             decision,
             market_session=market_session,
@@ -115,6 +114,7 @@ class PaperTradeExperimentJournal:
             execution_environment=environment,
         )
         _assert_no_secrets(features)
+        candidate_id = _candidate_id(features)
         now = (recorded_at or datetime.now(UTC)).astimezone(UTC).isoformat()
         execution = {
             "state": ExecutionState.NOT_EXECUTED.value,
@@ -673,12 +673,8 @@ def _decision_features(
     }
 
 
-def _candidate_id(decision: ScannerDecision, strategy_version: str) -> str:
-    payload = "\x1f".join((
-        decision.symbol,
-        decision.timestamp.astimezone(UTC).isoformat() if decision.timestamp else "",
-        str(decision.price), strategy_version,
-    ))
+def _candidate_id(features: Mapping[str, Any]) -> str:
+    payload = _json(features)
     return "candidate-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

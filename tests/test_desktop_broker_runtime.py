@@ -218,6 +218,89 @@ def test_production_composition_owns_autonomous_webull_universe_provider(
     assert captured["maximum_events_per_cycle"] == 100
 
 
+def test_experiment_sidecar_failures_do_not_escape_scanner_composition(
+    monkeypatch,
+) -> None:
+    configured = configuration()
+    broker = FakeBroker()
+    stream = object()
+    captured = {}
+
+    coordinator = object()
+
+    def capture_scanner_infrastructure(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(coordinator=coordinator)
+
+    logged_errors = []
+
+    class FakeLogger:
+        def error(self, *args, **kwargs):
+            logged_errors.append((args, kwargs))
+
+    class FailingExperimentJournal:
+        def __init__(self, path):
+            raise RuntimeError("experiment journal unavailable")
+
+    monkeypatch.setattr(
+        desktop_broker_module,
+        "_SCANNER_LOGGER",
+        FakeLogger(),
+    )
+    monkeypatch.setattr(
+        desktop_broker_module,
+        "create_desktop_scanner_infrastructure",
+        capture_scanner_infrastructure,
+    )
+    monkeypatch.setattr(
+        desktop_broker_module,
+        "PaperTradeExperimentJournal",
+        FailingExperimentJournal,
+    )
+
+    driver = create_configured_desktop_broker_driver(
+        event_sink=lambda event: None,
+        account_snapshot_sink=lambda snapshot: None,
+        configuration_loader=lambda: configured,
+        broker_runtime_factory=lambda **kwargs: BrokerRuntime(
+            provider="webull",
+            capabilities=BrokerCapabilities(
+                provider="webull",
+                version="test",
+                supports_execution=True,
+                supports_account_data=True,
+                supports_market_data=True,
+                supports_streaming=True,
+            ),
+            execution=broker,
+            market_data=stream,
+        ),
+        webull_broker_factory=lambda value: broker,
+        webull_market_data_factory=lambda value: stream,
+        clock=lambda: NOW,
+    )
+
+    decision_sink = captured["scanner_decision_sink"]
+    price_observer = captured["scanner_adapter"]._price_observer
+
+    assert decision_sink is not None
+    assert price_observer is not None
+
+    # Experimental persistence is an optional PAPER/TEST sidecar.
+    # Its failure must never own the scanner/runtime lifecycle.
+    assert decision_sink(object()) is None
+    assert price_observer("LUCY", NOW, Decimal("1.209")) is None
+
+    assert len(logged_errors) == 1
+    assert logged_errors[0][0][0].startswith(
+        "event_type=experiment_persistence_failure"
+    )
+    assert logged_errors[0][0][1] == "decision"
+    assert logged_errors[0][0][2] == "RuntimeError"
+
+    assert driver._scanner is coordinator
+
+
 def test_warrior_observer_binds_shared_scanner_adapter_without_second_stream(monkeypatch) -> None:
     configured = replace(configuration(), warrior_forward_paper_enabled=True)
     broker = FakeBroker()

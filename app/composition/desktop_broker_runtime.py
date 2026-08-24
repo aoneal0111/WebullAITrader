@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import logging
 
 from app.broker_plugins import BrokerRuntime, create_broker_runtime
 from app.catalysts import (
@@ -54,6 +55,9 @@ from app.webull.request_audit import AuditedMarketDataClient, RequestIsolationGu
 
 ConfigurationLoader = Callable[[], OperationalConfiguration]
 BrokerRuntimeFactory = Callable[..., BrokerRuntime]
+
+
+_SCANNER_LOGGER = logging.getLogger("atlas.scanner")
 
 
 def create_configured_desktop_broker_driver(
@@ -141,16 +145,45 @@ def create_configured_desktop_broker_driver(
                 "paper_trade_experiment.sqlite3"
             )
             experiment_holder: list[PaperTradeExperimentJournal] = []
+            experiment_failure_reported = False
+
+            def report_experiment_failure(
+                operation: str,
+                error: Exception,
+            ) -> None:
+                nonlocal experiment_failure_reported
+                if experiment_failure_reported:
+                    return
+                experiment_failure_reported = True
+                _SCANNER_LOGGER.error(
+                    "event_type=experiment_persistence_failure "
+                    "operation=%s error_type=%s error=%r",
+                    operation,
+                    type(error).__name__,
+                    error,
+                    exc_info=(
+                        type(error),
+                        error,
+                        error.__traceback__,
+                    ),
+                )
 
             def record_experiment_decision(decision) -> object:
-                if not experiment_holder:
-                    experiment_holder.append(
-                        PaperTradeExperimentJournal(experiment_path)
+                nonlocal experiment_failure_reported
+                try:
+                    if not experiment_holder:
+                        experiment_holder.append(
+                            PaperTradeExperimentJournal(experiment_path)
+                        )
+                    result = experiment_holder[0].record_scanner_decision(
+                        decision,
+                        execution_environment=experiment_execution_environment,
                     )
-                return experiment_holder[0].record_scanner_decision(
-                    decision,
-                    execution_environment=experiment_execution_environment,
-                )
+                    experiment_failure_reported = False
+                    return result
+                except Exception as error:
+                    report_experiment_failure("decision", error)
+                    return None
 
             experiment_decision_sink = record_experiment_decision
         universe_provider = WebullScannerUniverseProvider(
@@ -225,15 +258,22 @@ def create_configured_desktop_broker_driver(
                 timestamp,
                 price,
             ) -> object:
-                if not experiment_holder:
-                    experiment_holder.append(
-                        PaperTradeExperimentJournal(experiment_path)
+                nonlocal experiment_failure_reported
+                try:
+                    if not experiment_holder:
+                        experiment_holder.append(
+                            PaperTradeExperimentJournal(experiment_path)
+                        )
+                    result = experiment_holder[0].observe_price(
+                        symbol,
+                        timestamp,
+                        price,
                     )
-                return experiment_holder[0].observe_price(
-                    symbol,
-                    timestamp,
-                    price,
-                )
+                    experiment_failure_reported = False
+                    return result
+                except Exception as error:
+                    report_experiment_failure("price", error)
+                    return None
 
             experiment_price_observer = observe_experiment_price
 

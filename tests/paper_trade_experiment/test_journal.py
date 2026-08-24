@@ -118,22 +118,62 @@ def test_future_labels_and_mfe_mae_are_separate_from_features(tmp_path) -> None:
     assert labeled.labels["outcome_status"] == "COMPLETE"
 
 
-def test_decision_snapshot_is_immutable_and_recovers_after_restart(tmp_path) -> None:
+def test_decision_snapshot_identity_is_content_addressed_and_recovers_after_restart(
+    tmp_path,
+) -> None:
     path = tmp_path / "experiment.sqlite3"
     journal = PaperTradeExperimentJournal(path)
     decision = evaluate_candidate(observation())
-    first = journal.record_candidate(decision, strategy_version="strategy-7", model_version="model-3")
+    first = journal.record_candidate(
+        decision,
+        strategy_version="strategy-7",
+        model_version="model-3",
+    )
 
-    with pytest.raises(ValueError, match="immutable"):
-        journal.record_candidate(
-            replace(decision, score=decision.score + 1),
-            strategy_version="strategy-7", model_version="model-3",
-        )
+    duplicate = journal.record_candidate(
+        decision,
+        strategy_version="strategy-7",
+        model_version="model-3",
+    )
+    changed = journal.record_candidate(
+        replace(decision, score=decision.score + 1),
+        strategy_version="strategy-7",
+        model_version="model-3",
+    )
+
+    assert duplicate.candidate_id == first.candidate_id
+    assert changed.candidate_id != first.candidate_id
 
     recovered = PaperTradeExperimentJournal(path).get(first.candidate_id)
     assert recovered.features["strategy_version"] == "strategy-7"
     assert recovered.features["model_version"] == "model-3"
     assert recovered == first
+
+
+def test_same_timestamp_and_price_with_changed_market_snapshot_gets_new_identity(
+    tmp_path,
+) -> None:
+    journal = PaperTradeExperimentJournal(tmp_path / "experiment.sqlite3")
+
+    first_observation = observation()
+    second_observation = replace(
+        first_observation,
+        current_volume=first_observation.current_volume + Decimal("1"),
+    )
+
+    first_decision = evaluate_candidate(first_observation)
+    second_decision = evaluate_candidate(second_observation)
+
+    assert second_decision.symbol == first_decision.symbol
+    assert second_decision.timestamp == first_decision.timestamp
+    assert second_decision.price == first_decision.price
+    assert second_decision.current_volume != first_decision.current_volume
+
+    first = journal.record_candidate(first_decision)
+    second = journal.record_candidate(second_decision)
+
+    assert second.candidate_id != first.candidate_id
+    assert second.features["current_volume"] != first.features["current_volume"]
 
 
 def test_live_or_ambiguous_execution_is_impossible(tmp_path) -> None:
