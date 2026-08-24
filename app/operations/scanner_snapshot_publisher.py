@@ -23,6 +23,31 @@ from app.performance_diagnostics import (
 
 _LOGGER = logging.getLogger("atlas.scanner")
 
+_NEAR_MISS_RULES = frozenset({
+    "price_range",
+    "percentage_change",
+    "relative_volume",
+    "low_float",
+    "dollar_volume",
+    "spread",
+})
+
+
+def _scanner_classification(
+    decision: ScannerDecision,
+    ranked_symbols: set[str],
+) -> str | None:
+    if decision.symbol in ranked_symbols:
+        return "QUALIFYING"
+    if decision.technical_qualifies_without_catalyst:
+        return "WATCHING"
+    if (
+        len(decision.technical_failed_rules) == 1
+        and decision.technical_failed_rules[0] in _NEAR_MISS_RULES
+    ):
+        return "NEAR MISS"
+    return None
+
 
 class ScannerSnapshotPublisher:
     def __init__(
@@ -70,10 +95,10 @@ class ScannerSnapshotPublisher:
                 (
                     decision
                     for decision in decisions.values()
-                    if (
-                        decision.qualified
-                        or decision.technical_qualifies_without_catalyst
-                    )
+                    if _scanner_classification(
+                        decision,
+                        ranked_symbols,
+                    ) is not None
                 ),
                 key=lambda decision: (
                     decision.scanner_rank
@@ -157,11 +182,10 @@ class ScannerSnapshotPublisher:
                 ("scanner_session", session),
                 (
                     "scanner_classification",
-                    (
-                        "QUALIFYING"
-                        if candidate.symbol in ranked_symbols
-                        else "WATCHING"
-                    ),
+                    _scanner_classification(
+                        candidate,
+                        ranked_symbols,
+                    ) or "--",
                 ),
                 (
                     "technical_qualifies_without_catalyst",
@@ -169,23 +193,37 @@ class ScannerSnapshotPublisher:
                 ),
                 ("experiment_cohorts", ", ".join(candidate.cohort_flags) or "--"),
             )
+            classification = _scanner_classification(
+                candidate,
+                ranked_symbols,
+            )
+            if classification == "QUALIFYING":
+                event_type = "candidate_qualified"
+                message = (
+                    f"Scanner ranked {candidate.symbol} at "
+                    f"{candidate.scanner_rank or display_rank}."
+                )
+            elif classification == "WATCHING":
+                event_type = "SCANNER_CANDIDATE_WATCHING"
+                message = (
+                    f"Scanner is watching {candidate.symbol}; "
+                    "technical criteria qualify without catalyst."
+                )
+            elif classification == "NEAR MISS":
+                event_type = "SCANNER_CANDIDATE_NEAR_MISS"
+                message = (
+                    f"Scanner near miss {candidate.symbol}; "
+                    f"failed {candidate.technical_failed_rules[0]}."
+                )
+            else:
+                raise RuntimeError(
+                    "display candidate has no scanner classification"
+                )
             self._emit(
                 now,
                 cycle,
-                (
-                    "candidate_qualified"
-                    if candidate.symbol in ranked_symbols
-                    else "SCANNER_CANDIDATE_WATCHING"
-                ),
-                (
-                    f"Scanner ranked {candidate.symbol} at "
-                    f"{candidate.scanner_rank or display_rank}."
-                    if candidate.symbol in ranked_symbols
-                    else (
-                        f"Scanner is watching {candidate.symbol}; "
-                        "technical criteria qualify without catalyst."
-                    )
-                ),
+                event_type,
+                message,
                 candidate.symbol,
                 RuntimeWatchlistUpdate(
                     symbol=candidate.symbol,

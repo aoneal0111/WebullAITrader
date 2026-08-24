@@ -286,6 +286,133 @@ def test_repeated_technical_only_snapshot_does_not_enter_strict_exit_lifecycle()
     )
 
 
+def test_single_soft_technical_failure_is_near_miss_but_safety_failure_is_hidden() -> None:
+    events = []
+    sequences = count(1)
+    publisher = ScannerSnapshotPublisher(
+        events.append,
+        lambda: next(sequences),
+        source="near-miss-test",
+        stale_after=timedelta(seconds=30),
+    )
+
+    near_miss = ScannerDecision(
+        symbol="CLOSE",
+        qualified=False,
+        score=72,
+        metrics=ScannerMetrics(
+            percentage_change=Decimal("9.5"),
+            relative_volume=Decimal("7"),
+            dollar_volume=Decimal("6000000"),
+            spread_percent=Decimal("0.3"),
+        ),
+        passed_rules=(
+            "price_range",
+            "relative_volume",
+            "float_verified",
+            "low_float",
+            "news_catalyst",
+            "tradable",
+            "not_halted",
+            "dollar_volume",
+            "spread",
+        ),
+        failed_rules=("percentage_change",),
+        timestamp=NOW,
+        price=Decimal("4.50"),
+        current_volume=Decimal("1400000"),
+        catalyst=CatalystType.EARNINGS,
+        technical_qualifies_without_catalyst=False,
+        technical_passed_rules=(
+            "price_range",
+            "relative_volume",
+            "float_verified",
+            "low_float",
+            "tradable",
+            "not_halted",
+            "dollar_volume",
+            "spread",
+        ),
+        technical_failed_rules=("percentage_change",),
+        scanner_rank=3,
+    )
+
+    unsafe = ScannerDecision(
+        symbol="HALT",
+        qualified=False,
+        score=90,
+        metrics=ScannerMetrics(
+            percentage_change=Decimal("30"),
+            relative_volume=Decimal("10"),
+            dollar_volume=Decimal("9000000"),
+            spread_percent=Decimal("0.2"),
+        ),
+        passed_rules=(
+            "price_range",
+            "percentage_change",
+            "relative_volume",
+            "float_verified",
+            "low_float",
+            "news_catalyst",
+            "tradable",
+            "dollar_volume",
+            "spread",
+        ),
+        failed_rules=("not_halted",),
+        timestamp=NOW,
+        price=Decimal("6"),
+        current_volume=Decimal("1500000"),
+        catalyst=CatalystType.EARNINGS,
+        technical_qualifies_without_catalyst=False,
+        technical_passed_rules=(
+            "price_range",
+            "percentage_change",
+            "relative_volume",
+            "float_verified",
+            "low_float",
+            "tradable",
+            "dollar_volume",
+            "spread",
+        ),
+        technical_failed_rules=("not_halted",),
+        scanner_rank=1,
+    )
+
+    snapshot = ScannerSnapshot(
+        timestamp=NOW,
+        active_symbols=("CLOSE", "HALT"),
+        decisions=(near_miss, unsafe),
+        ranked_candidates=(),
+        processed_events=2,
+        ignored_events=0,
+        reference_failures=(),
+        session="REGULAR",
+    )
+
+    publisher.publish(snapshot, cycle=1, now=NOW)
+
+    near_events = [
+        event
+        for event in events
+        if event.event_type == "SCANNER_CANDIDATE_NEAR_MISS"
+    ]
+
+    assert len(near_events) == 1
+    assert near_events[0].symbol == "CLOSE"
+    assert near_events[0].watchlist is not None
+
+    metadata = dict(near_events[0].watchlist.metadata or ())
+    assert metadata["scanner_classification"] == "NEAR MISS"
+    assert metadata["scanner_failed_rules"] == "percentage_change"
+
+    assert not any(
+        event.symbol == "HALT"
+        and event.watchlist is not None
+        and event.watchlist.subscribed is True
+        for event in events
+    )
+
+
 def test_candidate_exit_logs_failed_rule_and_transition_values(caplog) -> None:
     publisher = ScannerSnapshotPublisher(
         lambda event: None,

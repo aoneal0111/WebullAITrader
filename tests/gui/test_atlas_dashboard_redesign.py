@@ -150,7 +150,7 @@ def test_atlas_focus_exposes_rich_projection_and_selection_without_fabrication(a
     assert workspace.watchlist._table.rowCount() == 1
 
 
-def test_atlas_scanner_filters_qualifying_and_watching_candidates(
+def test_atlas_scanner_filters_candidate_classifications(
     application,
 ) -> None:
     del application
@@ -188,17 +188,32 @@ def test_atlas_scanner_filters_qualifying_and_watching_candidates(
                     rank="2",
                     classification="WATCHING",
                 ),
+                WatchlistRow(
+                    symbol="CLOSE",
+                    selected=False,
+                    latest_price="4.50",
+                    change="--",
+                    change_percent="+9.50%",
+                    bid="--",
+                    ask="--",
+                    volume="75,000",
+                    market_status="REGULAR",
+                    last_update="10:00:02",
+                    stale="LIVE",
+                    rank="3",
+                    classification="NEAR MISS",
+                ),
             ),
             scanner_status="RUNNING",
-            candidate_count=2,
+            candidate_count=3,
         )
     )
 
     assert workspace.watchlist._view_buttons["All"].isEnabled()
     assert workspace.watchlist._view_buttons["Qualifying"].isEnabled()
     assert workspace.watchlist._view_buttons["Watching"].isEnabled()
-    assert not workspace.watchlist._view_buttons["Near Miss"].isEnabled()
-    assert workspace.watchlist._table.rowCount() == 2
+    assert workspace.watchlist._view_buttons["Near Miss"].isEnabled()
+    assert workspace.watchlist._table.rowCount() == 3
 
     workspace.watchlist._view_buttons["Qualifying"].click()
 
@@ -210,9 +225,14 @@ def test_atlas_scanner_filters_qualifying_and_watching_candidates(
     assert workspace.watchlist._table.rowCount() == 1
     assert workspace.watchlist._table.item(0, 1).text() == "WATCH"
 
+    workspace.watchlist._view_buttons["Near Miss"].click()
+
+    assert workspace.watchlist._table.rowCount() == 1
+    assert workspace.watchlist._table.item(0, 1).text() == "CLOSE"
+
     workspace.watchlist._view_buttons["All"].click()
 
-    assert workspace.watchlist._table.rowCount() == 2
+    assert workspace.watchlist._table.rowCount() == 3
 
 
 def test_running_scanner_with_zero_candidates_stays_truthful(application) -> None:

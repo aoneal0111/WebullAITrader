@@ -696,12 +696,7 @@ class CompactWatchlistPanel(QWidget):
             button.setObjectName("scannerFilter")
             button.setCheckable(True)
             button.setChecked(label == "All")
-            button.setEnabled(label != "Near Miss")
-            if label == "Near Miss":
-                button.setToolTip(
-                    "Near-miss candidates are not present in the "
-                    "current scanner projection"
-                )
+            button.setEnabled(True)
             button.clicked.connect(
                 lambda _checked=False, view=label:
                 self._set_view_filter(view)
