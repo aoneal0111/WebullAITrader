@@ -23,6 +23,7 @@ class ActivityPanel(QWidget):
 
     def __init__(self, *, show_filters: bool = True) -> None:
         super().__init__()
+        self._last_render_snapshot: ActivitySnapshot | None = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -60,6 +61,12 @@ class ActivityPanel(QWidget):
         self._search.textChanged.connect(self._emit_filters)
 
     def render(self, snapshot: ActivitySnapshot) -> None:
+        # ActivitySnapshot is an immutable presentation value. Rebuilding
+        # the QTableWidget for an identical snapshot causes unnecessary Qt
+        # model, header-sizing, layout and paint work.
+        if snapshot == self._last_render_snapshot:
+            return
+        self._last_render_snapshot = snapshot
         self._set_options(
             self._severity,
             snapshot.severity_options,

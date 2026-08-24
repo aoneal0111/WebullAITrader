@@ -69,6 +69,82 @@ def test_timeline_panel_emits_immutable_filter_intent(application) -> None:
     assert panel._table.rowCount() == 1
 
 
+def test_activity_panel_skips_identical_snapshot_table_rebuild(
+    application,
+    monkeypatch,
+) -> None:
+    del application
+    panel = ActivityPanel()
+    snapshot = ActivitySnapshot(
+        entries=(
+            ActivityEntry(
+                occurred_at=datetime(2026, 7, 30, tzinfo=UTC),
+                message="Order accepted",
+                category="ORDER",
+                severity="SUCCESS",
+                source="runtime",
+                related_symbol="AAPL",
+            ),
+        ),
+        severity_options=("ALL", "SUCCESS"),
+        category_options=("ALL", "ORDER"),
+        symbol_options=("ALL", "AAPL"),
+    )
+
+    set_item_calls = 0
+    original_set_item = panel._table.setItem
+
+    def count_set_item(row, column, item):
+        nonlocal set_item_calls
+        set_item_calls += 1
+        return original_set_item(row, column, item)
+
+    monkeypatch.setattr(
+        panel._table,
+        "setItem",
+        count_set_item,
+    )
+
+    panel.render(snapshot)
+    first_render_calls = set_item_calls
+
+    assert first_render_calls > 0
+    assert panel._table.rowCount() == 1
+
+    panel.render(snapshot)
+
+    assert set_item_calls == first_render_calls
+
+    changed = ActivitySnapshot(
+        entries=(
+            *snapshot.entries,
+            ActivityEntry(
+                occurred_at=datetime(
+                    2026,
+                    7,
+                    30,
+                    0,
+                    0,
+                    1,
+                    tzinfo=UTC,
+                ),
+                message="Position opened",
+                category="POSITION",
+                severity="INFO",
+                source="runtime",
+                related_symbol="AAPL",
+            ),
+        ),
+        severity_options=("ALL", "SUCCESS", "INFO"),
+        category_options=("ALL", "ORDER", "POSITION"),
+        symbol_options=("ALL", "AAPL"),
+    )
+
+    panel.render(changed)
+
+    assert set_item_calls > first_render_calls
+    assert panel._table.rowCount() == 2
+
 def test_decision_panel_emits_selected_structured_identity(application) -> None:
     del application
     panel = DecisionsPanel()
