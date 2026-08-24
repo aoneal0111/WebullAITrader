@@ -301,10 +301,11 @@ def test_experiment_sidecar_failures_do_not_escape_scanner_composition(
     assert driver._scanner is coordinator
 
 
-def test_warrior_observer_binds_shared_scanner_adapter_without_second_stream(monkeypatch) -> None:
+def test_warrior_observer_uses_runtime_stream_and_isolated_probe_stream(monkeypatch) -> None:
     configured = replace(configuration(), warrior_forward_paper_enabled=True)
     broker = FakeBroker()
     stream = object()
+    probe_stream = object()
     stream_factory_calls = []
 
     class Coordinator:
@@ -335,13 +336,20 @@ def test_warrior_observer_binds_shared_scanner_adapter_without_second_stream(mon
             ), execution=broker, market_data=stream,
         ),
         webull_broker_factory=lambda value: broker,
-        webull_market_data_factory=lambda value: stream_factory_calls.append(value) or stream,
+        webull_market_data_factory=(
+            lambda value: stream_factory_calls.append(value) or probe_stream
+        ),
         market_event_observer=observer, clock=lambda: NOW,
     )
     assert observer.adapter is captured["scanner_adapter"]
     assert coordinator.retained_source() == ("XYZ",)
-    # The configured BrokerRuntime owns the one stream; the sidecar constructs none.
-    assert stream_factory_calls == []
+
+    # Scanner ownership stays on the BrokerRuntime market-data stream.
+    assert captured["market_data_client"] is stream
+
+    # Startup capability probing intentionally owns one isolated stream so
+    # probe subscriptions cannot mutate the scanner's live subscription set.
+    assert stream_factory_calls == [configured]
 
 
 def test_driver_authenticates_owns_lifecycle_and_does_no_other_broker_work() -> None:
