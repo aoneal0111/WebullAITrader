@@ -689,15 +689,23 @@ class CompactWatchlistPanel(QWidget):
 
         controls = QHBoxLayout()
         controls.setSpacing(5)
+        self._active_view_filter = "All"
         self._view_buttons: dict[str, QPushButton] = {}
         for label in ("All", "Qualifying", "Near Miss", "Watching"):
             button = QPushButton(label)
             button.setObjectName("scannerFilter")
             button.setCheckable(True)
             button.setChecked(label == "All")
-            button.setEnabled(label == "All")
-            if label != "All":
-                button.setToolTip("This classification is not present in the current scanner projection")
+            button.setEnabled(label != "Near Miss")
+            if label == "Near Miss":
+                button.setToolTip(
+                    "Near-miss candidates are not present in the "
+                    "current scanner projection"
+                )
+            button.clicked.connect(
+                lambda _checked=False, view=label:
+                self._set_view_filter(view)
+            )
             controls.addWidget(button)
             self._view_buttons[label] = button
         controls.addStretch(1)
@@ -764,6 +772,7 @@ class CompactWatchlistPanel(QWidget):
             snapshot,
             warrior,
             self._mode_selector.currentText(),
+            self._active_view_filter,
         )
         if render_fingerprint == self._last_render_fingerprint:
             return
@@ -783,9 +792,21 @@ class CompactWatchlistPanel(QWidget):
         )
         self._table.clearSelection()
         query = self.search.text().strip().upper()
+        classification = (
+            self._active_view_filter.upper()
+            if self._active_view_filter != "All"
+            else None
+        )
         visible_rows = tuple(
-            row for row in snapshot.rows
-            if not query or query in row.symbol.upper()
+            row
+            for row in snapshot.rows
+            if (
+                (not query or query in row.symbol.upper())
+                and (
+                    classification is None
+                    or row.classification == classification
+                )
+            )
         )
         self._table.setRowCount(len(visible_rows))
         for row_index, row in enumerate(visible_rows):
@@ -844,6 +865,18 @@ class CompactWatchlistPanel(QWidget):
         }
         for index, name in enumerate(columns):
             self._table.setColumnWidth(index, widths.get(name, 118))
+
+    def _set_view_filter(self, view: str) -> None:
+        button = self._view_buttons.get(view)
+        if button is None or not button.isEnabled():
+            return
+        self._active_view_filter = view
+        for label, candidate in self._view_buttons.items():
+            candidate.setChecked(label == view)
+        self._last_render_fingerprint = None
+        snapshot = getattr(self, "_source_snapshot", None)
+        if snapshot is not None:
+            self.render(snapshot)
 
     def _apply_search(self) -> None:
         snapshot = getattr(self, "_source_snapshot", None)

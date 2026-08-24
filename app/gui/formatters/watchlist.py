@@ -152,6 +152,10 @@ def _row(entry, selected_symbol: str | None) -> WatchlistRow:
                 failed_rules=metadata.get("scanner_failed_rules", "--"),
                 freshness=metadata.get("scanner_freshness", "--"),
                 session=metadata.get("scanner_session", "--"),
+                classification=metadata.get(
+                    "scanner_classification",
+                    "--",
+                ),
                 float_shares=_shares(metadata.get("warrior_float")),
                 setup=metadata.get("warrior_setup", "--").replace("_", " "),
                 setup_state=metadata.get("warrior_setup_state", "--").replace("_", " "),

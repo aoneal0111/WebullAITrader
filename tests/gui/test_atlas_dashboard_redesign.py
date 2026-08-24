@@ -150,6 +150,71 @@ def test_atlas_focus_exposes_rich_projection_and_selection_without_fabrication(a
     assert workspace.watchlist._table.rowCount() == 1
 
 
+def test_atlas_scanner_filters_qualifying_and_watching_candidates(
+    application,
+) -> None:
+    del application
+    workspace = MarketWorkspace()
+    workspace.render(
+        WatchlistSnapshot(
+            rows=(
+                WatchlistRow(
+                    symbol="QUAL",
+                    selected=False,
+                    latest_price="10.00",
+                    change="--",
+                    change_percent="+20.00%",
+                    bid="--",
+                    ask="--",
+                    volume="100,000",
+                    market_status="REGULAR",
+                    last_update="10:00:00",
+                    stale="LIVE",
+                    rank="1",
+                    classification="QUALIFYING",
+                ),
+                WatchlistRow(
+                    symbol="WATCH",
+                    selected=False,
+                    latest_price="5.00",
+                    change="--",
+                    change_percent="+12.00%",
+                    bid="--",
+                    ask="--",
+                    volume="80,000",
+                    market_status="REGULAR",
+                    last_update="10:00:01",
+                    stale="LIVE",
+                    rank="2",
+                    classification="WATCHING",
+                ),
+            ),
+            scanner_status="RUNNING",
+            candidate_count=2,
+        )
+    )
+
+    assert workspace.watchlist._view_buttons["All"].isEnabled()
+    assert workspace.watchlist._view_buttons["Qualifying"].isEnabled()
+    assert workspace.watchlist._view_buttons["Watching"].isEnabled()
+    assert not workspace.watchlist._view_buttons["Near Miss"].isEnabled()
+    assert workspace.watchlist._table.rowCount() == 2
+
+    workspace.watchlist._view_buttons["Qualifying"].click()
+
+    assert workspace.watchlist._table.rowCount() == 1
+    assert workspace.watchlist._table.item(0, 1).text() == "QUAL"
+
+    workspace.watchlist._view_buttons["Watching"].click()
+
+    assert workspace.watchlist._table.rowCount() == 1
+    assert workspace.watchlist._table.item(0, 1).text() == "WATCH"
+
+    workspace.watchlist._view_buttons["All"].click()
+
+    assert workspace.watchlist._table.rowCount() == 2
+
+
 def test_running_scanner_with_zero_candidates_stays_truthful(application) -> None:
     del application
     workspace = MarketWorkspace()

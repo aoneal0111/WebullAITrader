@@ -26,6 +26,7 @@ class WatchlistRow:
     failed_rules: str = "--"
     freshness: str = "--"
     session: str = "--"
+    classification: str = "--"
     float_shares: str = "--"
     setup: str = "--"
     setup_state: str = "--"

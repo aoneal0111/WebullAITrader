@@ -156,6 +156,14 @@ class ScannerSnapshotPublisher:
                 ("scanner_freshness", "STALE" if stale else "LIVE"),
                 ("scanner_session", session),
                 (
+                    "scanner_classification",
+                    (
+                        "QUALIFYING"
+                        if candidate.symbol in ranked_symbols
+                        else "WATCHING"
+                    ),
+                ),
+                (
                     "technical_qualifies_without_catalyst",
                     str(candidate.technical_qualifies_without_catalyst).lower(),
                 ),

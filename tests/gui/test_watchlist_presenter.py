@@ -103,6 +103,42 @@ def test_watchlist_presenter_sorts_raw_projected_values() -> None:
     assert view.snapshot.rows[0].market_status == "OPEN"
 
 
+def test_watchlist_presenter_projects_scanner_classification() -> None:
+    view = View()
+    presenter = WatchlistPresenter(view)
+    state = ApplicationState(
+        watchlist_projection=WatchlistState(
+            ordered_symbols=("QUAL", "WATCH"),
+            entries=(
+                WatchlistEntry(
+                    symbol="QUAL",
+                    metadata=(
+                        ("scanner_rank", "1"),
+                        ("scanner_classification", "QUALIFYING"),
+                    ),
+                ),
+                WatchlistEntry(
+                    symbol="WATCH",
+                    metadata=(
+                        ("scanner_rank", "2"),
+                        ("scanner_classification", "WATCHING"),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    presenter.render(state)
+
+    assert tuple(
+        (row.symbol, row.classification)
+        for row in view.snapshot.rows
+    ) == (
+        ("QUAL", "QUALIFYING"),
+        ("WATCH", "WATCHING"),
+    )
+
+
 def test_empty_atlas_focus_explains_overnight_capability_pause() -> None:
     view = View()
     presenter = WatchlistPresenter(view)
