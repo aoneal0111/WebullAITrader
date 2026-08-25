@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from datetime import UTC, datetime, timedelta
 from collections import deque
 from decimal import Decimal
@@ -540,6 +542,66 @@ def test_shutdown_is_clean_while_high_frequency_state_updates_arrive() -> None:
     assert finished.is_set()
 
 
+def test_suppressed_scanner_snapshot_retains_current_stale_symbols() -> None:
+    diagnostics = PerformanceDiagnostics()
+    sequences = count(1)
+    publisher = ScannerSnapshotPublisher(
+        lambda event: None,
+        lambda: next(sequences),
+        source="stale-suppression-test",
+        stale_after=timedelta(seconds=5),
+        diagnostics=diagnostics,
+    )
+
+    candidate = _candidate("STALE")
+
+    first = ScannerSnapshot(
+        timestamp=NOW,
+        active_symbols=("STALE",),
+        decisions=(candidate,),
+        ranked_candidates=(candidate,),
+        processed_events=1,
+        ignored_events=0,
+        reference_failures=(),
+        session="REGULAR",
+    )
+    second = ScannerSnapshot(
+        timestamp=NOW + timedelta(seconds=10),
+        active_symbols=("STALE",),
+        decisions=(candidate,),
+        ranked_candidates=(candidate,),
+        processed_events=2,
+        ignored_events=0,
+        reference_failures=(),
+        session="REGULAR",
+    )
+
+    publisher.publish(
+        first,
+        cycle=1,
+        now=NOW + timedelta(seconds=10),
+    )
+
+    assert publisher.last_changed is True
+    assert publisher.last_stale_symbols == ()
+    assert "STALE" not in publisher._displayed_symbols
+
+    publisher.publish(
+        second,
+        cycle=2,
+        now=NOW + timedelta(seconds=20),
+    )
+
+    assert publisher.last_changed is False
+    assert publisher.last_stale_symbols == ()
+    assert "STALE" not in publisher._displayed_symbols
+
+    metrics = diagnostics.snapshot()
+    assert metrics.scanner_snapshots_published == 1
+    assert metrics.scanner_snapshots_suppressed_unchanged == 1
+
+
+
 def test_27_symbol_30k_mixed_event_load_is_full_fidelity_and_bounded() -> None:
     symbols = tuple(f"S{index:02d}" for index in range(27))
     events = deque()
@@ -647,3 +709,238 @@ def test_27_symbol_30k_mixed_event_load_is_full_fidelity_and_bounded() -> None:
     metrics = diagnostics.snapshot()
     assert metrics.scanner_snapshots_published == 2
     assert metrics.scanner_snapshots_suppressed_unchanged == 28
+
+
+def test_scanner_freshness_prefers_local_observation_time_over_old_market_timestamp() -> None:
+    """
+    A continuously received market event may carry an exchange/broker timestamp
+    older than Atlas's stale threshold. Scanner freshness must therefore use
+    local observation time when available, while preserving market timestamp
+    semantics for ordering and replay.
+    """
+    events = []
+    sequences = count(1)
+    publisher = ScannerSnapshotPublisher(
+        events.append,
+        lambda: next(sequences),
+        source="freshness-clock-test",
+        stale_after=timedelta(seconds=5),
+    )
+
+    old_market_time = NOW - timedelta(minutes=2)
+    received_now = NOW
+
+    live_candidate = replace(
+        _candidate("CLOCK"),
+        timestamp=old_market_time,
+        observed_at=received_now,
+    )
+
+    live_snapshot = ScannerSnapshot(
+        timestamp=received_now,
+        active_symbols=("CLOCK",),
+        decisions=(live_candidate,),
+        ranked_candidates=(live_candidate,),
+        processed_events=1,
+        ignored_events=0,
+        reference_failures=(),
+        session="REGULAR",
+    )
+
+    publisher.publish(
+        live_snapshot,
+        cycle=1,
+        now=received_now,
+    )
+
+    assert publisher.last_stale_symbols == ()
+
+    live_events = [
+        event
+        for event in events
+        if event.symbol == "CLOCK"
+        and event.watchlist is not None
+        and event.watchlist.subscribed is True
+    ]
+    assert live_events
+    assert dict(live_events[-1].watchlist.metadata or ())[
+        "scanner_freshness"
+    ] == "LIVE"
+
+    stale_now = received_now + timedelta(seconds=6)
+
+    events.clear()
+
+    publisher.publish(
+        live_snapshot,
+        cycle=2,
+        now=stale_now,
+    )
+
+    assert publisher.last_stale_symbols == ()
+    assert "CLOCK" not in publisher._displayed_symbols
+
+    removals = [
+        event
+        for event in events
+        if event.symbol == "CLOCK"
+        and event.watchlist is not None
+        and event.watchlist.subscribed is False
+    ]
+
+    assert removals
+
+    expired_subscriptions = [
+        event
+        for event in events
+        if event.symbol == "CLOCK"
+        and event.watchlist is not None
+        and event.watchlist.subscribed is True
+    ]
+
+    assert expired_subscriptions == []
+
+
+def test_scanner_freshness_uses_local_observation_time_not_market_timestamp() -> None:
+    """Old market time must not make newly observed scanner data stale."""
+    events = []
+    sequences = count(1)
+
+    publisher = ScannerSnapshotPublisher(
+        events.append,
+        lambda: next(sequences),
+        source="local-observation-regression",
+        stale_after=timedelta(seconds=5),
+    )
+
+    market_timestamp = NOW - timedelta(minutes=30)
+    local_observed_at = NOW - timedelta(seconds=1)
+
+    candidate = replace(
+        _candidate("XYZ"),
+        timestamp=market_timestamp,
+        observed_at=local_observed_at,
+    )
+
+    snapshot = ScannerSnapshot(
+        timestamp=NOW,
+        active_symbols=("XYZ",),
+        decisions=(candidate,),
+        ranked_candidates=(candidate,),
+        processed_events=1,
+        ignored_events=0,
+        reference_failures=(),
+        session="REGULAR",
+    )
+
+    publisher.publish(
+        snapshot,
+        cycle=1,
+        now=NOW,
+    )
+
+    assert candidate.timestamp == market_timestamp
+    assert candidate.observed_at == local_observed_at
+
+    # The exchange/broker timestamp is intentionally old.
+    assert NOW - candidate.timestamp > timedelta(seconds=5)
+
+    # But Atlas observed this candidate recently, so it is LIVE.
+    assert publisher.last_stale_symbols == ()
+
+    published = [
+        event
+        for event in events
+        if event.symbol == "XYZ"
+        and event.watchlist is not None
+        and event.watchlist.subscribed is True
+    ]
+
+    assert published
+
+    metadata = dict(published[-1].watchlist.metadata or ())
+    assert metadata["scanner_freshness"] == "LIVE"
+    assert published[-1].watchlist.quote is not None
+    assert published[-1].watchlist.quote.timestamp == local_observed_at
+    assert published[-1].watchlist.quote.stale is False
+
+    # Without any new local observation, the same candidate eventually
+    # expires from the live scanner display rather than remaining as a
+    # retained STALE row.
+    events.clear()
+
+    publisher.publish(
+        snapshot,
+        cycle=2,
+        now=NOW + timedelta(seconds=5),
+    )
+
+    assert publisher.last_stale_symbols == ()
+    assert "XYZ" not in publisher._displayed_symbols
+
+    removals = [
+        event
+        for event in events
+        if event.symbol == "XYZ"
+        and event.watchlist is not None
+        and event.watchlist.subscribed is False
+    ]
+
+    assert removals
+
+
+def test_scanner_publisher_removes_candidate_after_local_freshness_expires() -> None:
+    """Expired candidates must leave the live scanner display."""
+    events = []
+    sequences = count(1)
+
+    publisher = ScannerSnapshotPublisher(
+        events.append,
+        lambda: next(sequences),
+        source="candidate-expiration-regression",
+        stale_after=timedelta(seconds=5),
+    )
+
+    candidate = replace(
+        _candidate("XYZ"),
+        observed_at=NOW,
+    )
+
+    live_snapshot = ScannerSnapshot(
+        timestamp=NOW,
+        active_symbols=("XYZ",),
+        decisions=(candidate,),
+        ranked_candidates=(candidate,),
+        processed_events=1,
+        ignored_events=0,
+        reference_failures=(),
+        session="REGULAR",
+    )
+
+    publisher.publish(
+        live_snapshot,
+        cycle=1,
+        now=NOW,
+    )
+
+    assert "XYZ" in publisher._displayed_symbols
+
+    events.clear()
+
+    publisher.publish(
+        live_snapshot,
+        cycle=2,
+        now=NOW + timedelta(seconds=6),
+    )
+
+    assert "XYZ" not in publisher._displayed_symbols
+
+    removals = [
+        event
+        for event in events
+        if event.symbol == "XYZ"
+        and event.watchlist is not None
+        and event.watchlist.subscribed is False
+    ]
+
+    assert removals

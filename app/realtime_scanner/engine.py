@@ -144,6 +144,19 @@ class RealtimeScannerEngine:
 
         return self.active_symbols
 
+    def reset_stream_state(self) -> tuple[str, ...]:
+        """Reset stream-derived state after a transport session replacement."""
+        symbols = self.active_symbols
+        reset_symbol = getattr(self._pipeline, "reset_symbol", None)
+        if not callable(reset_symbol):
+            return ()
+
+        for symbol in symbols:
+            reset_symbol(symbol)
+            self._decisions.pop(symbol, None)
+
+        return symbols
+
     def consume(self, event: Any) -> ScannerDecision | None:
         symbol = _event_symbol(event)
 

@@ -1,7 +1,9 @@
+from datetime import timedelta
 from datetime import UTC, datetime
 
 from app.gui.models import ActivitySnapshot, TimelineFilter
 from app.gui.presenters import TimelinePresenter
+from app.gui.projections.activity_projection import project_timeline_activity
 from app.operations_core import ApplicationState, OperationsTimelineEntry
 from app.read_models.timeline import project_operational_timeline
 
@@ -94,3 +96,33 @@ def test_timeline_presenter_applies_structured_filters_and_search() -> None:
     assert snapshot.severity_options == ("ALL", "SUCCESS", "WARNING")
     assert snapshot.category_options == ("ALL", "ORDER", "SYSTEM")
     assert snapshot.symbol_options == ("ALL", "AAPL", "MSFT")
+
+
+def test_timeline_presenter_bounds_live_activity_rows() -> None:
+    panel = ActivityPanelSpy()
+
+    entries = tuple(
+        OperationsTimelineEntry(
+            timestamp=NOW - timedelta(seconds=index),
+            category="SYSTEM",
+            severity="INFO",
+            source="runtime",
+            title=f"Event {index}",
+            description=f"Timeline event {index}.",
+        )
+        for index in range(150)
+    )
+
+    projection = project_operational_timeline(entries)
+    state = ApplicationState(timeline_projection=projection)
+
+    TimelinePresenter(panel).render(state)
+
+    snapshot = panel.snapshots[-1]
+    expected = project_timeline_activity(
+        state,
+        limit=100,
+    )
+
+    assert len(snapshot.entries) == 100
+    assert snapshot.entries == expected.entries

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -444,3 +444,59 @@ def test_engine_has_no_execution_methods() -> None:
     assert "submit_order" not in method_names
     assert "place_order" not in method_names
     assert "cancel_order" not in method_names
+
+
+
+def test_reset_stream_state_delegates_active_symbols_and_clears_decisions() -> None:
+    class ResettablePipeline:
+        def __init__(self):
+            self.reset_calls = []
+
+        def consume(self, event):
+            return scanner_decision(event.symbol)
+
+        def reset_symbol(self, symbol):
+            self.reset_calls.append(symbol)
+
+    pipeline = ResettablePipeline()
+    universe = FakeUniverseService(
+        (
+            universe_symbol("AAA"),
+            universe_symbol("BBB"),
+        )
+    )
+
+    engine = RealtimeScannerEngine(
+        universe,
+        FakeReferenceService(),
+        pipeline,
+        clock=lambda: datetime(
+            2026,
+            7,
+            20,
+            14,
+            0,
+            tzinfo=UTC,
+        ),
+    )
+
+    engine.refresh_universe()
+    engine.consume(FakeEvent("AAA"))
+    engine.consume(FakeEvent("BBB"))
+
+    before = engine.snapshot()
+
+    assert tuple(item.symbol for item in before.decisions) == (
+        "AAA",
+        "BBB",
+    )
+
+    active = engine.active_symbols
+    reset = engine.reset_stream_state()
+
+    after = engine.snapshot()
+
+    assert reset == active
+    assert tuple(pipeline.reset_calls) == active
+    assert after.decisions == ()
+    assert after.active_symbols == active

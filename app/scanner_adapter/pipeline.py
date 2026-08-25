@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC, datetime
 
 from app.market_data.models import MarketEvent
 from app.momentum_scanner.models import ScannerDecision
@@ -36,10 +37,12 @@ class MomentumScannerPipeline:
         config: MomentumScannerConfig = MomentumScannerConfig(),
         *,
         decision_sink: Callable[[ScannerDecision], object] | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.adapter = adapter
         self.config = config
         self._latest: dict[str, ScannerDecision] = {}
+        self._clock = clock or (lambda: datetime.now(UTC))
         if decision_sink is not None and not callable(decision_sink):
             raise TypeError("decision_sink must be callable or None")
         self._decision_sink = decision_sink
@@ -56,6 +59,10 @@ class MomentumScannerPipeline:
         decision = evaluate_candidate(
             result.observation,
             self.config,
+        )
+        decision = replace(
+            decision,
+            observed_at=self._clock(),
         )
         ranked_all = sorted(
             (
@@ -95,6 +102,12 @@ class MomentumScannerPipeline:
                 decisions.append(decision)
 
         return tuple(decisions)
+
+    def reset_symbol(self, symbol: str) -> None:
+        """Discard stream-derived state for one symbol."""
+        normalized = symbol.strip().upper()
+        self.adapter.reset_symbol(normalized)
+        self._latest.pop(normalized, None)
 
     def latest_decision(
         self,

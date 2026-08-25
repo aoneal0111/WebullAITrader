@@ -164,6 +164,34 @@ class LiveScannerCoordinator:
     def stop(self) -> None:
         self._running = False
 
+    def recover_stream(self) -> tuple[str, ...]:
+        """Reconnect the transport and restore the current subscription."""
+        channels = self._channels
+        if not channels:
+            raise RuntimeError(
+                "scanner stream recovery requires an active subscription"
+            )
+
+        self.disconnect()
+
+        reset_stream_state = getattr(
+            self._engine,
+            "reset_stream_state",
+            None,
+        )
+        if callable(reset_stream_state):
+            reset_stream_state()
+
+        try:
+            self.connect()
+            self.subscribe(channels)
+        except Exception:
+            self.disconnect()
+            raise
+
+        self._running = True
+        return channels
+
     def run_once(self) -> LiveScannerCycle:
         self._require_running()
 

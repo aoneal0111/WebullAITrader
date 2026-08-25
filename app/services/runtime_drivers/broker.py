@@ -128,6 +128,9 @@ class DesktopBrokerRuntimeDriver:
         self._scanner_events_since_observation = 0
         self._last_scanner_observation_at = 0.0
         self._last_scanner_detail_at = 0.0
+        self._last_stale_recovery_at = 0.0
+        self._stale_recovery_pending = False
+        self._stale_recovery_symbols: tuple[str, ...] = ()
         self._scanner_publisher = ScannerSnapshotPublisher(
             self._event_sink,
             self._next_sequence,
@@ -740,12 +743,10 @@ class DesktopBrokerRuntimeDriver:
                             "ranked candidates.",
                         )
                     self._publish_scanner_observation_if_due(force=False)
-                    if stale:
-                        self._scanner_error(
-                            "Scanner quotes became stale: "
-                            + ", ".join(stale),
-                            RuntimeError("stale scanner quotes"),
-                        )
+                    # Candidate/display freshness is not transport liveness.
+                    # A retained scanner candidate may have an old market
+                    # timestamp while the underlying stream continues to
+                    # deliver fresh events.
                     continue
                 event = self._market_data.read_event()
                 if event is None:
@@ -1112,6 +1113,128 @@ class DesktopBrokerRuntimeDriver:
                 source=self._source,
                 health=health,
             )
+        )
+
+    def _observe_scanner_staleness(
+        self,
+        stale_symbols: tuple[str, ...],
+    ) -> None:
+        if self._stale_recovery_pending:
+            recovery_symbols = set(self._stale_recovery_symbols)
+            still_stale = tuple(
+                symbol
+                for symbol in stale_symbols
+                if symbol in recovery_symbols
+            )
+            if not still_stale:
+                self._complete_stale_scanner_recovery()
+            return
+
+        if stale_symbols:
+            self._recover_stale_scanner_stream(stale_symbols)
+
+    def _recover_stale_scanner_stream(
+        self,
+        stale_symbols: tuple[str, ...],
+    ) -> None:
+        scanner = self._scanner
+        if scanner is None:
+            return
+
+        # A successful reconnect remains pending until a scanner snapshot
+        # confirms that candidate quote timestamps are fresh again. Do not
+        # start another reconnect merely because the cooldown elapsed while
+        # that confirmation is still pending.
+        if self._stale_recovery_pending:
+            return
+
+        observed_at = monotonic()
+        cooldown_seconds = max(
+            1.0,
+            float(self._configuration.maximum_market_data_age_seconds),
+        )
+
+        if (
+            self._last_stale_recovery_at
+            and observed_at - self._last_stale_recovery_at
+            < cooldown_seconds
+        ):
+            return
+
+        recover = getattr(scanner, "recover_stream", None)
+        if not callable(recover):
+            self._scanner_error(
+                "Scanner quotes became stale: "
+                + ", ".join(stale_symbols),
+                RuntimeError("stale scanner quotes"),
+            )
+            return
+
+        self._last_stale_recovery_at = observed_at
+        self._stale_recovery_pending = True
+        self._stale_recovery_symbols = stale_symbols
+
+        self._publish_health(
+            "MARKET_DATA_RECONNECTING",
+            "Scanner quote delivery became stale; reconnecting market data.",
+            RuntimeHealthUpdate(
+                market_data_status="RECONNECTING",
+                streaming_status="RECONNECTING",
+                scanner_status="RECOVERING",
+                last_warning=(
+                    "Stale scanner quotes: "
+                    + ", ".join(stale_symbols)
+                ),
+            ),
+        )
+
+        try:
+            channels = recover()
+        except Exception as exc:
+            self._stale_recovery_pending = False
+            self._scanner_error(
+                "Scanner stale-feed recovery failed.",
+                exc,
+            )
+            return
+
+        self._scanner_log(
+            "scanner_stream_recovery_started",
+            (
+                "Reconnected stale scanner stream with "
+                f"{len(channels)} retained channels; "
+                "awaiting fresh quote confirmation."
+            ),
+        )
+
+    def _complete_stale_scanner_recovery(self) -> None:
+        stale_symbols = self._stale_recovery_symbols
+        self._stale_recovery_pending = False
+        self._stale_recovery_symbols = ()
+
+        self._publish_health(
+            "MARKET_DATA_RECONNECTED",
+            "Fresh scanner quotes confirmed after market-data recovery.",
+            RuntimeHealthUpdate(
+                market_data_status="CONNECTED",
+                streaming_status="CONNECTED",
+                subscription_status="ACCEPTED",
+                scanner_status="RUNNING",
+                last_warning=None,
+                last_error=None,
+            ),
+        )
+
+        self._scanner_log(
+            "scanner_stream_recovered",
+            (
+                "Fresh scanner quotes confirmed after stale-feed recovery"
+                + (
+                    ": " + ", ".join(stale_symbols)
+                    if stale_symbols
+                    else "."
+                )
+            ),
         )
 
     def _scanner_error(self, message: str, error: Exception) -> None:

@@ -73,12 +73,17 @@ class ScannerSnapshotPublisher:
         self._last_decisions: dict[str, ScannerDecision] = {}
         self._last_fingerprint: object | None = None
         self._last_changed = False
+        self._last_stale_symbols: tuple[str, ...] = ()
         self._published_experiments: dict[str, tuple[object, ...]] = {}
         self._diagnostics = diagnostics
 
     @property
     def last_changed(self) -> bool:
         return self._last_changed
+
+    @property
+    def last_stale_symbols(self) -> tuple[str, ...]:
+        return self._last_stale_symbols
 
     def publish(
         self,
@@ -99,6 +104,13 @@ class ScannerSnapshotPublisher:
                         decision,
                         ranked_symbols,
                     ) is not None
+                    and now
+                    - (
+                        decision.observed_at
+                        or decision.timestamp
+                        or snapshot.timestamp
+                    )
+                    <= self._stale_after
                 ),
                 key=lambda decision: (
                     decision.scanner_rank
@@ -129,12 +141,24 @@ class ScannerSnapshotPublisher:
             if snapshot.session != "UNKNOWN"
             else scanner_session(now).value
         )
+        stale_symbols = tuple(
+            candidate.symbol
+            for candidate in display_candidates
+            if now
+            - (
+                candidate.observed_at
+                or candidate.timestamp
+                or snapshot.timestamp
+            )
+            > self._stale_after
+        )
+        self._last_stale_symbols = stale_symbols
+
         fingerprint = (
             session,
             display_candidates,
             tuple(
-                now - (candidate.timestamp or snapshot.timestamp)
-                > self._stale_after
+                candidate.symbol in stale_symbols
                 for candidate in display_candidates
             ),
         )
@@ -148,12 +172,13 @@ class ScannerSnapshotPublisher:
         self._last_fingerprint = fingerprint
         self._last_changed = True
         self._diagnostics.increment("scanner_snapshots_published")
-        stale_symbols: list[str] = []
         for display_rank, candidate in enumerate(display_candidates, 1):
-            observed_at = candidate.timestamp or snapshot.timestamp
-            stale = now - observed_at > self._stale_after
-            if stale:
-                stale_symbols.append(candidate.symbol)
+            observed_at = (
+                candidate.observed_at
+                or candidate.timestamp
+                or snapshot.timestamp
+            )
+            stale = candidate.symbol in stale_symbols
             metadata = (
                 ("scanner_rank", str(candidate.scanner_rank or display_rank)),
                 ("scanner_score", str(candidate.score)),
@@ -263,7 +288,7 @@ class ScannerSnapshotPublisher:
             candidate.symbol: candidate for candidate in ranked
         }
         self._last_decisions = decisions
-        return tuple(stale_symbols)
+        return stale_symbols
 
     def _publish_experiment_candidates(
         self,

@@ -79,6 +79,8 @@ class PositionsPresenter:
 class TimelinePresenter:
     """Prepare and render the immutable timeline activity view model."""
 
+    _LIVE_ACTIVITY_LIMIT = 100
+
     def __init__(self, activity_panel: ActivityPanel, *additional_views) -> None:
         self._activity_views = (activity_panel, *additional_views)
         self._filters = TimelineFilter()
@@ -87,7 +89,7 @@ class TimelinePresenter:
     def render(self, state: ApplicationState) -> None:
         self._state = state
         snapshot = format_timeline(
-            project_timeline_activity(state),
+            project_timeline_activity(state, limit=self._LIVE_ACTIVITY_LIMIT),
             self._filters,
         )
         for view in self._activity_views:

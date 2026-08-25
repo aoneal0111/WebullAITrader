@@ -402,3 +402,136 @@ def test_price_observer_ignores_stale_trade() -> None:
         ("TEST", current.timestamp, current.payload.price),
     ]
 
+
+
+
+def test_pipeline_reset_symbol_clears_adapter_and_cached_decision() -> None:
+    store = ScannerReferenceStore()
+    store.put(
+        ScannerReferenceData(
+            symbol="XYZ",
+            previous_close=Decimal("10"),
+            average_30_day_volume=Decimal("1000000"),
+            float_shares=Decimal("5000000"),
+        )
+    )
+    adapter = MarketEventScannerAdapter(store)
+    pipeline = MomentumScannerPipeline(adapter)
+
+    event = MarketEvent(
+        sequence=1,
+        timestamp=NOW,
+        symbol="XYZ",
+        source="test",
+        event_type=MarketEventType.QUOTE,
+        payload=QuotePayload(
+            bid=Decimal("11"),
+            ask=Decimal("11.10"),
+            bid_size=Decimal("100"),
+            ask_size=Decimal("100"),
+        ),
+    )
+
+    pipeline.consume(event)
+
+    assert adapter.state_for("XYZ") is not None
+
+    pipeline.reset_symbol("XYZ")
+
+    assert adapter.state_for("XYZ") is None
+    assert pipeline.latest_decision("XYZ") is None
+
+
+def test_stream_session_reset_allows_lower_timestamp_new_baseline() -> None:
+    store = ScannerReferenceStore()
+    store.put(
+        ScannerReferenceData(
+            symbol="XYZ",
+            previous_close=Decimal("10"),
+            average_30_day_volume=Decimal("1000000"),
+            float_shares=Decimal("5000000"),
+        )
+    )
+
+    adapter = MarketEventScannerAdapter(store)
+    pipeline = MomentumScannerPipeline(adapter)
+
+    old_session_timestamp = datetime(
+        2026,
+        8,
+        25,
+        17,
+        0,
+        tzinfo=timezone.utc,
+    )
+    replacement_session_timestamp = datetime(
+        2026,
+        8,
+        25,
+        16,
+        59,
+        tzinfo=timezone.utc,
+    )
+
+    old_session_quote = MarketEvent(
+        sequence=1,
+        timestamp=old_session_timestamp,
+        symbol="XYZ",
+        source="test",
+        event_type=MarketEventType.QUOTE,
+        payload=QuotePayload(
+            bid=Decimal("11.00"),
+            ask=Decimal("11.10"),
+            bid_size=Decimal("100"),
+            ask_size=Decimal("100"),
+        ),
+    )
+
+    lower_timestamp_quote = MarketEvent(
+        sequence=2,
+        timestamp=replacement_session_timestamp,
+        symbol="XYZ",
+        source="test",
+        event_type=MarketEventType.QUOTE,
+        payload=QuotePayload(
+            bid=Decimal("12.00"),
+            ask=Decimal("12.10"),
+            bid_size=Decimal("200"),
+            ask_size=Decimal("200"),
+        ),
+    )
+
+    pipeline.consume(old_session_quote)
+
+    original = adapter.state_for("XYZ")
+
+    assert original is not None
+    assert original.quote_timestamp == old_session_timestamp
+    assert original.bid == Decimal("11.00")
+    assert original.ask == Decimal("11.10")
+
+    # Within the same stream session, a timestamp regression remains rejected.
+    pipeline.consume(lower_timestamp_quote)
+
+    rejected = adapter.state_for("XYZ")
+
+    assert rejected is not None
+    assert rejected.quote_timestamp == old_session_timestamp
+    assert rejected.bid == Decimal("11.00")
+    assert rejected.ask == Decimal("11.10")
+
+    # A transport session replacement creates a new ordering boundary.
+    pipeline.reset_symbol("XYZ")
+
+    assert adapter.state_for("XYZ") is None
+    assert pipeline.latest_decision("XYZ") is None
+
+    pipeline.consume(lower_timestamp_quote)
+
+    recovered = adapter.state_for("XYZ")
+
+    assert recovered is not None
+    assert recovered.quote_timestamp == replacement_session_timestamp
+    assert recovered.timestamp == replacement_session_timestamp
+    assert recovered.bid == Decimal("12.00")
+    assert recovered.ask == Decimal("12.10")

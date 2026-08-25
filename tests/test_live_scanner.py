@@ -310,6 +310,71 @@ def test_run_available_respects_cycle_limit() -> None:
     assert len(transport.events) == 1
 
 
+def test_recover_stream_reconnects_without_refreshing_universe() -> None:
+    transport = FakeTransport()
+    engine = FakeEngine()
+    coordinator = LiveScannerCoordinator(
+        transport,
+        engine,
+        default_channels=("quotes", "trades"),
+    )
+    coordinator.start()
+
+    assert transport.connect_calls == 1
+    assert transport.subscriptions == [("quotes", "trades")]
+    assert len(engine.refresh_calls) == 1
+
+    recovered = coordinator.recover_stream()
+
+    assert recovered == ("quotes", "trades")
+    assert transport.disconnect_calls == 1
+    assert transport.connect_calls == 2
+    assert transport.subscriptions == [
+        ("quotes", "trades"),
+        ("quotes", "trades"),
+    ]
+    assert len(engine.refresh_calls) == 1
+    assert coordinator.connected is True
+    assert coordinator.running is True
+
+
+def test_recover_stream_requires_existing_subscription() -> None:
+    coordinator = LiveScannerCoordinator(
+        FakeTransport(),
+        FakeEngine(),
+        default_channels=("quotes",),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="requires an active subscription",
+    ):
+        coordinator.recover_stream()
+
+
+def test_recover_stream_disconnects_after_resubscribe_failure() -> None:
+    class FailingRecoveryTransport(FakeTransport):
+        def subscribe(self, channels: tuple[str, ...]) -> None:
+            super().subscribe(channels)
+            if self.connect_calls > 1:
+                raise RuntimeError("resubscribe failed")
+
+    transport = FailingRecoveryTransport()
+    coordinator = LiveScannerCoordinator(
+        transport,
+        FakeEngine(),
+        default_channels=("quotes",),
+    )
+    coordinator.start()
+
+    with pytest.raises(RuntimeError, match="resubscribe failed"):
+        coordinator.recover_stream()
+
+    assert transport.disconnect_calls == 2
+    assert coordinator.connected is False
+    assert coordinator.running is False
+
+
 def test_stop_prevents_additional_processing() -> None:
     coordinator = LiveScannerCoordinator(
         FakeTransport([FakeEvent("AAA")]),
@@ -439,3 +504,49 @@ def test_coordinator_has_no_execution_methods() -> None:
     assert "submit_order" not in method_names
     assert "place_order" not in method_names
     assert "cancel_order" not in method_names
+
+
+
+def test_recover_stream_resets_engine_state_before_reconnecting() -> None:
+    actions = []
+
+    class RecoveryTransport(FakeTransport):
+        def connect(self):
+            actions.append("connect")
+            super().connect()
+
+        def disconnect(self):
+            actions.append("disconnect")
+            super().disconnect()
+
+        def subscribe(self, channels):
+            actions.append("subscribe")
+            super().subscribe(channels)
+
+    class ResettableEngine(FakeEngine):
+        def reset_stream_state(self):
+            actions.append("reset")
+            return ("AAA", "BBB")
+
+    transport = RecoveryTransport()
+    engine = ResettableEngine()
+
+    coordinator = LiveScannerCoordinator(
+        transport,
+        engine,
+        default_channels=("quotes", "trades"),
+    )
+
+    coordinator.start()
+
+    actions.clear()
+
+    recovered = coordinator.recover_stream()
+
+    assert recovered == ("quotes", "trades")
+    assert actions == [
+        "disconnect",
+        "reset",
+        "connect",
+        "subscribe",
+    ]

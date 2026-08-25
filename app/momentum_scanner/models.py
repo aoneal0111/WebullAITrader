@@ -83,6 +83,7 @@ class ScannerDecision:
     passed_rules: tuple[str, ...]
     failed_rules: tuple[str, ...]
     timestamp: datetime | None = None
+    observed_at: datetime | None = None
     price: Decimal | None = None
     current_volume: Decimal | None = None
     catalyst: CatalystType = CatalystType.NONE

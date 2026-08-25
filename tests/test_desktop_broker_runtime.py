@@ -352,6 +352,252 @@ def test_warrior_observer_uses_runtime_stream_and_isolated_probe_stream(monkeypa
     assert stream_factory_calls == [configured]
 
 
+
+def test_stale_scanner_recovery_reconnects_once_and_waits_for_fresh_data() -> None:
+    configured = configuration()
+
+    class Scanner:
+        def __init__(self):
+            self.calls = 0
+
+        def recover_stream(self):
+            self.calls += 1
+            return ("quotes", "trades")
+
+    scanner = Scanner()
+    events = []
+
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=configured,
+        broker_runtime=BrokerRuntime(
+            provider="webull",
+            capabilities=BrokerCapabilities(
+                provider="webull",
+                version="test",
+                supports_execution=True,
+                supports_account_data=True,
+                supports_market_data=True,
+                supports_streaming=True,
+            ),
+            execution=FakeBroker(),
+            market_data=object(),
+        ),
+        event_sink=events.append,
+        account_snapshot_sink=lambda snapshot: None,
+        scanner_coordinator=scanner,
+        clock=lambda: NOW,
+    )
+
+    driver._recover_stale_scanner_stream(("AAA", "BBB"))
+
+    assert scanner.calls == 1
+    assert driver._stale_recovery_pending is True
+    assert driver._stale_recovery_symbols == ("AAA", "BBB")
+
+    event_types = [event.event_type for event in events]
+    assert "MARKET_DATA_RECONNECTING" in event_types
+
+
+def test_stale_scanner_recovery_cooldown_suppresses_reconnect_storm() -> None:
+    configured = configuration()
+
+    class Scanner:
+        def __init__(self):
+            self.calls = 0
+
+        def recover_stream(self):
+            self.calls += 1
+            return ("quotes",)
+
+    scanner = Scanner()
+
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=configured,
+        broker_runtime=BrokerRuntime(
+            provider="webull",
+            capabilities=BrokerCapabilities(
+                provider="webull",
+                version="test",
+                supports_execution=True,
+                supports_account_data=True,
+                supports_market_data=True,
+                supports_streaming=True,
+            ),
+            execution=FakeBroker(),
+            market_data=object(),
+        ),
+        event_sink=lambda event: None,
+        account_snapshot_sink=lambda snapshot: None,
+        scanner_coordinator=scanner,
+        clock=lambda: NOW,
+    )
+
+    driver._recover_stale_scanner_stream(("AAA",))
+
+    assert scanner.calls == 1
+    assert driver._stale_recovery_pending is True
+
+    # Simulate a cooldown that has already expired. Recovery must still
+    # remain single-flight until a fresh scanner snapshot confirms success.
+    driver._last_stale_recovery_at = -1000000.0
+
+    driver._recover_stale_scanner_stream(("AAA",))
+    driver._recover_stale_scanner_stream(("AAA",))
+
+    assert scanner.calls == 1
+    assert driver._stale_recovery_pending is True
+
+
+
+def test_recovery_confirmation_ignores_unrelated_stale_symbols() -> None:
+    configured = configuration()
+    events = []
+
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=configured,
+        broker_runtime=BrokerRuntime(
+            provider="webull",
+            capabilities=BrokerCapabilities(
+                provider="webull",
+                version="test",
+                supports_execution=True,
+                supports_account_data=True,
+                supports_market_data=True,
+                supports_streaming=True,
+            ),
+            execution=FakeBroker(),
+            market_data=object(),
+        ),
+        event_sink=events.append,
+        account_snapshot_sink=lambda snapshot: None,
+        scanner_coordinator=None,
+        clock=lambda: NOW,
+    )
+
+    driver._stale_recovery_pending = True
+    driver._stale_recovery_symbols = ("AAA", "BBB")
+
+    driver._observe_scanner_staleness(("XYZ",))
+
+    assert driver._stale_recovery_pending is False
+    assert driver._stale_recovery_symbols == ()
+    assert "MARKET_DATA_RECONNECTED" in [
+        event.event_type for event in events
+    ]
+
+
+def test_recovery_confirmation_waits_for_original_stale_symbol() -> None:
+    configured = configuration()
+    events = []
+
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=configured,
+        broker_runtime=BrokerRuntime(
+            provider="webull",
+            capabilities=BrokerCapabilities(
+                provider="webull",
+                version="test",
+                supports_execution=True,
+                supports_account_data=True,
+                supports_market_data=True,
+                supports_streaming=True,
+            ),
+            execution=FakeBroker(),
+            market_data=object(),
+        ),
+        event_sink=events.append,
+        account_snapshot_sink=lambda snapshot: None,
+        scanner_coordinator=None,
+        clock=lambda: NOW,
+    )
+
+    driver._stale_recovery_pending = True
+    driver._stale_recovery_symbols = ("AAA", "BBB")
+
+    driver._observe_scanner_staleness(("BBB", "XYZ"))
+    assert driver._stale_recovery_pending is True
+    assert driver._stale_recovery_symbols == ("AAA", "BBB")
+    assert "MARKET_DATA_RECONNECTED" not in [
+        event.event_type for event in events
+    ]
+
+
+def test_fresh_scanner_data_completes_pending_stale_recovery() -> None:
+    configured = configuration()
+    events = []
+
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=configured,
+        broker_runtime=BrokerRuntime(
+            provider="webull",
+            capabilities=BrokerCapabilities(
+                provider="webull",
+                version="test",
+                supports_execution=True,
+                supports_account_data=True,
+                supports_market_data=True,
+                supports_streaming=True,
+            ),
+            execution=FakeBroker(),
+            market_data=object(),
+        ),
+        event_sink=events.append,
+        account_snapshot_sink=lambda snapshot: None,
+        scanner_coordinator=None,
+        clock=lambda: NOW,
+    )
+
+    driver._stale_recovery_pending = True
+    driver._stale_recovery_symbols = ("AAA",)
+
+    driver._complete_stale_scanner_recovery()
+
+    assert driver._stale_recovery_pending is False
+    assert driver._stale_recovery_symbols == ()
+
+    event_types = [event.event_type for event in events]
+    assert "MARKET_DATA_RECONNECTED" in event_types
+
+
+def test_failed_stale_scanner_recovery_clears_pending_state() -> None:
+    configured = configuration()
+
+    class Scanner:
+        def recover_stream(self):
+            raise RuntimeError("reconnect failed")
+
+    events = []
+
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=configured,
+        broker_runtime=BrokerRuntime(
+            provider="webull",
+            capabilities=BrokerCapabilities(
+                provider="webull",
+                version="test",
+                supports_execution=True,
+                supports_account_data=True,
+                supports_market_data=True,
+                supports_streaming=True,
+            ),
+            execution=FakeBroker(),
+            market_data=object(),
+        ),
+        event_sink=events.append,
+        account_snapshot_sink=lambda snapshot: None,
+        scanner_coordinator=Scanner(),
+        clock=lambda: NOW,
+    )
+
+    driver._recover_stale_scanner_stream(("AAA",))
+
+    assert driver._stale_recovery_pending is False
+
+    event_types = [event.event_type for event in events]
+    assert "MARKET_DATA_RECONNECTING" in event_types
+    assert "scanner_error" in event_types
+
+
 def test_driver_authenticates_owns_lifecycle_and_does_no_other_broker_work() -> None:
     broker = FakeBroker()
     events: list[PaperRuntimeEvent] = []
@@ -509,3 +755,65 @@ def test_driver_polls_account_until_stopped_and_reports_cycles() -> None:
         assert driver.cycles_completed == 1
     finally:
         store.close()
+
+def test_candidate_freshness_does_not_trigger_transport_recovery() -> None:
+    """Fresh transport events must not reconnect for an old retained candidate."""
+
+    class Cycle:
+        events_read = 1
+
+    class Scanner:
+        def __init__(self) -> None:
+            self.recover_calls = 0
+
+        def run_available(self):
+            stop_event.set()
+            return Cycle()
+
+        def snapshot(self):
+            return SimpleNamespace(
+                ranked_candidates=(),
+                decisions=(),
+                processed_events=1,
+                ignored_events=0,
+                active_symbols=("XYZ",),
+            )
+
+        def recover_stream(self):
+            self.recover_calls += 1
+            return ("XYZ",)
+
+    class Publisher:
+        def __init__(self) -> None:
+            self.last_changed = False
+            self.last_stale_symbols = ("XYZ",)
+
+        def publish(self, snapshot, *, cycle, now):
+            return self.last_stale_symbols
+
+    stop_event = Event()
+    scanner = Scanner()
+
+    driver = object.__new__(DesktopBrokerRuntimeDriver)
+    driver._scanner = scanner
+    driver._scanner_publisher = Publisher()
+    driver._scanner_events_since_observation = 0
+    driver._cycles_completed = 0
+    driver._market_data_stop = Event()
+    driver._timestamp = lambda: NOW
+    driver._scanner_log = lambda *args, **kwargs: None
+    driver._publish_scanner_observation_if_due = lambda *args, **kwargs: None
+
+    def unexpected_candidate_recovery(stale_symbols):
+        raise AssertionError(
+            "candidate/display freshness reached transport recovery: "
+            f"{stale_symbols!r}"
+        )
+
+    driver._observe_scanner_staleness = unexpected_candidate_recovery
+    driver._publish_terminal_market_data_failure = lambda exc: (_ for _ in ()).throw(exc)
+
+    driver._receive_market_data(stop_event)
+
+    assert scanner.recover_calls == 0
+    assert driver._scanner_events_since_observation == 1
