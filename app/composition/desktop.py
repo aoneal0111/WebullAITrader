@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from app.configuration import load_configuration
 from app.services.chart_market_data import ChartMarketDataService
@@ -80,6 +81,7 @@ def create_desktop_composition(
     cancellation_runtime: OrderCancellationRuntime | None = None,
     order_command_factory: OrderCommandFactory | None = None,
     paper_order_book: PaperOrderBook | None = None,
+    paper_persistence_path: str | Path | None = None,
 ) -> DesktopComposition:
     """Construct the desktop application dependency graph."""
 
@@ -203,6 +205,7 @@ def create_desktop_composition(
         paper_trading_commands = create_paper_trading_command_composition(
             order_book=paper_order_book,
             event_sink=runtime_projections.sink,
+            persistence_path=paper_persistence_path,
             position_average_cost_source=position_average_cost,
             position_quantity_source=position_quantity,
         )

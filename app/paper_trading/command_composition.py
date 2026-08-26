@@ -19,6 +19,7 @@ from app.order_cancellation.runtime import DeterministicOrderCancellationRuntime
 from app.order_placement.policies import OrderPlacementPolicy
 from app.order_placement.runtime import DeterministicOrderPlacementRuntime
 from app.paper_gateway import PaperOrderGateway
+from app.paper_gateway.durable_store import DurablePaperExecutionStore
 from app.operations.runtime import RuntimeEventSink
 from app.paper_trading.execution_engine import PaperExecutionEngine
 from app.paper_trading.order_book import PaperOrderBook
@@ -78,6 +79,7 @@ class PaperTradingCommandComposition:
     order_command_factory: OrderCommandFactory
     session_id: str
     account_id: str
+    durable_store: DurablePaperExecutionStore | None = None
 
     def close(self) -> None:
         """Invalidate the local paper command session and authentication."""
@@ -89,6 +91,8 @@ class PaperTradingCommandComposition:
             is AuthenticationStatus.AUTHENTICATED
         ):
             self.authentication_service.logout()
+        if self.durable_store is not None:
+            self.durable_store.close()
 
 
 def create_paper_trading_command_composition(
@@ -102,6 +106,7 @@ def create_paper_trading_command_composition(
     ) = None,
     position_quantity_source: Callable[[str], Decimal] | None = None,
     clock: Callable[[], datetime] | None = None,
+    persistence_path: str | None = None,
 ) -> PaperTradingCommandComposition:
     """Build an authenticated, active, paper-only trading command graph."""
 
@@ -133,12 +138,18 @@ def create_paper_trading_command_composition(
     session_manager.activate()
 
     shared_order_book = order_book or PaperOrderBook()
+    durable_store = (
+        None
+        if persistence_path is None
+        else DurablePaperExecutionStore(persistence_path, account_id=account_id)
+    )
     execution_engine = PaperExecutionEngine(shared_order_book)
     gateway_arguments = {
         "execution_engine": execution_engine,
         "event_sink": event_sink,
         "position_average_cost_source": position_average_cost_source,
         "position_quantity_source": position_quantity_source,
+        "durable_store": durable_store,
     }
     if clock is not None:
         gateway_arguments["clock"] = clock
@@ -177,6 +188,7 @@ def create_paper_trading_command_composition(
         order_command_factory=order_command_factory,
         session_id=session_id,
         account_id=account_id,
+        durable_store=durable_store,
     )
 
 

@@ -9,6 +9,7 @@ from threading import RLock
 from typing import Callable
 
 from app.paper_trading.order_book import PaperOrderBook
+from app.paper_trading.order_models import OrderSide
 from app.services.order_command_factory import OrderCommandFactory, OrderEntryCommand
 from app.services.trading_service import TradingService
 
@@ -68,6 +69,11 @@ class AutonomousPaperExecutionBridge:
             return False
         with self._lock:
             self._reconcile_terminal_exits()
+            if self.order_book is not None and (
+                self.order_book.open_orders_for_symbol(symbol)
+                or self._authoritative_quantity(symbol) > 0
+            ):
+                return False
             if self._active_by_symbol.get(symbol) is not None:
                 return False
             if self._identity_seen(identity):
@@ -108,6 +114,11 @@ class AutonomousPaperExecutionBridge:
             return False
         with self._lock:
             self._reconcile_terminal_exits()
+            if self.order_book is not None and any(
+                order.request.side is OrderSide.SELL
+                for order in self.order_book.open_orders_for_symbol(normalized)
+            ):
+                return False
             active = self._active_by_symbol.get(normalized)
             identity = lifecycle_id or active
             if identity is None or active != identity:
@@ -151,6 +162,19 @@ class AutonomousPaperExecutionBridge:
 
     def _identity_seen(self, identity: str) -> bool:
         return identity in self._seen_entries
+
+    def _authoritative_quantity(self, symbol: str) -> Decimal:
+        quantity = Decimal("0")
+        if self.order_book is None:
+            return quantity
+        for order in self.order_book.history():
+            if order.symbol != symbol:
+                continue
+            if order.request.side is OrderSide.BUY:
+                quantity += order.filled_quantity
+            else:
+                quantity -= order.filled_quantity
+        return max(quantity, Decimal("0"))
 
     @staticmethod
     def _remember(store: OrderedDict, key: object) -> None:

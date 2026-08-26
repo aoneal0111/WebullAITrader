@@ -57,6 +57,7 @@ from app.paper_trading.orders import (
     accept_order,
     create_order,
 )
+from app.paper_gateway.durable_store import DurablePaperExecutionStore
 
 
 Clock = Callable[[], datetime]
@@ -83,6 +84,7 @@ class PaperOrderGateway:
         position_quantity_source: PositionQuantitySource | None = None,
         clock: Clock = utc_now,
         source: str = "desktop-paper-execution",
+        durable_store: DurablePaperExecutionStore | None = None,
     ) -> None:
         if not isinstance(order_book, PaperOrderBook):
             raise TypeError("order_book must be PaperOrderBook")
@@ -126,9 +128,17 @@ class PaperOrderGateway:
         self._position_quantity_source = position_quantity_source
         self._clock = clock
         self._source = source.strip()
+        self._durable_store = durable_store
         self._sequence = 0
         self._journal = PaperJournal()
         self._lock = RLock()
+        if self._durable_store is not None:
+            for restored in self._durable_store.orders():
+                self._order_book.restore(restored)
+            self._sequence = max((event.sequence for event in self._durable_store.events()), default=0)
+            if self._event_sink is not None:
+                for event in self._durable_store.events():
+                    self._event_sink(event)
 
     @property
     def order_book(self) -> PaperOrderBook:
@@ -576,6 +586,14 @@ class PaperOrderGateway:
         return self._sequence
 
     def _publish(self, event: PaperRuntimeEvent) -> None:
+        if self._durable_store is not None:
+            order = None
+            if event.order is not None:
+                try:
+                    order = self._order_book.get(event.order.order_id)
+                except OrderNotFoundError:
+                    order = None
+            self._durable_store.persist(event, order)
         if self._event_sink is not None:
             self._event_sink(event)
 

@@ -65,6 +65,10 @@ class TimelineProjection:
     def __call__(self, event: PaperRuntimeEvent) -> None:
         if not isinstance(event, PaperRuntimeEvent):
             raise TypeError("event must be a PaperRuntimeEvent")
+        # Startup replay reconstructs state; it must not republish historical
+        # fills as fresh live Activity entries.
+        if event.source == "paper-execution-replay":
+            return
 
         identity = (event.source, event.sequence)
         with self._lock:

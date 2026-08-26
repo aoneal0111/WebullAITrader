@@ -46,6 +46,16 @@ class PaperOrderBook:
         self._orders[order.order_id] = order
         return order
 
+    def restore(self, order: PaperOrder) -> PaperOrder:
+        """Hydrate an authoritative order recovered from durable PAPER state."""
+        if order.order_id in self._orders:
+            current = self._orders[order.order_id]
+            if current != order:
+                raise OrderBookError(f"conflicting restored order {order.order_id}")
+            return current
+        self._orders[order.order_id] = order
+        return order
+
     def update(self, order: PaperOrder) -> PaperOrder:
         current = self.get(order.order_id)
 

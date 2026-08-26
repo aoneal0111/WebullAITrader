@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 from PySide6.QtWidgets import QApplication
 
 from app.composition.desktop import create_desktop_composition
+from app.configuration import load_configuration
 from app.gui.main_window import MainWindow
 from app.logging_config import configure_logging
+
+
+def configured_paper_persistence_path() -> Path:
+    """Return the deterministic PAPER-only execution store path."""
+    return Path(load_configuration().execution_database_path).with_name(
+        "paper-execution.sqlite3"
+    )
 
 
 def main() -> int:
@@ -19,7 +28,9 @@ def main() -> int:
     application.setApplicationName("Webull AI Trader")
     application.setOrganizationName("Webull AI Trader")
 
-    composition = create_desktop_composition()
+    composition = create_desktop_composition(
+        paper_persistence_path=configured_paper_persistence_path()
+    )
 
     window = MainWindow(
         composition.bus,
