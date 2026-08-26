@@ -33,6 +33,7 @@ class OrderEntryCommand:
     stop_price: Decimal | None
     time_in_force: str
     metadata: Mapping[str, JSONValue] | None = None
+    strategy_lifecycle_id: str | None = None
 
 
 class OrderCommandFactory:
@@ -108,6 +109,7 @@ class OrderCommandFactory:
             stop_price=command.stop_price,
             time_in_force=TimeInForce(command.time_in_force),
             client_order_id=client_order_id,
+            strategy_lifecycle_id=command.strategy_lifecycle_id,
             metadata=dict(command.metadata or {}),
         )
 

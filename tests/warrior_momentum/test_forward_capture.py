@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal as D
+from decimal import Decimal, Decimal as D
 from pathlib import Path
 from threading import Event
 from time import sleep
@@ -143,6 +143,9 @@ def test_paper_entry_partial_exit_stop_first_and_survives_candidate_removal(capt
     writer.flush()
     fills = [item.payload for item in store.records(record_type=CaptureRecordType.PAPER_FILL)]
     assert fills[0]["action"] == "ENTRY"
+    contexts = store.records(record_type=CaptureRecordType.MANAGEMENT_CONTEXT)
+    assert contexts and contexts[0].payload["environment"] == "PAPER"
+    assert Decimal(contexts[0].payload["stop"]) == signal.stop_price
     assert any(item.get("label") == "FIRST_TARGET" for item in fills)
     # After 1R the stop is breakeven; conservative same-bar handling exits before targets.
     assert fills[-1]["label"] == "STOP"
@@ -176,6 +179,27 @@ def test_restart_recovery_duplicate_prevention_and_replay_equivalence(tmp_path: 
         for item in store.records(record_type=CaptureRecordType.STATE_TRANSITION)
     )
     assert store.integrity_check() == "ok"
+
+
+def test_management_context_restores_stop_and_trailing_state(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "management.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(store, writer)
+    _candidate, signal = service.observe(point(), account=account())
+    assert signal is not None
+    writer.flush()
+    before = service._paper["XYZ"]
+    before.stop = signal.entry_trigger
+    before.maximum_high = signal.entry_trigger + Decimal("2")
+    service.observe_market_bar("XYZ", MinuteBar("XYZ", signal.timestamp + timedelta(minutes=1), signal.entry_trigger + D("0.015"), signal.entry_trigger + D("0.02"), signal.entry_trigger + D("0.01"), signal.entry_trigger + D("0.015"), D("100")), signal.timestamp + timedelta(minutes=2))
+    writer.flush()
+    writer.close()
+    restarted_writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    restarted = WarriorForwardCaptureService(store, restarted_writer)
+    state = restarted._paper["XYZ"]
+    assert state.stop == signal.entry_trigger
+    assert state.maximum_high == signal.entry_trigger + Decimal("2")
+    restarted_writer.close()
 
 
 def test_daily_report_uses_na_for_zero_trade_sample(capture) -> None:

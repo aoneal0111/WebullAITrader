@@ -10,6 +10,7 @@ from app.composition.desktop_runtime_config import (
 )
 from app.composition.runtime_mode import RuntimeMode
 from app.services import RuntimeServiceStatus
+from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperReadiness
 
 
 class FakeDriver:
@@ -32,6 +33,17 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
         assert composition.runtime_service.cycles_completed == 0
         assert composition.state_store.snapshot().revision == 0
         assert composition.chart_default_symbol is None
+    finally:
+        composition.close(timeout_seconds=1.0)
+
+
+def test_desktop_composition_reconciles_paper_execution_before_ready(tmp_path) -> None:
+    composition = create_desktop_composition(
+        paper_persistence_path=tmp_path / "paper.sqlite3",
+    )
+    try:
+        assert composition.autonomous_paper_bridge is not None
+        assert composition.autonomous_paper_bridge.readiness is AutonomousPaperReadiness.READY
     finally:
         composition.close(timeout_seconds=1.0)
 

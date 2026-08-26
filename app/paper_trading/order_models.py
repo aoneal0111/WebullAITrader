@@ -60,6 +60,7 @@ class OrderRequest:
     limit_price: Decimal | None = None
     stop_price: Decimal | None = None
     client_order_id: str | None = None
+    strategy_lifecycle_id: str | None = None
 
     def __post_init__(self) -> None:
         symbol = self.symbol.strip().upper()
@@ -89,6 +90,13 @@ class OrderRequest:
             "client_order_id",
             client_order_id,
         )
+        lifecycle_id = (
+            self.strategy_lifecycle_id.strip()
+            if self.strategy_lifecycle_id
+            and self.strategy_lifecycle_id.strip()
+            else None
+        )
+        object.__setattr__(self, "strategy_lifecycle_id", lifecycle_id)
 
 
 @dataclass(frozen=True, slots=True)

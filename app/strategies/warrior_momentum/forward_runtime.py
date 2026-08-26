@@ -28,6 +28,34 @@ ZERO = Decimal("0")
 HUNDRED = Decimal("100")
 
 
+def management_context_available(storage_path, symbol: str, lifecycle_id: str | None = None) -> str | None:
+    """Return the matching active PAPER lifecycle ID, when available.
+
+    Matching is structural when a lifecycle is supplied; symbol is only the
+    lookup partition and never the identity of an active trade.
+    """
+    try:
+        store = ForwardCaptureStore(storage_path)
+        records = store.records(symbol=symbol, record_type=CaptureRecordType.MANAGEMENT_CONTEXT)
+        if not records:
+            return None
+        for record in reversed(records):
+            payload = record.payload
+            candidate = payload.get("lifecycle_id")
+            if lifecycle_id is not None and candidate != lifecycle_id:
+                continue
+            if (
+                payload.get("environment") == "PAPER"
+                and payload.get("phase") != "CLOSED"
+                and bool(candidate)
+                and payload.get("stop") is not None
+            ):
+                return str(candidate)
+        return None
+    except Exception:
+        return None
+
+
 @dataclass(slots=True)
 class _PaperState:
     signal: MomentumEntrySignal
@@ -317,7 +345,7 @@ class WarriorForwardCaptureService:
             identity_parts=(ForwardTransition.PAPER_ENTRY.value,),
         )
         self._last_transition[signal.symbol] = ForwardTransition.PAPER_ENTRY
-        return fill, transition
+        return fill, transition, _management_context_record(signal.symbol, signal.timestamp, signal, state)
 
     @property
     def open_paper_symbols(self) -> tuple[str, ...]:
@@ -397,6 +425,12 @@ class WarriorForwardCaptureService:
                 identity_parts=(ForwardTransition.PAPER_PARTIAL.value, bar.timestamp.isoformat()),
             ))
             self._last_transition[signal.symbol] = ForwardTransition.PAPER_PARTIAL
+        # Management context is persisted at bar/state boundaries (not every
+        # quote), so a raised stop or high-water mark survives restart.
+        records.append(_management_context_record(
+            signal.symbol, observed_at, signal, state,
+            phase="CLOSED" if not state.remaining else "MANAGING",
+        ))
         return tuple(records)
 
     def _submit_exit(self, state: _PaperState, price: Decimal, quantity: int, reason: str) -> None:
@@ -491,6 +525,24 @@ class WarriorForwardCaptureService:
                     state.stop = max(state.stop, state.entry_price)
                 if state.remaining <= 0:
                     self._paper.pop(record.symbol, None)
+        for record in self.store.records(record_type=CaptureRecordType.MANAGEMENT_CONTEXT):
+            payload = record.payload
+            if payload.get("phase") == "CLOSED":
+                self._paper.pop(record.symbol, None)
+                continue
+            state = self._paper.get(record.symbol)
+            if state is None:
+                continue
+            try:
+                state.stop = Decimal(payload["stop"])
+                state.prior_low = None if payload.get("prior_low") is None else Decimal(payload["prior_low"])
+                state.minimum_low = None if payload.get("minimum_low") is None else Decimal(payload["minimum_low"])
+                state.maximum_high = None if payload.get("maximum_high") is None else Decimal(payload["maximum_high"])
+                state.first_taken = bool(payload.get("first_taken", False))
+                state.second_taken = bool(payload.get("second_taken", False))
+                state.remaining = int(payload.get("remaining", state.remaining))
+            except (KeyError, TypeError, ValueError):
+                self._paper.pop(record.symbol, None)
 
 
 def _bar_record(bar: MinuteBar, observed_at: datetime) -> CaptureRecord:
@@ -502,6 +554,38 @@ def _bar_record(bar: MinuteBar, observed_at: datetime) -> CaptureRecord:
          "open": bar.open, "high": bar.high, "low": bar.low,
          "close": bar.close, "volume": bar.volume},
         identity_parts=(bar.timestamp.isoformat(),),
+    )
+
+
+def _management_context_record(
+    symbol: str,
+    timestamp: datetime,
+    signal: MomentumEntrySignal,
+    state: _PaperState,
+    *,
+    phase: str = "MANAGING",
+) -> CaptureRecord:
+    """Persist only strategy-management context, never execution authority."""
+    return CaptureRecord.create(
+        CaptureRecordType.MANAGEMENT_CONTEXT, symbol, timestamp,
+        {
+            "environment": "PAPER",
+            "strategy": "WARRIOR_MOMENTUM_V1",
+            "lifecycle_id": lifecycle_identity(signal),
+            "setup": signal.setup_type.value,
+            "entry_timestamp": signal.timestamp,
+            "planned_entry": state.entry_price,
+            "structural_stop": signal.stop_price,
+            "stop": state.stop,
+            "prior_low": state.prior_low,
+            "minimum_low": state.minimum_low,
+            "maximum_high": state.maximum_high,
+            "first_taken": state.first_taken,
+            "second_taken": state.second_taken,
+            "remaining": state.remaining,
+            "phase": phase,
+        },
+        identity_parts=(lifecycle_identity(signal), phase, timestamp.isoformat()),
     )
 
 

@@ -255,6 +255,7 @@ class PaperOrderGateway:
                 limit_price=order.limit_price,
                 stop_price=order.stop_price,
                 client_order_id=order.client_order_id,
+                strategy_lifecycle_id=order.strategy_lifecycle_id,
             )
 
             paper_order = create_order(

@@ -34,6 +34,7 @@ def test_working_order_rehydrates_without_resubmission(tmp_path) -> None:
     )
     assert bridge.submit_entry(Signal(), 100, Decimal("50"))
     order_id = first.order_book.history()[0].order_id
+    assert first.order_book.history()[0].request.strategy_lifecycle_id == "trade-a"
     first.close()
 
     events = []
@@ -42,10 +43,13 @@ def test_working_order_rehydrates_without_resubmission(tmp_path) -> None:
     )
     assert len(second.order_book.history()) == 1
     assert second.order_book.history()[0].order_id == order_id
+    assert second.order_book.history()[0].request.strategy_lifecycle_id == "trade-a"
     assert second.order_book.history()[0].remaining_quantity == Decimal("100")
     restored_bridge = AutonomousPaperExecutionBridge(
         second.trading_service, second.order_command_factory, order_book=second.order_book,
     )
+    assert restored_bridge.reconcile().value == "READY"
+    assert restored_bridge._active_by_symbol["PMI"] == "trade-a"
     assert restored_bridge.submit_entry(Signal(), 100, Decimal("50")) is False
     assert not any(event.event_type == "ORDER_SUBMITTED" for event in events)
     second.close()
@@ -196,6 +200,7 @@ def test_two_same_symbol_trades_restore_once_with_aggregate_pnl(tmp_path) -> Non
         position_quantity_source=lambda _symbol: Decimal("100"),
     )
     assert len(second.order_book.history()) == 4
+    assert sorted(order.request.strategy_lifecycle_id for order in second.order_book.history()) == ["trade-a", "trade-a", "trade-b", "trade-b"]
     assert sum(len(order.fills) for order in second.order_book.history()) == 4
     assert second.order_book.open_orders() == ()
     bus = OperationsBus()
@@ -206,6 +211,22 @@ def test_two_same_symbol_trades_restore_once_with_aggregate_pnl(tmp_path) -> Non
     assert Decimal(position.quantity) == Decimal("0")
     assert Decimal(position.realized_gain_loss) == Decimal("25")
     second.close()
+
+
+def test_manual_order_and_legacy_payload_without_lifecycle_remain_compatible(tmp_path) -> None:
+    path = tmp_path / "paper.sqlite3"
+    composition = create_paper_trading_command_composition(persistence_path=str(path))
+    from app.services.order_command_factory import OrderEntryCommand
+    request = composition.order_command_factory.create_placement_request(OrderEntryCommand(
+        symbol="ABC", side="BUY", quantity=Decimal("10"), order_type="LIMIT",
+        limit_price=Decimal("5"), stop_price=None, time_in_force="DAY",
+    ))
+    assert request.order.strategy_lifecycle_id is None
+    assert composition.trading_service.place_order(request).success
+    composition.close()
+    reopened = create_paper_trading_command_composition(persistence_path=str(path))
+    assert reopened.order_book.history()[0].request.strategy_lifecycle_id is None
+    reopened.close()
 
 
 def test_replaying_same_store_twice_is_idempotent(tmp_path) -> None:

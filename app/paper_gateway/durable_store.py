@@ -95,6 +95,7 @@ def _order_payload(order: PaperOrder) -> dict:
             "limit_price": None if order.request.limit_price is None else str(order.request.limit_price),
             "stop_price": None if order.request.stop_price is None else str(order.request.stop_price),
             "client_order_id": order.request.client_order_id,
+            "strategy_lifecycle_id": order.request.strategy_lifecycle_id,
         },
         "fills": [_fill_payload(fill) for fill in order.fills],
     }
@@ -115,6 +116,7 @@ def _order_from_payload(value: dict) -> PaperOrder:
             limit_price=None if request["limit_price"] is None else Decimal(request["limit_price"]),
             stop_price=None if request["stop_price"] is None else Decimal(request["stop_price"]),
             client_order_id=request["client_order_id"],
+            strategy_lifecycle_id=request.get("strategy_lifecycle_id"),
         ),
         fills=tuple(_fill_from_payload(fill) for fill in value["fills"]),
     )

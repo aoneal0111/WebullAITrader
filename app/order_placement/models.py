@@ -23,7 +23,7 @@ class NormalizedOrderStatus(StrEnum):SUBMITTED="SUBMITTED";REJECTED="REJECTED";F
 class OrderPlacementDecision(StrEnum):DISABLED="DISABLED";SESSION_INVALID="SESSION_INVALID";ORDER_REJECTED="ORDER_REJECTED";GATEWAY_FAILURE="GATEWAY_FAILURE";SUCCESS="SUCCESS"
 @dataclass(frozen=True,slots=True)
 class OrderRequestModel:
- request_id:str;account_id:str;symbol:str;side:OrderSide;order_type:OrderType;quantity:Decimal;limit_price:Decimal|None;stop_price:Decimal|None;time_in_force:TimeInForce;client_order_id:str;metadata:Mapping[str,JSONValue]=field(default_factory=dict)
+ request_id:str;account_id:str;symbol:str;side:OrderSide;order_type:OrderType;quantity:Decimal;limit_price:Decimal|None;stop_price:Decimal|None;time_in_force:TimeInForce;client_order_id:str;metadata:Mapping[str,JSONValue]=field(default_factory=dict);strategy_lifecycle_id:str|None=None
  def __post_init__(self):
   for name in ("request_id","account_id","client_order_id"):object.__setattr__(self,name,_text(getattr(self,name),name))
   object.__setattr__(self,"symbol",_text(self.symbol,"symbol").upper())
@@ -36,8 +36,10 @@ class OrderRequestModel:
   if self.order_type is OrderType.MARKET and (self.limit_price is not None or self.stop_price is not None):raise OrderPlacementValidationError("market order cannot contain prices")
   if self.order_type is OrderType.LIMIT and self.stop_price is not None:raise OrderPlacementValidationError("limit order cannot contain stop_price")
   if self.order_type is OrderType.STOP and self.limit_price is not None:raise OrderPlacementValidationError("stop order cannot contain limit_price")
+  lifecycle_id = self.strategy_lifecycle_id.strip() if self.strategy_lifecycle_id and self.strategy_lifecycle_id.strip() else None
+  object.__setattr__(self,"strategy_lifecycle_id",lifecycle_id)
   object.__setattr__(self,"metadata",freeze_json_mapping("metadata",self.metadata))
- def to_dict(self):return {"request_id":self.request_id,"account_id":self.account_id,"symbol":self.symbol,"side":self.side.value,"order_type":self.order_type.value,"quantity":str(self.quantity),"limit_price":str(self.limit_price) if self.limit_price is not None else None,"stop_price":str(self.stop_price) if self.stop_price is not None else None,"time_in_force":self.time_in_force.value,"client_order_id":self.client_order_id,"metadata":thaw_json_value(self.metadata)}
+ def to_dict(self):return {"request_id":self.request_id,"account_id":self.account_id,"symbol":self.symbol,"side":self.side.value,"order_type":self.order_type.value,"quantity":str(self.quantity),"limit_price":str(self.limit_price) if self.limit_price is not None else None,"stop_price":str(self.stop_price) if self.stop_price is not None else None,"time_in_force":self.time_in_force.value,"client_order_id":self.client_order_id,"strategy_lifecycle_id":self.strategy_lifecycle_id,"metadata":thaw_json_value(self.metadata)}
  @classmethod
  def from_dict(cls,value):
   try:data=dict(value);data["side"]=OrderSide(data["side"]);data["order_type"]=OrderType(data["order_type"]);data["time_in_force"]=TimeInForce(data["time_in_force"]);return cls(**data)

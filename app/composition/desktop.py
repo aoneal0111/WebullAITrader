@@ -28,6 +28,7 @@ from app.strategies.warrior_momentum.desktop_sidecar import (
 )
 from app.strategies.warrior_momentum.forward_models import PaperAccountContext
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
+from app.strategies.warrior_momentum.forward_runtime import management_context_available
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -247,7 +248,12 @@ def create_desktop_composition(
             enabled=operational_configuration.warrior_forward_paper_enabled,
             order_book=paper_trading_commands.order_book,
             position_quantity_source=position_quantity,
+            management_context_source=lambda symbol: management_context_available(
+                operational_configuration.warrior_forward_capture_path, symbol
+            ),
         )
+        autonomous_paper_bridge.begin_reconciliation()
+        autonomous_paper_bridge.reconcile()
 
     warrior_forward_sidecar = WarriorDesktopSidecar(
         enabled=operational_configuration.warrior_forward_paper_enabled,
