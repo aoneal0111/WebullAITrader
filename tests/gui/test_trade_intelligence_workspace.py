@@ -145,7 +145,10 @@ def test_opportunity_selector_is_compact_and_has_no_placeholder_controls(applica
     assert tuple(
         workspace.watchlist._table.horizontalHeaderItem(index).text()
         for index in range(workspace.watchlist._table.columnCount())
-    ) == ("Rank", "Symbol", "Price", "Chg %", "Score", "RVOL", "Setup", "Status")
+    ) == (
+        "Rank", "Symbol", "Price", "Chg %", "RVOL", "Score", "Setup",
+        "Status", "Freshness",
+    )
     assert not hasattr(workspace.watchlist, "columns_button")
     assert not hasattr(workspace.watchlist, "filters_button")
 
@@ -157,6 +160,8 @@ def test_dashboard_keeps_real_controls_and_shows_authoritative_performance(appli
     assert not dashboard.portfolio_summary.isHidden()
     assert dashboard.runtime_header.resume_button.text() == "START"
     assert dashboard.runtime_header.stop_button.text() == "STOP"
-    assert not dashboard.runtime_header._metrics["Mode"].isHidden()
+    assert dashboard.runtime_header._metrics["Mode"].isHidden()
+    assert not dashboard.market_workspace.runtime_controls.mode_label.isHidden()
+    assert not dashboard.runtime_header._metrics["Risk"].isHidden()
     assert dashboard.runtime_header.pause_button.isHidden()
     assert dashboard.runtime_header.flatten_button.isHidden()

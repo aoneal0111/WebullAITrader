@@ -32,9 +32,12 @@ def _candidate() -> WatchlistRow:
     )
 
 
-def test_populated_candidate_renders_without_overflow(application: QApplication) -> None:
+@pytest.mark.parametrize("width,height", ((1536, 1024), (1920, 1080)))
+def test_populated_candidate_renders_without_overflow(
+    application: QApplication, width: int, height: int
+) -> None:
     dashboard = DashboardPage()
-    dashboard.resize(1920, 1080)
+    dashboard.resize(width, height)
     dashboard.market_workspace.render(
         WatchlistSnapshot(rows=(_candidate(),), candidate_count=1, scanner_status="Active")
     )
@@ -43,8 +46,14 @@ def test_populated_candidate_renders_without_overflow(application: QApplication)
         ActivityEntry(datetime.now(timezone.utc), "Entry conditions satisfied", "DECISIONS", related_symbol="PMI"),
     )))
     dashboard.market_workspace.portfolio_summary.render(PortfolioDashboardSnapshot(
-        metrics=(("Equity", "$25,000"), ("Buying Power", "$18,000"), ("Open Positions", "1"), ("Total P/L", "+$240"), ("Unrealized P/L", "+$180"), ("Realized P/L", "+$60")),
-        highlights=(("Exposure", "$4,720"),),
+        metrics=(("Equity", "$25,000"), ("Cash", "$20,280"),
+                 ("Buying Power", "$18,000"), ("Open Positions", "1"),
+                 ("Total P/L", "+$240"), ("Unrealized P/L", "+$180"),
+                 ("Realized P/L", "+$60"), ("Current Drawdown", "0.4%"),
+                 ("Win Rate", "67%")),
+        highlights=(("Exposure", "$4,720"), ("Gross Exposure", "$4,720"),
+                    ("Net Exposure", "$4,720"),
+                    ("Winning / Losing Positions", "2 / 1")),
     ))
     dashboard.show()
     application.processEvents()
@@ -57,4 +66,72 @@ def test_populated_candidate_renders_without_overflow(application: QApplication)
     assert panel._blocking.text() == "Entry trigger not reached"
     assert dashboard.market_workspace.activity_panel._table.rowCount() == 2
     assert dashboard.market_workspace.portfolio_summary._cards["Total P/L"]._value.text() == "+$240"
+    assert 100 <= dashboard.runtime_header.height() <= 125
+
+    critical = (
+        (panel._symbol, 20),
+        (panel._reason, 32),
+        (panel._passed_rules, 16),
+        (panel._failed_rules, 16),
+        (panel._market_values["Last"], 16),
+        (panel._market_values["Freshness"], 16),
+        (panel._plan_values["Entry trigger"], 16),
+        (panel._plan_values["Stop"], 16),
+        (panel._decision, 40),
+        (panel._blocking, 16),
+    )
+    for widget, readable_height in critical:
+        assert widget.isVisible()
+        assert widget.height() >= readable_height
+
+    contained = (
+        (panel._watching, panel._reason),
+        *( (panel._watching, value) for value in panel._watching_values.values() ),
+        (panel._watching, panel._passed_rules),
+        (panel._watching, panel._failed_rules),
+        *( (panel._market, value) for value in panel._market_values.values() ),
+        *( (panel._plan, value) for value in panel._plan_values.values() ),
+        (panel._plan, panel._plan_blocking),
+        (panel._decision_panel, panel._decision),
+        (panel._decision_panel, panel._decision_explanation),
+        (panel._decision_panel, panel._blocking),
+    )
+    for card, widget in contained:
+        widget_bottom = widget.mapToGlobal(widget.rect().bottomLeft()).y()
+        card_bottom = card.mapToGlobal(card.rect().bottomLeft()).y()
+        assert widget_bottom <= card_bottom
+
+    workspace = dashboard.market_workspace
+    assert workspace.runtime_controls_section.isHidden()
+    assert 0.58 <= (
+        workspace.opportunities_section.height()
+        / (workspace.opportunities_section.height() + workspace.market_overview_section.height())
+    ) <= 0.65
+    assert workspace.market_section.height() >= 470
+    assert workspace.activity_section.height() >= 280
+    assert workspace.activity_panel._table.height() >= 150
+    assert workspace.portfolio_section.height() >= 280
+    assert workspace.portfolio_summary._columns == 3
+    for card in workspace.portfolio_summary._card_order:
+        assert card.height() >= 48
+        assert card._value.isVisible()
+        assert card._value.height() >= 16
     assert dashboard.findChildren(type(dashboard)) == []
+
+
+@pytest.mark.parametrize("width,height", ((1536, 1024), (1920, 1080)))
+def test_empty_workstation_keeps_scanner_and_activity_states_compact(
+    application: QApplication, width: int, height: int
+) -> None:
+    dashboard = DashboardPage()
+    dashboard.resize(width, height)
+    dashboard.show()
+    application.processEvents()
+
+    workspace = dashboard.market_workspace
+    assert workspace.watchlist._table._empty_state.isVisible()
+    assert workspace.opportunities_section.height() < workspace.market_section.height()
+    assert workspace.activity_panel._table._empty_state.isVisible()
+    assert workspace.activity_section.height() < workspace.height() / 2
+    assert workspace.portfolio_summary._columns == 3
+    assert all(card.height() >= 48 for card in workspace.portfolio_summary._card_order)

@@ -60,7 +60,8 @@ class GlobalStatusBar(QWidget):
         runtime = snapshot.runtime
         self.runtime.set_status(
             f"Runtime {runtime.state.value.title()}",
-            "good" if runtime.state.value == "RUNNING" else "neutral",
+            "good" if runtime.state.value == "RUNNING" else "danger"
+            if runtime.state.value in {"STOPPED", "FAILED"} else "warn",
         )
 
     def render_health(self, snapshot: HealthDashboardSnapshot) -> None:

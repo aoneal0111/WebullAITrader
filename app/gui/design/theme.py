@@ -36,15 +36,17 @@ def application_stylesheet() -> str:
     QWidget#contentArea, QStackedWidget {{ background: {Colors.BACKGROUND}; }}
     QLabel {{ color: {Colors.TEXT}; }}
     QLabel#muted {{ color: {Colors.TEXT_MUTED}; }}
+    QLabel#identitySubtitle {{ color: {Colors.TEXT_MUTED}; font-size: {Typography.XS}px; }}
     QLabel#faint {{ color: {Colors.TEXT_FAINT}; }}
     QLabel#brand {{ font-size: {Typography.XL}px; font-weight: 800; letter-spacing: 2px; color: {Colors.TEXT_STRONG}; }}
     QLabel#brandMark {{ background: {Colors.ACCENT}; color: white; border-radius: 8px; font-size: 17px; font-weight: 900; }}
     QLabel#pageTitle {{ font-size: {Typography.XXL}px; font-weight: 750; color: {Colors.TEXT_STRONG}; }}
     QLabel#missionTitle {{ font-size: {Typography.XL}px; font-weight: 750; color: {Colors.TEXT_STRONG}; }}
-    QLabel#headerMetricValue {{ font-family: "{mono}"; color: {Colors.TEXT_STRONG}; font-size: 14px; font-weight: 700; }}
+    QLabel#headerMetricValue {{ font-family: "{mono}"; color: {Colors.TEXT_STRONG}; font-size: 12px; font-weight: 700; }}
     QLabel#headerMetricValue[status='good'] {{ color: {Colors.SUCCESS}; }}
     QLabel#headerMetricValue[status='warn'] {{ color: {Colors.WARNING}; }}
     QLabel#headerMetricValue[status='danger'] {{ color: {Colors.DANGER}; }}
+    QLabel#headerMetricValue[status='info'] {{ color: {Colors.CYAN}; }}
     QLabel#headerMetricValue[status='neutral'] {{ color: {Colors.TEXT_MUTED}; }}
     QLabel#sectionTitle {{ font-size: {Typography.PANEL_TITLE}px; font-weight: 700; color: {Colors.TEXT_STRONG}; }}
     QLabel#sectionEyebrow {{ font-size: {Typography.XS}px; font-weight: 750; color: {Colors.TEXT_MUTED}; letter-spacing: 0.8px; }}
@@ -64,7 +66,8 @@ def application_stylesheet() -> str:
         border-radius: 5px;
     }}
     QFrame#terminalHeader {{ background: {Colors.SIDEBAR}; border-bottom: 1px solid {Colors.BORDER_STRONG}; }}
-    QFrame#workstationHeader {{ background: {Colors.SIDEBAR}; border: 1px solid {Colors.BORDER_STRONG}; border-radius: 5px; }}
+    QFrame#workstationHeader {{ background: {Colors.SIDEBAR}; border: 0; border-bottom: 1px solid {Colors.ACCENT}; }}
+    QFrame#headerCommandCard, QFrame#headerStatusCard {{ background: {Colors.SIDEBAR}; border: 1px solid {Colors.BORDER_STRONG}; border-radius: 4px; }}
     QFrame#workstationFooter {{ background: {Colors.SURFACE}; border-top: 1px solid {Colors.BORDER}; }}
     QLabel#tableValue {{ color: {Colors.TEXT}; font-family: "{Typography.MONO}"; }}
     QFrame#headerSeparator {{ color: {Colors.BORDER}; max-width: 1px; margin: 4px 3px; }}
@@ -78,7 +81,7 @@ def application_stylesheet() -> str:
         border: 1px solid {Colors.BORDER_SOFT};
         border-radius: 6px;
     }}
-    QLabel#intelligenceExplanation {{ color: {Colors.TEXT_STRONG}; font-size: {Typography.LG}px; font-weight: 650; }}
+    QLabel#intelligenceExplanation {{ color: {Colors.TEXT_STRONG}; font-size: {Typography.MD}px; font-weight: 600; }}
     QLabel#decisionState {{ font-family: "{mono}"; color: {Colors.TEXT_STRONG}; font-size: {Typography.XXL}px; font-weight: 850; padding: 8px; }}
     QLabel#decisionState[tone='good'] {{ color: {Colors.SUCCESS}; }}
     QLabel#decisionState[tone='warn'] {{ color: {Colors.WARNING}; }}
@@ -88,7 +91,7 @@ def application_stylesheet() -> str:
     QFrame#metricCard:hover, QFrame#statusCard:hover {{ border-color: {Colors.BORDER_STRONG}; background: {Colors.SURFACE_ALT}; }}
     QFrame#metricCard[emphasis='primary'] {{ border-color: {Colors.BORDER_STRONG}; background: {Colors.SURFACE_ALT}; }}
     QFrame#metricCard[emphasis='compact'] {{ background: {Colors.SURFACE}; border-color: {Colors.BORDER_SOFT}; }}
-    QLabel#metricTitle {{ color: {Colors.TEXT_MUTED}; font-size: {Typography.SM}px; font-weight: 700; letter-spacing: 0.35px; }}
+    QLabel#metricTitle {{ color: {Colors.TEXT_MUTED}; font-size: 9px; font-weight: 700; letter-spacing: 0.25px; }}
     QLabel#aiObjective {{ color: {Colors.TEXT_STRONG}; font-size: {Typography.XL}px; font-weight: 750; }}
     QLabel#aiReasoning {{ color: {Colors.TEXT}; font-size: {Typography.MD}px; }}
     QLabel#aiFact {{ color: {Colors.TEXT_STRONG}; font-weight: 650; }}
@@ -109,6 +112,15 @@ def application_stylesheet() -> str:
     QPushButton#primaryButton:hover {{ background: {Colors.ACCENT_HOVER}; }}
     QPushButton#secondaryButton {{ background: {Colors.SURFACE_RAISED}; color: {Colors.TEXT}; border: 1px solid {Colors.BORDER}; }}
     QPushButton#secondaryButton:hover {{ border-color: {Colors.BORDER_STRONG}; background: {Colors.SURFACE_ALT}; }}
+    QPushButton#startButton {{ background: {Colors.SUCCESS_SOFT}; color: {Colors.SUCCESS}; border: 1px solid {Colors.SUCCESS}; }}
+    QPushButton#startButton:hover {{ background: {Colors.SUCCESS}; color: {Colors.BACKGROUND}; }}
+    QPushButton#inspectorButton {{ background: {Colors.ACCENT_SOFT}; color: {Colors.CYAN}; border: 1px solid {Colors.ACCENT_HOVER}; }}
+    QPushButton#inspectorButton:checked {{ background: {Colors.ACCENT}; color: white; }}
+    QLabel#runtimeMode[status='warn'] {{ color: {Colors.WARNING}; }}
+    QLabel#runtimeMode[status='danger'] {{ color: {Colors.DANGER}; }}
+    QLabel#runtimeState[status='good'] {{ color: {Colors.SUCCESS}; }}
+    QLabel#runtimeState[status='warn'] {{ color: {Colors.WARNING}; }}
+    QLabel#runtimeState[status='danger'] {{ color: {Colors.DANGER}; }}
     QPushButton#ghostButton {{ color: {Colors.TEXT_MUTED}; background: transparent; border: 1px solid {Colors.BORDER}; }}
     QPushButton#ghostButton:hover {{ color: {Colors.TEXT}; background: {Colors.SURFACE_RAISED}; }}
     QPushButton#dangerButton {{ background: {Colors.DANGER_SOFT}; color: {Colors.DANGER}; border: 1px solid {Colors.DANGER}; }}
@@ -142,11 +154,11 @@ def application_stylesheet() -> str:
         selection-color: {Colors.TEXT_STRONG};
         outline: 0;
     }}
-    QTreeView::item, QTableView::item, QTableWidget::item {{ padding: 3px 7px; border-bottom: 1px solid {Colors.BORDER_SOFT}; }}
+    QTreeView::item, QTableView::item, QTableWidget::item {{ padding: 3px 4px; border-bottom: 1px solid {Colors.BORDER_SOFT}; }}
     QTreeView::item:selected, QTableView::item:selected, QTableWidget::item:selected {{ border-top: 1px solid {Colors.ACCENT}; border-bottom: 1px solid {Colors.ACCENT}; }}
     QTreeView::branch {{ background: {Colors.SURFACE}; }}
     QTableCornerButton::section {{ background: {Colors.SURFACE_RAISED}; border: 0; border-bottom: 1px solid {Colors.BORDER_STRONG}; }}
-    QHeaderView::section {{ background: {Colors.SURFACE_RAISED}; color: {Colors.TEXT}; border: 0; border-bottom: 1px solid {Colors.BORDER_STRONG}; padding: 6px 7px; font-size: {Typography.SM}px; font-weight: 700; }}
+    QHeaderView::section {{ background: {Colors.SURFACE_RAISED}; color: {Colors.TEXT}; border: 0; border-bottom: 1px solid {Colors.BORDER_STRONG}; padding: 5px 3px; font-size: 10px; font-weight: 700; }}
     QLabel#emptyState {{ color: {Colors.TEXT_MUTED}; font-size: {Typography.MD}px; background: transparent; }}
     QTabWidget::pane {{ border: 1px solid {Colors.BORDER}; background: {Colors.SURFACE}; border-radius: 7px; top: -1px; }}
     QTabBar::tab {{ color: {Colors.TEXT_MUTED}; background: transparent; padding: 9px 14px; border-bottom: 2px solid transparent; }}
@@ -156,6 +168,7 @@ def application_stylesheet() -> str:
     QComboBox:hover, QLineEdit:hover, QSpinBox:hover, QDateTimeEdit:hover {{ border-color: {Colors.BORDER_STRONG}; }}
     QComboBox::drop-down {{ border: 0; width: 22px; }}
     QScrollArea {{ border: 0; background: transparent; }}
+    QScrollArea#sectionScrollArea, QScrollArea#sectionScrollArea > QWidget > QWidget {{ background: {Colors.SURFACE}; border: 0; }}
     QWidget#healthWorkspace, QWidget#healthPanel, QWidget#healthMetrics,
     QScrollArea#healthScrollArea, QWidget#healthScrollViewport {{
         background: {Colors.SURFACE};

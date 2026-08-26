@@ -47,20 +47,20 @@ class Typography:
     MONO = "Monospace"
     XS = 10
     SM = 11
-    MD = 12
-    LG = 15
+    MD = 11
+    LG = 14
     XL = 18
     XXL = 20
-    PANEL_TITLE = 14
+    PANEL_TITLE = 12
     PRIMARY_METRIC = 20
 
 
 class Dimensions:
     NAV_WIDTH = 184
     NAV_COMPACT_WIDTH = 64
-    HEADER_HEIGHT = 64
+    HEADER_HEIGHT = 102
     STATUS_HEIGHT = 24
-    TABLE_ROW_HEIGHT = 30
+    TABLE_ROW_HEIGHT = 27
     SPLITTER_HANDLE_WIDTH = 7
     # The market canvas is the primary laptop surface. The dashboard scrolls
     # vertically instead of negotiating it down to dashboard-card size.

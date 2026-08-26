@@ -57,7 +57,7 @@ class StyledDataTable(QTableWidget):
         icon: str = "\u25cb",
     ) -> None:
         self._empty_state.setText(
-            f"{icon}\n{title}\n{detail}"
+            "\n".join(part for part in (icon, title, detail) if part)
         )
         self._sync_empty_state()
 

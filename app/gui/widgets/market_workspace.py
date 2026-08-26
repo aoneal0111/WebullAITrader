@@ -690,7 +690,7 @@ class CompactWatchlistPanel(QWidget):
         self._mode_selector = QComboBox()
         self._mode_selector.addItems(("CURRENT ATLAS", "WARRIOR PAPER"))
         self._mode_selector.currentTextChanged.connect(self.focus_mode_changed.emit)
-        status_row.addWidget(self._mode_selector)
+        self._mode_selector.hide()
         layout.addLayout(status_row)
 
         controls = QHBoxLayout()
@@ -715,7 +715,7 @@ class CompactWatchlistPanel(QWidget):
         self.search.setClearButtonEnabled(True)
         self.search.setMaximumWidth(220)
         self.search.textChanged.connect(self._apply_search)
-        controls.addWidget(self.search)
+        self.search.hide()
         layout.addLayout(controls)
         self._paper_summary = QLabel()
         self._paper_summary.setObjectName("monoValue")
@@ -727,18 +727,18 @@ class CompactWatchlistPanel(QWidget):
             label.setVisible(False)
             layout.addWidget(label)
         self._columns = (
-            "Rank", "Symbol", "Price", "Chg %", "Score", "RVOL", "Setup",
-            "Status",
+            "Rank", "Symbol", "Price", "Chg %", "RVOL", "Score", "Setup",
+            "Status", "Freshness",
         )
         self._table = StyledDataTable(self._columns)
         self._table.set_empty_state(
-            "Atlas is scanning",
-            "High-confidence opportunities\n"
-            "will appear here automatically.",
-            icon="\u2606",
+            "Atlas is scanning — no qualifying opportunities yet.",
+            "Please wait while we analyze the market.\nOpportunities will appear here.",
+            icon="",
         )
         self._configure_columns(self._columns)
-        self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         layout.addWidget(self._table, 1)
         self._table.cellClicked.connect(self._select_row)
 
@@ -764,11 +764,15 @@ class CompactWatchlistPanel(QWidget):
         prefix = "Warrior Capture" if self._mode_selector.currentText() == "WARRIOR PAPER" else "Atlas Scanner"
         self._scanner_status.setText(f"{prefix}: {status}")
         self._candidate_count.setText(f"Candidates: {snapshot.candidate_count}")
-        self._table.set_empty_state(
-            snapshot.empty_title,
-            snapshot.empty_detail,
-            icon="\u2606",
-        )
+        empty_title = snapshot.empty_title.rstrip(".")
+        empty_detail = " ".join(snapshot.empty_detail.split())
+        if empty_title == "Atlas is scanning":
+            empty_title = "Atlas is scanning — no qualifying opportunities yet."
+            empty_detail = (
+                "Please wait while we analyze the market.\n"
+                "Opportunities will appear here."
+            )
+        self._table.set_empty_state(empty_title, empty_detail, icon="")
         self._table.clearSelection()
         query = self.search.text().strip().upper()
         classification = (
@@ -806,14 +810,15 @@ class CompactWatchlistPanel(QWidget):
                 f"\u25cf {row.symbol}" if row.selected else row.symbol,
                 row.latest_price,
                 row.change_percent,
-                row.score,
                 row.relative_volume,
+                row.score,
                 row.setup,
                 status,
+                row.freshness,
             )
             for column_index, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if column_index in (0, 2, 3, 4, 5):
+                if column_index in (0, 2, 3, 4, 5, 8):
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight
                         | Qt.AlignmentFlag.AlignVCenter
@@ -838,10 +843,11 @@ class CompactWatchlistPanel(QWidget):
         header.setStretchLastSection(False)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         widths = {
-            "Rank": 42, "Symbol": 68, "Price": 68, "Last": 70,
-            "Chg %": 58, "RVOL": 58, "Rel Vol": 62, "Volume": 78,
+            "Rank": 38, "Symbol": 54, "Price": 52, "Last": 54,
+            "Chg %": 48, "RVOL": 45, "Rel Vol": 48, "Volume": 70,
             "Float": 92, "$ Volume": 108, "Dollar Vol": 108,
-            "Catalyst": 120, "Score": 58, "Setup": 86, "Status": 92,
+            "Catalyst": 120, "Score": 44, "Setup": 62, "Status": 62,
+            "Freshness": 56,
         }
         for index, name in enumerate(columns):
             self._table.setColumnWidth(index, widths.get(name, 118))
@@ -892,7 +898,7 @@ class MarketWorkspace(QWidget):
         if chart_view is not None and not isinstance(chart_view, QWidget):
             raise TypeError("chart_view must be a QWidget chart adapter")
 
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
@@ -925,68 +931,91 @@ class MarketWorkspace(QWidget):
             "AI Thinking", self.ai_thinking, collapsible=True
         )
         self.activity_section = SectionPanel("LIVE AUTONOMOUS ACTIVITY", self.activity_panel)
-        self.portfolio_section = SectionPanel("PORTFOLIO / PERFORMANCE", self.portfolio_summary)
-        self.market_overview_section = SectionPanel("MARKET OVERVIEW", self.market_overview)
-        self.runtime_controls_section = SectionPanel("RUNTIME CONTROLS", self.runtime_controls)
-        safety_content = QWidget()
-        safety_layout = QVBoxLayout(safety_content)
-        safety_layout.setContentsMargins(0, 0, 0, 0)
-        safety_row = QHBoxLayout()
-        safety_row.addWidget(self.runtime_controls.emergency_stop_button)
-        flatten_unavailable = QPushButton("FLATTEN UNAVAILABLE")
-        flatten_unavailable.setObjectName("secondaryButton")
-        flatten_unavailable.setEnabled(False)
-        flatten_unavailable.setToolTip("No flatten command boundary is configured.")
-        safety_row.addWidget(flatten_unavailable)
-        safety_layout.addLayout(safety_row)
-        self.safety_section = SectionPanel("SAFETY", safety_content)
+        self.portfolio_section = SectionPanel(
+            "PORTFOLIO / PERFORMANCE", self.portfolio_summary, scrollable=True
+        )
+        self.market_overview_section = SectionPanel(
+            "MARKET OVERVIEW", self.market_overview, scrollable=True
+        )
+        self.runtime_controls_section = SectionPanel("RUNTIME CONTROLS", QWidget())
+        # Compatibility-only reference for integrations that inspected the
+        # former separate panel. Safety commands now live in the visible,
+        # compact runtime strip and retain their original signal wiring.
+        self.safety_section = SectionPanel("SAFETY", QWidget())
+        self.safety_section.hide()
         self.mission_section = SectionPanel(
             "Mission Status", self.mission_status, collapsible=True
         )
         self.infrastructure_section = SectionPanel(
             "Infrastructure", self.infrastructure, collapsible=True
         )
-        self.opportunities_section = SectionPanel("OPPORTUNITIES", self.watchlist)
+        opportunities_action = QToolButton()
+        opportunities_action.setObjectName("overflowButton")
+        opportunities_action.setText("...")
+        opportunities_action.setToolTip("Opportunity display settings")
+        self.opportunities_section = SectionPanel(
+            "OPPORTUNITIES", self.watchlist, action=opportunities_action
+        )
         self.focus_section = self.opportunities_section
         self.opportunities_section.setMinimumWidth(0)
-        self.market_section = SectionPanel("ATLAS TRADE INTELLIGENCE", self.trade_intelligence)
+        self.market_section = SectionPanel(
+            "ATLAS TRADE INTELLIGENCE",
+            self.trade_intelligence,
+            scrollable=True,
+        )
         self.market_section.setMinimumWidth(0)
         self._layout_mode: str | None = None
         self._responsive_width_override: int | None = None
 
-        self.left_column = QWidget()
-        left_layout = QVBoxLayout(self.left_column)
+        self.left_stack = QWidget()
+        self.left_column = self.left_stack
+        left_layout = QVBoxLayout(self.left_stack)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(8)
-        left_layout.addWidget(self.opportunities_section, 5)
-        left_layout.addWidget(self.market_overview_section, 2)
-        left_layout.addWidget(self.runtime_controls_section, 2)
-        left_layout.addWidget(self.safety_section, 1)
+        self.left_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.left_splitter.setObjectName("workstationLeftSplitter")
+        self.left_splitter.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
+        self.left_splitter.addWidget(self.opportunities_section)
+        self.left_splitter.addWidget(self.market_overview_section)
+        self.left_splitter.setStretchFactor(0, 62)
+        self.left_splitter.setStretchFactor(1, 38)
+        self.left_splitter.setSizes((310, 190))
+        left_layout.addWidget(self.left_splitter)
 
-        self.right_workspace = QWidget()
-        self.right_workspace.setMinimumWidth(0)
-        right_layout = QVBoxLayout(self.right_workspace)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(8)
-        right_layout.addWidget(self.market_section, 3)
+        # Compatibility alias for integrations that used the old wrapper name.
+        # The Trade Intelligence shell itself is now the direct right child of
+        # the production middle splitter, so no stale wrapper can detach it.
+        self.right_workspace = self.market_section
         lower = QSplitter(Qt.Orientation.Horizontal)
         lower.addWidget(self.activity_section)
         lower.addWidget(self.portfolio_section)
         self.lower_splitter = lower
-        lower.setStretchFactor(0, 6)
-        lower.setStretchFactor(1, 4)
-        lower.setSizes((700, 520))
-        right_layout.addWidget(lower, 2)
+        lower.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
+        lower.setStretchFactor(0, 53)
+        lower.setStretchFactor(1, 47)
+        lower.setSizes((810, 710))
 
-        self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.splitter.setObjectName("workstationMainSplitter")
-        self.splitter.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
-        self.splitter.addWidget(self.left_column)
-        self.splitter.addWidget(self.right_workspace)
-        self.splitter.setStretchFactor(0, 3)
-        self.splitter.setStretchFactor(1, 7)
-        self.splitter.setSizes((420, 980))
-        layout.addWidget(self.splitter)
+        self.middle_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.middle_splitter.setObjectName("workstationMainSplitter")
+        self.middle_splitter.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
+        self.middle_splitter.addWidget(self.left_stack)
+        self.middle_splitter.addWidget(self.market_section)
+        for index in range(self.middle_splitter.count()):
+            self.middle_splitter.setCollapsible(index, False)
+        self.middle_splitter.setStretchFactor(0, 32)
+        self.middle_splitter.setStretchFactor(1, 68)
+        self.middle_splitter.setSizes((485, 1035))
+        self.splitter = self.middle_splitter
+
+        self.workspace_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.workspace_splitter.setObjectName("workstationVerticalSplitter")
+        self.workspace_splitter.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
+        self.workspace_splitter.addWidget(self.middle_splitter)
+        self.workspace_splitter.addWidget(lower)
+        self.workspace_splitter.setStretchFactor(0, 61)
+        self.workspace_splitter.setStretchFactor(1, 39)
+        self.workspace_splitter.setSizes((500, 315))
+        layout.addWidget(self.workspace_splitter)
 
         # Secondary intelligence remains available to the inspector dock.
         intelligence_rail = QWidget()
@@ -1041,15 +1070,49 @@ class MarketWorkspace(QWidget):
         if not force and mode == self._layout_mode:
             return
         self._layout_mode = mode
-        self.splitter.setStretchFactor(0, 2)
-        self.splitter.setStretchFactor(1, 5)
-        self.splitter.setSizes(
-            (430 if mode == "compact" else 500, 760 if mode == "compact" else 980)
+        left_minimum, intelligence_minimum = (
+            (350, 600) if mode == "compact" else (400, 700)
         )
+        self.left_stack.setMinimumWidth(left_minimum)
+        self.market_section.setMinimumWidth(intelligence_minimum)
+        self.splitter.setStretchFactor(0, 32)
+        self.splitter.setStretchFactor(1, 68)
+        self.splitter.setSizes(
+            (410 if mode == "compact" else 485, 880 if mode == "compact" else 1035)
+        )
+
+    def ensure_middle_composition(self) -> None:
+        """Keep the production 32/68 middle row usable after state restore."""
+        self.market_section.show()
+        self.trade_intelligence.show()
+        available = max(
+            0,
+            self.middle_splitter.width() - self.middle_splitter.handleWidth(),
+        )
+        if available <= 0:
+            return
+        sizes = self.middle_splitter.sizes()
+        left_minimum = self.left_stack.minimumWidth()
+        intelligence_minimum = self.market_section.minimumWidth()
+        invalid = (
+            len(sizes) != 2
+            or sizes[0] < left_minimum
+            or sizes[1] < intelligence_minimum
+        )
+        if invalid:
+            left = max(left_minimum, round(available * 0.32))
+            right = available - left
+            if right < intelligence_minimum:
+                right = intelligence_minimum
+                left = available - right
+            self.middle_splitter.setSizes((left, right))
 
     def reset_layout(self, width: int | None = None) -> None:
         self.set_chart_focus(False)
         self.right_splitter.setSizes((230, 180, 190, 190))
+        self.left_splitter.setSizes((310, 190))
+        self.lower_splitter.setSizes((810, 710))
+        self.workspace_splitter.setSizes((500, 315))
         self._layout_mode = None
         self.set_responsive_width(width or self.width(), force=True)
 

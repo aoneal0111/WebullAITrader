@@ -223,9 +223,10 @@ class ReplayPresenter:
 class RuntimeControlsPresenter:
     """Keep runtime command availability synchronized with runtime phase."""
 
-    def __init__(self, start_button: QPushButton, stop_button: QPushButton) -> None:
+    def __init__(self, start_button: QPushButton, stop_button: QPushButton, status_view=None) -> None:
         self._start_button = start_button
         self._stop_button = stop_button
+        self._status_view = status_view
 
     def render(self, state: ApplicationState) -> None:
         phase = state.runtime.phase
@@ -238,6 +239,11 @@ class RuntimeControlsPresenter:
         self._stop_button.setEnabled(
             phase in {RuntimePhase.STARTING, RuntimePhase.RUNNING}
         )
+        if self._status_view is not None:
+            self._status_view.set_runtime_status(
+                state.runtime.environment,
+                phase.value,
+            )
 
 
 class RuntimeStatusPresenter:

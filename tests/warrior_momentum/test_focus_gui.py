@@ -26,7 +26,7 @@ def test_warrior_focus_uses_compact_selector_and_trade_intelligence() -> None:
         distance_to_hod="+0.70%", strategy_status="SETUP FORMING",
         explanations="Ranked #1 | Bull flag forming",
     ),)))
-    assert workspace.watchlist._table.columnCount() == 8
+    assert workspace.watchlist._table.columnCount() == 9
     assert workspace.watchlist._table.item(0, 7).text() == "SETUP FORMING"
     assert workspace.trade_intelligence._plan_values["Setup"].text() == "BULL FLAG"
     workspace.watchlist._select_row(0, 0)

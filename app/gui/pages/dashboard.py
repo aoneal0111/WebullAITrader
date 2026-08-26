@@ -15,18 +15,24 @@ class DashboardPage(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self.setObjectName("appRoot")
         self._external_viewport_width: int | None = None
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 8, 6)
         root.setSpacing(6)
-        self.runtime_header = RuntimeControlHeader()
-        self.workstation_header = self.runtime_header
         self.market_workspace = MarketWorkspace()
+        self.runtime_header = RuntimeControlHeader(
+            self.market_workspace.runtime_controls
+        )
+        self.workstation_header = self.runtime_header
         # Presenter compatibility aliases point at the visible workstation controls.
         self.runtime_header.resume_button = self.market_workspace.runtime_controls.start_button
         self.runtime_header.stop_button = self.market_workspace.runtime_controls.stop_button
         self.runtime_header.inspector_button = self.market_workspace.runtime_controls.inspector_button
         self.workstation_footer = WorkstationFooter()
+        self.market_workspace.runtime_controls.set_footer_view(
+            self.workstation_footer
+        )
         self.operator_workspace = OperatorWorkspace()
         self.mission_status = self.market_workspace.mission_status
         self.infrastructure = self.market_workspace.infrastructure
@@ -60,6 +66,9 @@ class DashboardPage(QWidget):
 
     def render(self, snapshot: DashboardSnapshot) -> None:
         self.runtime_header.render(snapshot.runtime)
+        self.workstation_footer.set_value(
+            "Mode", snapshot.runtime.environment.upper() or "--"
+        )
         self.market_workspace.render_activity(snapshot.atlas_activity)
         self.market_workspace.render_mission(snapshot.mission_status)
         self.market_workspace.render_ai_thinking(snapshot.ai_thinking)

@@ -59,6 +59,8 @@ from app.gui.formatters.warrior_paper import format_warrior_paper
 
 
 class MainWindow(QMainWindow):
+    _PRIMARY_LAYOUT_VERSION = 2
+
     def __init__(
         self,
         bus: OperationsBus,
@@ -144,10 +146,13 @@ class MainWindow(QMainWindow):
         content = QWidget()
         content.setObjectName("contentArea")
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(12, 9, 12, 5)
-        content_layout.setSpacing(8)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
         self.pages = QStackedWidget()
         self.dashboard = DashboardPage()
+        self.dashboard.workstation_footer.set_value(
+            "Version", _application_version()
+        )
         self.pages.addWidget(self.dashboard)  # 0
         self.positions = PositionsPanel()
         self.pages.addWidget(self.positions)  # 1
@@ -306,7 +311,11 @@ class MainWindow(QMainWindow):
                     else ()
                 ),
                 self._replay_presenter,
-                RuntimeControlsPresenter(self.start_button, self.stop_button),
+                RuntimeControlsPresenter(
+                    self.start_button,
+                    self.stop_button,
+                    self.dashboard.market_workspace.runtime_controls,
+                ),
                 RuntimeStatusPresenter(self.status_label),
                 RuntimeErrorPresenter(self),
             )
@@ -365,19 +374,34 @@ class MainWindow(QMainWindow):
         workspace = self.dashboard.market_workspace
         saved_mode = settings.value("layout/responsive_mode", "")
         if saved_mode == workspace.layout_mode:
-            for key, splitter in (
-                ("layout/chart_scanner_splitter", workspace.splitter),
+            splitter_states = [
                 ("layout/right_rail_splitter", workspace.right_splitter),
+            ]
+            if (
+                settings.value("layout/primary_layout_version", 0, type=int)
+                == self._PRIMARY_LAYOUT_VERSION
             ):
+                splitter_states.insert(
+                    0,
+                    ("layout/chart_scanner_splitter", workspace.middle_splitter),
+                )
+            for key, splitter in splitter_states:
                 state = settings.value(key)
                 if isinstance(state, QByteArray) and not state.isEmpty():
                     splitter.restoreState(state)
+        # Splitter state is applied before the native window has its final
+        # geometry. Validate again on the next event-loop turn so an old or
+        # collapsed production state cannot leave Trade Intelligence at 0 px.
+        QTimer.singleShot(0, workspace.ensure_middle_composition)
 
     def _save_layout(self) -> None:
         workspace = self.dashboard.market_workspace
         settings = self._settings
         settings.setValue("layout/window_geometry", self.saveGeometry())
         settings.setValue("layout/responsive_mode", workspace.layout_mode or "")
+        settings.setValue(
+            "layout/primary_layout_version", self._PRIMARY_LAYOUT_VERSION
+        )
         settings.setValue("layout/chart_scanner_splitter", workspace.splitter.saveState())
         settings.setValue("layout/right_rail_splitter", workspace.right_splitter.saveState())
         settings.setValue("layout/sidebar_compact", self._sidebar_user_compact)

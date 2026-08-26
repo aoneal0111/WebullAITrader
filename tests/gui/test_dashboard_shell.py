@@ -96,8 +96,14 @@ def test_supported_minimum_size_has_no_horizontal_dashboard_scroll(
     window.show()
     application.processEvents()
 
-    assert window.dashboard.findChild(QScrollArea) is None
-    assert window.dashboard.findChild(QScrollArea) is None
+    scroll_areas = window.dashboard.findChildren(QScrollArea)
+    assert len(scroll_areas) == 3
+    assert all(
+        area.objectName() == "sectionScrollArea"
+        and area.horizontalScrollBarPolicy()
+        == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        for area in scroll_areas
+    )
     for button in (
         window.start_button,
         window.pause_button,
@@ -121,7 +127,14 @@ def test_dashboard_preserves_content_at_supported_resolutions(
     window.show()
     application.processEvents()
 
-    assert window.dashboard.findChild(QScrollArea) is None
+    scroll_areas = window.dashboard.findChildren(QScrollArea)
+    assert len(scroll_areas) == 3
+    assert all(
+        area.objectName() == "sectionScrollArea"
+        and area.horizontalScrollBarPolicy()
+        == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        for area in scroll_areas
+    )
     assert window.size().width() == width
     assert window.size().height() == height
     for button in (
@@ -435,7 +448,7 @@ def test_compact_opportunity_selector_avoids_horizontal_scrolling(application) -
     application.processEvents()
 
     table = workspace.watchlist._table
-    assert table.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    assert table.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     assert table.horizontalScrollBar().maximum() == 0
     assert all(
         table.horizontalHeader().sectionResizeMode(index)

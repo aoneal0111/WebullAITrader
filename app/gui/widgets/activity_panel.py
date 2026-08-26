@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -49,9 +49,15 @@ class ActivityPanel(QWidget):
             ("Time", "Severity", "Category", "Symbol", "Source", "Event")
         )
         self._table.set_empty_state(
-            "No mission events",
-            "Projected runtime activity will appear here.",
-            icon="\u25f7",
+            "No mission events yet.",
+            "Autonomous activity will appear here.",
+            icon="",
+        )
+        self._table.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._table.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         layout.addWidget(self._table)
 

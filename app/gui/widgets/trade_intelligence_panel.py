@@ -18,6 +18,7 @@ class TradeIntelligencePanel(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self.setMinimumHeight(488)
         self._last_row: WatchlistRow | None | object = object()
         self._render_count = 0
 
@@ -27,12 +28,14 @@ class TradeIntelligencePanel(QWidget):
 
         header = QFrame()
         header.setObjectName("tradeIntelligenceHeader")
+        header.setMinimumHeight(78)
         header_layout = QVBoxLayout(header)
         header_layout.setContentsMargins(12, 10, 12, 10)
         header_layout.setSpacing(6)
         candidate_line = QHBoxLayout()
         self._symbol = QLabel("--")
         self._symbol.setObjectName("candidateSymbol")
+        self._symbol.setMinimumHeight(28)
         self._price = QLabel("--")
         self._price.setObjectName("candidatePrice")
         self._change = QLabel("--")
@@ -68,6 +71,7 @@ class TradeIntelligencePanel(QWidget):
         self._reason = QLabel("Select an opportunity to inspect Atlas state.")
         self._reason.setWordWrap(True)
         self._reason.setObjectName("intelligenceExplanation")
+        self._reason.setMinimumHeight(32)
         watching_layout.addWidget(self._reason)
         self._watching_values = _metric_grid(
             watching_layout,
@@ -86,6 +90,7 @@ class TradeIntelligencePanel(QWidget):
         self._decision.setObjectName("decisionState")
         self._decision.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._decision.setWordWrap(True)
+        self._decision.setMinimumHeight(40)
         decision_layout.addWidget(self._decision)
         self._decision_explanation = QLabel("--")
         self._decision_explanation.setWordWrap(True)
@@ -96,6 +101,7 @@ class TradeIntelligencePanel(QWidget):
         decision_layout.addWidget(blocking_title)
         self._blocking = QLabel("--")
         self._blocking.setWordWrap(True)
+        self._blocking.setMinimumHeight(16)
         decision_layout.addWidget(self._blocking)
         decision_layout.addStretch(1)
         market, market_layout = _section("CURRENT MARKET CONDITIONS")
@@ -124,14 +130,16 @@ class TradeIntelligencePanel(QWidget):
         plan_layout.addWidget(self._plan_blocking)
         body.addWidget(plan, 1)
         body.addWidget(decision, 1)
-        body.setStretch(0, 25)
-        body.setStretch(1, 20)
-        body.setStretch(2, 25)
-        body.setStretch(3, 30)
+        body.setStretch(0, 24)
+        body.setStretch(1, 22)
+        body.setStretch(2, 26)
+        body.setStretch(3, 28)
         self._watching = watching
         self._market = market
         self._plan = plan
         self._decision_panel = decision
+        for panel in (watching, market, plan, decision):
+            panel.setMinimumHeight(250)
         root.addLayout(body, 1)
 
     def render(self, row: WatchlistRow | None) -> None:
@@ -233,8 +241,9 @@ class TradeIntelligencePanel(QWidget):
 def _section(title: str) -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
     frame.setObjectName("intelligenceSection")
+    frame.setMinimumWidth(0)
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(12, 10, 12, 10)
+    layout.setContentsMargins(10, 9, 10, 9)
     layout.setSpacing(6)
     heading = QLabel(title)
     heading.setObjectName("sectionTitle")
@@ -252,7 +261,7 @@ def _metric_grid(
     container = QWidget()
     grid = QGridLayout(container)
     grid.setContentsMargins(0, 2, 0, 2)
-    grid.setHorizontalSpacing(14)
+    grid.setHorizontalSpacing(4)
     grid.setVerticalSpacing(4)
     values: dict[str, QLabel] = {}
     for index, name in enumerate(names):
@@ -266,6 +275,7 @@ def _metric_grid(
         value = QLabel("--")
         value.setObjectName("monoValue")
         value.setWordWrap(True)
+        value.setMinimumHeight(16)
         block_layout.addWidget(title)
         block_layout.addWidget(value)
         grid.addWidget(block, row, column)
@@ -281,6 +291,7 @@ def _fact_label(layout: QVBoxLayout, title: str) -> QLabel:
     heading.setObjectName("metricTitle")
     value = QLabel("--")
     value.setWordWrap(True)
+    value.setMinimumHeight(16)
     layout.addWidget(heading)
     layout.addWidget(value)
     return value

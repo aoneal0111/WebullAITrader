@@ -12,10 +12,16 @@ class PortfolioSummaryStrip(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        # Initialize resize-event state before installing the layout; native
+        # resize delivery can occur while child widgets are being constructed.
+        self._cards = {}
+        self._card_order = []
+        self._columns = 3
+        self.setMinimumHeight(264)
         self._layout = QGridLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setHorizontalSpacing(8)
-        self._layout.setVerticalSpacing(8)
+        self._layout.setVerticalSpacing(6)
 
         specifications = (
             ("Equity", "Net Equity", "primary"),
@@ -36,31 +42,37 @@ class PortfolioSummaryStrip(QWidget):
             ),
             ("Win Rate", "Win Rate", "standard"),
         )
-        self._cards = {}
-        self._card_order = []
-        self._columns = 0
-        for column, (source, title, emphasis) in enumerate(specifications):
+        for index, (source, title, emphasis) in enumerate(specifications):
             card = MetricCard(title, emphasis=emphasis)
             if source == "Open Positions":
                 card._value.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._layout.addWidget(card, 0, column)
+            self._layout.addWidget(card, index // 3, index % 3)
             self._cards[source] = card
             self._card_order.append(card)
+        for column in range(3):
             self._layout.setColumnStretch(column, 1)
 
     def minimumSizeHint(self) -> QSize:
         # Two compact rows on wide screens; additional rows are allowed on
         # smaller screens instead of clipping metric text.
-        rows = max(1, (len(self._card_order) + max(1, self._columns or 6) - 1) // max(1, self._columns or 6))
-        return QSize(0, 78 * rows + 8 * max(0, rows - 1))
+        columns = max(1, getattr(self, "_columns", 3) or 3)
+        rows = max(1, (len(self._card_order) + columns - 1) // columns)
+        return QSize(0, 48 * rows + 6 * max(0, rows - 1))
 
     def resizeEvent(self, event) -> None:
         width = event.size().width()
-        columns = 2 if width < 500 else 3 if width < 1200 else 4 if width < 1600 else 6
-        if columns != self._columns:
+        # The workstation gives this panel roughly 40% of the bottom row.
+        # Three columns preserve a label and a prominent value without
+        # producing the seven-row stack that previously drove compression.
+        columns = 2 if width < 340 else 3
+        if columns != getattr(self, "_columns", 3):
             self._columns = columns
+            for column in range(len(self._card_order)):
+                self._layout.setColumnStretch(column, 0)
             for index, card in enumerate(self._card_order):
                 self._layout.addWidget(card, index // columns, index % columns)
+            for column in range(columns):
+                self._layout.setColumnStretch(column, 1)
             self.updateGeometry()
         super().resizeEvent(event)
 

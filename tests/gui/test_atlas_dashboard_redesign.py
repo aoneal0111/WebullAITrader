@@ -108,7 +108,7 @@ def test_compact_atlas_focus_and_activity_use_projection_snapshots(application) 
         AtlasActivityRow("Evaluating", "Unknown"),
     )))
 
-    assert workspace.watchlist._table.columnCount() == 8
+    assert workspace.watchlist._table.columnCount() == 9
     assert workspace.watchlist._table.item(0, 1).text().endswith("XYZ")
     assert workspace.watchlist._table.item(0, 3).text() == "+0.40%"
     assert workspace.atlas_activity._rows["Universe"].text() == "●  7300"
@@ -400,7 +400,11 @@ def test_commercial_dashboard_preserves_panels_at_target_viewports(
     page.show()
     application.processEvents()
 
-    assert page.findChild(QScrollArea) is None
+    assert len(page.findChildren(QScrollArea)) == 3
+    assert all(
+        area.objectName() == "sectionScrollArea"
+        for area in page.findChildren(QScrollArea)
+    )
     assert page.market_workspace.splitter.orientation() == Qt.Orientation.Horizontal
     assert page.market_workspace.height() >= 420
 
