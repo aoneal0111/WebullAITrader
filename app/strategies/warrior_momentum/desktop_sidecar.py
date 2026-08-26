@@ -120,6 +120,9 @@ class WarriorDesktopSidecar:
         environment: str = "UNKNOWN",
         strategy_config: WarriorMomentumConfig = WarriorMomentumConfig(),
         account_context_source: Callable[[], PaperAccountContext | None] | None = None,
+        paper_entry_submitter: Callable[[object, int, Decimal], bool] | None = None,
+        paper_exit_submitter: Callable[[str, int, Decimal, str, str | None], bool] | None = None,
+        paper_position_quantity_source: Callable[[str], Decimal] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.enabled = bool(enabled)
@@ -129,6 +132,9 @@ class WarriorDesktopSidecar:
         self.capture_config = ForwardCaptureConfiguration(storage_path=self.storage_path)
         self.configuration_fingerprint = strategy_configuration_fingerprint(strategy_config)
         self._account_source = account_context_source or (lambda: None)
+        self._paper_entry_submitter = paper_entry_submitter
+        self._paper_exit_submitter = paper_exit_submitter
+        self._paper_position_quantity_source = paper_position_quantity_source
         self._clock = clock
         self._lock = RLock()
         self._adapter: MarketEventScannerAdapter | None = None
@@ -314,6 +320,9 @@ class WarriorDesktopSidecar:
                 self._service = WarriorForwardCaptureService(
                     self._store, self._writer, self.strategy_config,
                     self.capture_config,
+                    paper_entry_submitter=self._paper_entry_submitter,
+                    paper_exit_submitter=self._paper_exit_submitter,
+                    paper_position_quantity_source=self._paper_position_quantity_source,
                 )
                 self._restore_bars()
                 now = self._aware_now()

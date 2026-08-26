@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_FLOOR
+from typing import Callable
 
 from .configuration import WarriorMomentumConfig
 from .features import build_features, completed_bars_as_of
@@ -13,6 +14,7 @@ from .forward_models import (
     ForwardCaptureConfiguration, ForwardTransition, PaperAccountContext,
     PointInTimeObservation,
 )
+from .autonomous_paper import lifecycle_identity
 from .forward_queue import ForwardCaptureWriter
 from .forward_store import ForwardCaptureStore
 from .models import (
@@ -61,11 +63,17 @@ class WarriorForwardCaptureService:
         self, store: ForwardCaptureStore, writer: ForwardCaptureWriter,
         config: WarriorMomentumConfig = WarriorMomentumConfig(),
         capture_config: ForwardCaptureConfiguration = ForwardCaptureConfiguration(),
+        paper_entry_submitter: Callable[[MomentumEntrySignal, int, Decimal], bool] | None = None,
+        paper_exit_submitter: Callable[[str, int, Decimal, str, str | None], bool] | None = None,
+        paper_position_quantity_source: Callable[[str], Decimal] | None = None,
     ) -> None:
         self.store = store
         self.writer = writer
         self.config = config
         self.capture_config = capture_config
+        self._paper_entry_submitter = paper_entry_submitter
+        self._paper_exit_submitter = paper_exit_submitter
+        self._paper_position_quantity_source = paper_position_quantity_source
         self.runtime = WarriorMomentumRuntime(config)
         self._last_transition: dict[str, ForwardTransition] = {}
         self._seen_bars: set[tuple[str, datetime]] = set()
@@ -141,6 +149,11 @@ class WarriorForwardCaptureService:
                         value.float_provenance,
                     )
                     records.extend(entry_records)
+                    # A configured execution bridge is authoritative for the
+                    # entry boundary.  If it rejects the command, do not
+                    # return an apparently executable signal to callers.
+                    if self._paper_entry_submitter is not None and not entry_records:
+                        signal = None
                 else:
                     records.append(_transition_record(
                         assessed, ForwardTransition.ENTRY_BLOCKED,
@@ -275,6 +288,8 @@ class WarriorForwardCaptureService:
     ) -> tuple[CaptureRecord, ...]:
         if signal.symbol in self._paper:
             return ()
+        if self._paper_entry_submitter is not None and not self._paper_entry_submitter(signal, shares, risk_dollars):
+            return ()
         first = int((Decimal(shares) * self.config.trade_management.first_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
         second = int((Decimal(shares) * self.config.trade_management.second_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
         state = _PaperState(signal, signal.entry_trigger, shares, shares, signal.stop_price, first, second)
@@ -291,7 +306,8 @@ class WarriorForwardCaptureService:
              "float_provenance": float_provenance.value,
              "price": signal.reference_price,
              "catalyst_state": signal.catalyst_state.value, "session": signal.session,
-             "targets": signal.target_levels, "live_execution_authorized": False},
+             "targets": signal.target_levels, "live_execution_authorized": False,
+             "authority": "ANALYTICAL_FORWARD_CAPTURE"},
             identity_parts=("ENTRY",),
         )
         transition = CaptureRecord.create(
@@ -313,6 +329,12 @@ class WarriorForwardCaptureService:
 
     def _advance_paper(self, state: _PaperState, bar: MinuteBar, observed_at) -> tuple[CaptureRecord, ...]:
         state.last_bar_timestamp = bar.timestamp
+        if (
+            self._paper_entry_submitter is not None
+            and self._paper_position_quantity_source is not None
+            and self._paper_position_quantity_source(state.signal.symbol) <= 0
+        ):
+            return ()
         signal = state.signal
         records: list[CaptureRecord] = []
         if bar.low <= state.stop:
@@ -320,6 +342,7 @@ class WarriorForwardCaptureService:
             state.maximum_high = (
                 state.entry_price if state.maximum_high is None else state.maximum_high
             )
+            self._submit_exit(state, state.stop, state.remaining, "STOP")
             records.append(self._paper_fill(state, observed_at, "EXIT", "STOP", state.stop, state.remaining))
             state.realized_pnl += (state.stop - state.entry_price) * state.remaining
             state.remaining = 0
@@ -328,6 +351,7 @@ class WarriorForwardCaptureService:
             state.maximum_high = bar.high if state.maximum_high is None else max(state.maximum_high, bar.high)
             if not state.first_taken and bar.high >= signal.target_levels[0]:
                 quantity = min(state.first_quantity, state.remaining)
+                self._submit_exit(state, signal.target_levels[0], quantity, "FIRST_TARGET")
                 records.append(self._paper_fill(state, observed_at, "PARTIAL", "FIRST_TARGET", signal.target_levels[0], quantity))
                 state.realized_pnl += (signal.target_levels[0] - state.entry_price) * quantity
                 state.remaining -= quantity
@@ -335,11 +359,13 @@ class WarriorForwardCaptureService:
                 state.stop = max(state.stop, state.entry_price)
             if state.remaining and not state.second_taken and bar.high >= signal.target_levels[1]:
                 quantity = min(state.second_quantity, state.remaining)
+                self._submit_exit(state, signal.target_levels[1], quantity, "SECOND_TARGET")
                 records.append(self._paper_fill(state, observed_at, "PARTIAL", "SECOND_TARGET", signal.target_levels[1], quantity))
                 state.realized_pnl += (signal.target_levels[1] - state.entry_price) * quantity
                 state.remaining -= quantity
                 state.second_taken = True
             if state.remaining and bar.high >= signal.target_levels[2]:
+                self._submit_exit(state, signal.target_levels[2], state.remaining, "RUNNER_TARGET")
                 records.append(self._paper_fill(state, observed_at, "EXIT", "RUNNER_TARGET", signal.target_levels[2], state.remaining))
                 state.realized_pnl += (signal.target_levels[2] - state.entry_price) * state.remaining
                 state.remaining = 0
@@ -373,6 +399,13 @@ class WarriorForwardCaptureService:
             self._last_transition[signal.symbol] = ForwardTransition.PAPER_PARTIAL
         return tuple(records)
 
+    def _submit_exit(self, state: _PaperState, price: Decimal, quantity: int, reason: str) -> None:
+        if self._paper_exit_submitter is not None:
+            self._paper_exit_submitter(
+                state.signal.symbol, quantity, price, reason,
+                lifecycle_identity(state.signal),
+            )
+
     def _paper_fill(self, state: _PaperState, timestamp, action: str, label: str,
                     price: Decimal, quantity: int) -> CaptureRecord:
         return CaptureRecord.create(
@@ -380,7 +413,8 @@ class WarriorForwardCaptureService:
             {"action": action, "label": label, "fill_price": price,
              "filled_shares": quantity, "remaining_before": state.remaining,
              "active_stop": state.stop, "source": "SIMULATED_PAPER",
-             "live_execution_authorized": False},
+             "live_execution_authorized": False,
+             "authority": "ANALYTICAL_FORWARD_CAPTURE"},
             identity_parts=(action, label, str(state.last_bar_timestamp)),
         )
 

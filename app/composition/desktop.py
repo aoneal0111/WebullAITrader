@@ -26,6 +26,7 @@ from app.strategies.warrior_momentum.desktop_sidecar import (
     CompositeMarketEventObserver, WarriorDesktopSidecar,
 )
 from app.strategies.warrior_momentum.forward_models import PaperAccountContext
+from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -55,6 +56,7 @@ class DesktopComposition:
     chart_market_data_service: ChartMarketDataService | None = None
     chart_default_symbol: str | None = None
     warrior_forward_sidecar: WarriorDesktopSidecar | None = None
+    autonomous_paper_bridge: AutonomousPaperExecutionBridge | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         """Close composed resources in lifecycle order."""
@@ -233,11 +235,25 @@ def create_desktop_composition(
             risk_engine_approved=True, broker_restriction=False,
         )
 
+    autonomous_paper_bridge = None
+    if paper_trading_commands is not None:
+        autonomous_paper_bridge = AutonomousPaperExecutionBridge(
+            paper_trading_commands.trading_service,
+            paper_trading_commands.order_command_factory,
+            mode=configuration.runtime_mode.value,
+            enabled=operational_configuration.warrior_forward_paper_enabled,
+            order_book=paper_trading_commands.order_book,
+            position_quantity_source=position_quantity,
+        )
+
     warrior_forward_sidecar = WarriorDesktopSidecar(
         enabled=operational_configuration.warrior_forward_paper_enabled,
         storage_path=operational_configuration.warrior_forward_capture_path,
         environment=operational_configuration.environment.value,
         account_context_source=warrior_account_context,
+        paper_entry_submitter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.submit_entry),
+        paper_exit_submitter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.submit_exit),
+        paper_position_quantity_source=(None if paper_trading_commands is None else position_quantity),
     )
     if warrior_forward_sidecar.enabled:
         market_event_observer = CompositeMarketEventObserver(
@@ -274,6 +290,7 @@ def create_desktop_composition(
         chart_market_data_service=chart_market_data_service,
         chart_default_symbol=chart_default_symbol,
         warrior_forward_sidecar=warrior_forward_sidecar,
+        autonomous_paper_bridge=autonomous_paper_bridge,
     )
 __all__ = [
     "DesktopComposition",
