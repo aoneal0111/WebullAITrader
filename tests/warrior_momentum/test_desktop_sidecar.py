@@ -257,7 +257,8 @@ def test_warrior_focus_maps_trigger_stop_provenance_and_blocked_reasons() -> Non
     row = view.focus.rows[0]
     assert row.entry_trigger != "--" and row.stop_price != "--"
     assert row.float_provenance == "MCAP/PRICE PROXY"
-    assert row.blocking_reasons == "spread" and row.strategy_status == "ENTRY BLOCKED"
+    assert row.blocking_reasons == "Spread is too wide"
+    assert row.strategy_status == "ENTRY BLOCKED"
 
 
 def _session_record(action: str, at: datetime, fingerprint: str) -> CaptureRecord:

@@ -37,6 +37,11 @@ class WatchlistRow:
     entry_trigger: str = "--"
     stop_price: str = "--"
     blocking_reasons: str = "--"
+    warrior_evaluated: bool = False
+    warrior_score: str = "--"
+    warrior_status: str = "--"
+    warrior_session: str = "--"
+    strategy_name: str = "--"
 
 
 @dataclass(frozen=True, slots=True)

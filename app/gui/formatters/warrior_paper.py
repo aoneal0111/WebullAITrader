@@ -14,6 +14,8 @@ class WarriorPaperView:
     summary: str
     funnel: str
     research: str
+    enabled: bool
+    health: str
 
 
 def format_warrior_paper(snapshot: WarriorPaperSnapshot) -> WarriorPaperView:
@@ -37,13 +39,22 @@ def format_warrior_paper(snapshot: WarriorPaperSnapshot) -> WarriorPaperView:
         )),
         f"Triggered but blocked: {summary.triggered_but_blocked} · "
         f"Tracked counterfactuals: {summary.tracked_counterfactuals}",
+        snapshot.enabled,
+        snapshot.health.value,
     )
 
 
 def _row(item) -> WatchlistRow:
     candidate = item.candidate
     setup = candidate.setup
-    blocking = ", ".join(item.blocking_reasons) or "--"
+    raw_blockers = tuple(dict.fromkeys((
+        *(code.value for code in candidate.reason_codes),
+        *item.blocking_reasons,
+    )))
+    readable_blockers = tuple(dict.fromkeys(
+        _readable_blocker(reason) for reason in raw_blockers
+    ))
+    blocking = "\n".join(readable_blockers) or "--"
     explanations = (*candidate.explanations, *(
         (f"Blocked: {blocking}",) if blocking != "--" else ()
     ))
@@ -59,8 +70,8 @@ def _row(item) -> WatchlistRow:
         spread="--" if candidate.spread_percent is None else f"{candidate.spread_percent:.2f}%",
         catalyst=candidate.catalyst_status.value, session=candidate.session,
         float_shares=("--" if candidate.float_shares is None else f"{candidate.float_shares / 1_000_000:.1f}M"),
-        setup="--" if setup is None else setup.setup_type.value.replace("_", " "),
-        setup_state="UNKNOWN" if setup is None else setup.state.value,
+        setup="NO SETUP" if setup is None else setup.setup_type.value.replace("_", " "),
+        setup_state="--" if setup is None else setup.state.value,
         distance_to_hod=("--" if candidate.distance_from_hod_percent is None else f"{candidate.distance_from_hod_percent:.2f}%"),
         strategy_status=("ENTRY BLOCKED" if blocking != "--" and setup is not None and setup.state.value == "TRIGGERED" else candidate.status.value.replace("_", " ")),
         explanations=" | ".join(explanations),
@@ -68,7 +79,46 @@ def _row(item) -> WatchlistRow:
         entry_trigger="--" if item.entry_trigger is None else f"{item.entry_trigger:,.4f}",
         stop_price="--" if item.stop_price is None else f"{item.stop_price:,.4f}",
         blocking_reasons=blocking,
+        warrior_evaluated=True,
+        warrior_score=f"{candidate.score.total:.2f}",
+        warrior_status=candidate.status.value.replace("_", " "),
+        warrior_session=candidate.session,
+        strategy_name="Warrior Momentum",
     )
+
+
+def _readable_blocker(reason: str) -> str:
+    normalized = reason.strip().upper().replace(" ", "_")
+    return {
+        "NO_SETUP": "No Warrior setup detected",
+        "SETUP": "No Warrior setup detected",
+        "PRICE_TOO_LOW": "Price is below the Warrior range",
+        "PRICE_TOO_HIGH": "Price is above the Warrior range",
+        "CHANGE_TOO_LOW": "Percentage change requirement not met",
+        "RVOL_LOW": "Relative volume requirement not met",
+        "FLOAT_HIGH": "Float exceeds the Warrior limit",
+        "SESSION_NOT_ALLOWED": "Current session is not allowed for Warrior execution",
+        "SESSION": "Current session is not allowed for Warrior execution",
+        "SPREAD_WIDE": "Spread is too wide",
+        "SPREAD": "Spread is too wide",
+        "NO_CATALYST": "Required catalyst is missing",
+        "CATALYST_UNKNOWN": "Catalyst status is unavailable",
+        "CATALYST": "Required catalyst is missing",
+        "LIQUIDITY_LOW": "Liquidity requirement not met",
+        "LIQUIDITY": "Liquidity requirement not met",
+        "HALTED": "Symbol is halted",
+        "HALT_UNKNOWN": "Halt status is unavailable",
+        "HALT": "Symbol is halted",
+        "NOT_TRADABLE": "Symbol is not tradable",
+        "TRADABILITY": "Symbol is not tradable",
+        "STOP_TOO_WIDE": "Stop distance exceeds risk limit",
+        "STOP_INVALID": "Stop price is invalid",
+        "BREAKOUT_NOT_CONFIRMED": "Breakout is not confirmed",
+        "EXECUTION_NOT_ALLOWED": "Execution is not authorized",
+        "RISK_REJECTED": "Risk engine rejected the entry",
+        "RISK": "Risk gate rejected the entry",
+        "SCORE/RISK": "Risk engine rejected the entry",
+    }.get(normalized, reason.replace("_", " ").capitalize())
 
 
 __all__ = ["WarriorPaperView", "format_warrior_paper"]

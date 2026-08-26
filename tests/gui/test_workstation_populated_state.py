@@ -61,9 +61,9 @@ def test_populated_candidate_renders_without_overflow(
     panel = dashboard.market_workspace.trade_intelligence
     assert panel._symbol.text() == "PMI"
     assert panel._price.text() == "$4.72"
-    assert panel._header_metrics["Atlas score"].text() == "91"
-    assert panel._decision.text() == "WAIT"
-    assert panel._blocking.text() == "Entry trigger not reached"
+    assert panel._header_metrics["Scanner score"].text() == "91"
+    assert panel._decision.text() == "EVALUATING"
+    assert panel._blocking.text() == "--"
     assert dashboard.market_workspace.activity_panel._table.rowCount() == 2
     assert dashboard.market_workspace.portfolio_summary._cards["Total P/L"]._value.text() == "+$240"
     assert 100 <= dashboard.runtime_header.height() <= 125
@@ -79,6 +79,7 @@ def test_populated_candidate_renders_without_overflow(
         (panel._plan_values["Stop"], 16),
         (panel._decision, 40),
         (panel._blocking, 16),
+        (panel._autonomous_paper, 16),
     )
     for widget, readable_height in critical:
         assert widget.isVisible()
@@ -91,10 +92,10 @@ def test_populated_candidate_renders_without_overflow(
         (panel._watching, panel._failed_rules),
         *( (panel._market, value) for value in panel._market_values.values() ),
         *( (panel._plan, value) for value in panel._plan_values.values() ),
-        (panel._plan, panel._plan_blocking),
         (panel._decision_panel, panel._decision),
         (panel._decision_panel, panel._decision_explanation),
         (panel._decision_panel, panel._blocking),
+        (panel._decision_panel, panel._autonomous_paper),
     )
     for card, widget in contained:
         widget_bottom = widget.mapToGlobal(widget.rect().bottomLeft()).y()

@@ -1130,6 +1130,8 @@ class MarketWorkspace(QWidget):
 
     def _render_focus(self, snapshot: WatchlistSnapshot) -> None:
         atlas_rows = tuple(row for row in snapshot.rows if row.rank != "--")
+        if snapshot is self._atlas_snapshot:
+            atlas_rows = tuple(self._with_warrior_state(row) for row in atlas_rows)
         symbols = {row.symbol for row in atlas_rows}
         projected = next((row.symbol for row in atlas_rows if row.selected), None)
         if self._selected_symbol not in symbols:
@@ -1171,6 +1173,70 @@ class MarketWorkspace(QWidget):
         if self._focus_mode == "WARRIOR PAPER":
             self._render_focus(view.focus)
             self.watchlist.set_paper_summary(view.summary, view.funnel, view.research)
+        else:
+            # Refresh Trade Intelligence for the selected scanner symbol while
+            # preserving scanner rank, classification, and market evidence.
+            self._render_focus(self._atlas_snapshot)
+
+    def _with_warrior_state(self, scanner_row):
+        view = self._warrior_view
+        if view is None:
+            return replace(
+                scanner_row,
+                warrior_evaluated=False,
+                warrior_score="--",
+                warrior_status="EVALUATING",
+                warrior_session="--",
+                strategy_name="Warrior Momentum",
+                setup="--",
+                setup_state="--",
+                strategy_status="EVALUATING",
+                entry_trigger="--",
+                stop_price="--",
+                blocking_reasons="--",
+            )
+        match = next(
+            (
+                row for row in view.focus.rows
+                if row.symbol.strip().upper() == scanner_row.symbol.strip().upper()
+            ),
+            None,
+        )
+        if match is None:
+            status = (
+                "EVALUATING"
+                if getattr(view, "enabled", True)
+                and getattr(view, "health", "RUNNING") not in {"DISABLED", "STOPPED"}
+                else "UNAVAILABLE"
+            )
+            return replace(
+                scanner_row,
+                warrior_evaluated=False,
+                warrior_score="--",
+                warrior_status=status,
+                warrior_session="--",
+                strategy_name="Warrior Momentum",
+                setup="--",
+                setup_state="--",
+                strategy_status=status,
+                entry_trigger="--",
+                stop_price="--",
+                blocking_reasons="--",
+            )
+        return replace(
+            scanner_row,
+            warrior_evaluated=True,
+            warrior_score=match.warrior_score,
+            warrior_status=match.warrior_status,
+            warrior_session=match.warrior_session,
+            strategy_name=match.strategy_name,
+            setup=match.setup,
+            setup_state=match.setup_state,
+            strategy_status=match.strategy_status,
+            entry_trigger=match.entry_trigger,
+            stop_price=match.stop_price,
+            blocking_reasons=match.blocking_reasons,
+        )
 
     def _change_focus_mode(self, mode: str) -> None:
         self._focus_mode = mode

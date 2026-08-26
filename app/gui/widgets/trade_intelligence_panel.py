@@ -50,7 +50,8 @@ class TradeIntelligencePanel(QWidget):
         metrics.setSpacing(18)
         self._header_metrics: dict[str, QLabel] = {}
         for name in (
-            "Rank", "Atlas score", "Classification", "Session", "Freshness"
+            "Rank", "Scanner score", "Scanner status", "Warrior momentum",
+            "Session", "Freshness"
         ):
             block = QVBoxLayout()
             title = QLabel(name.upper())
@@ -77,7 +78,8 @@ class TradeIntelligencePanel(QWidget):
             watching_layout,
             (
                 "Relative volume", "Volume", "Dollar volume", "HOD distance",
-                "Float", "Spread", "Setup", "Catalyst", "Strategy status",
+                "Float", "Spread", "Catalyst", "Warrior score",
+                "Warrior status", "Setup", "Warrior session",
             ),
             columns=3,
         )
@@ -103,6 +105,14 @@ class TradeIntelligencePanel(QWidget):
         self._blocking.setWordWrap(True)
         self._blocking.setMinimumHeight(16)
         decision_layout.addWidget(self._blocking)
+        autonomous_title = QLabel("AUTONOMOUS PAPER")
+        autonomous_title.setObjectName("metricTitle")
+        decision_layout.addWidget(autonomous_title)
+        self._autonomous_paper = QLabel("--")
+        self._autonomous_paper.setObjectName("monoValue")
+        self._autonomous_paper.setWordWrap(True)
+        self._autonomous_paper.setMinimumHeight(16)
+        decision_layout.addWidget(self._autonomous_paper)
         decision_layout.addStretch(1)
         market, market_layout = _section("CURRENT MARKET CONDITIONS")
         self._market_values = _metric_grid(
@@ -124,10 +134,7 @@ class TradeIntelligencePanel(QWidget):
             ),
             columns=2,
         )
-        plan_layout.addWidget(QLabel("BLOCKING REASONS", objectName="metricTitle"))
-        self._plan_blocking = QLabel("--")
-        self._plan_blocking.setWordWrap(True)
-        plan_layout.addWidget(self._plan_blocking)
+        plan_layout.addStretch(1)
         body.addWidget(plan, 1)
         body.addWidget(decision, 1)
         body.setStretch(0, 24)
@@ -157,9 +164,10 @@ class TradeIntelligencePanel(QWidget):
         _set_tone(self._change, _direction_tone(row.change_percent))
         header = {
             "Rank": f"#{row.rank}" if row.rank != "--" else "--",
-            "Atlas score": row.score,
-            "Classification": row.classification,
-            "Session": row.session,
+            "Scanner score": row.score,
+            "Scanner status": row.classification,
+            "Warrior momentum": row.warrior_status,
+            "Session": _first_available(row.warrior_session, row.session),
             "Freshness": row.freshness if row.freshness != "--" else row.stale,
         }
         _render_values(self._header_metrics, header)
@@ -171,27 +179,23 @@ class TradeIntelligencePanel(QWidget):
             "HOD distance": row.distance_to_hod,
             "Float": row.float_shares,
             "Spread": row.spread,
-            "Setup": row.setup,
             "Catalyst": row.catalyst,
-            "Strategy status": row.strategy_status,
+            "Warrior score": row.warrior_score,
+            "Warrior status": row.warrior_status,
+            "Setup": row.setup,
+            "Warrior session": row.warrior_session,
         }
         _render_values(self._watching_values, watching)
         _set_text(self._reason, row.explanations)
         _set_text(self._passed_rules, row.passed_rules)
         _set_text(self._failed_rules, row.failed_rules)
 
-        decision = _first_available(
-            row.strategy_status,
-            row.classification,
-            row.setup_state,
-        )
+        decision, explanation, autonomous = _warrior_decision(row)
         _set_text(self._decision, decision)
         _set_tone(self._decision, _decision_tone(decision))
-        _set_text(
-            self._decision_explanation,
-            _first_available(row.explanations, row.failed_rules),
-        )
+        _set_text(self._decision_explanation, explanation)
         _set_text(self._blocking, row.blocking_reasons)
+        _set_text(self._autonomous_paper, autonomous)
 
         market = {
             "Last": _money_price(row.latest_price),
@@ -203,13 +207,12 @@ class TradeIntelligencePanel(QWidget):
             "Dollar volume": row.dollar_volume,
             "Float": row.float_shares,
             "HOD distance": row.distance_to_hod,
-            "Session": row.session,
+            "Session": _first_available(row.warrior_session, row.session),
             "Freshness": row.freshness if row.freshness != "--" else row.stale,
         }
         _render_values(self._market_values, market)
         plan = {
-            # No strategy name exists in WatchlistRow. Keep this gap explicit.
-            "Strategy": "--",
+            "Strategy": row.strategy_name,
             "Setup": row.setup,
             "Setup state": row.setup_state,
             "Strategy status": row.strategy_status,
@@ -217,7 +220,6 @@ class TradeIntelligencePanel(QWidget):
             "Stop": row.stop_price,
         }
         _render_values(self._plan_values, plan)
-        _set_text(self._plan_blocking, row.blocking_reasons)
 
     def _render_empty(self) -> None:
         _set_text(self._symbol, "--")
@@ -233,9 +235,9 @@ class TradeIntelligencePanel(QWidget):
         _set_tone(self._decision, "neutral")
         _set_text(self._decision_explanation, "--")
         _set_text(self._blocking, "--")
+        _set_text(self._autonomous_paper, "--")
         _render_values(self._market_values, {})
         _render_values(self._plan_values, {})
-        _set_text(self._plan_blocking, "--")
 
 
 def _section(title: str) -> tuple[QFrame, QVBoxLayout]:
@@ -337,6 +339,64 @@ def _decision_tone(value: str) -> str:
     if any(word in normalized for word in ("WAIT", "NEAR", "WATCH")):
         return "warn"
     return "neutral"
+
+
+def _warrior_decision(row: WatchlistRow) -> tuple[str, str, str]:
+    if not row.warrior_evaluated:
+        return (
+            row.warrior_status if row.warrior_status != "--" else "EVALUATING",
+            "Warrior Momentum has not evaluated this selected symbol yet.",
+            "WAITING",
+        )
+
+    status = row.warrior_status.upper()
+    setup_state = row.setup_state.upper()
+    if status == "ENTRY READY":
+        return (
+            "ENTRY READY",
+            "Warrior Momentum has accepted the setup for PAPER execution.",
+            "ENTRY READY",
+        )
+
+    blockers = {
+        value.strip().lower()
+        for value in row.blocking_reasons.splitlines()
+        if value.strip() and value.strip() != "--"
+    }
+    waiting_blockers = {
+        "no warrior setup detected",
+        "breakout is not confirmed",
+        "entry trigger not reached",
+    }
+    if (
+        setup_state == "TRIGGERED"
+        or bool(blockers - waiting_blockers)
+        or (status == "INELIGIBLE FOR EXECUTION" and row.setup != "NO SETUP")
+    ):
+        return "BLOCKED", _blocking_explanation(row.blocking_reasons), "BLOCKED"
+
+    if row.setup == "NO SETUP":
+        return (
+            "WAIT",
+            "Warrior Momentum has not detected a valid entry setup.",
+            "WAITING FOR SETUP",
+        )
+    if setup_state in {"FORMING", "NOT FORMED", "UNKNOWN", "--"}:
+        return (
+            "WAIT",
+            "Warrior Momentum is monitoring the setup; no PAPER order has been submitted.",
+            "WAITING FOR SETUP",
+        )
+    return "WAIT", _first_available(row.explanations, row.blocking_reasons), "WAITING"
+
+
+def _blocking_explanation(reasons: str) -> str:
+    values = [value.strip().rstrip(".") for value in reasons.splitlines() if value.strip()]
+    if not values:
+        return "Warrior execution is blocked by an authoritative strategy gate."
+    if len(values) == 1:
+        return f"{values[0]}."
+    return f"{'; '.join(values[:-1])}; and {values[-1].lower()}."
 
 
 __all__ = ["TradeIntelligencePanel"]

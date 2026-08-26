@@ -50,6 +50,11 @@ def candidate(**overrides) -> WatchlistRow:
         "entry_trigger": "4.7900",
         "stop_price": "4.4900",
         "blocking_reasons": "entry trigger not reached",
+        "warrior_evaluated": True,
+        "warrior_score": "76.55",
+        "warrior_status": "SETUP FORMING",
+        "warrior_session": "PREMARKET",
+        "strategy_name": "Warrior Momentum",
     }
     values.update(overrides)
     return WatchlistRow(**values)
@@ -68,22 +73,28 @@ def test_primary_workspace_replaces_chart_with_trade_intelligence(application) -
 
 def test_candidate_details_render_authoritative_strategy_state(application) -> None:
     del application
-    workspace = MarketWorkspace()
-    workspace.render(WatchlistSnapshot(rows=(candidate(),), candidate_count=1))
-    panel = workspace.trade_intelligence
+    panel = TradeIntelligencePanel()
+    panel.render(candidate())
 
     assert panel._symbol.text() == "PMI"
     assert panel._price.text() == "$4.72"
     assert panel._change.text() == "+18.30%"
     assert panel._header_metrics["Rank"].text() == "#1"
-    assert panel._header_metrics["Atlas score"].text() == "91.00"
-    assert panel._decision.text() == "WAITING"
+    assert panel._header_metrics["Scanner score"].text() == "91.00"
+    assert panel._header_metrics["Scanner status"].text() == "QUALIFYING"
+    assert panel._header_metrics["Warrior momentum"].text() == "SETUP FORMING"
+    assert panel._decision.text() == "WAIT"
     assert panel._market_values["Relative volume"].text() == "8.40x"
     assert panel._market_values["Float"].text() == "5.4M"
     assert panel._plan_values["Setup"].text() == "HOD BREAK"
     assert panel._plan_values["Setup state"].text() == "ARMED"
     assert panel._plan_values["Entry trigger"].text() == "4.7900"
     assert panel._plan_values["Stop"].text() == "4.4900"
+    assert panel._plan_values["Strategy"].text() == "Warrior Momentum"
+    assert tuple(panel._plan_values) == (
+        "Strategy", "Setup", "Setup state", "Strategy status",
+        "Entry trigger", "Stop",
+    )
     assert "entry trigger not reached" in panel._blocking.text()
     assert "relative volume" in panel._passed_rules.text()
 
@@ -96,7 +107,7 @@ def test_unavailable_candidate_values_remain_unavailable(application) -> None:
         entry_trigger="--", stop_price="--", blocking_reasons="--",
     ))
 
-    assert panel._header_metrics["Atlas score"].text() == "--"
+    assert panel._header_metrics["Scanner score"].text() == "--"
     assert panel._watching_values["Catalyst"].text() == "--"
     assert panel._market_values["Float"].text() == "--"
     assert panel._plan_values["Entry trigger"].text() == "--"
