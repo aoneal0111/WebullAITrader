@@ -22,13 +22,19 @@ class PortfolioSummaryStrip(QWidget):
             ("Cash", "Cash", "medium"),
             ("Buying Power", "Buying Power", "medium"),
             ("Total P/L", "Total PnL (Day)", "primary"),
-            ("Unrealized P/L", "Unrealized PnL", "standard"),
-            ("Realized P/L", "Realized PnL", "standard"),
+            ("Unrealized P/L", "Unrealized PnL", "primary"),
+            ("Realized P/L", "Realized PnL", "primary"),
             ("Open Positions", "Positions", "standard"),
             ("Exposure", "Exposure", "standard"),
             ("Gross Exposure", "Gross Exposure", "standard"),
             ("Net Exposure", "Net Exposure", "standard"),
             ("Current Drawdown", "Current Drawdown", "standard"),
+            (
+                "Winning / Losing Positions",
+                "Winning / Losing Positions",
+                "standard",
+            ),
+            ("Win Rate", "Win Rate", "standard"),
         )
         self._cards = {}
         self._card_order = []
@@ -50,7 +56,7 @@ class PortfolioSummaryStrip(QWidget):
 
     def resizeEvent(self, event) -> None:
         width = event.size().width()
-        columns = 2 if width < 500 else 3 if width < 720 else 4 if width < 980 else 6
+        columns = 2 if width < 500 else 3 if width < 1200 else 4 if width < 1600 else 6
         if columns != self._columns:
             self._columns = columns
             for index, card in enumerate(self._card_order):
@@ -60,6 +66,7 @@ class PortfolioSummaryStrip(QWidget):
 
     def render(self, snapshot: PortfolioDashboardSnapshot) -> None:
         metrics = dict(snapshot.metrics)
+        metrics.update(snapshot.highlights)
         for source, card in self._cards.items():
             value = metrics.get(source, "--")
             card.set_value(value)

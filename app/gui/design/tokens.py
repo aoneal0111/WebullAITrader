@@ -41,8 +41,10 @@ class Radius:
 
 
 class Typography:
-    FAMILY = "Segoe UI"
-    MONO = "Consolas"
+    # Qt generic families are portable across Windows, offscreen test
+    # platforms, and installations without the optional bundled fonts.
+    FAMILY = "Sans Serif"
+    MONO = "Monospace"
     XS = 10
     SM = 11
     MD = 12

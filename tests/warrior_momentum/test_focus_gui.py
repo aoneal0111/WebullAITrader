@@ -10,7 +10,7 @@ from app.gui.models import WatchlistRow, WatchlistSnapshot
 from app.gui.widgets.market_workspace import MarketWorkspace
 
 
-def test_warrior_focus_uses_extended_columns_and_operator_selection() -> None:
+def test_warrior_focus_uses_compact_selector_and_trade_intelligence() -> None:
     app = QApplication.instance() or QApplication([])
     del app
     workspace = MarketWorkspace()
@@ -26,10 +26,11 @@ def test_warrior_focus_uses_extended_columns_and_operator_selection() -> None:
         distance_to_hod="+0.70%", strategy_status="SETUP FORMING",
         explanations="Ranked #1 | Bull flag forming",
     ),)))
-    assert workspace.watchlist._table.columnCount() == 20
-    assert workspace.watchlist._table.item(0, 17).text() == "SETUP FORMING"
+    assert workspace.watchlist._table.columnCount() == 8
+    assert workspace.watchlist._table.item(0, 7).text() == "SETUP FORMING"
+    assert workspace.trade_intelligence._plan_values["Setup"].text() == "BULL FLAG"
     workspace.watchlist._select_row(0, 0)
-    assert selected == ["XYZ"]
+    assert selected == []
 
 
 def test_focus_mode_switch_preserves_current_atlas_and_warrior_selection() -> None:
@@ -56,9 +57,9 @@ def test_focus_mode_switch_preserves_current_atlas_and_warrior_selection() -> No
     workspace.render(atlas)
     workspace.render_warrior(warrior)
     workspace.watchlist._mode_selector.setCurrentText("WARRIOR PAPER")
-    assert workspace.watchlist._table.item(0, 1).text() == "WARR"
+    assert workspace.watchlist._table.item(0, 1).text().endswith("WARR")
     assert workspace.watchlist._paper_summary.text().endswith("N/A")
     workspace.watchlist._select_row(0, 1)
     workspace.watchlist._mode_selector.setCurrentText("CURRENT ATLAS")
-    assert workspace.watchlist._table.item(0, 1).text() == "ATLS"
-    assert selected == ["WARR"]
+    assert workspace.watchlist._table.item(0, 1).text().endswith("ATLS")
+    assert selected == []

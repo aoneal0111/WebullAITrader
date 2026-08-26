@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QMenu,
     QStackedWidget,
     QStatusBar,
     QVBoxLayout,
@@ -53,7 +54,6 @@ from app.operations_core import (
 )
 from app.replay_workspace import ReplayWorkspace
 from app.services import OrderCommandFactory, RuntimeService, TradingService
-from app.gui.projections.chart_projection import ChartProjection
 from app.services.chart_market_data import ChartMarketDataService
 from app.gui.formatters.warrior_paper import format_warrior_paper
 
@@ -138,7 +138,8 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         self.sidebar = Sidebar()
-        outer.addWidget(self.sidebar)
+        # Secondary navigation remains available through the compact Menu
+        # action; the wide rail is intentionally absent from the workstation.
 
         content = QWidget()
         content.setObjectName("contentArea")
@@ -184,18 +185,22 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
         header = self.dashboard.runtime_header
-        self.start_button = header.resume_button
-        self.stop_button = header.stop_button
+        controls = self.dashboard.market_workspace.runtime_controls
+        self.start_button = controls.start_button
+        self.stop_button = controls.stop_button
         self.pause_button = header.pause_button
         self.flatten_button = header.flatten_button
-        self.emergency_button = self.flatten_button
+        self.emergency_button = controls.emergency_stop_button
         self.start_button.clicked.connect(self._runtime_service.start)
         self.stop_button.clicked.connect(
             lambda checked=False: self._runtime_service.stop()
         )
         self.pause_button.clicked.connect(self._toggle_replay)
         header.reset_layout_requested.connect(self.reset_layout)
-        header.inspector_requested.connect(self._set_inspector_visible)
+        controls.inspector_requested.connect(self._set_inspector_visible)
+        header.settings_requested.connect(lambda: self.pages.setCurrentIndex(4))
+        header.menu_requested.connect(self._show_menu)
+        controls.emergency_stop_requested.connect(self._emergency_stop)
 
         status = QStatusBar()
         self.global_status = GlobalStatusBar(version=_application_version())
@@ -232,6 +237,13 @@ class MainWindow(QMainWindow):
         if visible:
             self.intelligence_inspector.raise_()
 
+    def _show_menu(self) -> None:
+        menu = QMenu(self)
+        for label, index in (("Positions", 1), ("Orders", 2), ("Activity", 5), ("Decisions", 6), ("Watchlist", 7), ("Replay", 8), ("Operations", 9), ("Risk & Settings", 4)):
+            action = menu.addAction(label)
+            action.triggered.connect(lambda _checked=False, page=index: self.pages.setCurrentIndex(page))
+        menu.exec(self.dashboard.runtime_header.menu_button.mapToGlobal(self.dashboard.runtime_header.menu_button.rect().bottomLeft()))
+
     def _sync_inspector_toggle(self, visible: bool) -> None:
         button = self.dashboard.runtime_header.inspector_button
         if button.isChecked() != visible:
@@ -243,6 +255,7 @@ class MainWindow(QMainWindow):
         self._timeline_presenter = TimelinePresenter(
             self.activity,
             self.dashboard.activity_panel,
+            self.dashboard.operations_activity_panel,
         )
         self._decisions_presenter = DecisionsPresenter(
             self.decisions,
@@ -253,12 +266,8 @@ class MainWindow(QMainWindow):
             self.dashboard.market_workspace,
             RenderAdapter(self.dashboard.runtime_header.render_watchlist),
         )
-        if self._chart_market_data_service is not None:
-            self._chart_presenter = ChartPresenter(
-                self.dashboard.market_workspace,
-                ChartProjection(self._chart_market_data_service),
-                default_symbol=self._chart_default_symbol,
-            )
+        # Chart services remain implemented for dedicated consumers, but the
+        # primary autonomous workstation no longer requests or renders charts.
         self._replay_presenter = ReplayPresenter(
             self.replay,
             self.dashboard.replay_status_panel,
@@ -305,6 +314,7 @@ class MainWindow(QMainWindow):
         for activity in (
             self.activity,
             self.dashboard.activity_panel,
+            self.dashboard.operations_activity_panel,
         ):
             activity.filters_changed.connect(
                 self._timeline_presenter.set_filters

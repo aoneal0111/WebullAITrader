@@ -43,7 +43,7 @@ def format_portfolio(
                 f"{summary.open_positions} / {summary.working_orders}",
             ),
             (
-                "Winners / Losers",
+                "Winning / Losing Positions",
                 _counts(
                     summary.winning_positions,
                     summary.losing_positions,

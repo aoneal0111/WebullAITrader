@@ -40,6 +40,10 @@ from app.gui.widgets.data_table import StyledDataTable
 from app.gui.widgets.infrastructure_strip import InfrastructureStrip
 from app.gui.widgets.mission_status_panel import MissionStatusPanel
 from app.gui.widgets.panel import SectionPanel
+from app.gui.widgets.trade_intelligence_panel import TradeIntelligencePanel
+from app.gui.widgets.activity_panel import ActivityPanel
+from app.gui.widgets.portfolio_summary_strip import PortfolioSummaryStrip
+from app.gui.widgets.workstation_panels import MarketOverviewPanel, RuntimeControlsPanel
 
 
 class ChartView(Protocol):
@@ -666,6 +670,8 @@ class CompactWatchlistPanel(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._last_render_fingerprint = None
+        self._render_count = 0
+        self._visible_rows = ()
         self.setMinimumWidth(Dimensions.WATCHLIST_MIN_WIDTH)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -704,21 +710,11 @@ class CompactWatchlistPanel(QWidget):
             controls.addWidget(button)
             self._view_buttons[label] = button
         controls.addStretch(1)
-        self.columns_button = QPushButton("Columns")
-        self.columns_button.setObjectName("ghostButton")
-        self.columns_button.setEnabled(False)
-        self.columns_button.setToolTip("Column presets are not available in the current projection")
-        self.filters_button = QPushButton("Filters")
-        self.filters_button.setObjectName("ghostButton")
-        self.filters_button.setEnabled(False)
-        self.filters_button.setToolTip("Scanner filters are controlled by the existing scanner configuration")
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search symbols\u2026")
         self.search.setClearButtonEnabled(True)
         self.search.setMaximumWidth(220)
         self.search.textChanged.connect(self._apply_search)
-        controls.addWidget(self.columns_button)
-        controls.addWidget(self.filters_button)
         controls.addWidget(self.search)
         layout.addLayout(controls)
         self._paper_summary = QLabel()
@@ -730,33 +726,24 @@ class CompactWatchlistPanel(QWidget):
         for label in (self._paper_summary, self._paper_funnel, self._paper_research):
             label.setVisible(False)
             layout.addWidget(label)
-        self._legacy_columns = (
-            "Rank", "Symbol", "Price", "Chg %", "RVOL", "Volume",
-            "Float", "$ Volume", "Catalyst", "Score", "Status",
+        self._columns = (
+            "Rank", "Symbol", "Price", "Chg %", "Score", "RVOL", "Setup",
+            "Status",
         )
-        self._warrior_columns = (
-            "Rank", "Symbol", "Last", "Chg %", "RVOL", "Float", "Volume",
-            "Dollar Vol", "Spread", "Catalyst", "Momentum", "Setup",
-            "Setup State", "Trigger", "Stop", "Dist HOD", "Session",
-            "Status", "Float Source", "Blocking",
-        )
-        self._table = StyledDataTable(self._legacy_columns)
+        self._table = StyledDataTable(self._columns)
         self._table.set_empty_state(
             "Atlas is scanning",
             "High-confidence opportunities\n"
             "will appear here automatically.",
             icon="\u2606",
         )
-        self._configure_columns(self._legacy_columns)
+        self._configure_columns(self._columns)
         self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         layout.addWidget(self._table, 1)
         self._table.cellClicked.connect(self._select_row)
 
     def render(self, snapshot: WatchlistSnapshot) -> None:
         self._source_snapshot = snapshot
-        warrior = any(row.strategy_status != "--" for row in snapshot.rows)
-        columns = self._warrior_columns if warrior else self._legacy_columns
-
         # Scanner state may be published frequently during live markets.
         # Rebuilding the QTableWidget is expensive: clearSelection(),
         # setRowCount(), item construction, header sizing and selectRow()
@@ -765,17 +752,14 @@ class CompactWatchlistPanel(QWidget):
         # no widget mutation.
         render_fingerprint = (
             snapshot,
-            warrior,
             self._mode_selector.currentText(),
             self._active_view_filter,
+            self.search.text().strip().upper(),
         )
         if render_fingerprint == self._last_render_fingerprint:
             return
         self._last_render_fingerprint = render_fingerprint
-        if self._table.columnCount() != len(columns):
-            self._table.setColumnCount(len(columns))
-            self._table.setHorizontalHeaderLabels(columns)
-            self._configure_columns(columns)
+        self._render_count += 1
         status = snapshot.scanner_status.replace("_", " ").title()
         prefix = "Warrior Capture" if self._mode_selector.currentText() == "WARRIOR PAPER" else "Atlas Scanner"
         self._scanner_status.setText(f"{prefix}: {status}")
@@ -803,6 +787,7 @@ class CompactWatchlistPanel(QWidget):
                 )
             )
         )
+        self._visible_rows = visible_rows
         self._table.setRowCount(len(visible_rows))
         for row_index, row in enumerate(visible_rows):
             state = (
@@ -810,30 +795,30 @@ class CompactWatchlistPanel(QWidget):
                 if row.market_status != "--"
                 else row.stale
             )
+            status = _first_watchlist_value(
+                row.strategy_status,
+                row.classification,
+                row.setup_state,
+                row.freshness,
+            )
             values = (
-                (row.rank, f"\u25cf {row.symbol}" if row.selected else row.symbol,
-                 row.latest_price, row.change_percent, row.relative_volume,
-                 row.float_shares, row.volume, row.dollar_volume, row.spread,
-                 row.catalyst, row.score, row.setup, row.setup_state,
-                 row.entry_trigger, row.stop_price, row.distance_to_hod,
-                 row.session, row.strategy_status, row.float_provenance,
-                 row.blocking_reasons)
-                if warrior else
-                (row.rank, f"\u25cf {row.symbol}" if row.selected else row.symbol,
-                 row.latest_price, row.change_percent, row.relative_volume,
-                 row.volume, row.float_shares, row.dollar_volume,
-                 row.catalyst, row.score,
-                 row.strategy_status if row.strategy_status != "--"
-                 else f"{row.session} / {row.freshness}")
+                row.rank,
+                f"\u25cf {row.symbol}" if row.selected else row.symbol,
+                row.latest_price,
+                row.change_percent,
+                row.score,
+                row.relative_volume,
+                row.setup,
+                status,
             )
             for column_index, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if column_index in (0, 2, 3, 4, 5, 6, 7, 8, 10, 13, 14, 15):
+                if column_index in (0, 2, 3, 4, 5):
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight
                         | Qt.AlignmentFlag.AlignVCenter
                     )
-                color = _watchlist_color(columns[column_index], value)
+                color = _watchlist_color(self._columns[column_index], value)
                 if color is not None:
                     item.setForeground(QBrush(QColor(color)))
                 item.setToolTip(state)
@@ -853,10 +838,10 @@ class CompactWatchlistPanel(QWidget):
         header.setStretchLastSection(False)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         widths = {
-            "Rank": 58, "Symbol": 92, "Price": 88, "Last": 88,
-            "Chg %": 82, "RVOL": 76, "Rel Vol": 82, "Volume": 100,
+            "Rank": 42, "Symbol": 68, "Price": 68, "Last": 70,
+            "Chg %": 58, "RVOL": 58, "Rel Vol": 62, "Volume": 78,
             "Float": 92, "$ Volume": 108, "Dollar Vol": 108,
-            "Catalyst": 160, "Score": 72, "Status": 110,
+            "Catalyst": 120, "Score": 58, "Setup": 86, "Status": 92,
         }
         for index, name in enumerate(columns):
             self._table.setColumnWidth(index, widths.get(name, 118))
@@ -888,51 +873,50 @@ class CompactWatchlistPanel(QWidget):
             label.setVisible(visible)
 
     def _select_row(self, row: int, _column: int) -> None:
-        item = self._table.item(row, 1)
-        if item is not None:
-            symbol = item.text().lstrip("● ").strip()
-            if symbol:
-                self.candidate_selected.emit(symbol)
+        if 0 <= row < len(self._visible_rows):
+            self.candidate_selected.emit(self._visible_rows[row].symbol)
 
 
 class MarketWorkspace(QWidget):
-    """Chart and scanner workspace; secondary intelligence lives in a dock."""
+    """Autonomous supervision workspace backed by immutable projections."""
 
     chart_symbol_selected = Signal(str)
     operator_symbol_selected = Signal(str)
     atlas_symbol_selected = Signal(str)
     chart_timeframe_selected = Signal(str)
     focus_mode_changed = Signal(bool)
+    inspector_requested = Signal(bool)
 
     def __init__(self, chart_view: ChartView | None = None) -> None:
         super().__init__()
         if chart_view is not None and not isinstance(chart_view, QWidget):
             raise TypeError("chart_view must be a QWidget chart adapter")
 
-        layout = QVBoxLayout(self)
+        layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
-        layout.setSpacing(0)
+        layout.setSpacing(8)
 
-        self.chart_view = chart_view or ChartPlaceholder()
+        # Chart infrastructure remains available to non-workspace consumers,
+        # but is deliberately not parented into the primary workstation.
+        self.chart_view = chart_view
         self._chart_managed = False
         self._chart_snapshot = ChartViewSnapshot()
-        if isinstance(self.chart_view, ChartPlaceholder):
-            self.chart_view._symbol_selector.currentTextChanged.connect(
-                self._emit_operator_symbol
-            )
-            self.chart_view._timeframe.currentTextChanged.connect(
-                self.chart_timeframe_selected.emit
-            )
 
         self.watchlist = CompactWatchlistPanel()
-        self.watchlist.candidate_selected.connect(self._emit_operator_symbol)
+        self.watchlist.candidate_selected.connect(self._select_candidate)
         self.watchlist.focus_mode_changed.connect(self._change_focus_mode)
+        self.trade_intelligence = TradeIntelligencePanel()
+        self._selected_symbol: str | None = None
         self._focus_mode = "CURRENT ATLAS"
         self._atlas_snapshot = WatchlistSnapshot()
         self._warrior_view = None
 
         self.atlas_activity = AtlasActivityPanel()
+        self.activity_panel = ActivityPanel()
+        self.portfolio_summary = PortfolioSummaryStrip()
+        self.market_overview = MarketOverviewPanel()
+        self.runtime_controls = RuntimeControlsPanel()
+        self.runtime_controls.inspector_requested.connect(self._inspector_requested)
         self.ai_thinking = AIThinkingPanel()
         self.mission_status = MissionStatusPanel()
         self.infrastructure = InfrastructureStrip()
@@ -940,38 +924,71 @@ class MarketWorkspace(QWidget):
         self.ai_thinking_section = SectionPanel(
             "AI Thinking", self.ai_thinking, collapsible=True
         )
-        self.activity_section = SectionPanel(
-            "Atlas Activity", self.atlas_activity, collapsible=True
-        )
+        self.activity_section = SectionPanel("LIVE AUTONOMOUS ACTIVITY", self.activity_panel)
+        self.portfolio_section = SectionPanel("PORTFOLIO / PERFORMANCE", self.portfolio_summary)
+        self.market_overview_section = SectionPanel("MARKET OVERVIEW", self.market_overview)
+        self.runtime_controls_section = SectionPanel("RUNTIME CONTROLS", self.runtime_controls)
+        safety_content = QWidget()
+        safety_layout = QVBoxLayout(safety_content)
+        safety_layout.setContentsMargins(0, 0, 0, 0)
+        safety_row = QHBoxLayout()
+        safety_row.addWidget(self.runtime_controls.emergency_stop_button)
+        flatten_unavailable = QPushButton("FLATTEN UNAVAILABLE")
+        flatten_unavailable.setObjectName("secondaryButton")
+        flatten_unavailable.setEnabled(False)
+        flatten_unavailable.setToolTip("No flatten command boundary is configured.")
+        safety_row.addWidget(flatten_unavailable)
+        safety_layout.addLayout(safety_row)
+        self.safety_section = SectionPanel("SAFETY", safety_content)
         self.mission_section = SectionPanel(
             "Mission Status", self.mission_status, collapsible=True
         )
         self.infrastructure_section = SectionPanel(
             "Infrastructure", self.infrastructure, collapsible=True
         )
-        self.focus_section = SectionPanel("Atlas Scanner", self.watchlist)
-        self.focus_section.setMinimumHeight(180)
-        self.focus_chart_button = QToolButton()
-        self.focus_chart_button.setObjectName("focusChartButton")
-        self.focus_chart_button.setText("Focus Chart")
-        self.focus_chart_button.setToolTip("Temporarily dedicate the workspace to the chart")
-        self.focus_chart_button.clicked.connect(self.toggle_chart_focus)
-        self.market_section = SectionPanel(
-            "Market", self.chart_view, action=self.focus_chart_button
-        )
-        self.market_section.setMinimumHeight(520)
-        self._chart_focused = False
-        self._pre_focus_sizes: tuple[int, ...] = ()
+        self.opportunities_section = SectionPanel("OPPORTUNITIES", self.watchlist)
+        self.focus_section = self.opportunities_section
+        self.opportunities_section.setMinimumWidth(0)
+        self.market_section = SectionPanel("ATLAS TRADE INTELLIGENCE", self.trade_intelligence)
+        self.market_section.setMinimumWidth(0)
         self._layout_mode: str | None = None
         self._responsive_width_override: int | None = None
 
-        # Keep market ownership stable. MainWindow places the separately-owned
-        # intelligence widget in a QDockWidget; responsive changes never move
-        # live widgets between splitters.
-        top = QSplitter(Qt.Orientation.Horizontal)
-        top.setObjectName("chartRailSplitter")
-        top.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
+        self.left_column = QWidget()
+        left_layout = QVBoxLayout(self.left_column)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+        left_layout.addWidget(self.opportunities_section, 5)
+        left_layout.addWidget(self.market_overview_section, 2)
+        left_layout.addWidget(self.runtime_controls_section, 2)
+        left_layout.addWidget(self.safety_section, 1)
 
+        self.right_workspace = QWidget()
+        self.right_workspace.setMinimumWidth(0)
+        right_layout = QVBoxLayout(self.right_workspace)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
+        right_layout.addWidget(self.market_section, 3)
+        lower = QSplitter(Qt.Orientation.Horizontal)
+        lower.addWidget(self.activity_section)
+        lower.addWidget(self.portfolio_section)
+        self.lower_splitter = lower
+        lower.setStretchFactor(0, 6)
+        lower.setStretchFactor(1, 4)
+        lower.setSizes((700, 520))
+        right_layout.addWidget(lower, 2)
+
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setObjectName("workstationMainSplitter")
+        self.splitter.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
+        self.splitter.addWidget(self.left_column)
+        self.splitter.addWidget(self.right_workspace)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 7)
+        self.splitter.setSizes((420, 980))
+        layout.addWidget(self.splitter)
+
+        # Secondary intelligence remains available to the inspector dock.
         intelligence_rail = QWidget()
         intelligence_rail.setMinimumWidth(340)
         self.intelligence_rail = intelligence_rail
@@ -983,7 +1000,7 @@ class MarketWorkspace(QWidget):
         self.right_splitter.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
         for section in (
             self.ai_thinking_section,
-            self.activity_section,
+            SectionPanel("Atlas Activity", self.atlas_activity, collapsible=True),
             self.mission_section,
             self.infrastructure_section,
         ):
@@ -994,56 +1011,26 @@ class MarketWorkspace(QWidget):
         self.right_splitter.setSizes((230, 180, 190, 190))
         rail_layout.addWidget(self.right_splitter)
 
-        top.addWidget(self.market_section)
-        top.setCollapsible(0, False)
-        top.setStretchFactor(0, 1)
+        self.top_splitter = self.splitter
 
-        # Atlas Scanner gets a full-width workspace below the chart so the
-        # richer Warrior Paper columns remain inspectable.
-        self.splitter = QSplitter(Qt.Orientation.Vertical)
-        self.splitter.setObjectName("chartScannerSplitter")
-        self.splitter.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
-        self.splitter.addWidget(top)
-        self.splitter.addWidget(self.focus_section)
-        self.splitter.setCollapsible(0, False)
-        self.splitter.setCollapsible(1, False)
-        self.splitter.setStretchFactor(0, 7)
-        self.splitter.setStretchFactor(1, 3)
-        self.splitter.setSizes((560, 260))
-
-        self.top_splitter = top
-        layout.addWidget(self.splitter)
+    def _inspector_requested(self, visible: bool) -> None:
+        self.inspector_requested.emit(visible)
 
     @property
     def chart_focused(self) -> bool:
-        return self._chart_focused
+        return False
 
     @property
     def layout_mode(self) -> str | None:
         return self._layout_mode
 
     def toggle_chart_focus(self) -> None:
-        self.set_chart_focus(not self._chart_focused)
+        return
 
     def set_chart_focus(self, focused: bool) -> None:
-        focused = bool(focused)
-        if focused == self._chart_focused:
-            return
-        self._chart_focused = focused
-        if focused:
-            self._pre_focus_sizes = tuple(self.splitter.sizes())
-            self.focus_section.hide()
-            self.focus_chart_button.setText("Restore Layout")
-            self.focus_chart_button.setToolTip("Restore Atlas Scanner")
-        else:
-            self.focus_section.show()
-            self.focus_chart_button.setText("Focus Chart")
-            self.focus_chart_button.setToolTip(
-                "Temporarily dedicate the workspace to the chart"
-            )
-            if self._pre_focus_sizes:
-                self.splitter.setSizes(self._pre_focus_sizes)
-        self.focus_mode_changed.emit(focused)
+        # Retained as a compatibility boundary for persisted pre-redesign
+        # layouts. The primary workstation no longer has a chart focus mode.
+        return
 
     def set_responsive_width(
         self, width: int, *, force: bool = False, external: bool = False
@@ -1054,11 +1041,11 @@ class MarketWorkspace(QWidget):
         if not force and mode == self._layout_mode:
             return
         self._layout_mode = mode
-        self.splitter.setStretchFactor(0, 7)
-        self.splitter.setStretchFactor(1, 3)
-        # Both modes preserve the native chart canvas. Scanner overflow belongs
-        # below it, in the dashboard's vertical scroll area.
-        self.splitter.setSizes((560 if mode == "compact" else 620, 260))
+        self.splitter.setStretchFactor(0, 2)
+        self.splitter.setStretchFactor(1, 5)
+        self.splitter.setSizes(
+            (430 if mode == "compact" else 500, 760 if mode == "compact" else 980)
+        )
 
     def reset_layout(self, width: int | None = None) -> None:
         self.set_chart_focus(False)
@@ -1067,11 +1054,9 @@ class MarketWorkspace(QWidget):
         self.set_responsive_width(width or self.width(), force=True)
 
     def _emit_operator_symbol(self, symbol: str) -> None:
-        self.chart_symbol_selected.emit(symbol)
         self.operator_symbol_selected.emit(symbol)
 
     def _emit_atlas_symbol(self, symbol: str) -> None:
-        self.chart_symbol_selected.emit(symbol)
         self.atlas_symbol_selected.emit(symbol)
 
     def render(self, snapshot: WatchlistSnapshot) -> None:
@@ -1082,6 +1067,16 @@ class MarketWorkspace(QWidget):
 
     def _render_focus(self, snapshot: WatchlistSnapshot) -> None:
         atlas_rows = tuple(row for row in snapshot.rows if row.rank != "--")
+        symbols = {row.symbol for row in atlas_rows}
+        projected = next((row.symbol for row in atlas_rows if row.selected), None)
+        if self._selected_symbol not in symbols:
+            self._selected_symbol = projected or (
+                atlas_rows[0].symbol if atlas_rows else None
+            )
+        atlas_rows = tuple(
+            replace(row, selected=row.symbol == self._selected_symbol)
+            for row in atlas_rows
+        )
         atlas_snapshot = replace(
             snapshot,
             rows=atlas_rows,
@@ -1092,33 +1087,21 @@ class MarketWorkspace(QWidget):
             (row for row in atlas_rows if row.selected),
             None,
         )
-        if isinstance(self.chart_view, ChartPlaceholder):
-            self.chart_view.set_symbols(
-                tuple(row.symbol for row in atlas_rows),
-                selected.symbol if selected is not None else None,
-            )
-        if self._chart_managed:
-            if (
-                isinstance(self.chart_view, ChartPlaceholder)
-                and self._chart_snapshot.symbol != "--"
-            ):
-                self.chart_view.select_symbol(self._chart_snapshot.symbol)
+        self.trade_intelligence.render(selected)
+
+    def _select_candidate(self, symbol: str) -> None:
+        if symbol == self._selected_symbol:
             return
-        chart_snapshot = ChartViewSnapshot(
-            symbol=selected.symbol if selected is not None else "--",
-            timeframe="1D",
-            market_status=(
-                selected.market_status
-                if selected is not None and selected.market_status != "--"
-                else "UNKNOWN"
-            ),
-            message=(
-                "Chart engine is not configured; market data is unavailable for this symbol."
-                if selected is not None
-                else "No active symbol is available for the market chart."
-            ),
+        snapshot = (
+            self._warrior_view.focus
+            if self._focus_mode == "WARRIOR PAPER" and self._warrior_view is not None
+            else self._atlas_snapshot
         )
-        self.chart_view.render(chart_snapshot)
+        if not any(row.symbol == symbol for row in snapshot.rows):
+            return
+        self._selected_symbol = symbol
+        self._render_focus(snapshot)
+        self._emit_operator_symbol(symbol)
 
     def render_warrior(self, view) -> None:
         self._warrior_view = view
@@ -1144,7 +1127,8 @@ class MarketWorkspace(QWidget):
 
     def render_chart(self, snapshot: ChartViewSnapshot) -> None:
         self._chart_snapshot = snapshot
-        self.chart_view.render(snapshot)
+        if self.chart_view is not None:
+            self.chart_view.render(snapshot)
 
     def render_activity(self, snapshot: AtlasActivitySnapshot) -> None:
         self.atlas_activity.render(snapshot)
@@ -1159,7 +1143,7 @@ class MarketWorkspace(QWidget):
         self.infrastructure.render(snapshot)
 
     def minimumSizeHint(self) -> QSize:
-        return QSize(0, 830)
+        return QSize(0, 600)
 
     def resizeEvent(self, event) -> None:
         # Geometry changes only when crossing the real responsive breakpoint;
@@ -1186,6 +1170,10 @@ def _watchlist_color(column: str, value: str) -> str | None:
     if column in {"Catalyst", "Setup / Catalyst"} and value != "--":
         return "#c084fc"
     return None
+
+
+def _first_watchlist_value(*values: str) -> str:
+    return next((value for value in values if value and value != "--"), "--")
 
 
 __all__ = [

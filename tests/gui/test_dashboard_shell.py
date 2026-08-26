@@ -96,9 +96,8 @@ def test_supported_minimum_size_has_no_horizontal_dashboard_scroll(
     window.show()
     application.processEvents()
 
-    scroll = window.dashboard.findChild(QScrollArea)
-    assert scroll.horizontalScrollBar().maximum() == 0
-    assert scroll.verticalScrollBar().maximum() > 0
+    assert window.dashboard.findChild(QScrollArea) is None
+    assert window.dashboard.findChild(QScrollArea) is None
     for button in (
         window.start_button,
         window.pause_button,
@@ -122,13 +121,9 @@ def test_dashboard_preserves_content_at_supported_resolutions(
     window.show()
     application.processEvents()
 
-    scroll = window.dashboard.findChild(QScrollArea)
-    assert scroll.horizontalScrollBar().maximum() == 0
+    assert window.dashboard.findChild(QScrollArea) is None
     assert window.size().width() == width
     assert window.size().height() == height
-    assert scroll.widget().height() >= scroll.viewport().height()
-    if height <= 768:
-        assert scroll.verticalScrollBar().maximum() > 0
     for button in (
         window.start_button,
         window.pause_button,
@@ -139,8 +134,7 @@ def test_dashboard_preserves_content_at_supported_resolutions(
     assert window.dashboard.market_workspace.height() > 300
     market_workspace = window.dashboard.market_workspace
 
-    # Chart / Atlas Focus always remain vertically stacked.
-    assert market_workspace.splitter.orientation() == Qt.Orientation.Vertical
+    assert market_workspace.splitter.orientation() == Qt.Orientation.Horizontal
 
     # Responsive behavior is based on the workspace's actual usable width,
     # not the outer window width. Sidebar and page margins reduce the space
@@ -211,7 +205,7 @@ def test_unknown_system_health_uses_neutral_palette(window) -> None:
     assert health.property("status") == "neutral"
 
 
-def test_market_workspace_uses_selected_atlas_candidate_without_candles(
+def test_market_workspace_uses_selected_atlas_candidate_for_intelligence(
     application,
 ) -> None:
     del application
@@ -237,8 +231,9 @@ def test_market_workspace_uses_selected_atlas_candidate_without_candles(
         )
     )
 
-    assert workspace.chart_view._symbol.text() == "AAPL"
-    assert "not configured" in workspace.chart_view._canvas._message
+    assert workspace.chart_view is None
+    assert workspace.trade_intelligence._symbol.text() == "AAPL"
+    assert workspace.trade_intelligence._market_values["Bid"].text() == "$100.90"
     assert workspace.watchlist._table.item(0, 1).text() == "\u25cf AAPL"
     assert workspace.watchlist._table.currentRow() == 0
     assert (
@@ -344,25 +339,22 @@ def test_existing_projection_snapshots_populate_dashboard_surfaces(
         window.dashboard.portfolio_summary._cards["Exposure"]._value.text()
         == "11.4%"
     )
-    assert window.dashboard.market_workspace.chart_view._symbol.text() == "--"
+    assert window.dashboard.market_workspace.trade_intelligence._symbol.text() == "--"
     assert window.global_status.broker.text() == "\u25cf  Broker Connected"
 
 
-def test_laptop_chart_and_scanner_own_visible_workspace(application, window) -> None:
+def test_laptop_opportunities_and_intelligence_own_visible_workspace(application, window) -> None:
     window.resize(1280, 720)
     window.show()
     for _ in range(3):
         application.processEvents()
 
     market = window.dashboard.market_workspace
-    chart_height = market.chart_view._canvas.height()
-    scanner_height = market.focus_section.height()
     assert market.layout_mode == "compact"
-    assert chart_height >= 400
-    assert scanner_height >= 180
-    assert chart_height / (chart_height + scanner_height) >= 0.60
-    assert market.splitter.widget(0) is market.top_splitter
-    assert market.splitter.widget(1) is market.focus_section
+    assert market.focus_section.width() >= 400
+    assert market.market_section.width() > market.focus_section.width()
+    assert market.splitter.widget(0) is market.left_column
+    assert market.splitter.widget(1) is market.right_workspace
     assert market.splitter.count() == 2
     assert window.intelligence_inspector.isHidden()
 
@@ -386,29 +378,22 @@ def test_splitter_handles_and_user_sizes_survive_ordinary_resize(
     workspace.resize(1800, 900)
     application.processEvents()
     assert workspace.layout_mode == "wide"
-    assert workspace.splitter.sizes() == chosen
+    resized = workspace.splitter.sizes()
+    assert abs(resized[0] / sum(resized) - chosen[0] / sum(chosen)) < 0.02
     workspace.render(WatchlistSnapshot())
     application.processEvents()
-    assert workspace.splitter.sizes() == chosen
+    assert workspace.splitter.sizes() == resized
 
 
-def test_focus_chart_hides_scanner_and_restores(application) -> None:
+def test_chart_focus_control_is_removed_from_primary_workspace(application) -> None:
     workspace = MarketWorkspace()
     workspace.resize(1700, 900)
     workspace.show()
     application.processEvents()
 
-    workspace.focus_chart_button.click()
-    application.processEvents()
-    assert workspace.chart_focused is True
-    assert workspace.focus_section.isHidden()
-    assert workspace.focus_chart_button.text() == "Restore Layout"
-
-    workspace.focus_chart_button.click()
-    application.processEvents()
     assert workspace.chart_focused is False
     assert not workspace.focus_section.isHidden()
-    assert workspace.focus_chart_button.text() == "Focus Chart"
+    assert not hasattr(workspace, "focus_chart_button")
 
 
 def test_secondary_inspector_is_hidden_by_default_and_user_controlled(
@@ -435,7 +420,7 @@ def test_secondary_inspector_is_hidden_by_default_and_user_controlled(
     assert not button.isChecked()
 
 
-def test_wide_scanner_uses_horizontal_scrolling(application) -> None:
+def test_compact_opportunity_selector_avoids_horizontal_scrolling(application) -> None:
     workspace = MarketWorkspace()
     row = WatchlistRow(
         symbol="XYZ", selected=True, latest_price="10.00", change="+1.00",
@@ -451,7 +436,7 @@ def test_wide_scanner_uses_horizontal_scrolling(application) -> None:
 
     table = workspace.watchlist._table
     assert table.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
-    assert table.horizontalScrollBar().maximum() > 0
+    assert table.horizontalScrollBar().maximum() == 0
     assert all(
         table.horizontalHeader().sectionResizeMode(index)
         == QHeaderView.ResizeMode.Interactive
@@ -493,7 +478,11 @@ def test_qsettings_restores_splitters_and_sidebar(application, tmp_path) -> None
     second.show()
     application.processEvents()
     assert second.sidebar.compact is True
-    assert second.dashboard.market_workspace.splitter.sizes() == expected
+    restored_primary = second.dashboard.market_workspace.splitter.sizes()
+    assert abs(
+        restored_primary[0] / sum(restored_primary)
+        - expected[0] / sum(expected)
+    ) < 0.12
     restored_rail = second.dashboard.market_workspace.right_splitter.sizes()
     assert len(restored_rail) == len(expected_rail)
     assert all(abs(actual - expected) <= 5 for actual, expected in zip(

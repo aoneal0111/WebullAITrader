@@ -1,11 +1,36 @@
 from __future__ import annotations
 
+import os
+from PySide6.QtGui import QFont, QFontDatabase
+from PySide6.QtWidgets import QApplication
+
 from app.gui.design.tokens import Colors, Dimensions, Typography
 
 
+def _font_families() -> tuple[str, str]:
+    """Install a known Windows UI font when Qt's runtime has no font database.
+
+    Some packaged/offscreen Qt deployments expose an empty font database; a
+    QSS family name then produces tofu glyphs instead of using platform
+    fallback.  Registering the installed Segoe UI file makes text rendering
+    deterministic while generic Qt families remain the non-Windows fallback.
+    """
+    app = QApplication.instance()
+    if app is not None and "Segoe UI" not in QFontDatabase.families():
+        path = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", "segoeui.ttf")
+        if os.path.exists(path):
+            QFontDatabase.addApplicationFont(path)
+    family = "Segoe UI" if "Segoe UI" in QFontDatabase.families() else "Sans Serif"
+    mono = "Consolas" if "Consolas" in QFontDatabase.families() else "Monospace"
+    if app is not None:
+        app.setFont(QFont(family, Typography.MD))
+    return family, mono
+
+
 def application_stylesheet() -> str:
+    family, mono = _font_families()
     return f"""
-    * {{ font-family: "{Typography.FAMILY}"; font-size: {Typography.MD}px; }}
+    * {{ font-family: "{family}"; font-size: {Typography.MD}px; }}
     QMainWindow, QWidget#appRoot {{ background: {Colors.BACKGROUND}; color: {Colors.TEXT}; }}
     QWidget#navigationRail {{ background: {Colors.SIDEBAR}; border-right: 1px solid {Colors.BORDER}; }}
     QWidget#contentArea, QStackedWidget {{ background: {Colors.BACKGROUND}; }}
@@ -16,7 +41,7 @@ def application_stylesheet() -> str:
     QLabel#brandMark {{ background: {Colors.ACCENT}; color: white; border-radius: 8px; font-size: 17px; font-weight: 900; }}
     QLabel#pageTitle {{ font-size: {Typography.XXL}px; font-weight: 750; color: {Colors.TEXT_STRONG}; }}
     QLabel#missionTitle {{ font-size: {Typography.XL}px; font-weight: 750; color: {Colors.TEXT_STRONG}; }}
-    QLabel#headerMetricValue {{ font-family: "{Typography.MONO}"; color: {Colors.TEXT_STRONG}; font-size: 14px; font-weight: 700; }}
+    QLabel#headerMetricValue {{ font-family: "{mono}"; color: {Colors.TEXT_STRONG}; font-size: 14px; font-weight: 700; }}
     QLabel#headerMetricValue[status='good'] {{ color: {Colors.SUCCESS}; }}
     QLabel#headerMetricValue[status='warn'] {{ color: {Colors.WARNING}; }}
     QLabel#headerMetricValue[status='danger'] {{ color: {Colors.DANGER}; }}
@@ -24,8 +49,14 @@ def application_stylesheet() -> str:
     QLabel#sectionTitle {{ font-size: {Typography.PANEL_TITLE}px; font-weight: 700; color: {Colors.TEXT_STRONG}; }}
     QLabel#sectionEyebrow {{ font-size: {Typography.XS}px; font-weight: 750; color: {Colors.TEXT_MUTED}; letter-spacing: 0.8px; }}
     QLabel#eyebrow {{ color: {Colors.ACCENT}; font-size: {Typography.XS}px; font-weight: 800; letter-spacing: 1px; }}
-    QLabel#monoValue {{ font-family: "{Typography.MONO}"; color: {Colors.TEXT_STRONG}; font-weight: 650; }}
-    QLabel#quotePrice {{ font-family: "{Typography.MONO}"; color: {Colors.TEXT_STRONG}; font-size: {Typography.PRIMARY_METRIC}px; font-weight: 800; }}
+    QLabel#monoValue {{ font-family: "{mono}"; color: {Colors.TEXT_STRONG}; font-weight: 650; }}
+    QLabel#quotePrice {{ font-family: "{mono}"; color: {Colors.TEXT_STRONG}; font-size: {Typography.PRIMARY_METRIC}px; font-weight: 800; }}
+    QLabel#candidateSymbol {{ font-size: 24px; font-weight: 800; color: {Colors.TEXT_STRONG}; }}
+    QLabel#candidatePrice {{ font-family: "{mono}"; font-size: 23px; font-weight: 800; color: {Colors.TEXT_STRONG}; }}
+    QLabel#candidateChange {{ font-family: "{mono}"; font-size: 19px; font-weight: 750; }}
+    QLabel#candidateChange[tone='good'] {{ color: {Colors.SUCCESS}; }}
+    QLabel#candidateChange[tone='danger'] {{ color: {Colors.DANGER}; }}
+    QLabel#candidateChange[tone='neutral'] {{ color: {Colors.TEXT_MUTED}; }}
     QLabel#monoValue[emphasis='primary'] {{ font-size: {Typography.LG}px; font-weight: 750; }}
     QFrame#panel, QFrame#metricCard, QFrame#statusCard {{
         background: {Colors.SURFACE};
@@ -33,12 +64,26 @@ def application_stylesheet() -> str:
         border-radius: 5px;
     }}
     QFrame#terminalHeader {{ background: {Colors.SIDEBAR}; border-bottom: 1px solid {Colors.BORDER_STRONG}; }}
+    QFrame#workstationHeader {{ background: {Colors.SIDEBAR}; border: 1px solid {Colors.BORDER_STRONG}; border-radius: 5px; }}
+    QFrame#workstationFooter {{ background: {Colors.SURFACE}; border-top: 1px solid {Colors.BORDER}; }}
+    QLabel#tableValue {{ color: {Colors.TEXT}; font-family: "{Typography.MONO}"; }}
     QFrame#headerSeparator {{ color: {Colors.BORDER}; max-width: 1px; margin: 4px 3px; }}
     QFrame#missionStatusCard, QFrame#activityMetric {{
         background: {Colors.SURFACE_ALT};
         border: 1px solid {Colors.BORDER_SOFT};
         border-radius: 6px;
     }}
+    QFrame#tradeIntelligenceHeader, QFrame#intelligenceSection {{
+        background: {Colors.SURFACE_ALT};
+        border: 1px solid {Colors.BORDER_SOFT};
+        border-radius: 6px;
+    }}
+    QLabel#intelligenceExplanation {{ color: {Colors.TEXT_STRONG}; font-size: {Typography.LG}px; font-weight: 650; }}
+    QLabel#decisionState {{ font-family: "{mono}"; color: {Colors.TEXT_STRONG}; font-size: {Typography.XXL}px; font-weight: 850; padding: 8px; }}
+    QLabel#decisionState[tone='good'] {{ color: {Colors.SUCCESS}; }}
+    QLabel#decisionState[tone='warn'] {{ color: {Colors.WARNING}; }}
+    QLabel#decisionState[tone='danger'] {{ color: {Colors.DANGER}; }}
+    QLabel#decisionState[tone='neutral'] {{ color: {Colors.TEXT_MUTED}; }}
     QFrame#activityMetric:hover {{ border-color: {Colors.BORDER_STRONG}; }}
     QFrame#metricCard:hover, QFrame#statusCard:hover {{ border-color: {Colors.BORDER_STRONG}; background: {Colors.SURFACE_ALT}; }}
     QFrame#metricCard[emphasis='primary'] {{ border-color: {Colors.BORDER_STRONG}; background: {Colors.SURFACE_ALT}; }}
@@ -47,10 +92,10 @@ def application_stylesheet() -> str:
     QLabel#aiObjective {{ color: {Colors.TEXT_STRONG}; font-size: {Typography.XL}px; font-weight: 750; }}
     QLabel#aiReasoning {{ color: {Colors.TEXT}; font-size: {Typography.MD}px; }}
     QLabel#aiFact {{ color: {Colors.TEXT_STRONG}; font-weight: 650; }}
-    QLabel#metricValue {{ font-family: "{Typography.MONO}"; font-size: {Typography.LG}px; font-weight: 700; color: {Colors.TEXT_STRONG}; }}
+    QLabel#metricValue {{ font-family: "{mono}"; font-size: {Typography.LG}px; font-weight: 700; color: {Colors.TEXT_STRONG}; }}
     QLabel#metricValue[emphasis='primary'] {{ font-size: {Typography.PRIMARY_METRIC}px; font-weight: 750; }}
     QLabel#metricValue[emphasis='medium'] {{ font-size: {Typography.XL}px; }}
-    QLabel#compactMetricValue {{ font-family: "{Typography.MONO}"; font-size: 14px; font-weight: 700; color: {Colors.TEXT_STRONG}; }}
+    QLabel#compactMetricValue {{ font-family: "{mono}"; font-size: 14px; font-weight: 700; color: {Colors.TEXT_STRONG}; }}
     QLabel#metricValue[tone='good'], QLabel#compactMetricValue[tone='good'], QLabel#monoValue[status='good'] {{ color: {Colors.SUCCESS}; }}
     QLabel#metricValue[tone='danger'], QLabel#compactMetricValue[tone='danger'], QLabel#monoValue[status='danger'] {{ color: {Colors.DANGER}; }}
     QLabel#metricValue[tone='warn'], QLabel#compactMetricValue[tone='warn'], QLabel#monoValue[status='warn'] {{ color: {Colors.WARNING}; }}

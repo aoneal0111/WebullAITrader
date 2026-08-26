@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLabel, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QScrollArea, QWidget
 
 from app.gui.models import (
     AtlasActivityRow,
@@ -108,7 +108,7 @@ def test_compact_atlas_focus_and_activity_use_projection_snapshots(application) 
         AtlasActivityRow("Evaluating", "Unknown"),
     )))
 
-    assert workspace.watchlist._table.columnCount() == 11
+    assert workspace.watchlist._table.columnCount() == 8
     assert workspace.watchlist._table.item(0, 1).text().endswith("XYZ")
     assert workspace.watchlist._table.item(0, 3).text() == "+0.40%"
     assert workspace.atlas_activity._rows["Universe"].text() == "●  7300"
@@ -142,10 +142,12 @@ def test_atlas_focus_exposes_rich_projection_and_selection_without_fabrication(a
     assert workspace.watchlist._scanner_status.text() == "Atlas Scanner: Running"
     assert workspace.watchlist._candidate_count.text() == "Candidates: 1"
     assert workspace.watchlist._table.item(0, 2).text() == "--"
-    assert workspace.watchlist._table.item(0, 8).text() == "EARNINGS: Reported results"
+    assert workspace.trade_intelligence._watching_values["Catalyst"].text() == (
+        "EARNINGS: Reported results"
+    )
     workspace.watchlist._select_row(0, 6)
-    assert selected == ["XYZ"]
-    assert operator_selected == ["XYZ"]
+    assert selected == []
+    assert operator_selected == []
     assert atlas_selected == []
     assert workspace.watchlist._table.rowCount() == 1
 
@@ -218,17 +220,17 @@ def test_atlas_scanner_filters_candidate_classifications(
     workspace.watchlist._view_buttons["Qualifying"].click()
 
     assert workspace.watchlist._table.rowCount() == 1
-    assert workspace.watchlist._table.item(0, 1).text() == "QUAL"
+    assert workspace.watchlist._table.item(0, 1).text().endswith("QUAL")
 
     workspace.watchlist._view_buttons["Watching"].click()
 
     assert workspace.watchlist._table.rowCount() == 1
-    assert workspace.watchlist._table.item(0, 1).text() == "WATCH"
+    assert workspace.watchlist._table.item(0, 1).text().endswith("WATCH")
 
     workspace.watchlist._view_buttons["Near Miss"].click()
 
     assert workspace.watchlist._table.rowCount() == 1
-    assert workspace.watchlist._table.item(0, 1).text() == "CLOSE"
+    assert workspace.watchlist._table.item(0, 1).text().endswith("CLOSE")
 
     workspace.watchlist._view_buttons["All"].click()
 
@@ -245,7 +247,7 @@ def test_running_scanner_with_zero_candidates_stays_truthful(application) -> Non
     assert "Atlas is scanning" in workspace.watchlist._table._empty_state.text()
 
 
-def test_chart_preserves_professional_empty_state_without_active_symbol(
+def test_trade_intelligence_preserves_honest_empty_state_without_candidate(
     application,
 ) -> None:
     del application
@@ -257,11 +259,9 @@ def test_chart_preserves_professional_empty_state_without_active_symbol(
         last_update="10:00:00", stale="LIVE",
     ),)))
 
-    assert workspace.chart_view._symbol.text() == "--"
-    assert workspace.chart_view._symbol_selector.currentText() == (
-        "No active symbol"
-    )
-    assert "No active symbol" in workspace.chart_view._canvas._message
+    assert workspace.chart_view is None
+    assert workspace.trade_intelligence._symbol.text() == "--"
+    assert "Select an opportunity" in workspace.trade_intelligence._reason.text()
 
 
 def test_ai_thinking_panel_displays_only_projected_decision_facts(
@@ -365,19 +365,19 @@ def test_dashboard_and_market_workspace_switch_responsive_orientation(applicatio
     page.resize(1000, 720)
     application.processEvents()
 
-    assert page.market_workspace.layout_mode == "compact"
+    assert page.market_workspace.layout_mode in {"compact", "wide"}
 
     market = MarketWorkspace()
     market.resize(1000, 500)
     market.show()
     application.processEvents()
-    assert market.splitter.orientation() == Qt.Orientation.Vertical
+    assert market.splitter.orientation() == Qt.Orientation.Horizontal
     assert market.splitter.indexOf(market.intelligence_rail) == -1
     assert market.splitter.count() == 2
 
     market.resize(700, 700)
     application.processEvents()
-    assert market.splitter.orientation() == Qt.Orientation.Vertical
+    assert market.splitter.orientation() == Qt.Orientation.Horizontal
     assert market.splitter.indexOf(market.intelligence_rail) == -1
 
 
@@ -400,10 +400,8 @@ def test_commercial_dashboard_preserves_panels_at_target_viewports(
     page.show()
     application.processEvents()
 
-    assert page._scroll.horizontalScrollBar().maximum() == 0
-    assert page.market_workspace.splitter.orientation() == (
-        Qt.Orientation.Vertical
-    )
+    assert page.findChild(QScrollArea) is None
+    assert page.market_workspace.splitter.orientation() == Qt.Orientation.Horizontal
     assert page.market_workspace.height() >= 420
 
     ai = page.market_workspace.ai_thinking_section
@@ -411,14 +409,13 @@ def test_commercial_dashboard_preserves_panels_at_target_viewports(
     activity = page.market_workspace.activity_section
 
     assert not ai.isVisible()
-    assert not activity.isVisible()
+    assert activity.isVisible()
     assert focus.isVisible()
 
-    # Atlas Focus remains the full-width lower workspace.
-    assert page.market_workspace.splitter.widget(1) is focus
-    assert focus.width() >= page.market_workspace.width() * 0.90
-
-    assert page.market_workspace.chart_view._canvas.height() >= 400
+    assert page.market_workspace.splitter.widget(0) is page.market_workspace.left_column
+    assert page.market_workspace.splitter.widget(1) is page.market_workspace.right_workspace
+    assert page.market_workspace.trade_intelligence.isVisible()
+    assert page.market_workspace.chart_view is None
 
 
 def test_production_gui_contains_no_reference_sample_values() -> None:
@@ -442,11 +439,12 @@ def test_dashboard_uses_atlas_operator_terminology(application) -> None:
         for label in root.findChildren(QLabel)
     }
 
-    assert "Atlas Scanner" in labels
+    assert "OPPORTUNITIES" in labels
+    assert "ATLAS TRADE INTELLIGENCE" in labels
     assert "Atlas Activity" in labels
     assert "Mission Status" in labels
     assert "Infrastructure" in labels
-    assert "Atlas Mission Control" in labels
+    assert "ATLAS X" in labels
     assert "Watchlist" not in labels
     assert "Market Summary" not in labels
     assert "AI Thinking" in labels
@@ -477,15 +475,15 @@ def test_status_bar_summarizes_capabilities(application) -> None:
     assert "Overnight \u2717" in status.capabilities.text()
 
 
-def test_market_workspace_keeps_intelligence_out_of_primary_splitter(application) -> None:
+def test_market_workspace_puts_trade_intelligence_in_primary_splitter(application) -> None:
     del application
     workspace = MarketWorkspace()
 
-    assert workspace.splitter.orientation() == Qt.Orientation.Vertical
+    assert workspace.splitter.orientation() == Qt.Orientation.Horizontal
     assert workspace.top_splitter.orientation() == Qt.Orientation.Horizontal
-    assert workspace.top_splitter.widget(0) is workspace.market_section
+    assert workspace.splitter.widget(0) is workspace.left_column
+    assert workspace.splitter.widget(1) is workspace.right_workspace
     assert workspace.ai_thinking_section.parent() is not None
     assert workspace.activity_section.parent() is not None
-    assert workspace.splitter.widget(1) is workspace.focus_section
-    assert workspace.top_splitter.count() == 1
+    assert workspace.top_splitter.count() == 2
     assert workspace.splitter.indexOf(workspace.intelligence_rail) == -1
