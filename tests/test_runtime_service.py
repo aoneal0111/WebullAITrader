@@ -162,6 +162,78 @@ def test_runtime_service_publishes_driver_failure() -> None:
     assert service.status is RuntimeServiceStatus.STOPPED
 
 
+def test_runtime_service_preserves_shutdown_failure_diagnostics(caplog) -> None:
+    class ShutdownFailureDriver:
+        environment = "PAPER"
+        active_model = "shutdown-failure-model"
+        cycles_completed = 0
+
+        def run(
+            self,
+            *,
+            stop_event: Event,
+            cycle_sink: Callable[[int], None],
+        ) -> None:
+            assert stop_event.wait(1.0)
+            raise LookupError("synthetic shutdown sentinel")
+
+    bus = OperationsBus()
+    failures: list[RuntimeFailed] = []
+    bus.subscribe(RuntimeFailed, failures.append)
+    service = RuntimeService(bus, ShutdownFailureDriver)
+
+    with caplog.at_level("ERROR", logger="atlas.runtime"):
+        assert service.start() is True
+        assert service.stop("Exercise shutdown diagnostics.") is True
+        assert service.wait(1.0) is True
+
+    assert len(failures) == 1
+    assert failures[0].error_message == (
+        "LookupError: synthetic shutdown sentinel"
+    )
+    assert service.status is RuntimeServiceStatus.STOPPED
+    assert "event_type=runtime_lifecycle_exception" in caplog.text
+    assert "lifecycle_phase=driver.run/stopping" in caplog.text
+    assert "shutdown_requested=True" in caplog.text
+    assert "exception_type=LookupError" in caplog.text
+    assert "exception_message=synthetic shutdown sentinel" in caplog.text
+    assert "Traceback (most recent call last)" in caplog.text
+    assert "raise LookupError(\"synthetic shutdown sentinel\")" in caplog.text
+
+
+def test_runtime_service_redacts_sensitive_chained_failure(caplog) -> None:
+    class SensitiveFailureDriver:
+        environment = "PAPER"
+        active_model = "sensitive-failure-model"
+        cycles_completed = 0
+
+        def run(
+            self,
+            *,
+            stop_event: Event,
+            cycle_sink: Callable[[int], None],
+        ) -> None:
+            try:
+                raise ValueError("token=synthetic-secret-value")
+            except ValueError as exc:
+                raise RuntimeError("shutdown wrapper") from exc
+
+    bus = OperationsBus()
+    failures: list[RuntimeFailed] = []
+    bus.subscribe(RuntimeFailed, failures.append)
+    service = RuntimeService(bus, SensitiveFailureDriver)
+
+    with caplog.at_level("ERROR", logger="atlas.runtime"):
+        assert service.start() is True
+        assert service.wait(1.0) is True
+
+    assert failures[0].error_message == "RuntimeError: [REDACTED]"
+    assert "synthetic-secret-value" not in caplog.text
+    assert "synthetic-secret-value" not in failures[0].error_message
+    assert "exception_message=[REDACTED]" in caplog.text
+    assert "Traceback (most recent call last)" in caplog.text
+
+
 def test_runtime_service_publishes_one_start_and_stop() -> None:
     bus = OperationsBus()
     started: list[RuntimeStarted] = []

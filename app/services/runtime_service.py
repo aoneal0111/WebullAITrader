@@ -3,10 +3,15 @@
 import time
 from collections.abc import Callable
 from enum import StrEnum
+import logging
 from threading import Event, RLock, Thread
 from typing import Protocol
 
 from app.services.runtime_driver_validation import validate_runtime_driver
+from app.services.runtime_diagnostics import (
+    log_runtime_exception,
+    safe_exception_message,
+)
 from app.operations_core import (
     OperationsBus,
     RuntimeCycleCompleted,
@@ -16,6 +21,9 @@ from app.operations_core import (
     RuntimeStopped,
     RuntimeStopping,
 )
+
+
+_LOGGER = logging.getLogger("atlas.runtime")
 
 
 class RuntimeServiceStatus(StrEnum):
@@ -242,10 +250,22 @@ class RuntimeService:
             )
 
         except Exception as exc:
+            with self._lock:
+                lifecycle_status = self._status.value
+            shutdown_requested = self._stop_event.is_set()
+            log_runtime_exception(
+                _LOGGER,
+                exc,
+                event_type="runtime_lifecycle_exception",
+                lifecycle_phase=(
+                    f"driver.run/{lifecycle_status.lower()}"
+                ),
+                shutdown_requested=shutdown_requested,
+            )
             self._bus.publish(
                 RuntimeFailed(
                     source=self._source,
-                    error_message=f"{type(exc).__name__}: {exc}",
+                    error_message=safe_exception_message(exc),
                 )
             )
 

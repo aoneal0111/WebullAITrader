@@ -27,6 +27,7 @@ from app.operations.runtime import (
 from app.operations.scanner_snapshot_publisher import ScannerSnapshotPublisher
 from app.performance_diagnostics import performance_diagnostics
 from app.services.market_event_translation import translate_market_event
+from app.services.runtime_diagnostics import log_runtime_exception
 from app.webull.client_factories import market_data_configuration
 from app.webull.market_data_session import (
     MarketDataSession,
@@ -42,6 +43,7 @@ MarketEventObserver = Callable[[MarketEvent], object]
 
 
 _SCANNER_LOGGER = logging.getLogger("atlas.scanner")
+_RUNTIME_LOGGER = logging.getLogger("atlas.runtime")
 
 
 def utc_now() -> datetime:
@@ -208,24 +210,45 @@ class DesktopBrokerRuntimeDriver:
         if self._startup_validation is not None:
             self._publish_startup_validation(self._startup_validation)
 
+        primary_error: tuple[Exception, object] | None = None
         try:
             self._start_market_data(stop_event)
             self._poll_accounts(
                 stop_event=stop_event,
                 cycle_sink=cycle_sink,
             )
+        except Exception as exc:
+            primary_error = (exc, exc.__traceback__)
         finally:
-            try:
-                self._stop_market_data()
-            finally:
+            cleanup_phases = (
+                ("market-data stop", self._stop_market_data),
+                ("observer/Warrior sidecar stop", self._stop_observer),
+                ("broker disconnect", self._disconnect),
+            )
+            for lifecycle_phase, cleanup in cleanup_phases:
                 try:
-                    observer_stop = getattr(
-                        self._market_event_observer, "stop", None,
+                    cleanup()
+                except Exception as exc:
+                    is_primary = primary_error is None
+                    log_runtime_exception(
+                        _RUNTIME_LOGGER,
+                        exc,
+                        event_type="runtime_cleanup_exception",
+                        lifecycle_phase=lifecycle_phase,
+                        shutdown_requested=stop_event.is_set(),
+                        primary=is_primary,
                     )
-                    if callable(observer_stop):
-                        observer_stop()
-                finally:
-                    self._disconnect()
+                    if is_primary:
+                        primary_error = (exc, exc.__traceback__)
+
+        if primary_error is not None:
+            error, error_traceback = primary_error
+            raise error.with_traceback(error_traceback)
+
+    def _stop_observer(self) -> None:
+        observer_stop = getattr(self._market_event_observer, "stop", None)
+        if callable(observer_stop):
+            observer_stop()
 
     def _start_market_data(self, stop_event: Event) -> None:
         if self._scanner is not None:

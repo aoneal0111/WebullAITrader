@@ -6,6 +6,8 @@ from decimal import Decimal as D
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.gui.formatters.warrior_paper import format_warrior_paper
 from app.live_scanner.session import scanner_session
 from app.market_data.models import MarketEvent, MarketEventType, QuotePayload, TradePayload
@@ -226,6 +228,38 @@ def test_multi_day_restart_appends_and_capture_failure_does_not_escape_stream(tm
     assert failing.snapshot().health is WarriorCaptureHealth.DEGRADED
     failing._writer._fatal = None
     failing.stop()
+
+
+def test_sidecar_stop_identifies_capture_writer_drain_failure(
+    tmp_path: Path,
+    monkeypatch,
+    caplog,
+) -> None:
+    sidecar = WarriorDesktopSidecar(
+        enabled=True,
+        storage_path=tmp_path / "stop-failure.sqlite3",
+        clock=lambda: T0,
+    )
+    sidecar.start("PAPER")
+    writer = sidecar._writer
+    assert writer is not None
+    original_flush = writer.flush
+
+    def fail_flush() -> None:
+        raise RuntimeError("synthetic writer drain sentinel")
+
+    monkeypatch.setattr(writer, "flush", fail_flush)
+    with caplog.at_level("ERROR", logger="atlas.runtime"):
+        with pytest.raises(RuntimeError, match="synthetic writer drain sentinel"):
+            sidecar.stop()
+
+    assert sidecar.snapshot().health is WarriorCaptureHealth.DEGRADED
+    assert "lifecycle_phase=shadow/capture writer drain" in caplog.text
+    assert "exception_type=RuntimeError" in caplog.text
+    assert "Traceback (most recent call last)" in caplog.text
+
+    monkeypatch.setattr(writer, "flush", original_flush)
+    writer.close()
 
 
 def _hod_bars() -> tuple[MinuteBar, ...]:

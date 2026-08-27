@@ -654,6 +654,50 @@ def test_driver_owns_market_observer_start_and_stop_without_broker_mutation() ->
     assert not {"submit_order", "replace_order", "cancel_order"}.intersection(broker.calls)
 
 
+def test_driver_preserves_primary_cleanup_error_and_logs_secondary(caplog) -> None:
+    class DisconnectFailingBroker(FakeBroker):
+        def disconnect(self) -> None:
+            super().disconnect()
+            raise OSError("secondary broker cleanup sentinel")
+
+    class StopFailingObserver:
+        def __call__(self, event) -> None:
+            pass
+
+        def start(self, environment: str) -> None:
+            pass
+
+        def stop(self) -> None:
+            raise ValueError("primary observer cleanup sentinel")
+
+    broker = DisconnectFailingBroker()
+    stop_event = Event()
+    stop_event.set()
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=configuration(),
+        broker_runtime=broker_runtime(broker),
+        event_sink=lambda event: None,
+        account_snapshot_sink=lambda snapshot: None,
+        market_event_observer=StopFailingObserver(),
+        clock=lambda: NOW,
+    )
+
+    with caplog.at_level("ERROR", logger="atlas.runtime"):
+        with pytest.raises(
+            ValueError,
+            match="primary observer cleanup sentinel",
+        ):
+            driver.run(stop_event=stop_event, cycle_sink=lambda cycle: None)
+
+    assert broker.calls == ["connect", "disconnect"]
+    assert "lifecycle_phase=observer/Warrior sidecar stop" in caplog.text
+    assert "exception_role=primary" in caplog.text
+    assert "exception_type=ValueError" in caplog.text
+    assert "lifecycle_phase=broker disconnect" in caplog.text
+    assert "exception_role=secondary" in caplog.text
+    assert "exception_type=OSError" in caplog.text
+
+
 def test_authentication_failure_is_published_and_fails_closed() -> None:
     broker = FakeBroker(connection_error=RuntimeError("invalid credentials"))
     events: list[PaperRuntimeEvent] = []

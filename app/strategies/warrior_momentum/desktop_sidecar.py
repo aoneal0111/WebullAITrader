@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from hashlib import sha256
+import logging
 from pathlib import Path
 from threading import RLock
 from time import monotonic
@@ -16,6 +17,7 @@ from app.live_scanner.session import scanner_session
 from app.market.calendar import EASTERN
 from app.market_data.models import MarketEvent, MarketEventType, TradePayload
 from app.scanner_adapter.adapter import MarketEventScannerAdapter
+from app.services.runtime_diagnostics import log_runtime_exception
 
 from .configuration import WarriorMomentumConfig
 from .features import contiguous_tail
@@ -30,6 +32,9 @@ from .forward_runtime import WarriorForwardCaptureService
 from .forward_store import ForwardCaptureStore
 from .models import CandidateStatus, MinuteBar, MomentumCandidate, SetupState
 from .runtime import WarriorMomentumRuntime
+
+
+_RUNTIME_LOGGER = logging.getLogger("atlas.runtime")
 
 STRATEGY_VERSION = "WARRIOR_MOMENTUM_V1"
 
@@ -361,24 +366,38 @@ class WarriorDesktopSidecar:
             if writer is None or store is None:
                 self._health = WarriorCaptureHealth.STOPPED
                 return
+            lifecycle_phase = "shadow outcome finalization"
             try:
                 now = self._aware_now()
                 if self._service is not None:
                     self._service.finalize_shadow_outcomes(now)
+                lifecycle_phase = "shadow/capture writer drain"
                 writer.flush()
+                lifecycle_phase = "shadow daily report finalization"
                 report = build_daily_report(
                     store, now.astimezone(EASTERN).date(),
                     configuration_fingerprint=self.configuration_fingerprint,
                 )
                 persist_daily_report(store, report)
+                lifecycle_phase = "shadow session finalization"
                 writer.submit(self._session_record("END", now))
+                lifecycle_phase = "shadow/capture writer close"
                 writer.close()
+                lifecycle_phase = "Warrior runtime finalization"
                 self._last_metrics = writer.metrics()
                 self._daily_report = report
                 self._health = WarriorCaptureHealth.STOPPED
             except Exception as exc:
                 self._last_error_type = type(exc).__name__
                 self._health = WarriorCaptureHealth.DEGRADED
+                log_runtime_exception(
+                    _RUNTIME_LOGGER,
+                    exc,
+                    event_type="runtime_cleanup_exception",
+                    lifecycle_phase=lifecycle_phase,
+                    shutdown_requested=True,
+                )
+                raise
             finally:
                 self._writer = None
                 self._service = None
