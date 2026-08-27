@@ -8,15 +8,20 @@ from time import sleep
 
 import pytest
 
+from app.market_data.models import MarketEvent, MarketEventType, QuotePayload
 from app.momentum_scanner.models import (
     AssetClass, CatalystStatus, CatalystType, ScannerObservation,
 )
+from app.paper_trading.command_composition import create_paper_trading_command_composition
 from app.strategies.warrior_momentum import (
     CaptureRecord, CaptureRecordType,
     FloatProvenance, ForwardCaptureWriter, ForwardCaptureStore,
     ForwardTransition, MinuteBar, PaperAccountContext,
     PointInTimeObservation, WarriorForwardCaptureService,
     build_daily_report, persist_daily_report, replay_captured_decision,
+)
+from app.strategies.warrior_momentum.autonomous_paper import (
+    AutonomousPaperExecutionBridge,
 )
 
 T0 = datetime(2026, 8, 10, 14, 30, tzinfo=UTC)
@@ -126,6 +131,71 @@ def test_transitions_blocked_diagnostics_and_counterfactual_are_separate(capture
     counter = store.records(record_type=CaptureRecordType.COUNTERFACTUAL)
     assert counter and counter[0].payload["excluded_from_v1_performance"] is True
     assert not store.records(record_type=CaptureRecordType.PAPER_FILL)
+
+
+def test_after_hours_risk_rejection_remains_blocked(capture) -> None:
+    store, writer, service = capture
+    rejected_account = PaperAccountContext(
+        D("50000"), D("25000"), frozenset({"XYZ"}), risk_engine_approved=False,
+    )
+
+    candidate, signal = service.observe(
+        point(session="AFTER_HOURS"), account=rejected_account,
+    )
+    writer.flush()
+
+    assert signal is None
+    assert candidate.session == "AFTER_HOURS"
+    transitions = [
+        item.payload
+        for item in store.records(record_type=CaptureRecordType.STATE_TRANSITION)
+    ]
+    blocked = [item for item in transitions if item["to"] == "ENTRY_BLOCKED"]
+    assert blocked
+    assert any("RISK_REJECTED" in item["reason_codes"] for item in blocked)
+    assert all("SESSION_NOT_ALLOWED" not in item["reason_codes"] for item in blocked)
+    assert not store.records(record_type=CaptureRecordType.PAPER_FILL)
+
+
+def test_after_hours_signal_reaches_normal_paper_gateway_once(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "after-hours-forward.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    composition = create_paper_trading_command_composition()
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    service = WarriorForwardCaptureService(
+        store, writer, paper_entry_submitter=bridge.submit_entry,
+    )
+    try:
+        candidate, signal = service.observe(
+            point(session="AFTER_HOURS"), account=account(),
+        )
+
+        assert candidate.status.value == "ENTRY_READY"
+        assert signal is not None and signal.session == "AFTER_HOURS"
+        assert len(composition.order_book.open_orders()) == 1
+        assert bridge.submit_entry(signal, 100, D("50")) is False
+        assert len(composition.order_book.open_orders()) == 1
+
+        reports = composition.gateway.process_market_event(MarketEvent(
+            1, datetime.now(UTC), signal.symbol, "after-hours-test",
+            MarketEventType.QUOTE,
+            QuotePayload(
+                signal.entry_trigger - D("0.01"), signal.entry_trigger,
+                D("1000"), D("1000"),
+            ),
+        ))
+
+        assert reports and reports[0].fills
+        assert reports[0].fills[0].quantity > 0
+        assert len(composition.order_book.history()) == 1
+        assert composition.order_book.history()[0].symbol == signal.symbol
+    finally:
+        writer.close()
+        composition.close()
 
 
 def test_paper_entry_partial_exit_stop_first_and_survives_candidate_removal(capture) -> None:

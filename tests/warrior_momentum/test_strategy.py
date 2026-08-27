@@ -13,6 +13,7 @@ from app.strategies.warrior_momentum import (
     BoundedTelemetry,
     ReplayTrade, SetupConfig, SetupDetection, SetupState, SetupType, StopModel,
     StrategySelection, WarriorMomentumConfig, WarriorMomentumRuntime,
+    WARRIOR_ENTRY_ALLOWED_SESSIONS,
     build_features, contiguous_tail, build_replay_report, catalyst_score, detect_best_setup, detect_bull_flag,
     create_selected_experiment,
     detect_flat_top, detect_hod_breakout, detect_micro_pullback,
@@ -263,6 +264,77 @@ def test_entry_rejects_execution_quality_and_state(change, reason) -> None:
     assert assessed.status is CandidateStatus.INELIGIBLE_FOR_EXECUTION
 
 
+def test_default_entry_sessions_explicitly_allow_after_hours_but_not_overnight() -> None:
+    assert WARRIOR_ENTRY_ALLOWED_SESSIONS == frozenset({
+        "PREMARKET", "REGULAR", "AFTER_HOURS",
+    })
+    assert WarriorMomentumConfig().entry.allowed_sessions == WARRIOR_ENTRY_ALLOWED_SESSIONS
+    assert "OVERNIGHT" not in WARRIOR_ENTRY_ALLOWED_SESSIONS
+
+
+@pytest.mark.parametrize("session", ("PREMARKET", "REGULAR", "AFTER_HOURS"))
+def test_valid_entry_is_allowed_in_each_authorized_session(session: str) -> None:
+    runtime = WarriorMomentumRuntime()
+    candidate = runtime.discover(observation(), hod_bars(), session=session)
+
+    assessed, signal_value = runtime.assess_entry(candidate)
+
+    assert assessed.status is CandidateStatus.ENTRY_READY
+    assert ReasonCode.SESSION_NOT_ALLOWED not in assessed.reason_codes
+    assert signal_value is not None and signal_value.session == session
+
+
+def test_after_hours_valid_entry_has_premarket_strategy_parity() -> None:
+    runtime = WarriorMomentumRuntime()
+    premarket, premarket_signal = runtime.assess_entry(
+        runtime.discover(observation(), hod_bars(), session="PREMARKET")
+    )
+    after_hours, after_hours_signal = runtime.assess_entry(
+        runtime.discover(observation(), hod_bars(), session="AFTER_HOURS")
+    )
+
+    assert premarket_signal is not None and after_hours_signal is not None
+    assert premarket.status is after_hours.status is CandidateStatus.ENTRY_READY
+    assert replace(after_hours_signal, session="PREMARKET") == premarket_signal
+    assert after_hours_signal.execution_authorized is False
+    assert runtime.authorize_live(after_hours_signal) is False
+
+
+def test_after_hours_without_setup_is_rejected_only_by_remaining_entry_gates() -> None:
+    runtime = WarriorMomentumRuntime()
+    candidate = runtime.discover(observation(), hod_bars(), session="AFTER_HOURS")
+
+    assessed, signal_value = runtime.assess_entry(replace(candidate, setup=None))
+
+    assert signal_value is None
+    assert set(assessed.reason_codes) == {ReasonCode.NO_SETUP}
+
+
+def test_after_hours_spread_failure_remains_ineligible() -> None:
+    runtime = WarriorMomentumRuntime()
+    candidate = runtime.discover(
+        observation(bid=D("9"), ask=D("11")), hod_bars(), session="AFTER_HOURS",
+    )
+
+    assessed, signal_value = runtime.assess_entry(candidate)
+
+    assert signal_value is None
+    assert assessed.status is CandidateStatus.INELIGIBLE_FOR_EXECUTION
+    assert ReasonCode.SPREAD_WIDE in assessed.reason_codes
+    assert ReasonCode.SESSION_NOT_ALLOWED not in assessed.reason_codes
+
+
+def test_overnight_remains_session_blocked() -> None:
+    runtime = WarriorMomentumRuntime()
+    candidate = runtime.discover(observation(), hod_bars(), session="OVERNIGHT")
+
+    assessed, signal_value = runtime.assess_entry(candidate)
+
+    assert signal_value is None
+    assert assessed.status is CandidateStatus.INELIGIBLE_FOR_EXECUTION
+    assert ReasonCode.SESSION_NOT_ALLOWED in assessed.reason_codes
+
+
 def signal() -> MomentumEntrySignal:
     return MomentumEntrySignal("WARRIOR_MOMENTUM_V1", "XYZ", T0, "REGULAR", D("80"),
                                SetupType.MICRO_PULLBACK, D("10"), D("10"), D("9.75"),
@@ -289,6 +361,18 @@ def test_position_sizing_enforces_allowed_symbols_and_risk_engine() -> None:
                            allowed_symbols=frozenset(), risk_engine_approved=False)
     assert not denied.approved and denied.shares == 0
     assert ReasonCode.EXECUTION_NOT_ALLOWED in denied.reason_codes
+    assert ReasonCode.RISK_REJECTED in denied.reason_codes
+
+
+def test_after_hours_position_sizing_still_requires_risk_approval() -> None:
+    after_hours_signal = replace(signal(), session="AFTER_HOURS")
+
+    denied = size_position(
+        after_hours_signal, account_equity=D("50000"), buying_power=D("10000"),
+        allowed_symbols=frozenset({"XYZ"}), risk_engine_approved=False,
+    )
+
+    assert not denied.approved and denied.shares == 0
     assert ReasonCode.RISK_REJECTED in denied.reason_codes
 
 

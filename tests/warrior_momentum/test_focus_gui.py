@@ -106,27 +106,26 @@ def test_focus_mode_switch_preserves_current_atlas_and_warrior_selection() -> No
     assert selected == []
 
 
-def test_scanner_qualifying_remains_distinct_from_warrior_ineligible() -> None:
+def test_after_hours_no_setup_omits_obsolete_session_blocker() -> None:
     app = QApplication.instance() or QApplication([])
     del app
     workspace = MarketWorkspace()
     workspace.render(WatchlistSnapshot(rows=(_scanner_row("YYGH", selected=True),)))
     workspace.render_warrior(_view(_warrior_row(
         "YYGH", status="INELIGIBLE FOR EXECUTION", setup="NO SETUP",
-        setup_state="--", blockers=(
-            "No Warrior setup detected\n"
-            "Current session is not allowed for Warrior execution"
-        ),
+        setup_state="--", blockers="No Warrior setup detected",
     )))
 
     panel = workspace.trade_intelligence
     assert panel._header_metrics["Scanner status"].text() == "QUALIFYING"
     assert panel._header_metrics["Warrior momentum"].text() == "INELIGIBLE FOR EXECUTION"
+    assert panel._header_metrics["Session"].text() == "AFTER_HOURS"
+    assert panel._watching_values["Warrior session"].text() == "AFTER_HOURS"
     assert panel._plan_values["Setup"].text() == "NO SETUP"
-    assert panel._decision.text() == "BLOCKED"
-    assert "No Warrior setup detected" in panel._blocking.text()
-    assert "session is not allowed" in panel._blocking.text()
-    assert panel._autonomous_paper.text() == "BLOCKED"
+    assert panel._decision.text() == "WAIT"
+    assert panel._blocking.text() == "No Warrior setup detected"
+    assert "session is not allowed" not in panel._blocking.text().lower()
+    assert panel._autonomous_paper.text() == "WAITING FOR SETUP"
 
 
 def test_no_setup_without_an_additional_failed_gate_waits() -> None:

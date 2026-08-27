@@ -7,6 +7,15 @@ from decimal import Decimal
 from enum import StrEnum
 import os
 
+from app.live_scanner.session import ScannerSession
+
+
+WARRIOR_ENTRY_ALLOWED_SESSIONS = frozenset({
+    ScannerSession.PREMARKET.value,
+    ScannerSession.REGULAR.value,
+    ScannerSession.AFTER_HOURS.value,
+})
+
 
 class AtlasStrategy(StrEnum):
     EXISTING = "existing"
@@ -91,7 +100,7 @@ class EntryConfig:
     minimum_dollar_volume: Decimal = Decimal("5000000")
     require_catalyst_for_entry: bool = True
     maximum_risk_per_share: Decimal = Decimal("1.00")
-    allowed_sessions: frozenset[str] = frozenset({"PREMARKET", "REGULAR"})
+    allowed_sessions: frozenset[str] = WARRIOR_ENTRY_ALLOWED_SESSIONS
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,5 +145,5 @@ class WarriorMomentumConfig:
 __all__ = [
     "AtlasStrategy", "StrategySelection", "ScoreWeights", "DiscoveryConfig",
     "SetupConfig", "EntryConfig", "RiskConfig", "TradeManagementConfig",
-    "WarriorMomentumConfig",
+    "WarriorMomentumConfig", "WARRIOR_ENTRY_ALLOWED_SESSIONS",
 ]
