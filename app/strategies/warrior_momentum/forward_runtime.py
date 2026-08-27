@@ -23,6 +23,7 @@ from .models import (
 )
 from .risk import size_position
 from .runtime import WarriorMomentumRuntime
+from .shadow_analysis import ShadowOpportunityAnalyzer
 
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
@@ -107,6 +108,10 @@ class WarriorForwardCaptureService:
         self._seen_bars: set[tuple[str, datetime]] = set()
         self._paper: dict[str, _PaperState] = {}
         self._counterfactual: dict[str, _CounterState] = {}
+        self._shadow = (
+            ShadowOpportunityAnalyzer(store)
+            if capture_config.shadow_analysis_enabled else None
+        )
         self._recover()
 
     def observe(
@@ -126,7 +131,9 @@ class WarriorForwardCaptureService:
         records: list[CaptureRecord] = []
         records.extend(self._evidence_records(value))
         records.append(_discovery_record(value, assessed))
-        records.append(_decision_record(value, assessed, completed, features))
+        decision_record = _decision_record(value, assessed, completed, features)
+        records.append(decision_record)
+        shadow_reasons = list(code.value for code in assessed.reason_codes)
         already_open = signal is not None and signal.symbol in self._paper
         records.extend(self._transition_records(
             assessed, None if already_open else signal, account=account,
@@ -135,6 +142,7 @@ class WarriorForwardCaptureService:
 
         if signal is not None:
             if signal.symbol in self._paper:
+                shadow_reasons.append(ReasonCode.EXECUTION_NOT_ALLOWED.value)
                 records.append(_transition_record(
                     assessed, ForwardTransition.ENTRY_BLOCKED,
                     (ReasonCode.EXECUTION_NOT_ALLOWED.value,),
@@ -143,6 +151,7 @@ class WarriorForwardCaptureService:
                 ))
                 signal = None
             elif not value.halt_state_known:
+                shadow_reasons.append(ReasonCode.HALT_UNKNOWN.value)
                 blocked = _transition_record(
                     assessed, ForwardTransition.ENTRY_BLOCKED,
                     (ReasonCode.HALT_UNKNOWN.value,),
@@ -153,6 +162,7 @@ class WarriorForwardCaptureService:
                 records.append(blocked)
                 signal = None
             elif account is None:
+                shadow_reasons.append(ReasonCode.EXECUTION_NOT_ALLOWED.value)
                 blocked = _transition_record(
                     assessed, ForwardTransition.ENTRY_BLOCKED,
                     (ReasonCode.EXECUTION_NOT_ALLOWED.value,),
@@ -181,8 +191,10 @@ class WarriorForwardCaptureService:
                     # entry boundary.  If it rejects the command, do not
                     # return an apparently executable signal to callers.
                     if self._paper_entry_submitter is not None and not entry_records:
+                        shadow_reasons.append(ReasonCode.EXECUTION_NOT_ALLOWED.value)
                         signal = None
                 else:
+                    shadow_reasons.extend(code.value for code in position.reason_codes)
                     records.append(_transition_record(
                         assessed, ForwardTransition.ENTRY_BLOCKED,
                         tuple(code.value for code in position.reason_codes),
@@ -190,6 +202,16 @@ class WarriorForwardCaptureService:
                          *_account_gate_diagnostics(signal, account)),
                     ))
                     signal = None
+
+        if signal is None and self._shadow is not None:
+            records.append(self._shadow.observe_rejection(
+                decision_record, value, assessed,
+                tuple(dict.fromkeys(shadow_reasons)),
+                scanner_rank=value.scanner_rank,
+                scanner_score=value.scanner_score,
+                scanner_classification=value.scanner_classification,
+                scanner_failed_rules=value.scanner_failed_rules,
+            ))
 
         setup = assessed.setup
         if (
@@ -237,8 +259,15 @@ class WarriorForwardCaptureService:
                         identity_parts=("END", str(counter.started_at)),
                     ))
                     self._counterfactual.pop(normalized, None)
+        if self._shadow is not None:
+            records.extend(self._shadow.observe_bar(bar))
         if records:
             self.writer.submit_many(tuple(records))
+
+    def finalize_shadow_outcomes(self, observed_at: datetime) -> None:
+        """Persist due incomplete windows without granting execution authority."""
+        if self._shadow is not None:
+            self.writer.submit_many(self._shadow.finalize_due(observed_at))
 
     def _evidence_records(self, value: PointInTimeObservation) -> tuple[CaptureRecord, ...]:
         observation = value.observation

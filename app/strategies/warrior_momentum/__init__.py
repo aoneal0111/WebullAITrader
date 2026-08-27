@@ -18,6 +18,7 @@ from .replay import *
 from .risk import *
 from .runtime import *
 from .scoring import *
+from .shadow_analysis import *
 from .setups import *
 from .telemetry import *
 from .trade_management import *

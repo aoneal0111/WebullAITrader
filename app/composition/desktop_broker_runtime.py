@@ -306,6 +306,17 @@ def create_configured_desktop_broker_driver(
         binder = getattr(market_event_observer, "bind_scanner_adapter", None)
         if callable(binder):
             binder(scanner_adapter)
+        decision_binder = getattr(
+            market_event_observer, "bind_scanner_decision_source", None,
+        )
+        if callable(decision_binder):
+            decision_binder(
+                scanner_infrastructure.pipeline.latest_decision,
+                lambda symbol: any(
+                    item.symbol == symbol.strip().upper()
+                    for item in scanner_infrastructure.pipeline.ranked()
+                ),
+            )
         retained = getattr(market_event_observer, "retained_symbols", None)
         if callable(retained):
             scanner_coordinator.set_retained_channels_source(retained)

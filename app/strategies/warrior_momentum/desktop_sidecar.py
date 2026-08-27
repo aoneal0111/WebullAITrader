@@ -138,6 +138,8 @@ class WarriorDesktopSidecar:
         self._clock = clock
         self._lock = RLock()
         self._adapter: MarketEventScannerAdapter | None = None
+        self._scanner_decision_source: Callable[[str], object | None] | None = None
+        self._scanner_ranked_source: Callable[[str], bool] | None = None
         self._store: ForwardCaptureStore | None = None
         self._writer: ForwardCaptureWriter | None = None
         self._service: WarriorForwardCaptureService | None = None
@@ -169,6 +171,17 @@ class WarriorDesktopSidecar:
             raise TypeError("Warrior sidecar requires the shared scanner adapter")
         with self._lock:
             self._adapter = adapter
+
+    def bind_scanner_decision_source(
+        self, source: Callable[[str], object | None],
+        ranked_source: Callable[[str], bool] | None = None,
+    ) -> None:
+        """Bind the production scanner projection as read-only capture context."""
+        if not callable(source):
+            raise TypeError("scanner decision source must be callable")
+        with self._lock:
+            self._scanner_decision_source = source
+            self._scanner_ranked_source = ranked_source
 
     def needs_historical_preload(self, symbol: str) -> bool:
         """Return whether this process still needs a REST history attempt."""
@@ -349,8 +362,10 @@ class WarriorDesktopSidecar:
                 self._health = WarriorCaptureHealth.STOPPED
                 return
             try:
-                writer.flush()
                 now = self._aware_now()
+                if self._service is not None:
+                    self._service.finalize_shadow_outcomes(now)
+                writer.flush()
                 report = build_daily_report(
                     store, now.astimezone(EASTERN).date(),
                     configuration_fingerprint=self.configuration_fingerprint,
@@ -455,6 +470,17 @@ class WarriorDesktopSidecar:
                 FloatProvenance.MARKET_CAP_PRICE_PROXY
                 if observation.float_shares is not None else FloatProvenance.UNKNOWN
             )
+            scanner_decision = (
+                None if self._scanner_decision_source is None
+                else self._scanner_decision_source(symbol)
+            )
+            scanner_classification = None
+            if scanner_decision is not None:
+                scanner_classification = _scanner_classification(
+                    scanner_decision,
+                    False if self._scanner_ranked_source is None
+                    else self._scanner_ranked_source(symbol),
+                )
             candidate, signal = service.observe(
                 PointInTimeObservation(
                     observation, scanner_session(observation.timestamp).value,
@@ -465,6 +491,19 @@ class WarriorDesktopSidecar:
                     halt_state_known=True,
                     volume_known=True,
                     historical_bars_available=bool(history),
+                    scanner_rank=(
+                        None if scanner_decision is None
+                        else getattr(scanner_decision, "scanner_rank", None)
+                    ),
+                    scanner_score=(
+                        None if scanner_decision is None
+                        else getattr(scanner_decision, "score", None)
+                    ),
+                    scanner_classification=scanner_classification,
+                    scanner_failed_rules=(
+                        () if scanner_decision is None
+                        else tuple(getattr(scanner_decision, "failed_rules", ()))
+                    ),
                 ),
                 account=self._account_source(),
             )
@@ -608,6 +647,12 @@ class CompositeMarketEventObserver:
     def bind_scanner_adapter(self, adapter: MarketEventScannerAdapter) -> None:
         self.warrior.bind_scanner_adapter(adapter)
 
+    def bind_scanner_decision_source(
+        self, source: Callable[[str], object | None],
+        ranked_source: Callable[[str], bool] | None = None,
+    ) -> None:
+        self.warrior.bind_scanner_decision_source(source, ranked_source)
+
     def needs_historical_preload(self, symbol: str) -> bool:
         return self.warrior.needs_historical_preload(symbol)
 
@@ -642,6 +687,21 @@ def _blocking_reasons(candidate: MomentumCandidate, entry_ready: bool) -> tuple[
     return tuple(dict.fromkeys(
         mapping[code.value] for code in candidate.reason_codes if code.value in mapping
     ))
+
+
+def _scanner_classification(decision: object, ranked: bool) -> str | None:
+    """Mirror the existing scanner projection labels for captured context."""
+    if ranked:
+        return "QUALIFYING"
+    if bool(getattr(decision, "technical_qualifies_without_catalyst", False)):
+        return "WATCHING"
+    failed = tuple(getattr(decision, "technical_failed_rules", ()))
+    if len(failed) == 1 and failed[0] in {
+        "price_range", "percentage_change", "relative_volume", "low_float",
+        "dollar_volume", "spread",
+    }:
+        return "NEAR MISS"
+    return None
 
 
 __all__ = [

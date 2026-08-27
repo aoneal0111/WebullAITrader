@@ -35,6 +35,9 @@ class CaptureRecordType(StrEnum):
     MANAGEMENT_CONTEXT = "MANAGEMENT_CONTEXT"
     COUNTERFACTUAL = "COUNTERFACTUAL"
     DAILY_REPORT = "DAILY_REPORT"
+    SHADOW_EVALUATION = "SHADOW_EVALUATION"
+    SHADOW_OUTCOME = "SHADOW_OUTCOME"
+    SHADOW_POLICY_RESULT = "SHADOW_POLICY_RESULT"
 
 
 class ForwardTransition(StrEnum):
@@ -73,6 +76,10 @@ class PointInTimeObservation:
     halt_state_known: bool = True
     volume_known: bool = True
     historical_bars_available: bool = True
+    scanner_rank: int | None = None
+    scanner_score: int | None = None
+    scanner_classification: str | None = None
+    scanner_failed_rules: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.observation.timestamp.tzinfo is None:
@@ -83,6 +90,8 @@ class PointInTimeObservation:
                 raise ValueError(f"{name} must be timezone-aware")
         if self.quote_freshness_seconds is not None and self.quote_freshness_seconds < 0:
             raise ValueError("quote freshness cannot be negative")
+        if self.scanner_rank is not None and self.scanner_rank <= 0:
+            raise ValueError("scanner rank must be positive when available")
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +117,7 @@ class ForwardCaptureConfiguration:
     flush_interval_seconds: float = 0.25
     quote_stale_after_seconds: Decimal = Decimal("5")
     counterfactual_bars: int = 60
+    shadow_analysis_enabled: bool = True
 
     def __post_init__(self) -> None:
         if (
