@@ -33,6 +33,10 @@ from .execution_quote import ExecutionQuoteSource
 from .forward_store import ForwardCaptureStore
 from .models import CandidateStatus, MinuteBar, MomentumCandidate, SetupState
 from .runtime import WarriorMomentumRuntime
+from .shadow_latched import (
+    ShadowLatchedTransition,
+    ShadowMarketObservation,
+)
 
 
 _RUNTIME_LOGGER = logging.getLogger("atlas.runtime")
@@ -389,6 +393,7 @@ class WarriorDesktopSidecar:
             try:
                 now = self._aware_now()
                 if self._service is not None:
+                    self._service.shutdown_intraminute_shadow(now)
                     self._service.finalize_shadow_outcomes(now)
                 lifecycle_phase = "shadow/capture writer drain"
                 writer.flush()
@@ -496,6 +501,13 @@ class WarriorDesktopSidecar:
         completed = False
         if event.event_type is MarketEventType.TRADE and isinstance(event.payload, TradePayload):
             completed = self._aggregate_trade(event, observation.current_volume)
+        if completed:
+            service.invalidate_intraminute_shadow(
+                symbol,
+                observation.timestamp,
+                ShadowLatchedTransition.NEW_BAR_INVALIDATION,
+                reason="NEW_COMPLETED_BAR",
+            )
         if symbol not in self._first_observed or completed:
             history = current_completed_bar_tail(
                 tuple(self._bars.get(symbol, ())[-120:]),
@@ -586,6 +598,36 @@ class WarriorDesktopSidecar:
                     self._store, observation.timestamp.astimezone(EASTERN).date(),
                     configuration_fingerprint=self.configuration_fingerprint,
                 )
+        else:
+            state = adapter.state_for(symbol)
+            evaluated_at = self._aware_now()
+            service.observe_intraminute_shadow(ShadowMarketObservation(
+                symbol=symbol,
+                observed_at=evaluated_at,
+                last=observation.price,
+                bid=observation.bid,
+                ask=observation.ask,
+                last_timestamp=(
+                    observation.last_price_timestamp
+                    if state is None else state.last_price_timestamp
+                ),
+                quote_timestamp=(
+                    observation.quote_timestamp
+                    if state is None else state.quote_timestamp
+                ),
+                last_received_timestamp=(
+                    observation.last_price_received_timestamp
+                    if state is None else state.last_price_received_timestamp
+                ),
+                quote_received_timestamp=(
+                    observation.quote_received_timestamp
+                    if state is None else state.quote_received_timestamp
+                ),
+                halted=observation.halted,
+                tradable=observation.tradable,
+                session=scanner_session(observation.timestamp).value,
+                execution_permitted=self._accept_execution,
+            ))
 
     def _aggregate_trade(self, event: MarketEvent, cumulative: Decimal) -> bool:
         assert event.symbol is not None and isinstance(event.payload, TradePayload)

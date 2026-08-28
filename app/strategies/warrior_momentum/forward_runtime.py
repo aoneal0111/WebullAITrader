@@ -25,6 +25,11 @@ from .models import (
 from .risk import size_position
 from .runtime import WarriorMomentumRuntime, entry_rejections
 from .shadow_analysis import ShadowOpportunityAnalyzer
+from .shadow_latched import (
+    ShadowLatchedPlanResearch,
+    ShadowLatchedTransition,
+    ShadowMarketObservation,
+)
 
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
@@ -117,6 +122,10 @@ class WarriorForwardCaptureService:
         self._counterfactual: dict[str, _CounterState] = {}
         self._shadow = (
             ShadowOpportunityAnalyzer(store)
+            if capture_config.shadow_analysis_enabled else None
+        )
+        self._latched_shadow = (
+            ShadowLatchedPlanResearch(config, capture_config)
             if capture_config.shadow_analysis_enabled else None
         )
         self._recover()
@@ -219,12 +228,29 @@ class WarriorForwardCaptureService:
                     ))),
                 )
                 signal = None
+        latched_rejections = entry_rejections(assessed, self.config)
+        create_latched_shadow = (
+            technical_signal is not None
+            and signal is None
+            and bool(latched_rejections)
+        )
         features = build_features(completed)
         records: list[CaptureRecord] = []
         records.extend(self._evidence_records(value))
         records.append(_discovery_record(value, assessed))
         decision_record = _decision_record(value, assessed, completed, features)
         records.append(decision_record)
+        if create_latched_shadow and self._latched_shadow is not None:
+            records.extend(self._latched_shadow.create(
+                assessed,
+                technical_signal,
+                value,
+                decision_record_id=decision_record.record_id,
+                entry_rejections=latched_rejections,
+                account=account,
+                existing_strategy_position=assessed.symbol in self._paper,
+                execution_permitted=self._execution_permitted(),
+            ))
         shadow_reasons = list(
             code.value for code in entry_rejections(assessed, self.config)
         )
@@ -317,6 +343,37 @@ class WarriorForwardCaptureService:
             records.extend(self._start_counterfactual(assessed))
         self.writer.submit_many(tuple(records))
         return assessed, signal
+
+    def observe_intraminute_shadow(
+        self, market: ShadowMarketObservation,
+    ) -> None:
+        """Append research records without invoking strategy or execution."""
+
+        if self._latched_shadow is None:
+            return
+        records = self._latched_shadow.observe(market)
+        if records:
+            self.writer.submit_many(records)
+
+    def invalidate_intraminute_shadow(
+        self, symbol: str, timestamp: datetime,
+        transition: ShadowLatchedTransition,
+        *, reason: str,
+    ) -> None:
+        if self._latched_shadow is None:
+            return
+        records = self._latched_shadow.invalidate(
+            symbol, timestamp, transition, reason=reason,
+        )
+        if records:
+            self.writer.submit_many(records)
+
+    def shutdown_intraminute_shadow(self, timestamp: datetime) -> None:
+        if self._latched_shadow is None:
+            return
+        records = self._latched_shadow.shutdown(timestamp)
+        if records:
+            self.writer.submit_many(records)
 
     def observe_market_bar(self, symbol: str, bar: MinuteBar, observed_at) -> None:
         """Advance retained paper/counterfactual state independent of ranking."""
