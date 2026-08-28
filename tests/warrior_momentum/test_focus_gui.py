@@ -179,6 +179,23 @@ def test_triggered_entry_ready_populates_plan_without_submitting_order() -> None
     assert panel._autonomous_paper.text() == "ENTRY READY"
 
 
+def test_triggered_setup_waiting_for_execution_quote_is_not_entry_ready() -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    workspace = MarketWorkspace()
+    workspace.render(WatchlistSnapshot(rows=(_scanner_row("WAITQ", selected=True),)))
+    workspace.render_warrior(_view(_warrior_row(
+        "WAITQ", status="AWAITING EXECUTION DATA",
+        setup="HIGH OF DAY BREAKOUT", setup_state="TRIGGERED",
+        blockers="Waiting for fresh bid/ask",
+    )))
+
+    panel = workspace.trade_intelligence
+    assert panel._decision.text() == "WAITING FOR FRESH QUOTE"
+    assert panel._autonomous_paper.text() == "WAITING FOR FRESH QUOTE"
+    assert panel._blocking.text() == "Waiting for fresh bid/ask"
+
+
 def test_selected_scanner_symbol_uses_matching_warrior_item_not_first_ranked() -> None:
     app = QApplication.instance() or QApplication([])
     del app

@@ -173,7 +173,7 @@ def test_stale_entry_critical_data_fails_closed_and_fresh_data_restores_eligibil
     )
 
     assert stale_signal is None
-    assert stale_candidate.status.value == "INELIGIBLE_FOR_EXECUTION"
+    assert stale_candidate.status.value == "AWAITING_EXECUTION_DATA"
     assert "STALE_MARKET_DATA" in {
         code.value for code in stale_candidate.reason_codes
     }
@@ -219,7 +219,7 @@ def test_each_stale_market_component_independently_blocks_paper_submission(
 
     assert candidate.setup is not None
     assert candidate.setup.state.value == "TRIGGERED"
-    assert candidate.status.value == "INELIGIBLE_FOR_EXECUTION"
+    assert candidate.status.value == "AWAITING_EXECUTION_DATA"
     assert "STALE_MARKET_DATA" in {code.value for code in candidate.reason_codes}
     assert signal is None
     assert not store.records(record_type=CaptureRecordType.PAPER_FILL)

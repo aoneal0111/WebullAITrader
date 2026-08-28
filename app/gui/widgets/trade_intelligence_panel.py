@@ -357,6 +357,12 @@ def _warrior_decision(row: WatchlistRow) -> tuple[str, str, str]:
             "Warrior Momentum has accepted the setup for PAPER execution.",
             "ENTRY READY",
         )
+    if status == "AWAITING EXECUTION DATA":
+        return (
+            "WAITING FOR FRESH QUOTE",
+            _blocking_explanation(row.blocking_reasons),
+            "WAITING FOR FRESH QUOTE",
+        )
 
     blockers = {
         value.strip().lower()

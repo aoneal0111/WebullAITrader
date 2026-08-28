@@ -15,6 +15,7 @@ from .forward_models import (
     PointInTimeObservation,
 )
 from .autonomous_paper import lifecycle_identity
+from .execution_quote import ExecutionQuoteSource
 from .forward_queue import ForwardCaptureWriter
 from .forward_store import ForwardCaptureStore
 from .models import (
@@ -95,6 +96,9 @@ class WarriorForwardCaptureService:
         paper_entry_submitter: Callable[[MomentumEntrySignal, int, Decimal], bool] | None = None,
         paper_exit_submitter: Callable[[str, int, Decimal, str, str | None], bool] | None = None,
         paper_position_quantity_source: Callable[[str], Decimal] | None = None,
+        execution_quote_source: ExecutionQuoteSource | None = None,
+        execution_permitted: Callable[[], bool] | None = None,
+        account_refresh_source: Callable[[], PaperAccountContext | None] | None = None,
     ) -> None:
         self.store = store
         self.writer = writer
@@ -103,6 +107,9 @@ class WarriorForwardCaptureService:
         self._paper_entry_submitter = paper_entry_submitter
         self._paper_exit_submitter = paper_exit_submitter
         self._paper_position_quantity_source = paper_position_quantity_source
+        self._execution_quote_source = execution_quote_source
+        self._execution_permitted = execution_permitted or (lambda: True)
+        self._account_refresh_source = account_refresh_source
         self.runtime = WarriorMomentumRuntime(config)
         self._last_transition: dict[str, ForwardTransition] = {}
         self._seen_bars: set[tuple[str, datetime]] = set()
@@ -127,6 +134,7 @@ class WarriorForwardCaptureService:
             observation, completed, session=value.session,
         )
         assessed, signal = self.runtime.assess_entry(candidate)
+        technical_signal = self.runtime.technical_entry_signal(candidate)
         market_data_stale = (
             value.last_price_freshness_seconds is None
             or value.quote_freshness_seconds is None
@@ -138,13 +146,79 @@ class WarriorForwardCaptureService:
         if market_data_stale:
             assessed = replace(
                 assessed,
-                status=CandidateStatus.INELIGIBLE_FOR_EXECUTION,
+                status=(CandidateStatus.AWAITING_EXECUTION_DATA
+                        if technical_signal is not None
+                        else CandidateStatus.INELIGIBLE_FOR_EXECUTION),
                 reason_codes=tuple(dict.fromkeys((
                     *assessed.reason_codes,
                     ReasonCode.STALE_MARKET_DATA,
+                    *((ReasonCode.AWAITING_EXECUTION_QUOTE,)
+                      if technical_signal is not None else ()),
                 ))),
             )
             signal = None
+            if technical_signal is not None and self._execution_quote_source is not None:
+                try:
+                    refreshed = self._execution_quote_source(symbol)
+                except Exception:
+                    refreshed = None
+                evaluated_at = (
+                    (None if refreshed is None else refreshed.confirmed_at)
+                    or value.evaluation_timestamp
+                    or observation.timestamp
+                )
+                if refreshed is not None:
+                    quote_age = Decimal(str((evaluated_at - refreshed.bid_timestamp).total_seconds()))
+                    last_age = Decimal(str((evaluated_at - refreshed.last_timestamp).total_seconds()))
+                    technical_minute = (
+                        value.evaluation_timestamp or observation.timestamp
+                    ).replace(second=0, microsecond=0)
+                    if (
+                        refreshed.symbol == symbol
+                        and Decimal("0") <= quote_age <= self.capture_config.quote_stale_after_seconds
+                        and Decimal("0") <= last_age <= self.capture_config.quote_stale_after_seconds
+                        # Do not reuse setup geometry if a new minute could
+                        # have completed while the bounded request was open.
+                        and evaluated_at.replace(second=0, microsecond=0) == technical_minute
+                    ):
+                        refreshed_observation = replace(
+                            observation, price=refreshed.last,
+                            bid=refreshed.bid, ask=refreshed.ask,
+                        )
+                        refreshed_candidate = self.runtime.discover(
+                            refreshed_observation, completed, session=value.session,
+                        )
+                        refreshed_assessed, refreshed_signal = self.runtime.assess_entry(
+                            refreshed_candidate
+                        )
+                        if refreshed_signal is not None:
+                            candidate = refreshed_candidate
+                            assessed = refreshed_assessed
+                            signal = refreshed_signal
+                            observation = refreshed_observation
+                            value = replace(
+                                value, observation=refreshed_observation,
+                                quote_observed_at=refreshed.bid_timestamp,
+                                quote_freshness_seconds=quote_age,
+                                last_price_observed_at=refreshed.last_timestamp,
+                                last_price_freshness_seconds=last_age,
+                                evaluation_timestamp=evaluated_at,
+                            )
+                            if self._account_refresh_source is not None:
+                                account = self._account_refresh_source()
+                            if not self._execution_permitted():
+                                signal = None
+        if signal is not None:
+            if self._account_refresh_source is not None:
+                account = self._account_refresh_source()
+            if not self._execution_permitted():
+                assessed = replace(
+                    assessed, status=CandidateStatus.INELIGIBLE_FOR_EXECUTION,
+                    reason_codes=tuple(dict.fromkeys((
+                        *assessed.reason_codes, ReasonCode.EXECUTION_NOT_ALLOWED,
+                    ))),
+                )
+                signal = None
         features = build_features(completed)
         records: list[CaptureRecord] = []
         records.extend(self._evidence_records(value))
@@ -333,11 +407,14 @@ class WarriorForwardCaptureService:
             CandidateStatus.QUALIFIED: ForwardTransition.QUALIFIED,
             CandidateStatus.SETUP_FORMING: ForwardTransition.SETUP_FORMING,
             CandidateStatus.ENTRY_READY: ForwardTransition.ENTRY_READY,
+            CandidateStatus.AWAITING_EXECUTION_DATA: ForwardTransition.AWAITING_EXECUTION_DATA,
             CandidateStatus.INELIGIBLE_FOR_EXECUTION: ForwardTransition.ENTRY_BLOCKED,
         }
         if candidate.setup is not None and candidate.setup.state is SetupState.TRIGGERED:
             terminal = (
                 ForwardTransition.ENTRY_READY if signal is not None
+                else ForwardTransition.AWAITING_EXECUTION_DATA
+                if candidate.status is CandidateStatus.AWAITING_EXECUTION_DATA
                 else ForwardTransition.ENTRY_BLOCKED
             )
             if self._last_transition.get(symbol) is terminal:

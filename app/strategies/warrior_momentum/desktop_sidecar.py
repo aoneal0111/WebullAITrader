@@ -29,6 +29,7 @@ from .forward_models import (
 from .forward_queue import ForwardCaptureWriter
 from .forward_report import DailyForwardReport, build_daily_report, persist_daily_report
 from .forward_runtime import WarriorForwardCaptureService
+from .execution_quote import ExecutionQuoteSource
 from .forward_store import ForwardCaptureStore
 from .models import CandidateStatus, MinuteBar, MomentumCandidate, SetupState
 from .runtime import WarriorMomentumRuntime
@@ -130,6 +131,7 @@ class WarriorDesktopSidecar:
         paper_entry_submitter: Callable[[object, int, Decimal], bool] | None = None,
         paper_exit_submitter: Callable[[str, int, Decimal, str, str | None], bool] | None = None,
         paper_position_quantity_source: Callable[[str], Decimal] | None = None,
+        execution_quote_source: ExecutionQuoteSource | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.enabled = bool(enabled)
@@ -142,6 +144,8 @@ class WarriorDesktopSidecar:
         self._paper_entry_submitter = paper_entry_submitter
         self._paper_exit_submitter = paper_exit_submitter
         self._paper_position_quantity_source = paper_position_quantity_source
+        self._execution_quote_source = execution_quote_source
+        self._accept_execution = False
         self._clock = clock
         self._lock = RLock()
         self._adapter: MarketEventScannerAdapter | None = None
@@ -345,6 +349,9 @@ class WarriorDesktopSidecar:
                     paper_entry_submitter=self._paper_entry_submitter,
                     paper_exit_submitter=self._paper_exit_submitter,
                     paper_position_quantity_source=self._paper_position_quantity_source,
+                    execution_quote_source=self._execution_quote_source,
+                    execution_permitted=lambda: self._accept_execution,
+                    account_refresh_source=self._account_source,
                 )
                 self._restore_bars()
                 now = self._aware_now()
@@ -358,6 +365,7 @@ class WarriorDesktopSidecar:
                     configuration_fingerprint=self.configuration_fingerprint,
                 )
                 self._health = WarriorCaptureHealth.RUNNING
+                self._accept_execution = True
             except Exception as exc:
                 self._last_error_type = type(exc).__name__
                 self._health = WarriorCaptureHealth.DEGRADED
@@ -365,6 +373,8 @@ class WarriorDesktopSidecar:
     def stop(self) -> None:
         if not self.enabled:
             return
+        # Publish shutdown intent before waiting for an in-flight confirmation.
+        self._accept_execution = False
         with self._lock:
             writer, store = self._writer, self._store
             if writer is None or store is None:
@@ -749,6 +759,7 @@ def _blocking_reasons(candidate: MomentumCandidate, entry_ready: bool) -> tuple[
         "STOP_TOO_WIDE": "risk", "STOP_INVALID": "risk",
         "RISK_REJECTED": "score/risk", "NO_SETUP": "setup",
         "STALE_MARKET_DATA": "stale_market_data",
+        "AWAITING_EXECUTION_QUOTE": "awaiting_execution_quote",
     }
     return tuple(dict.fromkeys(
         mapping[code.value] for code in candidate.reason_codes if code.value in mapping

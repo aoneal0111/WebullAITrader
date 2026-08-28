@@ -28,6 +28,7 @@ from app.strategies.warrior_momentum.desktop_sidecar import (
 )
 from app.strategies.warrior_momentum.forward_models import PaperAccountContext
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
+from app.strategies.warrior_momentum.execution_quote import WebullExecutionQuoteSource
 from app.strategies.warrior_momentum.forward_runtime import management_context_available
 
 from .desktop_runtime import create_desktop_runtime_service
@@ -157,16 +158,18 @@ def create_desktop_composition(
             ),
         ))
 
+    shared_rest_market_data = LazyOfficialDataClient(
+        lambda: AuditedMarketDataClient(
+            MarketDataClientFactory(chart_market_configuration).create(),
+            chart_request_guard,
+            chart_market_configuration,
+        )
+    )
     chart_market_data_service = ChartMarketDataService(
-        LazyOfficialDataClient(
-            lambda: AuditedMarketDataClient(
-                MarketDataClientFactory(chart_market_configuration).create(),
-                chart_request_guard,
-                chart_market_configuration,
-            )
-        ),
+        shared_rest_market_data,
         observation_sink=publish_chart_observation,
     )
+    execution_quote_source = WebullExecutionQuoteSource(shared_rest_market_data)
 
     def position_average_cost(symbol: str) -> Decimal | None:
         normalized = symbol.strip().upper()
@@ -263,6 +266,7 @@ def create_desktop_composition(
         paper_entry_submitter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.submit_entry),
         paper_exit_submitter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.submit_exit),
         paper_position_quantity_source=(None if paper_trading_commands is None else position_quantity),
+        execution_quote_source=execution_quote_source,
     )
     if warrior_forward_sidecar.enabled:
         market_event_observer = CompositeMarketEventObserver(

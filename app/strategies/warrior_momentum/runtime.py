@@ -119,6 +119,15 @@ class WarriorMomentumRuntime:
         return replace(candidate, status=status,
                        reason_codes=tuple(dict.fromkeys((*candidate.reason_codes, *rejections)))), None
 
+    def technical_entry_signal(self, candidate: MomentumCandidate) -> MomentumEntrySignal | None:
+        """Recognize technical actionability without execution authorization."""
+        ignored = {ReasonCode.SPREAD_WIDE, ReasonCode.STALE_MARKET_DATA}
+        technical = replace(
+            candidate, spread_percent=Decimal("0"),
+            reason_codes=tuple(code for code in candidate.reason_codes if code not in ignored),
+        )
+        return self.entry_signal(technical)
+
     @staticmethod
     def authorize_live(_signal: MomentumEntrySignal) -> bool:
         return False

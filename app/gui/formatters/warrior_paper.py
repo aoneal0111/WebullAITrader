@@ -124,6 +124,7 @@ def _readable_blocker(reason: str) -> str:
         "EXECUTION_NOT_ALLOWED": "Execution is not authorized",
         "RISK_REJECTED": "Risk engine rejected the entry",
         "STALE_MARKET_DATA": "Entry-critical market data is stale",
+        "AWAITING_EXECUTION_QUOTE": "Waiting for fresh bid/ask",
         "STALE MARKET DATA": "Entry-critical market data is stale",
         "RISK": "Risk gate rejected the entry",
         "SCORE/RISK": "Risk engine rejected the entry",
