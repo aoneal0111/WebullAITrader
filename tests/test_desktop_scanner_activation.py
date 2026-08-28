@@ -245,7 +245,7 @@ def test_desktop_start_runs_scanner_projects_gui_and_stop_disconnects() -> None:
         assert row.dollar_volume == "$7,000,000"
         assert row.catalyst.startswith("OTHER:")
         assert row.failed_rules == "--"
-        assert row.freshness == "LIVE"
+        assert row.freshness == "LIVE | 0.0s"
         assert row.session == "REGULAR"
 
         assert {

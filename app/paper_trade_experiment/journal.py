@@ -41,6 +41,7 @@ class PaperTradeExperimentJournal:
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
+        self._last_price_observation: dict[str, tuple[datetime, Decimal]] = {}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -157,7 +158,11 @@ class PaperTradeExperimentJournal:
 
         if decision.timestamp is None or decision.price is None:
             raise ValueError("complete scanner decision is required")
-        self.observe_price(decision.symbol, decision.timestamp, decision.price)
+        price_timestamp = decision.last_price_timestamp or decision.timestamp
+        price_observation = (price_timestamp, decision.price)
+        if self._last_price_observation.get(decision.symbol) != price_observation:
+            self.observe_price(decision.symbol, price_timestamp, decision.price)
+            self._last_price_observation[decision.symbol] = price_observation
         from app.live_scanner.session import scanner_session
 
         return self.record_candidate(
@@ -637,6 +642,26 @@ def _decision_features(
         "scanner_rank": decision.scanner_rank if scanner_rank is None else scanner_rank,
         "scanner_score": decision.score,
         "last_price": str(decision.price),
+        "last_price_timestamp": (
+            None if decision.last_price_timestamp is None
+            else decision.last_price_timestamp.isoformat()
+        ),
+        "quote_timestamp": (
+            None if decision.quote_timestamp is None
+            else decision.quote_timestamp.isoformat()
+        ),
+        "evaluation_timestamp": (
+            None if decision.observed_at is None
+            else decision.observed_at.isoformat()
+        ),
+        "last_price_received_timestamp": (
+            None if decision.last_price_received_timestamp is None
+            else decision.last_price_received_timestamp.isoformat()
+        ),
+        "quote_received_timestamp": (
+            None if decision.quote_received_timestamp is None
+            else decision.quote_received_timestamp.isoformat()
+        ),
         "previous_close": _decimal_text(decision.previous_close),
         "percentage_change": str(decision.metrics.percentage_change),
         "relative_volume": str(decision.metrics.relative_volume),

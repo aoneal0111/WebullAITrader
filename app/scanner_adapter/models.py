@@ -69,6 +69,9 @@ class SymbolScannerState:
     quote_timestamp: datetime | None = None
     trade_timestamp: datetime | None = None
     snapshot_timestamp: datetime | None = None
+    last_price_timestamp: datetime | None = None
+    quote_received_timestamp: datetime | None = None
+    last_price_received_timestamp: datetime | None = None
     last_price: Decimal | None = None
     bid: Decimal | None = None
     ask: Decimal | None = None
@@ -82,7 +85,9 @@ class SymbolScannerState:
             raise ValueError("symbol is required")
 
         for name in (
-            "timestamp", "quote_timestamp", "trade_timestamp", "snapshot_timestamp"
+            "timestamp", "quote_timestamp", "trade_timestamp", "snapshot_timestamp",
+            "last_price_timestamp", "quote_received_timestamp",
+            "last_price_received_timestamp",
         ):
             value = getattr(self, name)
             if value is not None and value.tzinfo is None:

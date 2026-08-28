@@ -60,7 +60,9 @@ def point(**changes) -> PointInTimeObservation:
         float_provenance=FloatProvenance.MARKET_CAP_PRICE_PROXY,
         catalyst_event_timestamp=T0 - timedelta(hours=1),
         catalyst_source="WEBULL_EARNINGS", quote_observed_at=T0 + timedelta(minutes=20),
-        quote_freshness_seconds=D("0.2"), halt_state_known=True,
+        quote_freshness_seconds=D("0.2"),
+        last_price_observed_at=T0 + timedelta(minutes=20),
+        last_price_freshness_seconds=D("0.2"), halt_state_known=True,
     )
     values.update(changes)
     return PointInTimeObservation(**values)
@@ -155,6 +157,40 @@ def test_after_hours_risk_rejection_remains_blocked(capture) -> None:
     assert any("RISK_REJECTED" in item["reason_codes"] for item in blocked)
     assert all("SESSION_NOT_ALLOWED" not in item["reason_codes"] for item in blocked)
     assert not store.records(record_type=CaptureRecordType.PAPER_FILL)
+
+
+def test_stale_entry_critical_data_fails_closed_and_fresh_data_restores_eligibility(
+    capture,
+) -> None:
+    _store, _writer, service = capture
+
+    stale_candidate, stale_signal = service.observe(
+        point(
+            quote_freshness_seconds=D("5.1"),
+            last_price_freshness_seconds=D("5.1"),
+        ),
+        account=account(),
+    )
+
+    assert stale_signal is None
+    assert stale_candidate.status.value == "INELIGIBLE_FOR_EXECUTION"
+    assert "STALE_MARKET_DATA" in {
+        code.value for code in stale_candidate.reason_codes
+    }
+
+    fresh_candidate, fresh_signal = service.observe(
+        point(
+            observation=scanner(timestamp=T0 + timedelta(minutes=21)),
+            quote_observed_at=T0 + timedelta(minutes=21),
+            last_price_observed_at=T0 + timedelta(minutes=21),
+            quote_freshness_seconds=D("0.1"),
+            last_price_freshness_seconds=D("0.1"),
+        ),
+        account=account(),
+    )
+
+    assert fresh_candidate.status.value == "ENTRY_READY"
+    assert fresh_signal is not None
 
 
 def test_after_hours_signal_reaches_normal_paper_gateway_once(tmp_path: Path) -> None:

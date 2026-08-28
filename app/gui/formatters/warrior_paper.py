@@ -65,7 +65,8 @@ def _row(item) -> WatchlistRow:
         change_percent=f"{candidate.percentage_change:+.2f}%",
         bid="--", ask="--", volume=f"{candidate.volume:,.0f}",
         market_status=candidate.session, last_update=candidate.timestamp.isoformat(),
-        stale="LIVE", rank=str(candidate.rank), score=f"{candidate.score.total:.2f}",
+        stale=("STALE" if item.market_data_stale else "LIVE"),
+        rank=str(candidate.rank), score=f"{candidate.score.total:.2f}",
         relative_volume=f"{candidate.relative_volume:.2f}x",
         dollar_volume=f"${candidate.dollar_volume:,.0f}",
         spread="--" if candidate.spread_percent is None else f"{candidate.spread_percent:.2f}%",
@@ -85,6 +86,11 @@ def _row(item) -> WatchlistRow:
         warrior_status=candidate.status.value.replace("_", " "),
         warrior_session=candidate.session,
         strategy_name="Warrior Momentum",
+        freshness=(
+            "--" if item.market_data_age_seconds is None
+            else f"{'STALE' if item.market_data_stale else 'LIVE'} · "
+            f"{item.market_data_age_seconds:.1f}s"
+        ),
     )
 
 
@@ -117,6 +123,8 @@ def _readable_blocker(reason: str) -> str:
         "BREAKOUT_NOT_CONFIRMED": "Breakout is not confirmed",
         "EXECUTION_NOT_ALLOWED": "Execution is not authorized",
         "RISK_REJECTED": "Risk engine rejected the entry",
+        "STALE_MARKET_DATA": "Entry-critical market data is stale",
+        "STALE MARKET DATA": "Entry-critical market data is stale",
         "RISK": "Risk gate rejected the entry",
         "SCORE/RISK": "Risk engine rejected the entry",
     }.get(normalized, reason.replace("_", " ").capitalize())

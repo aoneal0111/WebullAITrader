@@ -329,7 +329,7 @@ def test_snapshot_volume_uses_last_valid_trade_price_when_price_is_sparse() -> N
     event = parser(("snapshot", snapshot))
 
     assert event is not None
-    assert event.payload.trade_id == "snapshot"
+    assert event.payload.trade_id == "snapshot-retained-price"
     assert event.payload.price == Decimal("200.05")
     assert event.payload.size == Decimal("1900000")
 

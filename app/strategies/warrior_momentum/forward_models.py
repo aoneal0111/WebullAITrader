@@ -73,6 +73,9 @@ class PointInTimeObservation:
     catalyst_source_classification: str = "PRODUCTION_MARKET_DATA"
     quote_observed_at: datetime | None = None
     quote_freshness_seconds: Decimal | None = None
+    last_price_observed_at: datetime | None = None
+    last_price_freshness_seconds: Decimal | None = None
+    evaluation_timestamp: datetime | None = None
     halt_state_known: bool = True
     volume_known: bool = True
     historical_bars_available: bool = True
@@ -84,12 +87,21 @@ class PointInTimeObservation:
     def __post_init__(self) -> None:
         if self.observation.timestamp.tzinfo is None:
             raise ValueError("observation timestamp must be timezone-aware")
-        for name in ("catalyst_event_timestamp", "quote_observed_at"):
+        for name in (
+            "catalyst_event_timestamp", "quote_observed_at",
+            "last_price_observed_at",
+            "evaluation_timestamp",
+        ):
             value = getattr(self, name)
             if value is not None and value.tzinfo is None:
                 raise ValueError(f"{name} must be timezone-aware")
         if self.quote_freshness_seconds is not None and self.quote_freshness_seconds < 0:
             raise ValueError("quote freshness cannot be negative")
+        if (
+            self.last_price_freshness_seconds is not None
+            and self.last_price_freshness_seconds < 0
+        ):
+            raise ValueError("last price freshness cannot be negative")
         if self.scanner_rank is not None and self.scanner_rank <= 0:
             raise ValueError("scanner rank must be positive when available")
 

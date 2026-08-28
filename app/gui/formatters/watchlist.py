@@ -152,7 +152,10 @@ def _row(entry, selected_symbol: str | None) -> WatchlistRow:
                 catalyst=catalyst,
                 passed_rules=metadata.get("scanner_passed_rules", "--"),
                 failed_rules=metadata.get("scanner_failed_rules", "--"),
-                freshness=metadata.get("scanner_freshness", "--"),
+                freshness=_freshness(
+                    metadata.get("scanner_freshness", "--"),
+                    metadata.get("scanner_market_age_ms"),
+                ),
                 session=metadata.get("scanner_session", "--"),
                 classification=metadata.get(
                     "scanner_classification",
@@ -194,6 +197,12 @@ def _percent(value: str | None) -> str:
 
 def _multiple(value: str | None) -> str:
     return "--" if value is None else f"{Decimal(value):,.2f}x"
+
+
+def _freshness(state: str, age_ms: str | None) -> str:
+    if state == "--" or age_ms is None:
+        return state
+    return f"{state} | {Decimal(age_ms) / Decimal('1000'):.1f}s"
 
 
 def _money(value: str | None) -> str:

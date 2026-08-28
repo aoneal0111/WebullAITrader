@@ -64,6 +64,11 @@ class ScannerObservation:
     corroborating_sources: tuple[str, ...] = ()
     catalyst_evidence_count: int = 0
     catalyst_event_count: int = 0
+    last_price_timestamp: datetime | None = None
+    quote_timestamp: datetime | None = None
+    trade_timestamp: datetime | None = None
+    last_price_received_timestamp: datetime | None = None
+    quote_received_timestamp: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,4 +114,9 @@ class ScannerDecision:
     catalyst_event_count: int = 0
     scanner_rank: int | None = None
     policy_version: str = "CONSERVATIVE_V1"
+    last_price_timestamp: datetime | None = None
+    quote_timestamp: datetime | None = None
+    trade_timestamp: datetime | None = None
+    last_price_received_timestamp: datetime | None = None
+    quote_received_timestamp: datetime | None = None
 

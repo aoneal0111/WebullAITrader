@@ -425,14 +425,20 @@ class WebullMarketEventParser:
         elif event_name in {"TRADE", "TICK", "DEAL", "SNAPSHOT"} or _first(message, "trade_price", "last_price") is not None:
             event_type = MarketEventType.TRADE
             price = _first(message, "trade_price", "last_price", "price")
+            retained_snapshot_price = False
             if event_name == "SNAPSHOT" and price is None:
                 price = self._last_trade_price.get(symbol)
                 if price is None:
                     return None
+                retained_snapshot_price = True
             normalized = TradePayload(
                 _decimal({**message, "trade_price": price}, "trade_price"),
                 _decimal(message, "trade_size", "size", "volume", "qty"),
-                str(_first(message, "trade_id", "id", "serial_no") or sequence),
+                (
+                    "snapshot-retained-price"
+                    if retained_snapshot_price
+                    else str(_first(message, "trade_id", "id", "serial_no") or sequence)
+                ),
             )
         else:
             raise SerializationError(f"unsupported Webull stream event type: {event_name or 'unknown'}")

@@ -284,12 +284,11 @@ def test_experiment_sidecar_failures_do_not_escape_scanner_composition(
     price_observer = captured["scanner_adapter"]._price_observer
 
     assert decision_sink is not None
-    assert price_observer is not None
+    assert price_observer is None
 
     # Experimental persistence is an optional PAPER/TEST sidecar.
     # Its failure must never own the scanner/runtime lifecycle.
     assert decision_sink(object()) is None
-    assert price_observer("LUCY", NOW, Decimal("1.209")) is None
 
     assert len(logged_errors) == 1
     assert logged_errors[0][0][0].startswith(

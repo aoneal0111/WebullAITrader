@@ -127,6 +127,57 @@ def test_adapter_builds_complete_observation() -> None:
     assert result.missing_fields == ()
 
 
+def test_newer_trade_replaces_last_price_and_other_symbol_does_not_refresh_it() -> None:
+    store = ScannerReferenceStore((reference_data(),))
+    adapter = MarketEventScannerAdapter(store)
+    received = NOW + timedelta(milliseconds=25)
+
+    adapter.consume(replace(quote_event(), received_timestamp=received))
+    first = adapter.consume(replace(
+        trade_event(),
+        payload=TradePayload(Decimal("2.485"), Decimal("1"), "old"),
+        received_timestamp=received,
+    ))
+    newer_time = NOW + timedelta(seconds=1)
+    newer = adapter.consume(replace(
+        trade_event(sequence=3), timestamp=newer_time,
+        payload=TradePayload(Decimal("2.68"), Decimal("1"), "new"),
+        received_timestamp=newer_time + timedelta(milliseconds=20),
+    ))
+    adapter.consume(MarketEvent(
+        4, newer_time + timedelta(seconds=1), "OTHER", "WEBULL",
+        MarketEventType.TRADE,
+        TradePayload(Decimal("9"), Decimal("1"), "other"),
+        newer_time + timedelta(seconds=1, milliseconds=20),
+    ))
+
+    assert first is not None and first.state.last_price == Decimal("2.485")
+    assert newer is not None and newer.state.last_price == Decimal("2.68")
+    state = adapter.state_for("TEST")
+    assert state is not None
+    assert state.last_price == Decimal("2.68")
+    assert state.last_price_timestamp == newer_time
+    assert state.last_price_received_timestamp == newer_time + timedelta(milliseconds=20)
+
+
+def test_volume_only_snapshot_does_not_refresh_retained_last_price_timestamp() -> None:
+    store = ScannerReferenceStore((reference_data(),))
+    adapter = MarketEventScannerAdapter(store)
+    adapter.consume(quote_event())
+    adapter.consume(trade_event())
+
+    snapshot_time = NOW + timedelta(seconds=30)
+    result = adapter.consume(MarketEvent(
+        3, snapshot_time, "TEST", "WEBULL", MarketEventType.TRADE,
+        TradePayload(Decimal("6"), Decimal("900000"), "snapshot-retained-price"),
+        snapshot_time,
+    ))
+
+    assert result is not None
+    assert result.state.snapshot_timestamp == snapshot_time
+    assert result.state.last_price_timestamp == NOW
+
+
 def test_trade_volume_accumulates() -> None:
     store = ScannerReferenceStore((reference_data(),))
     adapter = MarketEventScannerAdapter(store)

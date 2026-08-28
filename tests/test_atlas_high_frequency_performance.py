@@ -583,8 +583,8 @@ def test_suppressed_scanner_snapshot_retains_current_stale_symbols() -> None:
     )
 
     assert publisher.last_changed is True
-    assert publisher.last_stale_symbols == ()
-    assert "STALE" not in publisher._displayed_symbols
+    assert publisher.last_stale_symbols == ("STALE",)
+    assert "STALE" in publisher._displayed_symbols
 
     publisher.publish(
         second,
@@ -593,8 +593,8 @@ def test_suppressed_scanner_snapshot_retains_current_stale_symbols() -> None:
     )
 
     assert publisher.last_changed is False
-    assert publisher.last_stale_symbols == ()
-    assert "STALE" not in publisher._displayed_symbols
+    assert publisher.last_stale_symbols == ("STALE",)
+    assert "STALE" in publisher._displayed_symbols
 
     metrics = diagnostics.snapshot()
     assert metrics.scanner_snapshots_published == 1
@@ -711,12 +711,10 @@ def test_27_symbol_30k_mixed_event_load_is_full_fidelity_and_bounded() -> None:
     assert metrics.scanner_snapshots_suppressed_unchanged == 28
 
 
-def test_scanner_freshness_prefers_local_observation_time_over_old_market_timestamp() -> None:
+def test_scanner_freshness_distinguishes_evaluation_from_old_market_timestamp() -> None:
     """
-    A continuously received market event may carry an exchange/broker timestamp
-    older than Atlas's stale threshold. Scanner freshness must therefore use
-    local observation time when available, while preserving market timestamp
-    semantics for ordering and replay.
+    A newly evaluated candidate remains market-data stale when its authoritative
+    trade/quote timestamps are old.
     """
     events = []
     sequences = count(1)
@@ -753,7 +751,7 @@ def test_scanner_freshness_prefers_local_observation_time_over_old_market_timest
         now=received_now,
     )
 
-    assert publisher.last_stale_symbols == ()
+    assert publisher.last_stale_symbols == ("CLOCK",)
 
     live_events = [
         event
@@ -765,7 +763,10 @@ def test_scanner_freshness_prefers_local_observation_time_over_old_market_timest
     assert live_events
     assert dict(live_events[-1].watchlist.metadata or ())[
         "scanner_freshness"
-    ] == "LIVE"
+    ] == "STALE"
+    metadata = dict(live_events[-1].watchlist.metadata or ())
+    assert metadata["scanner_market_age_ms"] == "120000"
+    assert metadata["scanner_evaluation_age_ms"] == "0"
 
     stale_now = received_now + timedelta(seconds=6)
 
@@ -777,8 +778,8 @@ def test_scanner_freshness_prefers_local_observation_time_over_old_market_timest
         now=stale_now,
     )
 
-    assert publisher.last_stale_symbols == ()
-    assert "CLOCK" not in publisher._displayed_symbols
+    assert publisher.last_stale_symbols == ("CLOCK",)
+    assert "CLOCK" in publisher._displayed_symbols
 
     removals = [
         event
@@ -788,7 +789,7 @@ def test_scanner_freshness_prefers_local_observation_time_over_old_market_timest
         and event.watchlist.subscribed is False
     ]
 
-    assert removals
+    assert removals == []
 
     expired_subscriptions = [
         event
@@ -801,8 +802,8 @@ def test_scanner_freshness_prefers_local_observation_time_over_old_market_timest
     assert expired_subscriptions == []
 
 
-def test_scanner_freshness_uses_local_observation_time_not_market_timestamp() -> None:
-    """Old market time must not make newly observed scanner data stale."""
+def test_scanner_freshness_uses_market_timestamp_not_evaluation_timestamp() -> None:
+    """Old market time cannot masquerade as LIVE after a new evaluation."""
     events = []
     sequences = count(1)
 
@@ -845,8 +846,7 @@ def test_scanner_freshness_uses_local_observation_time_not_market_timestamp() ->
     # The exchange/broker timestamp is intentionally old.
     assert NOW - candidate.timestamp > timedelta(seconds=5)
 
-    # But Atlas observed this candidate recently, so it is LIVE.
-    assert publisher.last_stale_symbols == ()
+    assert publisher.last_stale_symbols == ("XYZ",)
 
     published = [
         event
@@ -859,14 +859,12 @@ def test_scanner_freshness_uses_local_observation_time_not_market_timestamp() ->
     assert published
 
     metadata = dict(published[-1].watchlist.metadata or ())
-    assert metadata["scanner_freshness"] == "LIVE"
+    assert metadata["scanner_freshness"] == "STALE"
     assert published[-1].watchlist.quote is not None
-    assert published[-1].watchlist.quote.timestamp == local_observed_at
-    assert published[-1].watchlist.quote.stale is False
+    assert published[-1].watchlist.quote.timestamp == market_timestamp
+    assert published[-1].watchlist.quote.stale is True
 
-    # Without any new local observation, the same candidate eventually
-    # expires from the live scanner display rather than remaining as a
-    # retained STALE row.
+    # Candidate context remains visible, explicitly stale.
     events.clear()
 
     publisher.publish(
@@ -875,8 +873,8 @@ def test_scanner_freshness_uses_local_observation_time_not_market_timestamp() ->
         now=NOW + timedelta(seconds=5),
     )
 
-    assert publisher.last_stale_symbols == ()
-    assert "XYZ" not in publisher._displayed_symbols
+    assert publisher.last_stale_symbols == ("XYZ",)
+    assert "XYZ" in publisher._displayed_symbols
 
     removals = [
         event
@@ -886,11 +884,11 @@ def test_scanner_freshness_uses_local_observation_time_not_market_timestamp() ->
         and event.watchlist.subscribed is False
     ]
 
-    assert removals
+    assert removals == []
 
 
-def test_scanner_publisher_removes_candidate_after_local_freshness_expires() -> None:
-    """Expired candidates must leave the live scanner display."""
+def test_scanner_publisher_retains_stale_candidate_for_operator_context() -> None:
+    """Expired market data remains visible but cannot be labelled LIVE."""
     events = []
     sequences = count(1)
 
@@ -933,7 +931,8 @@ def test_scanner_publisher_removes_candidate_after_local_freshness_expires() -> 
         now=NOW + timedelta(seconds=6),
     )
 
-    assert "XYZ" not in publisher._displayed_symbols
+    assert "XYZ" in publisher._displayed_symbols
+    assert publisher.last_stale_symbols == ("XYZ",)
 
     removals = [
         event
@@ -943,4 +942,4 @@ def test_scanner_publisher_removes_candidate_after_local_freshness_expires() -> 
         and event.watchlist.subscribed is False
     ]
 
-    assert removals
+    assert removals == []

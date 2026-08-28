@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from queue import Empty, Queue
@@ -33,6 +34,13 @@ StreamLifecycleSink = Callable[
 
 class _StreamSequenceError(SerializationError):
     """A normalized-event integrity error, not a wire payload parse failure."""
+
+
+@dataclass(frozen=True, slots=True)
+class _ReceivedStreamPayload:
+    topic: object
+    payload: object
+    received_timestamp: datetime
 
 
 class OfficialSdkStreamBackend:
@@ -148,7 +156,9 @@ class OfficialSdkStreamBackend:
         if client is not self.client:
             self._emit_diagnostic("CROSS_CLIENT_MESSAGE_REJECTED")
             return
-        self._messages.put((topic, quotes))
+        self._messages.put(
+            _ReceivedStreamPayload(topic, quotes, self._clock())
+        )
         if callable(self._original_on_quotes_message):
             self._original_on_quotes_message(client, topic, quotes)
 
@@ -562,6 +572,11 @@ class WebullWebSocketClient:
             try:
                 message = receiver()
                 if message is None: return None
+                if isinstance(message, _ReceivedStreamPayload):
+                    received_timestamp = message.received_timestamp
+                    message = (message.topic, message.payload)
+                else:
+                    received_timestamp = None
                 diagnostic = payload_metadata(message)
                 classification = str(diagnostic["message_classification"])
                 self._payload_count += 1
@@ -602,6 +617,8 @@ class WebullWebSocketClient:
                             decoder_selected=decoder,
                         )
                     return None
+                if received_timestamp is not None:
+                    event = replace(event, received_timestamp=received_timestamp)
                 performance_diagnostics.increment("market_events_received")
                 try:
                     validate_event(event)

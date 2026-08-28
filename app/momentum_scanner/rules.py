@@ -236,6 +236,11 @@ def evaluate_candidate(
         catalyst_evidence_count=observation.catalyst_evidence_count,
         catalyst_event_count=observation.catalyst_event_count,
         policy_version=config.policy_version,
+        last_price_timestamp=observation.last_price_timestamp,
+        quote_timestamp=observation.quote_timestamp,
+        trade_timestamp=observation.trade_timestamp,
+        last_price_received_timestamp=observation.last_price_received_timestamp,
+        quote_received_timestamp=observation.quote_received_timestamp,
     )
 
 

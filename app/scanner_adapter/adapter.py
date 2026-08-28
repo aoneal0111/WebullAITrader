@@ -71,6 +71,8 @@ class MarketEventScannerAdapter:
                     previous.snapshot_timestamp,
                 )
                 updates_price = (
+                    event.payload.trade_id != "snapshot-retained-price"
+                    and
                     (
                         previous.snapshot_timestamp is None
                         or event.timestamp >= previous.snapshot_timestamp
@@ -175,6 +177,7 @@ class MarketEventScannerAdapter:
                 state,
                 timestamp=_latest_timestamp(state.timestamp, event.timestamp),
                 quote_timestamp=event.timestamp,
+                quote_received_timestamp=event.received_timestamp,
                 bid=event.payload.bid,
                 ask=event.payload.ask,
             )
@@ -192,14 +195,35 @@ class MarketEventScannerAdapter:
                 freshest_price_timestamp = _latest_timestamp(
                     state.trade_timestamp, state.snapshot_timestamp
                 )
+                retained_price = (
+                    event.payload.trade_id == "snapshot-retained-price"
+                )
                 return replace(
                     state,
                     timestamp=_latest_timestamp(state.timestamp, event.timestamp),
                     snapshot_timestamp=event.timestamp,
+                    last_price_timestamp=(
+                        event.timestamp
+                        if not retained_price and (
+                            freshest_price_timestamp is None
+                            or event.timestamp >= freshest_price_timestamp
+                        )
+                        else state.last_price_timestamp
+                    ),
+                    last_price_received_timestamp=(
+                        event.received_timestamp
+                        if not retained_price and (
+                            freshest_price_timestamp is None
+                            or event.timestamp >= freshest_price_timestamp
+                        )
+                        else state.last_price_received_timestamp
+                    ),
                     last_price=(
                         event.payload.price
-                        if freshest_price_timestamp is None
-                        or event.timestamp >= freshest_price_timestamp
+                        if not retained_price and (
+                            freshest_price_timestamp is None
+                            or event.timestamp >= freshest_price_timestamp
+                        )
                         else state.last_price
                     ),
                     cumulative_volume=max(
@@ -220,6 +244,16 @@ class MarketEventScannerAdapter:
                 state,
                 timestamp=_latest_timestamp(state.timestamp, event.timestamp),
                 trade_timestamp=event.timestamp,
+                last_price_timestamp=(
+                    event.timestamp
+                    if is_newer_than_snapshot
+                    else state.last_price_timestamp
+                ),
+                last_price_received_timestamp=(
+                    event.received_timestamp
+                    if is_newer_than_snapshot
+                    else state.last_price_received_timestamp
+                ),
                 last_price=(
                     event.payload.price
                     if is_newer_than_snapshot
@@ -340,6 +374,11 @@ class MarketEventScannerAdapter:
                 ask=state.ask,
                 tradable=reference.tradable,
                 halted=state.halted,
+                last_price_timestamp=state.last_price_timestamp,
+                quote_timestamp=state.quote_timestamp,
+                trade_timestamp=state.trade_timestamp,
+                last_price_received_timestamp=state.last_price_received_timestamp,
+                quote_received_timestamp=state.quote_received_timestamp,
             ),
             (),
         )

@@ -70,6 +70,8 @@ class WarriorFocusItem:
     entry_trigger: Decimal | None
     stop_price: Decimal | None
     blocking_reasons: tuple[str, ...]
+    market_data_stale: bool = False
+    market_data_age_seconds: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +158,8 @@ class WarriorDesktopSidecar:
         self._latest: dict[str, MomentumCandidate] = {}
         self._provenance: dict[str, FloatProvenance] = {}
         self._blocking: dict[str, tuple[str, ...]] = {}
+        self._market_data_age: dict[str, Decimal | None] = {}
+        self._market_data_timestamp: dict[str, datetime | None] = {}
         self._first_observed: set[str] = set()
         self._historical_preload_attempted: set[str] = set()
         self._stage_symbols: dict[str, set[str]] = {
@@ -479,11 +483,16 @@ class WarriorDesktopSidecar:
             completed = self._aggregate_trade(event, observation.current_volume)
         if symbol not in self._first_observed or completed:
             history = tuple(self._bars.get(symbol, ())[-120:])
-            freshness = None
+            quote_freshness = last_price_freshness = None
             state = adapter.state_for(symbol)
+            evaluated_at = self._aware_now()
             if state is not None and state.quote_timestamp is not None:
-                freshness = Decimal(str(max(
-                    0, (observation.timestamp - state.quote_timestamp).total_seconds(),
+                quote_freshness = Decimal(str(max(
+                    0, (evaluated_at - state.quote_timestamp).total_seconds(),
+                )))
+            if state is not None and state.last_price_timestamp is not None:
+                last_price_freshness = Decimal(str(max(
+                    0, (evaluated_at - state.last_price_timestamp).total_seconds(),
                 )))
             provenance = (
                 FloatProvenance.MARKET_CAP_PRICE_PROXY
@@ -506,7 +515,12 @@ class WarriorDesktopSidecar:
                     history, float_provenance=provenance,
                     catalyst_source="WEBULL_EARNINGS_SEC",
                     quote_observed_at=(None if state is None else state.quote_timestamp),
-                    quote_freshness_seconds=freshness,
+                    quote_freshness_seconds=quote_freshness,
+                    last_price_observed_at=(
+                        None if state is None else state.last_price_timestamp
+                    ),
+                    last_price_freshness_seconds=last_price_freshness,
+                    evaluation_timestamp=evaluated_at,
                     halt_state_known=True,
                     volume_known=True,
                     historical_bars_available=bool(history),
@@ -529,6 +543,20 @@ class WarriorDesktopSidecar:
             self._latest[symbol] = candidate
             self._provenance[symbol] = provenance
             self._blocking[symbol] = _blocking_reasons(candidate, signal is not None)
+            ages = tuple(
+                age for age in (quote_freshness, last_price_freshness)
+                if age is not None
+            )
+            self._market_data_age[symbol] = max(ages) if len(ages) == 2 else None
+            market_timestamps = tuple(
+                timestamp for timestamp in (
+                    None if state is None else state.quote_timestamp,
+                    None if state is None else state.last_price_timestamp,
+                ) if timestamp is not None
+            )
+            self._market_data_timestamp[symbol] = (
+                min(market_timestamps) if len(market_timestamps) == 2 else None
+            )
             self._observe_stages(candidate, signal is not None)
             self._first_observed.add(symbol)
             self._publications += 1
@@ -587,11 +615,24 @@ class WarriorDesktopSidecar:
 
     def _focus_item(self, candidate: MomentumCandidate) -> WarriorFocusItem:
         setup = candidate.setup
+        market_timestamp = self._market_data_timestamp.get(candidate.symbol)
+        market_age = (
+            None if market_timestamp is None
+            else Decimal(str(max(
+                0, (self._aware_now() - market_timestamp).total_seconds(),
+            )))
+        )
         return WarriorFocusItem(
             candidate, self._provenance.get(candidate.symbol, FloatProvenance.UNKNOWN),
             None if setup is None else setup.trigger,
             None if setup is None else setup.stop_price,
             self._blocking.get(candidate.symbol, ()),
+            (
+                market_age is None
+                or market_age
+                > self.capture_config.quote_stale_after_seconds
+            ),
+            market_age,
         )
 
     def _restore_bars(self) -> None:
@@ -704,6 +745,7 @@ def _blocking_reasons(candidate: MomentumCandidate, entry_ready: bool) -> tuple[
         "NOT_TRADABLE": "tradability", "SESSION_NOT_ALLOWED": "session",
         "STOP_TOO_WIDE": "risk", "STOP_INVALID": "risk",
         "RISK_REJECTED": "score/risk", "NO_SETUP": "setup",
+        "STALE_MARKET_DATA": "stale_market_data",
     }
     return tuple(dict.fromkeys(
         mapping[code.value] for code in candidate.reason_codes if code.value in mapping

@@ -181,6 +181,18 @@ def test_callbacks_from_another_client_cannot_cross_use_session() -> None:
     assert stream.client is second
 
 
+def test_callback_captures_receive_timestamp_before_queueing() -> None:
+    sdk = Client("session-one")
+    stream = backend(sdk)
+    stream.connect()
+
+    sdk.on_quotes_message(sdk, "quote", object())
+
+    received = stream.receive()
+    assert received.received_timestamp == NOW
+    assert received.topic == "quote"
+
+
 def test_successful_registration_permits_subscription_only_after_grace() -> None:
     sdk = Client("session-one")
     sleeps: list[float] = []

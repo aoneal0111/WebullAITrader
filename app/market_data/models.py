@@ -42,7 +42,9 @@ class HeartbeatPayload:connection_id:str
 class ClockSyncPayload:exchange_timestamp:datetime;local_timestamp:datetime
 EventPayload=QuotePayload|TradePayload|OrderBookSnapshotPayload|OrderBookDeltaPayload|MarketStatusPayload|TradingHaltPayload|ResumePayload|SymbolMetadataPayload|CorporateActionPayload|SessionChangePayload|HeartbeatPayload|ClockSyncPayload
 @dataclass(frozen=True,slots=True)
-class MarketEvent:sequence:int;timestamp:datetime;symbol:str|None;source:str;event_type:MarketEventType;payload:EventPayload
+class MarketEvent:
+ sequence:int;timestamp:datetime;symbol:str|None;source:str;event_type:MarketEventType;payload:EventPayload
+ received_timestamp:datetime|None=None
 @dataclass(frozen=True,slots=True)
 class MarketEventLog:events:tuple[MarketEvent,...]=();schema_version:int=1
 @dataclass(frozen=True,slots=True)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_FLOOR
 from typing import Callable
@@ -127,6 +127,24 @@ class WarriorForwardCaptureService:
             observation, completed, session=value.session,
         )
         assessed, signal = self.runtime.assess_entry(candidate)
+        market_data_stale = (
+            value.last_price_freshness_seconds is None
+            or value.quote_freshness_seconds is None
+            or value.last_price_freshness_seconds
+            > self.capture_config.quote_stale_after_seconds
+            or value.quote_freshness_seconds
+            > self.capture_config.quote_stale_after_seconds
+        )
+        if signal is not None and market_data_stale:
+            assessed = replace(
+                assessed,
+                status=CandidateStatus.INELIGIBLE_FOR_EXECUTION,
+                reason_codes=tuple(dict.fromkeys((
+                    *assessed.reason_codes,
+                    ReasonCode.STALE_MARKET_DATA,
+                ))),
+            )
+            signal = None
         features = build_features(completed)
         records: list[CaptureRecord] = []
         records.extend(self._evidence_records(value))
@@ -294,6 +312,8 @@ class WarriorForwardCaptureService:
              "spread_dollars": spread_dollars, "spread_percent": spread_percent,
              "observation_timestamp": value.quote_observed_at or observation.timestamp,
              "freshness_seconds": value.quote_freshness_seconds,
+             "last_price_observation_timestamp": value.last_price_observed_at,
+             "last_price_freshness_seconds": value.last_price_freshness_seconds,
              "authoritative": observation.bid is not None and observation.ask is not None},
         )
         return catalyst, spread
@@ -659,6 +679,11 @@ def _decision_record(value, candidate, completed, features) -> CaptureRecord:
         "discovery_status": "PASSED" if candidate.discovery_qualified else "BLOCKED",
         "entry_status": "READY" if candidate.status is CandidateStatus.ENTRY_READY else "BLOCKED",
         "decision_timestamp": candidate.timestamp,
+        "evaluation_timestamp": value.evaluation_timestamp,
+        "last_price_timestamp": value.last_price_observed_at,
+        "quote_timestamp": value.quote_observed_at,
+        "last_price_age_seconds": value.last_price_freshness_seconds,
+        "quote_age_seconds": value.quote_freshness_seconds,
         "observation": {
             "price": observation.price, "previous_close": observation.previous_close,
             "current_volume": observation.current_volume,
@@ -725,6 +750,11 @@ def _quality_record(value, completed, capture_config) -> CaptureRecord:
         "stale_bid_ask": (
             value.quote_freshness_seconds is None
             or value.quote_freshness_seconds > capture_config.quote_stale_after_seconds
+        ),
+        "stale_last_price": (
+            value.last_price_freshness_seconds is None
+            or value.last_price_freshness_seconds
+            > capture_config.quote_stale_after_seconds
         ),
         "missing_catalyst": observation.catalyst_status.value in {"UNKNOWN", "UNAVAILABLE"},
         "unknown_catalyst": observation.catalyst_status.value == "UNKNOWN",

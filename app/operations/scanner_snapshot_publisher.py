@@ -104,13 +104,6 @@ class ScannerSnapshotPublisher:
                         decision,
                         ranked_symbols,
                     ) is not None
-                    and now
-                    - (
-                        decision.observed_at
-                        or decision.timestamp
-                        or snapshot.timestamp
-                    )
-                    <= self._stale_after
                 ),
                 key=lambda decision: (
                     decision.scanner_rank
@@ -144,13 +137,10 @@ class ScannerSnapshotPublisher:
         stale_symbols = tuple(
             candidate.symbol
             for candidate in display_candidates
-            if now
-            - (
-                candidate.observed_at
-                or candidate.timestamp
-                or snapshot.timestamp
+            if _market_data_is_stale(
+                candidate, now=now, stale_after=self._stale_after,
+                fallback=snapshot.timestamp,
             )
-            > self._stale_after
         )
         self._last_stale_symbols = stale_symbols
 
@@ -173,11 +163,10 @@ class ScannerSnapshotPublisher:
         self._last_changed = True
         self._diagnostics.increment("scanner_snapshots_published")
         for display_rank, candidate in enumerate(display_candidates, 1):
-            observed_at = (
-                candidate.observed_at
-                or candidate.timestamp
-                or snapshot.timestamp
-            )
+            market_timestamp = _market_timestamp(candidate, snapshot.timestamp)
+            evaluation_timestamp = candidate.observed_at or snapshot.timestamp
+            market_age = max(timedelta(), now - market_timestamp)
+            evaluation_age = max(timedelta(), now - evaluation_timestamp)
             stale = candidate.symbol in stale_symbols
             metadata = (
                 ("scanner_rank", str(candidate.scanner_rank or display_rank)),
@@ -204,6 +193,44 @@ class ScannerSnapshotPublisher:
                 ("scanner_passed_rules", ", ".join(candidate.passed_rules) or "--"),
                 ("scanner_failed_rules", ", ".join(candidate.failed_rules) or "--"),
                 ("scanner_freshness", "STALE" if stale else "LIVE"),
+                ("scanner_market_age_ms", str(int(market_age.total_seconds() * 1000))),
+                ("scanner_evaluation_age_ms", str(int(evaluation_age.total_seconds() * 1000))),
+                ("scanner_market_timestamp", market_timestamp.isoformat()),
+                ("scanner_evaluation_timestamp", evaluation_timestamp.isoformat()),
+                (
+                    "scanner_last_price_timestamp",
+                    "--" if candidate.last_price_timestamp is None
+                    else candidate.last_price_timestamp.isoformat(),
+                ),
+                (
+                    "scanner_quote_timestamp",
+                    "--" if candidate.quote_timestamp is None
+                    else candidate.quote_timestamp.isoformat(),
+                ),
+                (
+                    "scanner_last_price_received_timestamp",
+                    "--" if candidate.last_price_received_timestamp is None
+                    else candidate.last_price_received_timestamp.isoformat(),
+                ),
+                (
+                    "scanner_quote_received_timestamp",
+                    "--" if candidate.quote_received_timestamp is None
+                    else candidate.quote_received_timestamp.isoformat(),
+                ),
+                (
+                    "scanner_last_price_source_to_receive_ms",
+                    _latency_ms(
+                        candidate.last_price_timestamp,
+                        candidate.last_price_received_timestamp,
+                    ),
+                ),
+                (
+                    "scanner_quote_source_to_receive_ms",
+                    _latency_ms(
+                        candidate.quote_timestamp,
+                        candidate.quote_received_timestamp,
+                    ),
+                ),
                 ("scanner_session", session),
                 (
                     "scanner_classification",
@@ -254,7 +281,7 @@ class ScannerSnapshotPublisher:
                     symbol=candidate.symbol,
                     subscribed=True,
                     quote=RuntimeWatchlistQuote(
-                        timestamp=observed_at,
+                        timestamp=market_timestamp,
                         latest_price=candidate.price,
                         change_percent=candidate.metrics.percentage_change,
                         volume=(
@@ -396,6 +423,29 @@ class ScannerSnapshotPublisher:
 
 def _decimal(value: Decimal) -> str:
     return format(value, "f")
+
+
+def _market_timestamp(decision: ScannerDecision, fallback: datetime) -> datetime:
+    timestamps = tuple(
+        value for value in (
+            decision.last_price_timestamp,
+            decision.quote_timestamp,
+        ) if value is not None
+    )
+    return min(timestamps) if timestamps else decision.timestamp or fallback
+
+
+def _market_data_is_stale(
+    decision: ScannerDecision, *, now: datetime,
+    stale_after: timedelta, fallback: datetime,
+) -> bool:
+    return now - _market_timestamp(decision, fallback) > stale_after
+
+
+def _latency_ms(start: datetime | None, end: datetime | None) -> str:
+    if start is None or end is None:
+        return "--"
+    return str(int(max(timedelta(), end - start).total_seconds() * 1000))
 
 
 def _rule_value(decision: ScannerDecision, rule: str) -> str:
