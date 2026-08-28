@@ -86,6 +86,18 @@ def _row(item) -> WatchlistRow:
         warrior_status=candidate.status.value.replace("_", " "),
         warrior_session=candidate.session,
         strategy_name="Warrior Momentum",
+        market_timestamp=candidate.timestamp.isoformat(),
+        decision_timestamp=(
+            "--" if item.decision_timestamp is None
+            else item.decision_timestamp.isoformat()
+        ),
+        decision_last=format_price(item.decision_last),
+        decision_bid=format_price(item.decision_bid),
+        decision_ask=format_price(item.decision_ask),
+        decision_spread=(
+            "--" if item.decision_spread_percent is None
+            else f"{item.decision_spread_percent:.2f}%"
+        ),
         freshness=(
             "--" if item.market_data_age_seconds is None
             else f"{'STALE' if item.market_data_stale else 'LIVE'} · "

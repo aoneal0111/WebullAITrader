@@ -11,8 +11,10 @@ from app.gui.models import WatchlistRow, WatchlistSnapshot
 from app.gui.widgets.market_workspace import MarketWorkspace
 
 
-def _scanner_row(symbol: str, *, selected: bool = False, rank: str = "1") -> WatchlistRow:
-    return WatchlistRow(
+def _scanner_row(
+    symbol: str, *, selected: bool = False, rank: str = "1", **overrides,
+) -> WatchlistRow:
+    values = dict(
         symbol=symbol, selected=selected, latest_price="2.08", change="+0.93",
         change_percent="+80.90%", bid="2.07", ask="2.08", volume="83,800,000",
         market_status="OPEN", last_update="now", stale="LIVE", rank=rank,
@@ -20,6 +22,8 @@ def _scanner_row(symbol: str, *, selected: bool = False, rank: str = "1") -> Wat
         spread="0.48%", catalyst="SEC Filing", freshness="LIVE",
         session="AFTER_HOURS", classification="QUALIFYING", float_shares="7.84M",
     )
+    values.update(overrides)
+    return WatchlistRow(**values)
 
 
 def _warrior_row(
@@ -29,8 +33,9 @@ def _warrior_row(
     setup: str,
     setup_state: str,
     blockers: str = "--",
+    **overrides,
 ) -> WatchlistRow:
-    return WatchlistRow(
+    values = dict(
         symbol=symbol, selected=False, latest_price="2.08", change="--",
         change_percent="+80.90%", bid="--", ask="--", volume="83,800,000",
         market_status="AFTER_HOURS", last_update="now", stale="LIVE", rank="1",
@@ -42,6 +47,8 @@ def _warrior_row(
         warrior_score="76.55", warrior_status=status,
         warrior_session="AFTER_HOURS", strategy_name="Warrior Momentum",
     )
+    values.update(overrides)
+    return WatchlistRow(**values)
 
 
 def _view(*rows: WatchlistRow):
@@ -194,6 +201,95 @@ def test_triggered_setup_waiting_for_execution_quote_is_not_entry_ready() -> Non
     assert panel._decision.text() == "WAITING FOR FRESH QUOTE"
     assert panel._autonomous_paper.text() == "WAITING FOR FRESH QUOTE"
     assert panel._blocking.text() == "Waiting for fresh bid/ask"
+
+
+def test_aehl_newer_scanner_quote_keeps_authoritative_decision_basis() -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    workspace = MarketWorkspace()
+    decision_time = "2026-08-28T22:32:00.044000+00:00"
+    current_time = "2026-08-28T22:32:22.206000+00:00"
+    workspace.render(WatchlistSnapshot(rows=(_scanner_row(
+        "AEHL", selected=True, latest_price="6.12", bid="6.13", ask="6.16",
+        spread="+0.49%", market_timestamp=current_time,
+    ),)))
+    workspace.render_warrior(_view(_warrior_row(
+        "AEHL", status="INELIGIBLE FOR EXECUTION",
+        setup="HIGH OF DAY BREAKOUT", setup_state="TRIGGERED",
+        blockers="Spread is too wide", decision_timestamp=decision_time,
+        decision_last="6.17", decision_bid="6.05", decision_ask="6.17",
+        decision_spread="1.96%",
+    )))
+
+    panel = workspace.trade_intelligence
+    assert panel._market_values["Last"].text() == "$6.12"
+    assert panel._market_values["Bid"].text() == "$6.13"
+    assert panel._market_values["Ask"].text() == "$6.16"
+    assert panel._market_values["Spread"].text() == "+0.49%"
+    assert panel._decision.text() == "BLOCKED"
+    assert panel._blocking.text() == "Spread is too wide"
+    assert "Bid $6.05" in panel._decision_basis.text()
+    assert "Ask $6.17" in panel._decision_basis.text()
+    assert "Spread 1.96%" in panel._decision_basis.text()
+    assert panel._decision_relation.text() == "CURRENT QUOTE NEWER THAN DECISION"
+
+
+def test_same_version_replaces_prior_wide_basis_without_leakage() -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    workspace = MarketWorkspace()
+    old_time = "2026-08-28T22:32:00.044000+00:00"
+    new_time = "2026-08-28T22:32:23.743000+00:00"
+    workspace.render(WatchlistSnapshot(rows=(_scanner_row(
+        "AEHL", selected=True, latest_price="6.12", bid="6.13", ask="6.16",
+        spread="+0.49%", market_timestamp=new_time,
+    ),)))
+    workspace.render_warrior(_view(_warrior_row(
+        "AEHL", status="INELIGIBLE FOR EXECUTION",
+        setup="HIGH OF DAY BREAKOUT", setup_state="TRIGGERED",
+        blockers="Spread is too wide", decision_timestamp=old_time,
+        decision_last="6.17", decision_bid="6.05", decision_ask="6.17",
+        decision_spread="1.96%",
+    )))
+    workspace.render_warrior(_view(_warrior_row(
+        "AEHL", status="ENTRY READY", setup="HIGH OF DAY BREAKOUT",
+        setup_state="TRIGGERED", decision_timestamp=new_time,
+        decision_last="6.12", decision_bid="6.13", decision_ask="6.16",
+        decision_spread="0.49%",
+    )))
+
+    panel = workspace.trade_intelligence
+    assert panel._decision.text() == "ENTRY READY"
+    assert panel._blocking.text() == "--"
+    assert "Bid $6.13" in panel._decision_basis.text()
+    assert "Spread 0.49%" in panel._decision_basis.text()
+    assert "1.96%" not in panel._decision_basis.text()
+    assert panel._decision_relation.text() == "CURRENT QUOTE MATCHES DECISION"
+
+
+def test_symbol_switch_clears_unmatched_decision_basis() -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    workspace = MarketWorkspace()
+    timestamp = "2026-08-28T22:32:23.743000+00:00"
+    workspace.render(WatchlistSnapshot(rows=(
+        _scanner_row("AEHL", selected=True, market_timestamp=timestamp),
+        _scanner_row("OTHER", rank="2", market_timestamp=timestamp),
+    )))
+    workspace.render_warrior(_view(_warrior_row(
+        "AEHL", status="INELIGIBLE FOR EXECUTION",
+        setup="HIGH OF DAY BREAKOUT", setup_state="TRIGGERED",
+        blockers="Spread is too wide", decision_timestamp=timestamp,
+        decision_last="6.17", decision_bid="6.05", decision_ask="6.17",
+        decision_spread="1.96%",
+    )))
+    workspace._select_candidate("OTHER")
+
+    panel = workspace.trade_intelligence
+    assert panel._symbol.text() == "OTHER"
+    assert panel._decision_basis.text() == "--"
+    assert panel._decision_relation.text() == "--"
+    assert panel._blocking.text() == "--"
 
 
 def test_selected_scanner_symbol_uses_matching_warrior_item_not_first_ranked() -> None:

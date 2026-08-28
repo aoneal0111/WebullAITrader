@@ -353,7 +353,7 @@ def test_current_completed_tail_accepts_legitimate_session_boundary(
     assert current_completed_bar_tail((prior,), evaluation) == (prior,)
 
 
-def test_warrior_focus_maps_trigger_stop_provenance_and_blocked_reasons() -> None:
+def test_warrior_focus_maps_decision_market_context_end_to_end(tmp_path) -> None:
     scanner = adapter()
     scanner.consume(quote(T0 + timedelta(minutes=20)))
     scanner.consume(trade(2, T0 + timedelta(minutes=20), "10.20"))
@@ -363,13 +363,27 @@ def test_warrior_focus_maps_trigger_stop_provenance_and_blocked_reasons() -> Non
     runtime = WarriorMomentumRuntime()
     candidate, signal = runtime.assess_entry(runtime.discover(observation, _hod_bars(), session="REGULAR"))
     assert signal is None and candidate.setup is not None
+    sidecar = WarriorDesktopSidecar(
+        enabled=False, storage_path=tmp_path / "forward.sqlite3",
+        clock=lambda: candidate.timestamp,
+    )
+    sidecar._provenance[candidate.symbol] = FloatProvenance.MARKET_CAP_PRICE_PROXY
+    sidecar._blocking[candidate.symbol] = ("spread",)
+    item = sidecar._focus_item(candidate)
     view = format_warrior_paper(WarriorPaperSnapshot(
         True, WarriorCaptureHealth.RUNNING, "fp",
-        (WarriorFocusItem(candidate, FloatProvenance.MARKET_CAP_PRICE_PROXY,
-                          candidate.setup.trigger, candidate.setup.stop_price,
-                          ("spread",)),),
+        (item,),
     ))
     row = view.focus.rows[0]
+    assert candidate.bid == D("9") and candidate.ask == D("11")
+    assert item.decision_timestamp == candidate.timestamp
+    assert item.decision_last == candidate.price
+    assert item.decision_bid == D("9") and item.decision_ask == D("11")
+    assert item.decision_spread_percent == candidate.spread_percent
+    assert row.decision_timestamp == candidate.timestamp.isoformat()
+    assert row.decision_last == "10.20"
+    assert row.decision_bid == "9.00" and row.decision_ask == "11.00"
+    assert row.decision_spread == f"{candidate.spread_percent:.2f}%"
     assert row.entry_trigger != "--" and row.stop_price != "--"
     assert row.float_provenance == "MCAP/PRICE PROXY"
     assert row.blocking_reasons == "Spread is too wide"

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
-
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QDateTime, QTimer, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from app.gui.models import HealthDashboardSnapshot, PortfolioDashboardSnapshot, ReplayWorkspaceSnapshot, RuntimeSnapshot, WatchlistSnapshot
@@ -104,7 +102,7 @@ class RuntimeControlHeader(QFrame):
         self._update_clock()
 
     def _update_clock(self) -> None:
-        self._metrics["Local Time"].setText(datetime.now().strftime("%H:%M:%S ET"))
+        self._metrics["Local Time"].setText(format_local_clock())
 
     def render(self, snapshot: RuntimeSnapshot) -> None:
         level = {RuntimeState.RUNNING: "good", RuntimeState.STARTING: "warn", RuntimeState.STOPPING: "warn", RuntimeState.FAILED: "danger", RuntimeState.STOPPED: "danger"}.get(snapshot.state, "neutral")
@@ -167,4 +165,11 @@ def _status_level(value: str) -> str:
     return "neutral"
 
 
-__all__ = ["RuntimeControlHeader"]
+def format_local_clock(value: QDateTime | None = None) -> str:
+    """Format an explicitly zoned local clock with Qt's platform abbreviation."""
+
+    current = value or QDateTime.currentDateTime()
+    return f"{current.toString('HH:mm:ss')} {current.timeZoneAbbreviation()}"
+
+
+__all__ = ["RuntimeControlHeader", "format_local_clock"]

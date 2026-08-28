@@ -165,6 +165,7 @@ def _row(entry, selected_symbol: str | None) -> WatchlistRow:
                     "scanner_classification",
                     "--",
                 ),
+                market_timestamp=metadata.get("scanner_market_timestamp", "--"),
                 float_shares=_shares(metadata.get("warrior_float")),
                 setup=metadata.get("warrior_setup", "--").replace("_", " "),
                 setup_state=metadata.get("warrior_setup_state", "--").replace("_", " "),

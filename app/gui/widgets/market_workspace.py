@@ -1195,6 +1195,11 @@ class MarketWorkspace(QWidget):
                 entry_trigger="--",
                 stop_price="--",
                 blocking_reasons="--",
+                decision_timestamp="--",
+                decision_last="--",
+                decision_bid="--",
+                decision_ask="--",
+                decision_spread="--",
             )
         match = next(
             (
@@ -1223,6 +1228,11 @@ class MarketWorkspace(QWidget):
                 entry_trigger="--",
                 stop_price="--",
                 blocking_reasons="--",
+                decision_timestamp="--",
+                decision_last="--",
+                decision_bid="--",
+                decision_ask="--",
+                decision_spread="--",
             )
         return replace(
             scanner_row,
@@ -1237,6 +1247,11 @@ class MarketWorkspace(QWidget):
             entry_trigger=match.entry_trigger,
             stop_price=match.stop_price,
             blocking_reasons=match.blocking_reasons,
+            decision_timestamp=match.decision_timestamp,
+            decision_last=match.decision_last,
+            decision_bid=match.decision_bid,
+            decision_ask=match.decision_ask,
+            decision_spread=match.decision_spread,
         )
 
     def _change_focus_mode(self, mode: str) -> None:

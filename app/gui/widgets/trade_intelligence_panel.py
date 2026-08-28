@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from datetime import datetime
+
+from PySide6.QtCore import QDateTime, Qt
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -105,6 +107,18 @@ class TradeIntelligencePanel(QWidget):
         self._blocking.setWordWrap(True)
         self._blocking.setMinimumHeight(16)
         decision_layout.addWidget(self._blocking)
+        decision_basis_title = QLabel("DECISION BASIS")
+        decision_basis_title.setObjectName("metricTitle")
+        decision_layout.addWidget(decision_basis_title)
+        self._decision_basis = QLabel("--")
+        self._decision_basis.setObjectName("monoValue")
+        self._decision_basis.setWordWrap(True)
+        self._decision_basis.setMinimumHeight(16)
+        decision_layout.addWidget(self._decision_basis)
+        self._decision_relation = QLabel("--")
+        self._decision_relation.setObjectName("metricTitle")
+        self._decision_relation.setWordWrap(True)
+        decision_layout.addWidget(self._decision_relation)
         autonomous_title = QLabel("AUTONOMOUS PAPER")
         autonomous_title.setObjectName("metricTitle")
         decision_layout.addWidget(autonomous_title)
@@ -195,6 +209,13 @@ class TradeIntelligencePanel(QWidget):
         _set_tone(self._decision, _decision_tone(decision))
         _set_text(self._decision_explanation, explanation)
         _set_text(self._blocking, row.blocking_reasons)
+        _set_text(self._decision_basis, _decision_basis(row))
+        relation = _decision_market_relation(row)
+        _set_text(self._decision_relation, relation)
+        _set_tone(
+            self._decision_relation,
+            "warn" if relation == "CURRENT QUOTE NEWER THAN DECISION" else "neutral",
+        )
         _set_text(self._autonomous_paper, autonomous)
 
         market = {
@@ -235,6 +256,9 @@ class TradeIntelligencePanel(QWidget):
         _set_tone(self._decision, "neutral")
         _set_text(self._decision_explanation, "--")
         _set_text(self._blocking, "--")
+        _set_text(self._decision_basis, "--")
+        _set_text(self._decision_relation, "--")
+        _set_tone(self._decision_relation, "neutral")
         _set_text(self._autonomous_paper, "--")
         _render_values(self._market_values, {})
         _render_values(self._plan_values, {})
@@ -403,6 +427,59 @@ def _blocking_explanation(reasons: str) -> str:
     if len(values) == 1:
         return f"{values[0]}."
     return f"{'; '.join(values[:-1])}; and {values[-1].lower()}."
+
+
+def _decision_basis(row: WatchlistRow) -> str:
+    values = (
+        row.decision_timestamp,
+        row.decision_last,
+        row.decision_bid,
+        row.decision_ask,
+        row.decision_spread,
+    )
+    if any(value in {None, "", "--"} for value in values):
+        return "--"
+    return "\n".join((
+        _local_timestamp(row.decision_timestamp),
+        f"Last {_money_price(row.decision_last)}  "
+        f"Bid {_money_price(row.decision_bid)}  "
+        f"Ask {_money_price(row.decision_ask)}",
+        f"Spread {row.decision_spread}",
+    ))
+
+
+def _decision_market_relation(row: WatchlistRow) -> str:
+    current = _aware_timestamp(row.market_timestamp)
+    decision = _aware_timestamp(row.decision_timestamp)
+    if current is None or decision is None:
+        return "--"
+    if current > decision:
+        return "CURRENT QUOTE NEWER THAN DECISION"
+    if current == decision:
+        return "CURRENT QUOTE MATCHES DECISION"
+    return "CURRENT QUOTE OLDER THAN DECISION"
+
+
+def _local_timestamp(value: str) -> str:
+    parsed = _aware_timestamp(value)
+    if parsed is None:
+        return "--"
+    local = QDateTime.fromMSecsSinceEpoch(
+        int(parsed.timestamp() * 1000)
+    ).toLocalTime()
+    return local.toString("HH:mm:ss t")
+
+
+def _aware_timestamp(value: str) -> datetime | None:
+    if value in {None, "", "--"}:
+        return None
+    try:
+        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if result.tzinfo is None or result.utcoffset() is None:
+        return None
+    return result
 
 
 __all__ = ["TradeIntelligencePanel"]

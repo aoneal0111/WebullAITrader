@@ -70,6 +70,7 @@ class WarriorMomentumRuntime:
             reason_codes=tuple(dict.fromkeys(reasons)), explanations=(),
             discovery_qualified=discovery_qualified(tuple(reasons)),
             policy_version=self.config.policy_version,
+            bid=observation.bid, ask=observation.ask,
         )
         return replace(candidate, explanations=_explanations(candidate))
 

@@ -73,6 +73,11 @@ class WarriorFocusItem:
     blocking_reasons: tuple[str, ...]
     market_data_stale: bool = False
     market_data_age_seconds: Decimal | None = None
+    decision_timestamp: datetime | None = None
+    decision_last: Decimal | None = None
+    decision_bid: Decimal | None = None
+    decision_ask: Decimal | None = None
+    decision_spread_percent: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -646,6 +651,11 @@ class WarriorDesktopSidecar:
                 > self.capture_config.quote_stale_after_seconds
             ),
             market_age,
+            decision_timestamp=candidate.timestamp,
+            decision_last=candidate.price,
+            decision_bid=candidate.bid,
+            decision_ask=candidate.ask,
+            decision_spread_percent=candidate.spread_percent,
         )
 
     def _restore_bars(self) -> None:

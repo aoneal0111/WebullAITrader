@@ -42,6 +42,12 @@ class WatchlistRow:
     warrior_status: str = "--"
     warrior_session: str = "--"
     strategy_name: str = "--"
+    market_timestamp: str = "--"
+    decision_timestamp: str = "--"
+    decision_last: str = "--"
+    decision_bid: str = "--"
+    decision_ask: str = "--"
+    decision_spread: str = "--"
 
 
 @dataclass(frozen=True, slots=True)

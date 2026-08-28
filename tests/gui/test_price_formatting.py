@@ -79,9 +79,10 @@ def test_opportunity_last_bid_and_ask_use_adaptive_precision() -> None:
         ordered_symbols=("AEMD",),
         entries=(WatchlistEntry(
             symbol="AEMD",
-            latest_price="2.545",
-            bid="2.540",
-            ask="2.550",
+        latest_price="2.545",
+        bid="2.540",
+        ask="2.550",
+        metadata=(("scanner_market_timestamp", "2026-08-28T22:32:22.206000+00:00"),),
         ),),
     )
 
@@ -90,6 +91,7 @@ def test_opportunity_last_bid_and_ask_use_adaptive_precision() -> None:
     assert row.latest_price == "2.545"
     assert row.bid == "2.54"
     assert row.ask == "2.55"
+    assert row.market_timestamp == "2026-08-28T22:32:22.206000+00:00"
 
 
 def test_warrior_price_trigger_and_stop_share_price_policy() -> None:

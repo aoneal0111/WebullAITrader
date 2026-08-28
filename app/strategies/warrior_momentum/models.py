@@ -161,6 +161,8 @@ class MomentumCandidate:
     explanations: tuple[str, ...]
     discovery_qualified: bool = False
     policy_version: str = "CONSERVATIVE_V1"
+    bid: Decimal | None = None
+    ask: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
