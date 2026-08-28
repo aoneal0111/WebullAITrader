@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.gui.formatters.prices import format_price
+
 from app.open_orders.models import (
     OpenOrderSnapshot,
     OpenOrdersCriteriaResult,
@@ -341,15 +343,15 @@ class OrdersPage(QWidget):
     def _price_text(cls, order: OpenOrderSnapshot) -> str:
         if order.limit_price is not None and order.stop_price is not None:
             return (
-                f"L {cls._decimal_text(order.limit_price)} / "
-                f"S {cls._decimal_text(order.stop_price)}"
+                f"L {format_price(order.limit_price)} / "
+                f"S {format_price(order.stop_price)}"
             )
 
         if order.limit_price is not None:
-            return cls._decimal_text(order.limit_price)
+            return format_price(order.limit_price)
 
         if order.stop_price is not None:
-            return cls._decimal_text(order.stop_price)
+            return format_price(order.stop_price)
 
         return "MARKET"
 
@@ -679,13 +681,13 @@ class OrdersPage(QWidget):
             else "--"
         )
         self._limit_price.setText(
-            self._decimal_text(order.limit_price)
+            format_price(order.limit_price)
         )
         self._stop_price.setText(
-            self._decimal_text(order.stop_price)
+            format_price(order.stop_price)
         )
         self._average_fill_price.setText(
-            self._decimal_text(order.average_fill_price)
+            format_price(order.average_fill_price)
         )
         self._remaining_quantity.setText(
             self._decimal_text(order.remaining_quantity)

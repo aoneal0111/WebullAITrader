@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
+from app.gui.formatters.prices import format_price
 from app.gui.models import PositionsSnapshot
 from app.read_models.positions import PositionsReadModelSnapshot
 
@@ -42,11 +43,7 @@ def _format_position(
 ) -> tuple[str, str, str, str]:
     quantity_value = _decimal(quantity, "quantity")
     quantity_label = _format_quantity(str(abs(quantity_value)))
-    average_cost_label = _format_money(
-        average_cost,
-        currency=currency,
-        include_sign=False,
-    )
+    average_cost_label = _format_unit_price(average_cost, currency=currency)
     profit_loss_label = (
         _format_money(
             unrealized_gain_loss,
@@ -58,10 +55,9 @@ def _format_position(
     )
     mark_label = "--"
     if market_value is not None and quantity_value != 0:
-        mark_label = _format_money(
+        mark_label = _format_unit_price(
             str(abs(_decimal(market_value, "market value") / quantity_value)),
             currency=currency,
-            include_sign=False,
         )
     pnl_percent = "--"
     if unrealized_gain_loss is not None:
@@ -112,6 +108,11 @@ def _format_money(
         )
 
     return f"{currency_prefix}{decimal_value:,.2f}"
+
+
+def _format_unit_price(value: str, *, currency: str) -> str:
+    currency_prefix = "$" if currency == "USD" else f"{currency} "
+    return f"{currency_prefix}{format_price(_decimal(value, 'price'))}"
 
 
 def _decimal(value: str, field_name: str) -> Decimal:

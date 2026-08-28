@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.gui.formatters.prices import format_price
 from app.gui.models.watchlist import WatchlistRow, WatchlistSnapshot
 from app.strategies.warrior_momentum.desktop_sidecar import WarriorPaperSnapshot
 
@@ -60,7 +61,7 @@ def _row(item) -> WatchlistRow:
     ))
     return WatchlistRow(
         symbol=candidate.symbol, selected=False,
-        latest_price=f"{candidate.price:,.2f}", change="--",
+        latest_price=format_price(candidate.price), change="--",
         change_percent=f"{candidate.percentage_change:+.2f}%",
         bid="--", ask="--", volume=f"{candidate.volume:,.0f}",
         market_status=candidate.session, last_update=candidate.timestamp.isoformat(),
@@ -76,8 +77,8 @@ def _row(item) -> WatchlistRow:
         strategy_status=("ENTRY BLOCKED" if blocking != "--" and setup is not None and setup.state.value == "TRIGGERED" else candidate.status.value.replace("_", " ")),
         explanations=" | ".join(explanations),
         float_provenance=item.float_provenance.value.replace("MARKET_CAP_PRICE_PROXY", "MCAP/PRICE PROXY"),
-        entry_trigger="--" if item.entry_trigger is None else f"{item.entry_trigger:,.4f}",
-        stop_price="--" if item.stop_price is None else f"{item.stop_price:,.4f}",
+        entry_trigger=format_price(item.entry_trigger),
+        stop_price=format_price(item.stop_price),
         blocking_reasons=blocking,
         warrior_evaluated=True,
         warrior_score=f"{candidate.score.total:.2f}",

@@ -650,6 +650,8 @@ def _discovery_record(value: PointInTimeObservation, candidate: MomentumCandidat
 
 
 def _decision_record(value, candidate, completed, features) -> CaptureRecord:
+    from .setup_diagnostics import production_setup_diagnostics
+
     observation = value.observation
     setup = candidate.setup
     payload = {
@@ -695,6 +697,9 @@ def _decision_record(value, candidate, completed, features) -> CaptureRecord:
             "resistance": setup.resistance,
         },
         "reason_codes": tuple(code.value for code in candidate.reason_codes),
+        "setup_diagnostics": tuple(
+            item.as_payload() for item in production_setup_diagnostics(completed)
+        ),
     }
     return CaptureRecord.create(CaptureRecordType.DECISION, candidate.symbol,
                                 candidate.timestamp, payload)

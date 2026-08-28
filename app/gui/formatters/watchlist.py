@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from app.gui.formatters.prices import format_price
+
 from app.gui.models.watchlist import WatchlistRow, WatchlistSnapshot
 from app.read_models.watchlist import WatchlistState
 from app.read_models.health import HealthState
@@ -179,7 +181,7 @@ def _number(value: str | None, *, signed: bool = False) -> str:
         return "--"
     number = Decimal(value)
     prefix = "+" if signed and number > 0 else ""
-    return f"{prefix}{number:,.2f}"
+    return f"{prefix}{format_price(number)}"
 
 
 def _percent(value: str | None) -> str:

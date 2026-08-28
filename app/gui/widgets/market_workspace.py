@@ -34,6 +34,7 @@ from app.gui.models import (
     MissionStatusSnapshot,
     WatchlistSnapshot,
 )
+from app.gui.formatters.prices import format_price
 from app.gui.widgets.atlas_activity_panel import AtlasActivityPanel
 from app.gui.widgets.ai_thinking_panel import AIThinkingPanel
 from app.gui.widgets.data_table import StyledDataTable
@@ -261,13 +262,13 @@ class EmptyChartCanvas(QFrame):
                 painter.drawRect(box)
                 tooltip_volume = "\u2014" if candle.volume is None else f"{candle.volume:,.0f}"
                 change_line = (
-                    f"Change {change:+,.2f}   Change % {percent:+.2f}%"
+                    f"Change {'+' if change > 0 else ''}{format_price(change)}   Change % {percent:+.2f}%"
                     if percent is not None else "Change --   Change % --"
                 )
                 tooltip = (
                     f"{candle.timestamp.astimezone(NEW_YORK):%Y-%m-%d %H:%M %Z}\n"
-                    f"Open {candle.open:,.2f}   High {candle.high:,.2f}\n"
-                    f"Low {candle.low:,.2f}   Close {candle.close:,.2f}\n"
+                    f"Open {format_price(candle.open)}   High {format_price(candle.high)}\n"
+                    f"Low {format_price(candle.low)}   Close {format_price(candle.close)}\n"
                     f"{change_line}\n"
                     f"Volume {tooltip_volume}"
                 )
