@@ -696,8 +696,10 @@ def _blocking_reasons(candidate: MomentumCandidate, entry_ready: bool) -> tuple[
     if entry_ready:
         return ()
     mapping = {
-        "SPREAD_WIDE": "spread", "NO_CATALYST": "catalyst",
-        "CATALYST_UNKNOWN": "catalyst", "LIQUIDITY_LOW": "liquidity",
+        "PRICE_TOO_LOW": "price", "PRICE_TOO_HIGH": "price",
+        "CHANGE_TOO_LOW": "change", "RVOL_LOW": "rvol",
+        "FLOAT_HIGH": "float", "SPREAD_WIDE": "spread",
+        "LIQUIDITY_LOW": "liquidity",
         "HALTED": "halt", "HALT_UNKNOWN": "halt",
         "NOT_TRADABLE": "tradability", "SESSION_NOT_ALLOWED": "session",
         "STOP_TOO_WIDE": "risk", "STOP_INVALID": "risk",

@@ -9,6 +9,7 @@ from app.momentum_scanner import (
     evaluate_candidate,
     rank_candidates,
 )
+from app.momentum_scanner.rules import MomentumScannerConfig
 
 D = Decimal
 
@@ -49,7 +50,8 @@ def test_candidate_without_news_fails() -> None:
         observation(
             catalyst=CatalystType.NONE,
             catalyst_headline=None,
-        )
+        ),
+        MomentumScannerConfig.conservative_v1(),
     )
 
     assert decision.qualified is False
@@ -58,7 +60,8 @@ def test_candidate_without_news_fails() -> None:
 
 def test_high_float_candidate_fails() -> None:
     decision = evaluate_candidate(
-        observation(float_shares=D("50000000"))
+        observation(float_shares=D("50000000")),
+        MomentumScannerConfig.conservative_v1(),
     )
 
     assert decision.qualified is False
@@ -69,7 +72,8 @@ def test_authoritative_high_float_definitively_fails_low_float() -> None:
         observation(
             float_shares=D("50000000"),
             float_provenance=FloatProvenance.AUTHORITATIVE_FLOAT,
-        )
+        ),
+        MomentumScannerConfig.conservative_v1(),
     )
 
     assert decision.qualified is False
@@ -81,7 +85,8 @@ def test_low_market_cap_price_proxy_safely_passes_low_float() -> None:
         observation(
             float_shares=D("8000000"),
             float_provenance=FloatProvenance.MARKET_CAP_PRICE_PROXY,
-        )
+        ),
+        MomentumScannerConfig.conservative_v1(),
     )
 
     assert "low_float" in decision.passed_rules
@@ -92,7 +97,8 @@ def test_high_market_cap_price_proxy_fails_closed_as_unverified() -> None:
         observation(
             float_shares=D("50000000"),
             float_provenance=FloatProvenance.MARKET_CAP_PRICE_PROXY,
-        )
+        ),
+        MomentumScannerConfig.conservative_v1(),
     )
 
     assert decision.qualified is False
@@ -135,7 +141,8 @@ def test_high_shares_outstanding_upper_bound_fails_closed_as_unverified() -> Non
         observation(
             float_shares=D("50000000"),
             float_provenance=FloatProvenance.SHARES_OUTSTANDING,
-        )
+        ),
+        MomentumScannerConfig.conservative_v1(),
     )
 
     assert decision.qualified is False
@@ -152,13 +159,15 @@ def test_wide_spread_candidate_fails() -> None:
 
 
 def test_ranking_excludes_failed_candidates() -> None:
-    strong = evaluate_candidate(observation(symbol="AAA"))
+    conservative = MomentumScannerConfig.conservative_v1()
+    strong = evaluate_candidate(observation(symbol="AAA"), conservative)
     failed = evaluate_candidate(
         observation(
             symbol="BBB",
             catalyst=CatalystType.NONE,
             catalyst_headline=None,
-        )
+        ),
+        conservative,
     )
 
     ranked = rank_candidates((failed, strong))
@@ -214,7 +223,8 @@ def test_stock_above_twenty_dollars_fails_price_range() -> None:
             bid=D("19.99"),
             ask=D("20.03"),
             asset_class=AssetClass.STOCK,
-        )
+        ),
+        MomentumScannerConfig.conservative_v1(),
     )
 
     assert decision.qualified is False
@@ -257,4 +267,3 @@ def test_crypto_has_no_minimum_price_restriction() -> None:
 
     assert decision.qualified is True
     assert "price_range" in decision.passed_rules
-

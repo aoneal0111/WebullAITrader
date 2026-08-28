@@ -27,6 +27,7 @@ from app.momentum_scanner import (
     CatalystStatus,
     CatalystType,
     rank_candidates,
+    MomentumScannerConfig,
 )
 from app.reference_data.models import ReferenceRecord
 from app.realtime_scanner.models import ReferenceWarmupResult, ScannerSnapshot
@@ -213,7 +214,10 @@ def events(at):
     )
 
 
-def runtime(at, *, positive=True, supplied_events=None, fail=False):
+def runtime(
+    at, *, positive=True, supplied_events=None, fail=False,
+    scanner_config: MomentumScannerConfig = MomentumScannerConfig(),
+):
     record = reference(catalyst=positive)
     store = ScannerReferenceStore()
     store.put(
@@ -231,7 +235,7 @@ def runtime(at, *, positive=True, supplied_events=None, fail=False):
         )
     )
     adapter = MarketEventScannerAdapter(store)
-    pipeline = MomentumScannerPipeline(adapter)
+    pipeline = MomentumScannerPipeline(adapter, scanner_config)
     coordinator = FakeCoordinator(
         pipeline,
         adapter,
@@ -261,11 +265,15 @@ def runtime(at, *, positive=True, supplied_events=None, fail=False):
     )
 
 
-def execute(at, *, positive=True, supplied_events=None):
+def execute(
+    at, *, positive=True, supplied_events=None,
+    scanner_config: MomentumScannerConfig = MomentumScannerConfig(),
+):
     value = runtime(
         at,
         positive=positive,
         supplied_events=supplied_events,
+        scanner_config=scanner_config,
     )
     event_count = len(events(at) if supplied_events is None else supplied_events)
     report = run_diagnostic(
@@ -406,7 +414,10 @@ def test_complete_observation_and_candidate_report() -> None:
 
 
 def test_zero_candidate_run_keeps_thresholds_and_explanations() -> None:
-    _value, report = execute(CORE, positive=False)
+    _value, report = execute(
+        CORE, positive=False,
+        scanner_config=MomentumScannerConfig.conservative_v1(),
+    )
     row = report["complete_observations"][0]
     assert report["accounting"]["qualifying_candidates"] == 0
     assert report["accounting"]["rejected_candidates"] == 1

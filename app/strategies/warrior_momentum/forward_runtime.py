@@ -22,7 +22,7 @@ from .models import (
     ReasonCode, SetupState,
 )
 from .risk import size_position
-from .runtime import WarriorMomentumRuntime
+from .runtime import WarriorMomentumRuntime, entry_rejections
 from .shadow_analysis import ShadowOpportunityAnalyzer
 
 ZERO = Decimal("0")
@@ -133,7 +133,9 @@ class WarriorForwardCaptureService:
         records.append(_discovery_record(value, assessed))
         decision_record = _decision_record(value, assessed, completed, features)
         records.append(decision_record)
-        shadow_reasons = list(code.value for code in assessed.reason_codes)
+        shadow_reasons = list(
+            code.value for code in entry_rejections(assessed, self.config)
+        )
         already_open = signal is not None and signal.symbol in self._paper
         records.extend(self._transition_records(
             assessed, None if already_open else signal, account=account,
@@ -330,7 +332,10 @@ class WarriorForwardCaptureService:
                 continue
             records.append(_transition_record(
                 candidate, transition,
-                tuple(code.value for code in candidate.reason_codes),
+                tuple(
+                    code.value
+                    for code in entry_rejections(candidate, self.config)
+                ),
                 (
                     _gate_diagnostics(candidate, self.config, account=account)
                     if transition is ForwardTransition.ENTRY_BLOCKED else ()
@@ -623,7 +628,9 @@ def _discovery_record(value: PointInTimeObservation, candidate: MomentumCandidat
     spread = candidate.spread_percent
     return CaptureRecord.create(
         CaptureRecordType.DISCOVERY, candidate.symbol, candidate.timestamp,
-        {"session": candidate.session, "last_price": candidate.price,
+        {"policy_version": candidate.policy_version,
+         "discovery_status": "PASSED" if candidate.discovery_qualified else "BLOCKED",
+         "session": candidate.session, "last_price": candidate.price,
          "percentage_change": candidate.percentage_change,
          "bid": observation.bid, "ask": observation.ask, "spread_percent": spread,
          "volume": candidate.volume, "relative_volume": candidate.relative_volume,
@@ -646,6 +653,9 @@ def _decision_record(value, candidate, completed, features) -> CaptureRecord:
     observation = value.observation
     setup = candidate.setup
     payload = {
+        "policy_version": candidate.policy_version,
+        "discovery_status": "PASSED" if candidate.discovery_qualified else "BLOCKED",
+        "entry_status": "READY" if candidate.status is CandidateStatus.ENTRY_READY else "BLOCKED",
         "decision_timestamp": candidate.timestamp,
         "observation": {
             "price": observation.price, "previous_close": observation.previous_close,
@@ -693,7 +703,11 @@ def _decision_record(value, candidate, completed, features) -> CaptureRecord:
 def _transition_record(candidate, transition, reasons, gates) -> CaptureRecord:
     return CaptureRecord.create(
         CaptureRecordType.STATE_TRANSITION, candidate.symbol, candidate.timestamp,
-        {"to": transition.value, "reason_codes": reasons,
+        {"policy_version": candidate.policy_version,
+         "discovery_status": "PASSED" if candidate.discovery_qualified else "BLOCKED",
+         "setup_status": "NO_SETUP" if candidate.setup is None else candidate.setup.state.value,
+         "entry_status": "READY" if transition is ForwardTransition.ENTRY_READY else "BLOCKED",
+         "to": transition.value, "reason_codes": reasons,
          "blocking_gates": tuple(gate for gate in gates if not gate["passed"])},
         identity_parts=(transition.value,),
     )

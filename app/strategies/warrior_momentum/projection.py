@@ -36,7 +36,7 @@ def focus_rows(candidates: tuple[MomentumCandidate, ...]) -> tuple[AtlasFocusRow
             change_percent=item.percentage_change, relative_volume=item.relative_volume,
             float_shares=item.float_shares, volume=item.volume,
             dollar_volume=item.dollar_volume, spread_percent=item.spread_percent,
-            catalyst=item.catalyst_status.value, momentum_score=item.score.total,
+            catalyst=item.catalyst_type.value, momentum_score=item.score.total,
             setup="--" if item.setup is None else item.setup.setup_type.value,
             setup_state="UNKNOWN" if item.setup is None else item.setup.state.value,
             distance_to_hod_percent=item.distance_from_hod_percent,
@@ -55,7 +55,8 @@ def watchlist_metadata(candidate: MomentumCandidate) -> tuple[tuple[str, str], .
         ("scanner_relative_volume", format(candidate.relative_volume, "f")),
         ("scanner_dollar_volume", format(candidate.dollar_volume, "f")),
         ("scanner_spread", "--" if candidate.spread_percent is None else format(candidate.spread_percent, "f")),
-        ("scanner_catalyst", candidate.catalyst_status.value),
+        ("scanner_catalyst", candidate.catalyst_type.value),
+        ("warrior_catalyst_status", candidate.catalyst_status.value),
         ("scanner_session", candidate.session),
         ("warrior_float", "--" if candidate.float_shares is None else format(candidate.float_shares, "f")),
         ("warrior_volume", format(candidate.volume, "f")),
@@ -63,6 +64,9 @@ def watchlist_metadata(candidate: MomentumCandidate) -> tuple[tuple[str, str], .
         ("warrior_setup_state", "UNKNOWN" if setup is None else setup.state.value),
         ("warrior_distance_hod", "--" if candidate.distance_from_hod_percent is None else format(candidate.distance_from_hod_percent, "f")),
         ("warrior_status", candidate.status.value),
+        ("warrior_policy_version", candidate.policy_version),
+        ("warrior_discovery_status", "PASSED" if candidate.discovery_qualified else "BLOCKED"),
+        ("warrior_entry_status", "READY" if candidate.status.value == "ENTRY_READY" else "BLOCKED"),
         ("warrior_explanations", " | ".join(candidate.explanations)),
     )
 

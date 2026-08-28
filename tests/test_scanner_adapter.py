@@ -11,6 +11,7 @@ from app.market_data.models import (
     TradingHaltPayload,
 )
 from app.momentum_scanner.models import CatalystStatus, CatalystType, FloatProvenance
+from app.momentum_scanner.rules import MomentumScannerConfig
 from app.scanner_adapter import (
     MarketEventScannerAdapter,
     MomentumScannerPipeline,
@@ -284,7 +285,10 @@ def test_pipeline_aggregates_rejections_and_catalyst_availability() -> None:
         catalyst=CatalystType.NONE,
         catalyst_status=CatalystStatus.UNAVAILABLE,
     ),))
-    pipeline = MomentumScannerPipeline(MarketEventScannerAdapter(store))
+    pipeline = MomentumScannerPipeline(
+        MarketEventScannerAdapter(store),
+        MomentumScannerConfig.conservative_v1(),
+    )
 
     pipeline.consume(quote_event())
     decision = pipeline.consume(trade_event(size=Decimal("1000000")))
@@ -315,7 +319,10 @@ def test_qualification_diagnostics_report_unverified_float_proxy() -> None:
             ),
         )
     )
-    pipeline = MomentumScannerPipeline(MarketEventScannerAdapter(store))
+    pipeline = MomentumScannerPipeline(
+        MarketEventScannerAdapter(store),
+        MomentumScannerConfig.conservative_v1(),
+    )
 
     pipeline.consume(quote_event())
     decision = pipeline.consume(trade_event(size=Decimal("1000000")))

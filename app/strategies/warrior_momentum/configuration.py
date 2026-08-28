@@ -15,6 +15,8 @@ WARRIOR_ENTRY_ALLOWED_SESSIONS = frozenset({
     ScannerSession.REGULAR.value,
     ScannerSession.AFTER_HOURS.value,
 })
+BALANCED_POLICY_VERSION = "BALANCED_V1"
+CONSERVATIVE_POLICY_VERSION = "CONSERVATIVE_V1"
 
 
 class AtlasStrategy(StrEnum):
@@ -64,12 +66,13 @@ class ScoreWeights:
 @dataclass(frozen=True, slots=True)
 class DiscoveryConfig:
     minimum_price: Decimal = Decimal("1.00")
-    maximum_price: Decimal = Decimal("20.00")
-    minimum_percentage_change: Decimal = Decimal("10")
-    preferred_relative_volume: Decimal = Decimal("5")
-    preferred_maximum_float: Decimal = Decimal("20000000")
-    minimum_volume: Decimal = Decimal("100000")
+    maximum_price: Decimal = Decimal("30.00")
+    minimum_percentage_change: Decimal = Decimal("5")
+    minimum_relative_volume: Decimal = Decimal("2")
+    maximum_float: Decimal = Decimal("50000000")
+    minimum_volume: Decimal = Decimal("0")
     minimum_dollar_volume: Decimal = Decimal("1000000")
+    maximum_spread_percent: Decimal = Decimal("1.50")
     watch_score: Decimal = Decimal("25")
     near_qualified_score: Decimal = Decimal("45")
     qualified_score: Decimal = Decimal("60")
@@ -94,11 +97,11 @@ class SetupConfig:
 
 @dataclass(frozen=True, slots=True)
 class EntryConfig:
-    minimum_momentum_score: Decimal = Decimal("60")
-    minimum_setup_score: Decimal = Decimal("60")
-    maximum_spread_percent: Decimal = Decimal("1")
-    minimum_dollar_volume: Decimal = Decimal("5000000")
-    require_catalyst_for_entry: bool = True
+    minimum_momentum_score: Decimal = Decimal("55")
+    minimum_setup_score: Decimal = Decimal("55")
+    maximum_spread_percent: Decimal = Decimal("1.25")
+    minimum_dollar_volume: Decimal = Decimal("2500000")
+    require_catalyst_for_entry: bool = False
     maximum_risk_per_share: Decimal = Decimal("1.00")
     allowed_sessions: frozenset[str] = WARRIOR_ENTRY_ALLOWED_SESSIONS
 
@@ -136,14 +139,38 @@ class WarriorMomentumConfig:
     top_gapper_count: int = 10
     telemetry_symbol_limit: int = 10
     live_execution_enabled: bool = False
+    policy_version: str = BALANCED_POLICY_VERSION
 
     def __post_init__(self) -> None:
         if self.live_execution_enabled:
             raise ValueError("WARRIOR_MOMENTUM_V1 is paper/replay only")
+
+    @classmethod
+    def conservative_v1(cls) -> "WarriorMomentumConfig":
+        """Return the exact pre-Balanced policy for research comparison."""
+        return cls(
+            discovery=DiscoveryConfig(
+                maximum_price=Decimal("20.00"),
+                minimum_percentage_change=Decimal("10"),
+                minimum_relative_volume=Decimal("5"),
+                maximum_float=Decimal("20000000"),
+                minimum_volume=Decimal("100000"),
+                maximum_spread_percent=Decimal("1"),
+            ),
+            entry=EntryConfig(
+                minimum_momentum_score=Decimal("60"),
+                minimum_setup_score=Decimal("60"),
+                maximum_spread_percent=Decimal("1"),
+                minimum_dollar_volume=Decimal("5000000"),
+                require_catalyst_for_entry=True,
+            ),
+            policy_version=CONSERVATIVE_POLICY_VERSION,
+        )
 
 
 __all__ = [
     "AtlasStrategy", "StrategySelection", "ScoreWeights", "DiscoveryConfig",
     "SetupConfig", "EntryConfig", "RiskConfig", "TradeManagementConfig",
     "WarriorMomentumConfig", "WARRIOR_ENTRY_ALLOWED_SESSIONS",
+    "BALANCED_POLICY_VERSION", "CONSERVATIVE_POLICY_VERSION",
 ]

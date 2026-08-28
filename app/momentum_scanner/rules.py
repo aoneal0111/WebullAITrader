@@ -15,18 +15,35 @@ from app.momentum_scanner.models import (
 
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
+BALANCED_POLICY_VERSION = "BALANCED_V1"
+CONSERVATIVE_POLICY_VERSION = "CONSERVATIVE_V1"
 
 
 @dataclass(frozen=True, slots=True)
 class MomentumScannerConfig:
     minimum_price: Decimal = Decimal("1")
-    maximum_price: Decimal = Decimal("20")
-    minimum_percentage_change: Decimal = Decimal("10")
-    minimum_relative_volume: Decimal = Decimal("5")
-    maximum_float_shares: Decimal = Decimal("20000000")
-    minimum_dollar_volume: Decimal = Decimal("5000000")
-    maximum_spread_percent: Decimal = Decimal("1")
-    require_catalyst: bool = True
+    maximum_price: Decimal = Decimal("30")
+    minimum_percentage_change: Decimal = Decimal("5")
+    minimum_relative_volume: Decimal = Decimal("2")
+    maximum_float_shares: Decimal = Decimal("50000000")
+    minimum_dollar_volume: Decimal = Decimal("1000000")
+    maximum_spread_percent: Decimal = Decimal("1.50")
+    require_catalyst: bool = False
+    policy_version: str = BALANCED_POLICY_VERSION
+
+    @classmethod
+    def conservative_v1(cls) -> "MomentumScannerConfig":
+        """Return the pre-Balanced scanner policy for research reconstruction."""
+        return cls(
+            maximum_price=Decimal("20"),
+            minimum_percentage_change=Decimal("10"),
+            minimum_relative_volume=Decimal("5"),
+            maximum_float_shares=Decimal("20000000"),
+            minimum_dollar_volume=Decimal("5000000"),
+            maximum_spread_percent=Decimal("1"),
+            require_catalyst=True,
+            policy_version=CONSERVATIVE_POLICY_VERSION,
+        )
 
 
 def calculate_metrics(observation: ScannerObservation) -> ScannerMetrics:
@@ -145,7 +162,11 @@ def evaluate_candidate(
     technical_failed = tuple(rule for rule in failed if rule != "news_catalyst")
     technical_qualifies = not technical_failed
     cohorts: list[str] = []
-    if not failed:
+    strict_catalyst_qualifies = (
+        technical_qualifies
+        and observation.catalyst is not CatalystType.NONE
+    )
+    if strict_catalyst_qualifies:
         cohorts.append("A_STRICT_CATALYST")
     if technical_qualifies:
         cohorts.append("B_TECHNICAL_ONLY")
@@ -214,6 +235,7 @@ def evaluate_candidate(
         corroborating_sources=observation.corroborating_sources,
         catalyst_evidence_count=observation.catalyst_evidence_count,
         catalyst_event_count=observation.catalyst_event_count,
+        policy_version=config.policy_version,
     )
 
 
@@ -245,4 +267,3 @@ def _score(
             score += 8
 
     return min(score, 100)
-

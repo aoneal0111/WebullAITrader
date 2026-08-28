@@ -52,7 +52,9 @@ def observation(
 
 
 def test_technical_qualification_is_independent_but_normal_rule_stays_strict() -> None:
-    decision = evaluate_candidate(observation())
+    decision = evaluate_candidate(
+        observation(), MomentumScannerConfig.conservative_v1(),
+    )
 
     assert decision.qualified is False
     assert decision.technical_qualifies_without_catalyst is True
@@ -81,7 +83,9 @@ def test_cohorts_include_corroborated_and_structured_primary() -> None:
 
 def test_bivi_counterfactual_is_recorded_without_fake_fill(tmp_path) -> None:
     journal = PaperTradeExperimentJournal(tmp_path / "experiment.sqlite3")
-    record = journal.record_candidate(evaluate_candidate(observation()))
+    record = journal.record_candidate(evaluate_candidate(
+        observation(), MomentumScannerConfig.conservative_v1(),
+    ))
 
     assert record.features["technical_qualifies_without_catalyst"] is True
     assert record.features["normal_qualifies"] is False

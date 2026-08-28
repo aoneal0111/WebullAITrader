@@ -156,6 +156,8 @@ class MomentumCandidate:
     distance_from_hod_percent: Decimal | None
     reason_codes: tuple[ReasonCode, ...]
     explanations: tuple[str, ...]
+    discovery_qualified: bool = False
+    policy_version: str = "CONSERVATIVE_V1"
 
 
 @dataclass(frozen=True, slots=True)

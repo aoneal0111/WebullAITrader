@@ -9,7 +9,10 @@ from app.momentum_scanner.models import CatalystStatus, CatalystType, ScannerObs
 from app.momentum_scanner.rules import calculate_metrics
 
 from .configuration import AtlasStrategy, StrategySelection, WarriorMomentumConfig
-from .discovery import candidate_status, detect_stocks_in_play, discovery_reasons
+from .discovery import (
+    candidate_status, detect_stocks_in_play, discovery_qualified,
+    discovery_reasons,
+)
 from .features import build_features, completed_bars_as_of
 from .models import (
     STRATEGY_ID, CandidateStatus, MinuteBar, MomentumCandidate, MomentumEntrySignal,
@@ -65,6 +68,8 @@ class WarriorMomentumRuntime:
             halted=observation.halted,
             distance_from_hod_percent=None if features is None else features.distance_from_hod_percent,
             reason_codes=tuple(dict.fromkeys(reasons)), explanations=(),
+            discovery_qualified=discovery_qualified(tuple(reasons)),
+            policy_version=self.config.policy_version,
         )
         return replace(candidate, explanations=_explanations(candidate))
 
@@ -75,7 +80,7 @@ class WarriorMomentumRuntime:
                      for index, item in enumerate(ordered, 1))
 
     def entry_signal(self, candidate: MomentumCandidate) -> MomentumEntrySignal | None:
-        reasons = _entry_rejections(candidate, self.config)
+        reasons = entry_rejections(candidate, self.config)
         setup = candidate.setup
         if reasons or setup is None or setup.trigger is None or setup.stop_price is None or setup.stop_model is None:
             return None
@@ -97,7 +102,7 @@ class WarriorMomentumRuntime:
 
     def assess_entry(self, candidate: MomentumCandidate) -> tuple[MomentumCandidate, MomentumEntrySignal | None]:
         """Apply strict entry gates without hiding the discovery candidate."""
-        rejections = _entry_rejections(candidate, self.config)
+        rejections = entry_rejections(candidate, self.config)
         signal = self.entry_signal(candidate)
         if signal is not None:
             return replace(candidate, status=CandidateStatus.ENTRY_READY), signal
@@ -128,9 +133,16 @@ def create_selected_experiment(selection: StrategySelection | None = None,
     return None
 
 
-def _entry_rejections(candidate: MomentumCandidate, config: WarriorMomentumConfig) -> tuple[ReasonCode, ...]:
+def entry_rejections(candidate: MomentumCandidate, config: WarriorMomentumConfig) -> tuple[ReasonCode, ...]:
     reasons: list[ReasonCode] = []
     setup = candidate.setup
+    discovery_gate_codes = {
+        ReasonCode.PRICE_TOO_LOW, ReasonCode.PRICE_TOO_HIGH,
+        ReasonCode.CHANGE_TOO_LOW, ReasonCode.RVOL_LOW, ReasonCode.FLOAT_HIGH,
+        ReasonCode.LIQUIDITY_LOW, ReasonCode.SPREAD_WIDE,
+        ReasonCode.HALTED, ReasonCode.NOT_TRADABLE,
+    }
+    reasons.extend(code for code in candidate.reason_codes if code in discovery_gate_codes)
     if candidate.score.total < config.entry.minimum_momentum_score:
         reasons.append(ReasonCode.RISK_REJECTED)
     if setup is None or setup.state is not SetupState.TRIGGERED or setup.score < config.entry.minimum_setup_score:
@@ -161,6 +173,8 @@ def _explanations(candidate: MomentumCandidate) -> tuple[str, ...]:
     result.append("Float unavailable" if candidate.float_shares is None else f"Float {candidate.float_shares / Decimal('1000000'):.1f}M")
     if candidate.catalyst_status is CatalystStatus.TRUE:
         result.append(f"{candidate.catalyst_type.value.replace('_', ' ').title()} catalyst")
+    elif candidate.catalyst_type is CatalystType.NONE and candidate.catalyst_status is CatalystStatus.FALSE:
+        result.append("Catalyst none (quality factor, not a Balanced V1 blocker)")
     elif candidate.catalyst_status in {CatalystStatus.UNKNOWN, CatalystStatus.UNAVAILABLE}:
         result.append(f"Catalyst {candidate.catalyst_status.value.lower()}")
     if candidate.distance_from_hod_percent is not None:
@@ -172,4 +186,4 @@ def _explanations(candidate: MomentumCandidate) -> tuple[str, ...]:
     return tuple(result)
 
 
-__all__ = ["WarriorMomentumRuntime", "create_selected_experiment"]
+__all__ = ["WarriorMomentumRuntime", "create_selected_experiment", "entry_rejections"]

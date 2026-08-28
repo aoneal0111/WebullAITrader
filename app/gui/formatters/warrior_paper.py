@@ -47,10 +47,10 @@ def format_warrior_paper(snapshot: WarriorPaperSnapshot) -> WarriorPaperView:
 def _row(item) -> WatchlistRow:
     candidate = item.candidate
     setup = candidate.setup
-    raw_blockers = tuple(dict.fromkeys((
-        *(code.value for code in candidate.reason_codes),
-        *item.blocking_reasons,
-    )))
+    # Candidate reason codes include non-blocking quality facts (for example
+    # catalyst NONE under Balanced V1).  The sidecar's entry blockers are the
+    # authoritative presentation source.
+    raw_blockers = tuple(dict.fromkeys(item.blocking_reasons))
     readable_blockers = tuple(dict.fromkeys(
         _readable_blocker(reason) for reason in raw_blockers
     ))
@@ -68,7 +68,7 @@ def _row(item) -> WatchlistRow:
         relative_volume=f"{candidate.relative_volume:.2f}x",
         dollar_volume=f"${candidate.dollar_volume:,.0f}",
         spread="--" if candidate.spread_percent is None else f"{candidate.spread_percent:.2f}%",
-        catalyst=candidate.catalyst_status.value, session=candidate.session,
+        catalyst=candidate.catalyst_type.value, session=candidate.session,
         float_shares=("--" if candidate.float_shares is None else f"{candidate.float_shares / 1_000_000:.1f}M"),
         setup="NO SETUP" if setup is None else setup.setup_type.value.replace("_", " "),
         setup_state="--" if setup is None else setup.state.value,
