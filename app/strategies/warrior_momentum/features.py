@@ -59,6 +59,32 @@ def completed_bars_as_of(
     )
 
 
+def current_completed_bar_tail(
+    bars: tuple[MinuteBar, ...],
+    as_of: datetime,
+    *,
+    interval: timedelta = BAR_INTERVAL,
+) -> tuple[MinuteBar, ...]:
+    """Return a contiguous tail ending in the immediately prior minute.
+
+    Bar timestamps denote opens.  The newest bar supplied to a current live
+    setup evaluation must therefore end exactly at the evaluation minute's
+    boundary.  This comparison deliberately does not require both timestamps
+    to share a scanner session, so valid PREMARKET/REGULAR/AFTER_HOURS boundary
+    evidence remains eligible.
+    """
+    if as_of.tzinfo is None:
+        raise ValueError("as_of must be timezone-aware")
+    completed = completed_bars_as_of(bars, as_of)
+    tail = contiguous_tail(completed, interval=interval)
+    if not tail:
+        return ()
+    evaluation_minute = as_of.replace(second=0, microsecond=0)
+    if tail[-1].timestamp + interval != evaluation_minute:
+        return ()
+    return tail
+
+
 def rolling_change(bars: tuple[MinuteBar, ...], minutes: int) -> Decimal | None:
     ordered = aligned_bars(bars)
     if minutes <= 0:
@@ -144,6 +170,7 @@ __all__ = [
     "aligned_bars",
     "contiguous_tail",
     "completed_bars_as_of",
+    "current_completed_bar_tail",
     "rolling_change",
     "build_features",
 ]

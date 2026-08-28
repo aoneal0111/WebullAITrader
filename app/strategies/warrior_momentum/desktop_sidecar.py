@@ -20,7 +20,7 @@ from app.scanner_adapter.adapter import MarketEventScannerAdapter
 from app.services.runtime_diagnostics import log_runtime_exception
 
 from .configuration import WarriorMomentumConfig
-from .features import contiguous_tail
+from .features import contiguous_tail, current_completed_bar_tail
 from .forward_models import (
     CAPTURE_SCHEMA_VERSION, CaptureMetrics, CaptureRecord, CaptureRecordType,
     FloatProvenance, ForwardCaptureConfiguration, PaperAccountContext,
@@ -482,7 +482,10 @@ class WarriorDesktopSidecar:
         if event.event_type is MarketEventType.TRADE and isinstance(event.payload, TradePayload):
             completed = self._aggregate_trade(event, observation.current_volume)
         if symbol not in self._first_observed or completed:
-            history = tuple(self._bars.get(symbol, ())[-120:])
+            history = current_completed_bar_tail(
+                tuple(self._bars.get(symbol, ())[-120:]),
+                observation.timestamp,
+            )
             quote_freshness = last_price_freshness = None
             state = adapter.state_for(symbol)
             evaluated_at = self._aware_now()

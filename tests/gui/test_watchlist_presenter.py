@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+from app.gui.formatters.watchlist import format_watchlist
 from app.gui.models import WatchlistSnapshot
 from app.gui.presenters import WatchlistPresenter
 from app.operations_core import ApplicationState
@@ -136,6 +137,55 @@ def test_watchlist_presenter_projects_scanner_classification() -> None:
     ) == (
         ("QUAL", "QUALIFYING"),
         ("WATCH", "WATCHING"),
+    )
+
+
+def test_watchlist_presenter_exposes_independent_entry_data_freshness() -> None:
+    def entry(
+        symbol: str, metadata: tuple[tuple[str, str], ...],
+    ) -> WatchlistEntry:
+        return WatchlistEntry(symbol=symbol, metadata=metadata)
+
+    state = WatchlistState(
+        ordered_symbols=("OLDQUOTE", "OLDLAST", "FRESH"),
+        entries=(
+            entry("OLDQUOTE", (
+                ("scanner_freshness", "STALE"),
+                ("scanner_market_age_ms", "57100"),
+                ("scanner_last_price_freshness", "LIVE"),
+                ("scanner_last_price_age_ms", "100"),
+                ("scanner_quote_freshness", "STALE"),
+                ("scanner_quote_age_ms", "57100"),
+            )),
+            entry("OLDLAST", (
+                ("scanner_freshness", "STALE"),
+                ("scanner_market_age_ms", "30200"),
+                ("scanner_last_price_freshness", "STALE"),
+                ("scanner_last_price_age_ms", "30200"),
+                ("scanner_quote_freshness", "LIVE"),
+                ("scanner_quote_age_ms", "200"),
+            )),
+            entry("FRESH", (
+                ("scanner_freshness", "LIVE"),
+                ("scanner_market_age_ms", "300"),
+                ("scanner_last_price_freshness", "LIVE"),
+                ("scanner_last_price_age_ms", "300"),
+                ("scanner_quote_freshness", "LIVE"),
+                ("scanner_quote_age_ms", "200"),
+            )),
+        ),
+    )
+
+    rows = {row.symbol: row for row in format_watchlist(state).rows}
+
+    assert rows["OLDQUOTE"].freshness == (
+        "LAST LIVE | QUOTE 57.1s | ENTRY DATA STALE"
+    )
+    assert rows["OLDLAST"].freshness == (
+        "LAST 30.2s | QUOTE LIVE | ENTRY DATA STALE"
+    )
+    assert rows["FRESH"].freshness == (
+        "LAST LIVE | QUOTE LIVE | ENTRY DATA LIVE"
     )
 
 

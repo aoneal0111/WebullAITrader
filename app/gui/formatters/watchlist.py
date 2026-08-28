@@ -155,6 +155,10 @@ def _row(entry, selected_symbol: str | None) -> WatchlistRow:
                 freshness=_freshness(
                     metadata.get("scanner_freshness", "--"),
                     metadata.get("scanner_market_age_ms"),
+                    last_state=metadata.get("scanner_last_price_freshness"),
+                    last_age_ms=metadata.get("scanner_last_price_age_ms"),
+                    quote_state=metadata.get("scanner_quote_freshness"),
+                    quote_age_ms=metadata.get("scanner_quote_age_ms"),
                 ),
                 session=metadata.get("scanner_session", "--"),
                 classification=metadata.get(
@@ -199,10 +203,38 @@ def _multiple(value: str | None) -> str:
     return "--" if value is None else f"{Decimal(value):,.2f}x"
 
 
-def _freshness(state: str, age_ms: str | None) -> str:
+def _freshness(
+    state: str,
+    age_ms: str | None,
+    *,
+    last_state: str | None = None,
+    last_age_ms: str | None = None,
+    quote_state: str | None = None,
+    quote_age_ms: str | None = None,
+) -> str:
     if state == "--" or age_ms is None:
         return state
+    if (
+        last_state is not None
+        and quote_state is not None
+        and (last_state != "MISSING" or quote_state != "MISSING")
+    ):
+        return " | ".join((
+            _component_freshness("LAST", last_state, last_age_ms),
+            _component_freshness("QUOTE", quote_state, quote_age_ms),
+            f"ENTRY DATA {state}",
+        ))
     return f"{state} | {Decimal(age_ms) / Decimal('1000'):.1f}s"
+
+
+def _component_freshness(
+    label: str, state: str, age_ms: str | None,
+) -> str:
+    if state == "LIVE":
+        return f"{label} LIVE"
+    if age_ms not in {None, "--"}:
+        return f"{label} {Decimal(age_ms) / Decimal('1000'):.1f}s"
+    return f"{label} {state}"
 
 
 def _money(value: str | None) -> str:

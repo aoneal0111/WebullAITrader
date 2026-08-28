@@ -148,7 +148,19 @@ class ScannerSnapshotPublisher:
             session,
             display_candidates,
             tuple(
-                candidate.symbol in stale_symbols
+                (
+                    candidate.symbol in stale_symbols,
+                    _component_freshness(
+                        candidate.last_price_timestamp,
+                        now=now,
+                        stale_after=self._stale_after,
+                    )[0],
+                    _component_freshness(
+                        candidate.quote_timestamp,
+                        now=now,
+                        stale_after=self._stale_after,
+                    )[0],
+                )
                 for candidate in display_candidates
             ),
         )
@@ -167,6 +179,16 @@ class ScannerSnapshotPublisher:
             evaluation_timestamp = candidate.observed_at or snapshot.timestamp
             market_age = max(timedelta(), now - market_timestamp)
             evaluation_age = max(timedelta(), now - evaluation_timestamp)
+            last_freshness, last_age = _component_freshness(
+                candidate.last_price_timestamp,
+                now=now,
+                stale_after=self._stale_after,
+            )
+            quote_freshness, quote_age = _component_freshness(
+                candidate.quote_timestamp,
+                now=now,
+                stale_after=self._stale_after,
+            )
             stale = candidate.symbol in stale_symbols
             metadata = (
                 ("scanner_rank", str(candidate.scanner_rank or display_rank)),
@@ -194,6 +216,10 @@ class ScannerSnapshotPublisher:
                 ("scanner_failed_rules", ", ".join(candidate.failed_rules) or "--"),
                 ("scanner_freshness", "STALE" if stale else "LIVE"),
                 ("scanner_market_age_ms", str(int(market_age.total_seconds() * 1000))),
+                ("scanner_last_price_freshness", last_freshness),
+                ("scanner_last_price_age_ms", _age_ms(last_age)),
+                ("scanner_quote_freshness", quote_freshness),
+                ("scanner_quote_age_ms", _age_ms(quote_age)),
                 ("scanner_evaluation_age_ms", str(int(evaluation_age.total_seconds() * 1000))),
                 ("scanner_market_timestamp", market_timestamp.isoformat()),
                 ("scanner_evaluation_timestamp", evaluation_timestamp.isoformat()),
@@ -439,7 +465,28 @@ def _market_data_is_stale(
     decision: ScannerDecision, *, now: datetime,
     stale_after: timedelta, fallback: datetime,
 ) -> bool:
+    if (
+        decision.last_price_timestamp is None
+        and decision.quote_timestamp is not None
+    ) or (
+        decision.quote_timestamp is None
+        and decision.last_price_timestamp is not None
+    ):
+        return True
     return now - _market_timestamp(decision, fallback) > stale_after
+
+
+def _component_freshness(
+    timestamp: datetime | None, *, now: datetime, stale_after: timedelta,
+) -> tuple[str, timedelta | None]:
+    if timestamp is None:
+        return "MISSING", None
+    age = max(timedelta(), now - timestamp)
+    return ("STALE" if age > stale_after else "LIVE"), age
+
+
+def _age_ms(value: timedelta | None) -> str:
+    return "--" if value is None else str(int(value.total_seconds() * 1000))
 
 
 def _latency_ms(start: datetime | None, end: datetime | None) -> str:

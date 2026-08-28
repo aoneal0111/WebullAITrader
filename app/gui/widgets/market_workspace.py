@@ -848,7 +848,7 @@ class CompactWatchlistPanel(QWidget):
             "Chg %": 48, "RVOL": 45, "Rel Vol": 48, "Volume": 70,
             "Float": 92, "$ Volume": 108, "Dollar Vol": 108,
             "Catalyst": 120, "Score": 44, "Setup": 62, "Status": 62,
-            "Freshness": 56,
+            "Freshness": 220,
         }
         for index, name in enumerate(columns):
             self._table.setColumnWidth(index, widths.get(name, 118))

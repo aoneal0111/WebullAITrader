@@ -193,6 +193,71 @@ def test_stale_entry_critical_data_fails_closed_and_fresh_data_restores_eligibil
     assert fresh_signal is not None
 
 
+@pytest.mark.parametrize(
+    ("quote_age", "last_age"),
+    (
+        (D("30.0"), D("0.1")),
+        (D("0.1"), D("30.0")),
+        (D("30.0"), D("30.0")),
+    ),
+    ids=("old-quote-fresh-last", "fresh-quote-old-last", "both-stale"),
+)
+def test_each_stale_market_component_independently_blocks_paper_submission(
+    capture, quote_age: Decimal, last_age: Decimal,
+) -> None:
+    store, writer, service = capture
+
+    candidate, signal = service.observe(
+        point(
+            session="AFTER_HOURS",
+            quote_freshness_seconds=quote_age,
+            last_price_freshness_seconds=last_age,
+        ),
+        account=account(),
+    )
+    writer.flush()
+
+    assert candidate.setup is not None
+    assert candidate.setup.state.value == "TRIGGERED"
+    assert candidate.status.value == "INELIGIBLE_FOR_EXECUTION"
+    assert "STALE_MARKET_DATA" in {code.value for code in candidate.reason_codes}
+    assert signal is None
+    assert not store.records(record_type=CaptureRecordType.PAPER_FILL)
+
+
+def test_stale_market_data_remains_visible_with_another_blocker(capture) -> None:
+    store, writer, service = capture
+
+    candidate, signal = service.observe(
+        point(
+            bars=(),
+            historical_bars_available=False,
+            quote_freshness_seconds=D("30"),
+            last_price_freshness_seconds=D("0.1"),
+        ),
+        account=account(),
+    )
+    writer.flush()
+
+    reasons = tuple(code.value for code in candidate.reason_codes)
+    assert reasons[-2:] == ("NO_SETUP", "STALE_MARKET_DATA")
+    assert candidate.status.value == "INELIGIBLE_FOR_EXECUTION"
+    assert signal is None
+    transitions = tuple(
+        item.payload
+        for item in store.records(record_type=CaptureRecordType.STATE_TRANSITION)
+        if item.payload["to"] == "ENTRY_BLOCKED"
+    )
+    assert transitions
+    assert tuple(transitions[-1]["reason_codes"][-2:]) == (
+        "NO_SETUP", "STALE_MARKET_DATA",
+    )
+    assert "market_data" in {
+        gate["gate"] for gate in transitions[-1]["blocking_gates"]
+    }
+    assert not store.records(record_type=CaptureRecordType.PAPER_FILL)
+
+
 def test_after_hours_signal_reaches_normal_paper_gateway_once(tmp_path: Path) -> None:
     store = ForwardCaptureStore(tmp_path / "after-hours-forward.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)

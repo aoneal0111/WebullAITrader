@@ -20,6 +20,7 @@ from app.strategies.warrior_momentum import (
     WarriorMomentumRuntime, WarriorPaperSnapshot, build_cumulative_reports,
     evidence_maturity, strategy_configuration_fingerprint,
 )
+from app.strategies.warrior_momentum.features import current_completed_bar_tail
 
 T0 = datetime(2026, 8, 11, 14, 30, tzinfo=UTC)
 
@@ -270,6 +271,86 @@ def _hod_bars() -> tuple[MinuteBar, ...]:
         item(2, "9.9", "9.99", "9.8", "9.92"), item(3, "9.92", "10", "9.85", "9.95"),
         item(4, "9.96", "10.2", "9.94", "10.10", "300"),
     )
+
+
+def test_stale_historical_tail_cannot_progress_current_live_setup(
+    tmp_path: Path,
+) -> None:
+    evaluation = T0 + timedelta(minutes=20, seconds=25)
+    path = tmp_path / "stale-history.sqlite3"
+    scanner = adapter()
+    sidecar = WarriorDesktopSidecar(
+        enabled=True, storage_path=path, clock=lambda: evaluation,
+    )
+    sidecar.bind_scanner_adapter(scanner)
+    sidecar.start("PAPER")
+    try:
+        assert sidecar.preload_historical_bars("XYZ", _hod_bars()) == 5
+
+        deliver(scanner, sidecar, quote(evaluation))
+        deliver(scanner, sidecar, trade(2, evaluation, "10.20"))
+        assert sidecar._writer is not None
+        sidecar._writer.flush()
+
+        store = ForwardCaptureStore(path)
+        decision = store.records(record_type=CaptureRecordType.DECISION)[-1]
+        quality = store.records(record_type=CaptureRecordType.DATA_QUALITY)[-1]
+        assert decision.payload["bar_timestamps"] == []
+        assert decision.payload["setup"] is None
+        assert quality.payload["missing_historical_bars"] is True
+        assert sidecar.snapshot().items[0].candidate.setup is None
+    finally:
+        sidecar.stop()
+
+
+def test_current_contiguous_tail_preserves_existing_live_setup_behavior(
+    tmp_path: Path,
+) -> None:
+    evaluation = T0 + timedelta(minutes=5, seconds=25)
+    path = tmp_path / "current-history.sqlite3"
+    scanner = adapter()
+    sidecar = WarriorDesktopSidecar(
+        enabled=True, storage_path=path, clock=lambda: evaluation,
+    )
+    sidecar.bind_scanner_adapter(scanner)
+    sidecar.start("PAPER")
+    try:
+        assert sidecar.preload_historical_bars("XYZ", _hod_bars()) == 5
+
+        deliver(scanner, sidecar, quote(evaluation))
+        deliver(scanner, sidecar, trade(2, evaluation, "10.20"))
+        assert sidecar._writer is not None
+        sidecar._writer.flush()
+
+        store = ForwardCaptureStore(path)
+        decision = store.records(record_type=CaptureRecordType.DECISION)[-1]
+        assert len(decision.payload["bar_timestamps"]) == 5
+        assert decision.payload["setup"]["state"] == "TRIGGERED"
+        assert sidecar.snapshot().items[0].candidate.setup is not None
+    finally:
+        sidecar.stop()
+
+
+@pytest.mark.parametrize(
+    ("evaluation", "prior_session", "evaluation_session"),
+    (
+        (datetime(2026, 8, 11, 8, 0, 25, tzinfo=UTC), "OVERNIGHT", "PREMARKET"),
+        (datetime(2026, 8, 11, 13, 30, 25, tzinfo=UTC), "PREMARKET", "REGULAR"),
+        (datetime(2026, 8, 11, 20, 0, 25, tzinfo=UTC), "REGULAR", "AFTER_HOURS"),
+    ),
+)
+def test_current_completed_tail_accepts_legitimate_session_boundary(
+    evaluation: datetime,
+    prior_session: str,
+    evaluation_session: str,
+) -> None:
+    prior_open = evaluation.replace(second=0, microsecond=0) - timedelta(minutes=1)
+    source = _hod_bars()[-1]
+    prior = replace(source, timestamp=prior_open)
+
+    assert scanner_session(prior.timestamp).value == prior_session
+    assert scanner_session(evaluation).value == evaluation_session
+    assert current_completed_bar_tail((prior,), evaluation) == (prior,)
 
 
 def test_warrior_focus_maps_trigger_stop_provenance_and_blocked_reasons() -> None:

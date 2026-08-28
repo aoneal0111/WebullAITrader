@@ -135,7 +135,7 @@ class WarriorForwardCaptureService:
             or value.quote_freshness_seconds
             > self.capture_config.quote_stale_after_seconds
         )
-        if signal is not None and market_data_stale:
+        if market_data_stale:
             assessed = replace(
                 assessed,
                 status=CandidateStatus.INELIGIBLE_FOR_EXECUTION,
@@ -791,6 +791,9 @@ def _gate_diagnostics(candidate, config, account):
          "observed": candidate.session, "limit": tuple(sorted(config.entry.allowed_sessions))},
         {"gate": "risk_distance", "passed": risk is not None and ZERO < risk <= config.entry.maximum_risk_per_share,
          "observed": risk, "limit": config.entry.maximum_risk_per_share},
+        {"gate": "market_data", "passed": ReasonCode.STALE_MARKET_DATA not in candidate.reason_codes,
+         "observed": "STALE" if ReasonCode.STALE_MARKET_DATA in candidate.reason_codes else "LIVE",
+         "limit": "LIVE"},
         {"gate": "paper_risk_context", "passed": account is not None and account.risk_engine_approved,
          "observed": None if account is None else account.risk_engine_approved, "limit": True},
     )

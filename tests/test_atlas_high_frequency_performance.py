@@ -887,6 +887,92 @@ def test_scanner_freshness_uses_market_timestamp_not_evaluation_timestamp() -> N
     assert removals == []
 
 
+def test_scanner_freshness_preserves_independent_last_and_quote_timestamps() -> None:
+    """A fresh component must not overwrite the other component's source age."""
+    old = NOW - timedelta(seconds=30)
+
+    for symbol, last_timestamp, quote_timestamp in (
+        ("OLDQUOTE", NOW, old),
+        ("OLDLAST", old, NOW),
+    ):
+        events = []
+        publisher = ScannerSnapshotPublisher(
+            events.append,
+            lambda: 1,
+            source="component-freshness-regression",
+            stale_after=timedelta(seconds=5),
+        )
+        candidate = replace(
+            _candidate(symbol),
+            timestamp=min(last_timestamp, quote_timestamp),
+            observed_at=NOW,
+            last_price_timestamp=last_timestamp,
+            quote_timestamp=quote_timestamp,
+            last_price_received_timestamp=NOW,
+            quote_received_timestamp=NOW,
+        )
+        snapshot = ScannerSnapshot(
+            timestamp=NOW,
+            active_symbols=(symbol,),
+            decisions=(candidate,),
+            ranked_candidates=(candidate,),
+            processed_events=1,
+            ignored_events=0,
+            reference_failures=(),
+            session="AFTER_HOURS",
+        )
+
+        publisher.publish(snapshot, cycle=1, now=NOW)
+
+        published = next(
+            event for event in events
+            if event.symbol == symbol and event.watchlist is not None
+        )
+        metadata = dict(published.watchlist.metadata or ())
+        assert metadata["scanner_freshness"] == "STALE"
+        assert metadata["scanner_market_age_ms"] == "30000"
+        assert metadata["scanner_last_price_timestamp"] == last_timestamp.isoformat()
+        assert metadata["scanner_quote_timestamp"] == quote_timestamp.isoformat()
+        assert metadata["scanner_last_price_freshness"] == (
+            "LIVE" if last_timestamp == NOW else "STALE"
+        )
+        assert metadata["scanner_quote_freshness"] == (
+            "LIVE" if quote_timestamp == NOW else "STALE"
+        )
+        assert metadata["scanner_last_price_age_ms"] == (
+            "0" if last_timestamp == NOW else "30000"
+        )
+        assert metadata["scanner_quote_age_ms"] == (
+            "0" if quote_timestamp == NOW else "30000"
+        )
+        assert published.watchlist.quote is not None
+        assert published.watchlist.quote.timestamp == old
+        assert published.watchlist.quote.stale is True
+
+        events.clear()
+        publisher.publish(snapshot, cycle=2, now=NOW + timedelta(seconds=6))
+
+        reevaluated = next(
+            event for event in events
+            if event.symbol == symbol and event.watchlist is not None
+        )
+        reevaluated_metadata = dict(reevaluated.watchlist.metadata or ())
+        assert reevaluated_metadata["scanner_last_price_timestamp"] == (
+            last_timestamp.isoformat()
+        )
+        assert reevaluated_metadata["scanner_quote_timestamp"] == (
+            quote_timestamp.isoformat()
+        )
+        assert reevaluated_metadata["scanner_last_price_age_ms"] == (
+            "6000" if last_timestamp == NOW else "36000"
+        )
+        assert reevaluated_metadata["scanner_quote_age_ms"] == (
+            "6000" if quote_timestamp == NOW else "36000"
+        )
+        assert reevaluated_metadata["scanner_last_price_freshness"] == "STALE"
+        assert reevaluated_metadata["scanner_quote_freshness"] == "STALE"
+
+
 def test_scanner_publisher_retains_stale_candidate_for_operator_context() -> None:
     """Expired market data remains visible but cannot be labelled LIVE."""
     events = []

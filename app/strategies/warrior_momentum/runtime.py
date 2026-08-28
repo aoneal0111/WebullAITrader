@@ -165,6 +165,8 @@ def entry_rejections(candidate: MomentumCandidate, config: WarriorMomentumConfig
             reasons.append(ReasonCode.STOP_INVALID)
         elif risk > config.entry.maximum_risk_per_share:
             reasons.append(ReasonCode.STOP_TOO_WIDE)
+    if ReasonCode.STALE_MARKET_DATA in candidate.reason_codes:
+        reasons.append(ReasonCode.STALE_MARKET_DATA)
     return tuple(dict.fromkeys(reasons))
 
 
