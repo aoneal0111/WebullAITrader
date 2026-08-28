@@ -1078,8 +1078,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", type=Path, default=DEFAULT_CAPTURE_PATH)
     parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.add_argument(
+        "--counterfactual", action="store_true",
+        help="run catalyst-first single-blocker counterfactual research",
+    )
     arguments = parser.parse_args(argv)
     dataset = load_shadow_dataset_read_only(arguments.database)
+    if arguments.counterfactual:
+        from .shadow_counterfactual_analysis import (
+            ShadowCounterfactualAnalyzer,
+            counterfactual_report_as_json,
+            render_counterfactual_report,
+        )
+
+        counterfactual = ShadowCounterfactualAnalyzer().analyze(dataset)
+        print(
+            counterfactual_report_as_json(counterfactual)
+            if arguments.as_json else render_counterfactual_report(counterfactual)
+        )
+        return 0
     report = ShadowPolicyAnalyzer().analyze(dataset)
     print(report_as_json(report) if arguments.as_json else render_policy_report(report))
     return 0
