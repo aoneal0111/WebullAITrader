@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import logging
 from threading import Event, RLock, Thread
-from time import monotonic
+from time import monotonic, perf_counter
 
 from app.broker_plugins import BrokerRuntime
 from app.broker_plugins.webull.capabilities import map_webull_capabilities
@@ -520,11 +520,17 @@ class DesktopBrokerRuntimeDriver:
                 getattr(warmup_snapshot, "health_reason", None)
                 or "No symbols survived scanner reference warmup."
             )
-            self._scanner_publisher.publish(
-                warmup_snapshot,
-                cycle=self._cycles_completed,
-                now=self._timestamp(),
-            )
+            projection_started = perf_counter()
+            try:
+                self._scanner_publisher.publish(
+                    warmup_snapshot,
+                    cycle=self._cycles_completed,
+                    now=self._timestamp(),
+                )
+            finally:
+                performance_diagnostics.record_projection_duration(
+                    (perf_counter() - projection_started) * 1000.0
+                )
             self._scanner_log(
                 "market_data_subscriptions",
                 "Scanner market-data subscription count=0.",
@@ -747,11 +753,17 @@ class DesktopBrokerRuntimeDriver:
                         "scanner_snapshots_generated"
                     )
                     now = self._timestamp()
-                    stale = self._scanner_publisher.publish(
-                        snapshot,
-                        cycle=self._cycles_completed,
-                        now=now,
-                    )
+                    projection_started = perf_counter()
+                    try:
+                        stale = self._scanner_publisher.publish(
+                            snapshot,
+                            cycle=self._cycles_completed,
+                            now=now,
+                        )
+                    finally:
+                        performance_diagnostics.record_projection_duration(
+                            (perf_counter() - projection_started) * 1000.0
+                        )
                     self._scanner_log(
                         "scanner_snapshot_counters",
                         f"ranked_candidates={len(snapshot.ranked_candidates)}; "

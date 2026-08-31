@@ -10,13 +10,14 @@ from hashlib import sha256
 import logging
 from pathlib import Path
 from threading import RLock
-from time import monotonic
+from time import monotonic, perf_counter
 from typing import Callable, Iterable
 
 from app.live_scanner.session import scanner_session
 from app.market.calendar import EASTERN
 from app.market_data.models import MarketEvent, MarketEventType, TradePayload
 from app.scanner_adapter.adapter import MarketEventScannerAdapter
+from app.performance_diagnostics import performance_diagnostics
 from app.services.runtime_diagnostics import log_runtime_exception
 
 from .configuration import WarriorMomentumConfig
@@ -27,7 +28,8 @@ from .forward_models import (
     PointInTimeObservation, canonical_json,
 )
 from .forward_queue import ForwardCaptureWriter
-from .forward_report import DailyForwardReport, build_daily_report, persist_daily_report
+from .forward_report import DailyForwardReport
+from .report_worker import ReportWorkerMetrics, WarriorReportWorker
 from .forward_runtime import WarriorForwardCaptureService
 from .execution_quote import ExecutionQuoteSource
 from .forward_store import ForwardCaptureStore
@@ -141,6 +143,7 @@ class WarriorDesktopSidecar:
         paper_exit_submitter: Callable[[str, int, Decimal, str, str | None], bool] | None = None,
         paper_position_quantity_source: Callable[[str], Decimal] | None = None,
         execution_quote_source: ExecutionQuoteSource | None = None,
+        report_worker_factory: Callable[..., WarriorReportWorker] = WarriorReportWorker,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.enabled = bool(enabled)
@@ -154,6 +157,7 @@ class WarriorDesktopSidecar:
         self._paper_exit_submitter = paper_exit_submitter
         self._paper_position_quantity_source = paper_position_quantity_source
         self._execution_quote_source = execution_quote_source
+        self._report_worker_factory = report_worker_factory
         self._accept_execution = False
         self._clock = clock
         self._lock = RLock()
@@ -163,6 +167,8 @@ class WarriorDesktopSidecar:
         self._store: ForwardCaptureStore | None = None
         self._writer: ForwardCaptureWriter | None = None
         self._service: WarriorForwardCaptureService | None = None
+        self._report_worker: WarriorReportWorker | None = None
+        self._last_report_metrics: ReportWorkerMetrics | None = None
         self._health = WarriorCaptureHealth.DISABLED if not enabled else WarriorCaptureHealth.STOPPED
         self._last_error_type: str | None = None
         self._bars: dict[str, list[MinuteBar]] = {}
@@ -187,6 +193,7 @@ class WarriorDesktopSidecar:
         self._publication_started = monotonic()
         self._daily_report: DailyForwardReport | None = None
         self._last_metrics: CaptureMetrics | None = None
+        self._report_error_type: str | None = None
 
     def bind_scanner_adapter(self, adapter: MarketEventScannerAdapter) -> None:
         if not isinstance(adapter, MarketEventScannerAdapter):
@@ -369,9 +376,14 @@ class WarriorDesktopSidecar:
                     f"{self.configuration_fingerprint}|{self.environment}|{now.isoformat()}".encode()
                 ).hexdigest()
                 self._writer.submit(self._session_record("START", now))
-                self._daily_report = build_daily_report(
-                    self._store, now.astimezone(EASTERN).date(),
-                    configuration_fingerprint=self.configuration_fingerprint,
+                self._report_worker = self._report_worker_factory(
+                    self._store,
+                    report_sink=self._accept_report,
+                    failure_sink=self._record_report_failure,
+                )
+                self._request_report_refresh(now.astimezone(EASTERN).date())
+                performance_diagnostics.set_diagnostic_sink(
+                    self._persist_latency_diagnostic
                 )
                 self._health = WarriorCaptureHealth.RUNNING
                 self._accept_execution = True
@@ -396,20 +408,21 @@ class WarriorDesktopSidecar:
                     self._service.shutdown_intraminute_shadow(now)
                     self._service.finalize_shadow_outcomes(now)
                 lifecycle_phase = "shadow/capture writer drain"
-                writer.flush()
+                self._flush_capture_writer(writer)
                 lifecycle_phase = "shadow daily report finalization"
-                report = build_daily_report(
-                    store, now.astimezone(EASTERN).date(),
-                    configuration_fingerprint=self.configuration_fingerprint,
-                )
-                persist_daily_report(store, report)
+                report_worker = self._report_worker
+                if report_worker is not None:
+                    self._request_report_refresh(
+                        now.astimezone(EASTERN).date(), persist=True
+                    )
+                    report_worker.close(timeout_seconds=5.0)
+                    self._last_report_metrics = report_worker.metrics()
                 lifecycle_phase = "shadow session finalization"
                 writer.submit(self._session_record("END", now))
                 lifecycle_phase = "shadow/capture writer close"
                 writer.close()
                 lifecycle_phase = "Warrior runtime finalization"
                 self._last_metrics = writer.metrics()
-                self._daily_report = report
                 self._health = WarriorCaptureHealth.STOPPED
             except Exception as exc:
                 self._last_error_type = type(exc).__name__
@@ -423,6 +436,8 @@ class WarriorDesktopSidecar:
                 )
                 raise
             finally:
+                performance_diagnostics.set_diagnostic_sink(None)
+                self._report_worker = None
                 self._writer = None
                 self._service = None
 
@@ -585,6 +600,19 @@ class WarriorDesktopSidecar:
                 ),
                 account=self._account_source(),
             )
+            processing_delayed = bool(
+                (
+                    processing_age is not None
+                    and processing_age > self.capture_config.quote_stale_after_seconds
+                )
+                or delivery_age > self.capture_config.quote_stale_after_seconds
+            )
+            performance_diagnostics.record_execution_safety(
+                processing_delayed=processing_delayed,
+                entry_authorized=signal is not None,
+                execution_quote_requested=False,
+                paper_order_created=signal is not None,
+            )
             self._latest[symbol] = candidate
             self._provenance[symbol] = provenance
             self._blocking[symbol] = _blocking_reasons(candidate, signal is not None)
@@ -606,12 +634,10 @@ class WarriorDesktopSidecar:
             self._first_observed.add(symbol)
             self._publications += 1
             if signal is not None or completed:
-                assert self._store is not None
                 assert self._writer is not None
-                self._writer.flush()
-                self._daily_report = build_daily_report(
-                    self._store, observation.timestamp.astimezone(EASTERN).date(),
-                    configuration_fingerprint=self.configuration_fingerprint,
+                self._flush_capture_writer(self._writer)
+                self._request_report_refresh(
+                    observation.timestamp.astimezone(EASTERN).date()
                 )
         else:
             state = adapter.state_for(symbol)
@@ -763,6 +789,70 @@ class WarriorDesktopSidecar:
             self._health = WarriorCaptureHealth.DEGRADED
         elif metrics.queue_depth > self.capture_config.queue_capacity * 3 // 4:
             self._health = WarriorCaptureHealth.DEGRADED
+
+    def _flush_capture_writer(self, writer: ForwardCaptureWriter) -> None:
+        started = perf_counter()
+        try:
+            writer.flush()
+        finally:
+            duration_ms = (perf_counter() - started) * 1000.0
+            performance_diagnostics.record_completed_bar_flush_duration(duration_ms)
+            performance_diagnostics.mark_latency_trace_stage(
+                "completed_bar_flush_duration_ms", duration_ms
+            )
+
+    def _request_report_refresh(self, trading_date: date, *, persist: bool = False) -> None:
+        worker = self._report_worker
+        if worker is None:
+            return
+        started = perf_counter()
+        try:
+            worker.request_refresh(
+                trading_date,
+                configuration_fingerprint=self.configuration_fingerprint,
+                persist=persist,
+            )
+        finally:
+            duration_ms = (perf_counter() - started) * 1000.0
+            performance_diagnostics.record_report_request_duration(duration_ms)
+            performance_diagnostics.mark_latency_trace_stage(
+                "report_refresh_request_duration_ms", duration_ms
+            )
+
+    def _accept_report(self, report: DailyForwardReport) -> None:
+        self._daily_report = report
+        self._report_error_type = None
+
+    def _record_report_failure(self, error: BaseException) -> None:
+        self._report_error_type = type(error).__name__
+        self._last_error_type = f"REPORT:{type(error).__name__}"
+
+    def _persist_latency_diagnostic(self, kind: str, payload: dict[str, object]) -> None:
+        writer = self._writer
+        if writer is None:
+            return
+        payload = {"diagnostic_kind": kind, **payload}
+        timestamp_value = payload.get("recorded_at") or payload.get("timestamp")
+        timestamp = (
+            datetime.fromisoformat(str(timestamp_value))
+            if timestamp_value is not None
+            else self._aware_now()
+        )
+        symbol = str(payload.get("symbol") or "MARKET_DATA")
+        record_type = (
+            CaptureRecordType.CALLBACK_QUEUE_THRESHOLD
+            if kind == "callback_queue_threshold"
+            else CaptureRecordType.LATENCY_DIAGNOSTIC
+        )
+        identity = tuple(
+            str(payload.get(name) or "")
+            for name in ("source", "sequence", "threshold", "direction", "recorded_at")
+        )
+        accepted = writer.submit_diagnostic(CaptureRecord.create(
+            record_type, symbol, timestamp, payload, identity_parts=identity,
+        ))
+        if not accepted:
+            raise RuntimeError("diagnostic capture queue unavailable")
 
     def _aware_now(self) -> datetime:
         value = self._clock()

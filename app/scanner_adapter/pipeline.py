@@ -140,9 +140,15 @@ class MomentumScannerPipeline:
         )
         if self._decision_sink is not None:
             capture_started = perf_counter()
+            performance_diagnostics.mark_latency_trace_timestamp(
+                "experiment_enqueue_started_at", datetime.now(UTC)
+            )
             try:
                 self._decision_sink(decision)
             finally:
+                performance_diagnostics.mark_latency_trace_timestamp(
+                    "experiment_enqueue_ended_at", datetime.now(UTC)
+                )
                 performance_diagnostics.record_experiment_capture_duration(
                     (perf_counter() - capture_started) * 1000.0
                 )

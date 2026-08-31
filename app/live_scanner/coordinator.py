@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any
 
@@ -387,16 +388,32 @@ class LiveScannerCoordinator:
             )
 
     def _consume(self, event: Any) -> Any:
-        decision = self._engine.consume(event)
-        if self._event_observer is not None:
-            observer_started = perf_counter()
-            try:
-                self._event_observer(event)
-            finally:
-                performance_diagnostics.record_observer_duration(
-                    (perf_counter() - observer_started) * 1000.0
+        scanner_started_at = datetime.now(UTC)
+        performance_diagnostics.begin_latency_trace(event, scanner_started_at)
+        try:
+            decision = self._engine.consume(event)
+            performance_diagnostics.mark_latency_trace_timestamp(
+                "scanner_ended_at", datetime.now(UTC)
+            )
+            if self._event_observer is not None:
+                observer_started_at = datetime.now(UTC)
+                performance_diagnostics.mark_latency_trace_timestamp(
+                    "observer_started_at", observer_started_at
                 )
-        return decision
+                observer_started = perf_counter()
+                try:
+                    self._event_observer(event)
+                finally:
+                    observer_ended_at = datetime.now(UTC)
+                    performance_diagnostics.record_observer_duration(
+                        (perf_counter() - observer_started) * 1000.0
+                    )
+                    performance_diagnostics.mark_latency_trace_timestamp(
+                        "observer_ended_at", observer_ended_at
+                    )
+            return decision
+        finally:
+            performance_diagnostics.finish_latency_trace(datetime.now(UTC))
 
 
 def _normalize_channels(

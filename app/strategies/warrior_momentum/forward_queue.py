@@ -28,6 +28,9 @@ class ForwardCaptureWriter:
             raise ValueError("capture writer settings must be positive")
         self._store = store
         self._queue: Queue[CaptureRecord] = Queue(maxsize=capacity)
+        # Sparse latency/queue diagnostics must never inherit the critical
+        # capture lane's synchronous SQLite fallback on a market thread.
+        self._diagnostic_queue: Queue[CaptureRecord] = Queue(maxsize=128)
         self._batch_size = batch_size
         self._flush_interval = flush_interval_seconds
         self._stop = Event()
@@ -63,8 +66,21 @@ class ForwardCaptureWriter:
         for record in records:
             self.submit(record, timeout_seconds=timeout_seconds)
 
+    def submit_diagnostic(self, record: CaptureRecord) -> bool:
+        """Enqueue sparse observability evidence without blocking its caller."""
+        if self._fatal is not None:
+            return False
+        try:
+            self._diagnostic_queue.put_nowait(record)
+        except Full:
+            with self._lock:
+                self._dropped += 1
+            return False
+        return True
+
     def flush(self) -> None:
         self._queue.join()
+        self._diagnostic_queue.join()
         if self._fatal is not None:
             raise CaptureWriterError("capture writer failed") from self._fatal
 
@@ -99,20 +115,27 @@ class ForwardCaptureWriter:
         return self._fatal is None
 
     def _run(self) -> None:
-        while not self._stop.is_set() or not self._queue.empty():
+        while (
+            not self._stop.is_set()
+            or not self._queue.empty()
+            or not self._diagnostic_queue.empty()
+        ):
             try:
-                first = self._queue.get(timeout=self._flush_interval)
+                first, source = self._next_record()
             except Empty:
                 continue
-            batch = [first]
+            batch = [(first, source)]
             while len(batch) < self._batch_size:
                 try:
-                    batch.append(self._queue.get_nowait())
+                    record, record_source = self._next_record(nowait=True)
+                    batch.append((record, record_source))
                 except Empty:
                     break
             started = perf_counter()
             try:
-                inserted, duplicates = self._store.append_batch(tuple(batch))
+                inserted, duplicates = self._store.append_batch(
+                    tuple(record for record, _source in batch)
+                )
                 latency = perf_counter() - started
                 with self._lock:
                     self._written += inserted
@@ -123,8 +146,18 @@ class ForwardCaptureWriter:
             except BaseException as exc:
                 self._fatal = exc
             finally:
-                for _record in batch:
-                    self._queue.task_done()
+                for _record, record_source in batch:
+                    record_source.task_done()
+
+    def _next_record(
+        self, *, nowait: bool = False
+    ) -> tuple[CaptureRecord, Queue[CaptureRecord]]:
+        try:
+            return self._diagnostic_queue.get_nowait(), self._diagnostic_queue
+        except Empty:
+            if nowait:
+                return self._queue.get_nowait(), self._queue
+            return self._queue.get(timeout=self._flush_interval), self._queue
 
 
 __all__ = [

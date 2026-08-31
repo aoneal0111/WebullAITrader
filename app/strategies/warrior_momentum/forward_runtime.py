@@ -188,6 +188,9 @@ class WarriorForwardCaptureService:
                 and not processing_delayed
                 and self._execution_quote_source is not None
             ):
+                performance_diagnostics.mark_latency_trace_stage(
+                    "execution_quote_requested", True
+                )
                 try:
                     refreshed = self._execution_quote_source(symbol)
                 except Exception:

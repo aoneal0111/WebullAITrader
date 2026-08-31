@@ -100,7 +100,16 @@ class QtStateBridge(QObject):
                 "event_processing_age_max_ms=%.2f "
                 "research_queue_depth=%d research_queue_high_water=%d "
                 "research_worker_lag_max_ms=%.2f research_failures=%d "
-                "processing_delayed_events=%d",
+                "processing_delayed_events=%d "
+                "scanner_duration_ms=%.2f scanner_duration_max_ms=%.2f "
+                "experiment_enqueue_ms=%.2f experiment_enqueue_max_ms=%.2f "
+                "observer_duration_ms=%.2f observer_duration_max_ms=%.2f "
+                "completed_bar_flush_ms=%.2f completed_bar_flush_max_ms=%.2f "
+                "report_request_ms=%.2f report_request_max_ms=%.2f "
+                "report_build_ms=%.2f report_build_max_ms=%.2f "
+                "projection_ms=%.2f projection_max_ms=%.2f "
+                "report_refresh_failures=%d latency_diagnostics=%d "
+                "callback_threshold_events=%d",
                 metrics.gui_refresh_hz,
                 metrics.gui_refresh_duration_ms,
                 metrics.gui_refresh_duration_avg_ms,
@@ -127,5 +136,22 @@ class QtStateBridge(QObject):
                 metrics.research_worker_lag_max_ms,
                 metrics.research_failures,
                 metrics.processing_delayed_events,
+                metrics.scanner_duration_ms,
+                metrics.scanner_duration_max_ms,
+                metrics.experiment_capture_duration_ms,
+                metrics.experiment_capture_duration_max_ms,
+                metrics.observer_duration_ms,
+                metrics.observer_duration_max_ms,
+                metrics.completed_bar_flush_duration_ms,
+                metrics.completed_bar_flush_duration_max_ms,
+                metrics.report_request_duration_ms,
+                metrics.report_request_duration_max_ms,
+                metrics.report_build_duration_ms,
+                metrics.report_build_duration_max_ms,
+                metrics.projection_duration_ms,
+                metrics.projection_duration_max_ms,
+                metrics.report_refresh_failures,
+                metrics.latency_diagnostics_persisted,
+                metrics.callback_threshold_events,
             )
             self._last_log_at = started
