@@ -23,7 +23,10 @@ from app.live_execution.broker_factory import (
     build_webull_market_data_stream,
 )
 from app.operations.runtime import RuntimeEventSink
-from app.paper_trade_experiment import PaperTradeExperimentJournal
+from app.paper_trade_experiment import (
+    PaperTradeExperimentJournal,
+    PaperTradeExperimentWorker,
+)
 from app.reference_data import ReferenceDataCache, ReferenceDataService
 from app.scanner_adapter import (
     MarketEventScannerAdapter,
@@ -144,48 +147,11 @@ def create_configured_desktop_broker_driver(
             experiment_path = configuration.execution_database_path.with_name(
                 "paper_trade_experiment.sqlite3"
             )
-            experiment_holder: list[PaperTradeExperimentJournal] = []
-            experiment_failure_reported = False
-
-            def report_experiment_failure(
-                operation: str,
-                error: Exception,
-            ) -> None:
-                nonlocal experiment_failure_reported
-                if experiment_failure_reported:
-                    return
-                experiment_failure_reported = True
-                _SCANNER_LOGGER.error(
-                    "event_type=experiment_persistence_failure "
-                    "operation=%s error_type=%s error=%r",
-                    operation,
-                    type(error).__name__,
-                    error,
-                    exc_info=(
-                        type(error),
-                        error,
-                        error.__traceback__,
-                    ),
-                )
-
-            def record_experiment_decision(decision) -> object:
-                nonlocal experiment_failure_reported
-                try:
-                    if not experiment_holder:
-                        experiment_holder.append(
-                            PaperTradeExperimentJournal(experiment_path)
-                        )
-                    result = experiment_holder[0].record_scanner_decision(
-                        decision,
-                        execution_environment=experiment_execution_environment,
-                    )
-                    experiment_failure_reported = False
-                    return result
-                except Exception as error:
-                    report_experiment_failure("decision", error)
-                    return None
-
-            experiment_decision_sink = record_experiment_decision
+            experiment_decision_sink = PaperTradeExperimentWorker(
+                experiment_path,
+                execution_environment=experiment_execution_environment,
+                journal_factory=PaperTradeExperimentJournal,
+            )
         universe_provider = WebullScannerUniverseProvider(
             data_client,
             clock=clock,

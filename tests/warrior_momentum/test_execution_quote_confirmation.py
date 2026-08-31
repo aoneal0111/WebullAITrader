@@ -133,6 +133,51 @@ def test_no_setup_never_requests_confirmation(tmp_path) -> None:
     assert signal is None and calls == []
 
 
+def test_processing_delayed_technical_event_fails_before_rest_confirmation(
+    tmp_path,
+) -> None:
+    calls = []
+    candidate, signal = evaluate(
+        tmp_path,
+        lambda symbol: calls.append(symbol) or snapshot(),
+        value=point(
+            evaluation_timestamp=NOW,
+            quote_freshness_seconds=D("0.2"),
+            last_price_freshness_seconds=D("0.2"),
+            processing_age_seconds=D("5.01"),
+        ),
+    )
+    assert signal is None
+    assert calls == []
+    assert "PROCESSING_DELAYED" in {
+        reason.value for reason in candidate.reason_codes
+    }
+    assert "AWAITING_EXECUTION_QUOTE" not in {
+        reason.value for reason in candidate.reason_codes
+    }
+
+
+def test_upstream_delayed_technical_event_cannot_mix_with_current_rest_quote(
+    tmp_path,
+) -> None:
+    calls = []
+    candidate, signal = evaluate(
+        tmp_path,
+        lambda symbol: calls.append(symbol) or snapshot(),
+        value=point(
+            evaluation_timestamp=NOW,
+            quote_freshness_seconds=D("30"),
+            last_price_freshness_seconds=D("30"),
+            processing_age_seconds=D("0.1"),
+            delivery_age_seconds=D("30"),
+        ),
+    )
+    assert signal is None and calls == []
+    assert "PROCESSING_DELAYED" in {
+        reason.value for reason in candidate.reason_codes
+    }
+
+
 def test_shutdown_intent_blocks_late_response(tmp_path) -> None:
     _candidate, signal = evaluate(tmp_path, lambda _symbol: snapshot(), permitted=lambda: False)
     assert signal is None

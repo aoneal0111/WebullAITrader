@@ -79,6 +79,8 @@ class PointInTimeObservation:
     quote_freshness_seconds: Decimal | None = None
     last_price_observed_at: datetime | None = None
     last_price_freshness_seconds: Decimal | None = None
+    processing_age_seconds: Decimal | None = None
+    delivery_age_seconds: Decimal | None = None
     evaluation_timestamp: datetime | None = None
     halt_state_known: bool = True
     volume_known: bool = True
@@ -106,6 +108,10 @@ class PointInTimeObservation:
             and self.last_price_freshness_seconds < 0
         ):
             raise ValueError("last price freshness cannot be negative")
+        if self.processing_age_seconds is not None and self.processing_age_seconds < 0:
+            raise ValueError("processing age cannot be negative")
+        if self.delivery_age_seconds is not None and self.delivery_age_seconds < 0:
+            raise ValueError("delivery age cannot be negative")
         if self.scanner_rank is not None and self.scanner_rank <= 0:
             raise ValueError("scanner rank must be positive when available")
 

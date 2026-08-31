@@ -507,6 +507,7 @@ class WarriorDesktopSidecar:
                 observation.timestamp,
                 ShadowLatchedTransition.NEW_BAR_INVALIDATION,
                 reason="NEW_COMPLETED_BAR",
+                processing_time=self._aware_now(),
             )
         if symbol not in self._first_observed or completed:
             history = current_completed_bar_tail(
@@ -516,6 +517,18 @@ class WarriorDesktopSidecar:
             quote_freshness = last_price_freshness = None
             state = adapter.state_for(symbol)
             evaluated_at = self._aware_now()
+            processing_age = (
+                None
+                if event.received_timestamp is None
+                else Decimal(str(max(
+                    0,
+                    (evaluated_at - event.received_timestamp).total_seconds(),
+                )))
+            )
+            delivery_age = Decimal(str(max(
+                0,
+                (evaluated_at - event.timestamp).total_seconds(),
+            )))
             if state is not None and state.quote_timestamp is not None:
                 quote_freshness = Decimal(str(max(
                     0, (evaluated_at - state.quote_timestamp).total_seconds(),
@@ -550,6 +563,8 @@ class WarriorDesktopSidecar:
                         None if state is None else state.last_price_timestamp
                     ),
                     last_price_freshness_seconds=last_price_freshness,
+                    processing_age_seconds=processing_age,
+                    delivery_age_seconds=delivery_age,
                     evaluation_timestamp=evaluated_at,
                     halt_state_known=True,
                     volume_known=True,

@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_FLOOR
 from typing import Callable
 
+from app.performance_diagnostics import performance_diagnostics
+
 from .configuration import WarriorMomentumConfig
 from .features import build_features, completed_bars_as_of
 from .forward_models import (
@@ -152,7 +154,21 @@ class WarriorForwardCaptureService:
             or value.quote_freshness_seconds
             > self.capture_config.quote_stale_after_seconds
         )
-        if market_data_stale:
+        processing_delayed = (
+            (
+                value.processing_age_seconds is not None
+                and value.processing_age_seconds
+                > self.capture_config.quote_stale_after_seconds
+            )
+            or (
+                value.delivery_age_seconds is not None
+                and value.delivery_age_seconds
+                > self.capture_config.quote_stale_after_seconds
+            )
+        )
+        if processing_delayed:
+            performance_diagnostics.increment("processing_delayed_events")
+        if market_data_stale or processing_delayed:
             assessed = replace(
                 assessed,
                 status=(CandidateStatus.AWAITING_EXECUTION_DATA
@@ -161,12 +177,17 @@ class WarriorForwardCaptureService:
                 reason_codes=tuple(dict.fromkeys((
                     *assessed.reason_codes,
                     ReasonCode.STALE_MARKET_DATA,
+                    *((ReasonCode.PROCESSING_DELAYED,) if processing_delayed else ()),
                     *((ReasonCode.AWAITING_EXECUTION_QUOTE,)
-                      if technical_signal is not None else ()),
+                      if technical_signal is not None and not processing_delayed else ()),
                 ))),
             )
             signal = None
-            if technical_signal is not None and self._execution_quote_source is not None:
+            if (
+                technical_signal is not None
+                and not processing_delayed
+                and self._execution_quote_source is not None
+            ):
                 try:
                     refreshed = self._execution_quote_source(symbol)
                 except Exception:
@@ -358,12 +379,13 @@ class WarriorForwardCaptureService:
     def invalidate_intraminute_shadow(
         self, symbol: str, timestamp: datetime,
         transition: ShadowLatchedTransition,
-        *, reason: str,
+        *, reason: str, processing_time: datetime | None = None,
     ) -> None:
         if self._latched_shadow is None:
             return
         records = self._latched_shadow.invalidate(
             symbol, timestamp, transition, reason=reason,
+            processing_time=processing_time,
         )
         if records:
             self.writer.submit_many(records)

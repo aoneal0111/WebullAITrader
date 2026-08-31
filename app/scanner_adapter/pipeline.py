@@ -4,6 +4,8 @@ from collections.abc import Iterable
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
+import logging
+from time import perf_counter
 
 from app.market_data.models import MarketEvent
 from app.momentum_scanner.models import ScannerDecision
@@ -14,6 +16,7 @@ from app.momentum_scanner.rules import (
 )
 from app.scanner_adapter.adapter import MarketEventScannerAdapter
 from app.scanner_adapter.models import QualificationDiagnostics
+from app.performance_diagnostics import performance_diagnostics
 
 
 _QUALIFICATION_RULES = (
@@ -28,6 +31,9 @@ _QUALIFICATION_RULES = (
     "dollar_volume",
     "spread",
 )
+
+_LOGGER = logging.getLogger("atlas.scanner")
+_PROCESSING_AGE_WARNING_SECONDS = 5.0
 
 
 class MomentumScannerPipeline:
@@ -51,6 +57,7 @@ class MomentumScannerPipeline:
         self,
         event: MarketEvent,
     ) -> ScannerDecision | None:
+        scanner_started = perf_counter()
         result = self.adapter.consume(event)
 
         if result is None or result.observation is None:
@@ -60,10 +67,34 @@ class MomentumScannerPipeline:
             result.observation,
             self.config,
         )
+        observed_at = self._clock()
         decision = replace(
             decision,
-            observed_at=self._clock(),
+            observed_at=observed_at,
         )
+        if event.received_timestamp is not None:
+            age_seconds = max(
+                0.0,
+                (observed_at - event.received_timestamp).total_seconds(),
+            )
+            performance_diagnostics.record_event_processing_age(
+                age_seconds * 1000.0
+            )
+            if age_seconds > _PROCESSING_AGE_WARNING_SECONDS:
+                _LOGGER.warning(
+                    "event_type=market_event_processing_delayed "
+                    "source=%s sequence=%s market_event_type=%s symbol=%s "
+                    "event_time=%s callback_received_at=%s scanner_started_at=%s "
+                    "processing_age_seconds=%.6f",
+                    event.source,
+                    event.sequence,
+                    event.event_type.value,
+                    event.symbol,
+                    event.timestamp.isoformat(),
+                    event.received_timestamp.isoformat(),
+                    observed_at.isoformat(),
+                    age_seconds,
+                )
         ranked_all = sorted(
             (
                 *(item for item in self._latest.values() if item.symbol != decision.symbol),
@@ -85,8 +116,17 @@ class MomentumScannerPipeline:
             ),
         )
         self._latest[decision.symbol] = decision
+        performance_diagnostics.record_scanner_duration(
+            (perf_counter() - scanner_started) * 1000.0
+        )
         if self._decision_sink is not None:
-            self._decision_sink(decision)
+            capture_started = perf_counter()
+            try:
+                self._decision_sink(decision)
+            finally:
+                performance_diagnostics.record_experiment_capture_duration(
+                    (perf_counter() - capture_started) * 1000.0
+                )
 
         return decision
 
@@ -130,6 +170,11 @@ class MomentumScannerPipeline:
             self._latest[symbol]
             for symbol in sorted(self._latest)
         )
+
+    def close(self) -> None:
+        close = getattr(self._decision_sink, "close", None)
+        if callable(close):
+            close()
 
     def diagnostic_results(self, *, limit: int = 3):
         return tuple(

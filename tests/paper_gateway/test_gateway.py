@@ -1,5 +1,9 @@
 ﻿from app.order_cancellation import OrderCancellationRequest
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+
 from app.order_placement import NormalizedOrderStatus
+from app.market_data.models import MarketEvent, MarketEventType, QuotePayload
 from app.services import OrderCommandFactory, OrderEntryCommand
 from app.paper_gateway import PaperOrderGateway
 from app.paper_trading.order_book import PaperOrderBook
@@ -7,6 +11,9 @@ from app.paper_trading.order_models import OrderStatus
 from app.services.order_command_factory import OrderEntryCommand
 
 from decimal import Decimal
+
+
+NOW = datetime(2026, 8, 31, 11, 30, tzinfo=UTC)
 
 
 def placement_request():
@@ -120,5 +127,35 @@ def test_client_order_id_mismatch_is_rejected() -> None:
         book.get(placement.broker_order_id).status
         is OrderStatus.ACCEPTED
     )
+
+
+def test_delayed_queued_quote_cannot_fill_working_paper_order() -> None:
+    book = PaperOrderBook()
+    gateway = PaperOrderGateway(book, clock=lambda: NOW)
+    placement = gateway.place_order(placement_request())
+    delayed = MarketEvent(
+        1,
+        NOW - timedelta(minutes=10),
+        "AAPL",
+        "webull",
+        MarketEventType.QUOTE,
+        QuotePayload(
+            Decimal("99"), Decimal("100"), Decimal("100"), Decimal("100")
+        ),
+        received_timestamp=NOW - timedelta(seconds=5, milliseconds=1),
+    )
+
+    assert gateway.process_market_event(delayed) == ()
+    assert book.get(placement.broker_order_id).status is OrderStatus.ACCEPTED
+
+    fresh = replace(
+        delayed,
+        sequence=2,
+        timestamp=NOW,
+        received_timestamp=NOW - timedelta(milliseconds=100),
+    )
+    reports = gateway.process_market_event(fresh)
+    assert reports and reports[0].fills
+    assert book.get(placement.broker_order_id).status is OrderStatus.FILLED
 
 

@@ -93,6 +93,7 @@ class OfficialSdkStreamBackend:
         self._lifecycle_sink: StreamLifecycleSink | None = None
         self._diagnostic_sink: DiagnosticSink | None = None
         self._deliberate_shutdown = False
+
         self._consumption_started = False
         self._has_connected = False
         self._active_subscription: tuple[str, ...] | None = None
@@ -103,6 +104,11 @@ class OfficialSdkStreamBackend:
         self._original_on_connect_success: object = None
         self._original_on_disconnect: object = None
         self._attach_client(sdk_client)
+
+    def queue_depth(self) -> int:
+        """Current callback FIFO depth for aggregate runtime diagnostics."""
+
+        return self._messages.qsize()
 
     @staticmethod
     def _hash(value: object) -> str:
@@ -158,6 +164,9 @@ class OfficialSdkStreamBackend:
             return
         self._messages.put(
             _ReceivedStreamPayload(topic, quotes, self._clock())
+        )
+        performance_diagnostics.record_market_event_callback(
+            self._messages.qsize()
         )
         if callable(self._original_on_quotes_message):
             self._original_on_quotes_message(client, topic, quotes)
@@ -572,11 +581,16 @@ class WebullWebSocketClient:
             try:
                 message = receiver()
                 if message is None: return None
+                queue_depth = getattr(self.backend, "queue_depth", None)
+                if callable(queue_depth):
+                    performance_diagnostics.set_callback_queue_depth(queue_depth())
                 if isinstance(message, _ReceivedStreamPayload):
                     received_timestamp = message.received_timestamp
+                    dequeued_timestamp = datetime.now(UTC)
                     message = (message.topic, message.payload)
                 else:
                     received_timestamp = None
+                    dequeued_timestamp = None
                 diagnostic = payload_metadata(message)
                 classification = str(diagnostic["message_classification"])
                 self._payload_count += 1
@@ -618,7 +632,11 @@ class WebullWebSocketClient:
                         )
                     return None
                 if received_timestamp is not None:
-                    event = replace(event, received_timestamp=received_timestamp)
+                    event = replace(
+                        event,
+                        received_timestamp=received_timestamp,
+                        dequeued_timestamp=dequeued_timestamp,
+                    )
                 performance_diagnostics.increment("market_events_received")
                 try:
                     validate_event(event)

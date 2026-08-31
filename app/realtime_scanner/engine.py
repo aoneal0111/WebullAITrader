@@ -189,6 +189,11 @@ class RealtimeScannerEngine:
 
         return tuple(updated)
 
+    def close(self) -> None:
+        close = getattr(self._pipeline, "close", None)
+        if callable(close):
+            close()
+
     def ranked_candidates(
         self,
         *,

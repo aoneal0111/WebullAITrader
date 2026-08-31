@@ -232,21 +232,10 @@ def test_experiment_sidecar_failures_do_not_escape_scanner_composition(
         captured.update(kwargs)
         return SimpleNamespace(coordinator=coordinator)
 
-    logged_errors = []
-
-    class FakeLogger:
-        def error(self, *args, **kwargs):
-            logged_errors.append((args, kwargs))
-
     class FailingExperimentJournal:
         def __init__(self, path):
             raise RuntimeError("experiment journal unavailable")
 
-    monkeypatch.setattr(
-        desktop_broker_module,
-        "_SCANNER_LOGGER",
-        FakeLogger(),
-    )
     monkeypatch.setattr(
         desktop_broker_module,
         "create_desktop_scanner_infrastructure",
@@ -288,14 +277,9 @@ def test_experiment_sidecar_failures_do_not_escape_scanner_composition(
 
     # Experimental persistence is an optional PAPER/TEST sidecar.
     # Its failure must never own the scanner/runtime lifecycle.
-    assert decision_sink(object()) is None
-
-    assert len(logged_errors) == 1
-    assert logged_errors[0][0][0].startswith(
-        "event_type=experiment_persistence_failure"
-    )
-    assert logged_errors[0][0][1] == "decision"
-    assert logged_errors[0][0][2] == "RuntimeError"
+    assert decision_sink(object()) is False
+    assert decision_sink.metrics().rejected == 1
+    assert decision_sink.close(timeout_seconds=1)
 
     assert driver._scanner is coordinator
 

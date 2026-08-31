@@ -1010,11 +1010,15 @@ class DesktopBrokerRuntimeDriver:
                 )
             self._market_data_thread = None
 
+        if self._scanner is not None:
+            # Scanner-owned research resources must close even when streaming
+            # never reached the connected state.
+            self._scanner.stop()
+
         if not self._market_data_connected:
             return
         try:
             if self._scanner is not None:
-                self._scanner.stop()
                 self._scanner.disconnect()
             else:
                 self._market_data.disconnect()

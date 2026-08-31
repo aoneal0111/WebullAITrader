@@ -153,6 +153,16 @@ def test_aehl_latched_plan_reconstructs_fast_execution_transitions_without_order
     assert plan.payload["trigger"] == str(TRIGGER)
     assert plan.payload["stop"] == str(STOP)
     assert plan.payload["original_market"]["spread_percent"] == str(spread("6.05", "6.17"))
+    assert plan.payload["event_time"] == T0.isoformat()
+    assert plan.payload["processing_time"] == T0.isoformat()
+    created = next(
+        record.payload for record in records
+        if record.payload.get("transition") == "PLAN_CREATED"
+    )
+    assert created["event_time"] == T0.isoformat()
+    assert created["processing_time"] == T0.isoformat()
+    assert "cause_event_time" in created
+    assert created["transition_written_at"] == T0.isoformat()
     assert transitions(tuple(records)) == [
         "PLAN_CREATED", "SPREAD_BLOCKED", "QUOTE_FRESH",
         "MARKET_BLOCKED", "LIMIT_NOT_MARKETABLE",

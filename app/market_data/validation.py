@@ -19,6 +19,8 @@ def validate_event(event):
  if not isinstance(event,MarketEvent):raise ValueError("MarketEvent is required")
  if not isinstance(event.sequence,int) or isinstance(event.sequence,bool) or event.sequence<0:raise ValueError("sequence must be a nonnegative integer")
  _aware(event.timestamp,"event timestamp")
+ if event.received_timestamp is not None:_aware(event.received_timestamp,"received timestamp")
+ if event.dequeued_timestamp is not None:_aware(event.dequeued_timestamp,"dequeued timestamp")
  if not isinstance(event.source,str) or not event.source.strip():raise ValueError("event source is required")
  if not isinstance(event.event_type,MarketEventType):raise ValueError("event type is unsupported")
  if event.event_type in SYMBOL_REQUIRED and (not isinstance(event.symbol,str) or not SYMBOL.fullmatch(event.symbol)):raise ValueError("event symbol is invalid")

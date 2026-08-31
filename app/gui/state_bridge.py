@@ -91,7 +91,16 @@ class QtStateBridge(QObject):
                 "scanner_evaluations=%d scanner_snapshots_generated=%d "
                 "scanner_snapshots_published=%d "
                 "scanner_snapshots_suppressed_unchanged=%d "
-                "stale_events_skipped=%d event_store_rows_added=%d",
+                "stale_events_skipped=%d event_store_rows_added=%d "
+                "callback_queue_depth=%d callback_queue_high_water=%d "
+                "market_arrival_rate_hz=%.2f market_processing_rate_hz=%.2f "
+                "event_processing_age_p50_ms=%.2f "
+                "event_processing_age_p90_ms=%.2f "
+                "event_processing_age_p99_ms=%.2f "
+                "event_processing_age_max_ms=%.2f "
+                "research_queue_depth=%d research_queue_high_water=%d "
+                "research_worker_lag_max_ms=%.2f research_failures=%d "
+                "processing_delayed_events=%d",
                 metrics.gui_refresh_hz,
                 metrics.gui_refresh_duration_ms,
                 metrics.gui_refresh_duration_avg_ms,
@@ -105,5 +114,18 @@ class QtStateBridge(QObject):
                 metrics.scanner_snapshots_suppressed_unchanged,
                 metrics.stale_events_skipped,
                 metrics.event_store_rows_added,
+                metrics.callback_queue_depth,
+                metrics.callback_queue_high_water,
+                metrics.market_arrival_rate_hz,
+                metrics.market_processing_rate_hz,
+                metrics.event_processing_age_p50_ms,
+                metrics.event_processing_age_p90_ms,
+                metrics.event_processing_age_p99_ms,
+                metrics.event_processing_age_max_ms,
+                metrics.research_queue_depth,
+                metrics.research_queue_high_water,
+                metrics.research_worker_lag_max_ms,
+                metrics.research_failures,
+                metrics.processing_delayed_events,
             )
             self._last_log_at = started

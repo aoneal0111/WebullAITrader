@@ -58,11 +58,13 @@ from app.paper_trading.orders import (
     create_order,
 )
 from app.paper_gateway.durable_store import DurablePaperExecutionStore
+from app.performance_diagnostics import performance_diagnostics
 
 
 Clock = Callable[[], datetime]
 PositionAverageCostSource = Callable[[str], Decimal | None]
 PositionQuantitySource = Callable[[str], Decimal]
+DEFAULT_MAXIMUM_PROCESSING_AGE_SECONDS = Decimal("5")
 
 
 def utc_now() -> datetime:
@@ -85,6 +87,9 @@ class PaperOrderGateway:
         clock: Clock = utc_now,
         source: str = "desktop-paper-execution",
         durable_store: DurablePaperExecutionStore | None = None,
+        maximum_processing_age_seconds: Decimal = (
+            DEFAULT_MAXIMUM_PROCESSING_AGE_SECONDS
+        ),
     ) -> None:
         if not isinstance(order_book, PaperOrderBook):
             raise TypeError("order_book must be PaperOrderBook")
@@ -114,6 +119,8 @@ class PaperOrderGateway:
             raise TypeError("clock must be callable")
         if not isinstance(source, str) or not source.strip():
             raise ValueError("source must be non-empty text")
+        if maximum_processing_age_seconds < 0:
+            raise ValueError("maximum processing age cannot be negative")
 
         self._order_book = order_book
         self._execution_engine = (
@@ -129,6 +136,9 @@ class PaperOrderGateway:
         self._clock = clock
         self._source = source.strip()
         self._durable_store = durable_store
+        self._maximum_processing_age_seconds = Decimal(
+            maximum_processing_age_seconds
+        )
         self._sequence = 0
         self._journal = PaperJournal()
         self._lock = RLock()
@@ -426,6 +436,23 @@ class PaperOrderGateway:
             raise TypeError(
                 "QUOTE event requires a symbol and QuotePayload"
             )
+
+        evaluated_at = self._clock()
+        if event.received_timestamp is not None:
+            processing_age = Decimal(str(max(
+                0,
+                (evaluated_at - event.received_timestamp).total_seconds(),
+            )))
+            if processing_age > self._maximum_processing_age_seconds:
+                performance_diagnostics.increment("processing_delayed_events")
+                return ()
+        source_age = Decimal(str(max(
+            0,
+            (evaluated_at - event.timestamp).total_seconds(),
+        )))
+        if source_age > self._maximum_processing_age_seconds:
+            performance_diagnostics.increment("processing_delayed_events")
+            return ()
 
         payload = event.payload
         if payload.bid <= 0 or payload.ask <= 0:

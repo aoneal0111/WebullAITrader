@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from time import perf_counter
 from typing import Any
 
 from app.live_scanner.models import (
@@ -12,6 +13,7 @@ from app.live_scanner.protocols import (
     SubscribableMarketDataTransport,
 )
 from app.momentum_scanner import AssetClass
+from app.performance_diagnostics import performance_diagnostics
 
 
 class LiveScannerCoordinator:
@@ -163,6 +165,9 @@ class LiveScannerCoordinator:
 
     def stop(self) -> None:
         self._running = False
+        close = getattr(self._engine, "close", None)
+        if callable(close):
+            close()
 
     def recover_stream(self) -> tuple[str, ...]:
         """Reconnect the transport and restore the current subscription."""
@@ -384,7 +389,13 @@ class LiveScannerCoordinator:
     def _consume(self, event: Any) -> Any:
         decision = self._engine.consume(event)
         if self._event_observer is not None:
-            self._event_observer(event)
+            observer_started = perf_counter()
+            try:
+                self._event_observer(event)
+            finally:
+                performance_diagnostics.record_observer_duration(
+                    (perf_counter() - observer_started) * 1000.0
+                )
         return decision
 
 

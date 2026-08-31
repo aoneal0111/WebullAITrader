@@ -75,6 +75,7 @@ def create_desktop_scanner_infrastructure(
         scanner_adapter,
         scanner_config,
         decision_sink=scanner_decision_sink,
+        clock=clock,
     )
 
     engine = RealtimeScannerEngine(

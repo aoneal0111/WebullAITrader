@@ -207,6 +207,9 @@ class ShadowLatchedPlanResearch:
                 candidate.symbol, candidate.timestamp,
                 ShadowLatchedTransition.PLAN_REPLACED,
                 reason="AUTHORITATIVE_TECHNICAL_REPLACEMENT",
+                processing_time=(
+                    value.evaluation_timestamp or candidate.timestamp
+                ),
             ))
 
         bar_version = tuple(bar.timestamp for bar in value.bars)
@@ -280,6 +283,9 @@ class ShadowLatchedPlanResearch:
                 "production_signal_mutated": False,
                 "paper_submission_attempted": False,
                 "rest_confirmation_requested": False,
+                "event_time": candidate.timestamp,
+                "processing_time": market.observed_at,
+                "transition_written_at": market.observed_at,
             },
             identity_parts=(plan_id,),
         ))
@@ -436,6 +442,7 @@ class ShadowLatchedPlanResearch:
         *,
         reason: str,
         market: ShadowMarketObservation | None = None,
+        processing_time: datetime | None = None,
     ) -> tuple[CaptureRecord, ...]:
         state = self._active.pop(symbol.strip().upper(), None)
         if state is None:
@@ -445,13 +452,18 @@ class ShadowLatchedPlanResearch:
             state, transition, observed,
             extra={"reason": reason, "hard_invalidation": True},
             timestamp=timestamp,
+            processing_time=processing_time,
         ))
         if transition is not ShadowLatchedTransition.PLAN_EXPIRED:
             records.extend(self._transition(
                 state, ShadowLatchedTransition.PLAN_EXPIRED, observed,
                 extra={"reason": reason}, timestamp=timestamp,
+                processing_time=processing_time,
             ))
-        records.append(_outcome_record(state, timestamp, reason))
+        records.append(_outcome_record(
+            state, timestamp, reason,
+            processing_time=processing_time or observed.observed_at,
+        ))
         return tuple(records)
 
     def shutdown(self, timestamp: datetime) -> tuple[CaptureRecord, ...]:
@@ -463,6 +475,7 @@ class ShadowLatchedPlanResearch:
             records.extend(self.invalidate(
                 symbol, timestamp, ShadowLatchedTransition.PLAN_EXPIRED,
                 reason="RUNTIME_SHUTDOWN",
+                processing_time=timestamp,
             ))
         return tuple(records)
 
@@ -490,8 +503,10 @@ class ShadowLatchedPlanResearch:
         *,
         extra: dict[str, object] | None = None,
         timestamp: datetime | None = None,
+        processing_time: datetime | None = None,
     ) -> tuple[CaptureRecord, ...]:
         at = timestamp or market.observed_at
+        processed_at = processing_time or market.observed_at
         market_blockers = _market_blockers(
             market, self.config, self.capture_config,
         )
@@ -513,6 +528,10 @@ class ShadowLatchedPlanResearch:
             "freshness_threshold_seconds": self.capture_config.quote_stale_after_seconds,
             "paper_submission_attempted": False,
             "rest_confirmation_requested": False,
+            "event_time": _market_event_time(market),
+            "processing_time": processed_at,
+            "cause_event_time": timestamp,
+            "transition_written_at": processed_at,
         }
         if extra:
             payload.update(extra)
@@ -812,6 +831,7 @@ def _market_blockers(
 
 def _outcome_record(
     state: _LatchedState, timestamp: datetime, reason: str,
+    *, processing_time: datetime,
 ) -> CaptureRecord:
     return CaptureRecord.create(
         CaptureRecordType.SHADOW_LATCHED_OUTCOME,
@@ -850,9 +870,22 @@ def _outcome_record(
             "hypothetical_fill_claimed": False,
             "paper_submission_attempted": False,
             "rest_confirmation_requested": False,
+            "event_time": timestamp,
+            "processing_time": processing_time,
+            "cause_event_time": timestamp,
+            "transition_written_at": processing_time,
         },
         identity_parts=(state.plan.plan_id, "OUTCOME", reason),
     )
+
+
+def _market_event_time(market: ShadowMarketObservation) -> datetime | None:
+    values = tuple(
+        value
+        for value in (market.last_timestamp, market.quote_timestamp)
+        if value is not None
+    )
+    return max(values) if values else None
 
 
 def _percentile(
