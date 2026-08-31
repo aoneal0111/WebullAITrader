@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, replace
+from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 from queue import Empty, Full, Queue
@@ -18,6 +19,8 @@ from .journal import (
     DEFAULT_MODEL_VERSION,
     DEFAULT_STRATEGY_VERSION,
     PaperTradeExperimentJournal,
+    PreparedResearchWork,
+    prepare_research_work,
 )
 
 
@@ -38,6 +41,7 @@ class ResearchDecisionWork:
     strategy_version: str
     model_version: str
     enqueued_at: datetime
+    prepared: PreparedResearchWork
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +56,10 @@ class ResearchWorkerMetrics:
     accepting: bool
     failed: bool
     stopped: bool
+    checkpointed: int = 0
+    resumed: int = 0
+    durable_outstanding: int = 0
+    oldest_outstanding_age_ms: float = 0.0
 
 
 JournalFactory = Callable[[str | Path], PaperTradeExperimentJournal]
@@ -96,6 +104,11 @@ class PaperTradeExperimentWorker:
         self._failures = 0
         self._maximum_lag_ms = 0.0
         self._failure_logged = False
+        self._checkpointed = 0
+        self._resumed = 0
+        self._durable_outstanding = 0
+        self._oldest_outstanding_at: datetime | None = None
+        self._accepted_ids: set[str] = set()
         self._thread = Thread(
             target=self._run,
             name="atlas-experiment-research",
@@ -119,12 +132,21 @@ class PaperTradeExperimentWorker:
             strategy_version=DEFAULT_STRATEGY_VERSION,
             model_version=DEFAULT_MODEL_VERSION,
             enqueued_at=now,
+            prepared=prepare_research_work(
+                decision,
+                execution_environment=self._environment,
+                strategy_version=DEFAULT_STRATEGY_VERSION,
+                model_version=DEFAULT_MODEL_VERSION,
+                enqueued_at=now,
+            ),
         )
         with self._lock:
             if not self._accepting or self._failed:
                 self._rejected += 1
                 performance_diagnostics.increment("research_events_rejected")
                 return False
+            if work.prepared.work_id in self._accepted_ids:
+                return True
             try:
                 self._queue.put_nowait(work)
             except Full:
@@ -137,6 +159,7 @@ class PaperTradeExperimentWorker:
                 self._log_failure("bounded research queue saturated")
                 return False
             self._enqueued += 1
+            self._accepted_ids.add(work.prepared.work_id)
             depth = self._queue.qsize()
             self._queue_high_water = max(self._queue_high_water, depth)
             performance_diagnostics.increment("research_events_enqueued")
@@ -167,10 +190,9 @@ class PaperTradeExperimentWorker:
                 performance_diagnostics.increment("research_failures")
                 self._log_failure("research worker did not drain before shutdown timeout")
         if not stopped:
-            # The in-flight SQLite call cannot be interrupted safely. Explicitly
-            # reject all not-yet-started work so shutdown never leaves an
-            # ambiguous partially queued dataset.
-            self._discard_pending()
+            # In-flight SQLite work is already checkpointed. Persist the
+            # producer queue without waiting indefinitely for that operation.
+            self._checkpoint_pending_from_shutdown()
         return stopped
 
     def metrics(self) -> ResearchWorkerMetrics:
@@ -186,6 +208,16 @@ class PaperTradeExperimentWorker:
                 accepting=self._accepting,
                 failed=self._failed,
                 stopped=self._stopped,
+                checkpointed=self._checkpointed,
+                resumed=self._resumed,
+                durable_outstanding=self._durable_outstanding,
+                oldest_outstanding_age_ms=(
+                    0.0 if self._oldest_outstanding_at is None else max(
+                        0.0,
+                        (self._aware_now() - self._oldest_outstanding_at)
+                        .total_seconds() * 1000.0,
+                    )
+                ),
             )
 
     @property
@@ -196,39 +228,199 @@ class PaperTradeExperimentWorker:
 
     def _run(self) -> None:
         journal: PaperTradeExperimentJournal | None = None
-        while not (self._stop_requested.is_set() and self._queue.empty()):
-            try:
-                work = self._queue.get(timeout=0.05)
-            except Empty:
-                continue
-            try:
-                if journal is None:
-                    journal = self._journal_factory(self._path)
-                started = self._aware_now()
-                lag_ms = max(
-                    0.0,
-                    (started - work.enqueued_at).total_seconds() * 1000.0,
-                )
-                journal.record_scanner_decision(
-                    work.decision,
-                    execution_environment=work.execution_environment,
-                    strategy_version=work.strategy_version,
-                    model_version=work.model_version,
-                )
+        durable: deque[PreparedResearchWork] = deque()
+        supports_durable = False
+        try:
+            journal = self._journal_factory(self._path)
+            supports_durable = all(callable(getattr(journal, name, None)) for name in (
+                "checkpoint_work_items", "recoverable_work_items",
+                "process_prepared_work",
+            ))
+            if supports_durable:
+                recovered = journal.recoverable_work_items()
+                durable.extend(recovered)
                 with self._lock:
-                    self._completed += 1
-                    self._maximum_lag_ms = max(self._maximum_lag_ms, lag_ms)
-                performance_diagnostics.increment("research_events_completed")
-                performance_diagnostics.record_research_worker_lag(lag_ms)
-            except Exception as error:
-                self._mark_failed("retrospective research update failed", error)
-                self._discard_pending()
-                return
-            finally:
-                self._queue.task_done()
-                performance_diagnostics.set_research_queue_depth(self._queue.qsize())
+                    self._resumed += len(recovered)
+                    self._durable_outstanding = len(durable)
+                    self._oldest_outstanding_at = (
+                        recovered[0].enqueued_at if recovered else None
+                    )
+            while not (
+                self._stop_requested.is_set()
+                and self._queue.empty()
+                and not durable
+            ):
+                if supports_durable:
+                    batch = self._take_batch(
+                        block=not durable, limit=self._queue.maxsize
+                    )
+                    if batch:
+                        prepared = tuple(item.prepared for item in batch)
+                        inserted, _duplicates = journal.checkpoint_work_items(prepared)
+                        durable.extend(prepared)
+                        with self._lock:
+                            self._checkpointed += inserted
+                            self._durable_outstanding = len(durable)
+                            if self._oldest_outstanding_at is None:
+                                self._oldest_outstanding_at = prepared[0].enqueued_at
+                        for _item in batch:
+                            self._queue.task_done()
+                        performance_diagnostics.set_research_queue_depth(
+                            self._queue.qsize()
+                        )
+                    if not durable:
+                        continue
+                    processing = tuple(
+                        durable.popleft() for _ in range(min(32, len(durable)))
+                    )
+                    prepared_work = processing[0]
+                    work = None
+                else:
+                    try:
+                        work = self._queue.get(timeout=0.05)
+                    except Empty:
+                        continue
+                    prepared_work = work.prepared
+                if supports_durable:
+                    started = self._aware_now()
+                    process_batch = getattr(journal, "process_prepared_batch", None)
+                    if callable(process_batch):
+                        process_batch(processing)
+                    else:
+                        for item in processing:
+                            journal.process_prepared_work(item)
+                    lag_values = tuple(max(
+                        0.0,
+                        (started - item.enqueued_at).total_seconds() * 1000.0,
+                    ) for item in processing)
+                else:
+                    assert work is not None
+                    started = self._aware_now()
+                    lag_values = (max(
+                        0.0,
+                        (started - prepared_work.enqueued_at).total_seconds() * 1000.0,
+                    ),)
+                    journal.record_scanner_decision(
+                        work.decision,
+                        execution_environment=work.execution_environment,
+                        strategy_version=work.strategy_version,
+                        model_version=work.model_version,
+                    )
+                with self._lock:
+                    self._completed += len(lag_values)
+                    self._maximum_lag_ms = max(
+                        self._maximum_lag_ms, *lag_values
+                    )
+                    if supports_durable:
+                        self._durable_outstanding = len(durable)
+                        self._oldest_outstanding_at = (
+                            durable[0].enqueued_at if durable else None
+                        )
+                performance_diagnostics.increment(
+                    "research_events_completed", len(lag_values)
+                )
+                performance_diagnostics.record_research_worker_lag(max(lag_values))
+                if not supports_durable:
+                    assert work is not None
+                    self._queue.task_done()
+                    performance_diagnostics.set_research_queue_depth(
+                        self._queue.qsize()
+                    )
+        except Exception as error:
+            self._mark_failed("retrospective research update failed", error)
+            self._checkpoint_pending(journal)
+            return
+        finally:
+            telemetry = getattr(journal, "record_worker_telemetry", None)
+            if callable(telemetry):
+                try:
+                    with self._lock:
+                        telemetry(
+                            rejected=self._rejected,
+                            queue_high_water=self._queue_high_water,
+                            lag_max_ms=self._maximum_lag_ms,
+                            resumed=self._resumed,
+                        )
+                except Exception as error:
+                    self._mark_failed("research telemetry checkpoint failed", error)
+            close = getattr(journal, "close", None)
+            if callable(close):
+                close()
         with self._lock:
             self._stopped = True
+
+    def _take_batch(
+        self, *, block: bool, limit: int = 256,
+    ) -> list[ResearchDecisionWork]:
+        batch: list[ResearchDecisionWork] = []
+        try:
+            batch.append(
+                self._queue.get(timeout=0.05) if block
+                else self._queue.get_nowait()
+            )
+        except Empty:
+            return batch
+        while len(batch) < limit:
+            try:
+                batch.append(self._queue.get_nowait())
+            except Empty:
+                break
+        return batch
+
+    def _checkpoint_pending(
+        self, journal: PaperTradeExperimentJournal | None,
+    ) -> None:
+        pending = self._take_batch(block=False, limit=self._queue.maxsize)
+        if not pending:
+            return
+        checkpoint = getattr(journal, "checkpoint_work_items", None)
+        if callable(checkpoint):
+            inserted, _duplicates = checkpoint(
+                tuple(item.prepared for item in pending)
+            )
+            with self._lock:
+                self._checkpointed += inserted
+                self._durable_outstanding += inserted
+        else:
+            with self._lock:
+                self._rejected += len(pending)
+            performance_diagnostics.increment(
+                "research_events_rejected", len(pending)
+            )
+        for _item in pending:
+            self._queue.task_done()
+        performance_diagnostics.set_research_queue_depth(0)
+
+    def _checkpoint_pending_from_shutdown(self) -> None:
+        pending = self._take_batch(block=False, limit=self._queue.maxsize)
+        if not pending:
+            return
+        journal = None
+        try:
+            journal = self._journal_factory(self._path)
+            checkpoint = getattr(journal, "checkpoint_work_items", None)
+            if not callable(checkpoint):
+                raise RuntimeError("research journal does not support checkpointing")
+            inserted, _duplicates = checkpoint(
+                tuple(item.prepared for item in pending)
+            )
+            with self._lock:
+                self._checkpointed += inserted
+                self._durable_outstanding += inserted
+        except Exception as error:
+            with self._lock:
+                self._rejected += len(pending)
+            performance_diagnostics.increment(
+                "research_events_rejected", len(pending)
+            )
+            self._log_failure("research checkpoint failed", error)
+        finally:
+            close = getattr(journal, "close", None)
+            if callable(close):
+                close()
+            for _item in pending:
+                self._queue.task_done()
+            performance_diagnostics.set_research_queue_depth(0)
 
     def _discard_pending(self) -> None:
         rejected = 0
