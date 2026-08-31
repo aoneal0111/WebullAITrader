@@ -331,6 +331,43 @@ def test_pipeline_evaluates_and_ranks_candidate() -> None:
     assert pipeline.ranked(limit=10) == (decision,)
 
 
+def test_processing_delayed_detection_counts_every_event_but_aggregates_logs(
+    caplog,
+) -> None:
+    store = ScannerReferenceStore((reference_data(),))
+    adapter = MarketEventScannerAdapter(store)
+    pipeline = MomentumScannerPipeline(
+        adapter,
+        clock=lambda: NOW + timedelta(seconds=10),
+    )
+    pipeline.consume(replace(quote_event(), received_timestamp=NOW))
+
+    with caplog.at_level("INFO", logger="atlas.scanner"):
+        for sequence in range(2, 2_003):
+            pipeline.consume(replace(
+                trade_event(sequence=sequence, size=Decimal("1")),
+                received_timestamp=NOW,
+            ))
+        pipeline._clock = lambda: NOW + timedelta(seconds=1)
+        pipeline.consume(replace(
+            trade_event(sequence=2_003, size=Decimal("1")),
+            received_timestamp=NOW,
+        ))
+
+    delayed = [
+        record for record in caplog.records
+        if "event_type=market_event_processing_delayed" in record.message
+    ]
+    recovered = [
+        record for record in caplog.records
+        if "event_type=market_event_processing_recovered" in record.message
+    ]
+    assert pipeline._processing_delay_count == 2_001
+    assert len(delayed) == 3
+    assert "delayed_event_count=2000" in delayed[-1].message
+    assert len(recovered) == 1
+
+
 def test_pipeline_aggregates_rejections_and_catalyst_availability() -> None:
     store = ScannerReferenceStore((reference_data(
         catalyst=CatalystType.NONE,

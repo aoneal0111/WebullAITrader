@@ -52,6 +52,8 @@ class MomentumScannerPipeline:
         if decision_sink is not None and not callable(decision_sink):
             raise TypeError("decision_sink must be callable or None")
         self._decision_sink = decision_sink
+        self._processing_delay_count = 0
+        self._processing_delay_active = False
 
     def consume(
         self,
@@ -81,20 +83,37 @@ class MomentumScannerPipeline:
                 age_seconds * 1000.0
             )
             if age_seconds > _PROCESSING_AGE_WARNING_SECONDS:
-                _LOGGER.warning(
-                    "event_type=market_event_processing_delayed "
-                    "source=%s sequence=%s market_event_type=%s symbol=%s "
-                    "event_time=%s callback_received_at=%s scanner_started_at=%s "
-                    "processing_age_seconds=%.6f",
-                    event.source,
-                    event.sequence,
-                    event.event_type.value,
-                    event.symbol,
-                    event.timestamp.isoformat(),
-                    event.received_timestamp.isoformat(),
-                    observed_at.isoformat(),
+                delay_episode_started = not self._processing_delay_active
+                self._processing_delay_count += 1
+                self._processing_delay_active = True
+                if (
+                    delay_episode_started
+                    or self._processing_delay_count % 1_000 == 0
+                ):
+                    _LOGGER.warning(
+                        "event_type=market_event_processing_delayed "
+                        "delayed_event_count=%d source=%s sequence=%s "
+                        "market_event_type=%s symbol=%s event_time=%s "
+                        "callback_received_at=%s scanner_started_at=%s "
+                        "processing_age_seconds=%.6f",
+                        self._processing_delay_count,
+                        event.source,
+                        event.sequence,
+                        event.event_type.value,
+                        event.symbol,
+                        event.timestamp.isoformat(),
+                        event.received_timestamp.isoformat(),
+                        observed_at.isoformat(),
+                        age_seconds,
+                    )
+            elif self._processing_delay_active:
+                _LOGGER.info(
+                    "event_type=market_event_processing_recovered "
+                    "delayed_event_count=%d processing_age_seconds=%.6f",
+                    self._processing_delay_count,
                     age_seconds,
                 )
+                self._processing_delay_active = False
         ranked_all = sorted(
             (
                 *(item for item in self._latest.values() if item.symbol != decision.symbol),

@@ -46,7 +46,6 @@ class HealthProjection:
             HealthState.initial(),
             market_data_stale_after_seconds=market_data_stale_after.total_seconds(),
         )
-        self._seen_events: frozenset[tuple[str, int]] = frozenset()
         self._latest_sequence: dict[str, int] = {}
         self._field_timestamps: dict[str, datetime] = {}
 
@@ -58,17 +57,14 @@ class HealthProjection:
     def __call__(self, event: PaperRuntimeEvent) -> None:
         if not isinstance(event, PaperRuntimeEvent):
             raise TypeError("event must be a PaperRuntimeEvent")
-        identity = (event.source, event.sequence)
         with self._lock:
-            if identity in self._seen_events:
-                return
             # Runtime sources own monotonically increasing sequences.  A
             # delayed event from the same source must never roll a projection
-            # back after a newer observation has already been applied.
+            # back after a newer observation has already been applied.  The
+            # high-water mark also rejects duplicates without retaining every
+            # historical event identity.
             if event.sequence <= self._latest_sequence.get(event.source, 0):
-                self._seen_events = self._seen_events | {identity}
                 return
-            self._seen_events = self._seen_events | {identity}
             self._latest_sequence[event.source] = event.sequence
             changes = _health_changes(self._snapshot, event)
             accepted: dict[str, object] = {}

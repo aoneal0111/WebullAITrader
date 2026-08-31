@@ -47,6 +47,8 @@ class DecisionProjection:
     def __call__(self, event: PaperRuntimeEvent) -> None:
         if not isinstance(event, PaperRuntimeEvent):
             raise TypeError("event must be a PaperRuntimeEvent")
+        if event.decision is None and event.order is None and event.fill is None:
+            return
         with self._lock:
             current = self._snapshot
             outcome = _event_outcome(event)

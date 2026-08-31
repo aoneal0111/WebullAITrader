@@ -44,7 +44,7 @@ class WatchlistProjection:
         self._stale_after = stale_after
         self._lock = RLock()
         self._snapshot = WatchlistState.initial()
-        self._seen_events: frozenset[tuple[str, int]] = frozenset()
+        self._latest_sequence: dict[str, int] = {}
         self._as_of: datetime | None = None
 
     @property
@@ -55,16 +55,32 @@ class WatchlistProjection:
     def __call__(self, event: PaperRuntimeEvent) -> None:
         if not isinstance(event, PaperRuntimeEvent):
             raise TypeError("event must be a PaperRuntimeEvent")
-        identity = (event.source, event.sequence)
+        update = _event_update(event)
         with self._lock:
-            if identity in self._seen_events:
+            if event.sequence <= self._latest_sequence.get(event.source, 0):
                 return
-            self._seen_events = self._seen_events | {identity}
+            self._latest_sequence[event.source] = event.sequence
             self._as_of = max(
                 value
                 for value in (self._as_of, event.timestamp)
                 if value is not None
             )
+            if update is None and not _would_mark_entry_stale(
+                self._snapshot,
+                as_of=self._as_of,
+                stale_after=self._stale_after,
+            ):
+                return
+            if update is not None and not _update_can_affect_state(
+                self._snapshot,
+                update,
+                maximum_symbols=self._maximum_symbols,
+            ) and not _would_mark_entry_stale(
+                self._snapshot,
+                as_of=self._as_of,
+                stale_after=self._stale_after,
+            ):
+                return
             projected = _reduce_watchlist(
                 self._snapshot,
                 event,
@@ -170,6 +186,19 @@ def _reduce_watchlist(
             if update.metadata is not None:
                 entry = replace(entry, metadata=update.metadata)
             entries[symbol] = entry
+            if update.metadata is not None and any(
+                key == "scanner_rank" for key, _ in update.metadata
+            ):
+                previous_order = {
+                    item_symbol: index
+                    for index, item_symbol in enumerate(ordered)
+                }
+                ordered.sort(
+                    key=lambda item_symbol: (
+                        _scanner_rank(entries[item_symbol]),
+                        previous_order[item_symbol],
+                    )
+                )
         elif symbol is None and update.market_status is not None:
             entries = {
                 item_symbol: replace(
@@ -247,8 +276,50 @@ def _refresh_stale(
     return replace(entry, stale=stale)
 
 
+def _would_mark_entry_stale(
+    state: WatchlistState,
+    *,
+    as_of: datetime,
+    stale_after: timedelta,
+) -> bool:
+    return any(
+        entry.last_update is not None
+        and not entry.stale
+        and as_of - entry.last_update > stale_after
+        for entry in state.entries
+    )
+
+
+def _update_can_affect_state(
+    state: WatchlistState,
+    update: RuntimeWatchlistUpdate,
+    *,
+    maximum_symbols: int,
+) -> bool:
+    symbols = set(state.ordered_symbols)
+    if update.selection_changed and (
+        update.selected_symbol is None or update.selected_symbol in symbols
+    ):
+        return True
+    if update.symbol is None:
+        return update.market_status is not None and bool(symbols)
+    if update.subscribed is True:
+        return update.symbol in symbols or len(symbols) < maximum_symbols
+    if update.symbol in symbols:
+        return True
+    return False
+
+
 def _decimal_text(value: Decimal | None) -> str | None:
     return format(value, "f") if value is not None else None
+
+
+def _scanner_rank(entry: WatchlistEntry) -> int:
+    value = dict(entry.metadata).get("scanner_rank")
+    try:
+        return int(value) if value is not None else 999_999
+    except ValueError:
+        return 999_999
 
 
 def _to_operations(state: WatchlistState) -> OperationsWatchlistState:

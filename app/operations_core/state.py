@@ -284,6 +284,25 @@ class ApplicationStateStore:
                 timeline = timeline + (self._timeline_entry(event),)
                 timeline = timeline[-self._timeline_limit :]
 
+            current = self._state
+            if (
+                runtime == current.runtime
+                and paper_runtime == current.paper_runtime
+                and broker_account == current.broker_account
+                and orders == current.orders
+                and order_projection == current.order_projection
+                and positions == current.positions
+                and position_projection == current.position_projection
+                and timeline_projection == current.timeline_projection
+                and decision_projection == current.decision_projection
+                and portfolio_projection == current.portfolio_projection
+                and portfolio_intelligence == current.portfolio_intelligence
+                and health_projection == current.health_projection
+                and watchlist_projection == current.watchlist_projection
+                and timeline == current.timeline
+            ):
+                return
+
             self._state = ApplicationState(
                 runtime=runtime,
                 paper_runtime=paper_runtime,

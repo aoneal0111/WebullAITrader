@@ -72,6 +72,8 @@ class ScannerSnapshotPublisher:
         self._published_decisions: dict[str, ScannerDecision] = {}
         self._last_decisions: dict[str, ScannerDecision] = {}
         self._last_fingerprint: object | None = None
+        self._published_display_fingerprints: dict[str, object] = {}
+        self._latest_snapshot: ScannerSnapshot | None = None
         self._last_changed = False
         self._last_stale_symbols: tuple[str, ...] = ()
         self._published_experiments: dict[str, tuple[object, ...]] = {}
@@ -85,6 +87,11 @@ class ScannerSnapshotPublisher:
     def last_stale_symbols(self) -> tuple[str, ...]:
         return self._last_stale_symbols
 
+    @property
+    def authoritative_snapshot(self) -> ScannerSnapshot | None:
+        """Return the latest full immutable scanner snapshot for recovery."""
+        return self._latest_snapshot
+
     def publish(
         self,
         snapshot: ScannerSnapshot,
@@ -92,6 +99,7 @@ class ScannerSnapshotPublisher:
         cycle: int,
         now: datetime,
     ) -> tuple[str, ...]:
+        self._latest_snapshot = snapshot
         ranked = snapshot.ranked_candidates
         ranked_symbols = {candidate.symbol for candidate in ranked}
         decisions = {decision.symbol: decision for decision in snapshot.decisions}
@@ -128,6 +136,7 @@ class ScannerSnapshotPublisher:
                 symbol,
                 RuntimeWatchlistUpdate(symbol=symbol, subscribed=False),
             )
+            self._published_display_fingerprints.pop(symbol, None)
 
         session = (
             snapshot.session
@@ -144,25 +153,27 @@ class ScannerSnapshotPublisher:
         )
         self._last_stale_symbols = stale_symbols
 
-        fingerprint = (
-            session,
-            display_candidates,
-            tuple(
-                (
-                    candidate.symbol in stale_symbols,
-                    _component_freshness(
-                        candidate.last_price_timestamp,
-                        now=now,
-                        stale_after=self._stale_after,
-                    )[0],
-                    _component_freshness(
-                        candidate.quote_timestamp,
-                        now=now,
-                        stale_after=self._stale_after,
-                    )[0],
-                )
-                for candidate in display_candidates
-            ),
+        display_fingerprints = {
+            candidate.symbol: (
+                session,
+                candidate,
+                candidate.symbol in stale_symbols,
+                _component_freshness(
+                    candidate.last_price_timestamp,
+                    now=now,
+                    stale_after=self._stale_after,
+                )[0],
+                _component_freshness(
+                    candidate.quote_timestamp,
+                    now=now,
+                    stale_after=self._stale_after,
+                )[0],
+            )
+            for candidate in display_candidates
+        }
+        fingerprint = tuple(
+            (candidate.symbol, display_fingerprints[candidate.symbol])
+            for candidate in display_candidates
         )
         if fingerprint == self._last_fingerprint:
             self._last_changed = False
@@ -175,6 +186,11 @@ class ScannerSnapshotPublisher:
         self._last_changed = True
         self._diagnostics.increment("scanner_snapshots_published")
         for display_rank, candidate in enumerate(display_candidates, 1):
+            if (
+                self._published_display_fingerprints.get(candidate.symbol)
+                == display_fingerprints[candidate.symbol]
+            ):
+                continue
             market_timestamp = _market_timestamp(candidate, snapshot.timestamp)
             evaluation_timestamp = candidate.observed_at or snapshot.timestamp
             market_age = max(timedelta(), now - market_timestamp)
@@ -336,6 +352,7 @@ class ScannerSnapshotPublisher:
             )
 
         self._displayed_symbols = current
+        self._published_display_fingerprints = display_fingerprints
         self._published_symbols = ranked_symbols
         self._published_decisions = {
             candidate.symbol: candidate for candidate in ranked
