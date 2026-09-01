@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 from pathlib import Path
 
+import pytest
+
 from app.strategies.warrior_momentum import (
     CaptureRecord,
     CaptureRecordType,
@@ -45,8 +47,10 @@ def observation(
     tradable: bool = True,
     execution_permitted: bool = True,
     provider_at: datetime | None = None,
+    received_at: datetime | None = None,
 ) -> ShadowMarketObservation:
     source_at = provider_at or at
+    local_received_at = received_at or at
     return ShadowMarketObservation(
         symbol="AEHL",
         observed_at=at,
@@ -55,8 +59,8 @@ def observation(
         ask=D(ask),
         last_timestamp=source_at,
         quote_timestamp=source_at,
-        last_received_timestamp=at,
-        quote_received_timestamp=at,
+        last_received_timestamp=local_received_at,
+        quote_received_timestamp=local_received_at,
         halted=halted,
         tradable=tradable,
         session=session,
@@ -183,6 +187,7 @@ def test_aehl_latched_plan_reconstructs_fast_execution_transitions_without_order
     )
     assert eligible_snapshot["market_eligible"] is True
     assert eligible_snapshot["limit_marketable"] is False
+    assert "HYPOTHETICAL_FILL_POSSIBLE" not in transitions(clear)
     assert tracker.observe(observation(
         clear_at, last="6.17", bid="6.15", ask="6.19",
     )) == ()
@@ -196,10 +201,16 @@ def test_aehl_latched_plan_reconstructs_fast_execution_transitions_without_order
         "SPREAD_BLOCKED", "MARKET_REBLOCKED", "LIMIT_MARKETABLE",
         "HYPOTHETICAL_FILL_POSSIBLE",
     ]
-    assert next(
-        record.payload["policy"] for record in marketable_wide
+    policy_a = next(
+        record.payload for record in marketable_wide
         if record.payload.get("transition") == "HYPOTHETICAL_FILL_POSSIBLE"
-    ) == "A_AUTHORIZATION_SPREAD_ONLY"
+    )
+    assert policy_a["policy"] == "A_AUTHORIZATION_SPREAD_ONLY"
+    assert policy_a["policy_freshness_semantics"] == (
+        "AUTHORIZATION_ONLY_RESEARCH_NOT_PRODUCTION_FRESHNESS"
+    )
+    assert policy_a["fill_observation_market_eligible"] is False
+    assert D(policy_a["market"]["ask"]) <= D(policy_a["structural_limit_price"])
 
     eligible_marketable_at = T0 + timedelta(seconds=36, milliseconds=560)
     eligible_marketable = tracker.observe(observation(
@@ -226,6 +237,12 @@ def test_aehl_latched_plan_reconstructs_fast_execution_transitions_without_order
         if record.record_type is CaptureRecordType.SHADOW_LATCHED_OUTCOME
     )
     assert outcome["time_to_clear_seconds"] == "1.353"
+    assert outcome["source_time_to_market_eligible_seconds"] == "1.353"
+    assert outcome["processing_time_to_market_eligible_seconds"] == "1.353"
+    assert outcome["source_time_to_authorization_seconds"] == "1.353"
+    assert outcome["source_time_to_policy_a_fill_seconds"] == "31.654"
+    assert outcome["source_time_to_policy_b_fill_seconds"] == "36.56"
+    assert outcome["duration_semantics_version"] == 2
     assert outcome["clear_cycles"] == 2
     assert outcome["reblock_cycles"] == 1
     assert outcome["policy_a_fill_possible"] is True
@@ -316,6 +333,7 @@ def test_stale_quote_records_confirmation_need_but_never_requests_rest() -> None
     at = T0 + timedelta(seconds=10)
     records = tracker.observe(observation(
         at, last="6.08", bid="6.07", ask="6.08", provider_at=T0,
+        received_at=T0,
     ))
     assert "QUOTE_STALE" in transitions(records)
     for record in records:
@@ -341,6 +359,236 @@ def test_unavailable_account_is_recorded_without_hypothetical_authorization() ->
     ))
     assert "MARKET_ELIGIBLE" in transitions(clear)
     assert "HYPOTHETICAL_ORDER_AUTHORIZED" not in transitions(clear)
+
+
+def test_clock_domains_persist_source_and_processing_durations_independently() -> None:
+    tracker = ShadowLatchedPlanResearch()
+    candidate, signal, value = technical_case()
+    decision_processing = T0 - timedelta(seconds=2)
+    value = replace(value, evaluation_timestamp=decision_processing)
+    created = tracker.create(
+        candidate, signal,
+        value,
+        decision_record_id="offset-clock-decision",
+        entry_rejections=(ReasonCode.SPREAD_WIDE,),
+        account=PaperAccountContext(D("50000"), D("25000"), frozenset({"AEHL"})),
+        existing_strategy_position=False,
+        execution_permitted=True,
+    )
+    plan = next(
+        record.payload for record in created
+        if record.record_type is CaptureRecordType.SHADOW_LATCHED_PLAN
+    )
+    assert plan["timestamp_domains"]["event_time"] == "DECISION_SOURCE_TIME"
+    assert plan["timestamp_domains"]["processing_time"] == "DECISION_PROCESSING_TIME"
+
+    eligible_source = T0 + timedelta(milliseconds=282)
+    eligible_processing = decision_processing + timedelta(milliseconds=700)
+    tracker.observe(observation(
+        eligible_processing,
+        last="6.17", bid="6.15", ask="6.19",
+        provider_at=eligible_source, received_at=eligible_processing,
+    ))
+    closed = tracker.invalidate(
+        "AEHL", T0 + timedelta(minutes=1),
+        ShadowLatchedTransition.NEW_BAR_INVALIDATION,
+        reason="NEW_COMPLETED_BAR",
+        processing_time=decision_processing + timedelta(minutes=1),
+    )
+    outcome = next(
+        record.payload for record in closed
+        if record.record_type is CaptureRecordType.SHADOW_LATCHED_OUTCOME
+    )
+    assert outcome["source_time_to_market_eligible_seconds"] == "0.282"
+    assert outcome["processing_time_to_market_eligible_seconds"] == "0.7"
+    assert outcome["time_to_clear_seconds"] == "0.282"
+    assert D(outcome["time_to_clear_seconds"]) >= 0
+    assert outcome["source_time_to_invalidation_seconds"] == "60.0"
+    assert outcome["processing_time_to_invalidation_seconds"] == "60.0"
+
+
+def test_missing_source_endpoint_never_manufactures_mixed_domain_duration() -> None:
+    tracker = ShadowLatchedPlanResearch()
+    create_plan(tracker)
+    processing_at = T0 + timedelta(seconds=1)
+    no_source = replace(
+        observation(
+            processing_at, last="6.17", bid="6.15", ask="6.19",
+            received_at=processing_at,
+        ),
+        last_timestamp=None,
+        quote_timestamp=None,
+    )
+    assert "MARKET_ELIGIBLE" in transitions(tracker.observe(no_source))
+    closed = tracker.shutdown(T0 + timedelta(seconds=10))
+    outcome = next(
+        record.payload for record in closed
+        if record.record_type is CaptureRecordType.SHADOW_LATCHED_OUTCOME
+    )
+    assert outcome["source_time_to_market_eligible_seconds"] is None
+    assert outcome["processing_time_to_market_eligible_seconds"] == "1.0"
+    assert outcome["source_time_to_invalidation_seconds"] is None
+    assert outcome["processing_time_to_invalidation_seconds"] == "10.0"
+
+
+def test_stop_before_entry_is_terminal_but_replacement_gets_new_identity() -> None:
+    tracker = ShadowLatchedPlanResearch()
+    created = create_plan(tracker)
+    first_plan_id = next(
+        record.payload["plan_id"] for record in created
+        if record.record_type is CaptureRecordType.SHADOW_LATCHED_PLAN
+    )
+    stopped = tracker.observe(observation(
+        T0 + timedelta(seconds=1),
+        last="5.92", bid="5.90", ask="6.20",
+    ))
+    assert transitions(stopped)[0] == "STOP_TOUCHED_BEFORE_ENTRY"
+    stop_payload = next(
+        record.payload for record in stopped
+        if record.payload.get("transition") == "STOP_TOUCHED_BEFORE_ENTRY"
+    )
+    assert stop_payload["entry_terminal"] is True
+    assert stop_payload["hard_invalidation"] is True
+
+    later = tracker.observe(observation(
+        T0 + timedelta(seconds=2),
+        last="6.00", bid="5.99", ask="6.00",
+    ))
+    assert "SPREAD_CLEAR" in transitions(later)
+    assert "LIMIT_MARKETABLE" in transitions(later)
+    assert "MARKET_ELIGIBLE" not in transitions(later)
+    assert "HYPOTHETICAL_ORDER_AUTHORIZED" not in transitions(later)
+    assert "HYPOTHETICAL_FILL_POSSIBLE" not in transitions(later)
+    assert all(
+        record.payload["market_eligible"] is False
+        for record in later
+        if record.record_type is CaptureRecordType.SHADOW_LATCHED_TRANSITION
+    )
+
+    candidate, signal, value = technical_case()
+    replacement_at = T0 + timedelta(minutes=1)
+    candidate = replace(candidate, timestamp=replacement_at)
+    value = replace(
+        value,
+        observation=replace(value.observation, timestamp=replacement_at),
+        evaluation_timestamp=replacement_at,
+    )
+    replacement = tracker.create(
+        candidate, signal, value,
+        decision_record_id="replacement-decision",
+        entry_rejections=(ReasonCode.SPREAD_WIDE,),
+        account=PaperAccountContext(D("50000"), D("25000"), frozenset({"AEHL"})),
+        existing_strategy_position=False,
+        execution_permitted=True,
+    )
+    second_plan_id = next(
+        record.payload["plan_id"] for record in replacement
+        if record.record_type is CaptureRecordType.SHADOW_LATCHED_PLAN
+    )
+    assert "PLAN_REPLACED" in transitions(replacement)
+    assert second_plan_id != first_plan_id
+
+
+def test_stop_after_authorization_blocks_both_policy_fill_paths() -> None:
+    tracker = ShadowLatchedPlanResearch()
+    create_plan(tracker)
+    authorized = tracker.observe(observation(
+        T0 + timedelta(seconds=1),
+        last="6.17", bid="6.15", ask="6.19",
+    ))
+    assert "HYPOTHETICAL_ORDER_AUTHORIZED" in transitions(authorized)
+    stopped = tracker.observe(observation(
+        T0 + timedelta(seconds=2),
+        last="5.92", bid="5.90", ask="6.20",
+    ))
+    assert "STOP_TOUCHED_BEFORE_ENTRY" in transitions(stopped)
+    later = tracker.observe(observation(
+        T0 + timedelta(seconds=3),
+        last="6.00", bid="5.99", ask="6.00",
+    ))
+    assert "HYPOTHETICAL_FILL_POSSIBLE" not in transitions(later)
+
+
+def test_read_only_account_risk_evaluation_distinguishes_rejection_and_approval() -> None:
+    rejected_account = PaperAccountContext(
+        D("50000"), D("25000"), frozenset(),
+    )
+    tracker = ShadowLatchedPlanResearch()
+    rejected = create_plan(tracker, account_context=rejected_account)
+    rejected_research = next(
+        record.payload["account_research"] for record in rejected
+        if record.record_type is CaptureRecordType.SHADOW_LATCHED_PLAN
+    )
+    assert rejected_research["risk_evaluator"] == "size_position"
+    assert rejected_research["allowed_symbol"] is False
+    assert rejected_research["risk_approved"] is False
+    assert rejected_research["reason_codes"] == ["EXECUTION_NOT_ALLOWED"]
+    assert rejected_research["mutated_account_state"] is False
+    assert rejected_research["execution_authority"] is False
+    assert tracker.observe(observation(
+        T0 + timedelta(seconds=1),
+        last="6.17", bid="6.15", ask="6.19",
+    ))
+    assert rejected_account.allowed_symbols == frozenset()
+
+    approved_tracker = ShadowLatchedPlanResearch()
+    approved = create_plan(approved_tracker)
+    approved_research = next(
+        record.payload["account_research"] for record in approved
+        if record.record_type is CaptureRecordType.SHADOW_LATCHED_PLAN
+    )
+    assert approved_research["allowed_symbol"] is True
+    assert approved_research["risk_approved"] is True
+    assert approved_research["authorization_observable"] is True
+    assert "HYPOTHETICAL_ORDER_AUTHORIZED" in transitions(
+        approved_tracker.observe(observation(
+            T0 + timedelta(seconds=1),
+            last="6.17", bid="6.15", ask="6.19",
+        ))
+    )
+
+
+@pytest.mark.parametrize(
+    ("market_changes", "expected"),
+    (
+        ({"session": "CLOSED"}, "SESSION_INVALIDATION"),
+        ({"halted": True}, "HALT_INVALIDATION"),
+        ({"execution_permitted": False}, "PLAN_EXPIRED"),
+    ),
+)
+def test_market_invalidations_prevent_late_authorization_and_fill(
+    market_changes: dict[str, object], expected: str,
+) -> None:
+    tracker = ShadowLatchedPlanResearch()
+    create_plan(tracker)
+    market = observation(
+        T0 + timedelta(seconds=1),
+        last="6.00", bid="5.99", ask="6.00",
+        **market_changes,
+    )
+    invalidated = tracker.observe(market)
+    assert expected in transitions(invalidated)
+    assert tracker.active_symbols == ()
+    assert tracker.observe(observation(
+        T0 + timedelta(seconds=2),
+        last="6.00", bid="5.99", ask="6.00",
+    )) == ()
+
+
+def test_new_bar_invalidation_prevents_late_authorization_and_fill() -> None:
+    tracker = ShadowLatchedPlanResearch()
+    create_plan(tracker)
+    closed = tracker.invalidate(
+        "AEHL", T0 + timedelta(minutes=1),
+        ShadowLatchedTransition.NEW_BAR_INVALIDATION,
+        reason="NEW_COMPLETED_BAR",
+        processing_time=T0 + timedelta(minutes=1),
+    )
+    assert transitions(closed) == ["NEW_BAR_INVALIDATION", "PLAN_EXPIRED"]
+    assert tracker.observe(observation(
+        T0 + timedelta(minutes=1, seconds=1),
+        last="6.00", bid="5.99", ask="6.00",
+    )) == ()
 
 
 def test_shutdown_invalidates_once_and_prevents_late_research_activity() -> None:

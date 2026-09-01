@@ -62,6 +62,16 @@ class ShadowLatchedTransition(StrEnum):
     HYPOTHETICAL_FILL_POSSIBLE = "HYPOTHETICAL_FILL_POSSIBLE"
 
 
+class ShadowClockDomain(StrEnum):
+    PROVIDER_SOURCE_TIME = "PROVIDER_SOURCE_TIME"
+    CALLBACK_RECEIPT_TIME = "CALLBACK_RECEIPT_TIME"
+    PROCESSING_TIME = "PROCESSING_TIME"
+    DECISION_SOURCE_TIME = "DECISION_SOURCE_TIME"
+    DECISION_PROCESSING_TIME = "DECISION_PROCESSING_TIME"
+    PERSISTENCE_TIME = "PERSISTENCE_TIME"
+    LOCAL_RUNTIME_TIME = "LOCAL_RUNTIME_TIME"
+
+
 @dataclass(frozen=True, slots=True)
 class ShadowMarketObservation:
     symbol: str
@@ -135,6 +145,12 @@ class ShadowLatchedPlan:
     original_market: ShadowMarketObservation
 
 
+@dataclass(frozen=True, slots=True)
+class _TimingPoint:
+    source_at: datetime | None
+    processing_at: datetime
+
+
 @dataclass(slots=True)
 class _LatchedState:
     plan: ShadowLatchedPlan
@@ -145,13 +161,18 @@ class _LatchedState:
     market_eligible: bool | None = None
     limit_marketable: bool | None = None
     halted: bool = False
-    stop_touched: bool = False
-    authorization_at: datetime | None = None
-    first_marketable_at: datetime | None = None
+    entry_terminal: bool = False
+    terminal_reason: str | None = None
+    first_fresh: _TimingPoint | None = None
+    first_spread_clear: _TimingPoint | None = None
+    first_market_eligible: _TimingPoint | None = None
+    authorization: _TimingPoint | None = None
+    first_marketable: _TimingPoint | None = None
     first_marketable_spread: Decimal | None = None
     first_marketable_fresh: bool | None = None
-    first_clear_at: datetime | None = None
-    stop_touched_at: datetime | None = None
+    stop_touched: _TimingPoint | None = None
+    policy_a_fill: _TimingPoint | None = None
+    policy_b_fill: _TimingPoint | None = None
     clear_cycles: int = 0
     reblock_cycles: int = 0
     policy_a_possible: bool = False
@@ -286,6 +307,14 @@ class ShadowLatchedPlanResearch:
                 "event_time": candidate.timestamp,
                 "processing_time": market.observed_at,
                 "transition_written_at": market.observed_at,
+                "persistence_time": None,
+                "timestamp_domains": {
+                    "record_timestamp": ShadowClockDomain.DECISION_SOURCE_TIME.value,
+                    "event_time": ShadowClockDomain.DECISION_SOURCE_TIME.value,
+                    "processing_time": ShadowClockDomain.DECISION_PROCESSING_TIME.value,
+                    "transition_written_at": ShadowClockDomain.DECISION_PROCESSING_TIME.value,
+                    "persistence_time": ShadowClockDomain.PERSISTENCE_TIME.value,
+                },
             },
             identity_parts=(plan_id,),
         ))
@@ -310,17 +339,42 @@ class ShadowLatchedPlanResearch:
             return ()
         if market.session not in self.config.entry.allowed_sessions:
             return self.invalidate(
-                market.symbol, market.observed_at,
+                market.symbol, _market_event_time(market) or market.observed_at,
                 ShadowLatchedTransition.SESSION_INVALIDATION,
                 reason="SESSION_NOT_ALLOWED",
                 market=market,
+                processing_time=market.observed_at,
+                timestamp_domain=(
+                    ShadowClockDomain.PROVIDER_SOURCE_TIME
+                    if _market_event_time(market) is not None
+                    else ShadowClockDomain.PROCESSING_TIME
+                ),
             )
         if not market.execution_permitted:
             return self.invalidate(
-                market.symbol, market.observed_at,
+                market.symbol, _market_event_time(market) or market.observed_at,
                 ShadowLatchedTransition.PLAN_EXPIRED,
                 reason="EXECUTION_DISABLED",
                 market=market,
+                processing_time=market.observed_at,
+                timestamp_domain=(
+                    ShadowClockDomain.PROVIDER_SOURCE_TIME
+                    if _market_event_time(market) is not None
+                    else ShadowClockDomain.PROCESSING_TIME
+                ),
+            )
+        if market.halted:
+            return self.invalidate(
+                market.symbol, _market_event_time(market) or market.observed_at,
+                ShadowLatchedTransition.HALT_INVALIDATION,
+                reason="MARKET_HALTED",
+                market=market,
+                processing_time=market.observed_at,
+                timestamp_domain=(
+                    ShadowClockDomain.PROVIDER_SOURCE_TIME
+                    if _market_event_time(market) is not None
+                    else ShadowClockDomain.PROCESSING_TIME
+                ),
             )
 
         version = _market_version(market, self.capture_config)
@@ -328,17 +382,43 @@ class ShadowLatchedPlanResearch:
             return ()
         state.prior_version = version
         records: list[CaptureRecord] = []
+        timing = _market_timing(market)
         spread = _spread_percent(market.bid, market.ask)
         spread_clear = (
             spread is not None
             and spread <= self.config.entry.maximum_spread_percent
         )
         quote_fresh = _market_fresh(market, self.capture_config)
-        eligible = (
+        raw_eligible = (
             spread_clear and quote_fresh and market.tradable
             and not market.halted and market.execution_permitted
         )
         marketable = market.ask is not None and market.ask <= state.plan.trigger
+
+        if (
+            market.last <= state.plan.stop
+            and state.stop_touched is None
+            and not state.policy_b_possible
+        ):
+            state.stop_touched = timing
+            state.entry_terminal = True
+            state.terminal_reason = ShadowLatchedTransition.STOP_TOUCHED_BEFORE_ENTRY.value
+            records.extend(self._transition(
+                state, ShadowLatchedTransition.STOP_TOUCHED_BEFORE_ENTRY,
+                market,
+                extra={
+                    "hard_invalidation": True,
+                    "entry_terminal": True,
+                    "price_source": "LAST",
+                },
+            ))
+
+        eligible = raw_eligible and not state.entry_terminal
+
+        if spread_clear and state.first_spread_clear is None:
+            state.first_spread_clear = timing
+        if quote_fresh and state.first_fresh is None:
+            state.first_fresh = timing
 
         records.extend(self._changed_transition(
             state, "spread_clear", spread_clear,
@@ -365,14 +445,15 @@ class ShadowLatchedPlanResearch:
             state.market_eligible = eligible
             if eligible:
                 state.clear_cycles += 1
-                if state.first_clear_at is None:
-                    state.first_clear_at = market.observed_at
+                if state.first_market_eligible is None:
+                    state.first_market_eligible = timing
                 if (
-                    state.authorization_at is None
+                    state.authorization is None
+                    and not state.entry_terminal
                     and bool(state.account_payload.get("risk_approved"))
                     and not bool(state.account_payload.get("existing_strategy_position"))
                 ):
-                    state.authorization_at = market.observed_at
+                    state.authorization = timing
                     records.extend(self._transition(
                         state,
                         ShadowLatchedTransition.HYPOTHETICAL_ORDER_AUTHORIZED,
@@ -387,48 +468,43 @@ class ShadowLatchedPlanResearch:
             ShadowLatchedTransition.LIMIT_NOT_MARKETABLE,
             market,
         ))
-        if marketable and state.first_marketable_at is None:
-            state.first_marketable_at = market.observed_at
+        if marketable and state.first_marketable is None:
+            state.first_marketable = timing
             state.first_marketable_spread = spread
             state.first_marketable_fresh = quote_fresh
-        if market.last <= state.plan.stop and not state.stop_touched:
-            state.stop_touched = True
-            state.stop_touched_at = market.observed_at
-            records.extend(self._transition(
-                state, ShadowLatchedTransition.STOP_TOUCHED_BEFORE_ENTRY,
-                market,
-                extra={"hard_invalidation": False, "price_source": "LAST"},
-            ))
-        if market.halted and not state.halted:
-            records.extend(self._transition(
-                state, ShadowLatchedTransition.HALT_INVALIDATION, market,
-                extra={"hard_invalidation": False},
-            ))
         state.halted = market.halted
 
         if (
-            state.authorization_at is not None and marketable
+            state.authorization is not None and marketable
+            and not state.entry_terminal
             and not state.policy_a_possible
         ):
             state.policy_a_possible = True
+            state.policy_a_fill = timing
             records.extend(self._transition(
                 state, ShadowLatchedTransition.HYPOTHETICAL_FILL_POSSIBLE,
                 market,
                 extra={
                     "policy": "A_AUTHORIZATION_SPREAD_ONLY",
+                    "policy_freshness_semantics": "AUTHORIZATION_ONLY_RESEARCH_NOT_PRODUCTION_FRESHNESS",
+                    "fill_observation_market_eligible": raw_eligible,
                     "liquidity_evidence_available": False,
                 },
             ))
         if (
-            state.authorization_at is not None and marketable and eligible
+            state.authorization is not None and marketable and eligible
+            and not state.entry_terminal
             and not state.policy_b_possible
         ):
             state.policy_b_possible = True
+            state.policy_b_fill = timing
             records.extend(self._transition(
                 state, ShadowLatchedTransition.HYPOTHETICAL_FILL_POSSIBLE,
                 market,
                 extra={
                     "policy": "B_SPREAD_THROUGH_FILL",
+                    "policy_freshness_semantics": "AUTHORIZATION_AND_FILL_MARKET_ELIGIBILITY_REQUIRED",
+                    "fill_observation_market_eligible": True,
                     "liquidity_evidence_available": False,
                 },
             ))
@@ -443,25 +519,35 @@ class ShadowLatchedPlanResearch:
         reason: str,
         market: ShadowMarketObservation | None = None,
         processing_time: datetime | None = None,
+        timestamp_domain: ShadowClockDomain = ShadowClockDomain.PROVIDER_SOURCE_TIME,
     ) -> tuple[CaptureRecord, ...]:
         state = self._active.pop(symbol.strip().upper(), None)
         if state is None:
             return ()
+        state.entry_terminal = True
+        state.terminal_reason = reason
         observed = market or state.plan.original_market
         records = list(self._transition(
             state, transition, observed,
             extra={"reason": reason, "hard_invalidation": True},
             timestamp=timestamp,
             processing_time=processing_time,
+            timestamp_domain=timestamp_domain,
         ))
         if transition is not ShadowLatchedTransition.PLAN_EXPIRED:
             records.extend(self._transition(
                 state, ShadowLatchedTransition.PLAN_EXPIRED, observed,
                 extra={"reason": reason}, timestamp=timestamp,
                 processing_time=processing_time,
+                timestamp_domain=timestamp_domain,
             ))
+        source_time = (
+            timestamp
+            if timestamp_domain is ShadowClockDomain.PROVIDER_SOURCE_TIME
+            else None
+        )
         records.append(_outcome_record(
-            state, timestamp, reason,
+            state, source_time, reason,
             processing_time=processing_time or observed.observed_at,
         ))
         return tuple(records)
@@ -476,6 +562,7 @@ class ShadowLatchedPlanResearch:
                 symbol, timestamp, ShadowLatchedTransition.PLAN_EXPIRED,
                 reason="RUNTIME_SHUTDOWN",
                 processing_time=timestamp,
+                timestamp_domain=ShadowClockDomain.PROCESSING_TIME,
             ))
         return tuple(records)
 
@@ -504,11 +591,19 @@ class ShadowLatchedPlanResearch:
         extra: dict[str, object] | None = None,
         timestamp: datetime | None = None,
         processing_time: datetime | None = None,
+        timestamp_domain: ShadowClockDomain = ShadowClockDomain.PROVIDER_SOURCE_TIME,
     ) -> tuple[CaptureRecord, ...]:
-        at = timestamp or market.observed_at
         processed_at = processing_time or market.observed_at
+        source_at = (
+            timestamp
+            if timestamp is not None
+            and timestamp_domain is ShadowClockDomain.PROVIDER_SOURCE_TIME
+            else None if timestamp is not None else _market_event_time(market)
+        )
+        at = source_at or processed_at
         market_blockers = _market_blockers(
             market, self.config, self.capture_config,
+            terminal_reason=(state.terminal_reason if state.entry_terminal else None),
         )
         payload: dict[str, object] = {
             "plan_id": state.plan.plan_id,
@@ -528,10 +623,28 @@ class ShadowLatchedPlanResearch:
             "freshness_threshold_seconds": self.capture_config.quote_stale_after_seconds,
             "paper_submission_attempted": False,
             "rest_confirmation_requested": False,
-            "event_time": _market_event_time(market),
+            "event_time": source_at,
             "processing_time": processed_at,
-            "cause_event_time": timestamp,
+            "cause_event_time": source_at,
             "transition_written_at": processed_at,
+            "persistence_time": None,
+            "entry_terminal": state.entry_terminal,
+            "terminal_reason": state.terminal_reason,
+            "timestamp_domains": {
+                "record_timestamp": (
+                    ShadowClockDomain.PROVIDER_SOURCE_TIME.value
+                    if source_at is not None
+                    else ShadowClockDomain.PROCESSING_TIME.value
+                ),
+                "event_time": ShadowClockDomain.PROVIDER_SOURCE_TIME.value,
+                "processing_time": ShadowClockDomain.PROCESSING_TIME.value,
+                "cause_event_time": (
+                    timestamp_domain.value if timestamp is not None else
+                    ShadowClockDomain.PROVIDER_SOURCE_TIME.value
+                ),
+                "transition_written_at": ShadowClockDomain.PROCESSING_TIME.value,
+                "persistence_time": ShadowClockDomain.PERSISTENCE_TIME.value,
+            },
         }
         if extra:
             payload.update(extra)
@@ -590,15 +703,18 @@ def analyze_shadow_latched(records: tuple[CaptureRecord, ...]) -> ShadowLatchedR
         ):
             horizon = int(record.payload["horizon_minutes"])
             horizons[horizon] = horizons.get(horizon, 0) + 1
-    for plan_id, plan_record in plans.items():
-        clear = next((
-            item for item in by_plan.get(plan_id, ())
-            if item.payload.get("transition") == ShadowLatchedTransition.MARKET_ELIGIBLE.value
-        ), None)
-        if clear is not None:
-            clear_times.append(Decimal(str(
-                (clear.timestamp - plan_record.timestamp).total_seconds()
-            )))
+    outcomes = {
+        str(record.payload.get("plan_id")): record
+        for record in records
+        if record.record_type is CaptureRecordType.SHADOW_LATCHED_OUTCOME
+    }
+    for plan_id in plans:
+        outcome = outcomes.get(str(plan_id))
+        if outcome is None:
+            continue
+        duration = outcome.payload.get("source_time_to_market_eligible_seconds")
+        if duration is not None:
+            clear_times.append(Decimal(str(duration)))
     transition_values = [str(item.payload.get("transition")) for item in transitions]
     account_approved = sum(
         bool(record.payload.get("account_research", {}).get("risk_approved"))
@@ -689,6 +805,9 @@ def _account_research(
             "captured_at": captured_at,
             "evaluation_semantics": "ACCOUNT_CONTEXT_UNAVAILABLE",
             "requires_execution_time_reassessment": True,
+            "authorization_observable": False,
+            "execution_authority": False,
+            "risk_evaluator": "size_position",
         }
     result = size_position(
         signal,
@@ -711,12 +830,18 @@ def _account_research(
         "exposure_limit": account.exposure_limit,
         "exposure_result": "PASSED" if result.approved else "REJECTED",
         "reason_codes": tuple(code.value for code in result.reason_codes),
+        "allowed_symbol": signal.symbol in account.allowed_symbols,
+        "risk_engine_approved": account.risk_engine_approved,
+        "broker_restriction": account.broker_restriction,
         "existing_strategy_position": existing_strategy_position,
         "authoritative_order_state_available": False,
         "mutated_account_state": False,
         "captured_at": captured_at,
         "evaluation_semantics": "READ_ONLY_PLAN_CREATION_SNAPSHOT",
         "requires_execution_time_reassessment": True,
+        "authorization_observable": True,
+        "execution_authority": False,
+        "risk_evaluator": "size_position",
     }
 
 
@@ -725,6 +850,8 @@ def _market_payload(
     capture_config: ForwardCaptureConfiguration,
 ) -> dict[str, object]:
     last_age, quote_age = _market_ages(market)
+    source_at = _market_event_time(market)
+    last_age_domain, quote_age_domain = _market_age_domains(market)
     fresh = _market_fresh(market, capture_config)
     return {
         "observed_at": market.observed_at,
@@ -737,6 +864,18 @@ def _market_payload(
         "quote_received_timestamp": market.quote_received_timestamp,
         "last_age_seconds": last_age,
         "quote_age_seconds": quote_age,
+        "last_age_clock_domain": last_age_domain,
+        "quote_age_clock_domain": quote_age_domain,
+        "age_semantics": "CALLBACK_RECEIPT_TO_PROCESSING_ELSE_PROVIDER_SOURCE_TO_SOURCE",
+        "source_event_time": source_at,
+        "timestamp_domains": {
+            "observed_at": ShadowClockDomain.PROCESSING_TIME.value,
+            "last_timestamp": ShadowClockDomain.PROVIDER_SOURCE_TIME.value,
+            "quote_timestamp": ShadowClockDomain.PROVIDER_SOURCE_TIME.value,
+            "last_received_timestamp": ShadowClockDomain.CALLBACK_RECEIPT_TIME.value,
+            "quote_received_timestamp": ShadowClockDomain.CALLBACK_RECEIPT_TIME.value,
+            "source_event_time": ShadowClockDomain.PROVIDER_SOURCE_TIME.value,
+        },
         "spread_percent": _spread_percent(market.bid, market.ask),
         "halted": market.halted,
         "tradable": market.tradable,
@@ -777,10 +916,12 @@ def _spread_percent(bid: Decimal | None, ask: Decimal | None) -> Decimal | None:
     return None if midpoint <= 0 else (ask - bid) / midpoint * HUNDRED
 
 
-def _age(observed_at: datetime, provider_at: datetime | None) -> Decimal | None:
-    if provider_at is None:
+def _elapsed_seconds(
+    start: datetime | None, end: datetime | None,
+) -> Decimal | None:
+    if start is None or end is None or end < start:
         return None
-    return Decimal(str(max(0, (observed_at - provider_at).total_seconds())))
+    return Decimal(str((end - start).total_seconds()))
 
 
 def _market_fresh(
@@ -799,11 +940,31 @@ def _market_fresh(
 def _market_ages(
     market: ShadowMarketObservation,
 ) -> tuple[Decimal | None, Decimal | None]:
-    if market.freshness_authoritative:
-        return market.last_age_seconds, market.quote_age_seconds
+    source_at = _market_event_time(market)
     return (
-        _age(market.observed_at, market.last_timestamp),
-        _age(market.observed_at, market.quote_timestamp),
+        _elapsed_seconds(market.last_received_timestamp, market.observed_at)
+        if market.last_received_timestamp is not None
+        else _elapsed_seconds(market.last_timestamp, source_at),
+        _elapsed_seconds(market.quote_received_timestamp, market.observed_at)
+        if market.quote_received_timestamp is not None
+        else _elapsed_seconds(market.quote_timestamp, source_at),
+    )
+
+
+def _market_age_domains(
+    market: ShadowMarketObservation,
+) -> tuple[str | None, str | None]:
+    return (
+        ShadowClockDomain.LOCAL_RUNTIME_TIME.value
+        if market.last_received_timestamp is not None
+        else ShadowClockDomain.PROVIDER_SOURCE_TIME.value
+        if market.last_timestamp is not None and _market_event_time(market) is not None
+        else None,
+        ShadowClockDomain.LOCAL_RUNTIME_TIME.value
+        if market.quote_received_timestamp is not None
+        else ShadowClockDomain.PROVIDER_SOURCE_TIME.value
+        if market.quote_timestamp is not None and _market_event_time(market) is not None
+        else None,
     )
 
 
@@ -811,6 +972,8 @@ def _market_blockers(
     market: ShadowMarketObservation,
     config: WarriorMomentumConfig,
     capture_config: ForwardCaptureConfiguration,
+    *,
+    terminal_reason: str | None = None,
 ) -> tuple[str, ...]:
     blockers: list[str] = []
     spread = _spread_percent(market.bid, market.ask)
@@ -826,54 +989,97 @@ def _market_blockers(
         blockers.append(ReasonCode.SESSION_NOT_ALLOWED.value)
     if not market.execution_permitted:
         blockers.append(ReasonCode.EXECUTION_NOT_ALLOWED.value)
+    if terminal_reason is not None:
+        blockers.append(terminal_reason)
     return tuple(blockers)
 
 
 def _outcome_record(
-    state: _LatchedState, timestamp: datetime, reason: str,
+    state: _LatchedState, source_time: datetime | None, reason: str,
     *, processing_time: datetime,
 ) -> CaptureRecord:
+    decision_timing = _TimingPoint(
+        state.plan.created_at, state.plan.original_market.observed_at,
+    )
+    invalidation_timing = _TimingPoint(source_time, processing_time)
+    durations: dict[str, object] = {}
+    for name, timing in (
+        ("fresh", state.first_fresh),
+        ("spread_clear", state.first_spread_clear),
+        ("market_eligible", state.first_market_eligible),
+        ("marketable", state.first_marketable),
+        ("authorization", state.authorization),
+        ("policy_a_fill", state.policy_a_fill),
+        ("policy_b_fill", state.policy_b_fill),
+        ("stop", state.stop_touched),
+        ("invalidation", invalidation_timing),
+    ):
+        durations.update(_duration_payload(name, decision_timing, timing))
+    record_timestamp = source_time or processing_time
     return CaptureRecord.create(
         CaptureRecordType.SHADOW_LATCHED_OUTCOME,
         state.plan.symbol,
-        timestamp,
+        record_timestamp,
         {
             "plan_id": state.plan.plan_id,
             "decision_record_id": state.plan.decision_record_id,
             "authority": "SHADOW_ONLY_NON_EXECUTABLE",
             "reason": reason,
-            "first_clear_at": state.first_clear_at,
-            "time_to_clear_seconds": (
-                None if state.first_clear_at is None
-                else Decimal(str((state.first_clear_at - state.plan.created_at).total_seconds()))
-            ),
+            "first_clear_at": _processing_at(state.first_market_eligible),
+            "first_clear_source_at": _source_at(state.first_market_eligible),
+            "first_clear_processing_at": _processing_at(state.first_market_eligible),
+            "time_to_clear_seconds": durations["source_time_to_market_eligible_seconds"],
+            "time_to_clear_clock_domain": ShadowClockDomain.PROVIDER_SOURCE_TIME.value,
             "clear_cycles": state.clear_cycles,
             "reblock_cycles": state.reblock_cycles,
-            "authorization_at": state.authorization_at,
-            "first_marketable_at": state.first_marketable_at,
+            "authorization_at": _processing_at(state.authorization),
+            "authorization_source_at": _source_at(state.authorization),
+            "authorization_processing_at": _processing_at(state.authorization),
+            "first_marketable_at": _processing_at(state.first_marketable),
+            "first_marketable_source_at": _source_at(state.first_marketable),
+            "first_marketable_processing_at": _processing_at(state.first_marketable),
             "first_marketable_spread_percent": state.first_marketable_spread,
             "first_marketable_quote_fresh": state.first_marketable_fresh,
-            "plan_invalidated_before_marketability": state.first_marketable_at is None,
-            "stop_touched_before_entry": state.stop_touched,
-            "stop_touched_at": state.stop_touched_at,
+            "plan_invalidated_before_marketability": state.first_marketable is None,
+            "stop_touched_before_entry": state.stop_touched is not None,
+            "stop_touched_at": _processing_at(state.stop_touched),
+            "stop_touched_source_at": _source_at(state.stop_touched),
+            "stop_touched_processing_at": _processing_at(state.stop_touched),
             "stop_touched_before_marketability": (
-                state.stop_touched_at is not None
+                state.stop_touched is not None
                 and (
-                    state.first_marketable_at is None
-                    or state.stop_touched_at <= state.first_marketable_at
+                    state.first_marketable is None
+                    or state.stop_touched.processing_at
+                    <= state.first_marketable.processing_at
                 )
             ),
-            "hypothetical_order_possible": state.authorization_at is not None,
+            "entry_terminal": state.entry_terminal,
+            "terminal_reason": state.terminal_reason,
+            "hypothetical_order_possible": state.authorization is not None,
             "policy_a_fill_possible": state.policy_a_possible,
             "policy_b_fill_possible": state.policy_b_possible,
             "policy_result_differs": state.policy_a_possible != state.policy_b_possible,
             "hypothetical_fill_claimed": False,
             "paper_submission_attempted": False,
             "rest_confirmation_requested": False,
-            "event_time": timestamp,
+            **durations,
+            "duration_semantics_version": 2,
+            "event_time": source_time,
             "processing_time": processing_time,
-            "cause_event_time": timestamp,
+            "cause_event_time": source_time,
             "transition_written_at": processing_time,
+            "persistence_time": None,
+            "timestamp_domains": {
+                "record_timestamp": (
+                    ShadowClockDomain.PROVIDER_SOURCE_TIME.value
+                    if source_time is not None
+                    else ShadowClockDomain.PROCESSING_TIME.value
+                ),
+                "event_time": ShadowClockDomain.PROVIDER_SOURCE_TIME.value,
+                "processing_time": ShadowClockDomain.PROCESSING_TIME.value,
+                "transition_written_at": ShadowClockDomain.PROCESSING_TIME.value,
+                "persistence_time": ShadowClockDomain.PERSISTENCE_TIME.value,
+            },
         },
         identity_parts=(state.plan.plan_id, "OUTCOME", reason),
     )
@@ -886,6 +1092,33 @@ def _market_event_time(market: ShadowMarketObservation) -> datetime | None:
         if value is not None
     )
     return max(values) if values else None
+
+
+def _market_timing(market: ShadowMarketObservation) -> _TimingPoint:
+    return _TimingPoint(_market_event_time(market), market.observed_at)
+
+
+def _source_at(timing: _TimingPoint | None) -> datetime | None:
+    return None if timing is None else timing.source_at
+
+
+def _processing_at(timing: _TimingPoint | None) -> datetime | None:
+    return None if timing is None else timing.processing_at
+
+
+def _duration_payload(
+    name: str, start: _TimingPoint, end: _TimingPoint | None,
+) -> dict[str, Decimal | None]:
+    return {
+        f"source_time_to_{name}_seconds": (
+            None if end is None
+            else _elapsed_seconds(start.source_at, end.source_at)
+        ),
+        f"processing_time_to_{name}_seconds": (
+            None if end is None
+            else _elapsed_seconds(start.processing_at, end.processing_at)
+        ),
+    }
 
 
 def _percentile(
@@ -901,7 +1134,7 @@ def _percentile(
 
 
 __all__ = [
-    "ShadowLatchedPlan", "ShadowLatchedPlanResearch",
+    "ShadowClockDomain", "ShadowLatchedPlan", "ShadowLatchedPlanResearch",
     "ShadowLatchedResearchSummary", "ShadowLatchedTransition",
     "ShadowMarketObservation", "analyze_shadow_latched",
     "analyze_shadow_latched_store",
