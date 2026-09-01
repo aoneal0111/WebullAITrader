@@ -73,6 +73,10 @@ class MomentumScannerPipeline:
         decision = replace(
             decision,
             observed_at=observed_at,
+            source_event_identity=(
+                f"{event.source.strip()}:{event.sequence}:{event.event_type.value}"
+            ),
+            source_event_type=event.event_type.value,
         )
         if event.received_timestamp is not None:
             age_seconds = max(
@@ -173,6 +177,9 @@ class MomentumScannerPipeline:
         normalized = symbol.strip().upper()
         self.adapter.reset_symbol(normalized)
         self._latest.pop(normalized, None)
+        reset = getattr(self._decision_sink, "reset_symbol", None)
+        if callable(reset):
+            reset(normalized)
 
     def latest_decision(
         self,

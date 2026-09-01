@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, replace
 from collections import deque
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event, RLock, Thread
@@ -20,6 +21,10 @@ from .journal import (
     DEFAULT_STRATEGY_VERSION,
     PaperTradeExperimentJournal,
     PreparedResearchWork,
+    logical_candidate_identity,
+    logical_decision_state,
+    logical_decision_state_signature,
+    prepare_price_observation,
     prepare_research_work,
 )
 
@@ -36,7 +41,7 @@ DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 30.0
 class ResearchDecisionWork:
     """Complete immutable input needed to reproduce the established journal call."""
 
-    decision: ScannerDecision
+    decision: ScannerDecision | None
     execution_environment: str
     strategy_version: str
     model_version: str
@@ -60,6 +65,12 @@ class ResearchWorkerMetrics:
     resumed: int = 0
     durable_outstanding: int = 0
     oldest_outstanding_age_ms: float = 0.0
+    candidate_creations: int = 0
+    observations_accepted: int = 0
+    suppressed_duplicates: int = 0
+    coalesced: int = 0
+    pressure_episodes: int = 0
+    legacy_outstanding: int = 0
 
 
 JournalFactory = Callable[[str | Path], PaperTradeExperimentJournal]
@@ -69,8 +80,8 @@ class PaperTradeExperimentWorker:
     """Own the research journal and execute its mutations off the market thread.
 
     The worker has no broker, PAPER gateway, order, or account dependency. Queue
-    saturation permanently degrades this capture instance so an incomplete
-    dataset is explicit rather than silently sampled.
+    queue pressure is explicit and recoverable: a full queue rejects that
+    item, but later submissions may succeed after the worker drains capacity.
     """
 
     def __init__(
@@ -108,7 +119,19 @@ class PaperTradeExperimentWorker:
         self._resumed = 0
         self._durable_outstanding = 0
         self._oldest_outstanding_at: datetime | None = None
-        self._accepted_ids: set[str] = set()
+        self._candidate_creations = 0
+        self._observations_accepted = 0
+        self._suppressed_duplicates = 0
+        self._coalesced = 0
+        self._pressure_episodes = 0
+        self._pressure_active = False
+        self._legacy_outstanding = 0
+        self._last_accepted_observation: dict[
+            str, tuple[datetime, object]
+        ] = {}
+        self._decision_state_signatures: dict[str, str] = {}
+        self._decision_states: dict[str, object] = {}
+        self._pending_ids: set[str] = set()
         self._thread = Thread(
             target=self._run,
             name="atlas-experiment-research",
@@ -123,43 +146,132 @@ class PaperTradeExperimentWorker:
         if not isinstance(decision, ScannerDecision):
             self._reject("invalid immutable scanner decision")
             return False
+        if decision.timestamp is None or decision.price is None:
+            self._reject("incomplete scanner decision")
+            return False
         now = self._aware_now()
+        snapshot = replace(decision)
+        assert snapshot.timestamp is not None and snapshot.price is not None
+        symbol = snapshot.symbol.strip().upper()
+        observation = (
+            (snapshot.last_price_timestamp or snapshot.timestamp).astimezone(UTC),
+            snapshot.price,
+        )
+        decision_state = logical_decision_state(snapshot)
         # ScannerDecision is a recursively immutable frozen dataclass. replace()
         # creates a distinct snapshot so no runtime-owned object is queued.
-        work = ResearchDecisionWork(
-            decision=replace(decision),
-            execution_environment=self._environment,
-            strategy_version=DEFAULT_STRATEGY_VERSION,
-            model_version=DEFAULT_MODEL_VERSION,
-            enqueued_at=now,
-            prepared=prepare_research_work(
-                decision,
-                execution_environment=self._environment,
-                strategy_version=DEFAULT_STRATEGY_VERSION,
-                model_version=DEFAULT_MODEL_VERSION,
-                enqueued_at=now,
-            ),
-        )
         with self._lock:
             if not self._accepting or self._failed:
                 self._rejected += 1
                 performance_diagnostics.increment("research_events_rejected")
                 return False
-            if work.prepared.work_id in self._accepted_ids:
+            observation_changed = (
+                self._last_accepted_observation.get(symbol) != observation
+            )
+            state_changed = self._decision_states.get(symbol) != decision_state
+            if not observation_changed and not state_changed:
+                self._suppressed_duplicates += 1
+                return True
+            state_signature = (
+                logical_decision_state_signature(snapshot)
+                if state_changed else self._decision_state_signatures[symbol]
+            )
+            identity = (
+                logical_candidate_identity(
+                    snapshot,
+                    state_signature=state_signature,
+                    execution_environment=self._environment,
+                    strategy_version=DEFAULT_STRATEGY_VERSION,
+                    model_version=DEFAULT_MODEL_VERSION,
+                )
+                if state_changed else None
+            )
+            work = ResearchDecisionWork(
+                decision=snapshot,
+                execution_environment=self._environment,
+                strategy_version=DEFAULT_STRATEGY_VERSION,
+                model_version=DEFAULT_MODEL_VERSION,
+                enqueued_at=now,
+                prepared=prepare_research_work(
+                    snapshot,
+                    execution_environment=self._environment,
+                    strategy_version=DEFAULT_STRATEGY_VERSION,
+                    model_version=DEFAULT_MODEL_VERSION,
+                    enqueued_at=now,
+                    create_candidate=state_changed,
+                    logical_identity=identity,
+                ),
+            )
+            if work.prepared.work_id in self._pending_ids:
+                self._suppressed_duplicates += 1
                 return True
             try:
                 self._queue.put_nowait(work)
             except Full:
-                self._accepting = False
-                self._failed = True
-                self._rejected += 1
-                self._failures += 1
-                performance_diagnostics.increment("research_events_rejected")
-                performance_diagnostics.increment("research_failures")
-                self._log_failure("bounded research queue saturated")
+                self._record_pressure_rejection()
                 return False
             self._enqueued += 1
-            self._accepted_ids.add(work.prepared.work_id)
+            self._pending_ids.add(work.prepared.work_id)
+            if observation_changed:
+                self._last_accepted_observation[symbol] = observation
+                self._observations_accepted += 1
+            if state_changed:
+                self._decision_states[symbol] = decision_state
+                self._decision_state_signatures[symbol] = state_signature
+                self._candidate_creations += 1
+            self._record_pressure_recovery()
+            depth = self._queue.qsize()
+            self._queue_high_water = max(self._queue_high_water, depth)
+            performance_diagnostics.increment("research_events_enqueued")
+            performance_diagnostics.set_research_queue_depth(depth)
+            return True
+
+    def observe_price(
+        self, symbol: str, timestamp: datetime, price: Decimal,
+    ) -> bool:
+        """Nonblocking market-observation admission without candidate creation."""
+
+        try:
+            normalized = symbol.strip().upper()
+            observed_at = timestamp.astimezone(UTC)
+            observed = Decimal(price)
+            now = self._aware_now()
+            prepared = prepare_price_observation(
+                normalized, observed_at, observed, enqueued_at=now
+            )
+        except (AttributeError, TypeError, ValueError):
+            self._reject("invalid research price observation")
+            return False
+        observation = (observed_at, observed)
+        with self._lock:
+            if not self._accepting or self._failed:
+                self._rejected += 1
+                performance_diagnostics.increment("research_events_rejected")
+                return False
+            if self._last_accepted_observation.get(normalized) == observation:
+                self._suppressed_duplicates += 1
+                return True
+            if prepared.work_id in self._pending_ids:
+                self._suppressed_duplicates += 1
+                return True
+            work = ResearchDecisionWork(
+                decision=None,
+                execution_environment=self._environment,
+                strategy_version=DEFAULT_STRATEGY_VERSION,
+                model_version=DEFAULT_MODEL_VERSION,
+                enqueued_at=now,
+                prepared=prepared,
+            )
+            try:
+                self._queue.put_nowait(work)
+            except Full:
+                self._record_pressure_rejection()
+                return False
+            self._enqueued += 1
+            self._observations_accepted += 1
+            self._last_accepted_observation[normalized] = observation
+            self._pending_ids.add(prepared.work_id)
+            self._record_pressure_recovery()
             depth = self._queue.qsize()
             self._queue_high_water = max(self._queue_high_water, depth)
             performance_diagnostics.increment("research_events_enqueued")
@@ -218,7 +330,22 @@ class PaperTradeExperimentWorker:
                         .total_seconds() * 1000.0,
                     )
                 ),
+                candidate_creations=self._candidate_creations,
+                observations_accepted=self._observations_accepted,
+                suppressed_duplicates=self._suppressed_duplicates,
+                coalesced=self._coalesced,
+                pressure_episodes=self._pressure_episodes,
+                legacy_outstanding=self._legacy_outstanding,
             )
+
+    def reset_symbol(self, symbol: str) -> None:
+        """End a logical decision episode at an authoritative stream reset."""
+
+        normalized = symbol.strip().upper()
+        with self._lock:
+            self._last_accepted_observation.pop(normalized, None)
+            self._decision_states.pop(normalized, None)
+            self._decision_state_signatures.pop(normalized, None)
 
     @property
     def thread(self) -> Thread:
@@ -239,8 +366,15 @@ class PaperTradeExperimentWorker:
             if supports_durable:
                 recovered = journal.recoverable_work_items()
                 durable.extend(recovered)
+                completeness = getattr(journal, "completeness_snapshot", None)
+                legacy_outstanding = 0
+                if callable(completeness):
+                    legacy_outstanding = int(
+                        completeness().get("legacy_outstanding_count", 0)
+                    )
                 with self._lock:
                     self._resumed += len(recovered)
+                    self._legacy_outstanding = legacy_outstanding
                     self._durable_outstanding = len(durable)
                     self._oldest_outstanding_at = (
                         recovered[0].enqueued_at if recovered else None
@@ -251,8 +385,12 @@ class PaperTradeExperimentWorker:
                 and not durable
             ):
                 if supports_durable:
-                    batch = self._take_batch(
-                        block=not durable, limit=self._queue.maxsize
+                    # Never drain the bounded queue into an unbounded secondary
+                    # deque.  Checkpoint and service one bounded batch before
+                    # admitting the next batch.
+                    batch = (
+                        [] if durable else
+                        self._take_batch(block=True, limit=256)
                     )
                     if batch:
                         prepared = tuple(item.prepared for item in batch)
@@ -260,6 +398,9 @@ class PaperTradeExperimentWorker:
                         durable.extend(prepared)
                         with self._lock:
                             self._checkpointed += inserted
+                            self._pending_ids.difference_update(
+                                item.work_id for item in prepared
+                            )
                             self._durable_outstanding = len(durable)
                             if self._oldest_outstanding_at is None:
                                 self._oldest_outstanding_at = prepared[0].enqueued_at
@@ -271,7 +412,7 @@ class PaperTradeExperimentWorker:
                     if not durable:
                         continue
                     processing = tuple(
-                        durable.popleft() for _ in range(min(32, len(durable)))
+                        durable.popleft() for _ in range(min(256, len(durable)))
                     )
                     prepared_work = processing[0]
                     work = None
@@ -300,14 +441,24 @@ class PaperTradeExperimentWorker:
                         0.0,
                         (started - prepared_work.enqueued_at).total_seconds() * 1000.0,
                     ),)
-                    journal.record_scanner_decision(
-                        work.decision,
-                        execution_environment=work.execution_environment,
-                        strategy_version=work.strategy_version,
-                        model_version=work.model_version,
-                    )
+                    if work.decision is None:
+                        payload = prepared_work.payload["observation"]
+                        journal.observe_price(
+                            str(payload["symbol"]),
+                            datetime.fromisoformat(str(payload["timestamp"])),
+                            Decimal(str(payload["price"])),
+                        )
+                    else:
+                        journal.record_scanner_decision(
+                            work.decision,
+                            execution_environment=work.execution_environment,
+                            strategy_version=work.strategy_version,
+                            model_version=work.model_version,
+                        )
                 with self._lock:
                     self._completed += len(lag_values)
+                    if not supports_durable:
+                        self._pending_ids.discard(prepared_work.work_id)
                     self._maximum_lag_ms = max(
                         self._maximum_lag_ms, *lag_values
                     )
@@ -381,6 +532,9 @@ class PaperTradeExperimentWorker:
             with self._lock:
                 self._checkpointed += inserted
                 self._durable_outstanding += inserted
+                self._pending_ids.difference_update(
+                    item.prepared.work_id for item in pending
+                )
         else:
             with self._lock:
                 self._rejected += len(pending)
@@ -407,6 +561,9 @@ class PaperTradeExperimentWorker:
             with self._lock:
                 self._checkpointed += inserted
                 self._durable_outstanding += inserted
+                self._pending_ids.difference_update(
+                    item.prepared.work_id for item in pending
+                )
         except Exception as error:
             with self._lock:
                 self._rejected += len(pending)
@@ -444,6 +601,27 @@ class PaperTradeExperimentWorker:
             self._failures += 1
         performance_diagnostics.increment("research_failures")
         self._log_failure(message, error)
+
+    def _record_pressure_rejection(self) -> None:
+        self._rejected += 1
+        if not self._pressure_active:
+            self._pressure_active = True
+            self._pressure_episodes += 1
+            _LOGGER.error(
+                "event_type=experiment_research_pressure "
+                "reason=bounded_research_queue_full capacity=%d",
+                self._queue.maxsize,
+            )
+        performance_diagnostics.increment("research_events_rejected")
+
+    def _record_pressure_recovery(self) -> None:
+        if self._pressure_active:
+            self._pressure_active = False
+            _LOGGER.info(
+                "event_type=experiment_research_pressure_recovered "
+                "queue_depth=%d",
+                self._queue.qsize(),
+            )
 
     def _reject(self, message: str) -> None:
         with self._lock:

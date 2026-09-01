@@ -219,6 +219,10 @@ def create_configured_desktop_broker_driver(
 
         scanner_adapter = MarketEventScannerAdapter(
             reference_store,
+            price_observer=(
+                None if experiment_decision_sink is None else
+                experiment_decision_sink.observe_price
+            ),
         )
         scanner_infrastructure = create_desktop_scanner_infrastructure(
             market_data_client=broker_runtime.market_data,

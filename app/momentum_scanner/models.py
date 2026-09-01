@@ -119,4 +119,9 @@ class ScannerDecision:
     trade_timestamp: datetime | None = None
     last_price_received_timestamp: datetime | None = None
     quote_received_timestamp: datetime | None = None
+    # Provenance for the authoritative market event that caused this scanner
+    # evaluation.  Research uses it to audit the start of a logical decision
+    # episode; it is never consulted by scanner or execution policy.
+    source_event_identity: str | None = None
+    source_event_type: str | None = None
 

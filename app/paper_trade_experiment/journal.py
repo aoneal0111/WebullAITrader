@@ -23,7 +23,8 @@ from app.paper_trade_experiment.models import (
 
 
 SCHEMA_VERSION = "atlas-paper-experiment-v1"
-INCREMENTAL_ENGINE_VERSION = "1"
+INCREMENTAL_ENGINE_VERSION = "2"
+RESEARCH_WORK_SCHEMA_VERSION = "atlas-research-work-v2"
 DEFAULT_STRATEGY_VERSION = "momentum-scanner-v1"
 DEFAULT_MODEL_VERSION = "none"
 _SAFE_EXECUTION_ENVIRONMENTS = frozenset({"PAPER", "TEST"})
@@ -53,28 +54,86 @@ def prepare_research_work(
     strategy_version: str = DEFAULT_STRATEGY_VERSION,
     model_version: str = DEFAULT_MODEL_VERSION,
     enqueued_at: datetime | None = None,
+    create_candidate: bool = True,
+    logical_identity: Mapping[str, Any] | None = None,
 ) -> PreparedResearchWork:
-    """Build bounded durable work without touching SQLite or prior history."""
+    """Build one durable observation, optionally creating one candidate.
+
+    A work item always carries the immutable market observation.  Candidate
+    features are present only for the first event in a logical decision
+    episode.  This is deliberately bounded and performs no SQLite work.
+    """
 
     if decision.timestamp is None or decision.price is None:
         raise ValueError("complete scanner decision is required")
     from app.live_scanner.session import scanner_session
 
-    features = _decision_features(
-        decision,
-        market_session=scanner_session(decision.timestamp).value,
-        scanner_rank=decision.scanner_rank,
-        strategy_version=strategy_version,
-        model_version=model_version,
-        application_commit=_safe_application_commit(),
-        execution_environment=_safe_environment(execution_environment),
-    )
+    environment = _safe_environment(execution_environment)
+    features = None
+    candidate_id = None
+    if create_candidate:
+        features = _decision_features(
+            decision,
+            market_session=scanner_session(decision.timestamp).value,
+            scanner_rank=decision.scanner_rank,
+            strategy_version=strategy_version,
+            model_version=model_version,
+            application_commit=_safe_application_commit(),
+            execution_environment=environment,
+        )
+        if logical_identity is not None:
+            canonical_identity = json.loads(_json(logical_identity))
+            features["logical_candidate_identity"] = canonical_identity
+            candidate_id = _logical_candidate_id(canonical_identity)
+        else:
+            candidate_id = _candidate_id(features)
     payload_json = _json({
-        "features": features,
-        "price": str(decision.price),
-        "price_timestamp": (
-            decision.last_price_timestamp or decision.timestamp
-        ).astimezone(UTC).isoformat(),
+        "work_schema": RESEARCH_WORK_SCHEMA_VERSION,
+        "observation": {
+            "symbol": decision.symbol.strip().upper(),
+            "price": str(decision.price),
+            "timestamp": (
+                decision.last_price_timestamp or decision.timestamp
+            ).astimezone(UTC).isoformat(),
+        },
+        "candidate_id": candidate_id,
+        "candidate_features": features if create_candidate else None,
+    })
+    work_id = "research-work-" + hashlib.sha256(
+        payload_json.encode("utf-8")
+    ).hexdigest()
+    accepted_at = enqueued_at or datetime.now(UTC)
+    if accepted_at.tzinfo is None:
+        raise ValueError("research enqueue timestamp must be timezone-aware")
+    return PreparedResearchWork(
+        work_id, payload_json, accepted_at.astimezone(UTC)
+    )
+
+
+def prepare_price_observation(
+    symbol: str,
+    timestamp: datetime,
+    price: Decimal,
+    *,
+    enqueued_at: datetime | None = None,
+) -> PreparedResearchWork:
+    """Build a durable observation-only envelope without scanner features."""
+
+    normalized = symbol.strip().upper()
+    observed = Decimal(price)
+    if not normalized or timestamp.tzinfo is None:
+        raise ValueError("symbol and timezone-aware timestamp are required")
+    if not observed.is_finite() or observed <= 0:
+        raise ValueError("observed price must be positive and finite")
+    payload_json = _json({
+        "work_schema": RESEARCH_WORK_SCHEMA_VERSION,
+        "observation": {
+            "symbol": normalized,
+            "price": str(observed),
+            "timestamp": timestamp.astimezone(UTC).isoformat(),
+        },
+        "candidate_id": None,
+        "candidate_features": None,
     })
     work_id = "research-work-" + hashlib.sha256(
         payload_json.encode("utf-8")
@@ -207,7 +266,16 @@ class PaperTradeExperimentJournal:
                 if result is None or result[0] != "ok":
                     raise ValueError("paper experiment journal integrity check failed")
             elif engine["value"] != INCREMENTAL_ENGINE_VERSION:
-                raise ValueError("unsupported incremental research engine schema")
+                if engine["value"] == "1":
+                    # Version 2 changes the durable work envelope and recovery
+                    # policy, not the candidate or horizon table layouts.
+                    connection.execute(
+                        "UPDATE experiment_metadata SET value=? "
+                        "WHERE key='incremental_engine_version'",
+                        (INCREMENTAL_ENGINE_VERSION,),
+                    )
+                else:
+                    raise ValueError("unsupported incremental research engine schema")
 
     def _bootstrap_incremental_state(self, connection: sqlite3.Connection) -> None:
         """One-time deterministic migration of legacy pending/open rows."""
@@ -324,16 +392,28 @@ class PaperTradeExperimentJournal:
         return inserted, duplicates
 
     def recoverable_work_items(self) -> tuple[PreparedResearchWork, ...]:
+        """Return only v2 work whose semantics can be resumed exactly.
+
+        Legacy v1 rows combined a tick observation with an unconditional
+        tick-scale candidate creation.  They remain CHECKPOINTED in place for
+        audit/recovery review and are intentionally not replayed into the v2
+        logical-candidate model.
+        """
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT work_id,payload_json,enqueued_at
                    FROM research_work_items
                    WHERE state IN ('CHECKPOINTED','STARTED')
-                   ORDER BY enqueued_at,work_id"""
+                     AND json_valid(payload_json)=1
+                     AND json_extract(payload_json,'$.work_schema')=?
+                   ORDER BY enqueued_at,work_id""",
+                (RESEARCH_WORK_SCHEMA_VERSION,),
             ).fetchall()
             connection.execute(
                 "UPDATE research_work_items SET state='CHECKPOINTED' "
-                "WHERE state='STARTED'"
+                "WHERE state='STARTED' AND json_valid(payload_json)=1 "
+                "AND json_extract(payload_json,'$.work_schema')=?",
+                (RESEARCH_WORK_SCHEMA_VERSION,),
             )
         return tuple(
             PreparedResearchWork(
@@ -363,6 +443,14 @@ class PaperTradeExperimentJournal:
                 """SELECT MIN(enqueued_at) FROM research_work_items
                    WHERE state IN ('CHECKPOINTED','STARTED')"""
             ).fetchone()[0]
+            legacy_outstanding = connection.execute(
+                """SELECT COUNT(*) FROM research_work_items
+                   WHERE state IN ('CHECKPOINTED','STARTED')
+                     AND (json_valid(payload_json)=0 OR
+                          COALESCE(json_extract(payload_json,'$.work_schema'),'')
+                          != ?)""",
+                (RESEARCH_WORK_SCHEMA_VERSION,),
+            ).fetchone()[0]
             resumed = connection.execute(
                 "SELECT COUNT(*) FROM research_work_items WHERE attempts>1"
             ).fetchone()[0]
@@ -390,6 +478,7 @@ class PaperTradeExperimentJournal:
                 work.get("CHECKPOINTED", 0) + work.get("STARTED", 0)
             ),
             "oldest_outstanding_at": oldest,
+            "legacy_outstanding_count": legacy_outstanding,
             "active_candidate_count": active,
             "complete_candidate_count": candidate.get("COMPLETE", 0),
             "pending_candidate_count": candidate.get("PENDING", 0),
@@ -443,70 +532,256 @@ class PaperTradeExperimentJournal:
         self, items: Iterable[PreparedResearchWork]
     ) -> tuple[str, ...]:
         """Process a bounded FIFO batch in one atomic transaction."""
-
+        batch = tuple(items)
+        if not batch:
+            return ()
         with self._connect() as connection:
-            return tuple(
-                self._process_prepared_work(connection, item) for item in items
+            placeholders = ",".join("?" for _ in batch)
+            states = {
+                row["work_id"]: row["state"] for row in connection.execute(
+                    f"SELECT work_id,state FROM research_work_items "
+                    f"WHERE work_id IN ({placeholders})",
+                    tuple(item.work_id for item in batch),
+                )
+            }
+            pending = tuple(
+                item for item in batch
+                if states.get(item.work_id) != "COMPLETED"
             )
+            if pending:
+                pending_placeholders = ",".join("?" for _ in pending)
+                started_at = datetime.now(UTC).isoformat()
+                connection.execute(
+                    f"""UPDATE research_work_items
+                        SET state='STARTED',attempts=attempts+1,
+                            started_at=?,error_type=NULL
+                        WHERE work_id IN ({pending_placeholders})""",
+                    (started_at, *(item.work_id for item in pending)),
+                )
+            results: list[str] = []
+            observations: list[PreparedResearchWork] = []
+
+            def flush_observations() -> None:
+                if observations:
+                    self._process_observation_batch(connection, observations)
+                    observations.clear()
+
+            for item in batch:
+                payload = item.payload
+                candidate_id = payload.get("candidate_id")
+                if states.get(item.work_id) == "COMPLETED":
+                    results.append("" if candidate_id is None else str(candidate_id))
+                elif candidate_id is None:
+                    observations.append(item)
+                    results.append("")
+                else:
+                    flush_observations()
+                    results.append(self._process_prepared_work(
+                        connection, item, manage_ledger=False
+                    ))
+            flush_observations()
+            if pending:
+                completed_at = datetime.now(UTC).isoformat()
+                connection.execute(
+                    f"""UPDATE research_work_items
+                        SET state='COMPLETED',completed_at=?
+                        WHERE work_id IN ({pending_placeholders})""",
+                    (completed_at, *(item.work_id for item in pending)),
+                )
+            return tuple(results)
+
+    def _process_observation_batch(
+        self, connection: sqlite3.Connection,
+        items: Iterable[PreparedResearchWork],
+    ) -> None:
+        """Apply observation-only work with one active lookup per symbol.
+
+        Every source observation is visited in FIFO order.  Only the database
+        lookup/write shape is coalesced; intermediate extrema and the first
+        observation at or after every horizon are retained exactly.
+        """
+
+        by_symbol: dict[str, list[tuple[datetime, Decimal]]] = {}
+        for item in items:
+            payload = item.payload
+            if payload.get("work_schema") != RESEARCH_WORK_SCHEMA_VERSION:
+                raise ValueError("unsupported research work schema")
+            observation = payload.get("observation")
+            if not isinstance(observation, dict):
+                raise ValueError("malformed research work observation")
+            symbol = str(observation["symbol"]).strip().upper()
+            timestamp = datetime.fromisoformat(str(observation["timestamp"]))
+            price = Decimal(str(observation["price"]))
+            if not symbol or timestamp.tzinfo is None or not price.is_finite() or price <= 0:
+                raise ValueError("invalid research price observation")
+            by_symbol.setdefault(symbol, []).append((timestamp.astimezone(UTC), price))
+
+        for symbol, observations in by_symbol.items():
+            latest = max(timestamp for timestamp, _price in observations)
+            rows = connection.execute(
+                """SELECT c.*,a.counterfactual_pending,a.execution_active,
+                          a.mfe_so_far AS active_mfe,
+                          a.mae_so_far AS active_mae,
+                          a.last_observation_time AS active_last_observed,
+                          a.extrema_initialized AS active_extrema_initialized
+                   FROM research_active_candidates AS a
+                   JOIN experiment_candidates AS c USING(candidate_id)
+                   WHERE a.symbol=? AND a.decision_timestamp<=?
+                   ORDER BY a.decision_timestamp,a.candidate_id""",
+                (symbol, latest.isoformat()),
+            ).fetchall()
+            for row in rows:
+                decision_at = datetime.fromisoformat(row["decision_timestamp"])
+                features = json.loads(row["features_json"])
+                labels = json.loads(row["labels_json"])
+                execution = json.loads(row["execution_json"])
+                counterfactual_active = bool(row["counterfactual_pending"])
+                execution_active = bool(row["execution_active"])
+                mfe = Decimal(str(row["active_mfe"]))
+                mae = Decimal(str(row["active_mae"]))
+                extrema_initialized = bool(row["active_extrema_initialized"])
+                touched = False
+                for observed_at, observed in observations:
+                    elapsed = (observed_at - decision_at).total_seconds()
+                    if elapsed < 0:
+                        continue
+                    touched = True
+                    if counterfactual_active:
+                        reference = Decimal(features["counterfactual_reference_price"])
+                        move = (observed - reference) / reference
+                        if elapsed <= HORIZONS_SECONDS["30m"]:
+                            mfe = max(mfe, move)
+                            mae = min(mae, move)
+                            extrema_initialized = True
+                        labels["last_observed_at"] = observed_at.isoformat()
+                        for name, seconds in HORIZONS_SECONDS.items():
+                            price_key = f"price_after_{name}"
+                            if elapsed >= seconds and price_key not in labels:
+                                labels[price_key] = str(observed)
+                                labels[f"return_after_{name}"] = str(move)
+                        labels["outcome_status"] = (
+                            "COMPLETE" if "price_after_30m" in labels else "PENDING"
+                        )
+                        labels["mfe"] = str(mfe)
+                        labels["mae"] = str(mae)
+                        if labels["outcome_status"] == "COMPLETE":
+                            counterfactual_active = False
+                    entry_at_text = execution.get("entry_timestamp")
+                    average_fill_text = execution.get("average_fill_price")
+                    actual_active = False
+                    if entry_at_text is not None and average_fill_text is not None:
+                        entry_at = datetime.fromisoformat(entry_at_text)
+                        exit_at_text = execution.get("exit_timestamp")
+                        exit_at = (
+                            None if exit_at_text is None else
+                            datetime.fromisoformat(exit_at_text)
+                        )
+                        actual_active = (
+                            observed_at >= entry_at
+                            and (exit_at is None or observed_at <= exit_at)
+                        )
+                        if actual_active:
+                            actual_reference = Decimal(average_fill_text)
+                            side = execution.get("side", "BUY")
+                            actual_move = (
+                                (observed - actual_reference) / actual_reference
+                                if side == "BUY" else
+                                (actual_reference - observed) / actual_reference
+                            )
+                            execution["actual_mfe"] = str(max(
+                                Decimal(execution.get("actual_mfe", "0")),
+                                actual_move,
+                            ))
+                            execution["actual_mae"] = str(min(
+                                Decimal(execution.get("actual_mae", "0")),
+                                actual_move,
+                            ))
+                    if not counterfactual_active and not execution_active:
+                        break
+                if not touched:
+                    continue
+                now = datetime.now(UTC).isoformat()
+                connection.execute(
+                    """UPDATE experiment_candidates
+                       SET labels_json=?,execution_json=?,updated_at=?
+                       WHERE candidate_id=?""",
+                    (_json(labels), _json(execution), now, row["candidate_id"]),
+                )
+                self._sync_active_row(connection, row, labels, execution)
+                self._last_price_observation[symbol] = observations[-1]
 
     def _process_prepared_work(
         self, connection: sqlite3.Connection, work: PreparedResearchWork,
+        *, manage_ledger: bool = True,
     ) -> str:
         payload = work.payload
-        features = payload.get("features")
-        if not isinstance(features, dict):
-            raise ValueError("malformed research work features")
-        price_timestamp = datetime.fromisoformat(str(payload["price_timestamp"]))
-        price = Decimal(str(payload["price"]))
-        symbol = str(features["symbol"])
-        candidate_id = _candidate_id(features)
+        if payload.get("work_schema") != RESEARCH_WORK_SCHEMA_VERSION:
+            raise ValueError("legacy research work requires explicit recovery treatment")
+        observation = payload.get("observation")
+        if not isinstance(observation, dict):
+            raise ValueError("malformed research work observation")
+        price_timestamp = datetime.fromisoformat(str(observation["timestamp"]))
+        price = Decimal(str(observation["price"]))
+        symbol = str(observation["symbol"]).strip().upper()
+        features = payload.get("candidate_features")
+        candidate_id_value = payload.get("candidate_id")
+        if (features is None) != (candidate_id_value is None):
+            raise ValueError("candidate identity and features must be paired")
+        if features is not None and not isinstance(features, dict):
+            raise ValueError("malformed research work candidate features")
+        candidate_id = "" if candidate_id_value is None else str(candidate_id_value)
         execution = {
             "state": ExecutionState.NOT_EXECUTED.value,
             "paper_trade_executed": False,
             "fill_ids": [],
             "fill_quantity": "0",
         }
-        ledger = connection.execute(
-            "SELECT state FROM research_work_items WHERE work_id=?",
-            (work.work_id,),
-        ).fetchone()
-        if ledger is not None and ledger["state"] == "COMPLETED":
-            return candidate_id
-        if ledger is not None:
-            connection.execute(
-                """UPDATE research_work_items
-                   SET state='STARTED',attempts=attempts+1,
-                       started_at=?,error_type=NULL WHERE work_id=?""",
-                (datetime.now(UTC).isoformat(), work.work_id),
-            )
+        ledger = None
+        if manage_ledger:
+            ledger = connection.execute(
+                "SELECT state FROM research_work_items WHERE work_id=?",
+                (work.work_id,),
+            ).fetchone()
+            if ledger is not None and ledger["state"] == "COMPLETED":
+                return candidate_id
+            if ledger is not None:
+                connection.execute(
+                    """UPDATE research_work_items
+                       SET state='STARTED',attempts=attempts+1,
+                           started_at=?,error_type=NULL WHERE work_id=?""",
+                    (datetime.now(UTC).isoformat(), work.work_id),
+                )
         observation = (price_timestamp, price)
         if self._last_price_observation.get(symbol) != observation:
             self._observe_price(connection, symbol, price_timestamp, price)
             self._last_price_observation[symbol] = observation
-        encoded_features = _json(features)
-        existing = connection.execute(
-            "SELECT * FROM experiment_candidates WHERE candidate_id=?",
-            (candidate_id,),
-        ).fetchone()
-        if existing is None:
-            now = datetime.now(UTC).isoformat()
-            connection.execute(
-                """INSERT INTO experiment_candidates(
-                   candidate_id,trade_id,symbol,decision_timestamp,features_json,
-                   labels_json,execution_json,created_at,updated_at
-                   ) VALUES(?,?,?,?,?,?,?,?,?)""",
-                (candidate_id, None, symbol, features["decision_timestamp"],
-                 encoded_features, _json({}), _json(execution), now, now),
-            )
+        if features is not None:
+            if str(features.get("symbol", "")).strip().upper() != symbol:
+                raise ValueError("candidate and observation symbols differ")
+            encoded_features = _json(features)
             existing = connection.execute(
                 "SELECT * FROM experiment_candidates WHERE candidate_id=?",
                 (candidate_id,),
             ).fetchone()
-            assert existing is not None
-            self._sync_active_row(connection, existing, {}, execution)
-        elif existing["features_json"] != encoded_features:
-            raise ValueError("immutable candidate decision snapshot mismatch")
-        if ledger is not None:
+            if existing is None:
+                now = datetime.now(UTC).isoformat()
+                connection.execute(
+                    """INSERT INTO experiment_candidates(
+                       candidate_id,trade_id,symbol,decision_timestamp,features_json,
+                       labels_json,execution_json,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (candidate_id, None, symbol, features["decision_timestamp"],
+                     encoded_features, _json({}), _json(execution), now, now),
+                )
+                existing = connection.execute(
+                    "SELECT * FROM experiment_candidates WHERE candidate_id=?",
+                    (candidate_id,),
+                ).fetchone()
+                assert existing is not None
+                self._sync_active_row(connection, existing, {}, execution)
+            elif existing["features_json"] != encoded_features:
+                raise ValueError("immutable candidate decision snapshot mismatch")
+        if manage_ledger and ledger is not None:
             connection.execute(
                 """UPDATE research_work_items SET state='COMPLETED',
                    completed_at=? WHERE work_id=?""",
@@ -1142,6 +1417,90 @@ def _candidate_id(features: Mapping[str, Any]) -> str:
     return "candidate-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def logical_decision_state(decision: ScannerDecision) -> Mapping[str, Any]:
+    """Return the categorical scanner-opportunity state for episode detection.
+
+    Continuous tick measurements, score, and rank are intentionally absent.
+    They are captured in the immutable features at episode entry, but changes
+    to them do not by themselves constitute a new scanner decision.
+    """
+
+    if decision.timestamp is None:
+        raise ValueError("complete scanner decision timestamp is required")
+    from app.live_scanner.session import scanner_session
+
+    return {
+        "identity_schema": "atlas-logical-scanner-candidate-v1",
+        "symbol": decision.symbol.strip().upper(),
+        "market_session": scanner_session(decision.timestamp).value,
+        "policy_version": decision.policy_version,
+        "normal_qualifies": decision.qualified,
+        "technical_qualifies_without_catalyst": (
+            decision.technical_qualifies_without_catalyst
+        ),
+        "passed_rules": list(decision.passed_rules),
+        "failed_rules": list(decision.failed_rules),
+        "technical_passed_rules": list(decision.technical_passed_rules),
+        "technical_failed_rules": list(decision.technical_failed_rules),
+        "cohort_flags": list(decision.cohort_flags),
+        "tradable": decision.tradable,
+        "halted": decision.halted,
+        "catalyst_status": decision.catalyst_status.value,
+        "catalyst_type": decision.catalyst.value,
+        "catalyst_event": {
+            "headline": decision.catalyst_headline,
+            "published_at": (
+                None if decision.catalyst_published_at is None else
+                decision.catalyst_published_at.astimezone(UTC).isoformat()
+            ),
+            "source": decision.catalyst_source,
+            "source_url": _safe_url(decision.catalyst_source_url),
+            "corroborating_sources": list(decision.corroborating_sources),
+            "evidence_count": decision.catalyst_evidence_count,
+            "event_count": decision.catalyst_event_count,
+        },
+    }
+
+
+def logical_decision_state_signature(decision: ScannerDecision) -> str:
+    return hashlib.sha256(
+        _json(logical_decision_state(decision)).encode("utf-8")
+    ).hexdigest()
+
+
+def logical_candidate_identity(
+    decision: ScannerDecision,
+    *,
+    state_signature: str,
+    execution_environment: str,
+    strategy_version: str = DEFAULT_STRATEGY_VERSION,
+    model_version: str = DEFAULT_MODEL_VERSION,
+) -> Mapping[str, Any]:
+    """Identify one transition into an authoritative scanner state."""
+
+    if decision.timestamp is None:
+        raise ValueError("complete scanner decision timestamp is required")
+    event_identity = decision.source_event_identity or (
+        "decision-time:" + decision.timestamp.astimezone(UTC).isoformat()
+    )
+    return {
+        "identity_schema": "atlas-logical-scanner-candidate-v1",
+        "symbol": decision.symbol.strip().upper(),
+        "episode_event_identity": event_identity,
+        "episode_started_at": decision.timestamp.astimezone(UTC).isoformat(),
+        "state_signature": state_signature,
+        "strategy_version": strategy_version,
+        "model_version": model_version,
+        "execution_environment": _safe_environment(execution_environment),
+    }
+
+
+def _logical_candidate_id(identity: Mapping[str, Any]) -> str:
+    return "candidate-" + hashlib.sha256(
+        _json(identity).encode("utf-8")
+    ).hexdigest()
+
+
 def _safe_environment(value: str) -> str:
     normalized = value.strip().upper()
     if normalized not in _SAFE_EXECUTION_ENVIRONMENTS:
@@ -1272,6 +1631,8 @@ def _coordination_reason(coordination: object) -> str:
 __all__ = [
     "DEFAULT_MODEL_VERSION", "DEFAULT_STRATEGY_VERSION",
     "INCREMENTAL_ENGINE_VERSION", "PaperTradeExperimentJournal",
-    "PreparedResearchWork", "SCHEMA_VERSION", "prepare_research_work",
-    "read_records",
+    "PreparedResearchWork", "RESEARCH_WORK_SCHEMA_VERSION", "SCHEMA_VERSION",
+    "logical_candidate_identity", "logical_decision_state",
+    "logical_decision_state_signature", "prepare_price_observation",
+    "prepare_research_work", "read_records",
 ]

@@ -229,7 +229,7 @@ def test_timeout_checkpoint_resumes_without_loss_or_duplicates(tmp_path) -> None
     assert after["items_accepted"] == len(sequence)
     assert after["items_completed"] == len(sequence)
     assert after["durable_outstanding"] == 0
-    assert len(after_journal.records()) == len(sequence)
+    assert len(after_journal.records()) == 1
     assert resumed.metrics().resumed == len(sequence)
 
 

@@ -81,17 +81,24 @@ def test_slow_research_never_runs_or_blocks_on_market_caller(tmp_path) -> None:
     assert not worker.thread.is_alive()
 
 
-def test_bounded_saturation_is_explicit_and_stops_new_capture(tmp_path) -> None:
+def test_bounded_saturation_is_explicit_and_capture_recovers(tmp_path) -> None:
     entered = Event()
     release = Event()
+    drained = Event()
 
     class SlowJournal:
+        calls = 0
+
         def __init__(self, _path):
             pass
 
         def record_scanner_decision(self, _decision, **_kwargs):
+            type(self).calls += 1
             entered.set()
-            assert release.wait(2)
+            if type(self).calls == 1:
+                assert release.wait(2)
+            if type(self).calls == 2:
+                drained.set()
 
     worker = PaperTradeExperimentWorker(
         tmp_path / "research.sqlite3",
@@ -103,13 +110,16 @@ def test_bounded_saturation_is_explicit_and_stops_new_capture(tmp_path) -> None:
     assert entered.wait(2)
     assert worker.submit(decision(T0 + timedelta(seconds=1), "5.10"))
     assert worker.submit(decision(T0 + timedelta(seconds=2), "5.20")) is False
-    assert worker.submit(decision(T0 + timedelta(seconds=3), "5.30")) is False
     metrics = worker.metrics()
-    assert metrics.failed and not metrics.accepting
+    assert not metrics.failed and metrics.accepting
     assert metrics.queue_high_water == 1
-    assert metrics.rejected == 2
+    assert metrics.rejected == 1
+    assert metrics.pressure_episodes == 1
     release.set()
+    assert drained.wait(2)
+    assert worker.submit(decision(T0 + timedelta(seconds=3), "5.30"))
     assert worker.close(timeout_seconds=2)
+    assert worker.metrics().completed == 3
 
 
 def test_august31_backlog_shape_is_absorbed_without_history_work_on_caller(
@@ -217,8 +227,11 @@ def test_stop_drains_fifo_and_preserves_reference_labels(tmp_path) -> None:
     reference_path = tmp_path / "reference.sqlite3"
     actual_path = tmp_path / "actual.sqlite3"
     reference = PaperTradeExperimentJournal(reference_path)
-    for item in sequence:
-        reference.record_scanner_decision(item, execution_environment="TEST")
+    expected_record = reference.record_candidate(
+        sequence[0], execution_environment="TEST", market_session="PREMARKET"
+    )
+    for item in sequence[1:]:
+        reference.observe_price(item.symbol, item.timestamp, item.price)
 
     worker = PaperTradeExperimentWorker(
         actual_path,
@@ -231,10 +244,11 @@ def test_stop_drains_fifo_and_preserves_reference_labels(tmp_path) -> None:
 
     expected = read_records(reference_path)
     actual = read_records(actual_path)
-    assert [item.candidate_id for item in actual] == [
-        item.candidate_id for item in expected
-    ]
-    assert [item.features for item in actual] == [item.features for item in expected]
-    assert [item.labels for item in actual] == [item.labels for item in expected]
-    assert [item.execution for item in actual] == [item.execution for item in expected]
+    assert len(expected) == len(actual) == 1
+    assert actual[0].labels == reference.get(expected_record.candidate_id).labels
+    assert actual[0].execution == expected[0].execution
+    assert {
+        key: value for key, value in actual[0].features.items()
+        if key != "logical_candidate_identity"
+    } == expected[0].features
     assert worker.metrics().completed == len(sequence)
