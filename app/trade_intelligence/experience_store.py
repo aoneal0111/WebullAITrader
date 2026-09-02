@@ -19,7 +19,7 @@ from .models import (
     decision_analog_signature,
 )
 
-STORE_SCHEMA_VERSION = 2
+STORE_SCHEMA_VERSION = 3
 
 
 class ExperienceStore:
@@ -126,6 +126,89 @@ class ExperienceStore:
                 CREATE TRIGGER IF NOT EXISTS paper_observation_immutable_delete
                     BEFORE DELETE ON paper_execution_observations BEGIN
                     SELECT RAISE(ABORT,'PAPER observation is immutable'); END;
+                CREATE TABLE IF NOT EXISTS discovery_opportunity_observations(
+                    observation_id TEXT PRIMARY KEY,opportunity_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,session TEXT NOT NULL,session_date TEXT NOT NULL,
+                    decision_cutoff TEXT NOT NULL,primary_strategy TEXT NOT NULL,
+                    membership_count INTEGER NOT NULL,research_only INTEGER NOT NULL CHECK(research_only=1),
+                    payload_json TEXT NOT NULL,payload_digest TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS ix_discovery_opportunity_identity
+                    ON discovery_opportunity_observations(opportunity_id,decision_cutoff);
+                CREATE TABLE IF NOT EXISTS strategy_membership_observations(
+                    observation_id TEXT PRIMARY KEY,opportunity_id TEXT NOT NULL,
+                    strategy_id TEXT NOT NULL,detector_version TEXT NOT NULL,
+                    state TEXT NOT NULL,decision_cutoff TEXT NOT NULL,
+                    research_only INTEGER NOT NULL CHECK(research_only=1),
+                    payload_json TEXT NOT NULL,payload_digest TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS ix_strategy_membership_identity
+                    ON strategy_membership_observations(opportunity_id,strategy_id,decision_cutoff);
+                CREATE TABLE IF NOT EXISTS strategy_transition_observations(
+                    transition_id TEXT PRIMARY KEY,position_id TEXT NOT NULL,
+                    original_opportunity_id TEXT NOT NULL,opportunity_id TEXT,
+                    strategy_id TEXT NOT NULL,transition_type TEXT NOT NULL,
+                    transition_timestamp TEXT NOT NULL,research_only INTEGER NOT NULL CHECK(research_only=1),
+                    payload_json TEXT NOT NULL,payload_digest TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS ix_strategy_transition_position
+                    ON strategy_transition_observations(position_id,transition_timestamp);
+                CREATE TABLE IF NOT EXISTS position_correlation_observations(
+                    observation_id TEXT PRIMARY KEY,position_id TEXT NOT NULL,
+                    authoritative_position_key TEXT NOT NULL,opportunity_id TEXT,
+                    decision_cutoff TEXT NOT NULL,entry_strategy_id TEXT,
+                    correlation_status TEXT NOT NULL,research_only INTEGER NOT NULL CHECK(research_only=1),
+                    payload_json TEXT NOT NULL,payload_digest TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS ix_position_correlation_identity
+                    ON position_correlation_observations(position_id,decision_cutoff);
+                CREATE TABLE IF NOT EXISTS position_thesis_observations(
+                    observation_id TEXT PRIMARY KEY,position_id TEXT NOT NULL,
+                    thesis_state TEXT NOT NULL,decision_cutoff TEXT NOT NULL,
+                    research_only INTEGER NOT NULL CHECK(research_only=1),
+                    payload_json TEXT NOT NULL,payload_digest TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS ix_position_thesis_identity
+                    ON position_thesis_observations(position_id,decision_cutoff);
+                CREATE TABLE IF NOT EXISTS add_on_research_candidates(
+                    candidate_id TEXT PRIMARY KEY,position_id TEXT NOT NULL,
+                    opportunity_id TEXT NOT NULL,strategy_id TEXT NOT NULL,
+                    decision_cutoff TEXT NOT NULL,research_only INTEGER NOT NULL CHECK(research_only=1),
+                    execution_authorized INTEGER NOT NULL CHECK(execution_authorized=0),
+                    payload_json TEXT NOT NULL,payload_digest TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS ix_add_on_position
+                    ON add_on_research_candidates(position_id,decision_cutoff);
+                CREATE TRIGGER IF NOT EXISTS discovery_opportunity_immutable_update
+                    BEFORE UPDATE ON discovery_opportunity_observations BEGIN
+                    SELECT RAISE(ABORT,'discovery opportunity observation is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS discovery_opportunity_immutable_delete
+                    BEFORE DELETE ON discovery_opportunity_observations BEGIN
+                    SELECT RAISE(ABORT,'discovery opportunity observation is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS strategy_membership_immutable_update
+                    BEFORE UPDATE ON strategy_membership_observations BEGIN
+                    SELECT RAISE(ABORT,'strategy membership observation is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS strategy_membership_immutable_delete
+                    BEFORE DELETE ON strategy_membership_observations BEGIN
+                    SELECT RAISE(ABORT,'strategy membership observation is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS strategy_transition_immutable_update
+                    BEFORE UPDATE ON strategy_transition_observations BEGIN
+                    SELECT RAISE(ABORT,'strategy transition observation is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS strategy_transition_immutable_delete
+                    BEFORE DELETE ON strategy_transition_observations BEGIN
+                    SELECT RAISE(ABORT,'strategy transition observation is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS position_correlation_immutable_update
+                    BEFORE UPDATE ON position_correlation_observations BEGIN
+                    SELECT RAISE(ABORT,'position correlation observation is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS position_correlation_immutable_delete
+                    BEFORE DELETE ON position_correlation_observations BEGIN
+                    SELECT RAISE(ABORT,'position correlation observation is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS position_thesis_immutable_update
+                    BEFORE UPDATE ON position_thesis_observations BEGIN
+                    SELECT RAISE(ABORT,'position thesis observation is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS position_thesis_immutable_delete
+                    BEFORE DELETE ON position_thesis_observations BEGIN
+                    SELECT RAISE(ABORT,'position thesis observation is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS add_on_candidate_immutable_update
+                    BEFORE UPDATE ON add_on_research_candidates BEGIN
+                    SELECT RAISE(ABORT,'add-on research candidate is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS add_on_candidate_immutable_delete
+                    BEFORE DELETE ON add_on_research_candidates BEGIN
+                    SELECT RAISE(ABORT,'add-on research candidate is immutable'); END;
                 CREATE TABLE IF NOT EXISTS import_ledger(
                     source_store TEXT NOT NULL,source_schema_version TEXT NOT NULL,
                     import_version TEXT NOT NULL,source_record_identity TEXT NOT NULL,
@@ -194,8 +277,8 @@ class ExperienceStore:
             row = db.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
             if row is None:
                 db.execute("INSERT INTO metadata VALUES('schema_version',?)", (str(STORE_SCHEMA_VERSION),))
-            elif int(row[0]) == 1:
-                # V2 is append-only research history. Existing V1 experience and
+            elif int(row[0]) in {1, 2}:
+                # V2/V3 add only research history. Existing experience and
                 # outcome rows retain their exact meaning and payload digests.
                 db.execute("UPDATE metadata SET value=? WHERE key='schema_version'", (str(STORE_SCHEMA_VERSION),))
             elif int(row[0]) != STORE_SCHEMA_VERSION:
@@ -684,6 +767,104 @@ class ExperienceStore:
             ).fetchone()
         return row is not None
 
+    def put_discovery_opportunity(self, value: dict[str, object]) -> bool:
+        _research_only(value)
+        return self._put_immutable_research(
+            "discovery_opportunity_observations", "observation_id", value,
+            (
+                "opportunity_id", "symbol", "session", "session_date",
+                "decision_cutoff", "primary_strategy", "membership_count",
+                "research_only",
+            ),
+        )
+
+    def put_strategy_membership(self, value: dict[str, object]) -> bool:
+        _research_only(value)
+        return self._put_immutable_research(
+            "strategy_membership_observations", "observation_id", value,
+            (
+                "opportunity_id", "strategy_id", "detector_version", "state",
+                "decision_cutoff", "research_only",
+            ),
+        )
+
+    def put_strategy_transition(self, value: dict[str, object]) -> bool:
+        _research_only(value)
+        return self._put_immutable_research(
+            "strategy_transition_observations", "transition_id", value,
+            (
+                "position_id", "original_opportunity_id", "opportunity_id",
+                "strategy_id", "transition_type", "transition_timestamp",
+                "research_only",
+            ),
+        )
+
+    def put_position_correlation(self, value: dict[str, object]) -> bool:
+        _research_only(value)
+        return self._put_immutable_research(
+            "position_correlation_observations", "observation_id", value,
+            (
+                "position_id", "authoritative_position_key", "opportunity_id",
+                "decision_cutoff", "entry_strategy_id", "correlation_status",
+                "research_only",
+            ),
+        )
+
+    def put_position_thesis(self, value: dict[str, object]) -> bool:
+        _research_only(value)
+        return self._put_immutable_research(
+            "position_thesis_observations", "observation_id", value,
+            ("position_id", "thesis_state", "decision_cutoff", "research_only"),
+        )
+
+    def put_add_on_candidate(self, value: dict[str, object]) -> bool:
+        _research_only(value)
+        if bool(value.get("execution_authorized")):
+            raise ValueError("add-on research cannot authorize execution")
+        return self._put_immutable_research(
+            "add_on_research_candidates", "candidate_id", value,
+            (
+                "position_id", "opportunity_id", "strategy_id",
+                "decision_cutoff", "research_only", "execution_authorized",
+            ),
+        )
+
+    def discovery_census(self) -> dict[str, int]:
+        tables = (
+            "discovery_opportunity_observations", "strategy_membership_observations",
+            "strategy_transition_observations", "position_correlation_observations",
+            "position_thesis_observations", "add_on_research_candidates",
+        )
+        with self._connect() as db:
+            return {
+                table: int(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                for table in tables
+            }
+
+    def _put_immutable_research(
+        self, table: str, identity_name: str, value: dict[str, object],
+        column_names: tuple[str, ...],
+    ) -> bool:
+        identity = str(value[identity_name])
+        payload = canonical_json(value)
+        digest = _digest(payload)
+        columns = (identity_name, *column_names, "payload_json", "payload_digest")
+        placeholders = ",".join("?" for _ in columns)
+        with self._connect() as db:
+            row = db.execute(
+                f"SELECT payload_digest FROM {table} WHERE {identity_name}=?",
+                (identity,),
+            ).fetchone()
+            if row is not None:
+                if row[0] != digest:
+                    raise ValueError(f"immutable {table} identity has conflicting content")
+                return False
+            db.execute(
+                f"INSERT INTO {table}({','.join(columns)}) VALUES({placeholders})",
+                (identity, *(value.get(name) for name in column_names), payload, digest),
+            )
+            return True
+
     def put_research_generation(self, value: ResearchGeneration) -> bool:
         payload = canonical_json(asdict(value))
         digest = _digest(payload)
@@ -811,6 +992,11 @@ class ExperienceStore:
 def _digest(payload: str) -> str:
     from hashlib import sha256
     return sha256(payload.encode()).hexdigest()
+
+
+def _research_only(value: dict[str, object]) -> None:
+    if value.get("research_only") is not True:
+        raise ValueError("discovery persistence must remain research-only")
 
 
 def _experience_from_json(payload: str) -> TradeOpportunityExperience:

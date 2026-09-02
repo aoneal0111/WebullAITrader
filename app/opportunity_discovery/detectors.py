@@ -256,6 +256,15 @@ def _missing(context, names):
 
 
 def _result(definition, context, state, anchor, trigger, stop, reasons, quality, missing):
+    # Detector geometry may identify a structure whose candidate stop is no
+    # longer below its reference/trigger (for example after a gap or a retest
+    # that never offered positive technical risk).  That remains useful
+    # observational evidence, but it is not a complete R plan.  Preserve the
+    # detection and make the unavailable plan explicit instead of allowing one
+    # detector to fail the entire multi-strategy evaluation cycle.
+    if trigger is not None and stop is not None and trigger <= stop:
+        stop = None
+        reasons = tuple(reasons) + ("INSUFFICIENT_R_PLAN_NONPOSITIVE_RISK",)
     observed = tuple(name for name in definition.required_features if name not in missing)
     optional = tuple(name for name in definition.optional_features if not _missing(context, (name,)))
     reference = None if not context.completed_bars else context.completed_bars[-1].close

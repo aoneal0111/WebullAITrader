@@ -1,9 +1,12 @@
 from collections import Counter
+from decimal import Decimal
 
 from app.opportunity_discovery import (
-    DetectorAvailability, STRATEGY_TAXONOMY, StrategyFamily,
+    DetectionState, DetectorAvailability, STRATEGY_TAXONOMY, StrategyFamily,
     default_registry, feature_capability_report,
 )
+from app.opportunity_discovery.detectors import RuleDetector
+from tests.opportunity_discovery.conftest import bar, context
 
 
 def test_taxonomy_has_30_unique_versioned_research_only_hypotheses():
@@ -34,3 +37,22 @@ def test_registration_cannot_grant_execution_authority():
     assert all(detector.definition.research_only for detector in registry.detectors)
     assert not any(hasattr(detector, name) for detector in registry.detectors
                    for name in ("place_order", "authorize_order", "veto_order", "resize_order"))
+
+
+def test_nonpositive_research_plan_preserves_detection_as_incomplete_evidence():
+    definition = next(item for item in STRATEGY_TAXONOMY if item.availability is DetectorAvailability.ACTIVE)
+    detector = RuleDetector(
+        definition,
+        lambda _analysis: (
+            DetectionState.DETECTED,
+            Decimal("10"),
+            Decimal("10.01"),
+            ("STRUCTURE_OBSERVED",),
+            (),
+        ),
+    )
+    detection = detector.detect(context((bar(0, 10, 10.2, 9.9, 10.1),)))
+    assert detection.state is DetectionState.DETECTED
+    assert detection.trigger_level == Decimal("10")
+    assert detection.structural_stop is None
+    assert "INSUFFICIENT_R_PLAN_NONPOSITIVE_RISK" in detection.reason_codes

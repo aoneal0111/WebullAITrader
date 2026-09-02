@@ -6,12 +6,14 @@ submitted with nonblocking calls to :class:`TradeIntelligenceService`.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from threading import RLock
+from time import perf_counter
 from typing import Callable
 
 from app.live_scanner.session import scanner_session
@@ -19,10 +21,17 @@ from app.market.calendar import EASTERN
 from app.market_data.models import MarketEvent, MarketEventType, TradePayload
 from app.momentum_scanner.models import ScannerDecision
 from app.performance_diagnostics import performance_diagnostics
+from app.opportunity_discovery import (
+    CompletedBar, DiscoveryContext, FeatureCapabilities, PositionFocusTier,
+)
 from app.strategies.warrior_momentum.forward_models import PointInTimeObservation
 from app.strategies.warrior_momentum.models import MinuteBar, MomentumCandidate, SetupState
 
 from .features import extract_completed_bar_features
+from .discovery_runtime import (
+    AuthoritativePositionObservation, DiscoveryTelemetry,
+    RuntimeDiscoveryObservation,
+)
 from .models import (
     AtlasDecision, DecisionObservation, DecisionTimeSnapshot, FEATURE_VERSION,
     OpportunityKey, PaperExecutionObservation, PriceBar,
@@ -81,6 +90,19 @@ class TradeIntelligenceRuntimeObserver:
         self._last_metrics: WorkerMetrics | None = None
         self._episodes: dict[str, _Episode] = {}
         self._bars: dict[str, _BarState] = {}
+        self._discovery_bars: dict[str, deque[CompletedBar]] = {}
+        self._last_discovery_cutoff: dict[str, datetime] = {}
+        self._scanner_decisions: dict[str, ScannerDecision] = {}
+        self._warrior_states: dict[str, SetupState] = {}
+        self._position_source: Callable[[], object] | None = None
+        self._order_source: Callable[[], object] | None = None
+        self._position_epochs: dict[tuple[str, str], datetime] = {}
+        self._entry_attribution: dict[str, dict[str, object]] = {}
+        self._market_observations = 0
+        self._completed_bar_count = 0
+        self._callback_build_samples: deque[float] = deque(maxlen=2048)
+        self._callback_build_max_ms = 0.0
+        self._last_discovery_telemetry = DiscoveryTelemetry()
         self._lock = RLock()
         performance_diagnostics.set_trade_intelligence_enabled(self.enabled)
 
@@ -100,7 +122,9 @@ class TradeIntelligenceRuntimeObserver:
             return True
         closed = service.close(timeout_seconds=timeout_seconds)
         self._last_metrics = service.metrics()
+        self._last_discovery_telemetry = self._combined_discovery_telemetry(service)
         performance_diagnostics.update_trade_intelligence(self._last_metrics)
+        performance_diagnostics.update_discovery(self._last_discovery_telemetry)
         if closed:
             with self._lock:
                 if self._service is service:
@@ -112,6 +136,8 @@ class TradeIntelligenceRuntimeObserver:
         # and trades never create experience rows here.
         if not self.enabled:
             return
+        with self._lock:
+            self._market_observations += 1
         if event.event_type is MarketEventType.SESSION_CHANGE:
             if event.symbol is None:
                 with self._lock:
@@ -124,10 +150,18 @@ class TradeIntelligenceRuntimeObserver:
             and event.event_type is MarketEventType.TRADE
             and isinstance(event.payload, TradePayload)
         ):
-            self._observe_trade_bar(event)
+            try:
+                self._observe_trade_bar(event)
+            except Exception:
+                # Research must fail closed without escaping to market ingress.
+                return
 
     def observe_scanner_decision(self, decision: ScannerDecision) -> None:
-        if not self.enabled or not (
+        if not self.enabled:
+            return
+        with self._lock:
+            self._scanner_decisions[decision.symbol.strip().upper()] = decision
+        if not (
             decision.qualified or decision.technical_qualifies_without_catalyst
         ):
             return
@@ -150,20 +184,48 @@ class TradeIntelligenceRuntimeObserver:
         self, value: PointInTimeObservation, candidate: MomentumCandidate,
         signal: object | None = None,
     ) -> None:
-        if not self.enabled or candidate.setup is None:
-            return
-        if candidate.setup.state not in {SetupState.FORMING, SetupState.TRIGGERED}:
+        if not self.enabled:
             return
         try:
-            self._observe_warrior(value, candidate, signal)
+            if candidate.setup is not None:
+                with self._lock:
+                    self._warrior_states[candidate.symbol.strip().upper()] = candidate.setup.state
+            self._observe_discovery_from_warrior(value, candidate)
+            if (
+                candidate.setup is not None
+                and candidate.setup.state in {SetupState.FORMING, SetupState.TRIGGERED}
+            ):
+                self._observe_warrior(value, candidate, signal)
         except Exception:
             return
+
+    def bind_authoritative_focus_sources(
+        self, *, position_source: Callable[[], object],
+        order_source: Callable[[], object],
+    ) -> None:
+        """Observe immutable execution-owned projections without owning them."""
+
+        with self._lock:
+            self._position_source = position_source
+            self._order_source = order_source
 
     def observe_completed_bar(self, bar: MinuteBar) -> None:
         service = self._service
         if not self.enabled or service is None:
             return
         try:
+            completed_at = _utc(bar.timestamp) + timedelta(minutes=1)
+            research_bar = CompletedBar(
+                bar.symbol.strip().upper(), completed_at, bar.open, bar.high,
+                bar.low, bar.close, bar.volume, scanner_session(bar.timestamp).value,
+            )
+            with self._lock:
+                values = self._discovery_bars.setdefault(
+                    research_bar.symbol, deque(maxlen=64),
+                )
+                if not values or values[-1].completed_at < completed_at:
+                    values.append(research_bar)
+            self._submit_discovery(research_bar.symbol, completed_at)
             service.observe_completed_bar(PriceBar(
                 bar.symbol, bar.timestamp, bar.open, bar.high, bar.low,
                 bar.close, bar.volume,
@@ -200,6 +262,24 @@ class TradeIntelligenceRuntimeObserver:
             "AMBIGUOUS" if len(candidates) > 1 else "UNRESOLVED"
         )
         experience_id = candidates[0].experience_id if status == "CORRELATED" else None
+        if (
+            status == "CORRELATED" and side is not None and side.upper() == "BUY"
+            and event_type in {"ORDER_FILLED", "ORDER_PARTIALLY_FILLED"}
+        ):
+            episode = candidates[0]
+            strategy_id = None if episode.setup_anchor is None else str(episode.setup_anchor[0])
+            with self._lock:
+                self._entry_attribution[normalized] = {
+                    "lifecycle_id": strategy_lifecycle_id,
+                    # The Phase 1 experience is not a normalized discovery
+                    # opportunity. The worker correlates the first observed
+                    # normalized opportunity without conflating identities.
+                    "original_opportunity_id": None,
+                    "entry_strategy_id": strategy_id,
+                    "entry_strategy_version": "WARRIOR_MOMENTUM_V1" if strategy_id else None,
+                    "entry_timestamp": observed_at,
+                    "entry_price": price,
+                }
         try:
             service.observe_paper_execution(PaperExecutionObservation(
                 observation_id=observation_id, observed_at=observed_at,
@@ -217,6 +297,10 @@ class TradeIntelligenceRuntimeObserver:
             normalized = symbol.strip().upper()
             self._episodes.pop(normalized, None)
             self._bars.pop(normalized, None)
+            self._discovery_bars.pop(normalized, None)
+            self._last_discovery_cutoff.pop(normalized, None)
+            self._scanner_decisions.pop(normalized, None)
+            self._warrior_states.pop(normalized, None)
 
     def metrics(self) -> WorkerMetrics | None:
         service = self._service
@@ -224,7 +308,21 @@ class TradeIntelligenceRuntimeObserver:
 
     def retained_symbols(self) -> tuple[str, ...]:
         with self._lock:
-            return tuple(sorted(self._episodes))
+            values = set(self._episodes)
+        positions, orders = self._authoritative_snapshots()
+        values.update(
+            str(item.symbol).strip().upper() for item in getattr(positions, "positions", ())
+            if _decimal_or_zero(getattr(item, "quantity", None)) != 0
+        )
+        values.update(
+            str(item.symbol).strip().upper() for item in getattr(orders, "orders", ())
+            if _working_order(getattr(item, "status", ""))
+        )
+        return tuple(sorted(value for value in values if value))
+
+    def discovery_telemetry(self) -> DiscoveryTelemetry:
+        service = self._service
+        return self._last_discovery_telemetry if service is None else self._combined_discovery_telemetry(service)
 
     def _observe_scanner(self, decision: ScannerDecision) -> None:
         service = self._service
@@ -418,14 +516,189 @@ class TradeIntelligenceRuntimeObserver:
                 and completed.timestamp <= item.started_at + timedelta(minutes=30)
                 for item in self._episodes.values()
             )
-        if completed is not None and needs_outcome and self._service is not None:
-            self._service.observe_completed_bar(completed)
-            self._publish_metrics()
+        if completed is not None:
+            cutoff = completed.timestamp + timedelta(minutes=1)
+            discovery_bar = CompletedBar(
+                completed.symbol, cutoff, completed.open, completed.high,
+                completed.low, completed.close, completed.volume,
+                scanner_session(completed.timestamp).value,
+            )
+            with self._lock:
+                bars = self._discovery_bars.setdefault(symbol, deque(maxlen=64))
+                if not bars or bars[-1].completed_at < discovery_bar.completed_at:
+                    bars.append(discovery_bar)
+            try:
+                self._submit_discovery(symbol, cutoff)
+            except Exception:
+                # A malformed research envelope cannot escape into ingress.
+                pass
+            if needs_outcome and self._service is not None:
+                self._service.observe_completed_bar(completed)
+                self._publish_metrics()
+
+    def _observe_discovery_from_warrior(
+        self, value: PointInTimeObservation, candidate: MomentumCandidate,
+    ) -> None:
+        symbol = candidate.symbol.strip().upper()
+        cutoff = _utc(candidate.timestamp)
+        completed = []
+        for bar in value.bars[-64:]:
+            completed_at = _utc(bar.timestamp) + timedelta(minutes=1)
+            if completed_at <= cutoff:
+                completed.append(CompletedBar(
+                    symbol, completed_at, bar.open, bar.high, bar.low,
+                    bar.close, bar.volume, scanner_session(bar.timestamp).value,
+                ))
+        if not completed:
+            return
+        with self._lock:
+            self._discovery_bars[symbol] = deque(completed, maxlen=64)
+        self._submit_discovery(symbol, cutoff, value=value, candidate=candidate)
+
+    def _submit_discovery(
+        self, symbol: str, cutoff: datetime, *, value: PointInTimeObservation | None = None,
+        candidate: MomentumCandidate | None = None,
+    ) -> None:
+        started = perf_counter()
+        service = self._service
+        cutoff = _utc(cutoff)
+        if service is None:
+            return
+        with self._lock:
+            if self._last_discovery_cutoff.get(symbol) == cutoff:
+                return
+            bars = tuple(self._discovery_bars.get(symbol, ()))
+            scanner = self._scanner_decisions.get(symbol)
+        if not bars:
+            return
+        position, working_ids, tier = self._focus_for(symbol, cutoff)
+        prior_close = None
+        if value is not None:
+            prior_close = value.observation.previous_close
+        if prior_close is None and scanner is not None:
+            prior_close = scanner.previous_close
+        context = DiscoveryContext(
+            symbol=symbol,
+            session_date=cutoff.astimezone(EASTERN).date(),
+            session=(candidate.session if candidate is not None else scanner_session(cutoff).value),
+            decision_cutoff=cutoff,
+            completed_bars=bars,
+            capabilities=FeatureCapabilities(prior_close=prior_close is not None),
+            prior_close=prior_close,
+            percentage_change=(candidate.percentage_change if candidate is not None else None if scanner is None else scanner.metrics.percentage_change),
+            relative_volume=(candidate.relative_volume if candidate is not None else None if scanner is None else scanner.metrics.relative_volume),
+            dollar_volume=(candidate.dollar_volume if candidate is not None else None if scanner is None else scanner.metrics.dollar_volume),
+            spread_percent=(candidate.spread_percent if candidate is not None else None if scanner is None else scanner.metrics.spread_percent),
+            float_shares=(candidate.float_shares if candidate is not None else None if scanner is None else scanner.float_shares),
+            scanner_rank=(candidate.rank if candidate is not None else None if scanner is None else scanner.scanner_rank),
+        )
+        submit = getattr(service, "submit_discovery_observation", None)
+        if not callable(submit):
+            return
+        accepted = submit(RuntimeDiscoveryObservation(
+            context=context, observed_at=cutoff, focus_tier=tier,
+            authoritative_position=position, working_order_ids=working_ids,
+        ))
+        elapsed = (perf_counter() - started) * 1000
+        with self._lock:
+            if accepted:
+                self._last_discovery_cutoff[symbol] = cutoff
+                self._completed_bar_count += 1
+            self._callback_build_samples.append(elapsed)
+            self._callback_build_max_ms = max(self._callback_build_max_ms, elapsed)
+        self._publish_metrics()
+
+    def _focus_for(
+        self, symbol: str, cutoff: datetime,
+    ) -> tuple[AuthoritativePositionObservation | None, tuple[str, ...], PositionFocusTier]:
+        positions, orders = self._authoritative_snapshots()
+        position_row = next((
+            item for item in getattr(positions, "positions", ())
+            if str(item.symbol).strip().upper() == symbol
+            and _decimal_or_zero(getattr(item, "quantity", None)) != 0
+        ), None)
+        working = tuple(sorted(
+            str(item.order_id) for item in getattr(orders, "orders", ())
+            if str(item.symbol).strip().upper() == symbol
+            and _working_order(getattr(item, "status", ""))
+        ))
+        if position_row is not None:
+            account = str(position_row.account_id)
+            key = (account, symbol)
+            with self._lock:
+                epoch = self._position_epochs.setdefault(key, cutoff)
+                attribution = dict(self._entry_attribution.get(symbol, {}))
+            lifecycle = attribution.get("lifecycle_id")
+            identity_material = (
+                f"authoritative-position-v1|{account}|{symbol}|{lifecycle}"
+                if lifecycle else f"uncorrelated-position-v1|{account}|{symbol}|{epoch.isoformat()}"
+            )
+            position = AuthoritativePositionObservation(
+                position_id=sha256(identity_material.encode()).hexdigest(),
+                source="desktop-paper-position-projection", account_id=account,
+                position_key=f"{account}|{symbol}", symbol=symbol,
+                quantity=Decimal(str(position_row.quantity)),
+                average_entry_price=Decimal(str(position_row.average_cost)),
+                observed_at=cutoff,
+                lifecycle_id=None if lifecycle is None else str(lifecycle),
+                original_opportunity_id=_optional_string(attribution.get("original_opportunity_id")),
+                entry_strategy_id=_optional_string(attribution.get("entry_strategy_id")),
+                entry_strategy_version=_optional_string(attribution.get("entry_strategy_version")),
+                entry_timestamp=attribution.get("entry_timestamp"),
+                entry_price=attribution.get("entry_price"),
+            )
+            return position, working, PositionFocusTier.OPEN_POSITION
+        with self._lock:
+            for key in tuple(self._position_epochs):
+                if key[1] == symbol:
+                    self._position_epochs.pop(key, None)
+            self._entry_attribution.pop(symbol, None)
+        if working:
+            return None, working, PositionFocusTier.WORKING_ORDER
+        with self._lock:
+            warrior_state = self._warrior_states.get(symbol)
+        if warrior_state is SetupState.TRIGGERED:
+            return None, (), PositionFocusTier.TRIGGERED_OPPORTUNITY
+        if warrior_state is SetupState.FORMING:
+            return None, (), PositionFocusTier.FORMING_OPPORTUNITY
+        return None, (), PositionFocusTier.SCANNER_DISCOVERY
+
+    def _authoritative_snapshots(self) -> tuple[object, object]:
+        with self._lock:
+            position_source, order_source = self._position_source, self._order_source
+        try:
+            positions = () if position_source is None else position_source()
+        except Exception:
+            positions = ()
+        try:
+            orders = () if order_source is None else order_source()
+        except Exception:
+            orders = ()
+        return positions, orders
+
+    def _combined_discovery_telemetry(self, service: TradeIntelligenceService) -> DiscoveryTelemetry:
+        telemetry = getattr(service, "discovery_telemetry", None)
+        base = telemetry() if callable(telemetry) else DiscoveryTelemetry()
+        with self._lock:
+            samples = sorted(self._callback_build_samples)
+            percentiles = (
+                _float_percentile(samples, .50), _float_percentile(samples, .90),
+                _float_percentile(samples, .99), self._callback_build_max_ms,
+            )
+            market_observations = self._market_observations
+            completed_bars = self._completed_bar_count
+        return replace(
+            base, market_observations=market_observations,
+            completed_bars=completed_bars,
+            callback_build_p50_ms=percentiles[0], callback_build_p90_ms=percentiles[1],
+            callback_build_p99_ms=percentiles[2], callback_build_max_ms=percentiles[3],
+        )
 
     def _publish_metrics(self) -> None:
         service = self._service
         if service is not None:
             performance_diagnostics.update_trade_intelligence(service.metrics())
+            performance_diagnostics.update_discovery(self._combined_discovery_telemetry(service))
 
 
 def _utc(value: datetime) -> datetime:
@@ -449,3 +722,27 @@ def _signal_identity(signal: object | None) -> str | None:
         getattr(signal, "entry_trigger", ""), getattr(signal, "stop_price", ""),
     )
     return "|".join(str(getattr(value, "value", value)) for value in values)
+
+
+def _working_order(status: object) -> bool:
+    return str(status).strip().upper() in {
+        "ACCEPTED", "ACKNOWLEDGED", "NEW", "OPEN", "PARTIAL_FILL",
+        "PARTIALLY_FILLED", "PENDING", "SUBMITTED", "WORKING",
+    }
+
+
+def _decimal_or_zero(value: object) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal("0")
+
+
+def _optional_string(value: object) -> str | None:
+    return None if value is None else str(value)
+
+
+def _float_percentile(values: list[float], fraction: float) -> float:
+    if not values:
+        return 0.0
+    return values[min(len(values) - 1, int((len(values) - 1) * fraction))]

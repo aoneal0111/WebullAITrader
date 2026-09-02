@@ -16,6 +16,11 @@ from .experience_store import (
     ExperienceStore, _bar_from_json, _decision_from_json, _experience_from_json,
     _paper_observation_from_json,
 )
+from .discovery_runtime import (
+    DiscoveryTelemetry, RuntimeDiscoveryObservation, discovery_observation_from_dict,
+    discovery_observation_payload,
+)
+from .discovery_worker import DiscoveryWorker
 from .models import (
     DecisionObservation, HORIZONS_MINUTES, MissedOpportunityClassification,
     PaperExecutionObservation, PriceBar, TradeOpportunityExperience, WorkerMetrics,
@@ -68,6 +73,8 @@ class TradeIntelligenceService:
         self._experiences_created = self._decisions_recorded = 0
         self._outcomes_completed = self._profitable_misses = 0
         self._protected_rejections = 0
+        self._discovery_worker = DiscoveryWorker(state_limit=max(1000, capacity * 2))
+        self._discovery_snapshot = self._discovery_worker.telemetry()
         self._thread = Thread(target=self._run, name="atlas-trade-intelligence", daemon=True)
         self._thread.start()
 
@@ -98,6 +105,15 @@ class TradeIntelligenceService:
             value.observation_id, "PAPER_OBSERVATION",
             canonical_json(asdict(value)), self._now(),
         ))
+
+    def submit_discovery_observation(self, value: RuntimeDiscoveryObservation) -> bool:
+        if not isinstance(value, RuntimeDiscoveryObservation):
+            return self._reject()
+        payload = canonical_json(discovery_observation_payload(value))
+        identity = sha256(
+            f"discovery|{value.context.symbol.upper()}|{value.context.decision_cutoff.isoformat()}".encode()
+        ).hexdigest()
+        return self._submit(_Work(identity, "DISCOVERY", payload, self._now()))
 
     def _submit(self, work: _Work) -> bool:
         with self._lock:
@@ -151,7 +167,21 @@ class TradeIntelligenceService:
                 self._lag_max_ms, self._experiences_created,
                 self._decisions_recorded, self._outcomes_completed,
                 self._profitable_misses, self._protected_rejections,
+                self._discovery_snapshot.discovery_cycles,
+                self._discovery_snapshot.detector_evaluations,
+                self._discovery_snapshot.raw_detector_firings,
+                self._discovery_snapshot.unique_detector_episodes,
+                self._discovery_snapshot.normalized_opportunities,
+                self._discovery_snapshot.strategy_memberships,
+                self._discovery_snapshot.strategy_transitions,
+                self._discovery_snapshot.position_correlations,
+                self._discovery_snapshot.thesis_observations,
+                self._discovery_snapshot.add_on_candidates,
             )
+
+    def discovery_telemetry(self) -> DiscoveryTelemetry:
+        with self._lock:
+            return self._discovery_snapshot
 
     @property
     def thread(self) -> Thread:
@@ -344,6 +374,11 @@ class TradeIntelligenceService:
                             active.pop(exp.experience_id, None)
                             completed_horizons.pop(exp.experience_id, None)
                     store.prune_bars()
+            elif work.work_type == "DISCOVERY":
+                discovery = discovery_observation_from_dict(json.loads(work.payload_json))
+                self._discovery_worker.process(store, discovery)
+                with self._lock:
+                    self._discovery_snapshot = self._discovery_worker.telemetry()
             else:
                 raise ValueError("unknown research work type")
             store.complete_work(work.work_id, self._now())

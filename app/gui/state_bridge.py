@@ -117,6 +117,18 @@ class QtStateBridge(QObject):
                 "trade_intelligence_worker_lag_max_ms=%d "
                 "trade_intelligence_pressure_episodes=%d "
                 "trade_intelligence_recovery_episodes=%d "
+                "discovery_market_observations=%d discovery_completed_bars=%d "
+                "discovery_cycles=%d discovery_detector_evaluations=%d "
+                "discovery_raw_firings=%d discovery_unique_episodes=%d "
+                "discovery_normalized_opportunities=%d "
+                "discovery_strategy_memberships=%d discovery_strategy_transitions=%d "
+                "discovery_position_correlations=%d discovery_thesis_observations=%d "
+                "discovery_add_on_candidates=%d "
+                "discovery_callback_build_p50_ms=%.3f "
+                "discovery_callback_build_p90_ms=%.3f "
+                "discovery_callback_build_p99_ms=%.3f "
+                "discovery_callback_build_max_ms=%.3f "
+                "discovery_strategy_coverage=%s "
                 "processing_delayed_events=%d "
                 "scanner_duration_ms=%.2f scanner_duration_max_ms=%.2f "
                 "experiment_enqueue_ms=%.2f experiment_enqueue_max_ms=%.2f "
@@ -169,6 +181,23 @@ class QtStateBridge(QObject):
                 metrics.trade_intelligence_worker_lag_max_ms,
                 metrics.trade_intelligence_pressure_episodes,
                 metrics.trade_intelligence_recovery_episodes,
+                metrics.discovery_market_observations,
+                metrics.discovery_completed_bars,
+                metrics.discovery_cycles,
+                metrics.discovery_detector_evaluations,
+                metrics.discovery_raw_firings,
+                metrics.discovery_unique_episodes,
+                metrics.discovery_normalized_opportunities,
+                metrics.discovery_strategy_memberships,
+                metrics.discovery_strategy_transitions,
+                metrics.discovery_position_correlations,
+                metrics.discovery_thesis_observations,
+                metrics.discovery_add_on_candidates,
+                metrics.discovery_callback_build_p50_ms,
+                metrics.discovery_callback_build_p90_ms,
+                metrics.discovery_callback_build_p99_ms,
+                metrics.discovery_callback_build_max_ms,
+                ",".join(metrics.discovery_strategy_coverage) or "NONE",
                 metrics.processing_delayed_events,
                 metrics.scanner_duration_ms,
                 metrics.scanner_duration_max_ms,

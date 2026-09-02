@@ -35,11 +35,12 @@ def test_discovery_has_no_execution_dependency_or_authority():
         assert forbidden_calls.isdisjoint(calls)
 
 
-def test_existing_production_modules_do_not_import_discovery():
+def test_only_research_sidecar_modules_import_discovery():
     hits = []
     for path in Path("app").rglob("*.py"):
         if "opportunity_discovery" in path.parts:
             continue
         if "opportunity_discovery" in path.read_text(encoding="utf-8"):
             hits.append(path)
-    assert hits == []
+    assert hits
+    assert all("trade_intelligence" in path.parts for path in hits)

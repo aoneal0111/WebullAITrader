@@ -86,6 +86,23 @@ class PerformanceSnapshot:
     trade_intelligence_rejections: int = 0
     trade_intelligence_failures: int = 0
     trade_intelligence_outstanding: int = 0
+    discovery_cycles: int = 0
+    discovery_detector_evaluations: int = 0
+    discovery_raw_firings: int = 0
+    discovery_unique_episodes: int = 0
+    discovery_normalized_opportunities: int = 0
+    discovery_strategy_memberships: int = 0
+    discovery_strategy_transitions: int = 0
+    discovery_position_correlations: int = 0
+    discovery_thesis_observations: int = 0
+    discovery_add_on_candidates: int = 0
+    discovery_market_observations: int = 0
+    discovery_completed_bars: int = 0
+    discovery_callback_build_p50_ms: float = 0.0
+    discovery_callback_build_p90_ms: float = 0.0
+    discovery_callback_build_p99_ms: float = 0.0
+    discovery_callback_build_max_ms: float = 0.0
+    discovery_strategy_coverage: tuple[str, ...] = ()
 
 
 class PerformanceDiagnostics:
@@ -170,6 +187,23 @@ class PerformanceDiagnostics:
             "trade_intelligence_rejections": 0,
             "trade_intelligence_failures": 0,
             "trade_intelligence_outstanding": 0,
+            "discovery_cycles": 0,
+            "discovery_detector_evaluations": 0,
+            "discovery_raw_firings": 0,
+            "discovery_unique_episodes": 0,
+            "discovery_normalized_opportunities": 0,
+            "discovery_strategy_memberships": 0,
+            "discovery_strategy_transitions": 0,
+            "discovery_position_correlations": 0,
+            "discovery_thesis_observations": 0,
+            "discovery_add_on_candidates": 0,
+            "discovery_market_observations": 0,
+            "discovery_completed_bars": 0,
+            "discovery_callback_build_p50_ms": 0.0,
+            "discovery_callback_build_p90_ms": 0.0,
+            "discovery_callback_build_p99_ms": 0.0,
+            "discovery_callback_build_max_ms": 0.0,
+            "discovery_strategy_coverage": (),
         }
 
     def increment(self, name: str, amount: int = 1) -> None:
@@ -304,6 +338,16 @@ class PerformanceDiagnostics:
             "trade_intelligence_rejections": "rejected",
             "trade_intelligence_failures": "failed",
             "trade_intelligence_outstanding": "outstanding",
+            "discovery_cycles": "discovery_cycles",
+            "discovery_detector_evaluations": "discovery_detector_evaluations",
+            "discovery_raw_firings": "discovery_raw_firings",
+            "discovery_unique_episodes": "discovery_unique_episodes",
+            "discovery_normalized_opportunities": "discovery_normalized_opportunities",
+            "discovery_strategy_memberships": "discovery_strategy_memberships",
+            "discovery_strategy_transitions": "discovery_strategy_transitions",
+            "discovery_position_correlations": "discovery_position_correlations",
+            "discovery_thesis_observations": "discovery_thesis_observations",
+            "discovery_add_on_candidates": "discovery_add_on_candidates",
         }
         values = {name: int(getattr(metrics, field, 0)) for name, field in mapping.items()}
         with self._lock:
@@ -312,6 +356,26 @@ class PerformanceDiagnostics:
     def set_trade_intelligence_enabled(self, enabled: bool) -> None:
         with self._lock:
             self._trade_intelligence["trade_intelligence_enabled"] = bool(enabled)
+
+    def update_discovery(self, telemetry: object) -> None:
+        mapping = {
+            "discovery_market_observations": "market_observations",
+            "discovery_completed_bars": "completed_bars",
+            "discovery_callback_build_p50_ms": "callback_build_p50_ms",
+            "discovery_callback_build_p90_ms": "callback_build_p90_ms",
+            "discovery_callback_build_p99_ms": "callback_build_p99_ms",
+            "discovery_callback_build_max_ms": "callback_build_max_ms",
+        }
+        values = {name: float(getattr(telemetry, field, 0)) for name, field in mapping.items()}
+        values["discovery_market_observations"] = int(values["discovery_market_observations"])
+        values["discovery_completed_bars"] = int(values["discovery_completed_bars"])
+        values["discovery_strategy_coverage"] = tuple(
+            f"{item.strategy_id}:{item.evaluations}/{item.raw_detections}/"
+            f"{item.unique_episodes}/{item.normalized_opportunities}"
+            for item in getattr(telemetry, "coverage", ())
+        )
+        with self._lock:
+            self._trade_intelligence.update(values)
 
     def _record_maximum(self, name: str, value: float) -> None:
         if value < 0:

@@ -455,6 +455,16 @@ class WorkerMetrics:
     outcomes_completed: int = 0
     profitable_misses: int = 0
     protected_rejections: int = 0
+    discovery_cycles: int = 0
+    discovery_detector_evaluations: int = 0
+    discovery_raw_firings: int = 0
+    discovery_unique_episodes: int = 0
+    discovery_normalized_opportunities: int = 0
+    discovery_strategy_memberships: int = 0
+    discovery_strategy_transitions: int = 0
+    discovery_position_correlations: int = 0
+    discovery_thesis_observations: int = 0
+    discovery_add_on_candidates: int = 0
 
 
 def temporal_partition(value: date) -> DatasetPartition:

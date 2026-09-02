@@ -151,6 +151,10 @@ def create_desktop_composition(
             )
         ),
     )
+    trade_intelligence_observer.bind_authoritative_focus_sources(
+        position_source=lambda: runtime_projections.position_projection.snapshot,
+        order_source=lambda: runtime_projections.order_projection.snapshot,
+    )
     chart_observation_sequence = 0
 
     def publish_chart_observation(event_type: str, symbol: str, count: int) -> None:
