@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 import json
+import sqlite3
+from threading import Thread, get_ident
 
 import pytest
 
@@ -8,6 +10,7 @@ from app.market_data.models import MarketEvent, MarketEventType, QuotePayload
 from app.operations_core import OperationsBus
 from app.composition.runtime_projection_pipeline import create_runtime_projection_pipeline
 from app.paper_gateway.durable_store import DurablePaperExecutionStore
+from app.operations.runtime import PaperRuntimeEvent
 from app.paper_trading.command_composition import create_paper_trading_command_composition
 from app.paper_trading.command_composition import PAPER_ACCOUNT_ID
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
@@ -293,3 +296,317 @@ def test_production_gui_uses_deterministic_paper_store_path() -> None:
     assert paper_path.name == "paper-execution.sqlite3"
     assert paper_path.parent == __import__("pathlib").Path(configured.execution_database_path).parent
     assert paper_path != __import__("pathlib").Path(configured.execution_database_path)
+
+
+class _TrackedConnection:
+    def __init__(self, connection, owner, records, failures) -> None:
+        self._connection = connection
+        self._owner = owner
+        self._records = records
+        self._failures = failures
+
+    def execute(self, sql, parameters=()):
+        self._records.append(("execute", self._owner, get_ident()))
+        if self._failures.get("execute") and not sql.startswith("PRAGMA"):
+            raise sqlite3.OperationalError("injected execute failure")
+        return self._connection.execute(sql, parameters)
+
+    def executescript(self, sql):
+        self._records.append(("executescript", self._owner, get_ident()))
+        return self._connection.executescript(sql)
+
+    def commit(self):
+        self._records.append(("commit", self._owner, get_ident()))
+        if self._failures.get("commit_after"):
+            self._connection.commit()
+            raise sqlite3.OperationalError("injected ambiguous commit failure")
+        if self._failures.get("commit"):
+            raise sqlite3.OperationalError("injected commit failure")
+        return self._connection.commit()
+
+    def rollback(self):
+        self._records.append(("rollback", self._owner, get_ident()))
+        return self._connection.rollback()
+
+    def close(self):
+        self._records.append(("close", self._owner, get_ident()))
+        return self._connection.close()
+
+
+class _ConnectionFactory:
+    def __init__(self) -> None:
+        self.records = []
+        self.failures = {
+            "open": False,
+            "execute": False,
+            "commit": False,
+            "commit_after": False,
+        }
+
+    def __call__(self, *args, **kwargs):
+        owner = get_ident()
+        self.records.append(("open", owner, owner))
+        if self.failures["open"]:
+            raise sqlite3.OperationalError("injected connection-open failure")
+        return _TrackedConnection(
+            sqlite3.connect(*args, **kwargs), owner, self.records, self.failures,
+        )
+
+
+def _assert_connections_never_cross_threads(records) -> None:
+    assert records
+    assert all(owner == actual for _, owner, actual in records)
+
+
+def test_construction_thread_differs_from_sequential_paper_processing_thread(tmp_path) -> None:
+    factory = _ConnectionFactory()
+    store = DurablePaperExecutionStore(
+        tmp_path / "threaded.sqlite3",
+        account_id=PAPER_ACCOUNT_ID,
+        connection_factory=factory,
+    )
+    composition = create_paper_trading_command_composition()
+    composition.gateway._durable_store = store
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    construction_thread = get_ident()
+    outcome = {}
+
+    def process() -> None:
+        outcome["thread"] = get_ident()
+        outcome["submitted"] = bridge.submit_entry(
+            Signal(), 100, Decimal("50")
+        )
+        outcome["nonfill"] = composition.gateway.process_market_event(
+            quote(1, "9.98", "10.01")
+        )
+        outcome["fill"] = composition.gateway.process_market_event(
+            quote(2, "9.99", "10")
+        )
+
+    worker = Thread(target=process, name="desktop-market-data-test")
+    worker.start()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert outcome["thread"] != construction_thread
+    assert outcome["submitted"] is True
+    assert outcome["nonfill"] and outcome["nonfill"][0].fills == ()
+    assert outcome["fill"] and len(outcome["fill"][0].fills) == 1
+    assert composition.order_book.history()[0].status.value == "FILLED"
+    assert {owner for action, owner, _ in factory.records if action == "open"} == {
+        construction_thread, outcome["thread"],
+    }
+    _assert_connections_never_cross_threads(factory.records)
+    composition.close()
+    store.close()
+
+    restarted = create_paper_trading_command_composition(
+        persistence_path=str(tmp_path / "threaded.sqlite3")
+    )
+    assert len(restarted.order_book.history()) == 1
+    assert len(restarted.order_book.history()[0].fills) == 1
+    assert len({fill.fill_id for fill in restarted.order_book.history()[0].fills}) == 1
+    restarted.close()
+
+
+@pytest.mark.parametrize("failure", ("execute", "commit", "open"))
+def test_order_persistence_failure_fails_closed_before_order_mutation(
+    tmp_path, failure,
+) -> None:
+    factory = _ConnectionFactory()
+    store = DurablePaperExecutionStore(
+        tmp_path / f"{failure}.sqlite3",
+        account_id=PAPER_ACCOUNT_ID,
+        connection_factory=factory,
+    )
+    events = []
+    composition = create_paper_trading_command_composition(event_sink=events.append)
+    composition.gateway._durable_store = store
+    factory.failures[failure] = True
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+
+    assert bridge.submit_entry(Signal(), 100, Decimal("50")) is False
+    assert composition.order_book.history() == ()
+    assert composition.gateway.durability_failed
+    assert [event.event_type for event in events] == ["PAPER_DURABILITY_FAILED"]
+    assert events[0].health.persistence_status == "FAILED"
+    assert composition.gateway.process_market_event(quote(1, "9.99", "10")) == ()
+    _assert_connections_never_cross_threads(factory.records)
+    composition.close()
+    store.close()
+
+
+def test_fill_persistence_failure_keeps_working_order_and_market_callback_alive(
+    tmp_path,
+) -> None:
+    factory = _ConnectionFactory()
+    path = tmp_path / "fill-failure.sqlite3"
+    store = DurablePaperExecutionStore(
+        path,
+        account_id=PAPER_ACCOUNT_ID,
+        connection_factory=factory,
+    )
+    events = []
+    composition = create_paper_trading_command_composition(event_sink=events.append)
+    composition.gateway._durable_store = store
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+    order_id = composition.order_book.history()[0].order_id
+    factory.failures["execute"] = True
+
+    assert composition.gateway.process_market_event(quote(1, "9.99", "10")) == ()
+    current = composition.order_book.get(order_id)
+    assert current.status.value == "ACCEPTED"
+    assert current.fills == ()
+    assert composition.gateway.durability_failed
+    assert events[-1].event_type == "PAPER_DURABILITY_FAILED"
+    assert composition.gateway.process_market_event(quote(2, "9.99", "10")) == ()
+    composition.close()
+    store.close()
+
+    restarted = create_paper_trading_command_composition(
+        persistence_path=str(path)
+    )
+    restored = restarted.order_book.get(order_id)
+    assert restored.status.value == "ACCEPTED"
+    assert restored.fills == ()
+    assert len(restarted.order_book.history()) == 1
+    restarted.close()
+
+
+def test_closed_store_rejects_new_work_without_opening_connection(tmp_path) -> None:
+    store = DurablePaperExecutionStore(
+        tmp_path / "closed.sqlite3", account_id=PAPER_ACCOUNT_ID,
+    )
+    store.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        store.events()
+
+
+def test_store_serializes_persistence_from_multiple_calling_threads(tmp_path) -> None:
+    factory = _ConnectionFactory()
+    store = DurablePaperExecutionStore(
+        tmp_path / "concurrent.sqlite3",
+        account_id=PAPER_ACCOUNT_ID,
+        connection_factory=factory,
+    )
+    errors = []
+
+    def persist(sequence: int) -> None:
+        try:
+            store.persist(PaperRuntimeEvent(
+                sequence=sequence,
+                timestamp=datetime.now(timezone.utc),
+                event_type="ORDER_REJECTED",
+                message="concurrency test",
+                cycle=0,
+                symbol="XYZ",
+                source="paper-concurrency-test",
+            ))
+        except Exception as exc:
+            errors.append(exc)
+
+    workers = [Thread(target=persist, args=(value,)) for value in range(1, 9)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=5)
+
+    assert errors == []
+    assert all(not worker.is_alive() for worker in workers)
+    assert [event.sequence for event in store.events()] == list(range(1, 9))
+    _assert_connections_never_cross_threads(factory.records)
+    store.close()
+
+
+def test_cancel_persistence_failure_preserves_working_order(tmp_path) -> None:
+    factory = _ConnectionFactory()
+    path = tmp_path / "cancel-failure.sqlite3"
+    store = DurablePaperExecutionStore(
+        path,
+        account_id=PAPER_ACCOUNT_ID,
+        connection_factory=factory,
+    )
+    composition = create_paper_trading_command_composition()
+    composition.gateway._durable_store = store
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+    order = composition.order_book.history()[0]
+    factory.failures["commit"] = True
+    from app.order_cancellation import OrderCancellationRequest
+
+    result = composition.trading_service.cancel_order(OrderCancellationRequest(
+        request_id="cancel-failure",
+        session_id=composition.session_id,
+        account_id=composition.account_id,
+        broker_order_id=order.order_id,
+        client_order_id=order.request.client_order_id,
+    ))
+
+    assert result.success is False
+    assert composition.order_book.get(order.order_id).status.value == "ACCEPTED"
+    assert composition.gateway.durability_failed
+    composition.close()
+    store.close()
+
+    restarted = create_paper_trading_command_composition(
+        persistence_path=str(path)
+    )
+    assert restarted.order_book.get(order.order_id).status.value == "ACCEPTED"
+    restarted.close()
+
+
+def test_ambiguous_commit_failure_recovers_once_and_blocks_resubmission(tmp_path) -> None:
+    factory = _ConnectionFactory()
+    path = tmp_path / "ambiguous-commit.sqlite3"
+    store = DurablePaperExecutionStore(
+        path,
+        account_id=PAPER_ACCOUNT_ID,
+        connection_factory=factory,
+    )
+    composition = create_paper_trading_command_composition()
+    composition.gateway._durable_store = store
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    factory.failures["commit_after"] = True
+
+    assert bridge.submit_entry(Signal(), 100, Decimal("50")) is False
+    assert composition.order_book.history() == ()
+    assert composition.gateway.durability_failed
+    factory.failures["commit_after"] = False
+    composition.close()
+    store.close()
+
+    restarted = create_paper_trading_command_composition(
+        persistence_path=str(path)
+    )
+    assert len(restarted.order_book.history()) == 1
+    assert len(restarted.durable_store.events()) == 2
+    restored_bridge = AutonomousPaperExecutionBridge(
+        restarted.trading_service,
+        restarted.order_command_factory,
+        order_book=restarted.order_book,
+    )
+    assert restored_bridge.reconcile().value == "READY"
+    assert restored_bridge.submit_entry(Signal(), 100, Decimal("50")) is False
+    assert len(restarted.order_book.history()) == 1
+    restarted.close()

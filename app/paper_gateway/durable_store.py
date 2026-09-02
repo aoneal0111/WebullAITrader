@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from threading import RLock
 
 from app.momentum_scanner import AssetClass
 from app.operations.runtime import PaperRuntimeEvent, RuntimeDecision
@@ -19,64 +21,167 @@ from app.paper_trading.order_models import (
 
 
 SCHEMA_VERSION = 1
+DEFAULT_BUSY_TIMEOUT_SECONDS = 1.0
+
+
+ConnectionFactory = Callable[..., sqlite3.Connection]
 
 
 class DurablePaperExecutionStore:
-    """PAPER-namespaced SQLite store for authoritative gateway events."""
+    """Thread-safe PAPER store using one same-thread connection per operation.
 
-    def __init__(self, path: str | Path, *, account_id: str) -> None:
+    PAPER commands can originate on either the desktop command thread or the
+    market-data processing thread.  Connections are therefore deliberately
+    short lived: the thread entering an operation opens, uses, and closes its
+    connection while ``_lock`` supplies one logical writer and coordinates
+    shutdown.  No SQLite connection crosses a thread boundary.
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        account_id: str,
+        connection_factory: ConnectionFactory = sqlite3.connect,
+        busy_timeout_seconds: float = DEFAULT_BUSY_TIMEOUT_SECONDS,
+    ) -> None:
+        if not callable(connection_factory):
+            raise TypeError("connection_factory must be callable")
+        if busy_timeout_seconds < 0:
+            raise ValueError("busy timeout must be nonnegative")
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(str(self.path), isolation_level=None)
-        self._connection.execute("PRAGMA journal_mode=WAL")
-        self._connection.execute("PRAGMA synchronous=FULL")
-        self._connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS orders(order_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY, event_type TEXT NOT NULL, payload TEXT NOT NULL);
-            """
-        )
-        self._ensure_metadata("schema_version", str(SCHEMA_VERSION))
-        self._ensure_metadata("environment", "PAPER")
-        self._ensure_metadata("account_id", account_id)
-        if self._metadata("environment") != "PAPER" or self._metadata("account_id") != account_id:
-            raise ValueError("PAPER execution store identity mismatch")
+        self._account_id = account_id
+        self._connection_factory = connection_factory
+        self._busy_timeout_seconds = float(busy_timeout_seconds)
+        self._lock = RLock()
+        self._closed = False
+        with self._lock:
+            connection = self._open_connection(initialize=True)
+            try:
+                connection.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS orders(order_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY, event_type TEXT NOT NULL, payload TEXT NOT NULL);
+                    """
+                )
+                self._ensure_metadata(connection, "schema_version", str(SCHEMA_VERSION))
+                self._ensure_metadata(connection, "environment", "PAPER")
+                self._ensure_metadata(connection, "account_id", account_id)
+                if (
+                    self._metadata(connection, "environment") != "PAPER"
+                    or self._metadata(connection, "account_id") != account_id
+                ):
+                    raise ValueError("PAPER execution store identity mismatch")
+            finally:
+                connection.close()
 
     def close(self) -> None:
-        self._connection.close()
+        with self._lock:
+            self._closed = True
 
     def persist(self, event: PaperRuntimeEvent, order: PaperOrder | None = None) -> None:
-        payload = _event_payload(event)
-        with self._connection:
-            if order is not None:
-                self._connection.execute(
-                    "INSERT INTO orders(order_id,payload) VALUES(?,?) ON CONFLICT(order_id) DO UPDATE SET payload=excluded.payload",
-                    (order.order_id, json.dumps(_order_payload(order), sort_keys=True)),
-                )
-            self._connection.execute(
-                "INSERT OR IGNORE INTO events(sequence,event_type,payload) VALUES(?,?,?)",
-                (event.sequence, event.event_type, json.dumps(payload, sort_keys=True)),
-            )
+        self.persist_batch((event,), order)
+
+    def persist_batch(
+        self,
+        events: Iterable[PaperRuntimeEvent],
+        order: PaperOrder | None = None,
+    ) -> None:
+        event_values = tuple(events)
+        if not event_values:
+            raise ValueError("at least one PAPER runtime event is required")
+        with self._lock:
+            self._require_open()
+            connection = self._open_connection()
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                if order is not None:
+                    connection.execute(
+                        "INSERT INTO orders(order_id,payload) VALUES(?,?) ON CONFLICT(order_id) DO UPDATE SET payload=excluded.payload",
+                        (order.order_id, json.dumps(_order_payload(order), sort_keys=True)),
+                    )
+                for event in event_values:
+                    connection.execute(
+                        "INSERT OR IGNORE INTO events(sequence,event_type,payload) VALUES(?,?,?)",
+                        (
+                            event.sequence,
+                            event.event_type,
+                            json.dumps(_event_payload(event), sort_keys=True),
+                        ),
+                    )
+                connection.commit()
+            except Exception:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                connection.close()
 
     def orders(self) -> tuple[PaperOrder, ...]:
-        rows = self._connection.execute("SELECT payload FROM orders ORDER BY order_id").fetchall()
-        return tuple(_order_from_payload(json.loads(row[0])) for row in rows)
+        with self._lock:
+            self._require_open()
+            connection = self._open_connection()
+            try:
+                rows = connection.execute(
+                    "SELECT payload FROM orders ORDER BY order_id"
+                ).fetchall()
+                return tuple(_order_from_payload(json.loads(row[0])) for row in rows)
+            finally:
+                connection.close()
 
     def events(self) -> tuple[PaperRuntimeEvent, ...]:
-        rows = self._connection.execute("SELECT payload FROM events ORDER BY sequence").fetchall()
-        return tuple(_event_from_payload(json.loads(row[0])) for row in rows)
+        with self._lock:
+            self._require_open()
+            connection = self._open_connection()
+            try:
+                rows = connection.execute(
+                    "SELECT payload FROM events ORDER BY sequence"
+                ).fetchall()
+                return tuple(_event_from_payload(json.loads(row[0])) for row in rows)
+            finally:
+                connection.close()
 
-    def _metadata(self, key: str) -> str:
-        row = self._connection.execute("SELECT value FROM metadata WHERE key=?", (key,)).fetchone()
+    def _open_connection(self, *, initialize: bool = False) -> sqlite3.Connection:
+        connection = self._connection_factory(
+            str(self.path),
+            timeout=self._busy_timeout_seconds,
+            isolation_level=None,
+        )
+        try:
+            if initialize:
+                connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=FULL")
+            return connection
+        except Exception:
+            connection.close()
+            raise
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("PAPER execution store is closed")
+
+    @staticmethod
+    def _metadata(connection: sqlite3.Connection, key: str) -> str:
+        row = connection.execute(
+            "SELECT value FROM metadata WHERE key=?", (key,)
+        ).fetchone()
         if row is None:
             raise ValueError(f"missing PAPER execution metadata: {key}")
         return row[0]
 
-    def _ensure_metadata(self, key: str, value: str) -> None:
-        existing = self._connection.execute("SELECT value FROM metadata WHERE key=?", (key,)).fetchone()
+    @staticmethod
+    def _ensure_metadata(
+        connection: sqlite3.Connection, key: str, value: str
+    ) -> None:
+        existing = connection.execute(
+            "SELECT value FROM metadata WHERE key=?", (key,)
+        ).fetchone()
         if existing is None:
-            self._connection.execute("INSERT INTO metadata VALUES(?,?)", (key, value))
+            connection.execute("INSERT INTO metadata VALUES(?,?)", (key, value))
         elif key == "schema_version" and existing[0] != value:
             raise ValueError("unsupported PAPER execution store schema")
 
@@ -144,4 +249,8 @@ def _event_from_payload(value: dict) -> PaperRuntimeEvent:
     )
 
 
-__all__ = ["DurablePaperExecutionStore", "SCHEMA_VERSION"]
+__all__ = [
+    "DEFAULT_BUSY_TIMEOUT_SECONDS",
+    "DurablePaperExecutionStore",
+    "SCHEMA_VERSION",
+]

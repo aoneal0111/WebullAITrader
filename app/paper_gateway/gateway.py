@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -17,6 +18,7 @@ from app.operations.runtime import (
     PaperRuntimeEvent,
     RuntimeDecision,
     RuntimeEventSink,
+    RuntimeHealthUpdate,
 )
 from app.operations_core import OperationsOrder
 from app.order_cancellation import (
@@ -55,6 +57,7 @@ from app.paper_trading.order_models import (
 from app.paper_trading.orders import (
     InvalidOrderTransitionError,
     accept_order,
+    cancel_order as transition_cancel_order,
     create_order,
 )
 from app.paper_gateway.durable_store import DurablePaperExecutionStore
@@ -65,6 +68,11 @@ Clock = Callable[[], datetime]
 PositionAverageCostSource = Callable[[str], Decimal | None]
 PositionQuantitySource = Callable[[str], Decimal]
 DEFAULT_MAXIMUM_PROCESSING_AGE_SECONDS = Decimal("5")
+_LOGGER = logging.getLogger("atlas.paper_gateway")
+
+
+class PaperDurabilityError(RuntimeError):
+    """The PAPER authority is fail-closed after an authoritative write fails."""
 
 
 def utc_now() -> datetime:
@@ -142,6 +150,7 @@ class PaperOrderGateway:
         self._sequence = 0
         self._journal = PaperJournal()
         self._lock = RLock()
+        self._durability_error: Exception | None = None
         if self._durable_store is not None:
             for restored in self._durable_store.orders():
                 self._order_book.restore(restored)
@@ -163,6 +172,11 @@ class PaperOrderGateway:
         with self._lock:
             return self._journal
 
+    @property
+    def durability_failed(self) -> bool:
+        with self._lock:
+            return self._durability_error is not None
+
     def place_order(
         self,
         request: OrderPlacementRequest,
@@ -174,6 +188,7 @@ class PaperOrderGateway:
 
         order = request.order
         with self._lock:
+            self._require_durability()
             if (
                 order.side.value == "SELL"
                 and self._position_quantity_source is not None
@@ -276,6 +291,59 @@ class PaperOrderGateway:
                 paper_order,
                 at=paper_order.created_at,
             )
+            if self._order_book.contains(paper_order.order_id):
+                message = "duplicate paper order ID"
+                self._append_journal(
+                    JournalEventType.REJECTION,
+                    order.request_id,
+                    self._now(),
+                    message,
+                )
+                self._publish_rejection(request, message)
+                return BrokerOrderAcknowledgement(
+                    client_order_id=order.client_order_id,
+                    broker_order_id="",
+                    accepted=False,
+                    status=NormalizedOrderStatus.REJECTED,
+                    message=message,
+                    metadata={
+                        "source": "paper_order_gateway",
+                        "account_id": order.account_id,
+                    },
+                )
+
+            accepted_event = self._order_event(
+                paper_order,
+                event_type="ORDER_ACCEPTED",
+                message="Paper order accepted.",
+                decision=RuntimeDecision(
+                    decision_id=order.request_id,
+                    timestamp=paper_order.updated_at,
+                    strategy_id="operator-order-entry",
+                    symbol=order.symbol,
+                    action=order.side.value,
+                    confidence=100,
+                    reasoning_summary=(
+                        "Operator submitted a validated paper order."
+                    ),
+                    risk_assessment=(
+                        "Authenticated paper session and placement "
+                        "policy approved."
+                    ),
+                    requested_quantity=order.quantity,
+                    resulting_order_id=paper_order.order_id,
+                ),
+            )
+            working_event = self._order_event(
+                paper_order,
+                event_type="ORDER_WORKING",
+                message="Paper order is working.",
+                status="WORKING",
+            )
+            self._persist_batch(
+                (accepted_event, working_event),
+                paper_order,
+            )
             try:
                 report = self._execution_engine.submit(paper_order)
             except DuplicateOrderError:
@@ -305,34 +373,8 @@ class PaperOrderGateway:
                 paper_order.updated_at,
                 report.message,
             )
-            self._publish_order(
-                paper_order,
-                event_type="ORDER_ACCEPTED",
-                message="Paper order accepted.",
-                decision=RuntimeDecision(
-                    decision_id=order.request_id,
-                    timestamp=paper_order.updated_at,
-                    strategy_id="operator-order-entry",
-                    symbol=order.symbol,
-                    action=order.side.value,
-                    confidence=100,
-                    reasoning_summary=(
-                        "Operator submitted a validated paper order."
-                    ),
-                    risk_assessment=(
-                        "Authenticated paper session and placement "
-                        "policy approved."
-                    ),
-                    requested_quantity=order.quantity,
-                    resulting_order_id=paper_order.order_id,
-                ),
-            )
-            self._publish_order(
-                paper_order,
-                event_type="ORDER_WORKING",
-                message="Paper order is working.",
-                status="WORKING",
-            )
+            self._emit_event(accepted_event)
+            self._emit_event(working_event)
 
         return BrokerOrderAcknowledgement(
             client_order_id=order.client_order_id,
@@ -379,9 +421,23 @@ class PaperOrderGateway:
 
         try:
             with self._lock:
-                report = self._execution_engine.cancel(
-                    request.broker_order_id,
+                self._require_durability()
+                cancelled = transition_cancel_order(
+                    existing,
                     at=self._now(),
+                )
+                event = self._order_event(
+                    cancelled,
+                    event_type="ORDER_CANCELLED",
+                    message=f"Order {cancelled.order_id} cancelled",
+                )
+                self._persist_event(event, cancelled)
+                self._order_book.update(cancelled)
+                report = ExecutionReport(
+                    order=cancelled,
+                    match_result=None,
+                    fills=(),
+                    message=f"Order {cancelled.order_id} cancelled",
                 )
                 self._append_journal(
                     JournalEventType.CANCELLATION,
@@ -389,11 +445,7 @@ class PaperOrderGateway:
                     report.order.updated_at,
                     report.message,
                 )
-                self._publish_order(
-                    report.order,
-                    event_type="ORDER_CANCELLED",
-                    message=report.message,
-                )
+                self._emit_event(event)
         except InvalidOrderTransitionError:
             return BrokerOrderCancellationAcknowledgement(
                 broker_order_id=request.broker_order_id,
@@ -471,10 +523,13 @@ class PaperOrderGateway:
         )
 
         with self._lock:
-            reports = self._execution_engine.process_quote(quote)
-            for report in reports:
-                if not report.fills:
-                    continue
+            if self._durability_error is not None:
+                return ()
+            durable_transitions: list[
+                tuple[ExecutionReport, PaperRuntimeEvent]
+            ] = []
+
+            def persist_before_update(report: ExecutionReport) -> None:
                 fill = report.fills[0]
                 realized_pnl = self._realized_pnl(
                     report.order,
@@ -491,18 +546,7 @@ class PaperOrderGateway:
                     realized_pnl=realized_pnl,
                     timestamp=fill.timestamp,
                 )
-                self._append_journal(
-                    JournalEventType.FILL,
-                    report.order.order_id,
-                    fill.timestamp,
-                    report.message,
-                    (
-                        ("fill_id", fill.fill_id),
-                        ("quantity", format(fill.quantity, "f")),
-                        ("price", format(fill.price, "f")),
-                    ),
-                )
-                self._publish_order(
+                event = self._order_event(
                     report.order,
                     event_type=(
                         "ORDER_FILLED"
@@ -514,6 +558,31 @@ class PaperOrderGateway:
                     fill=runtime_fill,
                     mark_price=fill.price,
                 )
+                self._persist_event(event, report.order)
+                durable_transitions.append((report, event))
+
+            try:
+                reports = self._execution_engine.process_quote(
+                    quote,
+                    before_update=persist_before_update,
+                )
+            except PaperDurabilityError:
+                return ()
+
+            for report, event in durable_transitions:
+                fill = report.fills[0]
+                self._append_journal(
+                    JournalEventType.FILL,
+                    report.order.order_id,
+                    fill.timestamp,
+                    report.message,
+                    (
+                        ("fill_id", fill.fill_id),
+                        ("quantity", format(fill.quantity, "f")),
+                        ("price", format(fill.price, "f")),
+                    ),
+                )
+                self._emit_event(event)
             return reports
 
     def _realized_pnl(
@@ -570,26 +639,48 @@ class PaperOrderGateway:
         decision: RuntimeDecision | None = None,
     ) -> None:
         self._publish(
-            PaperRuntimeEvent(
-                sequence=self._next_sequence(),
-                timestamp=order.updated_at,
+            self._order_event(
+                order,
                 event_type=event_type,
                 message=message,
-                cycle=0,
-                symbol=order.symbol,
-                source=self._source,
-                order=OperationsOrder(
-                    order_id=order.order_id,
-                    symbol=order.symbol,
-                    side=order.side.value,
-                    quantity=format(order.quantity, "f"),
-                    status=status or order.status.value,
-                    updated_at=order.updated_at,
-                ),
+                status=status,
                 fill=fill,
                 mark_price=mark_price,
                 decision=decision,
-            )
+            ),
+            order=order,
+        )
+
+    def _order_event(
+        self,
+        order: PaperOrder,
+        *,
+        event_type: str,
+        message: str,
+        status: str | None = None,
+        fill: PaperFill | None = None,
+        mark_price: Decimal | None = None,
+        decision: RuntimeDecision | None = None,
+    ) -> PaperRuntimeEvent:
+        return PaperRuntimeEvent(
+            sequence=self._next_sequence(),
+            timestamp=order.updated_at,
+            event_type=event_type,
+            message=message,
+            cycle=0,
+            symbol=order.symbol,
+            source=self._source,
+            order=OperationsOrder(
+                order_id=order.order_id,
+                symbol=order.symbol,
+                side=order.side.value,
+                quantity=format(order.quantity, "f"),
+                status=status or order.status.value,
+                updated_at=order.updated_at,
+            ),
+            fill=fill,
+            mark_price=mark_price,
+            decision=decision,
         )
 
     def _append_journal(
@@ -613,15 +704,96 @@ class PaperOrderGateway:
         self._sequence += 1
         return self._sequence
 
-    def _publish(self, event: PaperRuntimeEvent) -> None:
+    def _publish(
+        self,
+        event: PaperRuntimeEvent,
+        *,
+        order: PaperOrder | None = None,
+    ) -> None:
         if self._durable_store is not None:
-            order = None
-            if event.order is not None:
+            durable_order = order
+            if durable_order is None and event.order is not None:
                 try:
-                    order = self._order_book.get(event.order.order_id)
+                    durable_order = self._order_book.get(event.order.order_id)
                 except OrderNotFoundError:
-                    order = None
+                    durable_order = None
+            self._persist_event(event, durable_order)
+        self._emit_event(event)
+
+    def _persist_event(
+        self,
+        event: PaperRuntimeEvent,
+        order: PaperOrder | None,
+    ) -> None:
+        if self._durable_store is None:
+            return
+        self._require_durability()
+        try:
             self._durable_store.persist(event, order)
+        except Exception as exc:
+            self._mark_durability_failed(exc, event.symbol)
+            raise PaperDurabilityError(
+                "authoritative PAPER persistence failed; PAPER is disabled"
+            ) from exc
+
+    def _persist_batch(
+        self,
+        events: tuple[PaperRuntimeEvent, ...],
+        order: PaperOrder | None,
+    ) -> None:
+        if self._durable_store is None:
+            return
+        self._require_durability()
+        try:
+            self._durable_store.persist_batch(events, order)
+        except Exception as exc:
+            symbol = next((event.symbol for event in events if event.symbol), None)
+            self._mark_durability_failed(exc, symbol)
+            raise PaperDurabilityError(
+                "authoritative PAPER persistence failed; PAPER is disabled"
+            ) from exc
+
+    def _mark_durability_failed(
+        self,
+        error: Exception,
+        symbol: str | None,
+    ) -> None:
+        if self._durability_error is not None:
+            return
+        self._durability_error = error
+        _LOGGER.critical(
+            "PAPER durable persistence failed; execution is fail-closed",
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        if self._event_sink is None:
+            return
+        diagnostic = PaperRuntimeEvent(
+            sequence=self._next_sequence(),
+            timestamp=self._now(),
+            event_type="PAPER_DURABILITY_FAILED",
+            message="Authoritative PAPER persistence failed; PAPER execution is disabled.",
+            cycle=0,
+            symbol=symbol,
+            source=self._source,
+            health=RuntimeHealthUpdate(
+                runtime_status="DEGRADED",
+                risk_status="BLOCKED",
+                persistence_status="FAILED",
+                last_error=f"{type(error).__name__}: {error}",
+            ),
+        )
+        try:
+            self._event_sink(diagnostic)
+        except Exception:
+            _LOGGER.exception("PAPER durability diagnostic sink failed")
+
+    def _require_durability(self) -> None:
+        if self._durability_error is not None:
+            raise PaperDurabilityError(
+                "authoritative PAPER persistence is unavailable; PAPER is disabled"
+            ) from self._durability_error
+
+    def _emit_event(self, event: PaperRuntimeEvent) -> None:
         if self._event_sink is not None:
             self._event_sink(event)
 
@@ -632,4 +804,4 @@ class PaperOrderGateway:
         return value
 
 
-__all__ = ["PaperOrderGateway", "utc_now"]
+__all__ = ["PaperDurabilityError", "PaperOrderGateway", "utc_now"]

@@ -92,8 +92,13 @@ class PaperExecutionEngine:
     def process_quote(
         self,
         quote: MarketQuote,
+        *,
+        before_update: Callable[[ExecutionReport], None] | None = None,
     ) -> tuple[ExecutionReport, ...]:
-        """Process one quote against open orders for the quote's symbol only."""
+        """Process a quote, optionally durably recording before each mutation."""
+
+        if before_update is not None and not callable(before_update):
+            raise TypeError("before_update must be callable or None")
 
         with self._lock:
             reports: list[ExecutionReport] = []
@@ -132,18 +137,17 @@ class PaperExecutionEngine:
                     fill_id_factory=self._fill_id_factory,
                 )
 
-                self._order_book.update(updated)
-
                 new_fill = updated.fills[-1]
-
-                reports.append(
-                    ExecutionReport(
-                        order=updated,
-                        match_result=result,
-                        fills=(new_fill,),
-                        message=_fill_message(updated, new_fill),
-                    )
+                report = ExecutionReport(
+                    order=updated,
+                    match_result=result,
+                    fills=(new_fill,),
+                    message=_fill_message(updated, new_fill),
                 )
+                if before_update is not None:
+                    before_update(report)
+                self._order_book.update(updated)
+                reports.append(report)
 
             return tuple(reports)
 

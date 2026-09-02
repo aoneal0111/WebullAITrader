@@ -97,7 +97,9 @@ def test_dynamic_configuration_is_explicit_non_live_and_fail_closed():
 def test_dynamic_mode_authorizes_only_the_authoritative_warrior_service_path(tmp_path):
     store = ForwardCaptureStore(tmp_path / "dynamic.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
-    composition = create_paper_trading_command_composition()
+    composition = create_paper_trading_command_composition(
+        persistence_path=str(tmp_path / "paper.sqlite3")
+    )
     bridge = composition.trading_service
     paper_bridge = AutonomousPaperExecutionBridge(
         bridge,
@@ -126,6 +128,16 @@ def test_dynamic_mode_authorizes_only_the_authoritative_warrior_service_path(tmp
         assert decision["result"] == "AUTHORIZED"
         assert decision["symbol_authorization_mode"] == "DYNAMIC_WARRIOR"
         assert decision["symbol_authorization_source"] == "DYNAMIC_WARRIOR_PAPER"
+        assert decision["order_constructed"] is True
+        assert decision["submission_attempted"] is True
+        assert decision["placement_decision"] == "SUCCESS"
+        assert "SYMBOL_NOT_ALLOWED" not in decision.values()
+        durable_events = composition.durable_store.events()
+        assert [event.event_type for event in durable_events] == [
+            "ORDER_ACCEPTED", "ORDER_WORKING",
+        ]
+        assert all(event.symbol == "XYZ" for event in durable_events)
+        assert all("LIVE" not in event.source.upper() for event in durable_events)
     finally:
         writer.close()
         composition.close()
