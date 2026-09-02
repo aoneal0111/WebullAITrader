@@ -277,6 +277,78 @@ class TradeOpportunityExperience:
 
 
 @dataclass(frozen=True, slots=True)
+class DecisionObservation:
+    """One immutable, meaningful Atlas decision within an experience episode."""
+
+    experience_id: str
+    observed_at: datetime
+    source_event_identity: str
+    atlas_decision: AtlasDecision
+    snapshot: DecisionTimeSnapshot
+    blockers: tuple[str, ...] = ()
+    technically_actionable: bool = False
+    actually_traded: bool = False
+    symbol: str | None = None
+    lifecycle_stage: str = "OBSERVED"
+    schema_version: int = SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        observed = _aware_utc(self.observed_at, "decision observation timestamp")
+        if observed != _aware_utc(self.snapshot.decision_timestamp, "decision cutoff"):
+            raise ValueError("decision observation and snapshot cutoffs must match")
+        if not self.experience_id.strip() or not self.source_event_identity.strip():
+            raise ValueError("decision observation identity is required")
+        if not self.lifecycle_stage.strip() or self.schema_version != SCHEMA_VERSION:
+            raise ValueError("decision observation version/stage is invalid")
+        if self.symbol is not None and not self.symbol.strip():
+            raise ValueError("decision observation symbol cannot be blank")
+        if len(set(self.blockers)) != len(self.blockers):
+            raise ValueError("decision blockers must be deduplicated")
+
+    @property
+    def decision_id(self) -> str:
+        material = canonical_json({
+            "experience_id": self.experience_id,
+            "observed_at": self.observed_at,
+            "source_event_identity": self.source_event_identity,
+            "atlas_decision": self.atlas_decision,
+            "lifecycle_stage": self.lifecycle_stage,
+        })
+        return sha256(f"decision-v{self.schema_version}|{material}".encode()).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class PaperExecutionObservation:
+    """Sanitized PAPER fact. It has no command, broker, or authorization capability."""
+
+    observation_id: str
+    observed_at: datetime
+    event_type: str
+    symbol: str
+    experience_id: str | None = None
+    correlation_status: str = "UNRESOLVED"
+    order_id: str | None = None
+    fill_id: str | None = None
+    side: str | None = None
+    price: Decimal | None = None
+    quantity: Decimal | None = None
+    strategy_lifecycle_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _aware_utc(self.observed_at, "PAPER observation timestamp")
+        if not self.observation_id.strip() or not self.event_type.strip() or not self.symbol.strip():
+            raise ValueError("PAPER observation identity/type/symbol is required")
+        if self.correlation_status not in {"CORRELATED", "UNRESOLVED", "AMBIGUOUS"}:
+            raise ValueError("invalid PAPER correlation status")
+        if (self.experience_id is not None) != (self.correlation_status == "CORRELATED"):
+            raise ValueError("only correlated PAPER facts may name an experience")
+        if self.price is not None and self.price <= 0:
+            raise ValueError("PAPER observation price must be positive")
+        if self.quantity is not None and self.quantity <= 0:
+            raise ValueError("PAPER observation quantity must be positive")
+
+
+@dataclass(frozen=True, slots=True)
 class PriceBar:
     symbol: str
     timestamp: datetime
@@ -373,6 +445,16 @@ class WorkerMetrics:
     pressure_recoveries: int
     active_outcomes: int
     accepting: bool
+    oldest_work_age_ms: int = 0
+    worker_lag_p50_ms: int = 0
+    worker_lag_p90_ms: int = 0
+    worker_lag_p99_ms: int = 0
+    worker_lag_max_ms: int = 0
+    experiences_created: int = 0
+    decisions_recorded: int = 0
+    outcomes_completed: int = 0
+    profitable_misses: int = 0
+    protected_rejections: int = 0
 
 
 def temporal_partition(value: date) -> DatasetPartition:

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from dataclasses import asdict
 from datetime import timedelta
 from decimal import Decimal
+
+import pytest
 
 from app.trade_intelligence.analogs import AnalogQuery, HistoricalAnalogEngine
 from app.trade_intelligence.experience_store import ExperienceStore
 from app.trade_intelligence.models import (
     AtlasDecision, MissedOpportunityClassification, OutcomeStatus, PriceBar,
+    canonical_json,
 )
 from app.trade_intelligence.outcome_engine import OutcomeEngine, classify_missed_opportunity
 from app.trade_intelligence.reporting import ExperienceReporter
@@ -67,6 +71,47 @@ def test_missing_gaps_out_of_order_and_duplicate_bars_are_deterministic():
     assert outcomes[-1].status is OutcomeStatus.INSUFFICIENT_DATA
     gap = OutcomeEngine().evaluate(make_experience(), (bars[0], bars[2]), finalize_missing=True)
     assert any(item.unavailable_reason == "NONCONTIGUOUS_MINUTE_BARS" for item in gap)
+
+
+def test_gap_remains_provisional_during_bounded_reorder_window():
+    bars = path([
+        (Decimal("10.2"), Decimal("9.8"), Decimal("10")),
+        (Decimal("10.3"), Decimal("9.9"), Decimal("10.1")),
+        (Decimal("10.4"), Decimal("9.9"), Decimal("10.2")),
+        (Decimal("10.5"), Decimal("9.9"), Decimal("10.3")),
+    ])
+    provisional = OutcomeEngine().evaluate(make_experience(), (bars[0], bars[2]))
+    assert {item.horizon_minutes for item in provisional} == {1}
+
+    completed_after_late_bar = OutcomeEngine().evaluate(
+        make_experience(), (bars[2], bars[0], bars[1], bars[1]),
+    )
+    assert {item.horizon_minutes for item in completed_after_late_bar} >= {1, 2}
+    assert all(item.status is OutcomeStatus.COMPLETE for item in completed_after_late_bar)
+
+    terminal = OutcomeEngine().evaluate(make_experience(), (bars[0], bars[2], bars[3]))
+    two_minute = next(item for item in terminal if item.horizon_minutes == 2)
+    assert two_minute.status is OutcomeStatus.INSUFFICIENT_DATA
+    assert two_minute.unavailable_reason == "NONCONTIGUOUS_MINUTE_BARS"
+
+
+def test_repeated_outcome_evaluation_has_identical_immutable_content():
+    bars = path([
+        (Decimal("10.6"), Decimal("9.8"), Decimal("10.2")),
+        (Decimal("11.1"), Decimal("9.7"), Decimal("10.8")),
+    ])
+    first = OutcomeEngine().evaluate(make_experience(), bars)
+    repeated = OutcomeEngine().evaluate(make_experience(), (bars[1], bars[0], bars[0]))
+    assert tuple(canonical_json(asdict(item)) for item in first) == tuple(
+        canonical_json(asdict(item)) for item in repeated
+    )
+
+
+def test_conflicting_duplicate_completed_bar_is_rejected():
+    bars = path([(Decimal("10.2"), Decimal("9.8"), Decimal("10"))])
+    conflicting = replace(bars[0], close=Decimal("10.1"))
+    with pytest.raises(ValueError, match="completed bar identity"):
+        OutcomeEngine().evaluate(make_experience(), (bars[0], conflicting))
 
 
 def test_planless_experience_never_fabricates_hypothetical_execution():

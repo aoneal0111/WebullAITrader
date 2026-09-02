@@ -65,6 +65,27 @@ class PerformanceSnapshot:
     report_refresh_failures: int = 0
     latency_diagnostics_persisted: int = 0
     callback_threshold_events: int = 0
+    trade_intelligence_enabled: bool = False
+    trade_intelligence_experiences_created: int = 0
+    trade_intelligence_decisions_recorded: int = 0
+    trade_intelligence_outcomes_completed: int = 0
+    trade_intelligence_profitable_misses: int = 0
+    trade_intelligence_protected_rejections: int = 0
+    trade_intelligence_queue_depth: int = 0
+    trade_intelligence_queue_high_water: int = 0
+    trade_intelligence_accepted: int = 0
+    trade_intelligence_completed: int = 0
+    trade_intelligence_failed: int = 0
+    trade_intelligence_rejected: int = 0
+    trade_intelligence_worker_lag_max_ms: int = 0
+    trade_intelligence_worker_lag_p50_ms: int = 0
+    trade_intelligence_worker_lag_p90_ms: int = 0
+    trade_intelligence_worker_lag_p99_ms: int = 0
+    trade_intelligence_pressure_episodes: int = 0
+    trade_intelligence_recovery_episodes: int = 0
+    trade_intelligence_rejections: int = 0
+    trade_intelligence_failures: int = 0
+    trade_intelligence_outstanding: int = 0
 
 
 class PerformanceDiagnostics:
@@ -127,6 +148,29 @@ class PerformanceDiagnostics:
         self._queue_thresholds_above: set[int] = set()
         self._diagnostic_sink: DiagnosticSink | None = None
         self._trace_local = local()
+        self._trade_intelligence = {
+            "trade_intelligence_enabled": False,
+            "trade_intelligence_experiences_created": 0,
+            "trade_intelligence_decisions_recorded": 0,
+            "trade_intelligence_outcomes_completed": 0,
+            "trade_intelligence_profitable_misses": 0,
+            "trade_intelligence_protected_rejections": 0,
+            "trade_intelligence_queue_depth": 0,
+            "trade_intelligence_queue_high_water": 0,
+            "trade_intelligence_accepted": 0,
+            "trade_intelligence_completed": 0,
+            "trade_intelligence_failed": 0,
+            "trade_intelligence_rejected": 0,
+            "trade_intelligence_worker_lag_p50_ms": 0,
+            "trade_intelligence_worker_lag_p90_ms": 0,
+            "trade_intelligence_worker_lag_p99_ms": 0,
+            "trade_intelligence_worker_lag_max_ms": 0,
+            "trade_intelligence_pressure_episodes": 0,
+            "trade_intelligence_recovery_episodes": 0,
+            "trade_intelligence_rejections": 0,
+            "trade_intelligence_failures": 0,
+            "trade_intelligence_outstanding": 0,
+        }
 
     def increment(self, name: str, amount: int = 1) -> None:
         if name not in self._counters:
@@ -236,6 +280,38 @@ class PerformanceDiagnostics:
 
     def record_research_worker_lag(self, lag_ms: float) -> None:
         self._record_maximum("_research_worker_lag_max_ms", lag_ms)
+
+    def update_trade_intelligence(self, metrics: object) -> None:
+        """Publish one bounded in-memory worker snapshot; no database query occurs."""
+        mapping = {
+            "trade_intelligence_experiences_created": "experiences_created",
+            "trade_intelligence_decisions_recorded": "decisions_recorded",
+            "trade_intelligence_outcomes_completed": "outcomes_completed",
+            "trade_intelligence_profitable_misses": "profitable_misses",
+            "trade_intelligence_protected_rejections": "protected_rejections",
+            "trade_intelligence_queue_depth": "queue_depth",
+            "trade_intelligence_queue_high_water": "queue_high_water",
+            "trade_intelligence_accepted": "accepted",
+            "trade_intelligence_completed": "completed",
+            "trade_intelligence_failed": "failed",
+            "trade_intelligence_rejected": "rejected",
+            "trade_intelligence_worker_lag_p50_ms": "worker_lag_p50_ms",
+            "trade_intelligence_worker_lag_p90_ms": "worker_lag_p90_ms",
+            "trade_intelligence_worker_lag_p99_ms": "worker_lag_p99_ms",
+            "trade_intelligence_worker_lag_max_ms": "worker_lag_max_ms",
+            "trade_intelligence_pressure_episodes": "pressure_episodes",
+            "trade_intelligence_recovery_episodes": "pressure_recoveries",
+            "trade_intelligence_rejections": "rejected",
+            "trade_intelligence_failures": "failed",
+            "trade_intelligence_outstanding": "outstanding",
+        }
+        values = {name: int(getattr(metrics, field, 0)) for name, field in mapping.items()}
+        with self._lock:
+            self._trade_intelligence.update(values)
+
+    def set_trade_intelligence_enabled(self, enabled: bool) -> None:
+        with self._lock:
+            self._trade_intelligence["trade_intelligence_enabled"] = bool(enabled)
 
     def _record_maximum(self, name: str, value: float) -> None:
         if value < 0:
@@ -427,6 +503,7 @@ class PerformanceDiagnostics:
             ages = sorted(self._processing_ages_ms)
             return PerformanceSnapshot(
                 **values,
+                **self._trade_intelligence,
                 gui_refresh_hz=(
                     count / self._gui_interval_seconds
                     if self._gui_interval_seconds > 0

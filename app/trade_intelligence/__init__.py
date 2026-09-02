@@ -9,11 +9,11 @@ from .experience_store import ExperienceStore
 from .models import (
     ActualPaperExecutionOutcome, AtlasDecision,
     DatasetPartition,
-    DecisionTimeSnapshot,
+    DecisionObservation, DecisionTimeSnapshot,
     ExperienceSource,
     HorizonOutcome,
     MissedOpportunityClassification,
-    OpportunityKey,
+    OpportunityKey, PaperExecutionObservation,
     OutcomeKind, OutcomeStatus,
     PriceBar,
     ResearchGeneration,
@@ -24,13 +24,14 @@ from .models import (
 from .outcome_engine import OutcomeEngine, classify_missed_opportunity
 from .reporting import ExperienceReporter
 from .service import DEFAULT_STORE_PATH, TradeIntelligenceService
+from .runtime import TradeIntelligenceRuntimeObserver
 
 __all__ = [
     "ActualPaperExecutionOutcome", "AnalogQuery", "AnalogResult", "AtlasDecision", "DatasetPartition",
-    "DecisionTimeSnapshot", "DEFAULT_STORE_PATH", "ExperienceReporter", "ExperienceSource",
+    "DecisionObservation", "DecisionTimeSnapshot", "DEFAULT_STORE_PATH", "ExperienceReporter", "ExperienceSource",
     "ExperienceStore", "HistoricalAnalogEngine", "HorizonOutcome",
-    "MissedOpportunityClassification", "OpportunityKey",
+    "MissedOpportunityClassification", "OpportunityKey", "PaperExecutionObservation",
     "OutcomeEngine", "OutcomeKind", "OutcomeStatus", "PriceBar", "TradeIntelligenceService",
     "ResearchGeneration", "ResearchGenerationCompletion", "TradeOpportunityExperience",
-    "WorkerMetrics", "classify_missed_opportunity",
+    "TradeIntelligenceRuntimeObserver", "WorkerMetrics", "classify_missed_opportunity",
 ]

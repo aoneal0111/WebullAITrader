@@ -143,6 +143,7 @@ class WarriorDesktopSidecar:
         paper_exit_submitter: Callable[[str, int, Decimal, str, str | None], bool] | None = None,
         paper_position_quantity_source: Callable[[str], Decimal] | None = None,
         execution_quote_source: ExecutionQuoteSource | None = None,
+        research_observer: object | None = None,
         report_worker_factory: Callable[..., WarriorReportWorker] = WarriorReportWorker,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -157,6 +158,7 @@ class WarriorDesktopSidecar:
         self._paper_exit_submitter = paper_exit_submitter
         self._paper_position_quantity_source = paper_position_quantity_source
         self._execution_quote_source = execution_quote_source
+        self._research_observer = research_observer
         self._report_worker_factory = report_worker_factory
         self._accept_execution = False
         self._clock = clock
@@ -567,8 +569,7 @@ class WarriorDesktopSidecar:
                     False if self._scanner_ranked_source is None
                     else self._scanner_ranked_source(symbol),
                 )
-            candidate, signal = service.observe(
-                PointInTimeObservation(
+            point_in_time = PointInTimeObservation(
                     observation, scanner_session(observation.timestamp).value,
                     history, float_provenance=provenance,
                     catalyst_source="WEBULL_EARNINGS_SEC",
@@ -597,7 +598,9 @@ class WarriorDesktopSidecar:
                         () if scanner_decision is None
                         else tuple(getattr(scanner_decision, "failed_rules", ()))
                     ),
-                ),
+                )
+            candidate, signal = service.observe(
+                point_in_time,
                 account=self._account_source(),
             )
             processing_delayed = bool(
@@ -631,6 +634,14 @@ class WarriorDesktopSidecar:
                 min(market_timestamps) if len(market_timestamps) == 2 else None
             )
             self._observe_stages(candidate, signal is not None)
+            research_decision = getattr(
+                self._research_observer, "observe_warrior_decision", None,
+            )
+            if callable(research_decision):
+                try:
+                    research_decision(point_in_time, candidate, signal)
+                except Exception:
+                    pass
             self._first_observed.add(symbol)
             self._publications += 1
             if signal is not None or completed:
@@ -865,14 +876,28 @@ class CompositeMarketEventObserver:
     """Preserve existing paper observer while adding an isolated sidecar."""
 
     def __init__(self, primary: Callable[[MarketEvent], object] | None,
-                 warrior: WarriorDesktopSidecar) -> None:
+                 warrior: WarriorDesktopSidecar,
+                 research: object | None = None) -> None:
         self.primary = primary
         self.warrior = warrior
+        self.research = research
 
     def __call__(self, event: MarketEvent) -> None:
         if self.primary is not None:
             self.primary(event)
         self.warrior(event)
+        if callable(self.research):
+            self.research(event)
+
+    def observe_scanner_decision(self, decision: object) -> None:
+        observer = getattr(self.research, "observe_scanner_decision", None)
+        if callable(observer):
+            observer(decision)
+
+    def reset_symbol(self, symbol: str) -> None:
+        observer = getattr(self.research, "reset_symbol", None)
+        if callable(observer):
+            observer(symbol)
 
     def bind_scanner_adapter(self, adapter: MarketEventScannerAdapter) -> None:
         self.warrior.bind_scanner_adapter(adapter)
@@ -894,13 +919,26 @@ class CompositeMarketEventObserver:
         return self.warrior.preload_historical_bars(symbol, bars)
 
     def start(self, environment: str | None = None) -> None:
+        research_start = getattr(self.research, "start", None)
+        if callable(research_start):
+            research_start(environment)
         self.warrior.start(environment)
 
     def stop(self) -> None:
+        research_stop = getattr(self.research, "stop", None)
+        if callable(research_stop):
+            try:
+                research_stop()
+            except Exception:
+                pass
         self.warrior.stop()
 
     def retained_symbols(self) -> tuple[str, ...]:
-        return self.warrior.retained_symbols()
+        values = set(self.warrior.retained_symbols())
+        research_values = getattr(self.research, "retained_symbols", None)
+        if callable(research_values):
+            values.update(research_values())
+        return tuple(sorted(values))
 
 
 def _blocking_reasons(candidate: MomentumCandidate, entry_ready: bool) -> tuple[str, ...]:

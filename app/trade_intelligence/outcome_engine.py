@@ -17,6 +17,7 @@ from .models import (
 )
 
 ONE_MINUTE = timedelta(minutes=1)
+OUTCOME_REORDER_GRACE = timedelta(minutes=2)
 HUNDRED = Decimal("100")
 
 
@@ -34,27 +35,44 @@ class OutcomeEngine:
         first_possible = cutoff.replace(second=0, microsecond=0)
         if cutoff > first_possible:
             first_possible += ONE_MINUTE
-        ordered = tuple(sorted(
-            (bar for bar in bars
-             if bar.symbol.strip().upper() == experience.key.symbol.strip().upper()
-             and bar.timestamp >= first_possible),
-            key=lambda item: item.timestamp,
-        ))
+        by_timestamp: dict[object, PriceBar] = {}
+        for bar in sorted(bars, key=lambda item: item.timestamp):
+            if (
+                bar.symbol.strip().upper()
+                != experience.key.symbol.strip().upper()
+                or bar.timestamp < first_possible
+            ):
+                continue
+            prior = by_timestamp.get(bar.timestamp)
+            if prior is not None and prior != bar:
+                raise ValueError(
+                    "immutable completed bar identity has conflicting content"
+                )
+            by_timestamp[bar.timestamp] = bar
+        ordered = tuple(by_timestamp.values())
+        closed_through = (
+            None if not ordered else ordered[-1].timestamp + ONE_MINUTE
+        )
         outcomes = []
         for horizon in HORIZONS_MINUTES:
             target = cutoff + timedelta(minutes=horizon)
             sample = next((bar for bar in ordered if bar.timestamp + ONE_MINUTE >= target), None)
             if sample is None:
-                if finalize_missing:
+                if finalize_missing or _horizon_closed(target, closed_through):
                     outcomes.append(self._missing(experience, horizon, target, "NO_COMPLETED_BAR_AT_HORIZON"))
                 continue
             if sample.timestamp + ONE_MINUTE > target + ONE_MINUTE:
-                outcomes.append(self._missing(experience, horizon, target, "HORIZON_GAP"))
+                if finalize_missing or _horizon_closed(target, closed_through):
+                    outcomes.append(self._missing(experience, horizon, target, "HORIZON_GAP"))
                 continue
             path = tuple(bar for bar in ordered if bar.timestamp <= sample.timestamp)
             expected = first_possible
             if not path or any(bar.timestamp != expected + index * ONE_MINUTE for index, bar in enumerate(path)):
-                outcomes.append(self._missing(experience, horizon, target, "NONCONTIGUOUS_MINUTE_BARS"))
+                if finalize_missing or _horizon_closed(target, closed_through):
+                    outcomes.append(self._missing(
+                        experience, horizon, target,
+                        "NONCONTIGUOUS_MINUTE_BARS",
+                    ))
                 continue
             outcomes.append(self._complete(experience, horizon, target, sample, path))
         return tuple(outcomes)
@@ -94,6 +112,15 @@ class OutcomeEngine:
             exp.experience_id, horizon, target, OutcomeStatus.INSUFFICIENT_DATA,
             unavailable_reason=reason,
         )
+
+
+def _horizon_closed(target, closed_through) -> bool:
+    """A missing minute is terminal only after the bounded reorder window."""
+
+    return (
+        closed_through is not None
+        and closed_through >= target + OUTCOME_REORDER_GRACE
+    )
 
 
 def _plan_path(path, cutoff, entry, stop, risk):

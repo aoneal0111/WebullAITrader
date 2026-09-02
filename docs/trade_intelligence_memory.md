@@ -2,7 +2,20 @@
 
 This subsystem is an autonomous, observational research sidecar. It has no
 broker, order, account, authorization, strategy-configuration, or execution
-dependency. Runtime integration is intentionally not enabled in Phase 1.
+dependency. Phase 1B enables it only for non-LIVE TEST/PAPER observation.
+
+## Phase 1B runtime publication map
+
+The desktop scanner publishes its already-authoritative `ScannerDecision` to a
+fan-out sink after evaluation. The existing Warrior sidecar publishes its
+already-assessed point-in-time candidate after `WarriorForwardCaptureService`
+returns. PAPER runtime events are sanitized after publication into observational
+facts. None of these callbacks returns a decision or is consulted by execution.
+
+The market observer maintains only a per-symbol episode lookup and an in-progress
+minute OHLCV accumulator. Completed bars and immutable records enter a bounded
+`put_nowait` service queue. SQLite, horizon evaluation, classification, analogs,
+and reports remain exclusively on the research worker.
 
 ## Ownership and storage
 
@@ -27,6 +40,23 @@ rejected rather than silently rewriting decision history.
 Meaningless repeated `NO_SETUP` evaluations must not be submitted. The pure
 Warrior adapter accepts an explicit episode ID so lifecycle ownership remains
 visible and testable rather than inferred from noisy ticks.
+
+Runtime episode start is the first scanner qualification/technical-without-
+catalyst candidate or the first Warrior FORMING/TRIGGERED setup. Scanner,
+FORMING, TRIGGERED, blocker changes, ENTRY_READY, and subsequent PAPER facts
+correlate by symbol/session/date and, when available, the Warrior lifecycle
+identity. Rank, score, quote, price, and spread changes alone do not create a new
+experience. A changed setup `(type, trigger, structural stop)`, scanner reset,
+symbol reset, or session/date change terminates correlation and permits a new
+episode. If PAPER correlation is not unique it is stored as `UNRESOLVED` or
+`AMBIGUOUS`; it is never guessed.
+
+Each experience keeps its original snapshot immutable. Meaningful later states
+are `experience_decisions` append-only rows with their own cutoff and complete
+point-in-time snapshot. The outcome worker may use the latest recorded technical
+plan for hypothetical R-path labeling without rewriting the initial scanner
+truth. V2 store migration only adds these histories and sanitized PAPER facts;
+V1 experience/outcome payloads and digests retain their meaning.
 
 ## Point-in-time and outcome contracts
 
@@ -98,6 +128,28 @@ stops admission and drains accepted FIFO work. Checkpointed payloads survive a
 restart and replay idempotently; incompatible store schema versions fail closed.
 Future bars are retained only while experiences need horizons, bounding durable
 and in-memory state to active opportunities rather than completed history.
+
+Runtime telemetry is a bounded in-memory snapshot: experiences/decisions/outcomes,
+profitable misses, protected rejections, queue depth/high-water, worker maximum
+lag, rejections, failures, and outstanding work. Reading telemetry never queries
+the experience database.
+
+## Pullback and momentum evidence
+
+Captured now from completed bars: distance from HOD, pullback depth/bar count,
+consecutive red/green bars, higher-low state, consolidation duration, range
+compression, volume acceleration, pullback volume contraction, recent realized
+range, and recent momentum velocity. Authoritative Warrior snapshots also retain
+setup type/state/quality, trigger, stop, risk/share, and completed-bar identity.
+
+Derivable later from stored decision snapshots: distance from the structural
+trigger and stop. The pre-decision bar sequence is intentionally not retained as
+tick/bar-per-event memory, so impulse magnitude/duration and richer breakout
+sequences are not retrospectively derivable in V1B. Also unavailable and stored
+as `None`: authoritative VWAP distance at this publication boundary, a proven
+initial-momentum expansion anchor, and breakout-volume expansion without a
+proven breakout anchor. Phase 2 should add an explicitly bounded/versioned
+pre-decision bar context if those inputs are required; it must not backfill them.
 
 Historical imports accept decoded rows from an explicitly supplied external
 snapshot copy only. Provenance includes source path, source schema, import

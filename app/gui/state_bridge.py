@@ -100,6 +100,23 @@ class QtStateBridge(QObject):
                 "event_processing_age_max_ms=%.2f "
                 "research_queue_depth=%d research_queue_high_water=%d "
                 "research_worker_lag_max_ms=%.2f research_failures=%d "
+                "trade_intelligence_enabled=%s "
+                "trade_intelligence_experiences_created=%d "
+                "trade_intelligence_decisions_recorded=%d "
+                "trade_intelligence_outcomes_completed=%d "
+                "trade_intelligence_queue_depth=%d "
+                "trade_intelligence_queue_high_water=%d "
+                "trade_intelligence_accepted=%d "
+                "trade_intelligence_completed=%d "
+                "trade_intelligence_failed=%d "
+                "trade_intelligence_rejected=%d "
+                "trade_intelligence_outstanding=%d "
+                "trade_intelligence_worker_lag_p50_ms=%d "
+                "trade_intelligence_worker_lag_p90_ms=%d "
+                "trade_intelligence_worker_lag_p99_ms=%d "
+                "trade_intelligence_worker_lag_max_ms=%d "
+                "trade_intelligence_pressure_episodes=%d "
+                "trade_intelligence_recovery_episodes=%d "
                 "processing_delayed_events=%d "
                 "scanner_duration_ms=%.2f scanner_duration_max_ms=%.2f "
                 "experiment_enqueue_ms=%.2f experiment_enqueue_max_ms=%.2f "
@@ -135,6 +152,23 @@ class QtStateBridge(QObject):
                 metrics.research_queue_high_water,
                 metrics.research_worker_lag_max_ms,
                 metrics.research_failures,
+                metrics.trade_intelligence_enabled,
+                metrics.trade_intelligence_experiences_created,
+                metrics.trade_intelligence_decisions_recorded,
+                metrics.trade_intelligence_outcomes_completed,
+                metrics.trade_intelligence_queue_depth,
+                metrics.trade_intelligence_queue_high_water,
+                metrics.trade_intelligence_accepted,
+                metrics.trade_intelligence_completed,
+                metrics.trade_intelligence_failed,
+                metrics.trade_intelligence_rejected,
+                metrics.trade_intelligence_outstanding,
+                metrics.trade_intelligence_worker_lag_p50_ms,
+                metrics.trade_intelligence_worker_lag_p90_ms,
+                metrics.trade_intelligence_worker_lag_p99_ms,
+                metrics.trade_intelligence_worker_lag_max_ms,
+                metrics.trade_intelligence_pressure_episodes,
+                metrics.trade_intelligence_recovery_episodes,
                 metrics.processing_delayed_events,
                 metrics.scanner_duration_ms,
                 metrics.scanner_duration_max_ms,

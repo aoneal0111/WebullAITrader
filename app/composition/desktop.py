@@ -30,6 +30,7 @@ from app.strategies.warrior_momentum.forward_models import PaperAccountContext
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
 from app.strategies.warrior_momentum.execution_quote import WebullExecutionQuoteSource
 from app.strategies.warrior_momentum.forward_runtime import management_context_available
+from app.trade_intelligence.runtime import TradeIntelligenceRuntimeObserver
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -60,6 +61,7 @@ class DesktopComposition:
     chart_default_symbol: str | None = None
     warrior_forward_sidecar: WarriorDesktopSidecar | None = None
     autonomous_paper_bridge: AutonomousPaperExecutionBridge | None = None
+    trade_intelligence_observer: TradeIntelligenceRuntimeObserver | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         """Close composed resources in lifecycle order."""
@@ -71,6 +73,8 @@ class DesktopComposition:
             self.paper_trading_commands.close()
         if self.warrior_forward_sidecar is not None:
             self.warrior_forward_sidecar.stop()
+        if self.trade_intelligence_observer is not None:
+            self.trade_intelligence_observer.stop(timeout_seconds=timeout_seconds)
         self.state_store.close()
         return runtime_stopped
 
@@ -96,6 +100,15 @@ def create_desktop_composition(
         )
 
     operational_configuration = load_configuration()
+    trade_intelligence_observer = TradeIntelligenceRuntimeObserver(
+        enabled=(
+            operational_configuration.trade_intelligence_enabled
+            and not operational_configuration.live_trading_enabled
+        ),
+        environment=operational_configuration.environment.value,
+        path=operational_configuration.trade_intelligence_path,
+        capacity=operational_configuration.trade_intelligence_queue_capacity,
+    )
     chart_market_configuration = market_data_configuration(
         operational_configuration
     )
@@ -206,9 +219,38 @@ def create_desktop_composition(
     paper_trading_commands = None
     market_event_observer = None
     if placement_runtime is None:
+        def paper_runtime_event_sink(event: PaperRuntimeEvent) -> None:
+            runtime_projections.sink(event)
+            symbol = event.symbol
+            if symbol is None:
+                return
+            order_id = None if event.order is None else event.order.order_id
+            lifecycle_id = None
+            if order_id is not None and paper_order_book is not None:
+                try:
+                    lifecycle_id = paper_order_book.get(order_id).request.strategy_lifecycle_id
+                except Exception:
+                    lifecycle_id = None
+            fill = event.fill
+            trade_intelligence_observer.observe_paper_fact(
+                observation_id=f"{event.source}:{event.sequence}:{event.event_type}",
+                observed_at=event.timestamp, event_type=event.event_type,
+                symbol=symbol, order_id=order_id,
+                fill_id=None if fill is None else fill.request_id,
+                side=(
+                    event.order.side if event.order is not None
+                    else None if fill is None else fill.side
+                ),
+                price=None if fill is None else fill.fill_price,
+                quantity=(
+                    Decimal(event.order.quantity) if event.order is not None
+                    else None if fill is None else fill.quantity
+                ),
+                strategy_lifecycle_id=lifecycle_id,
+            )
         paper_trading_commands = create_paper_trading_command_composition(
             order_book=paper_order_book,
-            event_sink=runtime_projections.sink,
+            event_sink=paper_runtime_event_sink,
             persistence_path=paper_persistence_path,
             position_average_cost_source=position_average_cost,
             position_quantity_source=position_quantity,
@@ -267,10 +309,12 @@ def create_desktop_composition(
         paper_exit_submitter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.submit_exit),
         paper_position_quantity_source=(None if paper_trading_commands is None else position_quantity),
         execution_quote_source=execution_quote_source,
+        research_observer=trade_intelligence_observer,
     )
-    if warrior_forward_sidecar.enabled:
+    if warrior_forward_sidecar.enabled or trade_intelligence_observer.enabled:
         market_event_observer = CompositeMarketEventObserver(
             market_event_observer, warrior_forward_sidecar,
+            trade_intelligence_observer,
         )
 
     runtime_service = create_desktop_runtime_service(
@@ -304,6 +348,7 @@ def create_desktop_composition(
         chart_default_symbol=chart_default_symbol,
         warrior_forward_sidecar=warrior_forward_sidecar,
         autonomous_paper_bridge=autonomous_paper_bridge,
+        trade_intelligence_observer=trade_intelligence_observer,
     )
 __all__ = [
     "DesktopComposition",

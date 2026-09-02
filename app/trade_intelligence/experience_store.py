@@ -11,15 +11,15 @@ import sqlite3
 from typing import Iterable
 
 from .models import (
-    ActualPaperExecutionOutcome, AtlasDecision, DecisionTimeSnapshot,
+    ActualPaperExecutionOutcome, AtlasDecision, DecisionObservation, DecisionTimeSnapshot,
     DatasetPartition, ExperienceSource, HorizonOutcome, OpportunityKey,
     OutcomeKind, OutcomeStatus, PriceBar, ResearchGeneration,
-    ResearchGenerationCompletion, TradeOpportunityExperience,
+    PaperExecutionObservation, ResearchGenerationCompletion, TradeOpportunityExperience,
     canonical_json, experience_payload,
     decision_analog_signature,
 )
 
-STORE_SCHEMA_VERSION = 1
+STORE_SCHEMA_VERSION = 2
 
 
 class ExperienceStore:
@@ -98,6 +98,34 @@ class ExperienceStore:
                     execution_record_identity TEXT PRIMARY KEY,
                     experience_id TEXT NOT NULL REFERENCES experiences(experience_id),
                     payload_json TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS experience_decisions(
+                    decision_id TEXT PRIMARY KEY,
+                    experience_id TEXT NOT NULL REFERENCES experiences(experience_id),
+                    observed_at TEXT NOT NULL,atlas_decision TEXT NOT NULL,
+                    lifecycle_stage TEXT NOT NULL,blockers_json TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,payload_digest TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS ix_experience_decisions_episode
+                    ON experience_decisions(experience_id,observed_at,decision_id);
+                CREATE TRIGGER IF NOT EXISTS experience_decision_immutable_update
+                    BEFORE UPDATE ON experience_decisions BEGIN
+                    SELECT RAISE(ABORT,'decision observation is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS experience_decision_immutable_delete
+                    BEFORE DELETE ON experience_decisions BEGIN
+                    SELECT RAISE(ABORT,'decision observation is immutable'); END;
+                CREATE TABLE IF NOT EXISTS paper_execution_observations(
+                    observation_id TEXT PRIMARY KEY,
+                    experience_id TEXT REFERENCES experiences(experience_id),
+                    observed_at TEXT NOT NULL,event_type TEXT NOT NULL,
+                    symbol TEXT NOT NULL,correlation_status TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,payload_digest TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS ix_paper_observations_episode
+                    ON paper_execution_observations(experience_id,observed_at);
+                CREATE TRIGGER IF NOT EXISTS paper_observation_immutable_update
+                    BEFORE UPDATE ON paper_execution_observations BEGIN
+                    SELECT RAISE(ABORT,'PAPER observation is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS paper_observation_immutable_delete
+                    BEFORE DELETE ON paper_execution_observations BEGIN
+                    SELECT RAISE(ABORT,'PAPER observation is immutable'); END;
                 CREATE TABLE IF NOT EXISTS import_ledger(
                     source_store TEXT NOT NULL,source_schema_version TEXT NOT NULL,
                     import_version TEXT NOT NULL,source_record_identity TEXT NOT NULL,
@@ -166,6 +194,10 @@ class ExperienceStore:
             row = db.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
             if row is None:
                 db.execute("INSERT INTO metadata VALUES('schema_version',?)", (str(STORE_SCHEMA_VERSION),))
+            elif int(row[0]) == 1:
+                # V2 is append-only research history. Existing V1 experience and
+                # outcome rows retain their exact meaning and payload digests.
+                db.execute("UPDATE metadata SET value=? WHERE key='schema_version'", (str(STORE_SCHEMA_VERSION),))
             elif int(row[0]) != STORE_SCHEMA_VERSION:
                 raise ValueError("incompatible Trade Intelligence store schema")
 
@@ -345,8 +377,20 @@ class ExperienceStore:
                 WHERE status='COMPLETE' GROUP BY horizon_minutes
             """).fetchall())
             counts = db.execute("""
-                SELECT SUM(actually_traded),SUM(technically_actionable),
-                       SUM(atlas_decision='REJECTED') FROM experiences
+                SELECT
+                  SUM(e.actually_traded=1 OR EXISTS(
+                    SELECT 1 FROM paper_execution_observations p
+                    WHERE p.experience_id=e.experience_id
+                      AND p.event_type IN ('ORDER_FILLED','ORDER_PARTIALLY_FILLED'))),
+                  SUM(e.technically_actionable=1 OR EXISTS(
+                    SELECT 1 FROM experience_decisions d
+                    WHERE d.experience_id=e.experience_id
+                      AND json_extract(d.payload_json,'$.technically_actionable')=1)),
+                  SUM(e.atlas_decision='REJECTED' OR EXISTS(
+                    SELECT 1 FROM experience_decisions d
+                    WHERE d.experience_id=e.experience_id
+                      AND d.atlas_decision='REJECTED'))
+                FROM experiences e
             """).fetchone()
             classifications = dict(db.execute("""
                 WITH latest AS (
@@ -354,10 +398,21 @@ class ExperienceStore:
                     SELECT experience_id,MAX(horizon_minutes) horizon
                     FROM outcomes WHERE status='COMPLETE' GROUP BY experience_id
                   ) m ON m.experience_id=o.experience_id AND m.horizon=o.horizon_minutes
+                ), facts AS (
+                  SELECT e.*,
+                    (e.actually_traded=1 OR EXISTS(
+                      SELECT 1 FROM paper_execution_observations p
+                      WHERE p.experience_id=e.experience_id
+                        AND p.event_type IN ('ORDER_FILLED','ORDER_PARTIALLY_FILLED'))) traded,
+                    (e.technically_actionable=1 OR EXISTS(
+                      SELECT 1 FROM experience_decisions d
+                      WHERE d.experience_id=e.experience_id
+                        AND json_extract(d.payload_json,'$.technically_actionable')=1)) actionable
+                  FROM experiences e
                 ), classified AS (
                   SELECT CASE
-                    WHEN e.actually_traded=1 THEN 'NOT_APPLICABLE'
-                    WHEN l.experience_id IS NULL OR e.technically_actionable=0
+                    WHEN e.traded=1 THEN 'NOT_APPLICABLE'
+                    WHEN l.experience_id IS NULL OR e.actionable=0
                       THEN 'INSUFFICIENT_OUTCOME_DATA'
                     WHEN l.reached_2r=1 AND COALESCE(l.first_plan_event,'')!='STOP'
                       THEN 'PROFITABLE_MISSED_OPPORTUNITY'
@@ -366,7 +421,7 @@ class ExperienceStore:
                     WHEN l.reached_1r=1 AND l.stop_reached=1 AND l.reached_2r=0
                       THEN 'DANGEROUS_FALSE_POSITIVE'
                     ELSE 'NEUTRAL_REJECTION' END classification
-                  FROM experiences e LEFT JOIN latest l USING(experience_id)
+                  FROM facts e LEFT JOIN latest l USING(experience_id)
                 ) SELECT classification,COUNT(*) FROM classified GROUP BY classification
             """).fetchall())
             cohort_rows = db.execute("""
@@ -449,6 +504,16 @@ class ExperienceStore:
     def put_bar(self, bar: PriceBar) -> bool:
         payload = canonical_json(asdict(bar))
         with self._connect() as db:
+            existing = db.execute(
+                "SELECT payload_json FROM future_bars WHERE symbol=? AND bar_timestamp=?",
+                (bar.symbol.upper(), bar.timestamp.isoformat()),
+            ).fetchone()
+            if existing is not None:
+                if existing[0] != payload:
+                    raise ValueError(
+                        "immutable completed bar identity has conflicting content"
+                    )
+                return False
             cursor = db.execute(
                 "INSERT OR IGNORE INTO future_bars VALUES(?,?,?)",
                 (bar.symbol.upper(), bar.timestamp.isoformat(), payload),
@@ -494,6 +559,13 @@ class ExperienceStore:
                 ("FAILED" if error else "COMPLETED", timestamp.isoformat(), error, work_id),
             )
 
+    def work_state(self, work_id: str) -> str | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT state FROM work_ledger WHERE work_id=?", (work_id,),
+            ).fetchone()
+        return None if row is None else str(row[0])
+
     def accounting(self) -> dict[str, int]:
         with self._connect() as db:
             rows = db.execute("SELECT state,COUNT(*) FROM work_ledger GROUP BY state").fetchall()
@@ -532,7 +604,10 @@ class ExperienceStore:
     def recoverable_work(self) -> tuple[tuple[str, str, str, datetime], ...]:
         with self._connect() as db:
             rows = db.execute(
-                "SELECT work_id,work_type,payload_json,accepted_at FROM work_ledger WHERE state IN ('CHECKPOINTED','STARTED') ORDER BY accepted_at,work_id"
+                """SELECT work_id,work_type,payload_json,accepted_at
+                   FROM work_ledger WHERE state IN ('CHECKPOINTED','STARTED')
+                   ORDER BY CASE work_type WHEN 'EXPERIENCE' THEN 0 ELSE 1 END,
+                            accepted_at,work_id"""
             ).fetchall()
         return tuple((row[0], row[1], row[2], datetime.fromisoformat(row[3])) for row in rows)
 
@@ -548,6 +623,66 @@ class ExperienceStore:
                 (value.execution_record_identity, value.experience_id, payload),
             )
             return cursor.rowcount == 1
+
+    def put_decision_observation(self, value: DecisionObservation) -> bool:
+        payload = canonical_json(asdict(value))
+        digest = _digest(payload)
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT payload_digest FROM experience_decisions WHERE decision_id=?",
+                (value.decision_id,),
+            ).fetchone()
+            if row is not None:
+                if row[0] != digest:
+                    raise ValueError("immutable decision identity has conflicting content")
+                return False
+            if db.execute("SELECT 1 FROM experiences WHERE experience_id=?", (value.experience_id,)).fetchone() is None:
+                raise ValueError("decision experience does not exist")
+            db.execute(
+                "INSERT INTO experience_decisions VALUES(?,?,?,?,?,?,?,?)",
+                (value.decision_id, value.experience_id, value.observed_at.isoformat(),
+                 value.atlas_decision.value, value.lifecycle_stage,
+                 canonical_json(value.blockers), payload, digest),
+            )
+            return True
+
+    def decision_observations(self, experience_id: str) -> tuple[DecisionObservation, ...]:
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT payload_json FROM experience_decisions WHERE experience_id=? ORDER BY observed_at,decision_id",
+                (experience_id,),
+            ).fetchall()
+        return tuple(_decision_from_json(row[0]) for row in rows)
+
+    def put_paper_execution_observation(self, value: PaperExecutionObservation) -> bool:
+        payload = canonical_json(asdict(value))
+        digest = _digest(payload)
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT payload_digest FROM paper_execution_observations WHERE observation_id=?",
+                (value.observation_id,),
+            ).fetchone()
+            if row is not None:
+                if row[0] != digest:
+                    raise ValueError("immutable PAPER observation identity has conflicting content")
+                return False
+            db.execute(
+                "INSERT INTO paper_execution_observations VALUES(?,?,?,?,?,?,?,?)",
+                (value.observation_id, value.experience_id, value.observed_at.isoformat(),
+                 value.event_type, value.symbol.upper(), value.correlation_status,
+                 payload, digest),
+            )
+            return True
+
+    def has_actual_paper_execution(self, experience_id: str) -> bool:
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT 1 FROM paper_execution_observations
+                   WHERE experience_id=? AND event_type IN (
+                     'ORDER_FILLED','ORDER_PARTIALLY_FILLED') LIMIT 1""",
+                (experience_id,),
+            ).fetchone()
+        return row is not None
 
     def put_research_generation(self, value: ResearchGeneration) -> bool:
         payload = canonical_json(asdict(value))
@@ -726,6 +861,43 @@ def _outcome_from_json(payload: str) -> HorizonOutcome:
         if item[name] is not None:
             item[name] = Decimal(item[name])
     return HorizonOutcome(**item)
+
+
+def _decision_from_json(payload: str) -> DecisionObservation:
+    item = json.loads(payload)
+    snapshot = item["snapshot"]
+    for name in ("decision_timestamp", "source_timestamp", "setup_timestamp"):
+        if snapshot.get(name) is not None:
+            snapshot[name] = datetime.fromisoformat(snapshot[name])
+    snapshot["feature_source_timestamps"] = tuple(
+        (name, datetime.fromisoformat(value)) for name, value in snapshot["feature_source_timestamps"]
+    )
+    snapshot["features"] = tuple((name, _decimal_feature(value)) for name, value in snapshot["features"])
+    for name in (
+        "last_price", "bid", "ask", "spread_percent", "percentage_change",
+        "current_volume", "average_volume", "relative_volume", "dollar_volume",
+        "float_shares", "quote_freshness_seconds", "trade_freshness_seconds",
+        "scanner_score", "setup_quality", "trigger_price", "structural_stop",
+        "reference_price", "risk_per_share",
+    ):
+        if snapshot.get(name) is not None:
+            snapshot[name] = Decimal(snapshot[name])
+    snapshot["passed_rules"] = tuple(snapshot["passed_rules"])
+    snapshot["failed_rules"] = tuple(snapshot["failed_rules"])
+    item["snapshot"] = DecisionTimeSnapshot(**snapshot)
+    item["observed_at"] = datetime.fromisoformat(item["observed_at"])
+    item["atlas_decision"] = AtlasDecision(item["atlas_decision"])
+    item["blockers"] = tuple(item["blockers"])
+    return DecisionObservation(**item)
+
+
+def _paper_observation_from_json(payload: str) -> PaperExecutionObservation:
+    item = json.loads(payload)
+    item["observed_at"] = datetime.fromisoformat(item["observed_at"])
+    for name in ("price", "quantity"):
+        if item[name] is not None:
+            item[name] = Decimal(item[name])
+    return PaperExecutionObservation(**item)
 
 
 def _bar_from_json(payload: str) -> PriceBar:

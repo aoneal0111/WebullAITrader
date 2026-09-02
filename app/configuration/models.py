@@ -119,3 +119,6 @@ class OperationalConfiguration:
     yahoo_finance_news: YahooFinanceNewsConfiguration | None = None
     cnbc_news: CNBCNewsConfiguration | None = None
     marketwatch_news: MarketWatchNewsConfiguration | None = None
+    trade_intelligence_enabled: bool = True
+    trade_intelligence_path: Path = Path("data/atlas_learning/experiences.sqlite3")
+    trade_intelligence_queue_capacity: int = 4096

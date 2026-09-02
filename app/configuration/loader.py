@@ -303,6 +303,12 @@ def load_configuration(env=None):
         yahoo_finance_news_configuration,
         cnbc_news_configuration,
         marketwatch_news_configuration,
+        _bool(e.get("TRADE_INTELLIGENCE_ENABLED", "true")),
+        Path(e.get(
+            "TRADE_INTELLIGENCE_PATH",
+            "data/atlas_learning/experiences.sqlite3",
+        )).resolve(),
+        _int(e, "TRADE_INTELLIGENCE_QUEUE_CAPACITY", 4096),
     )
 
 

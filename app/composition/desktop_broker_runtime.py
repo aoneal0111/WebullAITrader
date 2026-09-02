@@ -63,6 +63,36 @@ BrokerRuntimeFactory = Callable[..., BrokerRuntime]
 _SCANNER_LOGGER = logging.getLogger("atlas.scanner")
 
 
+class _ResearchFanoutDecisionSink:
+    """Publish authoritative decisions to research without sharing lifecycle ownership."""
+
+    def __init__(self, primary: object | None, research: Callable[[object], object]) -> None:
+        self.primary = primary
+        self.research = research
+
+    def __call__(self, decision: object) -> None:
+        if callable(self.primary):
+            self.primary(decision)
+        try:
+            self.research(decision)
+        except Exception:
+            pass
+
+    def reset_symbol(self, symbol: str) -> None:
+        primary_reset = getattr(self.primary, "reset_symbol", None)
+        if callable(primary_reset):
+            primary_reset(symbol)
+        research_owner = getattr(self.research, "__self__", None)
+        research_reset = getattr(research_owner, "reset_symbol", None)
+        if callable(research_reset):
+            research_reset(symbol)
+
+    def close(self) -> None:
+        primary_close = getattr(self.primary, "close", None)
+        if callable(primary_close):
+            primary_close()
+
+
 def create_configured_desktop_broker_driver(
     *,
     event_sink: RuntimeEventSink,
@@ -151,6 +181,14 @@ def create_configured_desktop_broker_driver(
                 experiment_path,
                 execution_environment=experiment_execution_environment,
                 journal_factory=PaperTradeExperimentJournal,
+            )
+        research_decision_sink = getattr(
+            market_event_observer, "observe_scanner_decision", None,
+        )
+        scanner_decision_sink = experiment_decision_sink
+        if callable(research_decision_sink):
+            scanner_decision_sink = _ResearchFanoutDecisionSink(
+                experiment_decision_sink, research_decision_sink,
             )
         universe_provider = WebullScannerUniverseProvider(
             data_client,
@@ -242,7 +280,7 @@ def create_configured_desktop_broker_driver(
             # telemetry are published promptly on an active multi-symbol feed.
             maximum_events_per_cycle=100,
             scanner_decision_sink=(
-                experiment_decision_sink
+                scanner_decision_sink
             ),
         )
         scanner_coordinator = scanner_infrastructure.coordinator

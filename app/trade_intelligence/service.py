@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
-from dataclasses import asdict, dataclass
+from collections import OrderedDict, deque
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 import json
@@ -13,13 +13,15 @@ from threading import Event, RLock, Thread
 from typing import Callable
 
 from .experience_store import (
-    ExperienceStore, _bar_from_json, _experience_from_json,
+    ExperienceStore, _bar_from_json, _decision_from_json, _experience_from_json,
+    _paper_observation_from_json,
 )
 from .models import (
-    HORIZONS_MINUTES, PriceBar, TradeOpportunityExperience, WorkerMetrics,
+    DecisionObservation, HORIZONS_MINUTES, MissedOpportunityClassification,
+    PaperExecutionObservation, PriceBar, TradeOpportunityExperience, WorkerMetrics,
     canonical_json, experience_payload,
 )
-from .outcome_engine import OutcomeEngine
+from .outcome_engine import OutcomeEngine, classify_missed_opportunity
 
 MAX_SERIALIZED_WORK_BYTES = 64 * 1024
 DEFAULT_STORE_PATH = Path("data/atlas_learning/experiences.sqlite3")
@@ -61,6 +63,11 @@ class TradeIntelligenceService:
         self._pressure_active = False
         self._recent: OrderedDict[str, None] = OrderedDict()
         self._active_count = 0
+        self._lag_max_ms = 0
+        self._lag_samples: deque[int] = deque(maxlen=2048)
+        self._experiences_created = self._decisions_recorded = 0
+        self._outcomes_completed = self._profitable_misses = 0
+        self._protected_rejections = 0
         self._thread = Thread(target=self._run, name="atlas-trade-intelligence", daemon=True)
         self._thread.start()
 
@@ -76,6 +83,21 @@ class TradeIntelligenceService:
         payload = canonical_json(asdict(value))
         identity = sha256(f"bar|{value.symbol.upper()}|{value.timestamp.isoformat()}|{payload}".encode()).hexdigest()
         return self._submit(_Work(identity, "BAR", payload, self._now()))
+
+    def submit_decision(self, value: DecisionObservation) -> bool:
+        if not isinstance(value, DecisionObservation):
+            return self._reject()
+        return self._submit(_Work(
+            value.decision_id, "DECISION", canonical_json(asdict(value)), self._now()
+        ))
+
+    def observe_paper_execution(self, value: PaperExecutionObservation) -> bool:
+        if not isinstance(value, PaperExecutionObservation):
+            return self._reject()
+        return self._submit(_Work(
+            value.observation_id, "PAPER_OBSERVATION",
+            canonical_json(asdict(value)), self._now(),
+        ))
 
     def _submit(self, work: _Work) -> bool:
         with self._lock:
@@ -114,11 +136,21 @@ class TradeIntelligenceService:
     def metrics(self) -> WorkerMetrics:
         with self._lock:
             outstanding = self._accepted - self._completed - self._failed
+            oldest = 0
+            with self._queue.mutex:
+                if self._queue.queue:
+                    oldest = max(0, int((self._now() - self._queue.queue[0].accepted_at).total_seconds() * 1000))
+            lag_values = sorted(self._lag_samples)
             return WorkerMetrics(
                 self._accepted, self._checkpointed, self._started, self._completed,
                 self._suppressed, self._rejected, self._failed, outstanding,
                 self._queue.qsize(), self._hwm, self._pressure_episodes,
                 self._pressure_recoveries, self._active_count, self._accepting,
+                oldest, _percentile(lag_values, 0.50),
+                _percentile(lag_values, 0.90), _percentile(lag_values, 0.99),
+                self._lag_max_ms, self._experiences_created,
+                self._decisions_recorded, self._outcomes_completed,
+                self._profitable_misses, self._protected_rejections,
             )
 
     @property
@@ -128,10 +160,28 @@ class TradeIntelligenceService:
     def _run(self) -> None:
         store = None
         active: dict[str, TradeOpportunityExperience] = {}
+        completed_horizons: dict[str, set[int]] = {}
+        deferred: dict[str, list[_Work]] = {}
         try:
             store = self._store_factory(self._path)
             store.recover_started_work()
             active = {item.experience_id: item for item in store.incomplete_experiences()}
+            completed_horizons = {
+                identity: {item.horizon_minutes for item in store.outcomes(identity)}
+                for identity in active
+            }
+            for identity, experience in tuple(active.items()):
+                decisions = store.decision_observations(identity)
+                if decisions:
+                    latest = decisions[-1]
+                    active[identity] = replace(
+                        experience,
+                        actually_traded=(
+                            experience.actually_traded or latest.actually_traded
+                        ),
+                    )
+                if store.has_actual_paper_execution(identity):
+                    active[identity] = replace(active[identity], actually_traded=True)
             recovered = [
                 _Work(work_id, work_type, payload, accepted_at)
                 for work_id, work_type, payload, accepted_at in store.recoverable_work()
@@ -140,7 +190,10 @@ class TradeIntelligenceService:
                 self._accepted += len(recovered)
                 self._checkpointed += len(recovered)
             for work in recovered:
-                self._process(store, active, work, already_checkpointed=True)
+                self._process(
+                    store, active, completed_horizons, deferred, work,
+                    already_checkpointed=True,
+                )
             self._set_active(len(active))
             while not self._stop.is_set() or not self._queue.empty():
                 try:
@@ -148,9 +201,18 @@ class TradeIntelligenceService:
                 except Empty:
                     continue
                 try:
-                    self._process(store, active, work)
+                    self._process(store, active, completed_horizons, deferred, work)
                 finally:
                     self._queue.task_done()
+            for waiting in tuple(deferred.values()):
+                for work in waiting:
+                    self._terminal_failure(
+                        store, work,
+                        "MissingPrerequisiteError",
+                        "parent experience was never durably established before shutdown",
+                        prerequisite_related=True,
+                    )
+            deferred.clear()
         except Exception:
             with self._lock:
                 self._failed += 1
@@ -170,21 +232,90 @@ class TradeIntelligenceService:
                     with self._lock:
                         self._failed += 1
 
-    def _process(self, store, active, work, *, already_checkpointed=False):
+    def _process(
+        self, store, active, completed_horizons, deferred, work,
+        *, already_checkpointed=False,
+    ):
         now = self._now()
+        lag_ms = max(0, int((now - work.accepted_at).total_seconds() * 1000))
+        with self._lock:
+            self._lag_max_ms = max(self._lag_max_ms, lag_ms)
+            self._lag_samples.append(lag_ms)
         try:
             if not already_checkpointed:
                 if store.checkpoint_work(work.work_id, work.work_type, work.accepted_at, work.payload_json):
                     with self._lock:
                         self._checkpointed += 1
+            if work.work_type == "DECISION":
+                pending_decision = _decision_from_json(work.payload_json)
+                parent_id = pending_decision.experience_id
+                if (
+                    parent_id not in active
+                    and store.get_experience(parent_id) is None
+                ):
+                    parent_state = store.work_state(parent_id)
+                    waiting_count = sum(len(items) for items in deferred.values())
+                    if parent_state == "FAILED":
+                        self._terminal_failure(
+                            store, work, "MissingPrerequisiteError",
+                            "parent experience work failed",
+                            prerequisite_related=True,
+                        )
+                    elif waiting_count >= self._capacity:
+                        self._terminal_failure(
+                            store, work, "DependencyCapacityError",
+                            "bounded prerequisite deferral capacity exhausted",
+                            prerequisite_related=True,
+                        )
+                    else:
+                        deferred.setdefault(parent_id, []).append(work)
+                    return
             store.start_work(work.work_id, now)
             with self._lock:
                 self._started += 1
             if work.work_type == "EXPERIENCE":
                 exp = _experience_from_json(work.payload_json)
-                store.put_experience(exp)
-                if len(store.outcomes(exp.experience_id)) < len(HORIZONS_MINUTES):
+                inserted = store.put_experience(exp)
+                if inserted:
+                    with self._lock:
+                        self._experiences_created += 1
+                existing = {item.horizon_minutes for item in store.outcomes(exp.experience_id)}
+                if len(existing) < len(HORIZONS_MINUTES):
                     active[exp.experience_id] = exp
+                    completed_horizons[exp.experience_id] = existing
+            elif work.work_type == "DECISION":
+                decision = _decision_from_json(work.payload_json)
+                if store.put_decision_observation(decision):
+                    with self._lock:
+                        self._decisions_recorded += 1
+                experience = active.get(decision.experience_id)
+                if experience is None:
+                    experience = store.get_experience(decision.experience_id)
+                    existing = {
+                        item.horizon_minutes
+                        for item in store.outcomes(decision.experience_id)
+                    }
+                    if len(existing) < len(HORIZONS_MINUTES):
+                        completed_horizons[decision.experience_id] = existing
+                    else:
+                        experience = None
+                if experience is not None:
+                    active[decision.experience_id] = replace(
+                        experience,
+                        actually_traded=(
+                            experience.actually_traded or decision.actually_traded
+                        ),
+                    )
+            elif work.work_type == "PAPER_OBSERVATION":
+                paper = _paper_observation_from_json(work.payload_json)
+                store.put_paper_execution_observation(paper)
+                if (
+                    paper.experience_id in active
+                    and paper.event_type in {"ORDER_FILLED", "ORDER_PARTIALLY_FILLED"}
+                ):
+                    active[paper.experience_id] = replace(
+                        active[paper.experience_id], actually_traded=True,
+                    )
             elif work.work_type == "BAR":
                 bar = _bar_from_json(work.payload_json)
                 relevant = [item for item in active.values() if item.key.symbol.upper() == bar.symbol.upper()]
@@ -193,12 +324,25 @@ class TradeIntelligenceService:
                     bars = store.bars(bar.symbol)
                     engine = OutcomeEngine()
                     for exp in relevant:
-                        existing = {item.horizon_minutes for item in store.outcomes(exp.experience_id)}
+                        existing = completed_horizons.setdefault(exp.experience_id, set())
                         for outcome in engine.evaluate(exp, bars):
-                            if outcome.horizon_minutes not in existing:
-                                store.put_outcome(outcome)
-                        if len(store.outcomes(exp.experience_id)) == len(HORIZONS_MINUTES):
+                            if outcome.horizon_minutes not in existing and store.put_outcome(outcome):
+                                existing.add(outcome.horizon_minutes)
+                                with self._lock:
+                                    self._outcomes_completed += 1
+                        if len(existing) == len(HORIZONS_MINUTES):
+                            final = next(
+                                item for item in engine.evaluate(exp, bars)
+                                if item.horizon_minutes == max(HORIZONS_MINUTES)
+                            )
+                            classification = classify_missed_opportunity(exp, final)
+                            with self._lock:
+                                if classification is MissedOpportunityClassification.PROFITABLE_MISSED_OPPORTUNITY:
+                                    self._profitable_misses += 1
+                                elif classification is MissedOpportunityClassification.PROTECTED_REJECTION:
+                                    self._protected_rejections += 1
                             active.pop(exp.experience_id, None)
+                            completed_horizons.pop(exp.experience_id, None)
                     store.prune_bars()
             else:
                 raise ValueError("unknown research work type")
@@ -206,10 +350,41 @@ class TradeIntelligenceService:
             with self._lock:
                 self._completed += 1
                 self._active_count = len(active)
+            if work.work_type == "EXPERIENCE":
+                for child in deferred.pop(work.work_id, []):
+                    self._process(
+                        store, active, completed_horizons, deferred, child,
+                        already_checkpointed=True,
+                    )
         except Exception as exc:
-            store.complete_work(work.work_id, self._now(), f"{type(exc).__name__}: {exc}")
-            with self._lock:
-                self._failed += 1
+            self._terminal_failure(
+                store, work, type(exc).__name__, str(exc),
+                prerequisite_related=False,
+            )
+            if work.work_type == "EXPERIENCE":
+                for child in deferred.pop(work.work_id, []):
+                    self._terminal_failure(
+                        store, child, "MissingPrerequisiteError",
+                        "parent experience work failed",
+                        prerequisite_related=True,
+                    )
+
+    def _terminal_failure(
+        self, store, work: _Work, error_class: str, message: str, *,
+        prerequisite_related: bool,
+    ) -> None:
+        context = _failure_context(work)
+        context.update({
+            "data_lost": True,
+            "error_class": error_class,
+            "message": message,
+            "prerequisite_related": prerequisite_related,
+            "retryable": False,
+            "timestamp": self._now().isoformat(),
+        })
+        store.complete_work(work.work_id, self._now(), canonical_json(context))
+        with self._lock:
+            self._failed += 1
 
     def _remember(self, identity: str) -> None:
         self._recent[identity] = None
@@ -234,3 +409,24 @@ class TradeIntelligenceService:
     def _set_active(self, value: int) -> None:
         with self._lock:
             self._active_count = value
+
+
+def _percentile(values: list[int], fraction: float) -> int:
+    if not values:
+        return 0
+    return values[min(len(values) - 1, int((len(values) - 1) * fraction))]
+
+
+def _failure_context(work: _Work) -> dict[str, object]:
+    try:
+        payload = json.loads(work.payload_json)
+    except (TypeError, ValueError):
+        payload = {}
+    key = payload.get("key") if isinstance(payload.get("key"), dict) else {}
+    return {
+        "experience_id": payload.get("experience_id") or (
+            work.work_id if work.work_type == "EXPERIENCE" else None
+        ),
+        "symbol": payload.get("symbol") or key.get("symbol"),
+        "work_type": work.work_type,
+    }
