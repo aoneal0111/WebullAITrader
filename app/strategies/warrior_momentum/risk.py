@@ -13,6 +13,7 @@ def size_position(
     allowed_symbols: frozenset[str], existing_exposure: Decimal = Decimal("0"),
     exposure_limit: Decimal | None = None, risk_engine_approved: bool = True,
     broker_restriction: bool = False, config: RiskConfig = RiskConfig(),
+    symbol_authorized: bool | None = None,
 ) -> PositionSize:
     risk_budget = min(config.configured_per_trade_risk, config.equity_risk_percentage * account_equity)
     raw = int((risk_budget / signal.risk_per_share).to_integral_value(rounding=ROUND_FLOOR))
@@ -20,7 +21,11 @@ def size_position(
     position_cap = int((config.maximum_position_dollars / signal.reference_price).to_integral_value(rounding=ROUND_FLOOR))
     shares = max(0, min(raw, affordable, position_cap, config.maximum_quantity))
     reasons: list[ReasonCode] = []
-    if signal.symbol not in allowed_symbols or broker_restriction:
+    symbol_allowed = (
+        signal.symbol in allowed_symbols
+        if symbol_authorized is None else symbol_authorized
+    )
+    if not symbol_allowed or broker_restriction:
         reasons.append(ReasonCode.EXECUTION_NOT_ALLOWED)
     if not risk_engine_approved or shares <= 0:
         reasons.append(ReasonCode.RISK_REJECTED)

@@ -286,6 +286,9 @@ def create_desktop_composition(
             equity=Decimal(equity), buying_power=Decimal(buying_power),
             allowed_symbols=frozenset(operational_configuration.allowed_symbols),
             risk_engine_approved=True, broker_restriction=False,
+            symbol_authorization_mode=(
+                operational_configuration.paper_symbol_authorization_mode
+            ),
         )
 
     autonomous_paper_bridge = None

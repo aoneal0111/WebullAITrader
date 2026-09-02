@@ -241,9 +241,9 @@ def test_allowlist_refusal_retains_the_exact_failed_gate(tmp_path):
         )
         assert blocked[-1]["reason_codes"] == ["EXECUTION_NOT_ALLOWED"]
         assert blocked[-1]["blocking_gates"] == [{
-            "gate": "allowed_symbols",
-            "limit": True,
-            "observed": False,
+            "gate": "paper_symbol_authorization",
+            "limit": "STATIC_ALLOWLIST",
+            "observed": "NONE",
             "passed": False,
         }]
         decisions = store.records(

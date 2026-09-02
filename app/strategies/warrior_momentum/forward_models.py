@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from app.configuration.models import PaperSymbolAuthorizationMode
 from app.momentum_scanner.models import ScannerObservation
 
 from .models import MinuteBar
@@ -128,6 +129,24 @@ class PaperAccountContext:
     exposure_limit: Decimal | None = None
     risk_engine_approved: bool = True
     broker_restriction: bool = False
+    symbol_authorization_mode: PaperSymbolAuthorizationMode = (
+        PaperSymbolAuthorizationMode.STATIC_ALLOWLIST
+    )
+
+
+class PaperSymbolAuthorizationSource(StrEnum):
+    NONE = "NONE"
+    STATIC_ALLOWLIST = "STATIC_ALLOWLIST"
+    DYNAMIC_WARRIOR_PAPER = "DYNAMIC_WARRIOR_PAPER"
+
+
+@dataclass(frozen=True, slots=True)
+class PaperSymbolAuthorization:
+    """Immutable result of the PAPER-only Warrior provenance gate."""
+
+    authorized: bool
+    mode: PaperSymbolAuthorizationMode
+    source: PaperSymbolAuthorizationSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +260,7 @@ def _reject_sensitive(value: Any, path: str = "payload") -> None:
 __all__ = [
     "CAPTURE_SCHEMA_VERSION", "CaptureRecordType", "ForwardTransition",
     "FloatProvenance", "PointInTimeObservation", "PaperAccountContext",
+    "PaperSymbolAuthorization", "PaperSymbolAuthorizationSource",
     "ForwardCaptureConfiguration",
     "CaptureRecord", "CaptureMetrics", "canonical_json",
 ]

@@ -8,12 +8,14 @@ from decimal import Decimal, ROUND_FLOOR
 from typing import Callable
 
 from app.performance_diagnostics import performance_diagnostics
+from app.configuration.models import PaperSymbolAuthorizationMode
 
 from .configuration import WarriorMomentumConfig
 from .features import build_features, completed_bars_as_of
 from .forward_models import (
     CaptureRecord, CaptureRecordType, FloatProvenance,
     ForwardCaptureConfiguration, ForwardTransition, PaperAccountContext,
+    PaperSymbolAuthorization, PaperSymbolAuthorizationSource,
     PointInTimeObservation,
 )
 from .autonomous_paper import lifecycle_identity
@@ -293,6 +295,7 @@ class WarriorForwardCaptureService:
         records.append(_quality_record(value, completed, self.capture_config))
 
         if signal is not None:
+            symbol_authorization = _paper_symbol_authorization(signal, account)
             if signal.symbol in self._paper:
                 shadow_reasons.append(ReasonCode.EXECUTION_NOT_ALLOWED.value)
                 records.append(_transition_record(
@@ -332,11 +335,12 @@ class WarriorForwardCaptureService:
                     risk_engine_approved=account.risk_engine_approved,
                     broker_restriction=account.broker_restriction,
                     config=self.config.risk,
+                    symbol_authorized=symbol_authorization.authorized,
                 )
                 if position.approved:
                     entry_records, execution_record = self._open_paper(
                         signal, position.shares, position.risk_dollars,
-                        value.float_provenance,
+                        value.float_provenance, symbol_authorization,
                     )
                     records.extend(entry_records)
                     if execution_record is not None:
@@ -553,6 +557,7 @@ class WarriorForwardCaptureService:
     def _open_paper(
         self, signal: MomentumEntrySignal, shares: int, risk_dollars: Decimal,
         float_provenance: FloatProvenance,
+        symbol_authorization: PaperSymbolAuthorization,
     ) -> tuple[tuple[CaptureRecord, ...], CaptureRecord | None]:
         if signal.symbol in self._paper:
             return (), None
@@ -561,7 +566,9 @@ class WarriorForwardCaptureService:
             result = self._paper_entry_submitter(signal, shares, risk_dollars)
             if isinstance(result, PaperEntryAuthorizationDecision):
                 try:
-                    execution_record = _execution_gate_record(signal, result)
+                    execution_record = _execution_gate_record(
+                        signal, result, symbol_authorization,
+                    )
                 except Exception:
                     # Diagnostics are deliberately downstream of authorization
                     # and may never alter its result.
@@ -818,6 +825,7 @@ def _bar_record(bar: MinuteBar, observed_at: datetime) -> CaptureRecord:
 def _execution_gate_record(
     signal: MomentumEntrySignal,
     decision: PaperEntryAuthorizationDecision,
+    symbol_authorization: PaperSymbolAuthorization | None = None,
 ) -> CaptureRecord:
     """Mirror the authoritative PAPER boundary without influencing it."""
 
@@ -834,6 +842,14 @@ def _execution_gate_record(
             "entry_trigger": signal.entry_trigger,
             "structural_stop": signal.stop_price,
             "reference_price": signal.reference_price,
+            "symbol_authorization_mode": (
+                None if symbol_authorization is None
+                else symbol_authorization.mode.value
+            ),
+            "symbol_authorization_source": (
+                None if symbol_authorization is None
+                else symbol_authorization.source.value
+            ),
             "result": decision.result.value,
             "final_reason": decision.reason.value,
             "gates": tuple({
@@ -862,6 +878,10 @@ def _prebridge_execution_gate_record(
 ) -> CaptureRecord:
     """Explain a refusal/deferment before the PAPER bridge was invoked."""
 
+    symbol_authorization = (
+        None if account is None
+        else _paper_symbol_authorization(signal, account)
+    )
     gates = tuple(
         PaperEntryGateDecision(
             str(item["gate"]), bool(item["passed"]),
@@ -869,7 +889,9 @@ def _prebridge_execution_gate_record(
         )
         for item in (
             *_gate_diagnostics(candidate, config, account),
-            *(() if account is None else _account_gate_diagnostics(signal, account)),
+            *(() if account is None else _account_gate_diagnostics(
+                signal, account, symbol_authorization,
+            )),
         )
     )
     stale = (
@@ -891,7 +913,7 @@ def _prebridge_execution_gate_record(
     elif account is None:
         result = PaperEntryAuthorizationResult.DEFERRED
         reason = PaperEntryAuthorizationReason.ACCOUNT_NOT_READY
-    elif signal.symbol not in account.allowed_symbols:
+    elif not symbol_authorization.authorized:
         result = PaperEntryAuthorizationResult.REFUSED
         reason = PaperEntryAuthorizationReason.SYMBOL_NOT_ALLOWED
     elif account.broker_restriction:
@@ -918,7 +940,7 @@ def _prebridge_execution_gate_record(
     decision = PaperEntryAuthorizationDecision(
         result, reason, signal.symbol, lifecycle_identity(signal), gates,
     )
-    return _execution_gate_record(signal, decision)
+    return _execution_gate_record(signal, decision, symbol_authorization)
 
 
 def _management_context_record(
@@ -1109,10 +1131,52 @@ def _gate_diagnostics(candidate, config, account):
     )
 
 
-def _account_gate_diagnostics(signal, account):
+def _paper_symbol_authorization(
+    signal: MomentumEntrySignal,
+    account: PaperAccountContext | None,
+) -> PaperSymbolAuthorization:
+    """Authorize only the internally assessed Warrior PAPER signal boundary."""
+
+    if account is None:
+        return PaperSymbolAuthorization(
+            False,
+            PaperSymbolAuthorizationMode.STATIC_ALLOWLIST,
+            PaperSymbolAuthorizationSource.NONE,
+        )
+    mode = account.symbol_authorization_mode
+    if mode is PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR:
+        authorized = (
+            signal.strategy_id == "WARRIOR_MOMENTUM_V1"
+            and not signal.execution_authorized
+        )
+        return PaperSymbolAuthorization(
+            authorized,
+            mode,
+            (
+                PaperSymbolAuthorizationSource.DYNAMIC_WARRIOR_PAPER
+                if authorized else PaperSymbolAuthorizationSource.NONE
+            ),
+        )
+    authorized = signal.symbol in account.allowed_symbols
+    return PaperSymbolAuthorization(
+        authorized,
+        mode,
+        (
+            PaperSymbolAuthorizationSource.STATIC_ALLOWLIST
+            if authorized else PaperSymbolAuthorizationSource.NONE
+        ),
+    )
+
+
+def _account_gate_diagnostics(
+    signal, account,
+    authorization: PaperSymbolAuthorization | None = None,
+):
+    authorization = authorization or _paper_symbol_authorization(signal, account)
     return (
-        {"gate": "allowed_symbols", "passed": signal.symbol in account.allowed_symbols,
-         "observed": signal.symbol in account.allowed_symbols, "limit": True},
+        {"gate": "paper_symbol_authorization", "passed": authorization.authorized,
+         "observed": authorization.source.value,
+         "limit": authorization.mode.value},
         {"gate": "risk_engine", "passed": account.risk_engine_approved,
          "observed": account.risk_engine_approved, "limit": True},
         {"gate": "broker_restriction", "passed": not account.broker_restriction,

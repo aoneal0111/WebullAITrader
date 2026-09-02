@@ -264,6 +264,29 @@ def load_configuration(env=None):
         if urlparse(section.api_base_url).scheme != "https":
             raise ValueError(f"secure Webull {section_name} API endpoint is required")
         parse_webull_stream_url(section.stream_url)
+    paper_symbol_authorization_mode = PaperSymbolAuthorizationMode(
+        e.get(
+            "PAPER_SYMBOL_AUTHORIZATION_MODE",
+            PaperSymbolAuthorizationMode.STATIC_ALLOWLIST.value,
+        ).strip().upper()
+    )
+    if (
+        paper_symbol_authorization_mode
+        is PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR
+        and (
+            live
+            or trading_configuration.environment
+            not in {
+                TradingEnvironment.TEST,
+                TradingEnvironment.PAPER,
+                TradingEnvironment.SANDBOX,
+            }
+        )
+    ):
+        raise ValueError(
+            "dynamic Warrior PAPER symbol authorization requires a non-live "
+            "TEST/PAPER/SANDBOX trading environment"
+        )
     return OperationalConfiguration(
         mode,
         provider,
@@ -309,6 +332,7 @@ def load_configuration(env=None):
             "data/atlas_learning/experiences.sqlite3",
         )).resolve(),
         _int(e, "TRADE_INTELLIGENCE_QUEUE_CAPACITY", 4096),
+        paper_symbol_authorization_mode,
     )
 
 

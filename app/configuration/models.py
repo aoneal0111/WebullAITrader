@@ -12,6 +12,13 @@ class TradingEnvironment(StrEnum):
     PRODUCTION = "PRODUCTION"
 
 
+class PaperSymbolAuthorizationMode(StrEnum):
+    """How the Warrior PAPER path answers its symbol-authorization gate."""
+
+    STATIC_ALLOWLIST = "STATIC_ALLOWLIST"
+    DYNAMIC_WARRIOR = "DYNAMIC_WARRIOR"
+
+
 @dataclass(frozen=True, slots=True)
 class TradingConfiguration:
     environment: TradingEnvironment
@@ -122,3 +129,6 @@ class OperationalConfiguration:
     trade_intelligence_enabled: bool = True
     trade_intelligence_path: Path = Path("data/atlas_learning/experiences.sqlite3")
     trade_intelligence_queue_capacity: int = 4096
+    paper_symbol_authorization_mode: PaperSymbolAuthorizationMode = (
+        PaperSymbolAuthorizationMode.STATIC_ALLOWLIST
+    )
