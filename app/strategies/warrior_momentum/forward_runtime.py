@@ -20,6 +20,10 @@ from .autonomous_paper import lifecycle_identity
 from .execution_quote import ExecutionQuoteSource
 from .forward_queue import ForwardCaptureWriter
 from .forward_store import ForwardCaptureStore
+from .autonomous_paper import (
+    PaperEntryAuthorizationDecision, PaperEntryAuthorizationReason,
+    PaperEntryAuthorizationResult, PaperEntryGateDecision, lifecycle_identity,
+)
 from .models import (
     CandidateStatus, MinuteBar, MomentumCandidate, MomentumEntrySignal,
     ReasonCode, SetupState,
@@ -100,7 +104,10 @@ class WarriorForwardCaptureService:
         self, store: ForwardCaptureStore, writer: ForwardCaptureWriter,
         config: WarriorMomentumConfig = WarriorMomentumConfig(),
         capture_config: ForwardCaptureConfiguration = ForwardCaptureConfiguration(),
-        paper_entry_submitter: Callable[[MomentumEntrySignal, int, Decimal], bool] | None = None,
+        paper_entry_submitter: Callable[
+            [MomentumEntrySignal, int, Decimal],
+            bool | PaperEntryAuthorizationDecision,
+        ] | None = None,
         paper_exit_submitter: Callable[[str, int, Decimal, str, str | None], bool] | None = None,
         paper_position_quantity_source: Callable[[str], Decimal] | None = None,
         execution_quote_source: ExecutionQuoteSource | None = None,
@@ -260,6 +267,7 @@ class WarriorForwardCaptureService:
         )
         features = build_features(completed)
         records: list[CaptureRecord] = []
+        execution_record: CaptureRecord | None = None
         records.extend(self._evidence_records(value))
         records.append(_discovery_record(value, assessed))
         decision_record = _decision_record(value, assessed, completed, features)
@@ -326,11 +334,13 @@ class WarriorForwardCaptureService:
                     config=self.config.risk,
                 )
                 if position.approved:
-                    entry_records = self._open_paper(
+                    entry_records, execution_record = self._open_paper(
                         signal, position.shares, position.risk_dollars,
                         value.float_provenance,
                     )
                     records.extend(entry_records)
+                    if execution_record is not None:
+                        records.append(execution_record)
                     # A configured execution bridge is authoritative for the
                     # entry boundary.  If it rejects the command, do not
                     # return an apparently executable signal to callers.
@@ -356,6 +366,23 @@ class WarriorForwardCaptureService:
                 scanner_classification=value.scanner_classification,
                 scanner_failed_rules=value.scanner_failed_rules,
             ))
+
+        if (
+            technical_signal is not None
+            and self._paper_entry_submitter is not None
+            and execution_record is None
+        ):
+            try:
+                execution_record = _prebridge_execution_gate_record(
+                    assessed, technical_signal, value, account,
+                    config=self.config,
+                    stale_after=self.capture_config.quote_stale_after_seconds,
+                    execution_permitted=self._execution_permitted(),
+                )
+            except Exception:
+                execution_record = None
+            if execution_record is not None:
+                records.append(execution_record)
 
         setup = assessed.setup
         if (
@@ -526,11 +553,24 @@ class WarriorForwardCaptureService:
     def _open_paper(
         self, signal: MomentumEntrySignal, shares: int, risk_dollars: Decimal,
         float_provenance: FloatProvenance,
-    ) -> tuple[CaptureRecord, ...]:
+    ) -> tuple[tuple[CaptureRecord, ...], CaptureRecord | None]:
         if signal.symbol in self._paper:
-            return ()
-        if self._paper_entry_submitter is not None and not self._paper_entry_submitter(signal, shares, risk_dollars):
-            return ()
+            return (), None
+        execution_record = None
+        if self._paper_entry_submitter is not None:
+            result = self._paper_entry_submitter(signal, shares, risk_dollars)
+            if isinstance(result, PaperEntryAuthorizationDecision):
+                try:
+                    execution_record = _execution_gate_record(signal, result)
+                except Exception:
+                    # Diagnostics are deliberately downstream of authorization
+                    # and may never alter its result.
+                    execution_record = None
+                accepted = result.authorized
+            else:
+                accepted = bool(result)
+            if not accepted:
+                return (), execution_record
         first = int((Decimal(shares) * self.config.trade_management.first_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
         second = int((Decimal(shares) * self.config.trade_management.second_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
         state = _PaperState(signal, signal.entry_trigger, shares, shares, signal.stop_price, first, second)
@@ -558,7 +598,12 @@ class WarriorForwardCaptureService:
             identity_parts=(ForwardTransition.PAPER_ENTRY.value,),
         )
         self._last_transition[signal.symbol] = ForwardTransition.PAPER_ENTRY
-        return fill, transition, _management_context_record(signal.symbol, signal.timestamp, signal, state)
+        return (
+            (fill, transition, _management_context_record(
+                signal.symbol, signal.timestamp, signal, state,
+            )),
+            execution_record,
+        )
 
     @property
     def open_paper_symbols(self) -> tuple[str, ...]:
@@ -768,6 +813,112 @@ def _bar_record(bar: MinuteBar, observed_at: datetime) -> CaptureRecord:
          "close": bar.close, "volume": bar.volume},
         identity_parts=(bar.timestamp.isoformat(),),
     )
+
+
+def _execution_gate_record(
+    signal: MomentumEntrySignal,
+    decision: PaperEntryAuthorizationDecision,
+) -> CaptureRecord:
+    """Mirror the authoritative PAPER boundary without influencing it."""
+
+    return CaptureRecord.create(
+        CaptureRecordType.EXECUTION_GATE_DECISION,
+        signal.symbol,
+        signal.timestamp,
+        {
+            "authority": "OBSERVATION_ONLY",
+            "strategy": "WARRIOR_MOMENTUM_V1",
+            "lifecycle": decision.lifecycle_id,
+            "setup": signal.setup_type.value,
+            "technical_state": CandidateStatus.ENTRY_READY.value,
+            "entry_trigger": signal.entry_trigger,
+            "structural_stop": signal.stop_price,
+            "reference_price": signal.reference_price,
+            "result": decision.result.value,
+            "final_reason": decision.reason.value,
+            "gates": tuple({
+                "gate": item.gate,
+                "passed": item.passed,
+                "observed": item.observed,
+                "required": item.required,
+            } for item in decision.gates),
+            "order_constructed": decision.order_constructed,
+            "submission_attempted": decision.submission_attempted,
+            "placement_decision": decision.placement_decision,
+        },
+        identity_parts=(decision.lifecycle_id, decision.result.value),
+    )
+
+
+def _prebridge_execution_gate_record(
+    candidate: MomentumCandidate,
+    signal: MomentumEntrySignal,
+    value: PointInTimeObservation,
+    account: PaperAccountContext | None,
+    *,
+    config: WarriorMomentumConfig,
+    stale_after: Decimal,
+    execution_permitted: bool,
+) -> CaptureRecord:
+    """Explain a refusal/deferment before the PAPER bridge was invoked."""
+
+    gates = tuple(
+        PaperEntryGateDecision(
+            str(item["gate"]), bool(item["passed"]),
+            str(item["observed"]), str(item["limit"]),
+        )
+        for item in (
+            *_gate_diagnostics(candidate, config, account),
+            *(() if account is None else _account_gate_diagnostics(signal, account)),
+        )
+    )
+    stale = (
+        value.quote_freshness_seconds is None
+        or value.last_price_freshness_seconds is None
+        or value.quote_freshness_seconds > stale_after
+        or value.last_price_freshness_seconds > stale_after
+        or ReasonCode.STALE_MARKET_DATA in candidate.reason_codes
+    )
+    if stale:
+        result = PaperEntryAuthorizationResult.DEFERRED
+        reason = PaperEntryAuthorizationReason.EXECUTION_DATA_UNAVAILABLE
+    elif not execution_permitted:
+        result = PaperEntryAuthorizationResult.REFUSED
+        reason = PaperEntryAuthorizationReason.EXECUTION_NOT_PERMITTED
+    elif not value.halt_state_known:
+        result = PaperEntryAuthorizationResult.DEFERRED
+        reason = PaperEntryAuthorizationReason.HALT_UNKNOWN
+    elif account is None:
+        result = PaperEntryAuthorizationResult.DEFERRED
+        reason = PaperEntryAuthorizationReason.ACCOUNT_NOT_READY
+    elif signal.symbol not in account.allowed_symbols:
+        result = PaperEntryAuthorizationResult.REFUSED
+        reason = PaperEntryAuthorizationReason.SYMBOL_NOT_ALLOWED
+    elif account.broker_restriction:
+        result = PaperEntryAuthorizationResult.REFUSED
+        reason = PaperEntryAuthorizationReason.BROKER_RESTRICTED
+    elif not account.risk_engine_approved:
+        result = PaperEntryAuthorizationResult.REFUSED
+        reason = PaperEntryAuthorizationReason.RISK_REJECTED
+    elif account.buying_power < signal.reference_price:
+        result = PaperEntryAuthorizationResult.REFUSED
+        reason = PaperEntryAuthorizationReason.BUYING_POWER_INSUFFICIENT
+    elif (
+        account.exposure_limit is not None
+        and account.existing_exposure >= account.exposure_limit
+    ):
+        result = PaperEntryAuthorizationResult.REFUSED
+        reason = PaperEntryAuthorizationReason.EXPOSURE_LIMIT
+    elif ReasonCode.SPREAD_WIDE in candidate.reason_codes:
+        result = PaperEntryAuthorizationResult.REFUSED
+        reason = PaperEntryAuthorizationReason.SPREAD_WIDE
+    else:
+        result = PaperEntryAuthorizationResult.REFUSED
+        reason = PaperEntryAuthorizationReason.RISK_REJECTED
+    decision = PaperEntryAuthorizationDecision(
+        result, reason, signal.symbol, lifecycle_identity(signal), gates,
+    )
+    return _execution_gate_record(signal, decision)
 
 
 def _management_context_record(

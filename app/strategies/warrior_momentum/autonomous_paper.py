@@ -11,6 +11,7 @@ from enum import StrEnum
 
 from app.paper_trading.order_book import PaperOrderBook
 from app.paper_trading.order_models import OrderSide
+from app.order_placement import OrderPlacementDecision
 from app.services.order_command_factory import OrderCommandFactory, OrderEntryCommand
 from app.services.trading_service import TradingService
 
@@ -29,6 +30,65 @@ class AutonomousPaperReadiness(StrEnum):
 class AutonomousManagementReadiness(StrEnum):
     READY = "READY"
     RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
+
+
+class PaperEntryAuthorizationResult(StrEnum):
+    AUTHORIZED = "AUTHORIZED"
+    REFUSED = "REFUSED"
+    DEFERRED = "DEFERRED"
+
+
+class PaperEntryAuthorizationReason(StrEnum):
+    AUTHORIZED = "AUTHORIZED"
+    PAPER_DISABLED = "PAPER_DISABLED"
+    ENVIRONMENT_MISMATCH = "ENVIRONMENT_MISMATCH"
+    INVALID_SYMBOL = "INVALID_SYMBOL"
+    INVALID_QUANTITY = "INVALID_QUANTITY"
+    BROKER_NOT_READY = "BROKER_NOT_READY"
+    WORKING_ORDER_EXISTS = "WORKING_ORDER_EXISTS"
+    POSITION_EXISTS = "POSITION_EXISTS"
+    DUPLICATE_LIFECYCLE = "DUPLICATE_LIFECYCLE"
+    ORDER_CONSTRUCTION_FAILED = "ORDER_CONSTRUCTION_FAILED"
+    ORDER_PLACEMENT_DISABLED = "ORDER_PLACEMENT_DISABLED"
+    SESSION_BLOCKED = "SESSION_BLOCKED"
+    GATEWAY_FAILURE = "GATEWAY_FAILURE"
+    ORDER_REJECTED = "ORDER_REJECTED"
+    EXECUTION_DATA_UNAVAILABLE = "EXECUTION_DATA_UNAVAILABLE"
+    EXECUTION_NOT_PERMITTED = "EXECUTION_NOT_PERMITTED"
+    ACCOUNT_NOT_READY = "ACCOUNT_NOT_READY"
+    SYMBOL_NOT_ALLOWED = "SYMBOL_NOT_ALLOWED"
+    SPREAD_WIDE = "SPREAD_WIDE"
+    HALT_UNKNOWN = "HALT_UNKNOWN"
+    RISK_REJECTED = "RISK_REJECTED"
+    BROKER_RESTRICTED = "BROKER_RESTRICTED"
+    BUYING_POWER_INSUFFICIENT = "BUYING_POWER_INSUFFICIENT"
+    EXPOSURE_LIMIT = "EXPOSURE_LIMIT"
+
+
+@dataclass(frozen=True, slots=True)
+class PaperEntryGateDecision:
+    gate: str
+    passed: bool
+    observed: str
+    required: str
+
+
+@dataclass(frozen=True, slots=True)
+class PaperEntryAuthorizationDecision:
+    """Passive account of one attempt at the existing PAPER entry boundary."""
+
+    result: PaperEntryAuthorizationResult
+    reason: PaperEntryAuthorizationReason
+    symbol: str
+    lifecycle_id: str
+    gates: tuple[PaperEntryGateDecision, ...]
+    order_constructed: bool = False
+    submission_attempted: bool = False
+    placement_decision: str | None = None
+
+    @property
+    def authorized(self) -> bool:
+        return self.result is PaperEntryAuthorizationResult.AUTHORIZED
 
 
 def lifecycle_identity(signal: object) -> str:
@@ -215,25 +275,61 @@ class AutonomousPaperExecutionBridge:
             return identity, identity is None and len(active) > 1
         return None, len(active) > 1
 
-    def submit_entry(self, signal: object, shares: int, risk_dollars: Decimal) -> bool:
+    def submit_entry_decision(
+        self, signal: object, shares: int, risk_dollars: Decimal,
+    ) -> PaperEntryAuthorizationDecision:
+        """Run the unchanged PAPER entry path and expose its terminal gate."""
+
         symbol = str(getattr(signal, "symbol", "")).strip().upper()
         trigger = Decimal(getattr(signal, "entry_trigger"))
         identity = lifecycle_identity(signal)
-        if not self._authorized(symbol) or shares <= 0 or self.readiness is not AutonomousPaperReadiness.READY:
-            return False
+        gates: list[PaperEntryGateDecision] = []
+
+        def gate(name: str, passed: bool, observed: object, required: object) -> bool:
+            gates.append(PaperEntryGateDecision(
+                name, passed, str(observed), str(required),
+            ))
+            return passed
+
+        def refused(
+            reason: PaperEntryAuthorizationReason, *, constructed: bool = False,
+            attempted: bool = False, placement: str | None = None,
+        ) -> PaperEntryAuthorizationDecision:
+            return PaperEntryAuthorizationDecision(
+                PaperEntryAuthorizationResult.REFUSED, reason, symbol, identity,
+                tuple(gates), constructed, attempted, placement,
+            )
+
+        if not gate("environment", self.mode.strip().upper() == "PAPER", self.mode, "PAPER"):
+            return refused(PaperEntryAuthorizationReason.ENVIRONMENT_MISMATCH)
+        if not gate("paper_enabled", self.enabled, self.enabled, True):
+            return refused(PaperEntryAuthorizationReason.PAPER_DISABLED)
+        if not gate("symbol", bool(symbol), bool(symbol), True):
+            return refused(PaperEntryAuthorizationReason.INVALID_SYMBOL)
+        if not gate("quantity", shares > 0, shares, "> 0"):
+            return refused(PaperEntryAuthorizationReason.INVALID_QUANTITY)
+        if not gate(
+            "broker_readiness", self.readiness is AutonomousPaperReadiness.READY,
+            self.readiness.value, AutonomousPaperReadiness.READY.value,
+        ):
+            return refused(PaperEntryAuthorizationReason.BROKER_NOT_READY)
         with self._lock:
             self._reconcile_terminal_exits()
-            if self.order_book is not None and (
-                self.order_book.open_orders_for_symbol(symbol)
-                or self._authoritative_quantity(symbol) > 0
-            ):
-                return False
-            if self._active_by_symbol.get(symbol) is not None:
-                return False
-            if self._identity_seen(identity):
-                return False
-            result = self.trading_service.place_order(
-                self.order_command_factory.create_placement_request(
+            working = bool(
+                self.order_book is not None
+                and self.order_book.open_orders_for_symbol(symbol)
+            )
+            if not gate("working_order_clear", not working, working, False):
+                return refused(PaperEntryAuthorizationReason.WORKING_ORDER_EXISTS)
+            positioned = self._authoritative_quantity(symbol) > 0
+            active = self._active_by_symbol.get(symbol) is not None
+            if not gate("position_clear", not (positioned or active), positioned or active, False):
+                return refused(PaperEntryAuthorizationReason.POSITION_EXISTS)
+            duplicate = self._identity_seen(identity)
+            if not gate("lifecycle_clear", not duplicate, duplicate, False):
+                return refused(PaperEntryAuthorizationReason.DUPLICATE_LIFECYCLE)
+            try:
+                request = self.order_command_factory.create_placement_request(
                     OrderEntryCommand(
                         symbol=symbol, side="BUY", quantity=Decimal(shares),
                         order_type="LIMIT", limit_price=trigger,
@@ -246,13 +342,43 @@ class AutonomousPaperExecutionBridge:
                         },
                     )
                 )
-            )
+            except Exception:
+                gate("order_constructible", False, False, True)
+                return refused(PaperEntryAuthorizationReason.ORDER_CONSTRUCTION_FAILED)
+            gate("order_constructible", True, True, True)
+            try:
+                result = self.trading_service.place_order(request)
+            except Exception:
+                gate("submission", False, "EXCEPTION", "SUCCESS")
+                return refused(
+                    PaperEntryAuthorizationReason.GATEWAY_FAILURE,
+                    constructed=True, attempted=True,
+                )
+            gate("submission", result.success, result.decision.value, "SUCCESS")
             if not result.success:
-                return False
+                reasons = {
+                    OrderPlacementDecision.DISABLED: PaperEntryAuthorizationReason.ORDER_PLACEMENT_DISABLED,
+                    OrderPlacementDecision.SESSION_INVALID: PaperEntryAuthorizationReason.SESSION_BLOCKED,
+                    OrderPlacementDecision.GATEWAY_FAILURE: PaperEntryAuthorizationReason.GATEWAY_FAILURE,
+                    OrderPlacementDecision.ORDER_REJECTED: PaperEntryAuthorizationReason.ORDER_REJECTED,
+                }
+                return refused(
+                    reasons[result.decision], constructed=True, attempted=True,
+                    placement=result.decision.value,
+                )
             self._remember(self._seen_entries, identity)
             self._active_by_symbol[symbol] = identity
             self._entry_orders[identity] = result.broker_order_id
-            return True
+            return PaperEntryAuthorizationDecision(
+                PaperEntryAuthorizationResult.AUTHORIZED,
+                PaperEntryAuthorizationReason.AUTHORIZED, symbol, identity,
+                tuple(gates), True, True, result.decision.value,
+            )
+
+    def submit_entry(self, signal: object, shares: int, risk_dollars: Decimal) -> bool:
+        """Compatibility boundary retaining the historical boolean contract."""
+
+        return self.submit_entry_decision(signal, shares, risk_dollars).authorized
 
     def submit_exit(
         self, symbol: str, quantity: int, price: Decimal, reason: str,
@@ -348,4 +474,9 @@ class AutonomousPaperExecutionBridge:
         return bool(self.enabled and self.mode.strip().upper() == "PAPER" and symbol)
 
 
-__all__ = ["AutonomousPaperExecutionBridge", "AutonomousManagementReadiness", "AutonomousPaperReadiness", "lifecycle_identity"]
+__all__ = [
+    "AutonomousPaperExecutionBridge", "AutonomousManagementReadiness",
+    "AutonomousPaperReadiness", "PaperEntryAuthorizationDecision",
+    "PaperEntryAuthorizationReason", "PaperEntryAuthorizationResult",
+    "PaperEntryGateDecision", "lifecycle_identity",
+]
