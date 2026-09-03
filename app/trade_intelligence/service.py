@@ -276,9 +276,8 @@ class TradeIntelligenceService:
                 if store.checkpoint_work(work.work_id, work.work_type, work.accepted_at, work.payload_json):
                     with self._lock:
                         self._checkpointed += 1
-            if work.work_type == "DECISION":
-                pending_decision = _decision_from_json(work.payload_json)
-                parent_id = pending_decision.experience_id
+            parent_id = _experience_dependency(work)
+            if parent_id is not None:
                 if (
                     parent_id not in active
                     and store.get_experience(parent_id) is None
@@ -298,6 +297,11 @@ class TradeIntelligenceService:
                             prerequisite_related=True,
                         )
                     else:
+                        store.defer_work(
+                            work.work_id, now,
+                            dependency_type="EXPERIENCE",
+                            dependency_id=parent_id,
+                        )
                         deferred.setdefault(parent_id, []).append(work)
                     return
             store.start_work(work.work_id, now)
@@ -465,3 +469,13 @@ def _failure_context(work: _Work) -> dict[str, object]:
         "symbol": payload.get("symbol") or key.get("symbol"),
         "work_type": work.work_type,
     }
+
+
+def _experience_dependency(work: _Work) -> str | None:
+    """Return only an explicitly correlated, durable experience dependency."""
+
+    if work.work_type == "DECISION":
+        return _decision_from_json(work.payload_json).experience_id
+    if work.work_type == "PAPER_OBSERVATION":
+        return _paper_observation_from_json(work.payload_json).experience_id
+    return None

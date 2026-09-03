@@ -19,7 +19,7 @@ from .models import (
     decision_analog_signature,
 )
 
-STORE_SCHEMA_VERSION = 3
+STORE_SCHEMA_VERSION = 4
 
 
 class ExperienceStore:
@@ -93,7 +93,10 @@ class ExperienceStore:
                 CREATE TABLE IF NOT EXISTS work_ledger(
                     work_id TEXT PRIMARY KEY,work_type TEXT NOT NULL,
                     state TEXT NOT NULL,accepted_at TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,started_at TEXT,completed_at TEXT,error TEXT);
+                    payload_json TEXT NOT NULL,started_at TEXT,completed_at TEXT,error TEXT,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    dependency_type TEXT,dependency_id TEXT,deferred_at TEXT,
+                    deferred_count INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS actual_paper_outcomes(
                     execution_record_identity TEXT PRIMARY KEY,
                     experience_id TEXT NOT NULL REFERENCES experiences(experience_id),
@@ -274,12 +277,25 @@ class ExperienceStore:
                     rejected INTEGER NOT NULL,pressure_episodes INTEGER NOT NULL);
                 INSERT OR IGNORE INTO admission_accounting VALUES(1,0,0,0);
             """)
+            work_columns = {
+                str(item[1]) for item in db.execute("PRAGMA table_info(work_ledger)")
+            }
+            for name, declaration in (
+                ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("dependency_type", "TEXT"),
+                ("dependency_id", "TEXT"),
+                ("deferred_at", "TEXT"),
+                ("deferred_count", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if name not in work_columns:
+                    db.execute(f"ALTER TABLE work_ledger ADD COLUMN {name} {declaration}")
             row = db.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
             if row is None:
                 db.execute("INSERT INTO metadata VALUES('schema_version',?)", (str(STORE_SCHEMA_VERSION),))
-            elif int(row[0]) in {1, 2}:
-                # V2/V3 add only research history. Existing experience and
-                # outcome rows retain their exact meaning and payload digests.
+            elif int(row[0]) in {1, 2, 3}:
+                # V2/V3 add research history. V4 adds only durable dependency
+                # bookkeeping; existing facts retain their exact meaning and
+                # payload digests.
                 db.execute("UPDATE metadata SET value=? WHERE key='schema_version'", (str(STORE_SCHEMA_VERSION),))
             elif int(row[0]) != STORE_SCHEMA_VERSION:
                 raise ValueError("incompatible Trade Intelligence store schema")
@@ -626,14 +642,34 @@ class ExperienceStore:
     def checkpoint_work(self, work_id: str, work_type: str, accepted_at: datetime, payload_json: str) -> bool:
         with self._connect() as db:
             cursor = db.execute(
-                "INSERT OR IGNORE INTO work_ledger VALUES(?,?,'CHECKPOINTED',?,?,NULL,NULL,NULL)",
+                """INSERT OR IGNORE INTO work_ledger(
+                   work_id,work_type,state,accepted_at,payload_json)
+                   VALUES(?,?,'CHECKPOINTED',?,?)""",
                 (work_id, work_type, accepted_at.isoformat(), payload_json),
             )
             return cursor.rowcount == 1
 
     def start_work(self, work_id: str, timestamp: datetime) -> None:
         with self._connect() as db:
-            db.execute("UPDATE work_ledger SET state='STARTED',started_at=? WHERE work_id=? AND state='CHECKPOINTED'", (timestamp.isoformat(), work_id))
+            db.execute(
+                """UPDATE work_ledger SET state='STARTED',started_at=?,
+                   attempt_count=attempt_count+1
+                   WHERE work_id=? AND state IN ('CHECKPOINTED','DEPENDENCY_DEFERRED')""",
+                (timestamp.isoformat(), work_id),
+            )
+
+    def defer_work(
+        self, work_id: str, timestamp: datetime, *, dependency_type: str,
+        dependency_id: str,
+    ) -> None:
+        with self._connect() as db:
+            db.execute(
+                """UPDATE work_ledger SET state='DEPENDENCY_DEFERRED',
+                   dependency_type=?,dependency_id=?,deferred_at=?,
+                   deferred_count=deferred_count+1
+                   WHERE work_id=? AND state IN ('CHECKPOINTED','DEPENDENCY_DEFERRED')""",
+                (dependency_type, dependency_id, timestamp.isoformat(), work_id),
+            )
 
     def complete_work(self, work_id: str, timestamp: datetime, error: str | None = None) -> None:
         with self._connect() as db:
@@ -660,10 +696,15 @@ class ExperienceStore:
         return {
             "accepted": sum(values.values()),
             "checkpointed": values.get("CHECKPOINTED", 0),
+            "dependency_deferred": values.get("DEPENDENCY_DEFERRED", 0),
             "started": values.get("STARTED", 0),
             "completed": values.get("COMPLETED", 0),
             "failed": values.get("FAILED", 0),
-            "outstanding": values.get("CHECKPOINTED", 0) + values.get("STARTED", 0),
+            "outstanding": (
+                values.get("CHECKPOINTED", 0)
+                + values.get("DEPENDENCY_DEFERRED", 0)
+                + values.get("STARTED", 0)
+            ),
             "suppressed_duplicate": admission[0],
             "rejected": admission[1],
             "pressure_episodes": admission[2],
@@ -688,7 +729,8 @@ class ExperienceStore:
         with self._connect() as db:
             rows = db.execute(
                 """SELECT work_id,work_type,payload_json,accepted_at
-                   FROM work_ledger WHERE state IN ('CHECKPOINTED','STARTED')
+                   FROM work_ledger WHERE state IN (
+                     'CHECKPOINTED','DEPENDENCY_DEFERRED','STARTED')
                    ORDER BY CASE work_type WHEN 'EXPERIENCE' THEN 0 ELSE 1 END,
                             accepted_at,work_id"""
             ).fetchall()
