@@ -16,7 +16,8 @@ from app.operations_core import OperationsOrder
 from app.paper_trading.fill_models import Fill
 from app.paper_trading.models import PaperFill
 from app.paper_trading.order_models import (
-    OrderRequest, OrderSide, OrderStatus, OrderType, PaperOrder, TimeInForce,
+    OrderRequest, OrderSide, OrderStatus, OrderTerminalReason, OrderType,
+    PaperOrder, TimeInForce,
 )
 
 
@@ -193,6 +194,9 @@ def _order_payload(order: PaperOrder) -> dict:
         "filled_quantity": str(order.filled_quantity),
         "average_fill_price": None if order.average_fill_price is None else str(order.average_fill_price),
         "rejection_reason": order.rejection_reason,
+        "terminal_reason": (
+            None if order.terminal_reason is None else order.terminal_reason.value
+        ),
         "request": {
             "symbol": order.request.symbol, "asset_class": order.request.asset_class.value,
             "side": order.request.side.value, "order_type": order.request.order_type.value,
@@ -207,6 +211,11 @@ def _order_payload(order: PaperOrder) -> dict:
                 else str(order.request.structural_stop_price)
             ),
             "execution_reason": order.request.execution_reason,
+            "entry_valid_until": (
+                None
+                if order.request.entry_valid_until is None
+                else order.request.entry_valid_until.isoformat()
+            ),
         },
         "fills": [_fill_payload(fill) for fill in order.fills],
     }
@@ -220,6 +229,11 @@ def _order_from_payload(value: dict) -> PaperOrder:
         filled_quantity=Decimal(value["filled_quantity"]),
         average_fill_price=None if value["average_fill_price"] is None else Decimal(value["average_fill_price"]),
         rejection_reason=value["rejection_reason"],
+        terminal_reason=(
+            None
+            if value.get("terminal_reason") is None
+            else OrderTerminalReason(value["terminal_reason"])
+        ),
         request=OrderRequest(
             symbol=request["symbol"], asset_class=AssetClass(request["asset_class"]),
             side=OrderSide(request["side"]), order_type=OrderType(request["order_type"]),
@@ -234,6 +248,11 @@ def _order_from_payload(value: dict) -> PaperOrder:
                 else Decimal(request["structural_stop_price"])
             ),
             execution_reason=request.get("execution_reason"),
+            entry_valid_until=(
+                None
+                if request.get("entry_valid_until") is None
+                else datetime.fromisoformat(request["entry_valid_until"])
+            ),
         ),
         fills=tuple(_fill_from_payload(fill) for fill in value["fills"]),
     )

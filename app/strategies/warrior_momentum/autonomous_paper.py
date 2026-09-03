@@ -14,6 +14,7 @@ from app.paper_trading.order_models import OrderSide, OrderType
 from app.order_placement import OrderPlacementDecision
 from app.services.order_command_factory import OrderCommandFactory, OrderEntryCommand
 from app.services.trading_service import TradingService
+from app.strategies.warrior_momentum.features import BAR_INTERVAL
 
 
 _RECENT_LIFECYCLE_LIMIT = 1024
@@ -383,9 +384,13 @@ class AutonomousPaperExecutionBridge:
                         strategy_lifecycle_id=identity,
                         metadata={
                             "source": "autonomous-paper",
+                            "reason": "ENTRY",
                             "risk_dollars": str(risk_dollars),
                             "lifecycle_id": identity,
                             "structural_stop": str(getattr(signal, "stop_price", "")),
+                            "entry_validity_seconds": str(
+                                int(BAR_INTERVAL.total_seconds())
+                            ),
                         },
                     )
                 )
@@ -528,7 +533,9 @@ class AutonomousPaperExecutionBridge:
                     order_type="STOP" if protective else "LIMIT",
                     limit_price=None if protective else Decimal(price),
                     stop_price=Decimal(price) if protective else None,
-                    time_in_force="DAY",
+                    # Position management must survive DAY rollover.  Entry
+                    # validity is handled separately before exposure exists.
+                    time_in_force="GTC",
                     strategy_lifecycle_id=identity,
                     metadata={
                         "source": "autonomous-paper",

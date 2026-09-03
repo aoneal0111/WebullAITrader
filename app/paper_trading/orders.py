@@ -10,6 +10,7 @@ from app.paper_trading.fill_models import Fill
 from app.paper_trading.order_models import (
     OrderRequest,
     OrderStatus,
+    OrderTerminalReason,
     PaperOrder,
 )
 
@@ -109,6 +110,7 @@ def cancel_order(
     order: PaperOrder,
     *,
     at: datetime | None = None,
+    reason: OrderTerminalReason = OrderTerminalReason.OPERATOR_CANCELLED,
 ) -> PaperOrder:
     _require_status(
         order,
@@ -124,6 +126,7 @@ def cancel_order(
         order,
         status=OrderStatus.CANCELLED,
         updated_at=_transition_time(order, at),
+        terminal_reason=reason,
     )
 
 
@@ -131,6 +134,7 @@ def expire_order(
     order: PaperOrder,
     *,
     at: datetime | None = None,
+    reason: OrderTerminalReason = OrderTerminalReason.DAY_EXPIRED,
 ) -> PaperOrder:
     _require_status(
         order,
@@ -146,6 +150,7 @@ def expire_order(
         order,
         status=OrderStatus.EXPIRED,
         updated_at=_transition_time(order, at),
+        terminal_reason=reason,
     )
 
 

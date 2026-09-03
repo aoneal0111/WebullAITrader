@@ -39,6 +39,16 @@ class OrderStatus(StrEnum):
     EXPIRED = "EXPIRED"
 
 
+class OrderTerminalReason(StrEnum):
+    """Durable, operator-visible reason for a non-fill terminal transition."""
+
+    DAY_EXPIRED = "DAY_EXPIRED"
+    ENTRY_STALE = "ENTRY_STALE"
+    STRUCTURAL_STOP_INVALIDATED = "STRUCTURAL_STOP_INVALIDATED"
+    OPERATOR_CANCELLED = "OPERATOR_CANCELLED"
+    PROTECTIVE_REPLACED = "PROTECTIVE_REPLACED"
+
+
 TERMINAL_ORDER_STATUSES = frozenset(
     {
         OrderStatus.FILLED,
@@ -63,6 +73,7 @@ class OrderRequest:
     strategy_lifecycle_id: str | None = None
     structural_stop_price: Decimal | None = None
     execution_reason: str | None = None
+    entry_valid_until: datetime | None = None
 
     def __post_init__(self) -> None:
         symbol = self.symbol.strip().upper()
@@ -111,6 +122,11 @@ class OrderRequest:
             else None
         )
         object.__setattr__(self, "execution_reason", execution_reason)
+        if self.entry_valid_until is not None:
+            _require_aware_datetime(
+                self.entry_valid_until,
+                "entry_valid_until",
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +140,7 @@ class PaperOrder:
     average_fill_price: Decimal | None = None
     rejection_reason: str | None = None
     fills: tuple[Fill, ...] = ()
+    terminal_reason: OrderTerminalReason | None = None
 
     def __post_init__(self) -> None:
         order_id = self.order_id.strip()
@@ -235,6 +252,19 @@ class PaperOrder:
                 "rejection_reason is only valid "
                 "for rejected orders"
             )
+
+        if self.terminal_reason is not None:
+            if not isinstance(self.terminal_reason, OrderTerminalReason):
+                raise TypeError(
+                    "terminal_reason must be an OrderTerminalReason or None"
+                )
+            if self.status not in {
+                OrderStatus.CANCELLED,
+                OrderStatus.EXPIRED,
+            }:
+                raise ValueError(
+                    "terminal_reason is only valid for cancelled or expired orders"
+                )
 
         object.__setattr__(self, "order_id", order_id)
         object.__setattr__(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from threading import RLock
 
@@ -50,6 +50,7 @@ from app.paper_trading.order_models import (
     OrderRequest as PaperOrderRequest,
     OrderSide as PaperOrderSide,
     OrderStatus as PaperOrderStatus,
+    OrderTerminalReason,
     OrderType as PaperOrderType,
     PaperOrder,
     TimeInForce as PaperTimeInForce,
@@ -59,8 +60,10 @@ from app.paper_trading.orders import (
     accept_order,
     cancel_order as transition_cancel_order,
     create_order,
+    expire_order as transition_expire_order,
 )
 from app.paper_gateway.durable_store import DurablePaperExecutionStore
+from app.paper_gateway.order_validity import temporal_terminal_reason
 from app.performance_diagnostics import performance_diagnostics
 
 
@@ -152,12 +155,16 @@ class PaperOrderGateway:
         self._lock = RLock()
         self._durability_error: Exception | None = None
         if self._durable_store is not None:
+            restored_events = self._durable_store.events()
             for restored in self._durable_store.orders():
                 self._order_book.restore(restored)
-            self._sequence = max((event.sequence for event in self._durable_store.events()), default=0)
+            self._sequence = max((event.sequence for event in restored_events), default=0)
             if self._event_sink is not None:
-                for event in self._durable_store.events():
+                for event in restored_events:
                     self._event_sink(event)
+            # Startup validity reconciliation is part of gateway construction,
+            # before the command graph can expose matching or autonomous entry.
+            self.reconcile_temporal_validity()
 
     @property
     def order_book(self) -> PaperOrderBook:
@@ -268,6 +275,7 @@ class PaperOrderGateway:
                     },
                 )
 
+            created_at = self._now()
             paper_request = PaperOrderRequest(
                 symbol=order.symbol,
                 asset_class=AssetClass.STOCK,
@@ -283,11 +291,15 @@ class PaperOrderGateway:
                 strategy_lifecycle_id=order.strategy_lifecycle_id,
                 structural_stop_price=_structural_stop_from_placement(order),
                 execution_reason=_execution_reason_from_placement(order),
+                entry_valid_until=_entry_valid_until_from_placement(
+                    order,
+                    created_at,
+                ),
             )
 
             paper_order = create_order(
                 paper_request,
-                clock=self._clock,
+                clock=lambda: created_at,
             )
             paper_order = accept_order(
                 paper_order,
@@ -377,6 +389,10 @@ class PaperOrderGateway:
             )
             self._emit_event(accepted_event)
             self._emit_event(working_event)
+            # A DAY submitted outside its valid calendar/session boundary is
+            # recorded truthfully, then terminalized before it can match.
+            for event in self._expire_temporally_invalid_orders(created_at):
+                self._emit_event(event)
 
         return BrokerOrderAcknowledgement(
             client_order_id=order.client_order_id,
@@ -424,14 +440,19 @@ class PaperOrderGateway:
         try:
             with self._lock:
                 self._require_durability()
+                terminal_reason = _cancellation_reason(request)
                 cancelled = transition_cancel_order(
                     existing,
                     at=self._now(),
+                    reason=terminal_reason,
                 )
                 event = self._order_event(
                     cancelled,
                     event_type="ORDER_CANCELLED",
-                    message=f"Order {cancelled.order_id} cancelled",
+                    message=(
+                        f"Order {cancelled.order_id} cancelled: "
+                        f"{terminal_reason.value}."
+                    ),
                 )
                 self._persist_event(event, cancelled)
                 self._order_book.update(cancelled)
@@ -446,6 +467,7 @@ class PaperOrderGateway:
                     request.request_id,
                     report.order.updated_at,
                     report.message,
+                    (("reason", terminal_reason.value),),
                 )
                 self._emit_event(event)
         except InvalidOrderTransitionError:
@@ -528,9 +550,14 @@ class PaperOrderGateway:
             if self._durability_error is not None:
                 return ()
             try:
+                temporal_events = self._expire_temporally_invalid_orders(
+                    evaluated_at,
+                )
                 invalidation_events = self._invalidate_entry_orders(quote)
             except PaperDurabilityError:
                 return ()
+            for event in temporal_events:
+                self._emit_event(event)
             for event in invalidation_events:
                 self._emit_event(event)
             durable_transitions: list[
@@ -608,7 +635,11 @@ class PaperOrderGateway:
                 or quote.ask_price > stop
             ):
                 continue
-            cancelled = transition_cancel_order(order, at=quote.timestamp)
+            cancelled = transition_cancel_order(
+                order,
+                at=quote.timestamp,
+                reason=OrderTerminalReason.STRUCTURAL_STOP_INVALIDATED,
+            )
             event = self._order_event(
                 cancelled,
                 event_type="ORDER_CANCELLED",
@@ -630,6 +661,72 @@ class PaperOrderGateway:
             )
             events.append(event)
         return tuple(events)
+
+    def reconcile_temporal_validity(
+        self,
+        *,
+        at: datetime | None = None,
+    ) -> tuple[PaperRuntimeEvent, ...]:
+        """Durably terminalize invalid restored/current entries before use."""
+
+        evaluated_at = self._now() if at is None else at
+        if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
+            raise ValueError("validity reconciliation time must be timezone-aware")
+        with self._lock:
+            events = self._expire_temporally_invalid_orders(evaluated_at)
+        for event in events:
+            self._emit_event(event)
+        return events
+
+    def _expire_temporally_invalid_orders(
+        self,
+        evaluated_at: datetime,
+    ) -> tuple[PaperRuntimeEvent, ...]:
+        events: list[PaperRuntimeEvent] = []
+        for order in self._order_book.open_orders():
+            reason = temporal_terminal_reason(
+                order,
+                evaluated_at=evaluated_at,
+                long_position_quantity=self._long_position_quantity(order.symbol),
+            )
+            if reason is None:
+                continue
+            expired = transition_expire_order(
+                order,
+                at=evaluated_at,
+                reason=reason,
+            )
+            message = (
+                f"Order {order.order_id} expired before matching: "
+                f"{reason.value}."
+            )
+            event = self._order_event(
+                expired,
+                event_type="ORDER_EXPIRED",
+                message=message,
+            )
+            self._persist_event(event, expired)
+            self._order_book.update(expired)
+            self._append_journal(
+                JournalEventType.EXPIRATION,
+                order.order_id,
+                evaluated_at,
+                message,
+                (("reason", reason.value),),
+            )
+            events.append(event)
+        return tuple(events)
+
+    def _long_position_quantity(self, symbol: str) -> Decimal:
+        quantity = Decimal("0")
+        for order in self._order_book.history():
+            if order.symbol != symbol or order.filled_quantity <= 0:
+                continue
+            if order.side is PaperOrderSide.BUY:
+                quantity += order.filled_quantity
+            else:
+                quantity -= order.filled_quantity
+        return max(quantity, Decimal("0"))
 
     def _realized_pnl(
         self,
@@ -678,9 +775,7 @@ class PaperOrderGateway:
                     lifecycle_id=getattr(
                         order, "strategy_lifecycle_id", None
                     ),
-                    execution_reason=getattr(
-                        order, "execution_reason", None
-                    ),
+                    execution_reason=_execution_reason_from_placement(order),
                     execution_source=self._source,
                 ),
             )
@@ -744,7 +839,11 @@ class PaperOrderGateway:
                 average_fill_price=_decimal_text(order.average_fill_price),
                 submitted_at=order.created_at,
                 lifecycle_id=order.request.strategy_lifecycle_id,
-                execution_reason=order.request.execution_reason,
+                execution_reason=(
+                    order.terminal_reason.value
+                    if order.terminal_reason is not None
+                    else order.request.execution_reason
+                ),
                 execution_source=self._source,
             ),
             fill=fill,
@@ -889,6 +988,34 @@ def _structural_stop_from_placement(order: object) -> Decimal | None:
 def _execution_reason_from_placement(order: object) -> str | None:
     value = getattr(order, "metadata", {}).get("reason")
     return None if value is None else str(value).strip().upper() or None
+
+
+def _entry_valid_until_from_placement(
+    order: object,
+    created_at: datetime,
+) -> datetime | None:
+    """Persist the authorization-time validity supplied by Warrior PAPER."""
+
+    metadata = getattr(order, "metadata", {})
+    if metadata.get("source") != "autonomous-paper":
+        return None
+    value = metadata.get("entry_validity_seconds")
+    try:
+        seconds = Decimal(str(value))
+    except Exception:
+        return None
+    if not seconds.is_finite() or seconds <= 0:
+        return None
+    return created_at + timedelta(seconds=float(seconds))
+
+
+def _cancellation_reason(
+    request: OrderCancellationRequest,
+) -> OrderTerminalReason:
+    source = str(request.metadata.get("source", "")).strip().lower()
+    if source == "autonomous-paper-protective-replace":
+        return OrderTerminalReason.PROTECTIVE_REPLACED
+    return OrderTerminalReason.OPERATOR_CANCELLED
 
 
 def _decimal_text(value: Decimal | None) -> str | None:
