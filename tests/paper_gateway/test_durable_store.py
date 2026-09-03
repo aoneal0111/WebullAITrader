@@ -55,6 +55,13 @@ def test_working_order_rehydrates_without_resubmission(tmp_path) -> None:
     assert restored_bridge._active_by_symbol["PMI"] == "trade-a"
     assert restored_bridge.submit_entry(Signal(), 100, Decimal("50")) is False
     assert not any(event.event_type == "ORDER_SUBMITTED" for event in events)
+    restored_order_event = next(event for event in events if event.order is not None)
+    assert restored_order_event.order.order_type == "LIMIT"
+    assert restored_order_event.order.limit_price == "10"
+    assert restored_order_event.order.filled_quantity == "0"
+    assert restored_order_event.order.remaining_quantity == "100"
+    assert restored_order_event.order.submitted_at is not None
+    assert restored_order_event.order.lifecycle_id == "trade-a"
     second.close()
 
 

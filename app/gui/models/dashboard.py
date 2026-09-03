@@ -6,7 +6,11 @@ from datetime import datetime
 from .runtime import RuntimeState
 from .paper_validation import PaperValidationDashboardSnapshot
 from .atlas_activity import AtlasActivitySnapshot
-from .mission_control import AIThinkingSnapshot, MissionStatusSnapshot
+from .mission_control import (
+    AIThinkingSnapshot,
+    AtlasReasoningSnapshot,
+    MissionStatusSnapshot,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,8 +77,37 @@ class ActivitySnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ProtectionSnapshot:
+    status: str
+    side: str
+    order_type: str
+    remaining_quantity: str
+    stop_price: str
+    order_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class PositionManagementRow:
+    symbol: str
+    side: str
+    quantity: str
+    average_entry: str
+    mark: str
+    unrealized_pnl: str
+    unrealized_percent: str
+    realized_pnl: str
+    updated_at: str
+    strategy: str = "—"
+    setup: str = "—"
+    management_state: str = "Protection not evidenced"
+    thesis_state: str = "—"
+    protection: ProtectionSnapshot | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PositionsSnapshot:
-    rows: tuple[tuple[str, str, str, str], ...]
+    rows: tuple[tuple[str, ...], ...]
+    management: tuple[PositionManagementRow, ...] = ()
 
     @classmethod
     def initial(cls) -> "PositionsSnapshot":
@@ -83,7 +116,8 @@ class PositionsSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class OrdersSnapshot:
-    rows: tuple[tuple[str, str, str], ...]
+    rows: tuple[tuple[str, ...], ...]
+    protective_rows: frozenset[int] = frozenset()
 
     @classmethod
     def initial(cls) -> "OrdersSnapshot":
@@ -100,6 +134,7 @@ class DashboardSnapshot:
     atlas_activity: AtlasActivitySnapshot = AtlasActivitySnapshot()
     mission_status: MissionStatusSnapshot = MissionStatusSnapshot()
     ai_thinking: AIThinkingSnapshot = AIThinkingSnapshot()
+    atlas_reasoning: AtlasReasoningSnapshot = AtlasReasoningSnapshot()
 
     @classmethod
     def initial(cls) -> "DashboardSnapshot":
@@ -112,4 +147,5 @@ class DashboardSnapshot:
             atlas_activity=AtlasActivitySnapshot.initial(),
             mission_status=MissionStatusSnapshot.initial(),
             ai_thinking=AIThinkingSnapshot.initial(),
+            atlas_reasoning=AtlasReasoningSnapshot.initial(),
         )

@@ -20,11 +20,7 @@ def test_dashboard_uses_only_section_scrolling(application) -> None:
 
     workspace = dashboard.market_workspace
     scroll_areas = dashboard.findChildren(QScrollArea)
-    assert set(scroll_areas) == {
-        workspace.market_overview_section.scroll_area,
-        workspace.market_section.scroll_area,
-        workspace.portfolio_section.scroll_area,
-    }
+    assert set(scroll_areas) == {workspace.market_section.scroll_area}
     assert all(
         area.horizontalScrollBarPolicy()
         == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -62,7 +58,10 @@ def test_workstation_exposes_reference_panels(application) -> None:
     assert workspace.trade_intelligence._plan.heading.text() == "TRADE PLAN"
     assert workspace.trade_intelligence._decision_panel.heading.text() == "CURRENT DECISION"
     assert workspace.activity_section.heading.text() == "LIVE AUTONOMOUS ACTIVITY"
-    assert workspace.portfolio_section.heading.text() == "PORTFOLIO / PERFORMANCE"
+    assert workspace.portfolio_section.heading.text() == "ACCOUNT / RISK"
+    assert workspace.positions_section.heading.text() == "ACTIVE POSITIONS / MANAGEMENT"
+    assert workspace.orders_section.heading.text() == "WORKING / RECENT ORDERS"
+    assert workspace.market_overview_section.parentWidget() is None
 
 
 def test_workstation_header_has_compact_health_and_account_metrics(application) -> None:
@@ -83,10 +82,7 @@ def test_major_regions_keep_overflow_inside_their_assigned_geometry(application)
     dashboard.show()
     application.processEvents()
     workspace = dashboard.market_workspace
-    original_heights = (
-        workspace.opportunities_section.height(),
-        workspace.activity_section.height(),
-    )
+    original_height = workspace.opportunities_section.height()
 
     for table in (workspace.watchlist._table, workspace.activity_panel._table):
         table.setRowCount(50)
@@ -95,11 +91,9 @@ def test_major_regions_keep_overflow_inside_their_assigned_geometry(application)
     application.processEvents()
 
     assert workspace.watchlist._table.verticalScrollBar().maximum() > 0
-    assert workspace.activity_panel._table.verticalScrollBar().maximum() > 0
-    assert original_heights == (
-        workspace.opportunities_section.height(),
-        workspace.activity_section.height(),
-    )
+    assert workspace.activity_section.parentWidget() is workspace.right_splitter
+    assert workspace.activity_panel._table.rowCount() == 50
+    assert original_height == workspace.opportunities_section.height()
 
 
 def test_market_overview_is_honest_when_projection_is_unavailable(application) -> None:

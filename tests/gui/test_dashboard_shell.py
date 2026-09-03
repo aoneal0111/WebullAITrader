@@ -62,15 +62,15 @@ def test_navigation_rail_uses_reference_routes_without_reindexing(
     sidebar.buttons["Activity"].click()
 
     assert sidebar.ITEMS == (
-        "Dashboard",
-        "Watchlist",
+        "Mission Control",
         "Positions",
         "Orders",
+        "Operator Workspace",
         "Decisions",
         "Activity",
-        "Operations",
+        "Scanner",
         "Replay",
-        "Settings",
+        "System / Settings",
     )
     assert requested == [8, 5]
 
@@ -97,7 +97,7 @@ def test_supported_minimum_size_has_no_horizontal_dashboard_scroll(
     application.processEvents()
 
     scroll_areas = window.dashboard.findChildren(QScrollArea)
-    assert len(scroll_areas) == 3
+    assert len(scroll_areas) == 1
     assert all(
         area.objectName() == "sectionScrollArea"
         and area.horizontalScrollBarPolicy()
@@ -128,7 +128,7 @@ def test_dashboard_preserves_content_at_supported_resolutions(
     application.processEvents()
 
     scroll_areas = window.dashboard.findChildren(QScrollArea)
-    assert len(scroll_areas) == 3
+    assert len(scroll_areas) == 1
     assert all(
         area.objectName() == "sectionScrollArea"
         and area.horizontalScrollBarPolicy()
@@ -172,7 +172,7 @@ def test_portfolio_summary_exposes_visual_metric_hierarchy(window) -> None:
     cards = window.dashboard.portfolio_summary._cards
 
     assert cards["Equity"].property("emphasis") == "primary"
-    assert cards["Total P/L"].property("emphasis") == "primary"
+    assert cards["Unrealized P/L"].property("emphasis") == "primary"
     assert cards["Exposure"].property("emphasis") == "standard"
     assert cards["Buying Power"].property("emphasis") == "medium"
     assert cards["Open Positions"]._value.objectName() == "metricValue"
@@ -336,9 +336,9 @@ def test_existing_projection_snapshots_populate_dashboard_surfaces(
         ._rows["Candidates"].text()
     )
     assert (
-        window.dashboard.portfolio_summary._cards["Total P/L"]
+        window.dashboard.portfolio_summary._cards["Unrealized P/L"]
         ._value.text()
-        == "+$250.00"
+        == "+$200.00"
     )
     assert (
         window.dashboard.portfolio_summary._cards["Equity"]._value.text()
@@ -356,7 +356,7 @@ def test_existing_projection_snapshots_populate_dashboard_surfaces(
     assert window.global_status.broker.text() == "\u25cf  Broker Connected"
 
 
-def test_laptop_opportunities_and_intelligence_own_visible_workspace(application, window) -> None:
+def test_laptop_position_management_owns_primary_workspace(application, window) -> None:
     window.resize(1280, 720)
     window.show()
     for _ in range(3):
@@ -364,8 +364,9 @@ def test_laptop_opportunities_and_intelligence_own_visible_workspace(application
 
     market = window.dashboard.market_workspace
     assert market.layout_mode == "compact"
-    assert market.focus_section.width() >= 400
-    assert market.market_section.width() > market.focus_section.width()
+    assert market.positions_section.height() > market.focus_section.height()
+    assert market.left_column.width() > market.market_section.width()
+    assert market.reasoning_section.isVisible()
     assert market.splitter.widget(0) is market.left_column
     assert market.splitter.widget(1) is market.right_workspace
     assert market.splitter.count() == 2

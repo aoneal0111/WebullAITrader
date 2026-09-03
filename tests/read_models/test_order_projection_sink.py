@@ -66,6 +66,32 @@ def test_runtime_order_event_updates_projection_and_application_state() -> None:
     assert store.snapshot().orders[0].order_id == "order-1"
 
 
+def test_projection_preserves_authoritative_execution_display_fields() -> None:
+    bus = OperationsBus()
+    projection = OrderProjection(bus)
+    order = OperationsOrder(
+        order_id="stop-1", symbol="PMI", side="SELL", quantity="400",
+        status="PARTIALLY_FILLED", updated_at=NOW, order_type="STOP",
+        stop_price="5.03", filled_quantity="150", remaining_quantity="250",
+        average_fill_price="4.50", submitted_at=NOW,
+        lifecycle_id="warrior-pmi", execution_reason="STOP",
+        execution_source="paper-order-gateway",
+    )
+    projection(PaperRuntimeEvent(
+        sequence=1, timestamp=NOW, event_type="ORDER_PARTIALLY_FILLED",
+        message="partial", cycle=1, symbol="PMI", order=order,
+    ))
+
+    assert projection.snapshot.orders[0] == OrderReadModel(
+        order_id="stop-1", symbol="PMI", side="SELL", quantity="400",
+        status="PARTIALLY_FILLED", updated_at=NOW, order_type="STOP",
+        stop_price="5.03", filled_quantity="150", remaining_quantity="250",
+        average_fill_price="4.50", submitted_at=NOW,
+        lifecycle_id="warrior-pmi", execution_reason="STOP",
+        execution_source="paper-order-gateway",
+    )
+
+
 def test_projection_ignores_events_without_explicit_order_facts() -> None:
     bus = OperationsBus()
     store = ApplicationStateStore(bus)

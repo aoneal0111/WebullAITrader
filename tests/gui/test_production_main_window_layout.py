@@ -63,27 +63,23 @@ def test_production_main_window_keeps_trade_intelligence_in_middle_row(
         assert trade.parentWidget() is middle
 
         assert trade.isVisible()
-        assert trade.width() > 600
+        assert trade.width() >= 350
+        assert left.width() > trade.width()
         assert trade.height() > 300
         assert workspace.trade_intelligence.isVisible()
         assert workspace.opportunities_section.isVisible()
         assert 350 < workspace.opportunities_section.width() < 600
-        assert workspace.market_overview_section.isVisible()
-        assert abs(
-            workspace.market_overview_section.width()
-            - workspace.opportunities_section.width()
-        ) <= 2
+        assert workspace.positions_section.isVisible()
+        assert workspace.positions_section.width() > workspace.opportunities_section.width()
 
         total = sum(middle.sizes())
         left_ratio = middle.sizes()[0] / total
         right_ratio = middle.sizes()[1] / total
-        assert 0.28 <= left_ratio <= 0.36
-        assert 0.64 <= right_ratio <= 0.72
+        assert 0.60 <= left_ratio <= 0.68
+        assert 0.32 <= right_ratio <= 0.40
 
         section_scrolls = {
-            workspace.market_overview_section.scroll_area,
             workspace.market_section.scroll_area,
-            workspace.portfolio_section.scroll_area,
         }
         assert section_scrolls <= set(window.dashboard.findChildren(QScrollArea))
         assert all(

@@ -669,6 +669,19 @@ class PaperOrderGateway:
                     quantity=format(order.quantity, "f"),
                     status="REJECTED",
                     updated_at=timestamp,
+                    order_type=order.order_type.value,
+                    limit_price=_decimal_text(order.limit_price),
+                    stop_price=_decimal_text(order.stop_price),
+                    filled_quantity="0",
+                    remaining_quantity=format(order.quantity, "f"),
+                    submitted_at=timestamp,
+                    lifecycle_id=getattr(
+                        order, "strategy_lifecycle_id", None
+                    ),
+                    execution_reason=getattr(
+                        order, "execution_reason", None
+                    ),
+                    execution_source=self._source,
                 ),
             )
         )
@@ -723,6 +736,16 @@ class PaperOrderGateway:
                 quantity=format(order.quantity, "f"),
                 status=status or order.status.value,
                 updated_at=order.updated_at,
+                order_type=order.request.order_type.value,
+                limit_price=_decimal_text(order.request.limit_price),
+                stop_price=_decimal_text(order.request.stop_price),
+                filled_quantity=format(order.filled_quantity, "f"),
+                remaining_quantity=format(order.remaining_quantity, "f"),
+                average_fill_price=_decimal_text(order.average_fill_price),
+                submitted_at=order.created_at,
+                lifecycle_id=order.request.strategy_lifecycle_id,
+                execution_reason=order.request.execution_reason,
+                execution_source=self._source,
             ),
             fill=fill,
             mark_price=mark_price,
@@ -866,6 +889,10 @@ def _structural_stop_from_placement(order: object) -> Decimal | None:
 def _execution_reason_from_placement(order: object) -> str | None:
     value = getattr(order, "metadata", {}).get("reason")
     return None if value is None else str(value).strip().upper() or None
+
+
+def _decimal_text(value: Decimal | None) -> str | None:
+    return None if value is None else format(value, "f")
 
 
 def _entry_structural_stop(order: PaperOrder) -> Decimal | None:

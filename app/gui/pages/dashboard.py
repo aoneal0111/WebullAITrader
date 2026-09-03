@@ -45,8 +45,8 @@ class DashboardPage(QWidget):
         self.live_activity = self.market_workspace.activity_panel
         self.live_activity_section = self.market_workspace.activity_section
         self.activity_panel = self.live_activity
-        self.positions_panel = self.operator_workspace.positions
-        self.orders_panel = self.operator_workspace.orders
+        self.positions_panel = self.market_workspace.positions_panel
+        self.orders_panel = self.market_workspace.orders_panel
         self.operations_activity_panel = self.operator_workspace.timeline
         self.decisions_panel = self.operator_workspace.decisions
         self.portfolio_panel = self.portfolio_summary
@@ -72,8 +72,11 @@ class DashboardPage(QWidget):
         self.market_workspace.render_activity(snapshot.atlas_activity)
         self.market_workspace.render_mission(snapshot.mission_status)
         self.market_workspace.render_ai_thinking(snapshot.ai_thinking)
+        self.market_workspace.render_atlas_reasoning(snapshot.atlas_reasoning)
         self.positions_panel.render(snapshot.positions)
         self.orders_panel.render(snapshot.orders)
+        self.operator_workspace.positions.render(snapshot.positions)
+        self.operator_workspace.orders.render(snapshot.orders)
         self.paper_validation_panel.render(snapshot.paper_validation)
 
 

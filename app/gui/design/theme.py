@@ -95,6 +95,7 @@ def application_stylesheet() -> str:
     QLabel#aiObjective {{ color: {Colors.TEXT_STRONG}; font-size: {Typography.XL}px; font-weight: 750; }}
     QLabel#aiReasoning {{ color: {Colors.TEXT}; font-size: {Typography.MD}px; }}
     QLabel#aiFact {{ color: {Colors.TEXT_STRONG}; font-weight: 650; }}
+    QFrame#positionManagement {{ background: {Colors.SURFACE_ALT}; border-left: 3px solid {Colors.ACCENT}; border-radius: 4px; }}
     QLabel#metricValue {{ font-family: "{mono}"; font-size: {Typography.LG}px; font-weight: 700; color: {Colors.TEXT_STRONG}; }}
     QLabel#metricValue[emphasis='primary'] {{ font-size: {Typography.PRIMARY_METRIC}px; font-weight: 750; }}
     QLabel#metricValue[emphasis='medium'] {{ font-size: {Typography.XL}px; }}

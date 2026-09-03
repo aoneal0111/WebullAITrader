@@ -3,6 +3,8 @@ from .dashboard import (
     ActivitySnapshot,
     DashboardSnapshot,
     OrdersSnapshot,
+    PositionManagementRow,
+    ProtectionSnapshot,
     PositionsSnapshot,
     RuntimeSnapshot,
     TimelineFilter,
@@ -18,6 +20,7 @@ from .paper_validation import PaperValidationDashboardSnapshot
 from .atlas_activity import AtlasActivityRow, AtlasActivitySnapshot
 from .mission_control import (
     AIThinkingSnapshot,
+    AtlasReasoningSnapshot,
     MissionStatusRow,
     MissionStatusSnapshot,
 )
@@ -34,6 +37,8 @@ __all__ = [
     "WatchlistRow",
     "WatchlistSnapshot",
     "OrdersSnapshot",
+    "PositionManagementRow",
+    "ProtectionSnapshot",
     "PositionsSnapshot",
     "RuntimeSnapshot",
     "RuntimeState",
@@ -45,6 +50,7 @@ __all__ = [
     "AtlasActivityRow",
     "AtlasActivitySnapshot",
     "AIThinkingSnapshot",
+    "AtlasReasoningSnapshot",
     "MissionStatusRow",
     "MissionStatusSnapshot",
 ]

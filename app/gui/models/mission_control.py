@@ -46,7 +46,21 @@ class AIThinkingSnapshot:
         return cls()
 
 
+@dataclass(frozen=True, slots=True)
+class AtlasReasoningSnapshot:
+    current_action: str = "Unknown"
+    why: str = "Unknown — no projected reasoning"
+    risk_protection: str = "Unknown — no projected protection state"
+    next_trigger: str = "Unknown — no projected trigger"
+    tone: str = "neutral"
+
+    @classmethod
+    def initial(cls) -> "AtlasReasoningSnapshot":
+        return cls()
+
+
 __all__ = [
+    "AtlasReasoningSnapshot",
     "AIThinkingSnapshot",
     "MissionStatusRow",
     "MissionStatusSnapshot",

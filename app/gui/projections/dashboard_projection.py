@@ -13,6 +13,7 @@ from app.gui.projections.activity_projection import project_timeline_activity
 from app.gui.projections.atlas_activity_projection import project_atlas_activity
 from app.gui.projections.mission_control_projection import (
     project_ai_thinking,
+    project_atlas_reasoning,
     project_mission_status,
 )
 
@@ -23,6 +24,8 @@ def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
     orders_read_model = project_orders_read_model(state)
     positions_read_model = project_positions_read_model(state)
 
+    positions = format_positions(positions_read_model, orders_read_model)
+    thinking = project_ai_thinking(state)
     return DashboardSnapshot(
         runtime=RuntimeSnapshot(
             environment=runtime.environment,
@@ -54,9 +57,10 @@ def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
             runtime_duration="--",
         ),
         activity=project_timeline_activity(state, limit=10),
-        positions=format_positions(positions_read_model),
+        positions=positions,
         orders=format_orders(orders_read_model),
         atlas_activity=project_atlas_activity(state),
         mission_status=project_mission_status(state),
-        ai_thinking=project_ai_thinking(state),
+        ai_thinking=thinking,
+        atlas_reasoning=project_atlas_reasoning(thinking, positions),
     )

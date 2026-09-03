@@ -59,7 +59,7 @@ from app.gui.formatters.warrior_paper import format_warrior_paper
 
 
 class MainWindow(QMainWindow):
-    _PRIMARY_LAYOUT_VERSION = 2
+    _PRIMARY_LAYOUT_VERSION = 3
 
     def __init__(
         self,
@@ -140,8 +140,7 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         self.sidebar = Sidebar()
-        # Secondary navigation remains available through the compact Menu
-        # action; the wide rail is intentionally absent from the workstation.
+        outer.addWidget(self.sidebar)
 
         content = QWidget()
         content.setObjectName("contentArea")
@@ -186,6 +185,7 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.pages, 1)
         outer.addWidget(content, 1)
         self.sidebar.page_requested.connect(self.pages.setCurrentIndex)
+        self.pages.currentChanged.connect(self.sidebar.set_current_page)
         self.sidebar.compact_toggled.connect(self._set_sidebar_compact)
         self.setCentralWidget(root)
 
@@ -205,6 +205,9 @@ class MainWindow(QMainWindow):
         controls.inspector_requested.connect(self._set_inspector_visible)
         header.settings_requested.connect(lambda: self.pages.setCurrentIndex(4))
         header.menu_requested.connect(self._show_menu)
+        # Persistent navigation supersedes the former dashboard-only controls.
+        header.settings_button.hide()
+        header.menu_button.hide()
         controls.emergency_stop_requested.connect(self._emergency_stop)
 
         status = QStatusBar()
@@ -244,7 +247,7 @@ class MainWindow(QMainWindow):
 
     def _show_menu(self) -> None:
         menu = QMenu(self)
-        for label, index in (("Positions", 1), ("Orders", 2), ("Activity", 5), ("Decisions", 6), ("Watchlist", 7), ("Replay", 8), ("Operations", 9), ("Risk & Settings", 4)):
+        for label, index in zip(self.sidebar.ITEMS, self.sidebar.ROUTES):
             action = menu.addAction(label)
             action.triggered.connect(lambda _checked=False, page=index: self.pages.setCurrentIndex(page))
         menu.exec(self.dashboard.runtime_header.menu_button.mapToGlobal(self.dashboard.runtime_header.menu_button.rect().bottomLeft()))

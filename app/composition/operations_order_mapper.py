@@ -36,11 +36,23 @@ def _map_broker_order(order: BrokerOrder) -> OperationsOrder:
         quantity=_decimal_text(order.quantity),
         status=order.status.value,
         updated_at=order.updated_timestamp,
+        order_type=order.order_type.value,
+        limit_price=_optional_decimal_text(order.limit_price),
+        stop_price=_optional_decimal_text(order.stop_price),
+        filled_quantity=_decimal_text(order.filled_quantity),
+        remaining_quantity=_decimal_text(
+            order.quantity - order.filled_quantity
+        ),
+        execution_source="LIVE_BROKER",
     )
 
 
 def _decimal_text(value: Decimal) -> str:
     return format(value, "f")
+
+
+def _optional_decimal_text(value: Decimal | None) -> str | None:
+    return None if value is None else _decimal_text(value)
 
 
 __all__ = ["map_broker_orders"]

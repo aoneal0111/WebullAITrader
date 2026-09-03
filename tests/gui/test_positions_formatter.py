@@ -73,6 +73,8 @@ def test_format_positions_creates_dashboard_rows() -> None:
             "$190.00",
             "+$47.50",
             "+2.56%",
+                "\u2014",
+            NOW.astimezone().strftime("%H:%M:%S"),
         ),
         (
             "MSFT",
@@ -82,6 +84,8 @@ def test_format_positions_creates_dashboard_rows() -> None:
             "$405.00",
             "-$25.00",
             "-1.22%",
+                "\u2014",
+            NOW.astimezone().strftime("%H:%M:%S"),
         ),
     )
 

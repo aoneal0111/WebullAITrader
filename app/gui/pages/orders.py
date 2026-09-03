@@ -72,7 +72,7 @@ class OrdersPage(QWidget):
         title.setObjectName("pageTitle")
 
         subtitle = QLabel(
-            "Monitor immutable broker order snapshots and validation criteria."
+            "Supervise authoritative working, filled, cancelled, and rejected orders."
         )
         subtitle.setObjectName("mutedText")
 
@@ -98,13 +98,17 @@ class OrdersPage(QWidget):
         root.addLayout(header)
 
         self.order_entry_panel = OrderEntryPanel()
+        self.order_entry_panel.setParent(self)
         self.order_entry_panel.set_execution_enabled(
             self._trading_service is not None
         )
         self.order_entry_panel.order_validated.connect(
             self._place_validated_order
         )
-        root.addWidget(self.order_entry_panel)
+        # Manual entry remains available to explicitly privileged recovery
+        # tooling through this compatibility object, but is deliberately not
+        # mounted in the normal autonomous workstation.
+        self.order_entry_panel.hide()
         orders_panel = QFrame()
         orders_panel.setObjectName("contentPanel")
 
@@ -114,7 +118,7 @@ class OrdersPage(QWidget):
 
         orders_header = QHBoxLayout()
 
-        orders_title = QLabel("ACTIVE ORDERS")
+        orders_title = QLabel("ORDER SUPERVISION")
         orders_title.setObjectName("sectionTitle")
 
         self._order_count = QLabel("0 orders")
@@ -124,17 +128,21 @@ class OrdersPage(QWidget):
         orders_header.addStretch()
         orders_header.addWidget(self._order_count)
 
-        self._orders_table = QTableWidget(0, 8)
+        self._orders_table = QTableWidget(0, 12)
         self._orders_table.setHorizontalHeaderLabels(
             (
                 "SYMBOL",
                 "SIDE",
-                "TYPE",
-                "QUANTITY",
+                "QTY",
+                "FILLED",
                 "REMAINING",
+                "TYPE",
+                "LIMIT",
+                "STOP",
+                "AVG FILL",
                 "STATUS",
-                "PRICE",
                 "SUBMITTED",
+                "UPDATED",
             )
         )
         self._orders_table.setAlternatingRowColors(True)
@@ -182,41 +190,72 @@ class OrdersPage(QWidget):
         details_title = QLabel("SELECTED ORDER")
         details_title.setObjectName("sectionTitle")
         details_layout.addWidget(details_title)
-
+        detail_groups = QHBoxLayout()
+        detail_groups.setSpacing(20)
+        identity_layout = QVBoxLayout()
+        identity_layout.setSpacing(4)
+        identity_title = QLabel("IDENTITY / LIFECYCLE")
+        identity_title.setObjectName("metricTitle")
+        identity_layout.addWidget(identity_title)
         self._broker_order_id = self._detail_row(
-            details_layout,
+            identity_layout,
             "Broker Order ID",
         )
         self._client_order_id = self._detail_row(
-            details_layout,
+            identity_layout,
             "Client Order ID",
         )
         self._account_id = self._detail_row(
-            details_layout,
+            identity_layout,
             "Account",
         )
+        self._lifecycle_id = self._detail_row(
+            identity_layout,
+            "Lifecycle",
+        )
+        self._execution_source = self._detail_row(
+            identity_layout,
+            "Source / Reason",
+        )
         self._submitted_at = self._detail_row(
-            details_layout,
+            identity_layout,
             "Submitted",
         )
+        self._updated_at = self._detail_row(identity_layout, "Updated")
+
+        execution_layout = QVBoxLayout()
+        execution_layout.setSpacing(4)
+        execution_title = QLabel("EXECUTION")
+        execution_title.setObjectName("metricTitle")
+        execution_layout.addWidget(execution_title)
+        self._side = self._detail_row(execution_layout, "Side")
+        self._order_type = self._detail_row(execution_layout, "Type")
+        self._requested_quantity = self._detail_row(
+            execution_layout, "Requested Quantity"
+        )
+        self._filled_quantity = self._detail_row(execution_layout, "Filled")
+        self._remaining_quantity = self._detail_row(
+            execution_layout,
+            "Remaining",
+        )
         self._limit_price = self._detail_row(
-            details_layout,
-            "Limit Price",
+            execution_layout,
+            "Limit",
         )
         self._stop_price = self._detail_row(
-            details_layout,
-            "Stop Price",
+            execution_layout,
+            "Stop",
         )
         self._average_fill_price = self._detail_row(
-            details_layout,
-            "Average Fill Price",
+            execution_layout,
+            "Average Fill",
         )
-        self._remaining_quantity = self._detail_row(
-            details_layout,
-            "Remaining Quantity",
-        )
-
-        details_layout.addStretch()
+        self._detail_status = self._detail_row(execution_layout, "Status")
+        identity_layout.addStretch()
+        execution_layout.addStretch()
+        detail_groups.addLayout(identity_layout, 1)
+        detail_groups.addLayout(execution_layout, 1)
+        details_layout.addLayout(detail_groups)
 
         criteria_panel = QFrame()
         criteria_panel.setObjectName("contentPanel")
@@ -250,7 +289,7 @@ class OrdersPage(QWidget):
 
         lower.addWidget(details_panel, 0, 0)
         lower.addWidget(criteria_panel, 0, 1)
-        lower.setColumnStretch(0, 1)
+        lower.setColumnStretch(0, 3)
         lower.setColumnStretch(1, 1)
 
         root.addLayout(lower, 2)
@@ -511,20 +550,31 @@ class OrdersPage(QWidget):
             values = (
                 order.symbol,
                 order.side,
-                "--",
                 order.quantity,
-                "--",
+                self._table_known(order.filled_quantity),
+                self._table_known(order.remaining_quantity),
+                self._table_known(order.order_type),
+                self._table_price(order.limit_price),
+                self._table_price(order.stop_price),
+                self._table_price(order.average_fill_price),
                 order.status,
-                "--",
-                order.updated_at.astimezone().strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
+                self._compact_timestamp(order.submitted_at),
+                self._compact_timestamp(order.updated_at),
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.ItemDataRole.UserRole, order.order_id)
-                if column == 5:
+                if column == 9:
                     item.setForeground(self._status_color(order.status))
+                if column in {2, 3, 4, 6, 7, 8}:
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight
+                        | Qt.AlignmentFlag.AlignVCenter
+                    )
+                if column in {10, 11}:
+                    item.setToolTip(self._full_timestamp(
+                        order.submitted_at if column == 10 else order.updated_at
+                    ))
                 self._orders_table.setItem(row, column, item)
 
         count = len(self._visible_projected_orders)
@@ -550,22 +600,20 @@ class OrdersPage(QWidget):
         )
 
         for row, order in enumerate(self._visible_orders):
-            submitted = (
-                order.submitted_at.astimezone().strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
-                if order.submitted_at is not None
-                else "--"
-            )
+            submitted = self._compact_timestamp(order.submitted_at)
 
             values = (
                 order.symbol,
                 order.side.value,
-                order.order_type.value,
                 self._decimal_text(order.requested_quantity),
+                self._decimal_text(order.filled_quantity),
                 self._decimal_text(order.remaining_quantity),
+                order.order_type.value,
+                format_price(order.limit_price),
+                format_price(order.stop_price),
+                format_price(order.average_fill_price),
                 order.status.value,
-                self._price_text(order),
+                submitted,
                 submitted,
             )
 
@@ -576,16 +624,18 @@ class OrdersPage(QWidget):
                     order.broker_order_id,
                 )
 
-                if column == 5:
+                if column == 9:
                     item.setForeground(
                         self._status_color(order.status.value)
                     )
 
-                if column in {3, 4, 6}:
+                if column in {2, 3, 4, 6, 7, 8}:
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight
                         | Qt.AlignmentFlag.AlignVCenter
                     )
+                if column in {10, 11}:
+                    item.setToolTip(self._full_timestamp(order.submitted_at))
 
                 self._orders_table.setItem(
                     row,
@@ -613,7 +663,7 @@ class OrdersPage(QWidget):
         item.setForeground(QColor("#7f8a9a"))
 
         self._orders_table.setItem(0, 0, item)
-        self._orders_table.setSpan(0, 0, 1, 8)
+        self._orders_table.setSpan(0, 0, 1, 12)
         self._order_count.setText("0 orders")
         self._orders_table.setSortingEnabled(True)
 
@@ -656,10 +706,35 @@ class OrdersPage(QWidget):
             if order is not None:
                 self._broker_order_id.setText(order.order_id)
                 self._submitted_at.setText(
-                    order.updated_at.astimezone().strftime(
-                        "%Y-%m-%d %H:%M:%S %Z"
-                    )
+                    self._full_timestamp(order.submitted_at)
                 )
+                self._updated_at.setText(self._full_timestamp(order.updated_at))
+                self._side.setText(order.side)
+                self._order_type.setText(self._detail_known(order.order_type))
+                self._requested_quantity.setText(order.quantity)
+                self._filled_quantity.setText(
+                    self._detail_known(order.filled_quantity)
+                )
+                self._detail_status.setText(order.status)
+                self._limit_price.setText(
+                    self._detail_price(order.limit_price)
+                )
+                self._stop_price.setText(
+                    self._detail_price(order.stop_price)
+                )
+                self._average_fill_price.setText(
+                    self._detail_price(order.average_fill_price)
+                )
+                self._remaining_quantity.setText(
+                    self._detail_known(order.remaining_quantity)
+                )
+                self._lifecycle_id.setText(
+                    self._detail_known(order.lifecycle_id)
+                )
+                source = self._detail_known(order.execution_source)
+                if order.execution_reason is not None:
+                    source = f"{source} / {order.execution_reason}"
+                self._execution_source.setText(source)
             return
 
         order = self._selected_order()
@@ -674,12 +749,16 @@ class OrdersPage(QWidget):
         )
         self._account_id.setText(order.account_id)
         self._submitted_at.setText(
-            order.submitted_at.astimezone().strftime(
-                "%Y-%m-%d %H:%M:%S %Z"
-            )
-            if order.submitted_at is not None
-            else "--"
+            self._full_timestamp(order.submitted_at)
         )
+        self._updated_at.setText(self._full_timestamp(order.submitted_at))
+        self._side.setText(order.side.value)
+        self._order_type.setText(order.order_type.value)
+        self._requested_quantity.setText(
+            self._decimal_text(order.requested_quantity)
+        )
+        self._filled_quantity.setText(self._decimal_text(order.filled_quantity))
+        self._detail_status.setText(order.status.value)
         self._limit_price.setText(
             format_price(order.limit_price)
         )
@@ -699,9 +778,45 @@ class OrdersPage(QWidget):
             self._client_order_id,
             self._account_id,
             self._submitted_at,
+            self._updated_at,
+            self._side,
+            self._order_type,
+            self._requested_quantity,
+            self._filled_quantity,
+            self._detail_status,
             self._limit_price,
             self._stop_price,
             self._average_fill_price,
             self._remaining_quantity,
+            self._lifecycle_id,
+            self._execution_source,
         ):
             label.setText("--")
+
+    @staticmethod
+    def _table_known(value: str | None) -> str:
+        return "—" if value is None else value
+
+    @staticmethod
+    def _detail_known(value: str | None) -> str:
+        return "Not available" if value is None else value
+
+    @staticmethod
+    def _table_price(value: str | None) -> str:
+        return "—" if value is None else format_price(Decimal(value))
+
+    @staticmethod
+    def _detail_price(value: str | None) -> str:
+        return "Not available" if value is None else format_price(Decimal(value))
+
+    @staticmethod
+    def _compact_timestamp(value) -> str:
+        return "—" if value is None else value.astimezone().strftime("%m/%d %H:%M:%S")
+
+    @staticmethod
+    def _full_timestamp(value) -> str:
+        return (
+            "Not available"
+            if value is None
+            else value.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+        )

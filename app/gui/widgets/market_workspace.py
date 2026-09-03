@@ -44,6 +44,9 @@ from app.gui.widgets.panel import SectionPanel
 from app.gui.widgets.trade_intelligence_panel import TradeIntelligencePanel
 from app.gui.widgets.activity_panel import ActivityPanel
 from app.gui.widgets.portfolio_summary_strip import PortfolioSummaryStrip
+from app.gui.widgets.positions_panel import PositionsPanel
+from app.gui.widgets.orders_panel import OrdersPanel
+from app.gui.widgets.atlas_reasoning_panel import AtlasReasoningPanel
 from app.gui.widgets.workstation_panels import MarketOverviewPanel, RuntimeControlsPanel
 
 
@@ -921,6 +924,9 @@ class MarketWorkspace(QWidget):
         self.atlas_activity = AtlasActivityPanel()
         self.activity_panel = ActivityPanel()
         self.portfolio_summary = PortfolioSummaryStrip()
+        self.positions_panel = PositionsPanel()
+        self.orders_panel = OrdersPanel()
+        self.atlas_reasoning = AtlasReasoningPanel()
         self.market_overview = MarketOverviewPanel()
         self.runtime_controls = RuntimeControlsPanel()
         self.runtime_controls.inspector_requested.connect(self._inspector_requested)
@@ -933,10 +939,20 @@ class MarketWorkspace(QWidget):
         )
         self.activity_section = SectionPanel("LIVE AUTONOMOUS ACTIVITY", self.activity_panel)
         self.portfolio_section = SectionPanel(
-            "PORTFOLIO / PERFORMANCE", self.portfolio_summary, scrollable=True
+            "ACCOUNT / RISK", self.portfolio_summary
         )
+        self.portfolio_section.setMaximumHeight(116)
         self.market_overview_section = SectionPanel(
             "MARKET OVERVIEW", self.market_overview, scrollable=True
+        )
+        self.positions_section = SectionPanel(
+            "ACTIVE POSITIONS / MANAGEMENT", self.positions_panel
+        )
+        self.reasoning_section = SectionPanel(
+            "ATLAS REASONING", self.atlas_reasoning
+        )
+        self.orders_section = SectionPanel(
+            "WORKING / RECENT ORDERS", self.orders_panel
         )
         self.runtime_controls_section = SectionPanel("RUNTIME CONTROLS", QWidget())
         # Compatibility-only reference for integrations that inspected the
@@ -976,11 +992,8 @@ class MarketWorkspace(QWidget):
         self.left_splitter = QSplitter(Qt.Orientation.Vertical)
         self.left_splitter.setObjectName("workstationLeftSplitter")
         self.left_splitter.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
-        self.left_splitter.addWidget(self.opportunities_section)
-        self.left_splitter.addWidget(self.market_overview_section)
-        self.left_splitter.setStretchFactor(0, 62)
-        self.left_splitter.setStretchFactor(1, 38)
-        self.left_splitter.setSizes((310, 190))
+        self.left_splitter.addWidget(self.positions_section)
+        self.left_splitter.setStretchFactor(0, 1)
         left_layout.addWidget(self.left_splitter)
 
         # Compatibility alias for integrations that used the old wrapper name.
@@ -988,13 +1001,15 @@ class MarketWorkspace(QWidget):
         # the production middle splitter, so no stale wrapper can detach it.
         self.right_workspace = self.market_section
         lower = QSplitter(Qt.Orientation.Horizontal)
-        lower.addWidget(self.activity_section)
-        lower.addWidget(self.portfolio_section)
+        lower.addWidget(self.reasoning_section)
+        lower.addWidget(self.opportunities_section)
+        lower.addWidget(self.orders_section)
         self.lower_splitter = lower
         lower.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
-        lower.setStretchFactor(0, 53)
-        lower.setStretchFactor(1, 47)
-        lower.setSizes((810, 710))
+        lower.setStretchFactor(0, 24)
+        lower.setStretchFactor(1, 24)
+        lower.setStretchFactor(2, 52)
+        lower.setSizes((365, 365, 790))
 
         self.middle_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.middle_splitter.setObjectName("workstationMainSplitter")
@@ -1003,9 +1018,9 @@ class MarketWorkspace(QWidget):
         self.middle_splitter.addWidget(self.market_section)
         for index in range(self.middle_splitter.count()):
             self.middle_splitter.setCollapsible(index, False)
-        self.middle_splitter.setStretchFactor(0, 32)
-        self.middle_splitter.setStretchFactor(1, 68)
-        self.middle_splitter.setSizes((485, 1035))
+        self.middle_splitter.setStretchFactor(0, 64)
+        self.middle_splitter.setStretchFactor(1, 36)
+        self.middle_splitter.setSizes((970, 550))
         self.splitter = self.middle_splitter
 
         self.workspace_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -1016,7 +1031,8 @@ class MarketWorkspace(QWidget):
         self.workspace_splitter.setStretchFactor(0, 61)
         self.workspace_splitter.setStretchFactor(1, 39)
         self.workspace_splitter.setSizes((500, 315))
-        layout.addWidget(self.workspace_splitter)
+        layout.addWidget(self.workspace_splitter, 1)
+        layout.addWidget(self.portfolio_section)
 
         # Secondary intelligence remains available to the inspector dock.
         intelligence_rail = QWidget()
@@ -1031,6 +1047,7 @@ class MarketWorkspace(QWidget):
         for section in (
             self.ai_thinking_section,
             SectionPanel("Atlas Activity", self.atlas_activity, collapsible=True),
+            self.activity_section,
             self.mission_section,
             self.infrastructure_section,
         ):
@@ -1038,7 +1055,7 @@ class MarketWorkspace(QWidget):
             self.right_splitter.setCollapsible(
                 self.right_splitter.indexOf(section), True
             )
-        self.right_splitter.setSizes((230, 180, 190, 190))
+        self.right_splitter.setSizes((210, 150, 190, 150, 150))
         rail_layout.addWidget(self.right_splitter)
 
         self.top_splitter = self.splitter
@@ -1072,18 +1089,18 @@ class MarketWorkspace(QWidget):
             return
         self._layout_mode = mode
         left_minimum, intelligence_minimum = (
-            (350, 600) if mode == "compact" else (400, 700)
+            (700, 350) if mode == "compact" else (820, 420)
         )
         self.left_stack.setMinimumWidth(left_minimum)
         self.market_section.setMinimumWidth(intelligence_minimum)
-        self.splitter.setStretchFactor(0, 32)
-        self.splitter.setStretchFactor(1, 68)
+        self.splitter.setStretchFactor(0, 64)
+        self.splitter.setStretchFactor(1, 36)
         self.splitter.setSizes(
-            (410 if mode == "compact" else 485, 880 if mode == "compact" else 1035)
+            (820 if mode == "compact" else 970, 430 if mode == "compact" else 550)
         )
 
     def ensure_middle_composition(self) -> None:
-        """Keep the production 32/68 middle row usable after state restore."""
+        """Keep the execution-first 42/58 middle row usable after restore."""
         self.market_section.show()
         self.trade_intelligence.show()
         available = max(
@@ -1101,7 +1118,7 @@ class MarketWorkspace(QWidget):
             or sizes[1] < intelligence_minimum
         )
         if invalid:
-            left = max(left_minimum, round(available * 0.32))
+            left = max(left_minimum, round(available * 0.64))
             right = available - left
             if right < intelligence_minimum:
                 right = intelligence_minimum
@@ -1110,9 +1127,9 @@ class MarketWorkspace(QWidget):
 
     def reset_layout(self, width: int | None = None) -> None:
         self.set_chart_focus(False)
-        self.right_splitter.setSizes((230, 180, 190, 190))
-        self.left_splitter.setSizes((310, 190))
-        self.lower_splitter.setSizes((810, 710))
+        self.right_splitter.setSizes((210, 150, 190, 150, 150))
+        self.left_splitter.setSizes((500,))
+        self.lower_splitter.setSizes((365, 365, 790))
         self.workspace_splitter.setSizes((500, 315))
         self._layout_mode = None
         self.set_responsive_width(width or self.width(), force=True)
@@ -1280,6 +1297,9 @@ class MarketWorkspace(QWidget):
 
     def render_ai_thinking(self, snapshot: AIThinkingSnapshot) -> None:
         self.ai_thinking.render(snapshot)
+
+    def render_atlas_reasoning(self, snapshot) -> None:
+        self.atlas_reasoning.render(snapshot)
 
     def render_mission(self, snapshot: MissionStatusSnapshot) -> None:
         self.mission_status.render(snapshot)

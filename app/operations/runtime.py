@@ -983,6 +983,19 @@ def _project_runtime_order(
         quantity=format(intent.quantity, "f"),
         status=status,
         updated_at=timestamp,
+        order_type=getattr(intent.order_type, "value", str(intent.order_type)),
+        limit_price=(
+            None
+            if intent.limit_price is None
+            else format(intent.limit_price, "f")
+        ),
+        stop_price=(
+            None
+            if intent.stop_price is None
+            else format(intent.stop_price, "f")
+        ),
+        submitted_at=timestamp,
+        execution_source="RUNTIME",
     )
 
 

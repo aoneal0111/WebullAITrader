@@ -23,18 +23,22 @@ class Sidebar(QWidget):
     compact_toggled = Signal(bool)
 
     ITEMS = (
-        "Dashboard",
-        "Watchlist",
+        "Mission Control",
         "Positions",
         "Orders",
+        "Operator Workspace",
         "Decisions",
         "Activity",
-        "Operations",
+        "Scanner",
         "Replay",
-        "Settings",
+        "System / Settings",
     )
-    ICONS = ("▦", "★", "◫", "▤", "◇", "☷", "⚙", "▶", "≡")
-    ROUTES = (0, 7, 1, 2, 6, 5, 9, 8, 4)
+    ICONS = ("", "", "", "", "", "", "", "", "")
+    COMPACT_LABELS = (
+        "HOME", "POSITIONS", "ORDERS", "WORKSPACE", "DECISIONS",
+        "ACTIVITY", "SCANNER", "REPLAY", "SYSTEM",
+    )
+    ROUTES = (0, 1, 2, 9, 6, 5, 7, 8, 4)
 
     def __init__(self) -> None:
         super().__init__()
@@ -72,11 +76,12 @@ class Sidebar(QWidget):
         for label, icon, page_index in zip(
             self.ITEMS, self.ICONS, self.ROUTES
         ):
-            button = QPushButton(f"{icon}   {label}")
+            button = QPushButton(label)
             button.setObjectName("navButton")
             button.setCheckable(True)
             button.setToolTip(label)
             button.setAccessibleName(label)
+            button.setAccessibleDescription(f"Open {label}")
             button.clicked.connect(
                 lambda checked=False, route=page_index: (
                     self.page_requested.emit(route)
@@ -85,8 +90,11 @@ class Sidebar(QWidget):
             group.addButton(button)
             layout.addWidget(button)
             self.buttons[label] = button
-            if label == "Dashboard":
+            if label == "Mission Control":
                 button.setChecked(True)
+
+        # Compatibility for integrations that used the original route name.
+        self.buttons["Dashboard"] = self.buttons["Mission Control"]
 
         layout.addStretch()
         divider = QFrame()
@@ -103,7 +111,7 @@ class Sidebar(QWidget):
         layout.addWidget(self._connection_label)
         layout.addWidget(self.connection)
         layout.addWidget(self.connection_detail)
-        self.compact_button = QPushButton("‹  Compact")
+        self.compact_button = QPushButton("<  Compact")
         self.compact_button.setObjectName("sidebarToggle")
         self.compact_button.setToolTip("Toggle compact navigation")
         self.compact_button.clicked.connect(
@@ -135,11 +143,17 @@ class Sidebar(QWidget):
             self.connection_detail,
         ):
             widget.setVisible(not compact)
-        for label, icon in zip(self.ITEMS, self.ICONS):
+        for label, compact_label in zip(self.ITEMS, self.COMPACT_LABELS):
             button = self.buttons[label]
-            button.setText(icon if compact else f"{icon}   {label}")
+            button.setText(compact_label if compact else label)
             button.setAccessibleName(label)
-        self.compact_button.setText("›" if compact else "‹  Compact")
+            button.setAccessibleDescription(f"Open {label}")
+        self.compact_button.setText(">" if compact else "<  Compact")
+
+    def set_current_page(self, page_index: int) -> None:
+        """Synchronize selection when another control changes the route."""
+        for label, route in zip(self.ITEMS, self.ROUTES):
+            self.buttons[label].setChecked(route == page_index)
 
     def render(self, snapshot: HealthDashboardSnapshot) -> None:
         metrics = dict(snapshot.metrics)

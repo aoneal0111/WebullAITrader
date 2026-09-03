@@ -65,7 +65,7 @@ def test_populated_candidate_renders_without_overflow(
     assert panel._decision.text() == "EVALUATING"
     assert panel._blocking.text() == "--"
     assert dashboard.market_workspace.activity_panel._table.rowCount() == 2
-    assert dashboard.market_workspace.portfolio_summary._cards["Total P/L"]._value.text() == "+$240"
+    assert dashboard.market_workspace.portfolio_summary._cards["Unrealized P/L"]._value.text() == "+$180"
     assert 100 <= dashboard.runtime_header.height() <= 125
 
     critical = (
@@ -104,15 +104,16 @@ def test_populated_candidate_renders_without_overflow(
 
     workspace = dashboard.market_workspace
     assert workspace.runtime_controls_section.isHidden()
-    assert 0.58 <= (
+    assert (
         workspace.opportunities_section.height()
-        / (workspace.opportunities_section.height() + workspace.market_overview_section.height())
-    ) <= 0.65
-    assert workspace.market_section.height() >= 470
-    assert workspace.activity_section.height() >= 280
-    assert workspace.activity_panel._table.height() >= 150
-    assert workspace.portfolio_section.height() >= 280
-    assert workspace.portfolio_summary._columns == 3
+        / (workspace.opportunities_section.height() + workspace.positions_section.height())
+    ) < 0.40
+    assert workspace.positions_section.height() > workspace.opportunities_section.height()
+    assert workspace.market_section.height() >= 350
+    assert workspace.reasoning_section.isVisible()
+    assert workspace.orders_section.isVisible()
+    assert workspace.portfolio_section.height() <= 116
+    assert workspace.portfolio_summary._columns == 8
     for card in workspace.portfolio_summary._card_order:
         assert card.height() >= 48
         assert card._value.isVisible()
@@ -132,7 +133,8 @@ def test_empty_workstation_keeps_scanner_and_activity_states_compact(
     workspace = dashboard.market_workspace
     assert workspace.watchlist._table._empty_state.isVisible()
     assert workspace.opportunities_section.height() < workspace.market_section.height()
-    assert workspace.activity_panel._table._empty_state.isVisible()
-    assert workspace.activity_section.height() < workspace.height() / 2
-    assert workspace.portfolio_summary._columns == 3
+    assert workspace.activity_section.parentWidget() is workspace.right_splitter
+    assert workspace.activity_panel._table.rowCount() == 0
+    assert workspace.reasoning_section.isVisible()
+    assert workspace.portfolio_summary._columns == 8
     assert all(card.height() >= 48 for card in workspace.portfolio_summary._card_order)

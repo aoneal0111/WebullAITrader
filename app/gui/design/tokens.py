@@ -57,7 +57,7 @@ class Typography:
 
 class Dimensions:
     NAV_WIDTH = 184
-    NAV_COMPACT_WIDTH = 64
+    NAV_COMPACT_WIDTH = 104
     HEADER_HEIGHT = 102
     STATUS_HEIGHT = 24
     TABLE_ROW_HEIGHT = 27

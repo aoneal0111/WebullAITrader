@@ -81,12 +81,12 @@ def test_portfolio_pnl_uses_directional_color(application, value, tone) -> None:
     strip = PortfolioSummaryStrip()
     strip.render(
         PortfolioDashboardSnapshot(
-            metrics=(("Total P/L", value),),
+            metrics=(("Unrealized P/L", value),),
             highlights=(),
         )
     )
 
-    assert strip._cards["Total P/L"]._value.property("tone") == tone
+    assert strip._cards["Unrealized P/L"]._value.property("tone") == tone
 
 
 def test_compact_atlas_focus_and_activity_use_projection_snapshots(application) -> None:
@@ -291,16 +291,18 @@ def test_operator_tables_expose_reference_columns_and_real_rows(application) -> 
     positions = PositionsPanel()
     positions.render(PositionsSnapshot(rows=((
         "XYZ", "LONG", "2", "$10.00", "$11.00", "+$2.00", "+10.00%",
+        "$0.00", "10:00:00",
     ),)))
     orders = OrdersPanel()
     orders.render(OrdersSnapshot(rows=((
-        "XYZ", "BUY", "LIMIT", "$10.00", "2", "WORKING",
+        "XYZ", "BUY", "LIMIT", "2", "0", "2", "$10.00",
+        "Not available", "Not available", "WORKING",
     ),)))
 
-    assert positions._table.columnCount() == 7
+    assert positions._table.columnCount() == 9
     assert positions._table.item(0, 0).text() == "XYZ"
-    assert orders._table.columnCount() == 6
-    assert orders._table.item(0, 5).text() == "WORKING"
+    assert orders._table.columnCount() == 10
+    assert orders._table.item(0, 9).text() == "WORKING"
 
 
 def test_health_diagnostics_and_paper_validation_remain_visible(application) -> None:
@@ -400,7 +402,7 @@ def test_commercial_dashboard_preserves_panels_at_target_viewports(
     page.show()
     application.processEvents()
 
-    assert len(page.findChildren(QScrollArea)) == 3
+    assert len(page.findChildren(QScrollArea)) == 1
     assert all(
         area.objectName() == "sectionScrollArea"
         for area in page.findChildren(QScrollArea)
@@ -410,10 +412,10 @@ def test_commercial_dashboard_preserves_panels_at_target_viewports(
 
     ai = page.market_workspace.ai_thinking_section
     focus = page.market_workspace.focus_section
-    activity = page.market_workspace.activity_section
+    reasoning = page.market_workspace.reasoning_section
 
     assert not ai.isVisible()
-    assert activity.isVisible()
+    assert reasoning.isVisible()
     assert focus.isVisible()
 
     assert page.market_workspace.splitter.widget(0) is page.market_workspace.left_column

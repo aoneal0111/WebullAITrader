@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from app.gui.models import (
     AIThinkingSnapshot,
+    AtlasReasoningSnapshot,
     MissionStatusRow,
     MissionStatusSnapshot,
+    PositionsSnapshot,
 )
 from app.operations_core import ApplicationState, RuntimePhase
 from app.gui.formatters.health import format_health
@@ -82,6 +84,40 @@ def project_ai_thinking(state: ApplicationState) -> AIThinkingSnapshot:
     )
 
 
+def project_atlas_reasoning(
+    thinking: AIThinkingSnapshot,
+    positions: PositionsSnapshot,
+) -> AtlasReasoningSnapshot:
+    """Condense already-projected observational facts for permanent display."""
+    management = positions.management[0] if positions.management else None
+    if management is not None and management.protection is not None:
+        protection = management.protection
+        risk = (
+            f"{protection.status.replace('_', ' ')} · "
+            f"{protection.remaining_quantity} remaining · "
+            f"stop {protection.stop_price}"
+        )
+    elif management is not None:
+        risk = "Protection not evidenced in the current projection"
+    else:
+        risk = "No active position projected"
+    return AtlasReasoningSnapshot(
+        current_action=thinking.operational_state or "Unknown",
+        why=(
+            thinking.reasoning
+            if thinking.reasoning != "Unknown"
+            else "Unknown — no projected reasoning"
+        ),
+        risk_protection=risk,
+        next_trigger=(
+            thinking.next_evaluation
+            if thinking.next_evaluation != "Unknown"
+            else "Unknown — no projected trigger"
+        ),
+        tone=thinking.tone,
+    )
+
+
 def _objective(state: ApplicationState) -> str:
     if state.portfolio_projection.open_positions > 0:
         return "Managing Active Positions"
@@ -123,4 +159,6 @@ def _tone(value: object | None) -> str:
     return "neutral"
 
 
-__all__ = ["project_ai_thinking", "project_mission_status"]
+__all__ = [
+    "project_ai_thinking", "project_atlas_reasoning", "project_mission_status"
+]

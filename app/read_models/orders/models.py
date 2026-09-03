@@ -27,6 +27,16 @@ class OrderReadModel:
     quantity: str
     status: str
     updated_at: datetime
+    order_type: str | None = None
+    limit_price: str | None = None
+    stop_price: str | None = None
+    filled_quantity: str | None = None
+    remaining_quantity: str | None = None
+    average_fill_price: str | None = None
+    submitted_at: datetime | None = None
+    lifecycle_id: str | None = None
+    execution_reason: str | None = None
+    execution_source: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -46,6 +56,27 @@ class OrderReadModel:
 
         if self.updated_at.tzinfo is None:
             raise ValueError("updated_at must be timezone-aware")
+
+        for field_name in (
+            "order_type",
+            "limit_price",
+            "stop_price",
+            "filled_quantity",
+            "remaining_quantity",
+            "average_fill_price",
+            "lifecycle_id",
+            "execution_reason",
+            "execution_source",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                _required_text(value, field_name)
+
+        if self.submitted_at is not None:
+            if not isinstance(self.submitted_at, datetime):
+                raise TypeError("submitted_at must be a datetime or None")
+            if self.submitted_at.tzinfo is None:
+                raise ValueError("submitted_at must be timezone-aware")
 
 
 @dataclass(frozen=True, slots=True)
