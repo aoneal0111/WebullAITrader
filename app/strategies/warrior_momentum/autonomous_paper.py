@@ -10,13 +10,12 @@ from typing import Callable
 from enum import StrEnum
 
 from app.paper_trading.order_book import PaperOrderBook
-from app.paper_trading.order_models import OrderSide
+from app.paper_trading.order_models import OrderSide, OrderType
 from app.order_placement import OrderPlacementDecision
 from app.services.order_command_factory import OrderCommandFactory, OrderEntryCommand
 from app.services.trading_service import TradingService
 
 
-_TERMINAL_EXIT_REASONS = frozenset({"STOP", "STOP_LOSS", "EXIT", "RUNNER_TARGET"})
 _RECENT_LIFECYCLE_LIMIT = 1024
 
 
@@ -63,6 +62,28 @@ class PaperEntryAuthorizationReason(StrEnum):
     BROKER_RESTRICTED = "BROKER_RESTRICTED"
     BUYING_POWER_INSUFFICIENT = "BUYING_POWER_INSUFFICIENT"
     EXPOSURE_LIMIT = "EXPOSURE_LIMIT"
+
+
+class PaperExitSubmissionState(StrEnum):
+    SUBMITTED = "SUBMITTED"
+    WORKING = "WORKING"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+@dataclass(frozen=True, slots=True)
+class PaperExitSubmissionDecision:
+    state: PaperExitSubmissionState
+    symbol: str
+    lifecycle_id: str | None
+    reason: str
+    order_id: str | None = None
+
+    @property
+    def protection_active(self) -> bool:
+        return self.state in {
+            PaperExitSubmissionState.SUBMITTED,
+            PaperExitSubmissionState.WORKING,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +216,11 @@ class AutonomousPaperExecutionBridge:
             for order in working:
                 by_symbol.setdefault(order.symbol, []).append(order)
             for order in self.order_book.history():
+                if order.request.strategy_lifecycle_id is not None:
+                    self._remember(
+                        self._seen_entries,
+                        order.request.strategy_lifecycle_id,
+                    )
                 if self._authoritative_quantity(order.symbol) > 0:
                     by_symbol.setdefault(order.symbol, [])
             for symbol, orders in by_symbol.items():
@@ -232,6 +258,8 @@ class AutonomousPaperExecutionBridge:
                         return self._readiness
                     recovered_identity = recovered_identity or context_identity
                     self._active_by_symbol[symbol] = recovered_identity or f"recovered:{symbol}"
+                    if buys and recovered_identity is not None:
+                        self._entry_orders[recovered_identity] = buys[0].order_id
                     self._recovered_symbols.add(symbol)
                     if self._authoritative_quantity(symbol) > 0 and (
                         recovered_identity is None or context_identity != recovered_identity
@@ -242,9 +270,26 @@ class AutonomousPaperExecutionBridge:
                         if recovered_identity and sell_identity and sell_identity != recovered_identity:
                             self._readiness = AutonomousPaperReadiness.BLOCKED
                             return self._readiness
-                        recovered_key = (self._active_by_symbol[symbol], "STOP")
+                        recovered_reason = (
+                            sells[0].request.execution_reason
+                            or "LEGACY_EXIT_UNKNOWN"
+                        )
+                        recovered_key = (
+                            self._active_by_symbol[symbol], recovered_reason,
+                        )
                         self._exit_orders[recovered_key] = sells[0].order_id
                         self._remember(self._exit_keys, recovered_key)
+                        if (
+                            recovered_reason in {
+                                "STOP", "STOP_LOSS", "LEGACY_EXIT_UNKNOWN",
+                            }
+                            and sells[0].request.order_type is not OrderType.STOP
+                        ):
+                            # Legacy STOP requests were persisted as LIMITs.
+                            # Retain ownership and suppress duplicates, but do
+                            # not describe that unmarketable order as healthy
+                            # protective management.
+                            self._management_incomplete.add(symbol)
             self._readiness = AutonomousPaperReadiness.READY
             for symbol, identity in tuple(self._active_by_symbol.items()):
                 if identity.startswith("recovered:") and self._authoritative_quantity(symbol) <= 0 and not self.order_book.open_orders_for_symbol(symbol):
@@ -314,6 +359,7 @@ class AutonomousPaperExecutionBridge:
         ):
             return refused(PaperEntryAuthorizationReason.BROKER_NOT_READY)
         with self._lock:
+            self._reconcile_terminal_entries()
             self._reconcile_terminal_exits()
             working = bool(
                 self.order_book is not None
@@ -339,6 +385,7 @@ class AutonomousPaperExecutionBridge:
                             "source": "autonomous-paper",
                             "risk_dollars": str(risk_dollars),
                             "lifecycle_id": identity,
+                            "structural_stop": str(getattr(signal, "stop_price", "")),
                         },
                     )
                 )
@@ -384,68 +431,177 @@ class AutonomousPaperExecutionBridge:
         self, symbol: str, quantity: int, price: Decimal, reason: str,
         lifecycle_id: str | None = None,
     ) -> bool:
+        return self.ensure_exit(
+            symbol, quantity, price, reason, lifecycle_id,
+        ).state is PaperExitSubmissionState.SUBMITTED
+
+    def ensure_exit(
+        self, symbol: str, quantity: int, price: Decimal, reason: str,
+        lifecycle_id: str | None = None,
+    ) -> PaperExitSubmissionDecision:
         normalized = symbol.strip().upper()
         reason_key = reason.strip().upper()
         if not self._authorized(normalized) or quantity <= 0 or self.readiness is not AutonomousPaperReadiness.READY:
-            return False
+            return PaperExitSubmissionDecision(
+                PaperExitSubmissionState.UNAVAILABLE, normalized,
+                lifecycle_id, reason_key,
+            )
         if (
             self.position_quantity_source is not None
             and Decimal(self.position_quantity_source(normalized)) < Decimal(quantity)
         ):
-            return False
+            return PaperExitSubmissionDecision(
+                PaperExitSubmissionState.UNAVAILABLE, normalized,
+                lifecycle_id, reason_key,
+            )
         with self._lock:
+            self._reconcile_terminal_entries()
             self._reconcile_terminal_exits()
             if self._active_by_symbol.get(normalized, "").startswith("recovered:") and self._authoritative_quantity(normalized) > 0:
                 self._management_incomplete.add(normalized)
             if self.management_readiness(normalized) is AutonomousManagementReadiness.RECONCILIATION_REQUIRED:
-                return False
-            if self.order_book is not None and any(
-                order.request.side is OrderSide.SELL
-                for order in self.order_book.open_orders_for_symbol(normalized)
-            ):
-                return False
+                return PaperExitSubmissionDecision(
+                    PaperExitSubmissionState.UNAVAILABLE, normalized,
+                    lifecycle_id, reason_key,
+                )
             active = self._active_by_symbol.get(normalized)
             identity = lifecycle_id or active
             if identity is None or active != identity:
-                return False
+                return PaperExitSubmissionDecision(
+                    PaperExitSubmissionState.UNAVAILABLE, normalized,
+                    identity, reason_key,
+                )
+            if self.order_book is not None:
+                working_sell = next((
+                    order for order in self.order_book.open_orders_for_symbol(normalized)
+                    if order.request.side is OrderSide.SELL
+                ), None)
+                if working_sell is not None:
+                    protective = reason_key in {"STOP", "STOP_LOSS"}
+                    if (
+                        protective
+                        and working_sell.request.order_type is not OrderType.STOP
+                    ):
+                        try:
+                            cancellation = self.trading_service.cancel_order(
+                                self.order_command_factory.create_cancellation_request(
+                                    working_sell.order_id,
+                                    working_sell.request.client_order_id,
+                                    source="autonomous-paper-protective-replace",
+                                )
+                            )
+                        except Exception:
+                            cancellation = None
+                        if cancellation is None or not cancellation.success:
+                            self._management_incomplete.add(normalized)
+                            return PaperExitSubmissionDecision(
+                                PaperExitSubmissionState.UNAVAILABLE, normalized,
+                                identity, reason_key, working_sell.order_id,
+                            )
+                        self._reconcile_terminal_exits()
+                        return self._place_exit(
+                            normalized, quantity, price, reason_key, identity,
+                        )
+                    return PaperExitSubmissionDecision(
+                        PaperExitSubmissionState.WORKING, normalized,
+                        identity, reason_key, working_sell.order_id,
+                    )
             key = (identity, reason_key)
             if key in self._exit_keys:
-                return False
-            result = self.trading_service.place_order(
-                self.order_command_factory.create_placement_request(
-                    OrderEntryCommand(
-                        symbol=normalized, side="SELL", quantity=Decimal(quantity),
-                        order_type="LIMIT", limit_price=Decimal(price),
-                        stop_price=None, time_in_force="DAY",
-                        strategy_lifecycle_id=identity,
-                        metadata={
-                            "source": "autonomous-paper",
-                            "reason": reason_key,
-                            "lifecycle_id": identity,
-                        },
-                    )
+                return PaperExitSubmissionDecision(
+                    PaperExitSubmissionState.UNAVAILABLE, normalized,
+                    identity, reason_key, self._exit_orders.get(key),
+                )
+            return self._place_exit(
+                normalized, quantity, price, reason_key, identity,
+            )
+
+    def _place_exit(
+        self, normalized: str, quantity: int, price: Decimal,
+        reason_key: str, identity: str,
+    ) -> PaperExitSubmissionDecision:
+        protective = reason_key in {"STOP", "STOP_LOSS"}
+        result = self.trading_service.place_order(
+            self.order_command_factory.create_placement_request(
+                OrderEntryCommand(
+                    symbol=normalized, side="SELL", quantity=Decimal(quantity),
+                    order_type="STOP" if protective else "LIMIT",
+                    limit_price=None if protective else Decimal(price),
+                    stop_price=Decimal(price) if protective else None,
+                    time_in_force="DAY",
+                    strategy_lifecycle_id=identity,
+                    metadata={
+                        "source": "autonomous-paper",
+                        "reason": reason_key,
+                        "lifecycle_id": identity,
+                    },
                 )
             )
-            if not result.success:
-                return False
-            self._remember(self._exit_keys, key)
-            self._exit_orders[key] = result.broker_order_id
-            return True
+        )
+        if not result.success:
+            return PaperExitSubmissionDecision(
+                PaperExitSubmissionState.UNAVAILABLE, normalized,
+                identity, reason_key,
+            )
+        key = (identity, reason_key)
+        self._remember(self._exit_keys, key)
+        self._exit_orders[key] = result.broker_order_id
+        return PaperExitSubmissionDecision(
+            PaperExitSubmissionState.SUBMITTED, normalized,
+            identity, reason_key, result.broker_order_id,
+        )
 
     def _reconcile_terminal_exits(self) -> None:
         if self.order_book is None:
             return
-        terminal_ids = {order.order_id for order in self.order_book.terminal_orders()}
         for (identity, reason), order_id in tuple(self._exit_orders.items()):
-            if order_id not in terminal_ids or reason not in _TERMINAL_EXIT_REASONS:
+            try:
+                order = self.order_book.get(order_id)
+            except Exception:
+                continue
+            if not order.is_terminal:
                 continue
             symbol = next(
                 (symbol for symbol, value in self._active_by_symbol.items() if value == identity),
                 None,
             )
-            if symbol is not None:
+            if symbol is not None and self._authoritative_quantity(symbol) <= 0:
                 self._active_by_symbol.pop(symbol, None)
                 self._management_incomplete.discard(symbol)
+            elif self._authoritative_quantity(symbol) > 0:
+                # Any terminal exit that leaves quantity open is incomplete,
+                # including a partial terminal fill. Retain position ownership
+                # and release only this attempt so management can retry the
+                # authoritative remainder deterministically.
+                self._exit_orders.pop((identity, reason), None)
+                self._exit_keys.pop((identity, reason), None)
+
+    def has_execution_ownership(self, symbol: str) -> bool:
+        normalized = symbol.strip().upper()
+        with self._lock:
+            self._reconcile_terminal_entries()
+            self._reconcile_terminal_exits()
+            return normalized in self._active_by_symbol
+
+    def _reconcile_terminal_entries(self) -> None:
+        if self.order_book is None:
+            return
+        for identity, order_id in tuple(self._entry_orders.items()):
+            try:
+                order = self.order_book.get(order_id)
+            except Exception:
+                continue
+            if (
+                not order.is_terminal
+                or order.filled_quantity > 0
+                or self._authoritative_quantity(order.symbol) > 0
+            ):
+                continue
+            if self._active_by_symbol.get(order.symbol) == identity:
+                self._active_by_symbol.pop(order.symbol, None)
+                self._management_incomplete.discard(order.symbol)
+                self._recovered_symbols.discard(order.symbol)
+            self._entry_orders.pop(identity, None)
 
     def _identity_seen(self, identity: str) -> bool:
         return identity in self._seen_entries
@@ -479,4 +635,5 @@ __all__ = [
     "AutonomousPaperReadiness", "PaperEntryAuthorizationDecision",
     "PaperEntryAuthorizationReason", "PaperEntryAuthorizationResult",
     "PaperEntryGateDecision", "lifecycle_identity",
+    "PaperExitSubmissionDecision", "PaperExitSubmissionState",
 ]

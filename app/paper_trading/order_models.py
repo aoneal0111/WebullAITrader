@@ -61,6 +61,8 @@ class OrderRequest:
     stop_price: Decimal | None = None
     client_order_id: str | None = None
     strategy_lifecycle_id: str | None = None
+    structural_stop_price: Decimal | None = None
+    execution_reason: str | None = None
 
     def __post_init__(self) -> None:
         symbol = self.symbol.strip().upper()
@@ -90,6 +92,12 @@ class OrderRequest:
             "client_order_id",
             client_order_id,
         )
+
+        if (
+            self.structural_stop_price is not None
+            and self.structural_stop_price <= ZERO
+        ):
+            raise ValueError("structural_stop_price must be positive")
         lifecycle_id = (
             self.strategy_lifecycle_id.strip()
             if self.strategy_lifecycle_id
@@ -97,6 +105,12 @@ class OrderRequest:
             else None
         )
         object.__setattr__(self, "strategy_lifecycle_id", lifecycle_id)
+        execution_reason = (
+            self.execution_reason.strip().upper()
+            if self.execution_reason and self.execution_reason.strip()
+            else None
+        )
+        object.__setattr__(self, "execution_reason", execution_reason)
 
 
 @dataclass(frozen=True, slots=True)

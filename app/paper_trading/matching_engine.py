@@ -172,6 +172,12 @@ def _execution_price(
 
             return None
 
+        if order_type is OrderType.STOP:
+            stop_price = order.request.stop_price
+            if stop_price is None:
+                raise MatchingError("stop order requires stop_price")
+            return market_price if market_price >= stop_price else None
+
     if side is OrderSide.SELL:
         market_price = quote.bid_price
 
@@ -190,6 +196,14 @@ def _execution_price(
                 return market_price
 
             return None
+
+        if order_type is OrderType.STOP:
+            stop_price = order.request.stop_price
+            if stop_price is None:
+                raise MatchingError("stop order requires stop_price")
+            # A triggered sell stop becomes immediately marketable.  The
+            # executable bid, not the historical stop level, owns the fill.
+            return market_price if market_price <= stop_price else None
 
     raise MatchingError(
         f"unsupported order type for matching: {order_type}"

@@ -15,6 +15,7 @@ from app.order_placement import (
     OrderType,
     TimeInForce,
 )
+from app.order_cancellation import OrderCancellationRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +120,30 @@ class OrderCommandFactory:
             metadata={
                 "source": "desktop_order_entry",
             },
+        )
+
+    def create_cancellation_request(
+        self,
+        broker_order_id: str,
+        client_order_id: str | None,
+        *,
+        source: str = "application",
+    ) -> OrderCancellationRequest:
+        """Build a cancellation with the same owned session/account context."""
+
+        return OrderCancellationRequest(
+            request_id=self._resolve_identifier(
+                self._request_id_factory, "request_id_factory",
+            ),
+            session_id=self._resolve_identifier(
+                self._session_id_provider, "session_id_provider",
+            ),
+            account_id=self._resolve_identifier(
+                self._account_id_provider, "account_id_provider",
+            ),
+            broker_order_id=broker_order_id,
+            client_order_id=client_order_id,
+            metadata={"source": source},
         )
 
     @staticmethod

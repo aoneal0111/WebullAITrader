@@ -216,9 +216,9 @@ class PaperOrderGateway:
                         "account_id": order.account_id,
                     },
                 )
-            if order.order_type.value not in {"MARKET", "LIMIT"}:
+            if order.order_type.value not in {"MARKET", "LIMIT", "STOP"}:
                 message = (
-                    "paper matching supports MARKET and LIMIT orders only"
+                    "paper matching supports MARKET, LIMIT, and STOP orders only"
                 )
                 self._append_journal(
                     JournalEventType.REJECTION,
@@ -281,6 +281,8 @@ class PaperOrderGateway:
                 stop_price=order.stop_price,
                 client_order_id=order.client_order_id,
                 strategy_lifecycle_id=order.strategy_lifecycle_id,
+                structural_stop_price=_structural_stop_from_placement(order),
+                execution_reason=_execution_reason_from_placement(order),
             )
 
             paper_order = create_order(
@@ -525,6 +527,12 @@ class PaperOrderGateway:
         with self._lock:
             if self._durability_error is not None:
                 return ()
+            try:
+                invalidation_events = self._invalidate_entry_orders(quote)
+            except PaperDurabilityError:
+                return ()
+            for event in invalidation_events:
+                self._emit_event(event)
             durable_transitions: list[
                 tuple[ExecutionReport, PaperRuntimeEvent]
             ] = []
@@ -584,6 +592,44 @@ class PaperOrderGateway:
                 )
                 self._emit_event(event)
             return reports
+
+    def _invalidate_entry_orders(
+        self,
+        quote: MarketQuote,
+    ) -> tuple[PaperRuntimeEvent, ...]:
+        """Cancel risk-invalid LONG entries before matching the fresh quote."""
+
+        events: list[PaperRuntimeEvent] = []
+        for order in self._order_book.open_orders_for_symbol(quote.symbol):
+            stop = _entry_structural_stop(order)
+            if (
+                order.side is not PaperOrderSide.BUY
+                or stop is None
+                or quote.ask_price > stop
+            ):
+                continue
+            cancelled = transition_cancel_order(order, at=quote.timestamp)
+            event = self._order_event(
+                cancelled,
+                event_type="ORDER_CANCELLED",
+                message=(
+                    "Working entry invalidated before fill: executable ask "
+                    f"{quote.ask_price} is at or below structural stop {stop}."
+                ),
+            )
+            # The durable cancellation owns the transition.  A failed write
+            # leaves the in-memory order unchanged and disables PAPER.
+            self._persist_event(event, cancelled)
+            self._order_book.update(cancelled)
+            self._append_journal(
+                JournalEventType.CANCELLATION,
+                order.order_id,
+                quote.timestamp,
+                event.message,
+                (("reason", "STRUCTURAL_STOP_INVALIDATED"),),
+            )
+            events.append(event)
+        return tuple(events)
 
     def _realized_pnl(
         self,
@@ -802,6 +848,39 @@ class PaperOrderGateway:
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("paper gateway clock must be timezone-aware")
         return value
+
+
+def _structural_stop_from_placement(order: object) -> Decimal | None:
+    """Read explicit strategy risk metadata without changing order semantics."""
+
+    value = getattr(order, "metadata", {}).get("structural_stop")
+    if value is None:
+        return None
+    try:
+        stop = Decimal(str(value))
+    except Exception:
+        return None
+    return stop if stop.is_finite() and stop > 0 else None
+
+
+def _execution_reason_from_placement(order: object) -> str | None:
+    value = getattr(order, "metadata", {}).get("reason")
+    return None if value is None else str(value).strip().upper() or None
+
+
+def _entry_structural_stop(order: PaperOrder) -> Decimal | None:
+    """Resolve new explicit metadata, with a legacy Warrior lifecycle fallback."""
+
+    if order.request.structural_stop_price is not None:
+        return order.request.structural_stop_price
+    lifecycle = order.request.strategy_lifecycle_id
+    if not lifecycle or not lifecycle.startswith("WARRIOR_MOMENTUM_V1|"):
+        return None
+    try:
+        stop = Decimal(lifecycle.rsplit("|", 1)[1])
+    except Exception:
+        return None
+    return stop if stop.is_finite() and stop > 0 else None
 
 
 __all__ = ["PaperDurabilityError", "PaperOrderGateway", "utc_now"]

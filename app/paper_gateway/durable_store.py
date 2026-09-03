@@ -201,6 +201,12 @@ def _order_payload(order: PaperOrder) -> dict:
             "stop_price": None if order.request.stop_price is None else str(order.request.stop_price),
             "client_order_id": order.request.client_order_id,
             "strategy_lifecycle_id": order.request.strategy_lifecycle_id,
+            "structural_stop_price": (
+                None
+                if order.request.structural_stop_price is None
+                else str(order.request.structural_stop_price)
+            ),
+            "execution_reason": order.request.execution_reason,
         },
         "fills": [_fill_payload(fill) for fill in order.fills],
     }
@@ -222,6 +228,12 @@ def _order_from_payload(value: dict) -> PaperOrder:
             stop_price=None if request["stop_price"] is None else Decimal(request["stop_price"]),
             client_order_id=request["client_order_id"],
             strategy_lifecycle_id=request.get("strategy_lifecycle_id"),
+            structural_stop_price=(
+                None
+                if request.get("structural_stop_price") is None
+                else Decimal(request["structural_stop_price"])
+            ),
+            execution_reason=request.get("execution_reason"),
         ),
         fills=tuple(_fill_from_payload(fill) for fill in value["fills"]),
     )

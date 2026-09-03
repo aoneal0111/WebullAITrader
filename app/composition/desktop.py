@@ -313,8 +313,12 @@ def create_desktop_composition(
         environment=operational_configuration.environment.value,
         account_context_source=warrior_account_context,
         paper_entry_submitter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.submit_entry_decision),
-        paper_exit_submitter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.submit_exit),
+        paper_exit_submitter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.ensure_exit),
         paper_position_quantity_source=(None if paper_trading_commands is None else position_quantity),
+        paper_execution_ownership_source=(
+            None if autonomous_paper_bridge is None
+            else autonomous_paper_bridge.has_execution_ownership
+        ),
         execution_quote_source=execution_quote_source,
         research_observer=trade_intelligence_observer,
     )

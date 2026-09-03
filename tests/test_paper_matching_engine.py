@@ -34,6 +34,7 @@ def accepted_order(
     order_type: OrderType = OrderType.MARKET,
     quantity: Decimal = D("100"),
     limit_price: Decimal | None = None,
+    stop_price: Decimal | None = None,
 ):
     request = OrderRequest(
         symbol=symbol,
@@ -43,6 +44,7 @@ def accepted_order(
         quantity=quantity,
         time_in_force=TimeInForce.DAY,
         limit_price=limit_price,
+        stop_price=stop_price,
     )
 
     created = create_order(
@@ -135,6 +137,48 @@ def test_limit_sell_fills_when_bid_crosses_limit() -> None:
 
     assert result.matched is True
     assert result.execution_price == D("99")
+
+
+def test_sell_stop_triggers_at_bid_and_fills_at_executable_price() -> None:
+    result = match_order(
+        accepted_order(
+            side=OrderSide.SELL,
+            order_type=OrderType.STOP,
+            stop_price=D("5.03"),
+        ),
+        quote(bid="5.02", ask="5.03"),
+    )
+
+    assert result.matched is True
+    assert result.execution_price == D("5.02")
+
+
+def test_sell_stop_gap_uses_gap_bid_and_never_fabricates_stop_price() -> None:
+    result = match_order(
+        accepted_order(
+            side=OrderSide.SELL,
+            order_type=OrderType.STOP,
+            stop_price=D("5.03"),
+        ),
+        quote(bid="4.50", ask="4.51"),
+    )
+
+    assert result.matched is True
+    assert result.execution_price == D("4.50")
+    assert result.execution_price != D("5.03")
+
+
+def test_sell_stop_remains_working_above_trigger() -> None:
+    result = match_order(
+        accepted_order(
+            side=OrderSide.SELL,
+            order_type=OrderType.STOP,
+            stop_price=D("5.03"),
+        ),
+        quote(bid="5.04", ask="5.05"),
+    )
+
+    assert result.matched is False
 
 
 def test_available_volume_creates_partial_fill() -> None:

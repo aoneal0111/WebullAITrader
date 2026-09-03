@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from app.composition.runtime_mode import RuntimeMode
 from app.market_data.models import MarketEvent, MarketEventType, QuotePayload
+from app.order_cancellation import OrderCancellationRequest
 from app.paper_trading.command_composition import create_paper_trading_command_composition
 from app.services.order_command_factory import OrderEntryCommand
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
@@ -16,6 +17,7 @@ from app.strategies.warrior_momentum.autonomous_paper import (
 class Signal:
     symbol: str = "PMI"
     entry_trigger: Decimal = Decimal("10")
+    stop_price: Decimal = Decimal("9.50")
     lifecycle_id: str = "trade-a"
 
 
@@ -144,6 +146,174 @@ def test_restart_working_entry_reconciles_and_later_fills_once(tmp_path) -> None
     second.close()
 
 
+def test_restored_entry_below_structural_stop_cancels_before_fill(tmp_path) -> None:
+    path = tmp_path / "paper.sqlite3"
+    first = create_paper_trading_command_composition(persistence_path=str(path))
+    bridge = AutonomousPaperExecutionBridge(
+        first.trading_service, first.order_command_factory,
+        order_book=first.order_book,
+    )
+    assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+    order_id = first.order_book.open_orders()[0].order_id
+    first.close()
+
+    events = []
+    second = create_paper_trading_command_composition(
+        persistence_path=str(path), event_sink=events.append,
+    )
+    recovered = AutonomousPaperExecutionBridge(
+        second.trading_service, second.order_command_factory,
+        order_book=second.order_book,
+    )
+    recovered.begin_reconciliation()
+    assert recovered.reconcile() is AutonomousPaperReadiness.READY
+    _paper_quote(second, 2, "9.39", "9.40")
+
+    order = second.order_book.get(order_id)
+    assert order.status.value == "CANCELLED"
+    assert order.filled_quantity == Decimal("0")
+    assert order.remaining_quantity == Decimal("100")
+    assert [event.event_type for event in events][-1] == "ORDER_CANCELLED"
+    assert recovered.has_execution_ownership("PMI") is False
+    assert recovered.submit_entry(Signal(), 100, Decimal("50")) is False
+    assert recovered.submit_entry(
+        Signal(lifecycle_id="trade-b"), 100, Decimal("50"),
+    ) is True
+    second.close()
+
+
+def test_partial_entry_invalidation_preserves_fill_and_cancels_remainder() -> None:
+    composition = create_paper_trading_command_composition()
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+    order_id = composition.order_book.open_orders()[0].order_id
+    composition.gateway.process_market_event(MarketEvent(
+        1, datetime.now(timezone.utc), "PMI", "test", MarketEventType.QUOTE,
+        QuotePayload(Decimal("9.99"), Decimal("10"), Decimal("40"), Decimal("40")),
+    ))
+    composition.gateway.process_market_event(MarketEvent(
+        2, datetime.now(timezone.utc), "PMI", "test", MarketEventType.QUOTE,
+        QuotePayload(Decimal("9.39"), Decimal("9.40"), Decimal("100"), Decimal("100")),
+    ))
+
+    order = composition.order_book.get(order_id)
+    assert order.status.value == "CANCELLED"
+    assert order.filled_quantity == Decimal("40")
+    assert order.remaining_quantity == Decimal("60")
+    assert sum(fill.quantity for fill in order.fills) == Decimal("40")
+    protection = bridge.ensure_exit(
+        "PMI", 40, Decimal("9.50"), "STOP", "trade-a",
+    )
+    assert protection.protection_active
+    composition.close()
+
+
+def test_stop_exit_is_protective_and_gap_fills_at_bid() -> None:
+    composition = create_paper_trading_command_composition(
+        position_average_cost_source=lambda _symbol: Decimal("10"),
+        position_quantity_source=lambda _symbol: Decimal("100"),
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+    _paper_quote(composition, 1, "9.99", "10")
+    decision = bridge.ensure_exit("PMI", 100, Decimal("5.03"), "STOP", "trade-a")
+    assert decision.protection_active
+    sell = next(order for order in composition.order_book.open_orders()
+                if order.request.side.value == "SELL")
+    assert sell.request.order_type.value == "STOP"
+    assert sell.request.limit_price is None
+    assert sell.request.stop_price == Decimal("5.03")
+
+    _paper_quote(composition, 2, "4.50", "4.51")
+    sell = composition.order_book.get(sell.order_id)
+    assert sell.status.value == "FILLED"
+    assert sell.average_fill_price == Decimal("4.50")
+    composition.close()
+
+
+def test_duplicate_stop_signal_keeps_one_working_protective_order() -> None:
+    composition = create_paper_trading_command_composition(
+        position_quantity_source=lambda _symbol: Decimal("100"),
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+    _paper_quote(composition, 1, "9.99", "10")
+    first = bridge.ensure_exit("PMI", 100, Decimal("9.50"), "STOP", "trade-a")
+    second = bridge.ensure_exit("PMI", 100, Decimal("9.50"), "STOP", "trade-a")
+
+    assert first.state.value == "SUBMITTED"
+    assert second.state.value == "WORKING"
+    assert first.order_id == second.order_id
+    assert len([order for order in composition.order_book.history()
+                if order.request.side.value == "SELL"]) == 1
+    composition.close()
+
+
+def test_cancelled_protective_exit_retries_for_authoritative_remainder() -> None:
+    composition = create_paper_trading_command_composition(
+        position_quantity_source=lambda _symbol: Decimal("100"),
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+    _paper_quote(composition, 1, "9.99", "10")
+    first = bridge.ensure_exit("PMI", 100, Decimal("9.50"), "STOP", "trade-a")
+    first_order = composition.order_book.get(first.order_id)
+    cancelled = composition.gateway.cancel_order(OrderCancellationRequest(
+        request_id="cancel-protection",
+        session_id=composition.session_id,
+        account_id=composition.account_id,
+        broker_order_id=first.order_id,
+        client_order_id=first_order.request.client_order_id,
+    ))
+    assert cancelled is not None and cancelled.accepted
+
+    retried = bridge.ensure_exit("PMI", 100, Decimal("9.50"), "STOP", "trade-a")
+    assert retried.state.value == "SUBMITTED"
+    assert retried.order_id != first.order_id
+    assert len([order for order in composition.order_book.history()
+                if order.request.side.value == "SELL"]) == 2
+    composition.close()
+
+
+def test_triggered_stop_cancels_passive_target_before_protective_replace() -> None:
+    composition = create_paper_trading_command_composition(
+        position_quantity_source=lambda _symbol: Decimal("100"),
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+    _paper_quote(composition, 1, "9.99", "10")
+    target = bridge.ensure_exit(
+        "PMI", 100, Decimal("10.50"), "RUNNER_TARGET", "trade-a",
+    )
+    assert target.protection_active
+
+    stop = bridge.ensure_exit(
+        "PMI", 100, Decimal("9.50"), "STOP", "trade-a",
+    )
+    assert stop.state.value == "SUBMITTED"
+    assert composition.order_book.get(target.order_id).status.value == "CANCELLED"
+    protective = composition.order_book.get(stop.order_id)
+    assert protective.request.order_type.value == "STOP"
+    assert protective.request.stop_price == Decimal("9.50")
+    assert len(composition.order_book.open_orders_for_symbol("PMI")) == 1
+    composition.close()
+
+
 def test_restart_open_position_blocks_duplicate_entry_and_uses_restored_quantity(tmp_path) -> None:
     path = tmp_path / "paper.sqlite3"
     first = create_paper_trading_command_composition(
@@ -180,6 +350,10 @@ def test_restart_pending_exit_suppresses_duplicate_and_future_fill_closes(tmp_pa
     recovered = AutonomousPaperExecutionBridge(second.trading_service, second.order_command_factory, order_book=second.order_book, position_quantity_source=lambda _symbol: Decimal("100"))
     assert recovered.reconcile() is AutonomousPaperReadiness.READY
     assert recovered.submit_exit("PMI", 100, Decimal("10.50"), "STOP") is False
+    restored_exit = next(order for order in second.order_book.open_orders()
+                         if order.request.side.value == "SELL")
+    assert restored_exit.request.order_type.value == "STOP"
+    assert restored_exit.request.execution_reason == "STOP"
     _paper_quote(second, 2, "10.50", "10.51")
     assert len(second.order_book.history()) == 2
     assert second.order_book.open_orders() == ()

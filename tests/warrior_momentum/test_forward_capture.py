@@ -326,6 +326,196 @@ def test_paper_entry_partial_exit_stop_first_and_survives_candidate_removal(capt
     assert exit_record["mae_r"] == "0" and exit_record["mfe_r"] == "1"
 
 
+def test_authoritative_exit_submission_and_partial_fill_do_not_close(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "authoritative.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": Decimal("0")}
+    composition = create_paper_trading_command_composition(
+        position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+        position_average_cost_source=lambda _symbol: Decimal("10.20"),
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+        position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+    )
+    service = WarriorForwardCaptureService(
+        store, writer,
+        paper_entry_submitter=bridge.submit_entry,
+        paper_exit_submitter=bridge.ensure_exit,
+        paper_position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+    )
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        shares = int(composition.order_book.open_orders()[0].quantity)
+        composition.gateway.process_market_event(MarketEvent(
+            1, datetime.now(UTC), "XYZ", "test", MarketEventType.QUOTE,
+            QuotePayload(signal.entry_trigger - D("0.01"), signal.entry_trigger,
+                         D(shares), D(shares)),
+        ))
+        position["XYZ"] = Decimal(shares)
+
+        stop_bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=1), signal.entry_trigger,
+            signal.entry_trigger, signal.stop_price - D("0.01"),
+            signal.stop_price - D("0.01"), D("100"),
+        )
+        service.observe_market_bar("XYZ", stop_bar, stop_bar.timestamp + timedelta(minutes=1))
+        writer.flush()
+        transitions = [item.payload["to"] for item in store.records(
+            record_type=CaptureRecordType.STATE_TRANSITION
+        )]
+        assert "PAPER_EXIT_WORKING" in transitions
+        assert "PAPER_EXIT" not in transitions
+        assert "XYZ" in service.open_paper_symbols
+
+        sell = next(order for order in composition.order_book.open_orders()
+                    if order.request.side.value == "SELL")
+        composition.gateway.process_market_event(MarketEvent(
+            2, datetime.now(UTC), "XYZ", "test", MarketEventType.QUOTE,
+            QuotePayload(signal.stop_price - D("0.02"), signal.stop_price - D("0.01"),
+                         D("1"), D("1")),
+        ))
+        position["XYZ"] = Decimal(shares - 1)
+        next_bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=2), signal.stop_price,
+            signal.stop_price, signal.stop_price - D("0.02"),
+            signal.stop_price - D("0.01"), D("100"),
+        )
+        service.observe_market_bar("XYZ", next_bar, next_bar.timestamp + timedelta(minutes=1))
+        writer.flush()
+        assert "XYZ" in service.open_paper_symbols
+        assert service._paper["XYZ"].remaining == shares - 1
+        assert composition.order_book.get(sell.order_id).remaining_quantity == Decimal(shares - 1)
+        assert not any(
+            item.payload.get("to") == "PAPER_EXIT"
+            for item in store.records(record_type=CaptureRecordType.STATE_TRANSITION)
+        )
+
+        composition.gateway.process_market_event(MarketEvent(
+            3, datetime.now(UTC), "XYZ", "test", MarketEventType.QUOTE,
+            QuotePayload(signal.stop_price - D("0.03"), signal.stop_price - D("0.02"),
+                         D(shares), D(shares)),
+        ))
+        position["XYZ"] = Decimal("0")
+        final_bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=3), signal.stop_price,
+            signal.stop_price, signal.stop_price - D("0.03"),
+            signal.stop_price - D("0.02"), D("100"),
+        )
+        service.observe_market_bar("XYZ", final_bar, final_bar.timestamp + timedelta(minutes=1))
+        writer.flush()
+        terminal = [item.payload for item in store.records(
+            record_type=CaptureRecordType.STATE_TRANSITION
+        ) if item.payload.get("to") == "PAPER_EXIT"]
+        assert len(terminal) == 1
+        assert terminal[0]["authority"] == "AUTHORITATIVE_POSITION_PROJECTION"
+        assert "XYZ" not in service.open_paper_symbols
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_unavailable_exit_keeps_authoritative_position_open_and_critical(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "unavailable.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(
+        store, writer,
+        paper_entry_submitter=lambda *_args: True,
+        paper_exit_submitter=lambda *_args: False,
+        paper_position_quantity_source=lambda _symbol: Decimal("100"),
+    )
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        stop_bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=1), signal.entry_trigger,
+            signal.entry_trigger, signal.stop_price - D("0.01"),
+            signal.stop_price - D("0.01"), D("100"),
+        )
+        service.observe_market_bar("XYZ", stop_bar, stop_bar.timestamp + timedelta(minutes=1))
+        writer.flush()
+        transitions = [item.payload for item in store.records(
+            record_type=CaptureRecordType.STATE_TRANSITION
+        )]
+        assert any(item["to"] == "PAPER_EXIT_REQUIRED" for item in transitions)
+        assert any(
+            item["to"] == "PAPER_POSITION_CONTRADICTION"
+            and item["severity"] == "CRITICAL"
+            for item in transitions
+        )
+        assert not any(item["to"] == "PAPER_EXIT" for item in transitions)
+        assert service._paper["XYZ"].remaining == 100
+    finally:
+        writer.close()
+
+
+def test_zero_fill_terminal_entry_retires_analytical_ownership(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "cancelled-entry.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(
+        store, writer,
+        paper_entry_submitter=lambda *_args: True,
+        paper_position_quantity_source=lambda _symbol: Decimal("0"),
+        paper_execution_ownership_source=lambda _symbol: False,
+    )
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        next_bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=1), signal.entry_trigger,
+            signal.entry_trigger, signal.stop_price + D("0.01"),
+            signal.entry_trigger, D("100"),
+        )
+        service.observe_market_bar("XYZ", next_bar, next_bar.timestamp + timedelta(minutes=1))
+        writer.flush()
+        assert "XYZ" not in service.open_paper_symbols
+        transitions = [item.payload for item in store.records(
+            record_type=CaptureRecordType.STATE_TRANSITION
+        )]
+        assert any(
+            item["to"] == "ENTRY_BLOCKED"
+            and "ENTRY_TERMINATED_WITHOUT_POSITION" in item["reason_codes"]
+            for item in transitions
+        )
+        contexts = store.records(record_type=CaptureRecordType.MANAGEMENT_CONTEXT)
+        assert contexts[-1].payload["phase"] == "ENTRY_CANCELLED"
+    finally:
+        writer.close()
+
+
+def test_analytical_closed_authoritative_open_surfaces_critical_contradiction(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "contradiction.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(
+        store, writer,
+        paper_entry_submitter=lambda *_args: True,
+        paper_position_quantity_source=lambda _symbol: Decimal("100"),
+    )
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        service._last_transition["XYZ"] = ForwardTransition.PAPER_EXIT
+        safe_bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=1), signal.entry_trigger,
+            signal.entry_trigger, signal.stop_price + D("0.01"),
+            signal.entry_trigger, D("100"),
+        )
+        service.observe_market_bar("XYZ", safe_bar, safe_bar.timestamp + timedelta(minutes=1))
+        writer.flush()
+        contradictions = [item.payload for item in store.records(
+            record_type=CaptureRecordType.STATE_TRANSITION
+        ) if item.payload.get("to") == "PAPER_POSITION_CONTRADICTION"]
+        assert contradictions
+        assert contradictions[-1]["severity"] == "CRITICAL"
+        assert contradictions[-1]["authoritative_remaining"] == 100
+        assert contradictions[-1]["new_same_symbol_execution"] == "FAIL_CLOSED"
+        assert "XYZ" in service.open_paper_symbols
+    finally:
+        writer.close()
+
+
 def test_restart_recovery_duplicate_prevention_and_replay_equivalence(tmp_path: Path) -> None:
     store = ForwardCaptureStore(tmp_path / "recover.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)

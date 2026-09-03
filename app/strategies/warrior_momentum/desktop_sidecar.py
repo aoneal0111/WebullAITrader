@@ -140,8 +140,9 @@ class WarriorDesktopSidecar:
         strategy_config: WarriorMomentumConfig = WarriorMomentumConfig(),
         account_context_source: Callable[[], PaperAccountContext | None] | None = None,
         paper_entry_submitter: Callable[[object, int, Decimal], bool] | None = None,
-        paper_exit_submitter: Callable[[str, int, Decimal, str, str | None], bool] | None = None,
+        paper_exit_submitter: Callable[[str, int, Decimal, str, str | None], object] | None = None,
         paper_position_quantity_source: Callable[[str], Decimal] | None = None,
+        paper_execution_ownership_source: Callable[[str], bool] | None = None,
         execution_quote_source: ExecutionQuoteSource | None = None,
         research_observer: object | None = None,
         report_worker_factory: Callable[..., WarriorReportWorker] = WarriorReportWorker,
@@ -157,6 +158,7 @@ class WarriorDesktopSidecar:
         self._paper_entry_submitter = paper_entry_submitter
         self._paper_exit_submitter = paper_exit_submitter
         self._paper_position_quantity_source = paper_position_quantity_source
+        self._paper_execution_ownership_source = paper_execution_ownership_source
         self._execution_quote_source = execution_quote_source
         self._research_observer = research_observer
         self._report_worker_factory = report_worker_factory
@@ -367,6 +369,7 @@ class WarriorDesktopSidecar:
                     paper_entry_submitter=self._paper_entry_submitter,
                     paper_exit_submitter=self._paper_exit_submitter,
                     paper_position_quantity_source=self._paper_position_quantity_source,
+                    paper_execution_ownership_source=self._paper_execution_ownership_source,
                     execution_quote_source=self._execution_quote_source,
                     execution_permitted=lambda: self._accept_execution,
                     account_refresh_source=self._account_source,

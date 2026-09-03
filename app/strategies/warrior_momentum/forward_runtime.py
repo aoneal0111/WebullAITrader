@@ -24,7 +24,8 @@ from .forward_queue import ForwardCaptureWriter
 from .forward_store import ForwardCaptureStore
 from .autonomous_paper import (
     PaperEntryAuthorizationDecision, PaperEntryAuthorizationReason,
-    PaperEntryAuthorizationResult, PaperEntryGateDecision, lifecycle_identity,
+    PaperEntryAuthorizationResult, PaperEntryGateDecision,
+    PaperExitSubmissionDecision, lifecycle_identity,
 )
 from .models import (
     CandidateStatus, MinuteBar, MomentumCandidate, MomentumEntrySignal,
@@ -59,13 +60,12 @@ def management_context_available(storage_path, symbol: str, lifecycle_id: str | 
             candidate = payload.get("lifecycle_id")
             if lifecycle_id is not None and candidate != lifecycle_id:
                 continue
-            if (
-                payload.get("environment") == "PAPER"
-                and payload.get("phase") != "CLOSED"
-                and bool(candidate)
-                and payload.get("stop") is not None
-            ):
-                return str(candidate)
+            if payload.get("environment") == "PAPER" and bool(candidate):
+                # The newest matching context owns recovery.  Never skip a
+                # CLOSED record and revive an older MANAGING record.
+                if payload.get("phase") not in {"MANAGING", "EXIT_WORKING"}:
+                    return None
+                return str(candidate) if payload.get("stop") is not None else None
         return None
     except Exception:
         return None
@@ -87,6 +87,9 @@ class _PaperState:
     prior_low: Decimal | None = None
     minimum_low: Decimal | None = None
     maximum_high: Decimal | None = None
+    authoritative_position_seen: bool = False
+    exit_reason: str | None = None
+    exit_price: Decimal | None = None
 
 
 @dataclass(slots=True)
@@ -110,8 +113,9 @@ class WarriorForwardCaptureService:
             [MomentumEntrySignal, int, Decimal],
             bool | PaperEntryAuthorizationDecision,
         ] | None = None,
-        paper_exit_submitter: Callable[[str, int, Decimal, str, str | None], bool] | None = None,
+        paper_exit_submitter: Callable[[str, int, Decimal, str, str | None], object] | None = None,
         paper_position_quantity_source: Callable[[str], Decimal] | None = None,
+        paper_execution_ownership_source: Callable[[str], bool] | None = None,
         execution_quote_source: ExecutionQuoteSource | None = None,
         execution_permitted: Callable[[], bool] | None = None,
         account_refresh_source: Callable[[], PaperAccountContext | None] | None = None,
@@ -123,6 +127,7 @@ class WarriorForwardCaptureService:
         self._paper_entry_submitter = paper_entry_submitter
         self._paper_exit_submitter = paper_exit_submitter
         self._paper_position_quantity_source = paper_position_quantity_source
+        self._paper_execution_ownership_source = paper_execution_ownership_source
         self._execution_quote_source = execution_quote_source
         self._execution_permitted = execution_permitted or (lambda: True)
         self._account_refresh_source = account_refresh_source
@@ -621,13 +626,17 @@ class WarriorForwardCaptureService:
         return tuple(sorted(self._counterfactual))
 
     def _advance_paper(self, state: _PaperState, bar: MinuteBar, observed_at) -> tuple[CaptureRecord, ...]:
-        state.last_bar_timestamp = bar.timestamp
         if (
             self._paper_entry_submitter is not None
             and self._paper_position_quantity_source is not None
-            and self._paper_position_quantity_source(state.signal.symbol) <= 0
         ):
-            return ()
+            return self._advance_authoritative_paper(state, bar, observed_at)
+        return self._advance_analytical_paper(state, bar, observed_at)
+
+    def _advance_analytical_paper(
+        self, state: _PaperState, bar: MinuteBar, observed_at,
+    ) -> tuple[CaptureRecord, ...]:
+        state.last_bar_timestamp = bar.timestamp
         signal = state.signal
         records: list[CaptureRecord] = []
         if bar.low <= state.stop:
@@ -698,12 +707,163 @@ class WarriorForwardCaptureService:
         ))
         return tuple(records)
 
-    def _submit_exit(self, state: _PaperState, price: Decimal, quantity: int, reason: str) -> None:
+    def _advance_authoritative_paper(
+        self, state: _PaperState, bar: MinuteBar, observed_at,
+    ) -> tuple[CaptureRecord, ...]:
+        """Supervise execution state without inventing fills or flatness."""
+
+        state.last_bar_timestamp = bar.timestamp
+        signal = state.signal
+        quantity = max(0, int(self._paper_position_quantity_source(signal.symbol)))
+        previous = state.remaining if state.authoritative_position_seen else 0
+        records: list[CaptureRecord] = []
+
+        if quantity <= 0:
+            if not state.authoritative_position_seen:
+                # The entry order is still working (or was cancelled).  The
+                # gateway owns entry invalidation and no position management
+                # may be fabricated before an authoritative fill.
+                if (
+                    self._paper_execution_ownership_source is None
+                    or self._paper_execution_ownership_source(signal.symbol)
+                ):
+                    return ()
+                records.append(CaptureRecord.create(
+                    CaptureRecordType.STATE_TRANSITION, signal.symbol, observed_at,
+                    {"from": self._last_transition.get(signal.symbol, ForwardTransition.PAPER_ENTRY).value,
+                     "to": ForwardTransition.ENTRY_BLOCKED.value,
+                     "reason_codes": ["ENTRY_TERMINATED_WITHOUT_POSITION"],
+                     "authoritative_remaining": 0},
+                    identity_parts=("ENTRY_TERMINATED_WITHOUT_POSITION",
+                                    bar.timestamp.isoformat()),
+                ))
+                records.append(_management_context_record(
+                    signal.symbol, observed_at, signal, state,
+                    phase="ENTRY_CANCELLED",
+                ))
+                self._last_transition[signal.symbol] = ForwardTransition.ENTRY_BLOCKED
+                self._paper.pop(signal.symbol, None)
+                return tuple(records)
+            state.remaining = 0
+            records.append(self._authoritative_exit_record(state, bar, observed_at))
+            records.append(_management_context_record(
+                signal.symbol, observed_at, signal, state, phase="CLOSED",
+            ))
+            self._last_transition[signal.symbol] = ForwardTransition.PAPER_EXIT
+            self._paper.pop(signal.symbol, None)
+            return tuple(records)
+
+        state.authoritative_position_seen = True
+        state.remaining = quantity
+        state.minimum_low = bar.low if state.minimum_low is None else min(state.minimum_low, bar.low)
+        state.maximum_high = bar.high if state.maximum_high is None else max(state.maximum_high, bar.high)
+
+        if self._last_transition.get(signal.symbol) is ForwardTransition.PAPER_EXIT:
+            records.append(self._position_contradiction_record(state, observed_at))
+
+        if previous > quantity:
+            if state.exit_reason == "FIRST_TARGET":
+                state.first_taken = True
+                state.stop = max(state.stop, state.entry_price)
+            elif state.exit_reason == "SECOND_TARGET":
+                state.second_taken = True
+            state.exit_reason = None
+            state.exit_price = None
+            records.append(CaptureRecord.create(
+                CaptureRecordType.STATE_TRANSITION, signal.symbol, observed_at,
+                {"from": self._last_transition.get(signal.symbol, ForwardTransition.PAPER_ENTRY).value,
+                 "to": ForwardTransition.PAPER_PARTIAL.value,
+                 "reason_codes": [], "authoritative_remaining": quantity},
+                identity_parts=(ForwardTransition.PAPER_PARTIAL.value,
+                                bar.timestamp.isoformat(), str(quantity)),
+            ))
+            self._last_transition[signal.symbol] = ForwardTransition.PAPER_PARTIAL
+
+        requested: tuple[Decimal, int, str] | None = None
+        if bar.low <= state.stop:
+            requested = (state.stop, quantity, "STOP")
+        elif state.exit_reason is not None and state.exit_price is not None:
+            requested = (state.exit_price, quantity, state.exit_reason)
+        elif not state.first_taken and bar.high >= signal.target_levels[0]:
+            requested = (signal.target_levels[0], min(state.first_quantity, quantity), "FIRST_TARGET")
+        elif not state.second_taken and bar.high >= signal.target_levels[1]:
+            requested = (signal.target_levels[1], min(state.second_quantity, quantity), "SECOND_TARGET")
+        elif bar.high >= signal.target_levels[2]:
+            requested = (signal.target_levels[2], quantity, "RUNNER_TARGET")
+
+        if requested is not None:
+            price, requested_quantity, reason = requested
+            state.exit_reason = reason
+            state.exit_price = price
+            result = self._submit_exit(state, price, requested_quantity, reason)
+            active = (
+                result.protection_active
+                if isinstance(result, PaperExitSubmissionDecision)
+                else bool(result)
+            )
+            transition = (
+                ForwardTransition.PAPER_EXIT_WORKING
+                if active else ForwardTransition.PAPER_EXIT_REQUIRED
+            )
+            if self._last_transition.get(signal.symbol) is not transition:
+                records.append(CaptureRecord.create(
+                    CaptureRecordType.STATE_TRANSITION, signal.symbol, observed_at,
+                    {"from": self._last_transition.get(signal.symbol, ForwardTransition.PAPER_ENTRY).value,
+                     "to": transition.value, "reason_codes": [reason],
+                     "authoritative_remaining": quantity,
+                     "exit_order_id": getattr(result, "order_id", None)},
+                    identity_parts=(transition.value, reason,
+                                    bar.timestamp.isoformat()),
+                ))
+                self._last_transition[signal.symbol] = transition
+            if not active:
+                records.append(self._position_contradiction_record(
+                    state, observed_at, reason="PROTECTIVE_EXIT_UNAVAILABLE",
+                ))
+
+        if state.first_taken and state.prior_low is not None and state.prior_low < bar.close:
+            state.stop = max(state.stop, state.prior_low)
+        state.prior_low = bar.low
+        records.append(_management_context_record(
+            signal.symbol, observed_at, signal, state,
+            phase=("EXIT_WORKING" if state.exit_reason is not None else "MANAGING"),
+        ))
+        return tuple(records)
+
+    def _authoritative_exit_record(
+        self, state: _PaperState, bar: MinuteBar, observed_at,
+    ) -> CaptureRecord:
+        return CaptureRecord.create(
+            CaptureRecordType.STATE_TRANSITION, state.signal.symbol, observed_at,
+            {"from": self._last_transition.get(state.signal.symbol, ForwardTransition.PAPER_ENTRY).value,
+             "to": ForwardTransition.PAPER_EXIT.value, "reason_codes": [],
+             "authoritative_remaining": 0,
+             "authority": "AUTHORITATIVE_POSITION_PROJECTION"},
+            identity_parts=(ForwardTransition.PAPER_EXIT.value,
+                            bar.timestamp.isoformat(), "AUTHORITATIVE"),
+        )
+
+    def _position_contradiction_record(
+        self, state: _PaperState, observed_at, *, reason: str = "ANALYTICAL_CLOSED_AUTHORITATIVE_OPEN",
+    ) -> CaptureRecord:
+        return CaptureRecord.create(
+            CaptureRecordType.STATE_TRANSITION, state.signal.symbol, observed_at,
+            {"from": self._last_transition.get(state.signal.symbol, ForwardTransition.PAPER_ENTRY).value,
+             "to": ForwardTransition.PAPER_POSITION_CONTRADICTION.value,
+             "reason_codes": [reason], "severity": "CRITICAL",
+             "authoritative_remaining": state.remaining,
+             "new_same_symbol_execution": "FAIL_CLOSED"},
+            identity_parts=(ForwardTransition.PAPER_POSITION_CONTRADICTION.value,
+                            reason, str(state.last_bar_timestamp)),
+        )
+
+    def _submit_exit(self, state: _PaperState, price: Decimal, quantity: int, reason: str) -> object:
         if self._paper_exit_submitter is not None:
-            self._paper_exit_submitter(
+            return self._paper_exit_submitter(
                 state.signal.symbol, quantity, price, reason,
                 lifecycle_identity(state.signal),
             )
+        return False
 
     def _paper_fill(self, state: _PaperState, timestamp, action: str, label: str,
                     price: Decimal, quantity: int) -> CaptureRecord:
@@ -793,7 +953,18 @@ class WarriorForwardCaptureService:
         for record in self.store.records(record_type=CaptureRecordType.MANAGEMENT_CONTEXT):
             payload = record.payload
             if payload.get("phase") == "CLOSED":
-                self._paper.pop(record.symbol, None)
+                authoritative = (
+                    0 if self._paper_position_quantity_source is None
+                    else max(0, int(self._paper_position_quantity_source(record.symbol)))
+                )
+                if authoritative <= 0:
+                    self._paper.pop(record.symbol, None)
+                else:
+                    state = self._paper.get(record.symbol)
+                    if state is not None:
+                        state.authoritative_position_seen = True
+                        state.remaining = authoritative
+                        self._last_transition[record.symbol] = ForwardTransition.PAPER_EXIT
                 continue
             state = self._paper.get(record.symbol)
             if state is None:
@@ -806,6 +977,14 @@ class WarriorForwardCaptureService:
                 state.first_taken = bool(payload.get("first_taken", False))
                 state.second_taken = bool(payload.get("second_taken", False))
                 state.remaining = int(payload.get("remaining", state.remaining))
+                state.authoritative_position_seen = bool(
+                    payload.get("authoritative_position_seen", False)
+                )
+                state.exit_reason = payload.get("exit_reason")
+                state.exit_price = (
+                    None if payload.get("exit_price") is None
+                    else Decimal(payload["exit_price"])
+                )
             except (KeyError, TypeError, ValueError):
                 self._paper.pop(record.symbol, None)
 
@@ -969,6 +1148,9 @@ def _management_context_record(
             "first_taken": state.first_taken,
             "second_taken": state.second_taken,
             "remaining": state.remaining,
+            "authoritative_position_seen": state.authoritative_position_seen,
+            "exit_reason": state.exit_reason,
+            "exit_price": state.exit_price,
             "phase": phase,
         },
         identity_parts=(lifecycle_identity(signal), phase, timestamp.isoformat()),
