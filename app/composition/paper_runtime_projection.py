@@ -9,6 +9,7 @@ from app.operations_core import (
     PaperRuntimeSnapshot,
     PaperRuntimeUpdated,
     PositionsUpdated,
+    ProjectionAuthority,
 )
 
 
@@ -86,6 +87,7 @@ def create_paper_runtime_result_publisher(
             PositionsUpdated(
                 source=normalized_source,
                 positions=map_paper_positions(result),
+                projection_authority=ProjectionAuthority.PAPER_EXECUTION,
             )
         )
 

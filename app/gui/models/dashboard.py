@@ -102,12 +102,17 @@ class PositionManagementRow:
     management_state: str = "Protection not evidenced"
     thesis_state: str = "—"
     protection: ProtectionSnapshot | None = None
+    protection_applicable: bool = True
+    protection_conflict: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class PositionsSnapshot:
+    """Active management rows plus explicitly separated closed history."""
+
     rows: tuple[tuple[str, ...], ...]
     management: tuple[PositionManagementRow, ...] = ()
+    closed_rows: tuple[tuple[str, ...], ...] = ()
 
     @classmethod
     def initial(cls) -> "PositionsSnapshot":

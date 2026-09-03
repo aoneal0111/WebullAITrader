@@ -43,11 +43,11 @@ def test_orders_presenter_delegates_immutable_projection() -> None:
     assert page.projections == [projection]
 
 
-def test_orders_presenter_preserves_existing_page_data_for_empty_projection() -> None:
+def test_orders_presenter_renders_canonical_empty_projection() -> None:
     page = OrdersPageSpy()
     state = ApplicationState()
 
     OrdersPresenter(page).render(state)  # type: ignore[arg-type]
 
     assert page.states == [state]
-    assert page.projections == []
+    assert page.projections == [state.order_projection]

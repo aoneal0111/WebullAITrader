@@ -5,7 +5,12 @@ from datetime import datetime
 
 from app.broker_protocol.models import BrokerOrder
 from app.composition.operations_order_mapper import map_broker_orders
-from app.operations_core import OperationsBus, OperationsOrder, OrdersUpdated
+from app.operations_core import (
+    OperationsBus,
+    OperationsOrder,
+    OrdersUpdated,
+    ProjectionAuthority,
+)
 
 
 BrokerOrdersSink = Callable[
@@ -37,6 +42,7 @@ def create_broker_orders_publisher(
                 source=normalized_source,
                 orders=mapped,
                 occurred_at=occurred_at,
+                projection_authority=ProjectionAuthority.BROKER_CURRENT,
             )
         )
         return mapped

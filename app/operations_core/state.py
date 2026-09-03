@@ -21,6 +21,7 @@ from app.operations_core.events import (
     OperationsPosition,
     OrdersUpdated,
     PositionsUpdated,
+    ProjectionAuthority,
     PaperRuntimeSnapshot,
     PaperRuntimeUpdated,
 
@@ -130,6 +131,10 @@ class ApplicationState:
     broker_account: "BrokerNeutralAccountInformation | None" = None
     orders: tuple[OperationsOrder, ...] = ()
     positions: tuple[OperationsPosition, ...] = ()
+    broker_orders: tuple[OperationsOrder, ...] = ()
+    paper_orders: tuple[OperationsOrder, ...] = ()
+    broker_positions: tuple[OperationsPosition, ...] = ()
+    paper_positions: tuple[OperationsPosition, ...] = ()
 
     timeline: tuple[TimelineEntry, ...] = ()
     revision: int = 0
@@ -228,18 +233,21 @@ class ApplicationStateStore:
                 self._state.broker_account,
                 event,
             )
-            orders = self._reduce_orders(self._state.orders, event)
-            order_projection = self._reduce_order_projection(
-                self._state.order_projection,
+            (
+                orders,
+                order_projection,
+                broker_orders,
+                paper_orders,
+            ) = self._reduce_authoritative_orders(self._state, event)
+            (
+                positions,
+                position_projection,
+                broker_positions,
+                paper_positions,
+            ) = self._reduce_authoritative_positions(
+                self._state,
                 event,
-            )
-            positions = self._reduce_positions(
-                self._state.positions,
-                event,
-            )
-            position_projection = self._reduce_position_projection(
-                self._state.position_projection,
-                event,
+                environment=runtime.environment,
             )
             timeline_projection = self._reduce_timeline_projection(
                 self._state.timeline_projection,
@@ -253,6 +261,31 @@ class ApplicationStateStore:
                 self._state.portfolio_projection,
                 event,
             )
+            if (
+                isinstance(event, (OrdersUpdated, PositionsUpdated))
+                and event.projection_authority
+                is not ProjectionAuthority.CANONICAL
+            ) or (
+                isinstance(event, PortfolioUpdated)
+                and (
+                    broker_orders
+                    or paper_orders
+                    or broker_positions
+                    or paper_positions
+                )
+            ):
+                # Account/Risk consumes the same canonical position/order
+                # authority as the operator panels.  Publisher-specific
+                # PortfolioUpdated events cannot reintroduce last-writer-wins
+                # counts or exposure after those source slices are known.
+                from app.read_models.portfolio_projection import (
+                    aggregate_portfolio,
+                )
+
+                portfolio_projection = aggregate_portfolio(
+                    position_projection,
+                    order_projection,
+                )
             portfolio_intelligence = self._reduce_portfolio_intelligence(
                 self._state.portfolio_intelligence,
                 event,
@@ -293,6 +326,10 @@ class ApplicationStateStore:
                 and order_projection == current.order_projection
                 and positions == current.positions
                 and position_projection == current.position_projection
+                and broker_orders == current.broker_orders
+                and paper_orders == current.paper_orders
+                and broker_positions == current.broker_positions
+                and paper_positions == current.paper_positions
                 and timeline_projection == current.timeline_projection
                 and decision_projection == current.decision_projection
                 and portfolio_projection == current.portfolio_projection
@@ -311,6 +348,10 @@ class ApplicationStateStore:
                 order_projection=order_projection,
                 positions=positions,
                 position_projection=position_projection,
+                broker_orders=broker_orders,
+                paper_orders=paper_orders,
+                broker_positions=broker_positions,
+                paper_positions=paper_positions,
                 timeline_projection=timeline_projection,
                 decision_projection=decision_projection,
                 portfolio_projection=portfolio_projection,
@@ -413,52 +454,102 @@ class ApplicationStateStore:
         return current
 
     @staticmethod
-    def _reduce_orders(
-        current: tuple[OperationsOrder, ...],
+    def _reduce_authoritative_orders(
+        current: ApplicationState,
         event: OperationsEvent,
-    ) -> tuple[OperationsOrder, ...]:
-        if isinstance(event, OrdersUpdated):
-            return event.orders
-
-        return current
-
-    @staticmethod
-    def _reduce_order_projection(
-        current: "OrdersReadModelSnapshot",
-        event: OperationsEvent,
-    ) -> "OrdersReadModelSnapshot":
-        if isinstance(event, OrdersUpdated):
-            from app.read_models.orders.projector import (
-                project_operational_orders,
+    ) -> tuple[
+        tuple[OperationsOrder, ...],
+        "OrdersReadModelSnapshot",
+        tuple[OperationsOrder, ...],
+        tuple[OperationsOrder, ...],
+    ]:
+        if not isinstance(event, OrdersUpdated):
+            return (
+                current.orders,
+                current.order_projection,
+                current.broker_orders,
+                current.paper_orders,
             )
 
-            return project_operational_orders(event.orders)
+        from app.read_models.orders.projector import project_operational_orders
 
-        return current
-
-    @staticmethod
-    def _reduce_positions(
-        current: tuple[OperationsPosition, ...],
-        event: OperationsEvent,
-    ) -> tuple[OperationsPosition, ...]:
-        if isinstance(event, PositionsUpdated):
-            return event.positions
-
-        return current
-
-    @staticmethod
-    def _reduce_position_projection(
-        current: "PositionsReadModelSnapshot",
-        event: OperationsEvent,
-    ) -> "PositionsReadModelSnapshot":
-        if isinstance(event, PositionsUpdated):
-            from app.read_models.positions.projector import (
-                project_operational_positions,
+        if event.projection_authority is ProjectionAuthority.CANONICAL:
+            return (
+                event.orders,
+                project_operational_orders(event.orders),
+                current.broker_orders,
+                current.paper_orders,
             )
 
-            return project_operational_positions(event.positions)
+        from app.operations_core.projection_authority import merge_orders
 
-        return current
+        broker = (
+            event.orders
+            if event.projection_authority is ProjectionAuthority.BROKER_CURRENT
+            else current.broker_orders
+        )
+        paper = (
+            event.orders
+            if event.projection_authority is ProjectionAuthority.PAPER_EXECUTION
+            else current.paper_orders
+        )
+        merged = merge_orders(broker, paper)
+        return merged, project_operational_orders(merged), broker, paper
+
+    @staticmethod
+    def _reduce_authoritative_positions(
+        current: ApplicationState,
+        event: OperationsEvent,
+        *,
+        environment: str,
+    ) -> tuple[
+        tuple[OperationsPosition, ...],
+        "PositionsReadModelSnapshot",
+        tuple[OperationsPosition, ...],
+        tuple[OperationsPosition, ...],
+    ]:
+        source_event = isinstance(event, PositionsUpdated)
+        source_aware = source_event and (
+            event.projection_authority is not ProjectionAuthority.CANONICAL
+        )
+        environment_changed = environment != current.runtime.environment
+        if not source_event and not (
+            environment_changed
+            and (current.broker_positions or current.paper_positions)
+        ):
+            return (
+                current.positions,
+                current.position_projection,
+                current.broker_positions,
+                current.paper_positions,
+            )
+
+        from app.read_models.positions.projector import project_operational_positions
+
+        if source_event and not source_aware:
+            return (
+                event.positions,
+                project_operational_positions(event.positions),
+                current.broker_positions,
+                current.paper_positions,
+            )
+
+        from app.operations_core.projection_authority import merge_positions
+
+        broker = (
+            event.positions
+            if source_event
+            and event.projection_authority is ProjectionAuthority.BROKER_CURRENT
+            else current.broker_positions
+        )
+        paper = (
+            event.positions
+            if source_event
+            and event.projection_authority is ProjectionAuthority.PAPER_EXECUTION
+            else current.paper_positions
+        )
+        merged = merge_positions(broker, paper, environment=environment)
+        return merged, project_operational_positions(merged), broker, paper
 
     @staticmethod
     def _reduce_timeline_projection(

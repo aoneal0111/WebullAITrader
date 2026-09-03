@@ -5,8 +5,9 @@ from decimal import Decimal
 from app.gui.formatters.prices import format_price
 from app.gui.models import OrdersSnapshot
 from app.read_models.orders import OrderReadModel, OrdersReadModelSnapshot
+from app.operations_core.projection_authority import ACTIVE_ORDER_STATUSES
 
-DASHBOARD_ORDER_LIMIT = 25
+RECENT_TERMINAL_ORDER_LIMIT = 25
 
 
 def format_orders(snapshot: OrdersReadModelSnapshot) -> OrdersSnapshot:
@@ -15,20 +16,23 @@ def format_orders(snapshot: OrdersReadModelSnapshot) -> OrdersSnapshot:
     if not isinstance(snapshot, OrdersReadModelSnapshot):
         raise TypeError("snapshot must be an OrdersReadModelSnapshot")
 
-    active = {
-        "NEW", "PENDING", "SUBMITTED", "ACCEPTED", "WORKING",
-        "PARTIALLY_FILLED",
-    }
-    ordered = sorted(
-        snapshot.orders,
-        key=lambda order: (
-            order.status.upper() in active,
-            order.updated_at,
-            order.order_id,
+    active = sorted(
+        (
+            order for order in snapshot.orders
+            if _normalized_status(order.status) in ACTIVE_ORDER_STATUSES
         ),
+        key=lambda order: (order.updated_at, order.order_id),
         reverse=True,
     )
-    visible = ordered[:DASHBOARD_ORDER_LIMIT]
+    terminal = sorted(
+        (
+            order for order in snapshot.orders
+            if _normalized_status(order.status) not in ACTIVE_ORDER_STATUSES
+        ),
+        key=lambda order: (order.updated_at, order.order_id),
+        reverse=True,
+    )[:RECENT_TERMINAL_ORDER_LIMIT]
+    visible = (*active, *terminal)
     return OrdersSnapshot(
         rows=tuple(_format_order(order) for order in visible),
         protective_rows=frozenset(
@@ -70,3 +74,7 @@ def has_explicit_protection_evidence(order: OrderReadModel) -> bool:
         and any(token in reason for token in ("STOP", "PROTECT"))
         and order.lifecycle_id is not None
     )
+
+
+def _normalized_status(status: str) -> str:
+    return status.strip().upper().replace(" ", "_")

@@ -70,6 +70,10 @@ class PositionsPanel(QWidget):
         management_layout.addLayout(protection)
         layout.addWidget(self._management)
 
+        self._active_heading = QLabel("ACTIVE")
+        self._active_heading.setObjectName("sectionTitle")
+        layout.addWidget(self._active_heading)
+
         self._table = StyledDataTable(
             (
                 "Symbol", "Side", "Size", "Average Entry", "Mark",
@@ -77,19 +81,38 @@ class PositionsPanel(QWidget):
             )
         )
         self._table.set_empty_state(
-            "No positions",
-            "Filled orders will appear here.",
+            "No positions — ACTIVE",
+            "Current nonzero exposure will appear here.",
             icon="\u25ce",
         )
 
         layout.addWidget(self._table)
 
+        self._closed_heading = QLabel("CLOSED / RECENT")
+        self._closed_heading.setObjectName("sectionTitle")
+        layout.addWidget(self._closed_heading)
+        self._closed_table = StyledDataTable(
+            (
+                "Symbol", "Side", "Size", "Average Entry", "Mark",
+                "Unrealized PnL", "PnL %", "Realized PnL", "Updated",
+            )
+        )
+        self._closed_table.set_empty_state(
+            "No closed position history",
+            "Recently closed PAPER positions will appear here.",
+            icon="\u25ce",
+        )
+        layout.addWidget(self._closed_table)
+
     def render(self, snapshot: PositionsSnapshot) -> None:
         rows = snapshot.rows
         self._render_management(snapshot)
+        self._render_rows(self._table, rows)
+        self._render_rows(self._closed_table, snapshot.closed_rows)
 
-        self._table.setRowCount(len(rows))
-
+    @staticmethod
+    def _render_rows(table: StyledDataTable, rows) -> None:
+        table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             for column_index, value in enumerate(row):
                 item = QTableWidgetItem(value)
@@ -110,7 +133,7 @@ class PositionsPanel(QWidget):
                     item.setForeground(
                         QBrush(QColor(_financial_color(value)))
                     )
-                self._table.setItem(row_index, column_index, item)
+                table.setItem(row_index, column_index, item)
 
     def _render_management(self, snapshot: PositionsSnapshot) -> None:
         if not snapshot.management:
@@ -127,7 +150,9 @@ class PositionsPanel(QWidget):
         self._position_state.setText(row.management_state.upper())
         self._set_status_tone(
             self._position_state,
-            "warn" if row.protection and row.protection.status == "PARTIALLY_FILLED"
+            "neutral" if not row.protection_applicable
+            else "danger" if row.protection_conflict
+            else "warn" if row.protection and row.protection.status == "PARTIALLY_FILLED"
             else "good" if row.protection else "danger",
         )
         self._facts["SIDE / QTY"].setText(f"{row.side}  {row.quantity}")
@@ -142,6 +167,20 @@ class PositionsPanel(QWidget):
         )
         self._facts["UPDATED"].setText(row.updated_at)
         self._facts["THESIS"].setText(row.thesis_state)
+        if not row.protection_applicable:
+            self._protection_status.setText("NOT APPLICABLE")
+            self._set_status_tone(self._protection_status, "neutral")
+            self._protection_detail.setText(
+                "Protection semantics are not authorized for this exposure"
+            )
+            return
+        if row.protection_conflict:
+            self._protection_status.setText("CONFLICTING EVIDENCE")
+            self._set_status_tone(self._protection_status, "danger")
+            self._protection_detail.setText(
+                "Multiple active protective orders correlate to this position"
+            )
+            return
         if row.protection is None:
             self._protection_status.setText("NOT EVIDENCED")
             self._set_status_tone(self._protection_status, "danger")

@@ -9,6 +9,7 @@ from app.operations_core import (
     OperationsBus,
     OperationsPosition,
     PositionsUpdated,
+    ProjectionAuthority,
 )
 
 
@@ -53,6 +54,7 @@ def create_broker_positions_publisher(
                 source=normalized_source,
                 positions=mapped,
                 occurred_at=occurred_at,
+                projection_authority=ProjectionAuthority.BROKER_CURRENT,
             )
         )
         return mapped

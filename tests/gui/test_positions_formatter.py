@@ -166,6 +166,30 @@ def test_format_positions_returns_immutable_rows() -> None:
     assert isinstance(snapshot.rows[0], tuple)
 
 
+def test_flat_position_is_closed_history_not_active_management() -> None:
+    snapshot = format_positions(
+        PositionsReadModelSnapshot(
+            positions=(
+                make_read_model_position(
+                    symbol="TLYS",
+                    quantity="0",
+                    average_cost="4.5297",
+                    market_value="0",
+                    unrealized_gain_loss="0",
+                    realized_gain_loss="-517.71",
+                ),
+            ),
+        )
+    )
+
+    assert snapshot.rows == ()
+    assert snapshot.management == ()
+    assert snapshot.closed_rows[0][0:4] == (
+        "TLYS", "FLAT", "0", "$4.5297",
+    )
+    assert snapshot.closed_rows[0][7] == "-$517.71"
+
+
 def test_format_positions_rejects_wrong_snapshot_type() -> None:
     with pytest.raises(
         TypeError,

@@ -21,8 +21,8 @@ def format_positions(
             "snapshot must be a PositionsReadModelSnapshot"
         )
 
-    rows = tuple(
-            _format_position(
+    formatted = tuple(
+            (position, _format_position(
                 symbol=position.symbol,
                 quantity=position.quantity,
                 average_cost=position.average_cost,
@@ -31,38 +31,67 @@ def format_positions(
                 realized_gain_loss=position.realized_gain_loss,
                 currency=position.currency,
                 updated_at=position.updated_at,
-            )
+            ))
             for position in snapshot.positions
         )
+    active = tuple(
+        (position, row)
+        for position, row in formatted
+        if _decimal(position.quantity, "quantity") != 0
+    )
+    closed = tuple(
+        row
+        for position, row in formatted
+        if _decimal(position.quantity, "quantity") == 0
+    )
     return PositionsSnapshot(
-        rows=rows,
+        rows=tuple(row for _, row in active),
         management=tuple(
             _management_row(position, row, orders)
-            for position, row in zip(snapshot.positions, rows)
+            for position, row in active
         ),
+        closed_rows=closed,
     )
 
 
 def _management_row(position, row, orders) -> PositionManagementRow:
-    protection = _correlated_protection(position, orders)
+    quantity = _decimal(position.quantity, "quantity")
+    protection_applicable = quantity > 0
+    protection, protection_conflict = (
+        _correlated_protection(position, orders)
+        if protection_applicable
+        else (None, False)
+    )
     strategy, setup = _strategy_setup(protection, orders)
     return PositionManagementRow(
         symbol=row[0], side=row[1], quantity=row[2], average_entry=row[3],
         mark=row[4], unrealized_pnl=row[5], unrealized_percent=row[6],
         realized_pnl=row[7], updated_at=row[8], strategy=strategy, setup=setup,
         management_state=(
-            protection.status.replace("_", " ").title()
+            "Protection not applicable"
+            if not protection_applicable
+            else "Conflicting protection evidence"
+            if protection_conflict
+            else protection.status.replace("_", " ").title()
             if protection is not None else "Protection not evidenced"
         ),
         protection=protection,
+        protection_applicable=protection_applicable,
+        protection_conflict=protection_conflict,
     )
 
 
-def _correlated_protection(position, orders) -> ProtectionSnapshot | None:
-    if orders is None:
-        return None
+def _correlated_protection(
+    position, orders,
+) -> tuple[ProtectionSnapshot | None, bool]:
     quantity = _decimal(position.quantity, "quantity")
-    expected_sides = {"SELL"} if quantity > 0 else {"BUY", "COVER"}
+    if quantity == 0 or orders is None:
+        return None, False
+    # Only long protection is authorized in this milestone.  Future short
+    # semantics must be introduced with explicit execution-side support.
+    if quantity < 0:
+        return None, False
+    expected_sides = {"SELL"}
     active = {
         "NEW", "PENDING", "SUBMITTED", "ACCEPTED", "WORKING",
         "PARTIALLY_FILLED",
@@ -85,7 +114,9 @@ def _correlated_protection(position, orders) -> ProtectionSnapshot | None:
         ):
             candidates.append(order)
     if not candidates:
-        return None
+        return None, False
+    if len(candidates) > 1:
+        return None, True
     order = max(candidates, key=lambda item: (item.updated_at, item.order_id))
     return ProtectionSnapshot(
         status=order.status,
@@ -94,7 +125,7 @@ def _correlated_protection(position, orders) -> ProtectionSnapshot | None:
         remaining_quantity=_format_quantity(order.remaining_quantity or "0"),
         stop_price=format_price(_decimal(order.stop_price or "0", "stop price")),
         order_id=order.order_id,
-    )
+    ), False
 
 
 def _strategy_setup(protection, orders) -> tuple[str, str]:

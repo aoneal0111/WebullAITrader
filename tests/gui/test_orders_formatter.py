@@ -109,13 +109,28 @@ def test_format_orders_preserves_immutable_rows() -> None:
 
 def test_format_orders_bounds_mission_control_history() -> None:
     orders = tuple(
-        make_read_model_order(order_id=f"order-{index}", symbol=f"S{index}")
+        make_read_model_order(
+            order_id=f"order-{index}",
+            symbol=f"S{index}",
+            status="FILLED",
+        )
         for index in range(30)
     )
 
     snapshot = format_orders(OrdersReadModelSnapshot(orders=orders))
 
     assert len(snapshot.rows) == 25
+
+
+def test_format_orders_never_bounds_working_orders() -> None:
+    orders = tuple(
+        make_read_model_order(order_id=f"order-{index}", symbol=f"S{index}")
+        for index in range(30)
+    )
+
+    snapshot = format_orders(OrdersReadModelSnapshot(orders=orders))
+
+    assert len(snapshot.rows) == 30
 
 
 def test_format_orders_rejects_wrong_model() -> None:

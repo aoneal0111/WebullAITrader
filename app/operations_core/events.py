@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 from datetime import datetime, timezone
+from enum import StrEnum
 from uuid import UUID, uuid4
 
 from app.account_information.models import BrokerNeutralAccountInformation
@@ -15,6 +16,20 @@ def utc_now() -> datetime:
     """Return the current timezone-aware UTC timestamp."""
 
     return datetime.now(timezone.utc)
+
+
+class ProjectionAuthority(StrEnum):
+    """Ownership of a complete position or order presentation snapshot.
+
+    ``CANONICAL`` preserves the historical replace-slice contract for callers
+    that already publish a fully composed snapshot.  Runtime publishers must
+    identify broker-current and PAPER execution facts explicitly so the
+    application-state layer can merge them without publisher-order effects.
+    """
+
+    CANONICAL = "CANONICAL"
+    BROKER_CURRENT = "BROKER_CURRENT"
+    PAPER_EXECUTION = "PAPER_EXECUTION"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -168,9 +183,10 @@ class OperationsPosition:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OrdersUpdated(OperationsEvent):
-    """Replace the Operations Center order slice with an immutable snapshot."""
+    """Publish one complete immutable order snapshot for its authority."""
 
     orders: tuple[OperationsOrder, ...] = ()
+    projection_authority: ProjectionAuthority = ProjectionAuthority.CANONICAL
 
     def __post_init__(self) -> None:
         OperationsEvent.__post_init__(self)
@@ -185,14 +201,19 @@ class OrdersUpdated(OperationsEvent):
             raise TypeError(
                 "orders must contain only OperationsOrder instances"
             )
+        if not isinstance(self.projection_authority, ProjectionAuthority):
+            raise TypeError(
+                "projection_authority must be a ProjectionAuthority"
+            )
 
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PositionsUpdated(OperationsEvent):
-    """Replace the Operations Center position slice with an immutable snapshot."""
+    """Publish one complete immutable position snapshot for its authority."""
 
     positions: tuple[OperationsPosition, ...] = ()
+    projection_authority: ProjectionAuthority = ProjectionAuthority.CANONICAL
 
     def __post_init__(self) -> None:
         OperationsEvent.__post_init__(self)
@@ -206,6 +227,10 @@ class PositionsUpdated(OperationsEvent):
         ):
             raise TypeError(
                 "positions must contain only OperationsPosition instances"
+            )
+        if not isinstance(self.projection_authority, ProjectionAuthority):
+            raise TypeError(
+                "projection_authority must be a ProjectionAuthority"
             )
 
 

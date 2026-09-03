@@ -3,7 +3,12 @@ from __future__ import annotations
 from threading import RLock
 
 from app.operations.runtime import PaperRuntimeEvent
-from app.operations_core import OperationsBus, OperationsOrder, OrdersUpdated
+from app.operations_core import (
+    OperationsBus,
+    OperationsOrder,
+    OrdersUpdated,
+    ProjectionAuthority,
+)
 from app.read_models.orders.models import (
     OrderReadModel,
     OrdersReadModelSnapshot,
@@ -50,6 +55,7 @@ class OrderProjection:
                 event_id=projection_event_id("orders", event),
                 source="paper-runtime-order-projection",
                 orders=orders,
+                projection_authority=ProjectionAuthority.PAPER_EXECUTION,
             )
         )
 

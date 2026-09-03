@@ -151,3 +151,20 @@ def test_projection_rendering_does_not_call_execution_services() -> None:
     page = OrdersPage(Forbidden(), Forbidden())
     page.render_projection(OrdersReadModelSnapshot())
     assert page._orders_table.rowCount() == 1
+
+
+def test_canonical_empty_projection_clears_obsolete_order_rows(application) -> None:
+    page = OrdersPage()
+    page.render_projection(OrdersReadModelSnapshot(orders=(OrderReadModel(
+        order_id="chpt-entry", symbol="CHPT", side="BUY", quantity="1833",
+        status="WORKING", updated_at=NOW, order_type="LIMIT",
+        limit_price="9.104550", filled_quantity="0",
+        remaining_quantity="1833",
+    ),)))
+    assert page._orders_table.item(0, 0).text() == "CHPT"
+
+    page.render_projection(OrdersReadModelSnapshot.initial())
+    application.processEvents()
+
+    assert page._orders_table.rowCount() == 1
+    assert "No active paper orders" in page._orders_table.item(0, 0).text()

@@ -167,6 +167,45 @@ def test_protection_correlation_never_invents_without_complete_evidence(changes)
     assert snapshot.management[0].management_state == "Protection not evidenced"
 
 
+def test_flat_history_has_no_management_focus_or_protection_warning(application) -> None:
+    snapshot = format_positions(
+        PositionsReadModelSnapshot((_position(quantity="0"),)),
+        OrdersReadModelSnapshot((_stop(status="FILLED", remaining_quantity="0"),)),
+    )
+    page = DashboardPage()
+    page.positions_panel.render(snapshot)
+    application.processEvents()
+
+    assert snapshot.rows == ()
+    assert snapshot.management == ()
+    assert snapshot.closed_rows[0][0:3] == ("PMI", "FLAT", "0")
+    assert page.positions_panel._symbol.text() == "NO ACTIVE POSITION"
+    assert page.positions_panel._protection_status.text() == "NOT APPLICABLE"
+    assert page.positions_panel._closed_table.item(0, 0).text() == "PMI"
+
+
+def test_conflicting_protection_evidence_fails_visibly(application) -> None:
+    snapshot = format_positions(
+        PositionsReadModelSnapshot((_position(),)),
+        OrdersReadModelSnapshot((
+            _stop(),
+            _stop(order_id="paper-stop-2"),
+        )),
+    )
+    page = DashboardPage()
+    page.positions_panel.render(snapshot)
+    application.processEvents()
+
+    assert snapshot.management[0].protection is None
+    assert snapshot.management[0].protection_conflict is True
+    assert snapshot.management[0].management_state == (
+        "Conflicting protection evidence"
+    )
+    assert page.positions_panel._protection_status.text() == (
+        "CONFLICTING EVIDENCE"
+    )
+
+
 def test_atlas_reasoning_is_compact_observational_position_management(application) -> None:
     positions = format_positions(
         PositionsReadModelSnapshot((_position(),)),

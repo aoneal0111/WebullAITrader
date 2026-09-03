@@ -61,8 +61,8 @@ class OrdersPresenter:
 
     def render(self, state: ApplicationState) -> None:
         self._orders_page.render(state)
-        if state.order_projection.orders:
-            self._orders_page.render_projection(state.order_projection)
+        # Empty is a canonical fact and must clear obsolete rendered rows.
+        self._orders_page.render_projection(state.order_projection)
 
 
 class PositionsPresenter:

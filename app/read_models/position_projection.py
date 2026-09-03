@@ -10,6 +10,7 @@ from app.operations_core import (
     OperationsBus,
     OperationsPosition,
     PositionsUpdated,
+    ProjectionAuthority,
 )
 from app.paper_trading.models import PaperFill
 from app.read_models.positions.models import (
@@ -103,6 +104,7 @@ class PositionProjection:
                 event_id=projection_event_id("positions", event),
                 source="paper-runtime-position-projection",
                 positions=positions,
+                projection_authority=ProjectionAuthority.PAPER_EXECUTION,
             )
         )
 
