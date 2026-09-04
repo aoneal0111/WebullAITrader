@@ -91,7 +91,8 @@ def test_dynamic_momentum_discovery_is_disabled_and_dedicated(tmp_path):
         "DYNAMIC_MOMENTUM_DISCOVERY_ENABLED": "true",
         "DYNAMIC_MOMENTUM_DISCOVERY_PATH": str(tmp_path / "dynamic.jsonl"),
         "DYNAMIC_MOMENTUM_DISCOVERY_QUEUE_CAPACITY": "321",
-        "DYNAMIC_MOMENTUM_DISCOVERY_BREADTH": "500",
+        "DYNAMIC_MOMENTUM_DISCOVERY_BREADTH": "100",
+        "DYNAMIC_MOMENTUM_DISCOVERY_REFRESH_SECONDS": "45",
     })
     assert default.dynamic_momentum_discovery_enabled is False
     assert default.dynamic_momentum_discovery_path.name == "observations.jsonl"
@@ -100,4 +101,7 @@ def test_dynamic_momentum_discovery_is_disabled_and_dedicated(tmp_path):
         tmp_path / "dynamic.jsonl"
     ).resolve()
     assert enabled.dynamic_momentum_discovery_queue_capacity == 321
-    assert enabled.dynamic_momentum_discovery_breadth == 500
+    assert default.dynamic_momentum_discovery_breadth == 100
+    assert default.dynamic_momentum_discovery_refresh_seconds == 60
+    assert enabled.dynamic_momentum_discovery_breadth == 100
+    assert enabled.dynamic_momentum_discovery_refresh_seconds == 45

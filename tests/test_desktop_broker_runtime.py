@@ -220,6 +220,158 @@ def test_production_composition_owns_autonomous_webull_universe_provider(
     assert configured.allowed_symbols == ("AAPL",)
     assert "default_channels" not in captured
     assert captured["maximum_events_per_cycle"] == 100
+    assert driver._dynamic_momentum_discovery is None
+
+
+def test_dynamic_shadow_composition_preserves_production_page_shape(
+    monkeypatch, tmp_path,
+) -> None:
+    configured = replace(
+        configuration(),
+        dynamic_momentum_discovery_enabled=True,
+        dynamic_momentum_discovery_path=tmp_path / "shadow.jsonl",
+        dynamic_momentum_discovery_breadth=100,
+        dynamic_momentum_discovery_refresh_seconds=60,
+    )
+    broker = FakeBroker()
+    stream = object()
+    captured = {}
+    coordinator = object()
+
+    monkeypatch.setattr(
+        desktop_broker_module,
+        "create_desktop_scanner_infrastructure",
+        lambda **kwargs: captured.update(kwargs) or SimpleNamespace(
+            coordinator=coordinator
+        ),
+    )
+    driver = create_configured_desktop_broker_driver(
+        event_sink=lambda event: None,
+        account_snapshot_sink=lambda snapshot: None,
+        configuration_loader=lambda: configured,
+        broker_runtime_factory=lambda **kwargs: BrokerRuntime(
+            provider="webull",
+            capabilities=BrokerCapabilities(
+                provider="webull", version="test", supports_execution=True,
+                supports_account_data=True, supports_market_data=True,
+                supports_streaming=True,
+            ),
+            execution=broker,
+            market_data=stream,
+        ),
+        webull_broker_factory=lambda value: broker,
+        webull_market_data_factory=lambda value: stream,
+        clock=lambda: NOW,
+    )
+
+    production = captured["universe_service"]._provider
+    shadow = driver._dynamic_momentum_discovery
+    assert isinstance(production, WebullScannerUniverseProvider)
+    assert production._page_size == 50
+    assert shadow is not None
+    assert shadow._breadth == 100
+    assert shadow._provider._page_size == 50
+    assert shadow._provider._screener._data_client is not production._client
+    assert shadow._refresh_seconds == 60
+    assert shadow.metrics().running is False
+    assert captured["market_data_client"] is stream
+
+
+def test_dynamic_shadow_starts_after_production_universe_and_stops_first() -> None:
+    calls = []
+
+    class ResearchRuntime:
+        def start(self):
+            calls.append("shadow-start")
+            return True
+
+        def close(self, *, timeout_seconds):
+            calls.append(("shadow-stop", timeout_seconds))
+            return True
+
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=configuration(),
+        broker_runtime=BrokerRuntime(
+            provider="webull",
+            capabilities=BrokerCapabilities(
+                provider="webull", version="test", supports_execution=True,
+                supports_account_data=True, supports_market_data=True,
+                supports_streaming=True,
+            ),
+            execution=FakeBroker(),
+            market_data=object(),
+        ),
+        event_sink=lambda event: None,
+        account_snapshot_sink=lambda snapshot: None,
+        scanner_coordinator=object(),
+        dynamic_momentum_discovery_runtime=ResearchRuntime(),
+        clock=lambda: NOW,
+    )
+    driver._start_scanner = lambda: calls.append("production-start") or False
+    driver._start_market_data(Event())
+    assert calls == ["production-start", "shadow-start"]
+
+    driver._stop_market_data = lambda: calls.append("production-stop")
+    driver._stop_observer = lambda: calls.append("observer-stop")
+    driver._disconnect = lambda: calls.append("broker-stop")
+    driver._poll_accounts = lambda **kwargs: None
+    driver._start_market_data = lambda stop_event: None
+    driver.run(stop_event=Event(), cycle_sink=lambda cycle: None)
+    assert calls[-4:] == [
+        ("shadow-stop", 5.0), "production-stop", "observer-stop", "broker-stop"
+    ]
+
+
+def test_dynamic_shadow_failure_cannot_escape_execution_lifecycle() -> None:
+    class BrokenResearchRuntime:
+        def start(self): raise RuntimeError("research start")
+        def close(self, **kwargs): raise RuntimeError("research close")
+
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=configuration(),
+        broker_runtime=broker_runtime(FakeBroker()),
+        event_sink=lambda event: None,
+        account_snapshot_sink=lambda snapshot: None,
+        dynamic_momentum_discovery_runtime=BrokenResearchRuntime(),
+        clock=lambda: NOW,
+    )
+    driver._start_dynamic_momentum_discovery()
+    driver._stop_dynamic_momentum_discovery()
+
+
+def test_dynamic_shadow_is_ineligible_for_live_composition(monkeypatch, tmp_path) -> None:
+    configured = replace(
+        configuration(),
+        environment=TradingEnvironment.LIVE,
+        live_trading_enabled=True,
+        dynamic_momentum_discovery_enabled=True,
+        dynamic_momentum_discovery_path=tmp_path / "shadow.jsonl",
+    )
+    stream = object()
+    broker = FakeBroker()
+    monkeypatch.setattr(
+        desktop_broker_module,
+        "create_desktop_scanner_infrastructure",
+        lambda **kwargs: SimpleNamespace(coordinator=object()),
+    )
+    driver = create_configured_desktop_broker_driver(
+        event_sink=lambda event: None,
+        account_snapshot_sink=lambda snapshot: None,
+        configuration_loader=lambda: configured,
+        broker_runtime_factory=lambda **kwargs: BrokerRuntime(
+            provider="webull",
+            capabilities=BrokerCapabilities(
+                provider="webull", version="test", supports_execution=True,
+                supports_account_data=True, supports_market_data=True,
+                supports_streaming=True,
+            ),
+            execution=broker, market_data=stream,
+        ),
+        webull_broker_factory=lambda value: broker,
+        webull_market_data_factory=lambda value: stream,
+        clock=lambda: NOW,
+    )
+    assert driver._dynamic_momentum_discovery is None
 
 
 def test_experiment_sidecar_failures_do_not_escape_scanner_composition(

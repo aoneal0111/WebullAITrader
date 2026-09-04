@@ -27,6 +27,8 @@ class DynamicDiscoveryMetrics:
     suppressed: int
     rejected: int
     failed: int
+    evaluation_failures: int
+    persistence_failures: int
     outstanding: int
     queue_depth: int
     queue_high_water: int
@@ -78,6 +80,7 @@ class DynamicMomentumDiscoveryService:
         self._previous: OrderedDict[str, BroadMarketSnapshot] = OrderedDict()
         self._accepted = self._completed = self._suppressed = 0
         self._rejected = self._failed = self._high_water = 0
+        self._evaluation_failures = self._persistence_failures = 0
         self._max_producer_ms = self._max_lag_ms = 0.0
         self._promotions = 0
         self._events: Counter[MomentumEvent] = Counter()
@@ -147,6 +150,8 @@ class DynamicMomentumDiscoveryService:
                 enabled=self.enabled, accepted=self._accepted,
                 completed=self._completed, suppressed=self._suppressed,
                 rejected=self._rejected, failed=self._failed,
+                evaluation_failures=self._evaluation_failures,
+                persistence_failures=self._persistence_failures,
                 outstanding=self._accepted - self._completed,
                 queue_depth=depth, queue_high_water=self._high_water,
                 retained_symbols=len(self._previous),
@@ -176,30 +181,44 @@ class DynamicMomentumDiscoveryService:
             now = self._clock()
             lag = max(0.0, (now - work.enqueued_at).total_seconds() * 1000)
             try:
-                previous = self._previous.get(work.snapshot.symbol)
-                observation = self._evaluator(
-                    work.snapshot, previous=previous,
-                    evaluated_at=max(now, work.snapshot.decision_cutoff),
-                    policy=self._policy,
-                )
-                self._store.append(observation)
-                if self._sink is not None:
+                try:
+                    previous = self._previous.get(work.snapshot.symbol)
+                    observation = self._evaluator(
+                        work.snapshot, previous=previous,
+                        evaluated_at=max(now, work.snapshot.decision_cutoff),
+                        policy=self._policy,
+                    )
+                except Exception:
+                    with self._lock:
+                        self._evaluation_failures += 1
+                        self._failed += 1
+                        self._completed += 1
+                    observation = None
+                if observation is not None:
+                    persisted = True
                     try:
-                        self._sink(observation)
+                        self._store.append(observation)
                     except Exception:
-                        pass
-                with self._lock:
-                    self._previous[work.snapshot.symbol] = work.snapshot
-                    self._previous.move_to_end(work.snapshot.symbol)
-                    while len(self._previous) > self._maximum_retained_symbols:
-                        self._previous.popitem(last=False)
-                    self._completed += 1
-                    self._promotions += int(observation.shadow_promote_to_full_analysis)
-                    self._events.update(observation.events)
-            except Exception:
-                with self._lock:
-                    self._failed += 1
-                    self._completed += 1
+                        persisted = False
+                        with self._lock:
+                            self._persistence_failures += 1
+                            self._failed += 1
+                    if self._sink is not None:
+                        try:
+                            self._sink(observation)
+                        except Exception:
+                            pass
+                    with self._lock:
+                        self._previous[work.snapshot.symbol] = work.snapshot
+                        self._previous.move_to_end(work.snapshot.symbol)
+                        while len(self._previous) > self._maximum_retained_symbols:
+                            self._previous.popitem(last=False)
+                        self._completed += 1
+                        if persisted:
+                            self._promotions += int(
+                                observation.shadow_promote_to_full_analysis
+                            )
+                            self._events.update(observation.events)
             finally:
                 with self._lock:
                     self._max_lag_ms = max(self._max_lag_ms, lag)
@@ -208,6 +227,7 @@ class DynamicMomentumDiscoveryService:
             self._store.close()
         except Exception:
             with self._lock:
+                self._persistence_failures += 1
                 self._failed += 1
         with self._lock:
             self._stopped = True

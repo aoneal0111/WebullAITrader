@@ -82,11 +82,30 @@ def snapshot_from_rows(
         volume=_max(ordered, "volume"),
         relative_volume=_max(ordered, "relative_volume"),
         turnover=_max(ordered, "turnover"),
-        bid=bid, ask=ask, bid_size=bid_size, ask_size=ask_size,
-        quote_timestamp=quote_timestamp,
-        recent_1m_change_percent=recent_1m_change_percent,
-        recent_5m_change_percent=recent_5m_change_percent,
-        volume_acceleration=volume_acceleration,
+        bid=bid if bid is not None else _first(ordered, "bid"),
+        ask=ask if ask is not None else _first(ordered, "ask"),
+        bid_size=(bid_size if bid_size is not None else _first(ordered, "bid_size")),
+        ask_size=(ask_size if ask_size is not None else _first(ordered, "ask_size")),
+        quote_timestamp=(
+            quote_timestamp
+            if quote_timestamp is not None
+            else _latest_not_after(ordered, "quote_timestamp", decision_cutoff)
+        ),
+        recent_1m_change_percent=(
+            recent_1m_change_percent
+            if recent_1m_change_percent is not None
+            else _first(ordered, "recent_1m_change_percent")
+        ),
+        recent_5m_change_percent=(
+            recent_5m_change_percent
+            if recent_5m_change_percent is not None
+            else _first(ordered, "recent_5m_change_percent")
+        ),
+        volume_acceleration=(
+            volume_acceleration
+            if volume_acceleration is not None
+            else _first(ordered, "volume_acceleration")
+        ),
         fresh_high_count=fresh_high_count,
         first_acceleration_at=first_acceleration_at,
         production_stages=production_stages,
@@ -283,6 +302,14 @@ def _first(rows, name):
 
 def _max(rows, name):
     values = [getattr(row, name) for row in rows if getattr(row, name) is not None]
+    return max(values) if values else None
+
+
+def _latest_not_after(rows, name, cutoff):
+    values = [
+        getattr(row, name) for row in rows
+        if getattr(row, name) is not None and getattr(row, name) <= cutoff
+    ]
     return max(values) if values else None
 
 

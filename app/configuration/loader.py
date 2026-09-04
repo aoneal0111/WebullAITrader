@@ -351,7 +351,8 @@ def load_configuration(env=None):
             or "data/dynamic_momentum_discovery/observations.jsonl"
         ).resolve(),
         _int(e, "DYNAMIC_MOMENTUM_DISCOVERY_QUEUE_CAPACITY", 1024),
-        _int(e, "DYNAMIC_MOMENTUM_DISCOVERY_BREADTH", 200),
+        _int(e, "DYNAMIC_MOMENTUM_DISCOVERY_BREADTH", 100),
+        _int(e, "DYNAMIC_MOMENTUM_DISCOVERY_REFRESH_SECONDS", 60),
     )
 
 

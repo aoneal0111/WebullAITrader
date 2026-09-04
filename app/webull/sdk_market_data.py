@@ -76,6 +76,7 @@ def create_official_data_client(
     app_secret: str,
     endpoint: str,
     region_id: str = "us",
+    timeout_seconds: float | None = None,
 ) -> object:
     """Create the official SDK DataClient lazily at scanner startup."""
 
@@ -84,6 +85,7 @@ def create_official_data_client(
         app_secret=app_secret,
         endpoint=endpoint,
         region_id=region_id,
+        timeout_seconds=timeout_seconds,
     )
 
     from webull.data.data_client import DataClient
@@ -104,6 +106,7 @@ def build_official_data_api_client(
     app_secret: str,
     endpoint: str,
     region_id: str = "us",
+    timeout_seconds: float | None = None,
 ) -> object:
     """Build Atlas's configured SDK client without initializing DataClient."""
 
@@ -123,7 +126,7 @@ def build_official_data_api_client(
             "webull-openapi-python-sdk"
         ) from exc
 
-    api_client = ApiClient(
+    client_values = dict(
         app_key=app_key,
         app_secret=app_secret,
         region_id=region_id,
@@ -131,6 +134,14 @@ def build_official_data_api_client(
         auto_retry=False,
         max_retry_num=0,
     )
+    if timeout_seconds is not None:
+        if timeout_seconds <= 0:
+            raise ValueError("market-data timeout must be positive")
+        client_values.update(
+            connect_timeout=float(timeout_seconds),
+            timeout=float(timeout_seconds),
+        )
+    api_client = ApiClient(**client_values)
     api_client.add_endpoint(region_id, parsed.hostname)
     api_client.append_user_agent("Atlas", "1.0")
     api_client.set_logger(configure_official_sdk_logging())

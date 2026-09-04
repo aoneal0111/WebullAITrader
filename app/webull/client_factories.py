@@ -33,14 +33,17 @@ class MarketDataClientFactory:
     configuration: MarketDataConfiguration
     builder: Callable[..., object] = create_official_data_client
 
-    def create(self) -> object:
+    def create(self, *, timeout_seconds: float | None = None) -> object:
         if not isinstance(self.configuration, MarketDataConfiguration):
             raise TypeError("market-data configuration is required")
-        return self.builder(
+        values = dict(
             app_key=self.configuration.api_key,
             app_secret=self.configuration.api_secret,
             endpoint=self.configuration.api_base_url,
         )
+        if timeout_seconds is not None:
+            values["timeout_seconds"] = timeout_seconds
+        return self.builder(**values)
 
 
 def trading_configuration(configuration: object) -> TradingConfiguration:

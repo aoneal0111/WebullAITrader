@@ -7,7 +7,7 @@ subscriptions and returns research rows only; it cannot mutate the production un
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 import json
 from math import ceil
@@ -30,6 +30,14 @@ class BroadDiscoveryRow:
     relative_volume: Decimal | None
     turnover: Decimal | None
     raw_fields_json: str
+    bid: Decimal | None = None
+    ask: Decimal | None = None
+    bid_size: Decimal | None = None
+    ask_size: Decimal | None = None
+    quote_timestamp: datetime | None = None
+    recent_1m_change_percent: Decimal | None = None
+    recent_5m_change_percent: Decimal | None = None
+    volume_acceleration: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +146,22 @@ class WebullBroadDiscoveryProvider:
                             dict(raw), default=str, sort_keys=True,
                             separators=(",", ":"),
                         ),
+                        bid=_decimal(raw, "bid", "bid_price"),
+                        ask=_decimal(raw, "ask", "ask_price"),
+                        bid_size=_decimal(raw, "bid_size", "bid_volume"),
+                        ask_size=_decimal(raw, "ask_size", "ask_volume"),
+                        quote_timestamp=_datetime(
+                            raw, "quote_timestamp", "timestamp", "time"
+                        ),
+                        recent_1m_change_percent=_decimal(
+                            raw, "change_1m_percent", "change_ratio_1m"
+                        ),
+                        recent_5m_change_percent=_decimal(
+                            raw, "change_5m_percent", "change_ratio_5m"
+                        ),
+                        volume_acceleration=_decimal(
+                            raw, "volume_acceleration"
+                        ),
                     ))
                     if source_rank >= breadth_per_source:
                         break
@@ -190,7 +214,7 @@ def _request(screener, source, session, *, page_index, page_size):
         DiscoverySource.TURNOVER_LEADERS: "TURNOVER",
     }[source]
     return screener.get_most_active(
-        "US_STOCK", rank_type=sort, sort_by=sort,
+        "US_STOCK", sort_by=sort,
         page_index=page_index, page_size=page_size, direction="DESC",
     )
 
@@ -234,6 +258,26 @@ def _decimal(row: Mapping[str, object], *names: str) -> Decimal | None:
                 return Decimal(str(value))
             except (InvalidOperation, ValueError):
                 return None
+    return None
+
+
+def _datetime(row: Mapping[str, object], *names: str) -> datetime | None:
+    for name in names:
+        value = row.get(name)
+        if value in (None, ""):
+            continue
+        if isinstance(value, datetime):
+            return value if value.tzinfo is not None else None
+        try:
+            if isinstance(value, (int, float)) or str(value).isdigit():
+                number = float(value)
+                if number > 10_000_000_000:
+                    number /= 1000.0
+                return datetime.fromtimestamp(number, tz=UTC)
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo is not None else None
+        except (ValueError, TypeError, OverflowError):
+            return None
     return None
 
 

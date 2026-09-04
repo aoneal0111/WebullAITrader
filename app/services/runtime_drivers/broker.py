@@ -66,6 +66,7 @@ class DesktopBrokerRuntimeDriver:
         ),
         market_event_observer: MarketEventObserver | None = None,
         scanner_coordinator: object | None = None,
+        dynamic_momentum_discovery_runtime: object | None = None,
         market_data_probe: object | None = None,
         startup_validator: object | None = None,
         clock: Clock = utc_now,
@@ -110,6 +111,7 @@ class DesktopBrokerRuntimeDriver:
         self._market_event_translator = market_event_translator
         self._market_event_observer = market_event_observer
         self._scanner = scanner_coordinator
+        self._dynamic_momentum_discovery = dynamic_momentum_discovery_runtime
         self._market_data_probe = market_data_probe
         self._startup_validator = startup_validator
         self._startup_validation = None
@@ -221,6 +223,7 @@ class DesktopBrokerRuntimeDriver:
             primary_error = (exc, exc.__traceback__)
         finally:
             cleanup_phases = (
+                ("dynamic momentum research stop", self._stop_dynamic_momentum_discovery),
                 ("market-data stop", self._stop_market_data),
                 ("observer/Warrior sidecar stop", self._stop_observer),
                 ("broker disconnect", self._disconnect),
@@ -346,6 +349,7 @@ class DesktopBrokerRuntimeDriver:
                         self._scanner.disconnect()
                         return
                 scanner_active = self._start_scanner()
+                self._start_dynamic_momentum_discovery()
                 if scanner_active:
                     self._market_data_stop.clear()
                     self._market_data_thread = Thread(
@@ -411,6 +415,40 @@ class DesktopBrokerRuntimeDriver:
             name="desktop-market-data",
         )
         self._market_data_thread.start()
+
+    def _start_dynamic_momentum_discovery(self) -> None:
+        runtime = self._dynamic_momentum_discovery
+        starter = getattr(runtime, "start", None)
+        if not callable(starter):
+            return
+        try:
+            starter()
+        except Exception as exc:
+            log_runtime_exception(
+                _RUNTIME_LOGGER,
+                exc,
+                event_type="dynamic_momentum_research_start_exception",
+                lifecycle_phase="dynamic momentum research start",
+                shutdown_requested=False,
+                primary=False,
+            )
+
+    def _stop_dynamic_momentum_discovery(self) -> None:
+        runtime = self._dynamic_momentum_discovery
+        closer = getattr(runtime, "close", None)
+        if not callable(closer):
+            return
+        try:
+            closer(timeout_seconds=5.0)
+        except Exception as exc:
+            log_runtime_exception(
+                _RUNTIME_LOGGER,
+                exc,
+                event_type="dynamic_momentum_research_stop_exception",
+                lifecycle_phase="dynamic momentum research stop",
+                shutdown_requested=True,
+                primary=False,
+            )
 
     def _publish_startup_validation(self, result: object) -> None:
         trading = result.trading

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from app.dynamic_momentum_discovery import DiscoverySource, WebullBroadDiscoveryProvider
 from app.dynamic_momentum_discovery.experiments import summarize_breadths
 from tests.dynamic_momentum_discovery.helpers import NOW
@@ -125,3 +127,30 @@ def test_provider_failure_is_captured_without_escaping_other_source():
     assert len(refresh.failures) == 1
     assert refresh.failures[0].source is DiscoverySource.SESSION_GAINERS
     assert refresh.unique_symbol_count == 50
+
+
+def test_available_l1_and_acceleration_fields_are_captured_without_subscription():
+    class RichScreener(PagedScreener):
+        def _page(self, prefix, kwargs):
+            response = super()._page(prefix, kwargs)
+            rows = [dict(row) for row in response.rows]
+            for row in rows:
+                row.update({
+                    "bid": "5.00", "ask": "5.02", "bid_size": "1000",
+                    "ask_size": "900", "timestamp": NOW.isoformat(),
+                    "change_1m_percent": "2.1", "change_5m_percent": "6.2",
+                    "volume_acceleration": "1.7",
+                })
+            return Response(rows, response.has_more)
+
+    refresh = WebullBroadDiscoveryProvider(RichScreener()).fetch(
+        breadth_per_source=50, observed_at=NOW, session="REGULAR"
+    )
+    row = refresh.rows[0]
+    assert (row.bid, row.ask, row.bid_size, row.ask_size) == (
+        Decimal("5.00"), Decimal("5.02"), Decimal("1000"), Decimal("900")
+    )
+    assert row.quote_timestamp == NOW
+    assert row.recent_1m_change_percent == Decimal("2.1")
+    assert row.recent_5m_change_percent == Decimal("6.2")
+    assert row.volume_acceleration == Decimal("1.7")

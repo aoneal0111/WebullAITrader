@@ -147,7 +147,7 @@ def test_provider_failure_does_not_escape_runner_or_other_source():
     service.close()
 
 
-def test_static_authority_and_composition_isolation():
+def test_static_authority_and_one_way_composition_isolation():
     root = Path(__file__).parents[2]
     package = root / "app" / "dynamic_momentum_discovery"
     text = "\n".join(path.read_text(encoding="utf-8") for path in package.glob("*.py"))
@@ -162,7 +162,16 @@ def test_static_authority_and_composition_isolation():
         path.read_text(encoding="utf-8")
         for path in (root / "app" / "composition").glob("*.py")
     )
-    assert "dynamic_momentum_discovery" not in composition
+    broker_composition = (
+        root / "app" / "composition" / "desktop_broker_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "DynamicMomentumDiscoveryRuntime" in broker_composition
+    assert "dynamic_momentum_discovery_runtime=" in broker_composition
+    forbidden_consumers = (
+        "shadow_promote_to_full_analysis", "production_promoted",
+        ".place_order(", ".cancel_order(", ".replace_order(",
+    )
+    assert all(value not in composition for value in forbidden_consumers)
 
 
 def test_producer_latency_is_measured_and_bounded_for_duplicates():

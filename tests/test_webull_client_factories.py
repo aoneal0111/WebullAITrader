@@ -55,6 +55,21 @@ def test_factory_rejects_the_other_configuration_type():
         TradingClientFactory(market_data, lambda **kwargs: object()).create()
 
 
+def test_research_market_data_client_can_request_bounded_timeout():
+    calls = []
+    market_data = MarketDataConfiguration(
+        TradingEnvironment.PRODUCTION, "key", "secret",
+        "https://data.example", "wss://data.example/mqtt",
+    )
+    MarketDataClientFactory(
+        market_data, lambda **kwargs: calls.append(kwargs) or object()
+    ).create(timeout_seconds=10.0)
+    assert calls == [{
+        "app_key": "key", "app_secret": "secret",
+        "endpoint": "https://data.example", "timeout_seconds": 10.0,
+    }]
+
+
 def test_factories_do_not_share_authentication_or_tokens():
     class Client:
         def __init__(self, token):

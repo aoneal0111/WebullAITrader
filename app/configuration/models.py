@@ -147,4 +147,5 @@ class OperationalConfiguration:
         "data/dynamic_momentum_discovery/observations.jsonl"
     )
     dynamic_momentum_discovery_queue_capacity: int = 1024
-    dynamic_momentum_discovery_breadth: int = 200
+    dynamic_momentum_discovery_breadth: int = 100
+    dynamic_momentum_discovery_refresh_seconds: int = 60

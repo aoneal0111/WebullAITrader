@@ -14,6 +14,12 @@ from app.composition.desktop_infrastructure import (
     create_desktop_scanner_infrastructure,
 )
 from app.configuration import OperationalConfiguration, load_configuration
+from app.dynamic_momentum_discovery import (
+    DynamicMomentumDiscoveryRuntime,
+    ProductionUniverseComparisonTracker,
+    UniverseAdmissionObserverFanout,
+    WebullBroadDiscoveryProvider,
+)
 from app.live_execution.account_polling import (
     BrokerAccountSnapshot,
     poll_broker_account,
@@ -55,6 +61,7 @@ from app.webull.market_data_probe import MarketDataCapabilityProbe
 from app.webull.startup_validation import RuntimeStartupValidator
 from app.webull.client_factories import trading_configuration
 from app.webull.request_audit import AuditedMarketDataClient, RequestIsolationGuard
+from app.webull.market_data_session import current_market_data_session
 
 
 ConfigurationLoader = Callable[[], OperationalConfiguration]
@@ -62,6 +69,19 @@ BrokerRuntimeFactory = Callable[..., BrokerRuntime]
 
 
 _SCANNER_LOGGER = logging.getLogger("atlas.scanner")
+
+
+class _LazyResearchScreener:
+    """Use the existing official data client without owning another client."""
+
+    def __init__(self, data_client: LazyOfficialDataClient) -> None:
+        self._data_client = data_client
+
+    def get_gainers_losers(self, *args, **kwargs):
+        return self._data_client.get().screener.get_gainers_losers(*args, **kwargs)
+
+    def get_most_active(self, *args, **kwargs):
+        return self._data_client.get().screener.get_most_active(*args, **kwargs)
 
 
 class _ResearchFanoutDecisionSink:
@@ -166,6 +186,7 @@ def create_configured_desktop_broker_driver(
     )
 
     scanner_coordinator = None
+    dynamic_momentum_runtime = None
     if broker_runtime.market_data is not None:
         universe_admission_observer = ScannerUniverseAdmissionObserver(
             enabled=configuration.scanner_universe_observability_enabled,
@@ -173,6 +194,55 @@ def create_configured_desktop_broker_driver(
             capacity=configuration.scanner_universe_observability_queue_capacity,
             clock=clock,
         )
+        dynamic_environment = trading_configuration(configuration).environment.value
+        dynamic_enabled = (
+            configuration.dynamic_momentum_discovery_enabled
+            and not configuration.live_trading_enabled
+            and dynamic_environment in {"PAPER", "TEST", "SANDBOX"}
+        )
+        if dynamic_enabled:
+            research_data_client = LazyOfficialDataClient(
+                lambda: AuditedMarketDataClient(
+                    MarketDataClientFactory(
+                        market_data_configuration_value
+                    ).create(timeout_seconds=10.0),
+                    request_guard,
+                    market_data_configuration_value,
+                )
+            )
+            production_comparison = ProductionUniverseComparisonTracker(
+                maximum_symbols=1000,
+            )
+            universe_admission_observer = UniverseAdmissionObserverFanout(
+                universe_admission_observer,
+                production_comparison,
+            )
+            dynamic_momentum_runtime = DynamicMomentumDiscoveryRuntime(
+                WebullBroadDiscoveryProvider(
+                    _LazyResearchScreener(research_data_client),
+                    page_size=50,
+                    maximum_breadth=100,
+                ),
+                enabled=True,
+                path=configuration.dynamic_momentum_discovery_path,
+                comparison_source=production_comparison.stages_for,
+                comparison_memory_source=(
+                    production_comparison.estimated_retained_bytes
+                ),
+                comparison_retained_source=production_comparison.retained_symbols,
+                breadth=configuration.dynamic_momentum_discovery_breadth,
+                refresh_seconds=(
+                    configuration.dynamic_momentum_discovery_refresh_seconds
+                ),
+                queue_capacity=(
+                    configuration.dynamic_momentum_discovery_queue_capacity
+                ),
+                maximum_retained_symbols=1000,
+                clock=clock,
+                session_source=lambda observed_at: current_market_data_session(
+                    lambda: observed_at
+                ).value,
+            )
         experiment_decision_sink = None
         experiment_execution_environment = trading_configuration(
             configuration
@@ -339,6 +409,7 @@ def create_configured_desktop_broker_driver(
         account_poller=account_poller,
         market_event_observer=market_event_observer,
         scanner_coordinator=scanner_coordinator,
+        dynamic_momentum_discovery_runtime=dynamic_momentum_runtime,
         market_data_probe=market_data_probe,
         startup_validator=startup_validator,
         clock=clock,
