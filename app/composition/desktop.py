@@ -32,6 +32,7 @@ from app.strategies.warrior_momentum.execution_quote import WebullExecutionQuote
 from app.strategies.warrior_momentum.forward_runtime import management_context_available
 from app.trade_intelligence.runtime import TradeIntelligenceRuntimeObserver
 from app.entry_opportunity_value import EntryOpportunityValueRuntimeObserver
+from app.adaptive_entry_research import AdaptiveWorkingEntryObserver
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -64,6 +65,7 @@ class DesktopComposition:
     autonomous_paper_bridge: AutonomousPaperExecutionBridge | None = None
     trade_intelligence_observer: TradeIntelligenceRuntimeObserver | None = None
     entry_opportunity_value_observer: EntryOpportunityValueRuntimeObserver | None = None
+    adaptive_entry_research_observer: AdaptiveWorkingEntryObserver | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         """Close composed resources in lifecycle order."""
@@ -192,14 +194,8 @@ def create_desktop_composition(
     execution_quote_source = WebullExecutionQuoteSource(shared_rest_market_data)
 
     def position_average_cost(symbol: str) -> Decimal | None:
-        normalized = symbol.strip().upper()
-        position = next(
-            (
-                item
-                for item in runtime_projections.position_projection.snapshot.positions
-                if item.symbol == normalized
-            ),
-            None,
+        position = runtime_projections.position_projection.position_for_symbol(
+            symbol,
         )
         return (
             None
@@ -208,20 +204,22 @@ def create_desktop_composition(
         )
 
     def position_quantity(symbol: str) -> Decimal:
-        normalized = symbol.strip().upper()
-        position = next(
-            (
-                item
-                for item in runtime_projections.position_projection.snapshot.positions
-                if item.symbol == normalized
-            ),
-            None,
+        position = runtime_projections.position_projection.position_for_symbol(
+            symbol,
         )
         return (
             Decimal("0")
             if position is None
             else Decimal(position.quantity)
         )
+
+    def adaptive_position(symbol: str) -> tuple[Decimal, datetime]:
+        position = runtime_projections.position_projection.position_for_symbol(
+            symbol,
+        )
+        if position is None:
+            return Decimal("0"), utc_now()
+        return Decimal(position.quantity), position.updated_at
 
     paper_trading_commands = None
     market_event_observer = None
@@ -359,10 +357,26 @@ def create_desktop_composition(
         research_observer=trade_intelligence_observer,
         entry_value_observer=entry_opportunity_value_observer,
     )
+
+    adaptive_entry_research_observer = AdaptiveWorkingEntryObserver(
+        enabled=(
+            operational_configuration.adaptive_entry_research_enabled
+            and operational_configuration.warrior_forward_paper_enabled
+        ),
+        environment=operational_configuration.environment.value,
+        path=operational_configuration.adaptive_entry_research_path,
+        capacity=operational_configuration.adaptive_entry_research_queue_capacity,
+        order_source=(
+            (lambda _symbol: ()) if paper_order_book is None
+            else paper_order_book.open_orders_for_symbol
+        ),
+        position_source=adaptive_position,
+        warrior_source=warrior_forward_sidecar.adaptive_entry_context,
+    )
     if warrior_forward_sidecar.enabled or trade_intelligence_observer.enabled:
         market_event_observer = CompositeMarketEventObserver(
             market_event_observer, warrior_forward_sidecar,
-            trade_intelligence_observer,
+            trade_intelligence_observer, adaptive_entry_research_observer,
         )
 
     runtime_service = create_desktop_runtime_service(
@@ -398,6 +412,7 @@ def create_desktop_composition(
         autonomous_paper_bridge=autonomous_paper_bridge,
         trade_intelligence_observer=trade_intelligence_observer,
         entry_opportunity_value_observer=entry_opportunity_value_observer,
+        adaptive_entry_research_observer=adaptive_entry_research_observer,
     )
 __all__ = [
     "DesktopComposition",

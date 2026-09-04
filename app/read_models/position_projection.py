@@ -51,6 +51,27 @@ class PositionProjection:
         with self._lock:
             return self._snapshot
 
+    def position_for_symbol(self, symbol: str) -> PositionReadModel | None:
+        """Return current symbol state without scanning historical events."""
+
+        if not isinstance(symbol, str):
+            raise TypeError("symbol must be a string")
+        normalized = symbol.strip().upper()
+        if not normalized:
+            raise ValueError("symbol must be non-empty")
+        positions = self.snapshot.positions
+        low, high = 0, len(positions)
+        while low < high:
+            middle = (low + high) // 2
+            candidate = positions[middle]
+            if candidate.symbol < normalized:
+                low = middle + 1
+            else:
+                high = middle
+        if low < len(positions) and positions[low].symbol == normalized:
+            return positions[low]
+        return None
+
     def __call__(self, event: PaperRuntimeEvent) -> None:
         if not isinstance(event, PaperRuntimeEvent):
             raise TypeError("event must be a PaperRuntimeEvent")

@@ -69,6 +69,20 @@ def test_entry_opportunity_value_is_explicit_and_uses_dedicated_jsonl(tmp_path):
     assert enabled.entry_opportunity_value_queue_capacity == 77
 
 
+def test_adaptive_entry_research_is_disabled_and_dedicated(tmp_path):
+    default = load_configuration({})
+    enabled = load_configuration({
+        "ADAPTIVE_ENTRY_RESEARCH_ENABLED": "true",
+        "ADAPTIVE_ENTRY_RESEARCH_PATH": str(tmp_path / "adaptive.jsonl"),
+        "ADAPTIVE_ENTRY_RESEARCH_QUEUE_CAPACITY": "41",
+    })
+    assert default.adaptive_entry_research_enabled is False
+    assert default.adaptive_entry_research_path.name == "recommendations.jsonl"
+    assert enabled.adaptive_entry_research_enabled is True
+    assert enabled.adaptive_entry_research_path == (tmp_path / "adaptive.jsonl").resolve()
+    assert enabled.adaptive_entry_research_queue_capacity == 41
+
+
 def test_scanner_universe_observability_is_explicit_and_dedicated(tmp_path):
     default = load_configuration({})
     enabled = load_configuration({

@@ -23,7 +23,10 @@ from app.paper_trading.order_models import (
 from app.paper_trading.orders import (
     accept_order,
     apply_fill,
+    cancel_order,
     create_order,
+    expire_order,
+    reject_order,
 )
 
 D = Decimal
@@ -34,9 +37,10 @@ def make_order(
     order_id: str,
     *,
     time_in_force: TimeInForce = TimeInForce.DAY,
+    symbol: str = "AAPL",
 ):
     request = OrderRequest(
-        symbol="AAPL",
+        symbol=symbol,
         asset_class=AssetClass.STOCK,
         side=OrderSide.BUY,
         order_type=OrderType.MARKET,
@@ -185,3 +189,97 @@ def test_empty_order_id_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="order_id is required"):
         book.contains("   ")
+
+
+def test_active_indexes_follow_every_order_lifecycle_and_restore() -> None:
+    book = PaperOrderBook()
+    new = make_order("NEW")
+    book.submit(new)
+    assert book.open_orders_for_symbol("AAPL") == (new,)
+
+    accepted = accept_order(new, at=NOW + timedelta(seconds=1))
+    book.update(accepted)
+    assert book.open_orders_for_symbol("AAPL") == (accepted,)
+
+    partial = apply_fill(
+        accepted,
+        D("40"),
+        D("10"),
+        at=NOW + timedelta(seconds=2),
+        fill_id_factory=lambda: "PARTIAL-FILL",
+    )
+    book.update(partial)
+    assert partial.status is OrderStatus.PARTIALLY_FILLED
+    assert book.open_orders_for_symbol("AAPL") == (partial,)
+
+    filled = apply_fill(
+        partial,
+        D("60"),
+        D("10"),
+        at=NOW + timedelta(seconds=3),
+        fill_id_factory=lambda: "FINAL-FILL",
+    )
+    book.update(filled)
+    assert filled.status is OrderStatus.FILLED
+    assert book.open_orders_for_symbol("AAPL") == ()
+
+    terminal_factories = (
+        lambda value: cancel_order(value, at=NOW + timedelta(seconds=2)),
+        lambda value: expire_order(value, at=NOW + timedelta(seconds=2)),
+    )
+    for index, transition in enumerate(terminal_factories):
+        active = accept_order(
+            make_order(f"TERMINAL-{index}"),
+            at=NOW + timedelta(seconds=1),
+        )
+        book.submit(active)
+        book.update(transition(active))
+        assert active.order_id not in {
+            item.order_id for item in book.open_orders_for_symbol("AAPL")
+        }
+
+    rejected_new = make_order("REJECTED")
+    book.submit(rejected_new)
+    rejected = reject_order(
+        rejected_new,
+        "policy",
+        at=NOW + timedelta(seconds=1),
+    )
+    book.update(rejected)
+    assert rejected.status is OrderStatus.REJECTED
+    assert rejected.order_id not in {
+        item.order_id for item in book.open_orders_for_symbol("AAPL")
+    }
+
+    restored = accept_order(
+        make_order("RESTORED", symbol="MSFT"),
+        at=NOW + timedelta(seconds=1),
+    )
+    book.restore(restored)
+    assert book.open_orders_for_symbol("msft") == (restored,)
+
+
+def test_symbol_lookup_never_iterates_terminal_history() -> None:
+    class HistoryGuard(dict):
+        def values(self):
+            raise AssertionError("symbol lookup scanned retained history")
+
+        def __iter__(self):
+            raise AssertionError("symbol lookup iterated retained history")
+
+    book = PaperOrderBook()
+    for index in range(2_000):
+        terminal = reject_order(
+            make_order(f"OLD-{index}"),
+            "historical",
+            at=NOW + timedelta(seconds=1),
+        )
+        book.restore(terminal)
+    active = accept_order(
+        make_order("ACTIVE", symbol="CDTG"),
+        at=NOW + timedelta(seconds=1),
+    )
+    book.submit(active)
+    book._orders = HistoryGuard(book._orders)
+
+    assert book.open_orders_for_symbol("CDTG") == (active,)

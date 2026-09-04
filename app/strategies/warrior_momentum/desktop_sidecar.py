@@ -535,6 +535,48 @@ class WarriorDesktopSidecar:
                 Decimal(str(self._publications / elapsed)),
             )
 
+    def adaptive_entry_context(
+        self, symbol: str, cutoff: datetime,
+    ) -> dict[str, object] | None:
+        """Return one cutoff-safe, read-only Warrior research snapshot."""
+
+        normalized = symbol.strip().upper()
+        # Research must never wait behind authoritative Warrior processing.
+        # A missed snapshot is explicit insufficient evidence on this event;
+        # the next market event can retry.
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            candidate = self._latest.get(normalized)
+            if candidate is None or candidate.timestamp > cutoff:
+                return None
+            setup = candidate.setup
+            return {
+                "observed_at": candidate.timestamp,
+                "scanner_rank": candidate.rank,
+                "scanner_score": candidate.score.total,
+                "relative_volume": candidate.relative_volume,
+                "percentage_change": candidate.percentage_change,
+                "volume": candidate.volume,
+                "dollar_volume": candidate.dollar_volume,
+                "float_shares": candidate.float_shares,
+                "warrior_current_state": candidate.status.value,
+                "setup_type": None if setup is None else setup.setup_type.value,
+                "setup_state": None if setup is None else setup.state.value,
+                "current_reference_price": None if setup is None else setup.trigger,
+                "current_structural_stop": None if setup is None else setup.stop_price,
+                "current_setup_quality": None if setup is None else setup.score,
+                "current_technical_actionable": bool(
+                    setup is not None
+                    and setup.state is SetupState.TRIGGERED
+                    and candidate.tradable
+                    and not candidate.halted
+                ),
+                "distance_from_hod_percent": candidate.distance_from_hod_percent,
+            }
+        finally:
+            self._lock.release()
+
     def mark_gui_refresh(self) -> None:
         with self._lock:
             if self._writer is not None:
@@ -917,10 +959,13 @@ class CompositeMarketEventObserver:
 
     def __init__(self, primary: Callable[[MarketEvent], object] | None,
                  warrior: WarriorDesktopSidecar,
-                 research: object | None = None) -> None:
+                 research: object | None = None,
+                 adaptive_entry: object | None = None) -> None:
         self.primary = primary
         self.warrior = warrior
         self.research = research
+        self.adaptive_entry = adaptive_entry
+        self.adaptive_entry_failures = 0
 
     def __call__(self, event: MarketEvent) -> None:
         if self.primary is not None:
@@ -928,6 +973,13 @@ class CompositeMarketEventObserver:
         self.warrior(event)
         if callable(self.research):
             self.research(event)
+        if callable(self.adaptive_entry):
+            try:
+                self.adaptive_entry(event)
+            except Exception:
+                # Defense in depth: adaptive research runs last and can never
+                # unwind the authoritative PAPER/Warrior event pipeline.
+                self.adaptive_entry_failures += 1
 
     def observe_scanner_decision(self, decision: object) -> None:
         observer = getattr(self.research, "observe_scanner_decision", None)
@@ -962,6 +1014,9 @@ class CompositeMarketEventObserver:
         research_start = getattr(self.research, "start", None)
         if callable(research_start):
             research_start(environment)
+        adaptive_start = getattr(self.adaptive_entry, "start", None)
+        if callable(adaptive_start):
+            adaptive_start(environment)
         self.warrior.start(environment)
 
     def stop(self) -> None:
@@ -969,6 +1024,12 @@ class CompositeMarketEventObserver:
         if callable(research_stop):
             try:
                 research_stop()
+            except Exception:
+                pass
+        adaptive_stop = getattr(self.adaptive_entry, "stop", None)
+        if callable(adaptive_stop):
+            try:
+                adaptive_stop()
             except Exception:
                 pass
         self.warrior.stop()

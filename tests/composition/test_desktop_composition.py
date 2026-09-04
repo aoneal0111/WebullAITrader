@@ -35,6 +35,8 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
         assert composition.chart_default_symbol is None
         assert composition.entry_opportunity_value_observer is not None
         assert composition.entry_opportunity_value_observer.metrics().enabled is False
+        assert composition.adaptive_entry_research_observer is not None
+        assert composition.adaptive_entry_research_observer.metrics().enabled is False
     finally:
         composition.close(timeout_seconds=1.0)
 

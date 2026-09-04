@@ -36,6 +36,11 @@ class PaperOrderBook:
 
     def __init__(self) -> None:
         self._orders: dict[str, PaperOrder] = {}
+        # Authoritative lifecycle indexes over ``_orders``.  The global
+        # index preserves open_orders() insertion order; the symbol index
+        # keeps event-time lookup independent of retained terminal history.
+        self._active_order_ids: dict[str, None] = {}
+        self._active_order_ids_by_symbol: dict[str, dict[str, None]] = {}
 
     def submit(self, order: PaperOrder) -> PaperOrder:
         if order.order_id in self._orders:
@@ -44,6 +49,7 @@ class PaperOrderBook:
             )
 
         self._orders[order.order_id] = order
+        self._index(order)
         return order
 
     def restore(self, order: PaperOrder) -> PaperOrder:
@@ -54,6 +60,7 @@ class PaperOrderBook:
                 raise OrderBookError(f"conflicting restored order {order.order_id}")
             return current
         self._orders[order.order_id] = order
+        self._index(order)
         return order
 
     def update(self, order: PaperOrder) -> PaperOrder:
@@ -70,6 +77,7 @@ class PaperOrderBook:
             )
 
         self._orders[order.order_id] = order
+        self._index(order, previous=current)
         return order
 
     def get(self, order_id: str) -> PaperOrder:
@@ -113,9 +121,8 @@ class PaperOrderBook:
 
     def open_orders(self) -> tuple[PaperOrder, ...]:
         return tuple(
-            order
-            for order in self._orders.values()
-            if not order.is_terminal
+            self._orders[order_id]
+            for order_id in self._active_order_ids
         )
 
     def open_orders_for_symbol(
@@ -124,11 +131,8 @@ class PaperOrderBook:
     ) -> tuple[PaperOrder, ...]:
         normalized = self._normalize_symbol(symbol)
 
-        return tuple(
-            order
-            for order in self.open_orders()
-            if order.request.symbol.strip().upper() == normalized
-        )
+        order_ids = self._active_order_ids_by_symbol.get(normalized, {})
+        return tuple(self._orders[order_id] for order_id in order_ids)
 
     def terminal_orders(self) -> tuple[PaperOrder, ...]:
         return tuple(
@@ -142,6 +146,38 @@ class PaperOrderBook:
 
     def __len__(self) -> int:
         return len(self._orders)
+
+    def _index(
+        self,
+        order: PaperOrder,
+        *,
+        previous: PaperOrder | None = None,
+    ) -> None:
+        """Synchronize active indexes with one authoritative order."""
+
+        symbol = self._normalize_symbol(order.request.symbol)
+        if previous is not None and not previous.is_terminal:
+            previous_symbol = self._normalize_symbol(previous.request.symbol)
+            if previous_symbol != symbol:
+                self._remove_active(order.order_id, previous_symbol)
+
+        if order.is_terminal:
+            self._remove_active(order.order_id, symbol)
+            return
+
+        self._active_order_ids[order.order_id] = None
+        self._active_order_ids_by_symbol.setdefault(symbol, {})[
+            order.order_id
+        ] = None
+
+    def _remove_active(self, order_id: str, symbol: str) -> None:
+        self._active_order_ids.pop(order_id, None)
+        symbol_orders = self._active_order_ids_by_symbol.get(symbol)
+        if symbol_orders is None:
+            return
+        symbol_orders.pop(order_id, None)
+        if not symbol_orders:
+            self._active_order_ids_by_symbol.pop(symbol, None)
 
     @staticmethod
     def _normalize_symbol(symbol: str) -> str:

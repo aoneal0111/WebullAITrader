@@ -65,6 +65,8 @@ def test_opening_position_projects_cost_and_valuation() -> None:
     assert position.unrealized_gain_loss == "100"
     assert position.market_value == "1100"
     assert position.exposure == "1100"
+    assert projection.position_for_symbol("aapl") is position
+    assert projection.position_for_symbol("MSFT") is None
 
 
 def test_increasing_position_recalculates_weighted_average_cost() -> None:

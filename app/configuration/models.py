@@ -137,6 +137,11 @@ class OperationalConfiguration:
         "data/entry_opportunity_value/observations.jsonl"
     )
     entry_opportunity_value_queue_capacity: int = 1024
+    adaptive_entry_research_enabled: bool = False
+    adaptive_entry_research_path: Path = Path(
+        "data/adaptive_entry_research/recommendations.jsonl"
+    )
+    adaptive_entry_research_queue_capacity: int = 512
     scanner_universe_observability_enabled: bool = False
     scanner_universe_observability_path: Path = Path(
         "data/scanner_universe_observability/events.jsonl"

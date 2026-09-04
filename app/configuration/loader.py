@@ -339,6 +339,12 @@ def load_configuration(env=None):
             or "data/entry_opportunity_value/observations.jsonl"
         ).resolve(),
         _int(e, "ENTRY_OPPORTUNITY_VALUE_QUEUE_CAPACITY", 1024),
+        _bool(e.get("ADAPTIVE_ENTRY_RESEARCH_ENABLED", "false")),
+        Path(
+            e.get("ADAPTIVE_ENTRY_RESEARCH_PATH", "").strip()
+            or "data/adaptive_entry_research/recommendations.jsonl"
+        ).resolve(),
+        _int(e, "ADAPTIVE_ENTRY_RESEARCH_QUEUE_CAPACITY", 512),
         _bool(e.get("SCANNER_UNIVERSE_OBSERVABILITY_ENABLED", "false")),
         Path(
             e.get("SCANNER_UNIVERSE_OBSERVABILITY_PATH", "").strip()
