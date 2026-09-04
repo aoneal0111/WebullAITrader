@@ -137,3 +137,8 @@ class OperationalConfiguration:
         "data/entry_opportunity_value/observations.jsonl"
     )
     entry_opportunity_value_queue_capacity: int = 1024
+    scanner_universe_observability_enabled: bool = False
+    scanner_universe_observability_path: Path = Path(
+        "data/scanner_universe_observability/events.jsonl"
+    )
+    scanner_universe_observability_queue_capacity: int = 4096

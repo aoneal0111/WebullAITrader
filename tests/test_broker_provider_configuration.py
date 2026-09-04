@@ -67,3 +67,19 @@ def test_entry_opportunity_value_is_explicit_and_uses_dedicated_jsonl(tmp_path):
         tmp_path / "session-eov.jsonl"
     ).resolve()
     assert enabled.entry_opportunity_value_queue_capacity == 77
+
+
+def test_scanner_universe_observability_is_explicit_and_dedicated(tmp_path):
+    default = load_configuration({})
+    enabled = load_configuration({
+        "SCANNER_UNIVERSE_OBSERVABILITY_ENABLED": "true",
+        "SCANNER_UNIVERSE_OBSERVABILITY_PATH": str(tmp_path / "universe.jsonl"),
+        "SCANNER_UNIVERSE_OBSERVABILITY_QUEUE_CAPACITY": "211",
+    })
+    assert default.scanner_universe_observability_enabled is False
+    assert default.scanner_universe_observability_path.name == "events.jsonl"
+    assert enabled.scanner_universe_observability_enabled is True
+    assert enabled.scanner_universe_observability_path == (
+        tmp_path / "universe.jsonl"
+    ).resolve()
+    assert enabled.scanner_universe_observability_queue_capacity == 211

@@ -17,6 +17,10 @@ from app.momentum_scanner import AssetClass, CatalystStatus, CatalystType
 from app.momentum_scanner.models import FloatProvenance
 from app.reference_data.models import ReferenceRecord
 from app.reference_data.provider import UnsupportedReferenceSymbolError
+from app.scanner_universe_observability import (
+    UniverseAdmissionOutcome,
+    UniverseAdmissionStage,
+)
 from app.universe.models import SecurityType, UniverseSymbol
 
 
@@ -235,12 +239,14 @@ class WebullScannerUniverseProvider:
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         page_size: int = 50,
+        admission_observer: object | None = None,
     ) -> None:
         if page_size < 1 or page_size > 100:
             raise ValueError("scanner screener page_size must be 1..100")
         self._client = client
         self._clock = clock
         self._page_size = page_size
+        self._admission_observer = admission_observer
         self._rows: dict[str, Mapping[str, object]] = {}
         self._instruments: dict[str, UniverseSymbol] = {}
 
@@ -253,48 +259,141 @@ class WebullScannerUniverseProvider:
 
         client = self._client.get()
         screener = getattr(client, "screener")
-        session = scanner_session(self._clock())
+        observed_at = self._clock()
+        session = scanner_session(observed_at)
         rank_type = {
             ScannerSession.PREMARKET: "PRE_MARKET",
             ScannerSession.AFTER_HOURS: "AFTER_MARKET",
         }.get(session, "DAY_1")
 
+        _observe_admission(
+            self._admission_observer, "begin_refresh",
+            timestamp=observed_at, session=session.value,
+            page_size=self._page_size,
+        )
         responses = (
-            screener.get_gainers_losers(
+            ("PREMARKET_GAINERS" if session is ScannerSession.PREMARKET else
+             "AFTER_HOURS_GAINERS" if session is ScannerSession.AFTER_HOURS else
+             "DAY_GAINERS", screener.get_gainers_losers(
                 rank_type,
                 "US_STOCK",
                 "CHANGE_RATIO",
                 page_index=1,
                 page_size=self._page_size,
                 direction="DESC",
-            ),
-            screener.get_most_active(
+            )),
+            ("RELATIVE_VOLUME_10D", screener.get_most_active(
                 "US_STOCK",
                 sort_by="RELATIVE_VOLUME_10D",
                 page_index=1,
                 page_size=self._page_size,
                 direction="DESC",
-            ),
+            )),
         )
         rows: dict[str, Mapping[str, object]] = {}
-        for response in responses:
-            for row in _response_rows(response):
+        provenance: dict[str, list[tuple[str, int]]] = {}
+        for source_identity, response in responses:
+            for source_rank, row in enumerate(_response_rows(response), 1):
                 symbol = str(row.get("symbol", "")).strip().upper()
-                if symbol:
-                    rows[symbol] = row
-        self._rows = rows
-        instrument_rows = _instrument_rows(client, tuple(sorted(rows)))
-        instruments = tuple(
-            item
-            for symbol in sorted(rows)
-            if (
-                item := _universe_symbol(
-                    rows[symbol],
-                    instrument_rows.get(symbol),
+                _observe_admission(
+                    self._admission_observer, "record",
+                    stage=UniverseAdmissionStage.SCREENER_RETURNED,
+                    outcome=UniverseAdmissionOutcome.OBSERVED,
+                    reason="UPSTREAM_RESPONSE_ROW",
+                    screener_identity=source_identity,
+                    source_rank=source_rank,
+                    raw_symbol=str(row.get("symbol", "")),
+                    upstream_fields=row,
                 )
-            )
-            is not None
+                _observe_admission(
+                    self._admission_observer, "record",
+                    stage=UniverseAdmissionStage.REQUEST_WINDOW_INCLUDED,
+                    outcome=UniverseAdmissionOutcome.INCLUDED,
+                    reason="PAGE_INDEX_1_PAGE_SIZE_REQUEST_NO_LOCAL_TRUNCATION",
+                    screener_identity=source_identity,
+                    source_rank=source_rank,
+                    raw_symbol=str(row.get("symbol", "")),
+                    upstream_fields={
+                        "page_index": 1, "page_size": self._page_size,
+                    },
+                )
+                if not symbol:
+                    _observe_admission(
+                        self._admission_observer, "record",
+                        stage=UniverseAdmissionStage.NORMALIZATION_REJECTED,
+                        outcome=UniverseAdmissionOutcome.REJECTED,
+                        reason="MISSING_SYMBOL",
+                        screener_identity=source_identity,
+                        source_rank=source_rank,
+                        raw_symbol=str(row.get("symbol", "")),
+                    )
+                    continue
+                rows[symbol] = row
+                provenance.setdefault(symbol, []).append(
+                    (source_identity, source_rank)
+                )
+        self._rows = rows
+        instrument_rows, instrument_error = _instrument_rows_with_error(
+            client, tuple(sorted(rows))
         )
+        if instrument_error is not None:
+            _observe_admission(
+                self._admission_observer, "record",
+                stage=UniverseAdmissionStage.INSTRUMENT_LOOKUP_FAILED,
+                outcome=UniverseAdmissionOutcome.FAILED,
+                reason=instrument_error,
+                upstream_fields={"symbol_count": len(rows)},
+            )
+        instruments_list: list[UniverseSymbol] = []
+        for symbol in sorted(rows):
+            sources = provenance[symbol]
+            _observe_admission(
+                self._admission_observer, "record",
+                stage=UniverseAdmissionStage.SOURCE_DEDUPLICATED,
+                outcome=(UniverseAdmissionOutcome.MERGED
+                         if len(sources) > 1 else UniverseAdmissionOutcome.UNIQUE),
+                reason=("LATER_SOURCE_ROW_RETAINED"
+                        if len(sources) > 1 else "SINGLE_SOURCE_SYMBOL"),
+                raw_symbol=symbol,
+                normalized_symbol=symbol,
+                upstream_fields={"sources": sources},
+            )
+            _observe_admission(
+                self._admission_observer, "record",
+                stage=UniverseAdmissionStage.NORMALIZATION_STARTED,
+                outcome=UniverseAdmissionOutcome.STARTED,
+                reason="EXISTING_WEBULL_UNIVERSE_NORMALIZATION",
+                raw_symbol=symbol,
+                upstream_fields={"sources": sources},
+            )
+            item, rejection = _universe_symbol_with_reason(
+                rows[symbol], instrument_rows.get(symbol),
+            )
+            if item is None:
+                _observe_admission(
+                    self._admission_observer, "record",
+                    stage=UniverseAdmissionStage.NORMALIZATION_REJECTED,
+                    outcome=UniverseAdmissionOutcome.REJECTED,
+                    reason=rejection or "INVALID_UNIVERSE_SYMBOL",
+                    raw_symbol=symbol,
+                    upstream_fields={"sources": sources},
+                )
+                continue
+            instruments_list.append(item)
+            _observe_admission(
+                self._admission_observer, "record",
+                stage=UniverseAdmissionStage.SYMBOL_NORMALIZED,
+                outcome=UniverseAdmissionOutcome.ACCEPTED,
+                reason="UNIVERSE_SYMBOL_CONSTRUCTED",
+                raw_symbol=symbol,
+                normalized_symbol=item.symbol,
+                upstream_fields={
+                    "api_symbol": item.api_symbol,
+                    "instrument_id": item.instrument_id,
+                    "sources": sources,
+                },
+            )
+        instruments = tuple(instruments_list)
         self._instruments = {item.display_symbol: item for item in instruments}
         return instruments
 
@@ -596,6 +695,13 @@ def _universe_symbol(
     row: Mapping[str, object],
     instrument_row: Mapping[str, object] | None = None,
 ) -> UniverseSymbol | None:
+    return _universe_symbol_with_reason(row, instrument_row)[0]
+
+
+def _universe_symbol_with_reason(
+    row: Mapping[str, object],
+    instrument_row: Mapping[str, object] | None = None,
+) -> tuple[UniverseSymbol | None, str | None]:
     try:
         identity = instrument_row or row
         volume = _positive(row, "volume")
@@ -622,19 +728,28 @@ def _universe_symbol(
             quote_currency=str(
                 row.get("currency_code", row.get("currency", "USD"))
             ),
-        )
-    except (KeyError, ValueError):
-        return None
+        ), None
+    except KeyError as exc:
+        return None, f"MISSING_FIELD_{str(exc.args[0]).strip().upper()}"
+    except ValueError as exc:
+        return None, _normalization_rejection_reason(exc)
 
 
 def _instrument_rows(
     client: object,
     symbols: tuple[str, ...],
 ) -> dict[str, Mapping[str, object]]:
+    return _instrument_rows_with_error(client, symbols)[0]
+
+
+def _instrument_rows_with_error(
+    client: object,
+    symbols: tuple[str, ...],
+) -> tuple[dict[str, Mapping[str, object]], str | None]:
     instrument_api = getattr(client, "instrument", None)
     lookup = getattr(instrument_api, "get_instrument", None)
     if not callable(lookup) or not symbols:
-        return {}
+        return {}, None
     try:
         rows = _response_rows(
             lookup(
@@ -643,13 +758,31 @@ def _instrument_rows(
                 page_size=max(100, len(symbols)),
             )
         )
-    except Exception:
-        return {}
+    except Exception as exc:
+        return {}, f"{type(exc).__name__}_INSTRUMENT_LOOKUP_FAILED".upper()
     return {
         str(row.get("symbol", "")).strip().upper(): row
         for row in rows
         if str(row.get("symbol", "")).strip()
-    }
+    }, None
+
+
+def _normalization_rejection_reason(exc: ValueError) -> str:
+    text = str(exc).strip().upper().replace(" ", "_")
+    if text.startswith("MISSING_POSITIVE_WEBULL_FIELD:"):
+        field = text.split(":", 1)[1].strip("_")
+        return f"MISSING_POSITIVE_{field}"
+    return "INVALID_UNIVERSE_SYMBOL_" + text[:120]
+
+
+def _observe_admission(observer: object | None, method: str, **values) -> None:
+    callback = getattr(observer, method, None)
+    if not callable(callback):
+        return
+    try:
+        callback(**values)
+    except Exception:
+        pass
 
 
 def _instrument_is_tradable(row: Mapping[str, object]) -> bool:

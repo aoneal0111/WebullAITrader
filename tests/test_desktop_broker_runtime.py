@@ -212,6 +212,10 @@ def test_production_composition_owns_autonomous_webull_universe_provider(
 
     provider = captured["universe_service"]._provider
     assert isinstance(provider, WebullScannerUniverseProvider)
+    observer = captured["scanner_universe_admission_observer"]
+    assert observer.enabled is False
+    assert provider._admission_observer is observer
+    assert captured["universe_service"]._admission_observer is observer
     assert driver._scanner is coordinator
     assert configured.allowed_symbols == ("AAPL",)
     assert "default_channels" not in captured

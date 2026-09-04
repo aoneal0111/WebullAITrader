@@ -16,6 +16,10 @@ from app.realtime_scanner.models import (
     ScannerSnapshot,
 )
 from app.reference_data.provider import UnsupportedReferenceSymbolError
+from app.scanner_universe_observability import (
+    UniverseAdmissionOutcome,
+    UniverseAdmissionStage,
+)
 from app.realtime_scanner.protocols import (
     EventPipeline,
     ReferenceLoader,
@@ -40,12 +44,14 @@ class RealtimeScannerEngine:
         *,
         reference_sink: ReferenceSink | None = None,
         clock: Callable[[], datetime] | None = None,
+        admission_observer: object | None = None,
     ) -> None:
         self._universe_service = universe_service
         self._reference_data_service = reference_data_service
         self._pipeline = pipeline
         self._reference_sink = reference_sink
         self._clock = clock or _utc_now
+        self._admission_observer = admission_observer
 
         self._active_symbols: set[str] = set()
         self._active_asset_classes: dict[str, AssetClass] = {}
@@ -85,6 +91,15 @@ class RealtimeScannerEngine:
 
         for item in selection.included:
             symbol = item.symbol.strip().upper()
+            _observe_admission(
+                self._admission_observer,
+                stage=UniverseAdmissionStage.REFERENCE_WARMUP_STARTED,
+                outcome=UniverseAdmissionOutcome.STARTED,
+                reason="EXISTING_REFERENCE_DATA_WARMUP",
+                raw_symbol=item.display_symbol,
+                normalized_symbol=symbol,
+                upstream_fields={"api_symbol": item.api_symbol},
+            )
 
             try:
                 get_for_instrument = getattr(
@@ -105,6 +120,20 @@ class RealtimeScannerEngine:
                     )
             except Exception as exc:
                 failure = _warmup_failure(symbol, exc)
+                _observe_admission(
+                    self._admission_observer,
+                    stage=UniverseAdmissionStage.REFERENCE_WARMUP_REJECTED,
+                    outcome=UniverseAdmissionOutcome.REJECTED,
+                    reason=failure.failure_type.upper(),
+                    raw_symbol=item.display_symbol,
+                    normalized_symbol=symbol,
+                    upstream_fields={
+                        "detail": failure.reason,
+                        "environment": failure.environment,
+                        "endpoint": failure.endpoint,
+                        "retryable": failure.retryable,
+                    },
+                )
                 failures.append(failure)
                 if failure.failure_type == "unsupported_symbol":
                     unsupported.append(failure)
@@ -115,9 +144,33 @@ class RealtimeScannerEngine:
                 continue
 
             successful_records.append(record)
+            _observe_admission(
+                self._admission_observer,
+                stage=UniverseAdmissionStage.REFERENCE_WARMUP_ACCEPTED,
+                outcome=UniverseAdmissionOutcome.ACCEPTED,
+                reason="REFERENCE_RECORD_AVAILABLE",
+                raw_symbol=item.display_symbol,
+                normalized_symbol=symbol,
+                upstream_fields={
+                    "api_symbol": item.api_symbol,
+                    "reference_as_of": getattr(record, "as_of", None),
+                },
+            )
             active_symbols.add(symbol)
             active_asset_classes[symbol] = item.asset_class
             subscription_symbols[symbol] = item.api_symbol or symbol
+            _observe_admission(
+                self._admission_observer,
+                stage=UniverseAdmissionStage.UNIVERSE_ADMITTED,
+                outcome=UniverseAdmissionOutcome.ACCEPTED,
+                reason="REFERENCE_WARMUP_SUCCEEDED",
+                raw_symbol=item.display_symbol,
+                normalized_symbol=symbol,
+                upstream_fields={
+                    "asset_class": item.asset_class.value,
+                    "subscription_symbol": item.api_symbol or symbol,
+                },
+            )
 
             if self._reference_sink is not None:
                 self._reference_sink(record)
@@ -164,6 +217,20 @@ class RealtimeScannerEngine:
             self._ignored_events += 1
             return None
 
+        _observe_admission(
+            self._admission_observer,
+            stage=UniverseAdmissionStage.SCANNER_EVALUATION_REACHED,
+            outcome=UniverseAdmissionOutcome.REACHED,
+            reason="ACTIVE_SYMBOL_EVENT_ENTERED_SCANNER_PIPELINE",
+            raw_symbol=symbol,
+            normalized_symbol=symbol,
+            upstream_fields={
+                "asset_class": getattr(
+                    self._active_asset_classes.get(symbol), "value", None
+                ),
+            },
+        )
+
         decision = self._pipeline.consume(event)
         self._processed_events += 1
 
@@ -193,6 +260,12 @@ class RealtimeScannerEngine:
         close = getattr(self._pipeline, "close", None)
         if callable(close):
             close()
+        observer_close = getattr(self._admission_observer, "close", None)
+        if callable(observer_close):
+            try:
+                observer_close()
+            except Exception:
+                pass
 
     def ranked_candidates(
         self,
@@ -305,6 +378,16 @@ def _event_symbol(event: Any) -> str | None:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _observe_admission(observer: object | None, **values) -> None:
+    callback = getattr(observer, "record", None)
+    if not callable(callback):
+        return
+    try:
+        callback(**values)
+    except Exception:
+        pass
 
 
 def _warmup_failure(symbol: str, exc: Exception) -> ReferenceWarmupFailure:

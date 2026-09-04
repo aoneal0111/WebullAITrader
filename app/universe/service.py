@@ -5,7 +5,12 @@ from collections.abc import Iterable
 from app.momentum_scanner.models import AssetClass
 from app.universe.filters import (
     UniverseFilterConfig,
+    exclusion_reasons,
     is_eligible,
+)
+from app.scanner_universe_observability import (
+    UniverseAdmissionOutcome,
+    UniverseAdmissionStage,
 )
 from app.universe.models import (
     UniverseSelection,
@@ -20,6 +25,7 @@ class UniverseService:
         provider: UniverseProvider,
         *,
         config: UniverseFilterConfig | None = None,
+        admission_observer: object | None = None,
     ) -> None:
         self._provider = provider
         self._config = (
@@ -27,6 +33,7 @@ class UniverseService:
             if config is not None
             else UniverseFilterConfig()
         )
+        self._admission_observer = admission_observer
 
     def select(
         self,
@@ -40,11 +47,34 @@ class UniverseService:
         excluded: list[UniverseSymbol] = []
 
         for item in candidates:
-            target = (
-                included
-                if is_eligible(item, self._config)
-                else excluded
+            eligible = is_eligible(item, self._config)
+            reasons = exclusion_reasons(item, self._config)
+            _observe_admission(
+                self._admission_observer,
+                stage=(
+                    UniverseAdmissionStage.UNIVERSE_FILTER_ACCEPTED
+                    if eligible
+                    else UniverseAdmissionStage.UNIVERSE_FILTER_REJECTED
+                ),
+                outcome=(
+                    UniverseAdmissionOutcome.ACCEPTED
+                    if eligible
+                    else UniverseAdmissionOutcome.REJECTED
+                ),
+                reason=(
+                    "ELIGIBLE_EXISTING_UNIVERSE_FILTER"
+                    if eligible
+                    else "|".join(reason.upper() for reason in reasons)
+                    or "INELIGIBLE_EXISTING_UNIVERSE_FILTER"
+                ),
+                raw_symbol=item.display_symbol,
+                normalized_symbol=item.symbol,
+                upstream_fields={
+                    "asset_class": item.asset_class.value,
+                    "api_symbol": item.api_symbol,
+                },
             )
+            target = included if eligible else excluded
             target.append(item)
 
         return UniverseSelection(
@@ -95,3 +125,13 @@ class UniverseService:
                 sorted(excluded.values(), key=sort_key)
             ),
         )
+
+
+def _observe_admission(observer: object | None, **values) -> None:
+    callback = getattr(observer, "record", None)
+    if not callable(callback):
+        return
+    try:
+        callback(**values)
+    except Exception:
+        pass

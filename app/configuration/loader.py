@@ -339,6 +339,12 @@ def load_configuration(env=None):
             or "data/entry_opportunity_value/observations.jsonl"
         ).resolve(),
         _int(e, "ENTRY_OPPORTUNITY_VALUE_QUEUE_CAPACITY", 1024),
+        _bool(e.get("SCANNER_UNIVERSE_OBSERVABILITY_ENABLED", "false")),
+        Path(
+            e.get("SCANNER_UNIVERSE_OBSERVABILITY_PATH", "").strip()
+            or "data/scanner_universe_observability/events.jsonl"
+        ).resolve(),
+        _int(e, "SCANNER_UNIVERSE_OBSERVABILITY_QUEUE_CAPACITY", 4096),
     )
 
 

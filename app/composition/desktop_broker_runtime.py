@@ -33,6 +33,7 @@ from app.scanner_adapter import (
     ScannerReferenceData,
     ScannerReferenceStore,
 )
+from app.scanner_universe_observability import ScannerUniverseAdmissionObserver
 from app.services.chart_market_data import ChartMarketDataService
 from app.services.runtime_drivers.broker import (
     Clock,
@@ -166,6 +167,12 @@ def create_configured_desktop_broker_driver(
 
     scanner_coordinator = None
     if broker_runtime.market_data is not None:
+        universe_admission_observer = ScannerUniverseAdmissionObserver(
+            enabled=configuration.scanner_universe_observability_enabled,
+            path=configuration.scanner_universe_observability_path,
+            capacity=configuration.scanner_universe_observability_queue_capacity,
+            clock=clock,
+        )
         experiment_decision_sink = None
         experiment_execution_environment = trading_configuration(
             configuration
@@ -193,6 +200,7 @@ def create_configured_desktop_broker_driver(
         universe_provider = WebullScannerUniverseProvider(
             data_client,
             clock=clock,
+            admission_observer=universe_admission_observer,
         )
         catalyst_providers = build_catalyst_providers(data_client, configuration)
         reference_provider = WebullScannerReferenceProvider(
@@ -264,7 +272,10 @@ def create_configured_desktop_broker_driver(
         )
         scanner_infrastructure = create_desktop_scanner_infrastructure(
             market_data_client=broker_runtime.market_data,
-            universe_service=UniverseService(universe_provider),
+            universe_service=UniverseService(
+                universe_provider,
+                admission_observer=universe_admission_observer,
+            ),
             reference_data_service=ReferenceDataService(
                 reference_provider,
                 cache=ReferenceDataCache(
@@ -282,6 +293,7 @@ def create_configured_desktop_broker_driver(
             scanner_decision_sink=(
                 scanner_decision_sink
             ),
+            scanner_universe_admission_observer=universe_admission_observer,
         )
         scanner_coordinator = scanner_infrastructure.coordinator
         binder = getattr(market_event_observer, "bind_scanner_adapter", None)
