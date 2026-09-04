@@ -83,3 +83,21 @@ def test_scanner_universe_observability_is_explicit_and_dedicated(tmp_path):
         tmp_path / "universe.jsonl"
     ).resolve()
     assert enabled.scanner_universe_observability_queue_capacity == 211
+
+
+def test_dynamic_momentum_discovery_is_disabled_and_dedicated(tmp_path):
+    default = load_configuration({})
+    enabled = load_configuration({
+        "DYNAMIC_MOMENTUM_DISCOVERY_ENABLED": "true",
+        "DYNAMIC_MOMENTUM_DISCOVERY_PATH": str(tmp_path / "dynamic.jsonl"),
+        "DYNAMIC_MOMENTUM_DISCOVERY_QUEUE_CAPACITY": "321",
+        "DYNAMIC_MOMENTUM_DISCOVERY_BREADTH": "500",
+    })
+    assert default.dynamic_momentum_discovery_enabled is False
+    assert default.dynamic_momentum_discovery_path.name == "observations.jsonl"
+    assert enabled.dynamic_momentum_discovery_enabled is True
+    assert enabled.dynamic_momentum_discovery_path == (
+        tmp_path / "dynamic.jsonl"
+    ).resolve()
+    assert enabled.dynamic_momentum_discovery_queue_capacity == 321
+    assert enabled.dynamic_momentum_discovery_breadth == 500

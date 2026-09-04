@@ -345,6 +345,13 @@ def load_configuration(env=None):
             or "data/scanner_universe_observability/events.jsonl"
         ).resolve(),
         _int(e, "SCANNER_UNIVERSE_OBSERVABILITY_QUEUE_CAPACITY", 4096),
+        _bool(e.get("DYNAMIC_MOMENTUM_DISCOVERY_ENABLED", "false")),
+        Path(
+            e.get("DYNAMIC_MOMENTUM_DISCOVERY_PATH", "").strip()
+            or "data/dynamic_momentum_discovery/observations.jsonl"
+        ).resolve(),
+        _int(e, "DYNAMIC_MOMENTUM_DISCOVERY_QUEUE_CAPACITY", 1024),
+        _int(e, "DYNAMIC_MOMENTUM_DISCOVERY_BREADTH", 200),
     )
 
 

@@ -124,6 +124,12 @@ def test_reduced_historical_order_contract_remains_valid() -> None:
 def test_mission_control_prioritizes_positions_orders_and_compact_account(
     application, window
 ) -> None:
+    # QtStateBridge coalesces the store's initial revision behind its timer.
+    # Flush that canonical state before directly exercising independent widget
+    # renders, so a later processEvents() cannot deliver an older empty snapshot.
+    window._state_bridge._flush()
+    application.processEvents()
+
     workspace = window.dashboard.market_workspace
     assert workspace.positions_section.isVisible()
     assert workspace.orders_section.isVisible()

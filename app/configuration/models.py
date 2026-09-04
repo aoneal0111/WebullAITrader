@@ -142,3 +142,9 @@ class OperationalConfiguration:
         "data/scanner_universe_observability/events.jsonl"
     )
     scanner_universe_observability_queue_capacity: int = 4096
+    dynamic_momentum_discovery_enabled: bool = False
+    dynamic_momentum_discovery_path: Path = Path(
+        "data/dynamic_momentum_discovery/observations.jsonl"
+    )
+    dynamic_momentum_discovery_queue_capacity: int = 1024
+    dynamic_momentum_discovery_breadth: int = 200
