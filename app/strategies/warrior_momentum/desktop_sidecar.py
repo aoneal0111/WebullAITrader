@@ -145,6 +145,7 @@ class WarriorDesktopSidecar:
         paper_execution_ownership_source: Callable[[str], bool] | None = None,
         execution_quote_source: ExecutionQuoteSource | None = None,
         research_observer: object | None = None,
+        entry_value_observer: object | None = None,
         report_worker_factory: Callable[..., WarriorReportWorker] = WarriorReportWorker,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -161,6 +162,7 @@ class WarriorDesktopSidecar:
         self._paper_execution_ownership_source = paper_execution_ownership_source
         self._execution_quote_source = execution_quote_source
         self._research_observer = research_observer
+        self._entry_value_observer = entry_value_observer
         self._report_worker_factory = report_worker_factory
         self._accept_execution = False
         self._clock = clock
@@ -357,6 +359,11 @@ class WarriorDesktopSidecar:
             if environment:
                 self.environment = environment.strip().upper()
             try:
+                entry_value_start = getattr(
+                    self._entry_value_observer, "start", None,
+                )
+                if callable(entry_value_start):
+                    entry_value_start(self.environment)
                 self._store = ForwardCaptureStore(self.storage_path)
                 self._writer = ForwardCaptureWriter(
                     self._store, capacity=self.capture_config.queue_capacity,
@@ -373,6 +380,9 @@ class WarriorDesktopSidecar:
                     execution_quote_source=self._execution_quote_source,
                     execution_permitted=lambda: self._accept_execution,
                     account_refresh_source=self._account_source,
+                    entry_value_observer=getattr(
+                        self._entry_value_observer, "observe_decision", None,
+                    ),
                 )
                 self._restore_bars()
                 now = self._aware_now()
@@ -395,6 +405,14 @@ class WarriorDesktopSidecar:
             except Exception as exc:
                 self._last_error_type = type(exc).__name__
                 self._health = WarriorCaptureHealth.DEGRADED
+                entry_value_stop = getattr(
+                    self._entry_value_observer, "close", None,
+                )
+                if callable(entry_value_stop):
+                    try:
+                        entry_value_stop()
+                    except Exception:
+                        pass
 
     def stop(self) -> None:
         if not self.enabled:
@@ -405,6 +423,14 @@ class WarriorDesktopSidecar:
             writer, store = self._writer, self._store
             if writer is None or store is None:
                 self._health = WarriorCaptureHealth.STOPPED
+                entry_value_stop = getattr(
+                    self._entry_value_observer, "close", None,
+                )
+                if callable(entry_value_stop):
+                    try:
+                        entry_value_stop()
+                    except Exception:
+                        pass
                 return
             lifecycle_phase = "shadow outcome finalization"
             try:
@@ -441,6 +467,14 @@ class WarriorDesktopSidecar:
                 )
                 raise
             finally:
+                entry_value_stop = getattr(
+                    self._entry_value_observer, "close", None,
+                )
+                if callable(entry_value_stop):
+                    try:
+                        entry_value_stop()
+                    except Exception:
+                        pass
                 performance_diagnostics.set_diagnostic_sink(None)
                 self._report_worker = None
                 self._writer = None
@@ -601,6 +635,9 @@ class WarriorDesktopSidecar:
                         () if scanner_decision is None
                         else tuple(getattr(scanner_decision, "failed_rules", ()))
                     ),
+                    best_bid_size=(None if state is None else state.bid_size),
+                    best_ask_size=(None if state is None else state.ask_size),
+                    quote_provenance="SHARED_SCANNER_ADAPTER",
                 )
             candidate, signal = service.observe(
                 point_in_time,

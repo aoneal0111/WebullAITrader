@@ -70,6 +70,11 @@ class EntryOpportunityValueInput:
     detector_memberships: tuple[str, ...] = ()
     technical_state: str | None = None
     entry_ready_state: str | None = None
+    quote_provenance: str | None = None
+    source_event_identity: str | None = None
+    order_id: str | None = None
+    client_order_id: str | None = None
+    trade_intelligence_experience_id: str | None = None
     valid_until: datetime | None = None
     day_boundary: datetime | None = None
     order_terminal_state: str | None = None
@@ -168,6 +173,13 @@ class EntryOpportunityValueInput:
         )
         memberships = tuple(sorted({item.strip().upper() for item in self.detector_memberships if item.strip()}))
         object.__setattr__(self, "detector_memberships", memberships)
+        for name in (
+            "quote_provenance", "source_event_identity", "order_id",
+            "client_order_id", "trade_intelligence_experience_id",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, value.strip() or None)
 
 
 @dataclass(frozen=True, slots=True)

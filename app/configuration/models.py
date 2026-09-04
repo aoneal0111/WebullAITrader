@@ -132,3 +132,8 @@ class OperationalConfiguration:
     paper_symbol_authorization_mode: PaperSymbolAuthorizationMode = (
         PaperSymbolAuthorizationMode.STATIC_ALLOWLIST
     )
+    entry_opportunity_value_enabled: bool = False
+    entry_opportunity_value_path: Path = Path(
+        "data/entry_opportunity_value/observations.jsonl"
+    )
+    entry_opportunity_value_queue_capacity: int = 1024

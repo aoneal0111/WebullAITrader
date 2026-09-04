@@ -75,6 +75,8 @@ class SymbolScannerState:
     last_price: Decimal | None = None
     bid: Decimal | None = None
     ask: Decimal | None = None
+    bid_size: Decimal | None = None
+    ask_size: Decimal | None = None
     cumulative_volume: Decimal = Decimal("0")
     halted: bool = False
 
@@ -104,6 +106,12 @@ class SymbolScannerState:
 
         if self.bid is not None and self.ask is not None and self.ask < self.bid:
             raise ValueError("ask cannot be lower than bid")
+
+        if self.bid_size is not None and self.bid_size < 0:
+            raise ValueError("bid_size cannot be negative")
+
+        if self.ask_size is not None and self.ask_size < 0:
+            raise ValueError("ask_size cannot be negative")
 
         if self.cumulative_volume < 0:
             raise ValueError("cumulative_volume cannot be negative")

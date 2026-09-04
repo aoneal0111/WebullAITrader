@@ -14,7 +14,7 @@ from app.opportunity_discovery import (
 )
 
 from .discovery_runtime import (
-    DiscoveryTelemetry,
+    DiscoveryTelemetry, KnownDiscoveryContext,
     RuntimeDiscoveryObservation,
     StrategyCoverage,
 )
@@ -46,6 +46,7 @@ class DiscoveryWorker:
         self._opportunity_signatures: OrderedDict[str, tuple[object, ...]] = OrderedDict()
         self._membership_signatures: OrderedDict[tuple[str, str], tuple[object, ...]] = OrderedDict()
         self._positions: OrderedDict[str, _PositionState] = OrderedDict()
+        self._latest_contexts: OrderedDict[str, KnownDiscoveryContext] = OrderedDict()
         self._coverage = {
             item.definition.strategy_id: {
                 "evaluations": 0, "raw": 0, "episodes": set(), "episode_total": 0,
@@ -107,6 +108,39 @@ class DiscoveryWorker:
                 self._persist_membership(store, opportunity.opportunity_id, item)
 
         self._observe_position(store, observation, batch.opportunities, detected)
+        self._remember_context(observation, batch.opportunities)
+
+    def context_for(self, symbol: str) -> KnownDiscoveryContext | None:
+        return self._latest_contexts.get(symbol.strip().upper())
+
+    def _remember_context(self, observation, opportunities) -> None:
+        symbol = observation.context.symbol.strip().upper()
+        ordered = tuple(sorted(
+            opportunities,
+            key=lambda item: (
+                "HIGH_OF_DAY_BREAKOUT" not in {
+                    member.strategy_id for member in item.memberships
+                },
+                item.opportunity_id,
+            ),
+        ))
+        selected = ordered[0] if ordered else None
+        context = KnownDiscoveryContext(
+            symbol=symbol,
+            observed_at=observation.observed_at,
+            opportunity_id=(
+                None if selected is None else selected.opportunity_id
+            ),
+            detector_memberships=tuple(sorted({
+                member.strategy_id
+                for item in opportunities
+                for member in item.memberships
+            })),
+        )
+        self._latest_contexts[symbol] = context
+        self._latest_contexts.move_to_end(symbol)
+        while len(self._latest_contexts) > self.state_limit:
+            self._latest_contexts.popitem(last=False)
 
     def telemetry(self, *, market_observations: int = 0, completed_bars: int = 0,
                   callback_percentiles: tuple[float, float, float, float] = (0, 0, 0, 0)) -> DiscoveryTelemetry:

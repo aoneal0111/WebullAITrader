@@ -50,3 +50,20 @@ def test_warrior_forward_paper_is_explicit_and_never_a_live_flag(tmp_path):
     assert enabled.warrior_forward_paper_enabled is True
     assert enabled.warrior_forward_capture_path == (tmp_path / "forward.sqlite3").resolve()
     assert enabled.live_trading_enabled is False
+
+
+def test_entry_opportunity_value_is_explicit_and_uses_dedicated_jsonl(tmp_path):
+    default = load_configuration({})
+    enabled = load_configuration({
+        "ENTRY_OPPORTUNITY_VALUE_ENABLED": "true",
+        "ENTRY_OPPORTUNITY_VALUE_PATH": str(tmp_path / "session-eov.jsonl"),
+        "ENTRY_OPPORTUNITY_VALUE_QUEUE_CAPACITY": "77",
+    })
+
+    assert default.entry_opportunity_value_enabled is False
+    assert default.entry_opportunity_value_path.name == "observations.jsonl"
+    assert enabled.entry_opportunity_value_enabled is True
+    assert enabled.entry_opportunity_value_path == (
+        tmp_path / "session-eov.jsonl"
+    ).resolve()
+    assert enabled.entry_opportunity_value_queue_capacity == 77

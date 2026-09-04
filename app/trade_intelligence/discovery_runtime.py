@@ -102,6 +102,21 @@ class DiscoveryTelemetry:
     coverage: tuple[StrategyCoverage, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class KnownDiscoveryContext:
+    """Latest worker-completed memberships safe at a later decision cutoff."""
+
+    symbol: str
+    observed_at: datetime
+    opportunity_id: str | None = None
+    detector_memberships: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
+            raise ValueError("known discovery context time must be aware")
+        object.__setattr__(self, "symbol", self.symbol.strip().upper())
+
+
 def discovery_observation_payload(value: RuntimeDiscoveryObservation) -> dict[str, Any]:
     return asdict(value)
 

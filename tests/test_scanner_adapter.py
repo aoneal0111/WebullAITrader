@@ -124,6 +124,8 @@ def test_adapter_builds_complete_observation() -> None:
     assert result.observation.current_volume == Decimal("600000")
     assert result.observation.bid == Decimal("5.99")
     assert result.observation.ask == Decimal("6.01")
+    assert result.observation.bid_size == Decimal("100")
+    assert result.observation.ask_size == Decimal("100")
     assert result.missing_fields == ()
 
 

@@ -333,6 +333,12 @@ def load_configuration(env=None):
         )).resolve(),
         _int(e, "TRADE_INTELLIGENCE_QUEUE_CAPACITY", 4096),
         paper_symbol_authorization_mode,
+        _bool(e.get("ENTRY_OPPORTUNITY_VALUE_ENABLED", "false")),
+        Path(
+            e.get("ENTRY_OPPORTUNITY_VALUE_PATH", "").strip()
+            or "data/entry_opportunity_value/observations.jsonl"
+        ).resolve(),
+        _int(e, "ENTRY_OPPORTUNITY_VALUE_QUEUE_CAPACITY", 1024),
     )
 
 

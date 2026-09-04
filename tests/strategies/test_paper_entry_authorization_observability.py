@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -8,6 +8,9 @@ from types import SimpleNamespace
 import pytest
 
 from app.order_placement import OrderPlacementDecision
+from app.entry_opportunity_value import (
+    EntryOpportunityValueRuntimeObserver, EntryOpportunityValueService,
+)
 from tests.test_support.session_clock import (
     create_session_paper_composition as create_paper_trading_command_composition,
 )
@@ -218,6 +221,234 @@ def test_authorization_result_is_appended_without_changing_submission(tmp_path):
     finally:
         writer.close()
         composition.close()
+
+
+def test_entry_value_callback_success_or_failure_cannot_change_submission(tmp_path):
+    def run(name, observer):
+        store = ForwardCaptureStore(tmp_path / f"{name}.sqlite3")
+        writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+        submitted = []
+
+        def submit(signal, shares, risk_dollars):
+            submitted.append((
+                signal.symbol, signal.entry_trigger, signal.stop_price,
+                shares, risk_dollars,
+            ))
+            return True
+
+        service = WarriorForwardCaptureService(
+            store, writer, paper_entry_submitter=submit,
+            entry_value_observer=observer,
+        )
+        try:
+            _candidate, signal = service.observe(
+                _observation(),
+                account=PaperAccountContext(
+                    Decimal("50000"), Decimal("25000"), frozenset({"XYZ"}),
+                ),
+            )
+            return signal, tuple(submitted)
+        finally:
+            writer.close()
+
+    observed = []
+    baseline = run("disabled", None)
+    enabled = run(
+        "enabled", lambda **facts: observed.append(facts),
+    )
+    failing = run(
+        "failing", lambda **_facts: (_ for _ in ()).throw(
+            OSError("EOV persistence unavailable")
+        ),
+    )
+
+    assert baseline == enabled == failing
+    assert baseline[0] is not None
+    assert len(baseline[1]) == 1
+    assert len(observed) == 1
+    assert observed[0]["planned_quantity"] == baseline[1][0][3]
+    assert observed[0]["decision_state"] == "ENTRY_AUTHORIZATION_ACCEPTED"
+
+
+def test_non_actionable_wide_spread_cannot_become_eov_authority(tmp_path):
+    store = ForwardCaptureStore(tmp_path / "no-trade.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    observations = []
+    submissions = []
+    service = WarriorForwardCaptureService(
+        store, writer,
+        paper_entry_submitter=lambda *_args: submissions.append(True) or True,
+        entry_value_observer=lambda **facts: observations.append(facts),
+    )
+    original = _observation()
+    wide = replace(
+        original,
+        observation=replace(
+            original.observation, bid=Decimal("9"), ask=Decimal("11"),
+        ),
+    )
+    try:
+        _candidate, signal = service.observe(
+            wide,
+            account=PaperAccountContext(
+                Decimal("50000"), Decimal("25000"), frozenset({"XYZ"}),
+            ),
+        )
+        assert signal is None
+        assert submissions == []
+        assert observations == []
+    finally:
+        writer.close()
+
+
+def test_real_warrior_boundary_emits_one_off_thread_eov_observation(tmp_path):
+    class Store:
+        def __init__(self):
+            self.items = []
+
+        def append(self, item):
+            self.items.append(item)
+
+        def close(self):
+            pass
+
+    eov_store = Store()
+    eov = EntryOpportunityValueRuntimeObserver(
+        enabled=True, environment="PAPER", path=tmp_path / "eov.jsonl",
+        clock=lambda: PAPER_AT,
+        store_factory=lambda _path: eov_store,
+        service_factory=EntryOpportunityValueService,
+    )
+    eov.start("PAPER")
+    store = ForwardCaptureStore(tmp_path / "warrior.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(
+        store, writer,
+        paper_entry_submitter=lambda *_args: True,
+        entry_value_observer=eov.observe_decision,
+    )
+    try:
+        _candidate, signal = service.observe(
+            _observation(),
+            account=PaperAccountContext(
+                Decimal("50000"), Decimal("25000"), frozenset({"XYZ"}),
+            ),
+        )
+        assert signal is not None
+        assert eov.close(timeout_seconds=2)
+        assert len(eov_store.items) == 1
+        observation = eov_store.items[0]
+        assert observation.context.bid == _observation().observation.bid
+        assert observation.context.ask == _observation().observation.ask
+        assert observation.context.lifecycle_id
+        assert observation.execution_authorized is False
+    finally:
+        writer.close()
+        eov.close(timeout_seconds=2)
+
+
+def test_eov_on_off_and_persistence_failure_preserve_paper_event_semantics(tmp_path):
+    class Store:
+        def __init__(self, *, failing=False):
+            self.failing = failing
+
+        def append(self, _item):
+            if self.failing:
+                raise OSError("research persistence unavailable")
+
+        def close(self):
+            pass
+
+    def run(name, *, eov_enabled, persistence_fails=False):
+        events = []
+        paper = create_paper_trading_command_composition(
+            at=PAPER_AT, event_sink=events.append,
+        )
+        bridge = AutonomousPaperExecutionBridge(
+            paper.trading_service, paper.order_command_factory,
+            order_book=paper.order_book,
+        )
+        eov = EntryOpportunityValueRuntimeObserver(
+            enabled=eov_enabled, environment="PAPER",
+            path=tmp_path / f"{name}.jsonl", clock=lambda: PAPER_AT,
+            store_factory=lambda _path: Store(failing=persistence_fails),
+            service_factory=EntryOpportunityValueService,
+        )
+        eov.start("PAPER")
+        capture_store = ForwardCaptureStore(tmp_path / f"{name}.sqlite3")
+        writer = ForwardCaptureWriter(capture_store, flush_interval_seconds=0.01)
+        service = WarriorForwardCaptureService(
+            capture_store, writer,
+            paper_entry_submitter=bridge.submit_entry_decision,
+            entry_value_observer=eov.observe_decision,
+        )
+        try:
+            _candidate, signal = service.observe(
+                _observation(),
+                account=PaperAccountContext(
+                    Decimal("50000"), Decimal("25000"), frozenset({"XYZ"}),
+                ),
+            )
+            assert signal is not None
+            assert eov.close(timeout_seconds=2)
+            order = paper.order_book.history()[0]
+            request = order.request
+            return (
+                request.symbol, request.side.value, request.order_type.value,
+                request.quantity, request.limit_price,
+                request.structural_stop_price, request.time_in_force.value,
+                request.strategy_lifecycle_id,
+                tuple((event.sequence, event.event_type) for event in events),
+                order.status.value,
+            ), eov.metrics()
+        finally:
+            writer.close()
+            eov.close(timeout_seconds=2)
+            paper.close()
+
+    disabled, disabled_metrics = run("disabled-real", eov_enabled=False)
+    enabled, enabled_metrics = run("enabled-real", eov_enabled=True)
+    failing, failing_metrics = run(
+        "failing-real", eov_enabled=True, persistence_fails=True,
+    )
+    assert disabled == enabled == failing
+    assert disabled_metrics.accepted == 0
+    assert enabled_metrics.completed == 1 and enabled_metrics.failed == 0
+    assert failing_metrics.completed == 0 and failing_metrics.failed == 1
+
+
+def test_working_order_suppression_is_observed_but_remains_refused(tmp_path):
+    paper = create_paper_trading_command_composition(at=PAPER_AT)
+    bridge = AutonomousPaperExecutionBridge(
+        paper.trading_service, paper.order_command_factory,
+        order_book=paper.order_book,
+    )
+    assert bridge.submit_entry_decision(
+        Signal(lifecycle_id="existing-working"), 100, Decimal("50"),
+    ).authorized
+    observed = []
+    store = ForwardCaptureStore(tmp_path / "working-suppression.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(
+        store, writer,
+        paper_entry_submitter=bridge.submit_entry_decision,
+        entry_value_observer=lambda **facts: observed.append(facts),
+    )
+    try:
+        _candidate, signal = service.observe(
+            _observation(),
+            account=PaperAccountContext(
+                Decimal("50000"), Decimal("25000"), frozenset({"XYZ"}),
+            ),
+        )
+        assert signal is None
+        assert len(paper.order_book.open_orders()) == 1
+        assert len(observed) == 1
+        assert observed[0]["decision_state"] == "WORKING_ORDER_EXISTS"
+        assert observed[0]["planned_quantity"] > 0
+    finally:
+        writer.close()
+        paper.close()
 
 
 def test_allowlist_refusal_retains_the_exact_failed_gate(tmp_path):

@@ -69,6 +69,8 @@ class ScannerObservation:
     trade_timestamp: datetime | None = None
     last_price_received_timestamp: datetime | None = None
     quote_received_timestamp: datetime | None = None
+    bid_size: Decimal | None = None
+    ask_size: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)

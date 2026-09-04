@@ -115,12 +115,14 @@ def test_package_has_no_execution_authority_imports_or_calls():
     forbidden_import_fragments = {
         "broker", "paper_gateway", "paper_trading", "order_placement",
         "order_cancellation", "execution", "account", "risk", "scanner",
-        "warrior_momentum", "configuration",
+        "warrior_momentum", "configuration", "market_data", "webull",
+        "trade_intelligence", "opportunity_discovery",
     }
     forbidden_calls = {
         "place_order", "submit_order", "submit_entry", "submit_exit",
         "cancel_order", "replace_order", "authorize_order", "resize_position",
         "close_position", "modify_order", "veto_order",
+        "override_risk", "change_quantity",
     }
     for path in Path("app/entry_opportunity_value").glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))

@@ -17,12 +17,18 @@ from .outcomes import (
 )
 from .service import EntryOpportunityValueService, ShadowServiceMetrics
 from .store import JsonLinesObservationStore, ObservationStore
+from .runtime import (
+    EntryOpportunityValueRuntimeMetrics,
+    EntryOpportunityValueRuntimeObserver,
+)
 
 __all__ = [
     "ComponentAvailability",
     "EntryOpportunityValueInput",
     "EntryOpportunityValueObservation",
     "EntryOpportunityValueService",
+    "EntryOpportunityValueRuntimeMetrics",
+    "EntryOpportunityValueRuntimeObserver",
     "EvaluationPolicy",
     "ForwardOutcomeLabels",
     "ForwardPricePoint",

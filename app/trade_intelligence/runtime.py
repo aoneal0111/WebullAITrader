@@ -324,6 +324,33 @@ class TradeIntelligenceRuntimeObserver:
         service = self._service
         return self._last_discovery_telemetry if service is None else self._combined_discovery_telemetry(service)
 
+    def entry_opportunity_context(
+        self, symbol: str, lifecycle_id: str, cutoff: datetime,
+    ) -> dict[str, object]:
+        """Expose cutoff-safe research correlation without execution authority."""
+
+        normalized = symbol.strip().upper()
+        result: dict[str, object] = {"observed_at": cutoff}
+        with self._lock:
+            episode = self._episodes.get(normalized)
+            if (
+                episode is not None
+                and episode.started_at <= cutoff
+                and episode.lifecycle_identity in {None, lifecycle_id}
+            ):
+                result["trade_intelligence_experience_id"] = episode.experience_id
+        service = self._service
+        lookup = getattr(service, "discovery_context", None)
+        if callable(lookup):
+            context = lookup(normalized, cutoff)
+            if context is not None:
+                result.update({
+                    "observed_at": context.observed_at,
+                    "opportunity_id": context.opportunity_id,
+                    "detector_memberships": context.detector_memberships,
+                })
+        return result
+
     def _observe_scanner(self, decision: ScannerDecision) -> None:
         service = self._service
         cutoff = decision.observed_at or decision.timestamp

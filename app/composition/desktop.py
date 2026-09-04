@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -31,6 +31,7 @@ from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExec
 from app.strategies.warrior_momentum.execution_quote import WebullExecutionQuoteSource
 from app.strategies.warrior_momentum.forward_runtime import management_context_available
 from app.trade_intelligence.runtime import TradeIntelligenceRuntimeObserver
+from app.entry_opportunity_value import EntryOpportunityValueRuntimeObserver
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -62,6 +63,7 @@ class DesktopComposition:
     warrior_forward_sidecar: WarriorDesktopSidecar | None = None
     autonomous_paper_bridge: AutonomousPaperExecutionBridge | None = None
     trade_intelligence_observer: TradeIntelligenceRuntimeObserver | None = None
+    entry_opportunity_value_observer: EntryOpportunityValueRuntimeObserver | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         """Close composed resources in lifecycle order."""
@@ -309,6 +311,38 @@ def create_desktop_composition(
         autonomous_paper_bridge.begin_reconciliation()
         autonomous_paper_bridge.reconcile()
 
+    def eov_order_correlation(lifecycle_id: str) -> dict[str, object] | None:
+        if paper_order_book is None:
+            return None
+        try:
+            order = next((
+                item for item in reversed(paper_order_book.history())
+                if item.request.strategy_lifecycle_id == lifecycle_id
+            ), None)
+        except Exception:
+            return None
+        if order is None:
+            return None
+        return {
+            "order_id": order.order_id,
+            "client_order_id": order.request.client_order_id,
+        }
+
+    entry_opportunity_value_observer = EntryOpportunityValueRuntimeObserver(
+        enabled=(
+            operational_configuration.entry_opportunity_value_enabled
+            and operational_configuration.warrior_forward_paper_enabled
+        ),
+        environment=operational_configuration.environment.value,
+        path=operational_configuration.entry_opportunity_value_path,
+        capacity=operational_configuration.entry_opportunity_value_queue_capacity,
+        clock=utc_now,
+        research_context_source=(
+            trade_intelligence_observer.entry_opportunity_context
+        ),
+        order_correlation_source=eov_order_correlation,
+    )
+
     warrior_forward_sidecar = WarriorDesktopSidecar(
         enabled=operational_configuration.warrior_forward_paper_enabled,
         storage_path=operational_configuration.warrior_forward_capture_path,
@@ -323,6 +357,7 @@ def create_desktop_composition(
         ),
         execution_quote_source=execution_quote_source,
         research_observer=trade_intelligence_observer,
+        entry_value_observer=entry_opportunity_value_observer,
     )
     if warrior_forward_sidecar.enabled or trade_intelligence_observer.enabled:
         market_event_observer = CompositeMarketEventObserver(
@@ -362,6 +397,7 @@ def create_desktop_composition(
         warrior_forward_sidecar=warrior_forward_sidecar,
         autonomous_paper_bridge=autonomous_paper_bridge,
         trade_intelligence_observer=trade_intelligence_observer,
+        entry_opportunity_value_observer=entry_opportunity_value_observer,
     )
 __all__ = [
     "DesktopComposition",

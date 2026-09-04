@@ -119,6 +119,7 @@ class WarriorForwardCaptureService:
         execution_quote_source: ExecutionQuoteSource | None = None,
         execution_permitted: Callable[[], bool] | None = None,
         account_refresh_source: Callable[[], PaperAccountContext | None] | None = None,
+        entry_value_observer: Callable[..., None] | None = None,
     ) -> None:
         self.store = store
         self.writer = writer
@@ -131,6 +132,7 @@ class WarriorForwardCaptureService:
         self._execution_quote_source = execution_quote_source
         self._execution_permitted = execution_permitted or (lambda: True)
         self._account_refresh_source = account_refresh_source
+        self._entry_value_observer = entry_value_observer
         self.runtime = WarriorMomentumRuntime(config)
         self._last_transition: dict[str, ForwardTransition] = {}
         self._seen_bars: set[tuple[str, datetime]] = set()
@@ -231,6 +233,11 @@ class WarriorForwardCaptureService:
                         refreshed_observation = replace(
                             observation, price=refreshed.last,
                             bid=refreshed.bid, ask=refreshed.ask,
+                            quote_timestamp=refreshed.bid_timestamp,
+                            last_price_timestamp=refreshed.last_timestamp,
+                            quote_received_timestamp=refreshed.confirmed_at,
+                            last_price_received_timestamp=refreshed.confirmed_at,
+                            bid_size=None, ask_size=None,
                         )
                         refreshed_candidate = self.runtime.discover(
                             refreshed_observation, completed, session=value.session,
@@ -250,6 +257,9 @@ class WarriorForwardCaptureService:
                                 last_price_observed_at=refreshed.last_timestamp,
                                 last_price_freshness_seconds=last_age,
                                 evaluation_timestamp=evaluated_at,
+                                best_bid_size=None,
+                                best_ask_size=None,
+                                quote_provenance="SHARED_EXECUTION_QUOTE_CONFIRMATION",
                             )
                             if self._account_refresh_source is not None:
                                 account = self._account_refresh_source()
@@ -275,6 +285,10 @@ class WarriorForwardCaptureService:
         features = build_features(completed)
         records: list[CaptureRecord] = []
         execution_record: CaptureRecord | None = None
+        authorization_decision: PaperEntryAuthorizationDecision | None = None
+        entry_value_quantity: int | None = None
+        entry_value_signal = signal or technical_signal
+        entry_value_state = assessed.status.value
         records.extend(self._evidence_records(value))
         records.append(_discovery_record(value, assessed))
         decision_record = _decision_record(value, assessed, completed, features)
@@ -343,9 +357,17 @@ class WarriorForwardCaptureService:
                     symbol_authorized=symbol_authorization.authorized,
                 )
                 if position.approved:
-                    entry_records, execution_record = self._open_paper(
+                    entry_value_quantity = position.shares
+                    entry_records, execution_record, authorization_decision = self._open_paper(
                         signal, position.shares, position.risk_dollars,
                         value.float_provenance, symbol_authorization,
+                    )
+                    entry_value_state = (
+                        authorization_decision.reason.value
+                        if authorization_decision is not None
+                        else "ENTRY_AUTHORIZATION_ACCEPTED"
+                        if entry_records
+                        else "ENTRY_AUTHORIZATION_REFUSED"
                     )
                     records.extend(entry_records)
                     if execution_record is not None:
@@ -401,6 +423,25 @@ class WarriorForwardCaptureService:
             and setup.trigger is not None and setup.stop_price is not None
         ):
             records.extend(self._start_counterfactual(assessed))
+        observer = self._entry_value_observer
+        if (
+            callable(observer)
+            and entry_value_signal is not None
+            and entry_value_quantity is not None
+        ):
+            try:
+                observer(
+                    value=value,
+                    candidate=assessed,
+                    signal=entry_value_signal,
+                    planned_quantity=entry_value_quantity,
+                    decision_state=entry_value_state,
+                    lifecycle_id=lifecycle_identity(entry_value_signal),
+                )
+            except Exception:
+                # EOV is a one-way research consumer. It cannot change this
+                # decision, record publication, or order outcome.
+                pass
         self.writer.submit_many(tuple(records))
         return assessed, signal
 
@@ -563,13 +604,18 @@ class WarriorForwardCaptureService:
         self, signal: MomentumEntrySignal, shares: int, risk_dollars: Decimal,
         float_provenance: FloatProvenance,
         symbol_authorization: PaperSymbolAuthorization,
-    ) -> tuple[tuple[CaptureRecord, ...], CaptureRecord | None]:
+    ) -> tuple[
+        tuple[CaptureRecord, ...], CaptureRecord | None,
+        PaperEntryAuthorizationDecision | None,
+    ]:
         if signal.symbol in self._paper:
-            return (), None
+            return (), None, None
         execution_record = None
+        authorization_decision = None
         if self._paper_entry_submitter is not None:
             result = self._paper_entry_submitter(signal, shares, risk_dollars)
             if isinstance(result, PaperEntryAuthorizationDecision):
+                authorization_decision = result
                 try:
                     execution_record = _execution_gate_record(
                         signal, result, symbol_authorization,
@@ -582,7 +628,7 @@ class WarriorForwardCaptureService:
             else:
                 accepted = bool(result)
             if not accepted:
-                return (), execution_record
+                return (), execution_record, authorization_decision
         first = int((Decimal(shares) * self.config.trade_management.first_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
         second = int((Decimal(shares) * self.config.trade_management.second_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
         state = _PaperState(signal, signal.entry_trigger, shares, shares, signal.stop_price, first, second)
@@ -615,6 +661,7 @@ class WarriorForwardCaptureService:
                 signal.symbol, signal.timestamp, signal, state,
             )),
             execution_record,
+            authorization_decision,
         )
 
     @property

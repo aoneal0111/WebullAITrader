@@ -75,6 +75,7 @@ class TradeIntelligenceService:
         self._protected_rejections = 0
         self._discovery_worker = DiscoveryWorker(state_limit=max(1000, capacity * 2))
         self._discovery_snapshot = self._discovery_worker.telemetry()
+        self._discovery_contexts = {}
         self._thread = Thread(target=self._run, name="atlas-trade-intelligence", daemon=True)
         self._thread.start()
 
@@ -182,6 +183,15 @@ class TradeIntelligenceService:
     def discovery_telemetry(self) -> DiscoveryTelemetry:
         with self._lock:
             return self._discovery_snapshot
+
+    def discovery_context(self, symbol: str, cutoff: datetime):
+        """Return only worker-completed context known by the supplied cutoff."""
+
+        with self._lock:
+            context = self._discovery_contexts.get(symbol.strip().upper())
+        if context is None or context.observed_at > cutoff:
+            return None
+        return context
 
     @property
     def thread(self) -> Thread:
@@ -381,8 +391,13 @@ class TradeIntelligenceService:
             elif work.work_type == "DISCOVERY":
                 discovery = discovery_observation_from_dict(json.loads(work.payload_json))
                 self._discovery_worker.process(store, discovery)
+                context = self._discovery_worker.context_for(
+                    discovery.context.symbol,
+                )
                 with self._lock:
                     self._discovery_snapshot = self._discovery_worker.telemetry()
+                    if context is not None:
+                        self._discovery_contexts[context.symbol] = context
             else:
                 raise ValueError("unknown research work type")
             store.complete_work(work.work_id, self._now())

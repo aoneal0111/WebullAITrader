@@ -10,7 +10,9 @@ from types import SimpleNamespace
 from app.opportunity_discovery import PositionFocusTier
 from app.strategies.warrior_momentum import MinuteBar
 from app.trade_intelligence import ExperienceStore, TradeIntelligenceService
-from app.trade_intelligence.discovery_runtime import DiscoveryTelemetry
+from app.trade_intelligence.discovery_runtime import (
+    DiscoveryTelemetry, KnownDiscoveryContext,
+)
 from app.trade_intelligence.models import WorkerMetrics
 from app.trade_intelligence.runtime import TradeIntelligenceRuntimeObserver
 
@@ -46,6 +48,12 @@ class _RecordingService:
     def discovery_telemetry(self):
         return DiscoveryTelemetry()
 
+    def discovery_context(self, symbol, cutoff):
+        return KnownDiscoveryContext(
+            symbol, cutoff - timedelta(seconds=1), "opportunity-known",
+            ("HIGHER_LOW_CONTINUATION", "HIGH_OF_DAY_BREAKOUT"),
+        )
+
     def close(self, *, timeout_seconds):
         return True
 
@@ -77,6 +85,21 @@ def test_completed_bar_cadence_is_bounded_and_duplicate_safe():
         for item in service.discovery[-1].context.completed_bars
     )
     assert service.discovery[-1].context.capabilities.authoritative_vwap is False
+
+
+def test_eov_context_exposes_only_observational_discovery_memberships():
+    observer, _service = _observer()
+    cutoff = T0 + timedelta(minutes=1)
+    context = observer.entry_opportunity_context(
+        "ABCD", "WARRIOR_MOMENTUM_V1|ABCD|episode", cutoff,
+    )
+    assert context == {
+        "observed_at": cutoff - timedelta(seconds=1),
+        "opportunity_id": "opportunity-known",
+        "detector_memberships": (
+            "HIGHER_LOW_CONTINUATION", "HIGH_OF_DAY_BREAKOUT",
+        ),
+    }
 
 
 def test_authoritative_position_and_working_order_retention_priority():

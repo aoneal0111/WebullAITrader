@@ -46,6 +46,7 @@ class EntryOpportunityValueService:
         policy: EvaluationPolicy = EvaluationPolicy(),
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         observation_sink: Callable[[EntryOpportunityValueObservation], None] | None = None,
+        evaluator: Callable[..., EntryOpportunityValueObservation] = evaluate_entry_opportunity,
     ) -> None:
         if capacity <= 0:
             raise ValueError("shadow queue capacity must be positive")
@@ -54,6 +55,7 @@ class EntryOpportunityValueService:
         self._policy = policy
         self._clock = clock
         self._sink = observation_sink
+        self._evaluator = evaluator
         self._lock = RLock()
         self._stop = Event()
         self._accepting = True
@@ -131,7 +133,7 @@ class EntryOpportunityValueService:
             lag_ms = max(0.0, (now - work.enqueued_at).total_seconds() * 1000.0)
             key = work.context.lifecycle_id
             try:
-                observation = evaluate_entry_opportunity(
+                observation = self._evaluator(
                     work.context,
                     evaluated_at=max(now, work.context.decision_cutoff),
                     previous=self._previous.get(key),

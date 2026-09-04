@@ -96,6 +96,9 @@ class PointInTimeObservation:
     scanner_score: int | None = None
     scanner_classification: str | None = None
     scanner_failed_rules: tuple[str, ...] = ()
+    best_bid_size: Decimal | None = None
+    best_ask_size: Decimal | None = None
+    quote_provenance: str = "SHARED_SCANNER_ADAPTER"
 
     def __post_init__(self) -> None:
         if self.observation.timestamp.tzinfo is None:
@@ -121,6 +124,12 @@ class PointInTimeObservation:
             raise ValueError("delivery age cannot be negative")
         if self.scanner_rank is not None and self.scanner_rank <= 0:
             raise ValueError("scanner rank must be positive when available")
+        if self.best_bid_size is not None and self.best_bid_size < 0:
+            raise ValueError("best bid size cannot be negative")
+        if self.best_ask_size is not None and self.best_ask_size < 0:
+            raise ValueError("best ask size cannot be negative")
+        if not self.quote_provenance.strip():
+            raise ValueError("quote provenance is required")
 
 
 @dataclass(frozen=True, slots=True)

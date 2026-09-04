@@ -180,6 +180,8 @@ class MarketEventScannerAdapter:
                 quote_received_timestamp=event.received_timestamp,
                 bid=event.payload.bid,
                 ask=event.payload.ask,
+                bid_size=event.payload.bid_size,
+                ask_size=event.payload.ask_size,
             )
 
         if event.event_type is MarketEventType.TRADE:
@@ -379,6 +381,8 @@ class MarketEventScannerAdapter:
                 trade_timestamp=state.trade_timestamp,
                 last_price_received_timestamp=state.last_price_received_timestamp,
                 quote_received_timestamp=state.quote_received_timestamp,
+                bid_size=state.bid_size,
+                ask_size=state.ask_size,
             ),
             (),
         )
