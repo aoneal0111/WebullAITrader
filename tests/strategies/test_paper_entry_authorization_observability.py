@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.order_placement import OrderPlacementDecision
-from app.paper_trading.command_composition import (
-    create_paper_trading_command_composition,
+from tests.test_support.session_clock import (
+    create_session_paper_composition as create_paper_trading_command_composition,
 )
 from app.strategies.warrior_momentum.autonomous_paper import (
     AutonomousPaperExecutionBridge,
@@ -34,6 +34,9 @@ from app.momentum_scanner.models import (
     CatalystType,
     ScannerObservation,
 )
+
+
+PAPER_AT = datetime(2026, 8, 10, 14, 50, tzinfo=UTC)
 
 
 @dataclass(frozen=True)
@@ -102,7 +105,7 @@ def test_reconciliation_readiness_refusal_is_explicit():
 
 
 def test_working_order_and_position_refusals_are_distinct():
-    composition = create_paper_trading_command_composition()
+    composition = create_paper_trading_command_composition(at=PAPER_AT)
     bridge = AutonomousPaperExecutionBridge(
         composition.trading_service,
         composition.order_command_factory,
@@ -187,7 +190,7 @@ def _observation():
 def test_authorization_result_is_appended_without_changing_submission(tmp_path):
     store = ForwardCaptureStore(tmp_path / "capture.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
-    composition = create_paper_trading_command_composition()
+    composition = create_paper_trading_command_composition(at=PAPER_AT)
     bridge = AutonomousPaperExecutionBridge(
         composition.trading_service,
         composition.order_command_factory,
@@ -262,7 +265,7 @@ def test_diagnostic_serialization_failure_cannot_change_authorization(
 ):
     store = ForwardCaptureStore(tmp_path / "isolated.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
-    composition = create_paper_trading_command_composition()
+    composition = create_paper_trading_command_composition(at=PAPER_AT)
     bridge = AutonomousPaperExecutionBridge(
         composition.trading_service,
         composition.order_command_factory,

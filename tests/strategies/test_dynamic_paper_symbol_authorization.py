@@ -13,8 +13,8 @@ from app.momentum_scanner.models import (
     CatalystType,
     ScannerObservation,
 )
-from app.paper_trading.command_composition import (
-    create_paper_trading_command_composition,
+from tests.test_support.session_clock import (
+    create_session_paper_composition as create_paper_trading_command_composition,
 )
 from app.strategies.warrior_momentum.autonomous_paper import (
     AutonomousPaperExecutionBridge,
@@ -33,6 +33,9 @@ from app.strategies.warrior_momentum.forward_store import ForwardCaptureStore
 from app.strategies.warrior_momentum.models import MinuteBar
 from app.strategies.warrior_momentum.risk import size_position
 from app.strategies.warrior_momentum.runtime import WarriorMomentumRuntime
+
+
+PAPER_AT = datetime(2026, 8, 10, 14, 50, tzinfo=UTC)
 
 
 def _bar(index: int, open_: str, high: str, low: str, close: str, volume="100"):
@@ -98,7 +101,7 @@ def test_dynamic_mode_authorizes_only_the_authoritative_warrior_service_path(tmp
     store = ForwardCaptureStore(tmp_path / "dynamic.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
     composition = create_paper_trading_command_composition(
-        persistence_path=str(tmp_path / "paper.sqlite3")
+        persistence_path=str(tmp_path / "paper.sqlite3"), at=PAPER_AT,
     )
     bridge = composition.trading_service
     paper_bridge = AutonomousPaperExecutionBridge(

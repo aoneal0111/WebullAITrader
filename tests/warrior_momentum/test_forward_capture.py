@@ -12,7 +12,10 @@ from app.market_data.models import MarketEvent, MarketEventType, QuotePayload
 from app.momentum_scanner.models import (
     AssetClass, CatalystStatus, CatalystType, ScannerObservation,
 )
-from app.paper_trading.command_composition import create_paper_trading_command_composition
+from tests.test_support.session_clock import (
+    create_session_paper_composition as create_paper_trading_command_composition,
+    session_timestamp,
+)
 from app.strategies.warrior_momentum import (
     CaptureRecord, CaptureRecordType,
     FloatProvenance, ForwardCaptureWriter, ForwardCaptureStore,
@@ -261,7 +264,8 @@ def test_stale_market_data_remains_visible_with_another_blocker(capture) -> None
 def test_after_hours_signal_reaches_normal_paper_gateway_once(tmp_path: Path) -> None:
     store = ForwardCaptureStore(tmp_path / "after-hours-forward.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
-    composition = create_paper_trading_command_composition()
+    after_hours = datetime(2026, 8, 10, 22, 0, tzinfo=UTC)
+    composition = create_paper_trading_command_composition(at=after_hours)
     bridge = AutonomousPaperExecutionBridge(
         composition.trading_service,
         composition.order_command_factory,
@@ -282,7 +286,7 @@ def test_after_hours_signal_reaches_normal_paper_gateway_once(tmp_path: Path) ->
         assert len(composition.order_book.open_orders()) == 1
 
         reports = composition.gateway.process_market_event(MarketEvent(
-            1, datetime.now(UTC), signal.symbol, "after-hours-test",
+            1, session_timestamp(1, at=after_hours), signal.symbol, "after-hours-test",
             MarketEventType.QUOTE,
             QuotePayload(
                 signal.entry_trigger - D("0.01"), signal.entry_trigger,
@@ -331,6 +335,7 @@ def test_authoritative_exit_submission_and_partial_fill_do_not_close(tmp_path: P
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
     position = {"XYZ": Decimal("0")}
     composition = create_paper_trading_command_composition(
+        at=T0 + timedelta(minutes=20),
         position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
         position_average_cost_source=lambda _symbol: Decimal("10.20"),
     )
@@ -350,7 +355,7 @@ def test_authoritative_exit_submission_and_partial_fill_do_not_close(tmp_path: P
         assert signal is not None
         shares = int(composition.order_book.open_orders()[0].quantity)
         composition.gateway.process_market_event(MarketEvent(
-            1, datetime.now(UTC), "XYZ", "test", MarketEventType.QUOTE,
+            1, session_timestamp(1, at=T0 + timedelta(minutes=20)), "XYZ", "test", MarketEventType.QUOTE,
             QuotePayload(signal.entry_trigger - D("0.01"), signal.entry_trigger,
                          D(shares), D(shares)),
         ))
@@ -373,7 +378,7 @@ def test_authoritative_exit_submission_and_partial_fill_do_not_close(tmp_path: P
         sell = next(order for order in composition.order_book.open_orders()
                     if order.request.side.value == "SELL")
         composition.gateway.process_market_event(MarketEvent(
-            2, datetime.now(UTC), "XYZ", "test", MarketEventType.QUOTE,
+            2, session_timestamp(2, at=T0 + timedelta(minutes=20)), "XYZ", "test", MarketEventType.QUOTE,
             QuotePayload(signal.stop_price - D("0.02"), signal.stop_price - D("0.01"),
                          D("1"), D("1")),
         ))
@@ -394,7 +399,7 @@ def test_authoritative_exit_submission_and_partial_fill_do_not_close(tmp_path: P
         )
 
         composition.gateway.process_market_event(MarketEvent(
-            3, datetime.now(UTC), "XYZ", "test", MarketEventType.QUOTE,
+            3, session_timestamp(3, at=T0 + timedelta(minutes=20)), "XYZ", "test", MarketEventType.QUOTE,
             QuotePayload(signal.stop_price - D("0.03"), signal.stop_price - D("0.02"),
                          D(shares), D(shares)),
         ))

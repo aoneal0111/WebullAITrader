@@ -11,9 +11,12 @@ from app.operations_core import OperationsBus
 from app.composition.runtime_projection_pipeline import create_runtime_projection_pipeline
 from app.paper_gateway.durable_store import DurablePaperExecutionStore
 from app.operations.runtime import PaperRuntimeEvent
-from app.paper_trading.command_composition import create_paper_trading_command_composition
 from app.paper_trading.command_composition import PAPER_ACCOUNT_ID
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
+from tests.test_support.session_clock import (
+    create_session_paper_composition as create_paper_trading_command_composition,
+    session_timestamp,
+)
 
 
 class Signal:
@@ -24,7 +27,7 @@ class Signal:
 
 def quote(sequence: int, bid: str, ask: str) -> MarketEvent:
     return MarketEvent(
-        sequence, datetime.now(timezone.utc), "PMI", "test", MarketEventType.QUOTE,
+        sequence, session_timestamp(sequence), "PMI", "test", MarketEventType.QUOTE,
         QuotePayload(Decimal(bid), Decimal(ask), Decimal("100"), Decimal("100")),
     )
 

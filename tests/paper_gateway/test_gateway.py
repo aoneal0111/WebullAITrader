@@ -39,7 +39,7 @@ def placement_request():
 
 def test_places_order_into_shared_book() -> None:
     book = PaperOrderBook()
-    gateway = PaperOrderGateway(book)
+    gateway = PaperOrderGateway(book, clock=lambda: NOW)
 
     acknowledgement = gateway.place_order(
         placement_request()
@@ -63,7 +63,7 @@ def test_places_order_into_shared_book() -> None:
 
 def test_cancels_order_from_shared_book() -> None:
     book = PaperOrderBook()
-    gateway = PaperOrderGateway(book)
+    gateway = PaperOrderGateway(book, clock=lambda: NOW)
 
     placement = gateway.place_order(
         placement_request()
@@ -88,7 +88,7 @@ def test_cancels_order_from_shared_book() -> None:
 
 
 def test_missing_order_returns_none() -> None:
-    gateway = PaperOrderGateway(PaperOrderBook())
+    gateway = PaperOrderGateway(PaperOrderBook(), clock=lambda: NOW)
 
     result = gateway.cancel_order(
         OrderCancellationRequest(
@@ -105,7 +105,7 @@ def test_missing_order_returns_none() -> None:
 
 def test_client_order_id_mismatch_is_rejected() -> None:
     book = PaperOrderBook()
-    gateway = PaperOrderGateway(book)
+    gateway = PaperOrderGateway(book, clock=lambda: NOW)
 
     placement = gateway.place_order(
         placement_request()

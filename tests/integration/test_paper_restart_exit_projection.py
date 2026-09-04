@@ -1,16 +1,18 @@
-from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.composition.runtime_projection_pipeline import create_runtime_projection_pipeline
 from app.operations_core import OperationsBus
-from app.paper_trading.command_composition import create_paper_trading_command_composition
+from tests.test_support.session_clock import (
+    create_session_paper_composition as create_paper_trading_command_composition,
+    session_timestamp,
+)
 from app.services.order_command_factory import OrderEntryCommand
 from app.market_data.models import MarketEvent, MarketEventType, QuotePayload
 
 
 def _quote(composition, sequence, bid, ask):
     return composition.gateway.process_market_event(MarketEvent(
-        sequence, datetime.now(UTC), "PMI", "integration", MarketEventType.QUOTE,
+        sequence, session_timestamp(sequence), "PMI", "integration", MarketEventType.QUOTE,
         QuotePayload(Decimal(bid), Decimal(ask), Decimal("100"), Decimal("100")),
     ))
 

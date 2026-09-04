@@ -18,6 +18,7 @@ from app.operations_core import ApplicationStateStore, OperationsBus
 from app.paper_gateway import PaperOrderGateway
 from app.paper_gateway.gateway import PaperDurabilityError
 from app.paper_gateway.durable_store import DurablePaperExecutionStore
+from app.paper_gateway.order_validity import atlas_day_expiration
 from app.paper_trading.command_composition import (
     PAPER_ACCOUNT_ID,
     create_paper_trading_command_composition,
@@ -177,6 +178,52 @@ def test_day_submitted_outside_supported_extended_hours_expires_immediately() ->
             composition.order_book.get(order.order_id).terminal_reason
             is OrderTerminalReason.DAY_EXPIRED
         )
+        composition.close()
+
+
+@pytest.mark.parametrize(
+    ("submitted_time", "working"),
+    (
+        ((3, 59, 59), False),
+        ((4, 0, 0), True),
+        ((19, 59, 59), True),
+        ((20, 0, 0), False),
+        ((20, 0, 1), False),
+    ),
+)
+def test_atlas_day_boundaries_are_exact_to_the_second(
+    submitted_time: tuple[int, int, int], working: bool,
+) -> None:
+    clock = Clock(datetime(2026, 9, 3, *submitted_time, tzinfo=ET))
+    composition = create_paper_trading_command_composition(clock=clock)
+    try:
+        order = submit_manual(composition)
+        assert (not order.is_terminal) is working
+        assert (
+            order.terminal_reason is OrderTerminalReason.DAY_EXPIRED
+        ) is (not working)
+    finally:
+        composition.close()
+
+
+@pytest.mark.parametrize(
+    ("submitted", "expected_offset_hours"),
+    (
+        (datetime(2026, 1, 15, 14, 0, tzinfo=ET), -5),
+        (datetime(2026, 9, 3, 14, 0, tzinfo=ET), -4),
+    ),
+)
+def test_atlas_day_expiration_preserves_local_boundary_across_dst(
+    submitted: datetime, expected_offset_hours: int,
+) -> None:
+    clock = Clock(submitted)
+    composition = create_paper_trading_command_composition(clock=clock)
+    try:
+        order = submit_manual(composition)
+        expiration = atlas_day_expiration(order)
+        assert expiration.astimezone(ET).time() == datetime.min.time().replace(hour=20)
+        assert expiration.utcoffset() == timedelta(hours=expected_offset_hours)
+    finally:
         composition.close()
 
 

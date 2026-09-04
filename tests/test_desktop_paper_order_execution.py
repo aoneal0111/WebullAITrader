@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -10,7 +10,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from app.authentication.models import AuthenticationStatus
-from app.composition import create_desktop_composition
+from app.composition import create_desktop_composition as _create_desktop_composition
 from app.gui.main_window import MainWindow
 from app.market_data.models import (
     MarketEvent,
@@ -26,6 +26,18 @@ from app.paper_trading.command_composition import (
 from app.paper_trading.models import JournalEventType
 from app.services import OrderEntryCommand
 from app.session.models import SessionStatus
+from tests.test_support.session_clock import (
+    FixedClock,
+    REGULAR_SESSION_UTC,
+    session_timestamp,
+)
+
+
+def create_desktop_composition(**kwargs):
+    return _create_desktop_composition(
+        paper_clock=FixedClock(REGULAR_SESSION_UTC),
+        **kwargs,
+    )
 
 
 def quote(
@@ -38,7 +50,7 @@ def quote(
 ) -> MarketEvent:
     return MarketEvent(
         sequence=sequence,
-        timestamp=timestamp or datetime.now(UTC) + timedelta(seconds=1),
+        timestamp=timestamp or session_timestamp(1),
         symbol="AAPL",
         source="webull",
         event_type=MarketEventType.QUOTE,
@@ -135,7 +147,7 @@ def test_partial_and_complete_fills_update_all_existing_projections() -> None:
         composition.runtime_projections.sink(
             PaperRuntimeEvent(
                 sequence=100,
-                timestamp=datetime.now(UTC),
+                timestamp=session_timestamp(),
                 event_type="MARK_UPDATED",
                 message="Broker market mark.",
                 cycle=0,
@@ -173,7 +185,7 @@ def test_partial_and_complete_fills_update_all_existing_projections() -> None:
                 sequence=2,
                 ask="102",
                 volume="10",
-                timestamp=datetime.now(UTC) + timedelta(seconds=2),
+                timestamp=session_timestamp(2),
             )
         )
         filled_state = composition.state_store.snapshot()

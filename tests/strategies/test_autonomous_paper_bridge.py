@@ -1,11 +1,13 @@
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from decimal import Decimal
 
 from app.composition.runtime_mode import RuntimeMode
 from app.market_data.models import MarketEvent, MarketEventType, QuotePayload
 from app.order_cancellation import OrderCancellationRequest
-from app.paper_trading.command_composition import create_paper_trading_command_composition
+from tests.test_support.session_clock import (
+    create_session_paper_composition as create_paper_trading_command_composition,
+    session_timestamp,
+)
 from app.services.order_command_factory import OrderEntryCommand
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
 from app.strategies.warrior_momentum.autonomous_paper import (
@@ -60,13 +62,13 @@ def test_paper_bridge_round_trip_uses_gateway_fill_lifecycle() -> None:
     )
     assert bridge.submit_entry(Signal(), 100, Decimal("50")) is True
     entry_reports = composition.gateway.process_market_event(MarketEvent(
-        1, datetime.now(timezone.utc), "PMI", "test", MarketEventType.QUOTE,
+        1, session_timestamp(1), "PMI", "test", MarketEventType.QUOTE,
         QuotePayload(Decimal("9.99"), Decimal("10"), Decimal("100"), Decimal("100")),
     ))
     assert entry_reports and entry_reports[0].fills
     assert bridge.submit_exit("PMI", 100, Decimal("10.50"), "TARGET") is True
     exit_reports = composition.gateway.process_market_event(MarketEvent(
-        2, datetime.now(timezone.utc), "PMI", "test", MarketEventType.QUOTE,
+        2, session_timestamp(2), "PMI", "test", MarketEventType.QUOTE,
         QuotePayload(Decimal("10.50"), Decimal("10.51"), Decimal("100"), Decimal("100")),
     ))
     assert exit_reports and exit_reports[0].fills
@@ -90,7 +92,7 @@ def test_same_symbol_sequential_lifecycles_allow_reentry_and_same_exit_reason() 
 
     def quote(sequence: int, bid: str, ask: str) -> None:
         composition.gateway.process_market_event(MarketEvent(
-            sequence, datetime.now(timezone.utc), "PMI", "test", MarketEventType.QUOTE,
+            sequence, session_timestamp(sequence), "PMI", "test", MarketEventType.QUOTE,
             QuotePayload(Decimal(bid), Decimal(ask), Decimal("100"), Decimal("100")),
         ))
 
@@ -123,7 +125,7 @@ def test_same_symbol_sequential_lifecycles_allow_reentry_and_same_exit_reason() 
 
 def _paper_quote(composition, sequence: int, bid: str, ask: str) -> None:
     composition.gateway.process_market_event(MarketEvent(
-        sequence, datetime.now(timezone.utc), "PMI", "test", MarketEventType.QUOTE,
+        sequence, session_timestamp(sequence), "PMI", "test", MarketEventType.QUOTE,
         QuotePayload(Decimal(bid), Decimal(ask), Decimal("100"), Decimal("100")),
     ))
 
@@ -191,11 +193,11 @@ def test_partial_entry_invalidation_preserves_fill_and_cancels_remainder() -> No
     assert bridge.submit_entry(Signal(), 100, Decimal("50"))
     order_id = composition.order_book.open_orders()[0].order_id
     composition.gateway.process_market_event(MarketEvent(
-        1, datetime.now(timezone.utc), "PMI", "test", MarketEventType.QUOTE,
+        1, session_timestamp(1), "PMI", "test", MarketEventType.QUOTE,
         QuotePayload(Decimal("9.99"), Decimal("10"), Decimal("40"), Decimal("40")),
     ))
     composition.gateway.process_market_event(MarketEvent(
-        2, datetime.now(timezone.utc), "PMI", "test", MarketEventType.QUOTE,
+        2, session_timestamp(2), "PMI", "test", MarketEventType.QUOTE,
         QuotePayload(Decimal("9.39"), Decimal("9.40"), Decimal("100"), Decimal("100")),
     ))
 

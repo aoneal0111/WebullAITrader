@@ -88,6 +88,7 @@ def create_desktop_composition(
     order_command_factory: OrderCommandFactory | None = None,
     paper_order_book: PaperOrderBook | None = None,
     paper_persistence_path: str | Path | None = None,
+    paper_clock: Callable[[], datetime] | None = None,
 ) -> DesktopComposition:
     """Construct the desktop application dependency graph."""
 
@@ -258,6 +259,7 @@ def create_desktop_composition(
             persistence_path=paper_persistence_path,
             position_average_cost_source=position_average_cost,
             position_quantity_source=position_quantity,
+            clock=paper_clock,
         )
         placement_runtime = paper_trading_commands.placement_runtime
         cancellation_runtime = paper_trading_commands.cancellation_runtime
