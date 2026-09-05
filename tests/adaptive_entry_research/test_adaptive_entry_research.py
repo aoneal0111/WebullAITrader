@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from threading import Event
+from threading import Barrier, Event, Thread
 from time import perf_counter
 from types import SimpleNamespace
 
@@ -318,6 +318,84 @@ class InlineWorker:
     def observe(self, snap, reasons): self.items.append((snap, reasons)); return True
     def close(self, **_kwargs): return True
     def metrics(self): return None
+
+
+def test_concurrent_identical_admission_is_one_episode(tmp_path):
+    gate = Barrier(2)
+
+    class CoordinatedObserver(AdaptiveWorkingEntryObserver):
+        def _snapshot(self, order, event, market_event_at, *, previous=None):
+            gate.wait(timeout=2)
+            return super()._snapshot(order, event, market_event_at, previous=previous)
+
+    working = order(order_id="cdtg-race")
+    observer = CoordinatedObserver(
+        enabled=True, environment="PAPER", path=tmp_path / "race.jsonl",
+        order_source=lambda _symbol: (working,),
+        position_source=lambda _symbol: D("0"),
+        warrior_source=lambda _symbol, cutoff: warrior_context(cutoff),
+        worker_factory=InlineWorker, store_factory=lambda _path: MemoryStore(),
+        clock=lambda: T0 + timedelta(seconds=3),
+    )
+    observer.start()
+    event = quote(T0 + timedelta(seconds=3), bid="1.235", ask="1.240")
+    threads = [Thread(target=observer, args=(event,)) for _ in range(2)]
+    for thread in threads: thread.start()
+    for thread in threads: thread.join(timeout=3)
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(observer._worker.items) == 1
+    assert observer.metrics().concurrent_duplicate_suppressions >= 1
+    observer.stop()
+
+
+def test_worker_duplicate_admission_persists_one_row_and_one_outcome_identity():
+    store = MemoryStore()
+    tracker = BoundedOutcomeTracker()
+    worker = AdaptiveEntryResearchWorker(store, capacity=4, outcome_tracker=tracker)
+    reasons = (MaterialChangeReason.PRICE_DISPLACEMENT,)
+    assert worker.observe(snapshot(), reasons)
+    assert not worker.observe(snapshot(), reasons)
+    assert worker.close(timeout_seconds=2)
+    assert len(store.items) == 1
+    assert worker.metrics().semantic_repeats_suppressed == 1
+    assert tracker.retained_recommendations == 1
+
+
+def test_semantic_episode_suppresses_spread_noise_but_emits_transitions(tmp_path):
+    now = [T0 + timedelta(seconds=3)]
+    context = {"setup_state": "TRIGGERED", "action": True}
+
+    def warrior(_symbol, cutoff):
+        return {"observed_at": cutoff, "setup_state": context["setup_state"],
+                "current_reference_price": D("1.225"),
+                "current_structural_stop": D("1.175"),
+                "current_setup_quality": D("0.90"),
+                "current_technical_actionable": context["action"]}
+
+    working = order(order_id="sgrx-episode")
+    observer = AdaptiveWorkingEntryObserver(
+        enabled=True, environment="PAPER", path=tmp_path / "episodes.jsonl",
+        order_source=lambda _symbol: (working,), position_source=lambda _symbol: D("0"),
+        warrior_source=warrior, worker_factory=InlineWorker,
+        store_factory=lambda _path: MemoryStore(), clock=lambda: now[0],
+    )
+    observer.start()
+    for index in range(20):
+        bid = D("1.224") - D(index) / D("100000")
+        observer(quote(T0 + timedelta(seconds=3, milliseconds=index), bid=str(bid), ask="1.225"))
+    assert len(observer._worker.items) == 1
+    assert observer.metrics().semantic_repeats_suppressed >= 10
+    # A meaningful displacement bucket transition is immediate.
+    observer(quote(T0 + timedelta(seconds=4), bid="1.239", ask="1.240"))
+    assert len(observer._worker.items) == 2
+    # Near-expiry and setup/actionability transitions are not hidden by a cooldown.
+    now[0] = T0 + timedelta(seconds=55)
+    observer(quote(T0 + timedelta(seconds=55), bid="1.239", ask="1.240"))
+    assert len(observer._worker.items) == 3
+    context["setup_state"], context["action"] = "INVALIDATED", False
+    observer(quote(T0 + timedelta(seconds=56), bid="1.239", ask="1.240"))
+    assert len(observer._worker.items) == 4
+    observer.stop()
 
 
 def warrior_context(at):

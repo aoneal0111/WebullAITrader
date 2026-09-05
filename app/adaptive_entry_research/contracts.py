@@ -218,6 +218,23 @@ class OutcomeObservation:
     research_only: bool = True
     execution_authorized: bool = False
     production_promoted: bool = False
+    # Schema-v2 immutable provenance.  Defaults keep older in-memory callers
+    # and historical JSONL rows readable; new labels always populate these.
+    schema_version: str = "2"
+    symbol: str = ""
+    order_id: str = ""
+    recommendation: str = ""
+    strategy_id: str = ""
+    strategy_lifecycle_id: str = ""
+    setup_type: str = ""
+    original_entry: Decimal | None = None
+    original_stop: Decimal | None = None
+    original_quantity: int | None = None
+    original_risk_per_share: Decimal | None = None
+    original_total_risk: Decimal | None = None
+    fresh_entry: Decimal | None = None
+    fresh_stop: Decimal | None = None
+    fresh_quantity: int | None = None
 
     def __post_init__(self) -> None:
         if self.observed_at <= self.decision_cutoff:

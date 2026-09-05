@@ -26,10 +26,28 @@ def label_outcome(recommendation: AdaptiveEntryRecommendation, *, observed_at: d
     original_fill = None if original is None or low is None else low <= original
     fresh_fill = None if fresh is None or low is None else low <= fresh
     identity = sha256(f"{recommendation.recommendation_id}|{horizon}|{observed_at.isoformat()}".encode()).hexdigest()
-    return OutcomeObservation(identity, recommendation.recommendation_id,
-                              recommendation.decision_cutoff, horizon, observed_at,
-                              future_price, mfe, mae, original_fill, fresh_fill,
-                              "RESEARCH_OBSERVED_PRICE_TOUCH_V1")
+    lifecycle_parts = recommendation.strategy_lifecycle_id.split("|")
+    return OutcomeObservation(
+        identity, recommendation.recommendation_id,
+        recommendation.decision_cutoff, horizon, observed_at,
+        future_price, mfe, mae, original_fill, fresh_fill,
+        "RESEARCH_OBSERVED_PRICE_TOUCH_V1",
+        schema_version="2",
+        symbol=recommendation.symbol,
+        order_id=recommendation.order_id,
+        recommendation=recommendation.recommendation.value,
+        strategy_id=lifecycle_parts[0] if lifecycle_parts else "",
+        strategy_lifecycle_id=recommendation.strategy_lifecycle_id,
+        setup_type=lifecycle_parts[3] if len(lifecycle_parts) > 3 else "",
+        original_entry=recommendation.original.entry,
+        original_stop=recommendation.original.stop,
+        original_quantity=recommendation.original.quantity,
+        original_risk_per_share=recommendation.original.risk_per_share,
+        original_total_risk=recommendation.original.total_risk,
+        fresh_entry=recommendation.fresh_hypothetical.entry,
+        fresh_stop=recommendation.fresh_hypothetical.stop,
+        fresh_quantity=recommendation.fresh_hypothetical.quantity,
+    )
 
 
 @dataclass(slots=True)

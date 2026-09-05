@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from threading import RLock
 
 from .contracts import WorkingEntrySnapshot
 from .material_change import detect_material_change, semantic_signature
@@ -28,6 +29,8 @@ class RuntimeMetrics:
     retained_order_state: int
     retained_signatures: int
     worker: WorkerMetrics | None
+    semantic_repeats_suppressed: int = 0
+    concurrent_duplicate_suppressions: int = 0
 
 
 class AdaptiveWorkingEntryObserver:
@@ -47,9 +50,12 @@ class AdaptiveWorkingEntryObserver:
         self._worker_factory, self._store_factory = worker_factory, store_factory
         self._clock = clock
         self._worker: AdaptiveEntryResearchWorker | None = None
+        self._state_lock = RLock()
         self._previous: OrderedDict[str, WorkingEntrySnapshot] = OrderedDict()
         self._signatures: OrderedDict[str, tuple[object, ...]] = OrderedDict()
         self._observed = self._eligible = self._suppressed = self._failed = 0
+        self._semantic_repeats_suppressed = 0
+        self._concurrent_duplicate_suppressions = 0
 
     def start(self, _environment: str | None = None) -> None:
         if not self.enabled or self._worker is not None:
@@ -101,37 +107,67 @@ class AdaptiveWorkingEntryObserver:
                     symbol=symbol, observed_at=market_event_at, price=outcome_price,
                 )
             for order in tuple(self._orders(symbol)):
-                snapshot = self._snapshot(order, event, market_event_at)
-                if snapshot is None:
-                    continue
-                self._eligible += 1
-                previous = self._previous.get(snapshot.order_id)
-                reasons = detect_material_change(previous, snapshot)
-                if not reasons:
-                    if previous is not None:
-                        self._suppressed += 1
-                    self._remember(self._previous, snapshot.order_id, snapshot)
-                    continue
-                signature = semantic_signature(snapshot, reasons)
-                if self._signatures.get(snapshot.order_id) == signature:
-                    self._suppressed += 1
-                    continue
-                if self._worker.observe(snapshot, reasons):
-                    self._remember(self._previous, snapshot.order_id, snapshot)
-                    self._remember(self._signatures, snapshot.order_id, signature)
+                order_id = str(getattr(order, "order_id", ""))
+                for _attempt in range(3):
+                    with self._state_lock:
+                        previous = self._previous.get(order_id)
+                    snapshot = self._snapshot(order, event, market_event_at, previous=previous)
+                    if snapshot is None:
+                        break
+                    self._eligible += 1
+                    reasons = detect_material_change(previous, snapshot)
+                    signature = semantic_signature(snapshot, reasons)
+                    retry = False
+                    admit = False
+                    with self._state_lock:
+                        # A producer may have raced while the snapshot was
+                        # being built. Retry against the newest state rather
+                        # than dropping a materially different transition.
+                        current_previous = self._previous.get(snapshot.order_id)
+                        if current_previous is not previous:
+                            self._concurrent_duplicate_suppressions += 1
+                            retry = True
+                        elif not reasons:
+                            if previous is not None:
+                                self._suppressed += 1
+                                self._semantic_repeats_suppressed += 1
+                            self._remember(self._previous, snapshot.order_id, snapshot)
+                        elif self._signatures.get(snapshot.order_id) == signature:
+                            self._suppressed += 1
+                            self._semantic_repeats_suppressed += 1
+                        else:
+                            # Reserve state atomically, but keep worker
+                            # admission and all persistence/evaluation
+                            # outside this short lock.
+                            self._remember(self._previous, snapshot.order_id, snapshot)
+                            self._remember(self._signatures, snapshot.order_id, signature)
+                            admit = True
+                    if retry:
+                        continue
+                    if admit:
+                        self._worker.observe(snapshot, reasons)
+                    break
         except Exception:
             self._failed += 1
 
     def metrics(self) -> RuntimeMetrics:
-        return RuntimeMetrics(self.enabled, self._observed, self._eligible, self._suppressed,
-                              self._failed, len(self._previous), len(self._signatures),
-                              None if self._worker is None else self._worker.metrics())
+        with self._state_lock:
+            previous_count, signature_count = len(self._previous), len(self._signatures)
+            suppressed = self._suppressed
+            semantic_suppressed = self._semantic_repeats_suppressed
+            concurrent_suppressed = self._concurrent_duplicate_suppressions
+        return RuntimeMetrics(self.enabled, self._observed, self._eligible, suppressed,
+                              self._failed, previous_count, signature_count,
+                              None if self._worker is None else self._worker.metrics(),
+                              semantic_suppressed, concurrent_suppressed)
 
     def _snapshot(
         self,
         order: object,
         event: object,
         market_event_at: datetime,
+        *,
+        previous: WorkingEntrySnapshot | None = None,
     ) -> WorkingEntrySnapshot | None:
         request = getattr(order, "request", None)
         status = _value(getattr(order, "status", ""))
@@ -153,7 +189,6 @@ class AdaptiveWorkingEntryObserver:
             return None
         payload = getattr(event, "payload", None)
         event_type = _value(getattr(event, "event_type", ""))
-        previous = self._previous.get(str(getattr(order, "order_id")))
         bid, ask, last = (None if previous is None else previous.bid,
                           None if previous is None else previous.ask,
                           None if previous is None else previous.last)

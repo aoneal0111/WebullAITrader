@@ -62,16 +62,52 @@ def detect_material_change(
 
 
 def semantic_signature(snapshot: WorkingEntrySnapshot, reasons: tuple[MaterialChangeReason, ...]) -> tuple[object, ...]:
-    """Exclude timestamps and raw event identities from semantic deduplication."""
+    """Return an episode-scale key, excluding quote-by-quote noise.
+
+    The key deliberately retains state boundaries which can change the
+    evaluator's decision, while omitting the raw spread value.  Spread is
+    represented only by the evaluator's existing wide/acceptable gate.  This
+    is persistence semantics, not a trading threshold.
+    """
     risk = snapshot.original_risk_per_share
     bucket = lambda value: None if value is None else int((value / risk * 4).to_integral_value())
+    market = snapshot.last or snapshot.ask or snapshot.bid
+    drift_r = None if market is None else (market - snapshot.original_limit_price) / risk
+    if drift_r is None:
+        displacement = "MISSING"
+    else:
+        magnitude = abs(drift_r)
+        if magnitude < Decimal("0.25"):
+            band = "KEEP"
+        elif magnitude < Decimal("0.75"):
+            band = "RETRACE"
+        elif magnitude < Decimal("1.50"):
+            band = "DISPLACED"
+        elif magnitude < Decimal("3"):
+            band = "REPRICE"
+        else:
+            band = "ABANDON"
+        displacement = ("-" if drift_r < 0 else "+", band)
+    if snapshot.spread_percent is None:
+        spread_gate = "MISSING"
+    elif snapshot.spread_percent > Decimal("2"):
+        spread_gate = "WIDE"
+    else:
+        spread_gate = "ACCEPTABLE"
+    important_reasons = tuple(sorted(
+        reason.value for reason in reasons
+        if reason is not MaterialChangeReason.SPREAD_CHANGE
+        and reason is not MaterialChangeReason.PRICE_DISPLACEMENT
+    ))
     return (
-        snapshot.order_status, snapshot.remaining_quantity, snapshot.filled_quantity,
-        bucket(snapshot.bid), bucket(snapshot.ask), bucket(snapshot.last),
-        bucket(snapshot.spread), snapshot.setup_state,
+        snapshot.order_id, snapshot.order_status, snapshot.remaining_quantity,
+        snapshot.filled_quantity, snapshot.setup_type, snapshot.setup_state,
+        snapshot.warrior_current_state, snapshot.current_technical_actionable,
+        bucket(snapshot.current_setup_quality),
         bucket(snapshot.current_reference_price), bucket(snapshot.current_structural_stop),
-        snapshot.current_technical_actionable,
-        tuple(reason.value for reason in reasons), snapshot.terminal_reason,
+        tuple(snapshot.unavailable_evidence), snapshot.quote_freshness_seconds is None,
+        snapshot.quote_freshness_seconds is not None and snapshot.quote_freshness_seconds > Decimal("5"),
+        spread_gate, displacement, important_reasons, snapshot.terminal_reason,
     )
 
 

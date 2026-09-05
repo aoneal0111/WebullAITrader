@@ -12,6 +12,7 @@ from typing import Callable
 
 from .contracts import MaterialChangeReason, ShadowRecommendation, WorkingEntrySnapshot
 from .evaluator import evaluate_reassessment
+from .material_change import semantic_signature
 from .outcomes import BoundedOutcomeTracker
 from .persistence import ResearchStore
 
@@ -33,6 +34,8 @@ class WorkerMetrics:
     outcome_points_suppressed: int
     retained_outcome_signatures: int
     admission_contention_drops: int
+    semantic_repeats_suppressed: int = 0
+    duplicate_recommendations_suppressed: int = 0
 
 
 class AdaptiveEntryResearchWorker:
@@ -55,6 +58,11 @@ class AdaptiveEntryResearchWorker:
         self._outcome_accepted = self._outcome_completed = self._outcome_suppressed = 0
         self._contention_drops = 0
         self._outcome_signatures: OrderedDict[str, tuple[object, ...]] = OrderedDict()
+        self._admission_keys: OrderedDict[tuple[object, ...], None] = OrderedDict()
+        self._persisted_ids: OrderedDict[str, None] = OrderedDict()
+        self._persisted_semantics: OrderedDict[tuple[object, ...], None] = OrderedDict()
+        self._semantic_repeats_suppressed = 0
+        self._duplicate_recommendations_suppressed = 0
         self._thread = Thread(target=self._run, name="atlas-adaptive-entry-research", daemon=True)
         self._thread.start()
 
@@ -67,12 +75,21 @@ class AdaptiveEntryResearchWorker:
             if not self._accepting:
                 self._rejected += 1
                 return False
+            admission_key = (snapshot.order_id, snapshot.decision_cutoff,
+                             semantic_signature(snapshot, reasons))
+            if admission_key in self._admission_keys:
+                self._semantic_repeats_suppressed += 1
+                return False
             try:
                 self._queue.put_nowait(("RECOMMENDATION", snapshot, reasons))
             except Full:
                 self._rejected += 1
                 return False
             self._accepted += 1
+            self._admission_keys[admission_key] = None
+            self._admission_keys.move_to_end(admission_key)
+            while len(self._admission_keys) > self._state_limit:
+                self._admission_keys.popitem(last=False)
             self._high_water = max(self._high_water, self._queue.qsize())
             return True
         finally:
@@ -130,7 +147,8 @@ class AdaptiveEntryResearchWorker:
                                  tuple((item.value, self._classes[item]) for item in ShadowRecommendation),
                                  self._outcome_accepted, self._outcome_completed,
                                  self._outcome_suppressed, len(self._outcome_signatures),
-                                 self._contention_drops)
+                                 self._contention_drops, self._semantic_repeats_suppressed,
+                                 self._duplicate_recommendations_suppressed)
 
     def _run(self) -> None:
         while not self._stop.is_set() or not self._queue.empty():
@@ -142,9 +160,23 @@ class AdaptiveEntryResearchWorker:
                 if work[0] == "RECOMMENDATION":
                     _, snapshot, reasons = work
                     result = self._evaluator(snapshot, reasons)
+                    plan = result.fresh_hypothetical
+                    semantic_key = (snapshot.order_id, result.recommendation.value,
+                                    semantic_signature(snapshot, reasons), plan.entry,
+                                    plan.stop, plan.quantity, plan.total_risk)
+                    with self._lock:
+                        if result.recommendation_id in self._persisted_ids or semantic_key in self._persisted_semantics:
+                            self._duplicate_recommendations_suppressed += 1
+                            continue
                     self._store.append(result)
                     self._outcomes.track(result)
                     with self._lock:
+                        self._persisted_ids[result.recommendation_id] = None
+                        self._persisted_semantics[semantic_key] = None
+                        while len(self._persisted_ids) > self._state_limit:
+                            self._persisted_ids.popitem(last=False)
+                        while len(self._persisted_semantics) > self._state_limit:
+                            self._persisted_semantics.popitem(last=False)
                         self._completed += 1
                         self._classes[result.recommendation] += 1
                         self._recent[snapshot.order_id] = None
