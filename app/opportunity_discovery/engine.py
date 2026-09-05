@@ -116,6 +116,12 @@ class MultiStrategyDiscoveryEngine:
             max(memberships, default=0), len(self._symbols),
         )
 
+    def memory_metrics(self) -> dict[str, int]:
+        return {"symbol_count": len(self._symbols),
+                "episode_count": len(self._episodes),
+                "opportunity_count": len(self._opportunities),
+                "membership_count": sum(len(item.memberships) for item in self._opportunities.values())}
+
 
 def _trim(values: OrderedDict, limit: int) -> None:
     while len(values) > limit:

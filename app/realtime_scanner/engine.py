@@ -357,6 +357,11 @@ class RealtimeScannerEngine:
     def ignored_events(self) -> int:
         return self._ignored_events
 
+    def memory_metrics(self) -> dict[str, int]:
+        return {"candidate_count": len(self._decisions),
+                "subscription_count": len(self._subscription_symbols),
+                "current_quote_symbol_count": len(self._active_symbols)}
+
     def asset_class_for(
         self,
         symbol: str,

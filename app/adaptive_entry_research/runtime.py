@@ -161,6 +161,11 @@ class AdaptiveWorkingEntryObserver:
                               None if self._worker is None else self._worker.metrics(),
                               semantic_suppressed, concurrent_suppressed)
 
+    def memory_metrics(self) -> dict[str, int]:
+        """Read-only scalar cardinalities for optional diagnostics."""
+        with self._state_lock:
+            return {"previous_count": len(self._previous), "signature_count": len(self._signatures)}
+
     def _snapshot(
         self,
         order: object,

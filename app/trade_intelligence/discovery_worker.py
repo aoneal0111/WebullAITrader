@@ -335,6 +335,12 @@ class DiscoveryWorker:
             result.append(payload)
         return tuple(result)
 
+    def memory_metrics(self) -> dict[str, int]:
+        return {"opportunity_symbol_count": len(self._latest_contexts),
+                "membership_count": len(self._membership_signatures),
+                "opportunity_state_count": len(self._opportunity_signatures),
+                "position_state_count": len(self._positions)}
+
     def _remember(self, mapping: OrderedDict, key, value) -> None:
         mapping[key] = value
         mapping.move_to_end(key)

@@ -320,6 +320,15 @@ class TradeIntelligenceRuntimeObserver:
         )
         return tuple(sorted(value for value in values if value))
 
+    def memory_metrics(self) -> dict[str, int]:
+        with self._lock:
+            return {"discovery_symbol_count": len(self._discovery_bars),
+                    "discovery_total_bars": sum(len(values) for values in self._discovery_bars.values()),
+                    "scanner_decision_count": len(self._scanner_decisions),
+                    "warrior_state_count": len(self._warrior_states),
+                    "position_epoch_count": len(self._position_epochs),
+                    "entry_attribution_count": len(self._entry_attribution)}
+
     def discovery_telemetry(self) -> DiscoveryTelemetry:
         service = self._service
         return self._last_discovery_telemetry if service is None else self._combined_discovery_telemetry(service)

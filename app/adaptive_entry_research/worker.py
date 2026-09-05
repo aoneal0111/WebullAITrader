@@ -150,6 +150,14 @@ class AdaptiveEntryResearchWorker:
                                  self._contention_drops, self._semantic_repeats_suppressed,
                                  self._duplicate_recommendations_suppressed)
 
+    def memory_metrics(self) -> dict[str, int]:
+        with self._lock:
+            return {"admission_keys": len(self._admission_keys),
+                    "persisted_ids": len(self._persisted_ids),
+                    "persisted_semantics": len(self._persisted_semantics),
+                    "outcome_tracked": self._outcomes.retained_recommendations,
+                    "queue_depth": self._queue.qsize()}
+
     def _run(self) -> None:
         while not self._stop.is_set() or not self._queue.empty():
             try:

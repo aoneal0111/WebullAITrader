@@ -672,6 +672,13 @@ class WarriorForwardCaptureService:
     def counterfactual_symbols(self) -> tuple[str, ...]:
         return tuple(sorted(self._counterfactual))
 
+    def memory_metrics(self) -> dict[str, int]:
+        return {"seen_bars_count": len(self._seen_bars),
+                "seen_bars_symbols": len({symbol for symbol, _ in self._seen_bars}),
+                "last_transition_symbols": len(self._last_transition),
+                "paper_symbols": len(self._paper),
+                "counterfactual_symbols": len(self._counterfactual)}
+
     def _advance_paper(self, state: _PaperState, bar: MinuteBar, observed_at) -> tuple[CaptureRecord, ...]:
         if (
             self._paper_entry_submitter is not None
