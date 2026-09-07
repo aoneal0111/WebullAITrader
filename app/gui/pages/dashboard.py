@@ -66,6 +66,12 @@ class DashboardPage(QWidget):
 
     def render(self, snapshot: DashboardSnapshot) -> None:
         self.runtime_header.render(snapshot.runtime)
+        self.market_workspace.set_runtime_phase(
+            snapshot.runtime.state,
+            account_loaded=snapshot.runtime.account != "--",
+            positions_synchronized=snapshot.runtime.cycle_count > 0,
+            positions_status=snapshot.runtime.positions_status,
+        )
         self.workstation_footer.set_value(
             "Mode", snapshot.runtime.environment.upper() or "--"
         )

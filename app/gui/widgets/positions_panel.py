@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 
 from app.gui.design.tokens import Colors
 from app.gui.models import PositionsSnapshot
+from app.gui.models.runtime import RuntimeState
 from app.gui.widgets.data_table import StyledDataTable
 from app.gui.widgets.orders_panel import MissionControlOrdersPanel
 
@@ -16,6 +17,11 @@ from app.gui.widgets.orders_panel import MissionControlOrdersPanel
 class PositionsPanel(QWidget):
     def __init__(self) -> None:
         super().__init__()
+        self._runtime_phase: RuntimeState | None = None
+        self._runtime_started = False
+        self._account_loaded = False
+        self._positions_synchronized = False
+        self._positions_status: str | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -110,10 +116,124 @@ class PositionsPanel(QWidget):
             self.activity_tabs.setCurrentWidget(self.recent_orders_panel)
 
     def render(self, snapshot: PositionsSnapshot) -> None:
+        if (
+            self._runtime_phase is RuntimeState.STOPPED
+            and not self._runtime_started
+            and not snapshot.rows
+        ):
+            self._render_not_started()
+            return
+        if self._position_snapshot_failed and not snapshot.rows:
+            self._render_unavailable(
+                "POSITION STATE UNAVAILABLE",
+                "BROKER POSITION SNAPSHOT UNAVAILABLE",
+                "The authoritative broker position snapshot is unavailable",
+                "POSITION STATE UNAVAILABLE",
+            )
+            return
+        if self._runtime_phase in {
+            RuntimeState.STARTING, RuntimeState.RUNNING,
+        } and not self._positions_synchronized and not snapshot.rows:
+            self._render_awaiting_sync()
+            return
+        if (
+            self._runtime_phase is RuntimeState.STOPPED
+            and self._runtime_started
+            and not self._positions_synchronized
+        ):
+            self._render_unavailable(
+                "POSITION STATE NOT LOADED",
+                "RUNTIME STOPPED · POSITION STATE NOT LOADED",
+                "No authoritative broker position snapshot was loaded",
+                "POSITION STATE NOT LOADED",
+            )
+            return
         rows = snapshot.rows
         self._render_management(snapshot)
         self._render_rows(self._table, rows)
         self._render_rows(self._closed_table, snapshot.closed_rows)
+        self._restore_authoritative_empty_states()
+
+    def set_runtime_phase(
+        self,
+        phase: RuntimeState,
+        *,
+        account_loaded: bool = False,
+        positions_synchronized: bool | None = None,
+        positions_status: str | None = None,
+    ) -> None:
+        if not isinstance(phase, RuntimeState):
+            phase = RuntimeState(str(getattr(phase, "value", phase)))
+        if phase in {RuntimeState.STARTING, RuntimeState.RUNNING, RuntimeState.STOPPING}:
+            self._runtime_started = True
+        self._runtime_phase = phase
+        self._account_loaded = bool(account_loaded)
+        self._positions_synchronized = bool(
+            account_loaded
+            if positions_synchronized is None
+            else positions_synchronized
+        )
+        self._positions_status = positions_status
+        if phase is RuntimeState.STOPPED and not self._runtime_started:
+            self._render_not_started()
+
+    @property
+    def _position_snapshot_failed(self) -> bool:
+        status = (self._positions_status or "").strip().upper()
+        return self._runtime_phase is RuntimeState.FAILED or any(
+            token in status for token in ("ERROR", "FAILED", "UNAVAILABLE")
+        )
+
+    def _restore_authoritative_empty_states(self) -> None:
+        self._table.set_empty_state(
+            "NO ACTIVE POSITION",
+            "No positions in the authoritative broker snapshot.",
+            icon="",
+        )
+        self._closed_table.set_empty_state(
+            "No closed position history",
+            "Recently closed PAPER positions will appear here.",
+            icon="\u25ce",
+        )
+
+    def _render_not_started(self) -> None:
+        self._render_unavailable(
+            "POSITION STATE NOT LOADED",
+            "NOT STARTED",
+            "Start Atlas to synchronize broker positions",
+            "POSITION STATE NOT LOADED",
+        )
+
+    def _render_awaiting_sync(self) -> None:
+        self._render_unavailable(
+            "POSITION STATE NOT LOADED",
+            "AWAITING BROKER SYNCHRONIZATION",
+            "Awaiting the authoritative broker position snapshot",
+            "AWAITING BROKER SYNCHRONIZATION",
+        )
+
+    def _render_unavailable(
+        self,
+        symbol: str,
+        state: str,
+        detail: str,
+        empty_title: str,
+    ) -> None:
+        self._symbol.setText(symbol)
+        self._position_state.setText(state)
+        self._set_status_tone(self._position_state, "neutral")
+        for value in self._facts.values():
+            value.setText("--")
+        self._protection_status.setText(state)
+        self._set_status_tone(self._protection_status, "neutral")
+        self._protection_detail.setText(detail)
+        self._table.setRowCount(0)
+        self._closed_table.setRowCount(0)
+        self._table.set_empty_state(
+            empty_title,
+            detail + ".",
+            icon="",
+        )
 
     @staticmethod
     def _render_rows(table: StyledDataTable, rows) -> None:
@@ -143,7 +263,8 @@ class PositionsPanel(QWidget):
     def _render_management(self, snapshot: PositionsSnapshot) -> None:
         if not snapshot.management:
             self._symbol.setText("NO ACTIVE POSITION")
-            self._position_state.setText("Awaiting authoritative position")
+            self._position_state.setText("NO ACTIVE POSITION")
+            self._set_status_tone(self._position_state, "neutral")
             for value in self._facts.values():
                 value.setText("—")
             self._protection_status.setText("NOT APPLICABLE")

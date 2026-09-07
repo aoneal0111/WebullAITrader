@@ -13,6 +13,7 @@ from app.gui.main_window import MainWindow
 from app.gui.design.tokens import Dimensions
 from app.gui.models import (
     HealthDashboardSnapshot,
+    RuntimeState,
     WatchlistRow,
     WatchlistSnapshot,
 )
@@ -20,7 +21,8 @@ from app.gui.shell.sidebar import Sidebar
 from app.gui.widgets.infrastructure_strip import InfrastructureStrip
 from app.gui.widgets.market_workspace import MarketWorkspace
 from app.gui.widgets.operator_workspace import OperatorWorkspace
-from app.operations_core import ApplicationState
+from app.operations_core import ApplicationState, RuntimePhase
+from app.operations_core import RuntimeState as OperationsRuntimeState
 from app.read_models.health import HealthState
 from app.read_models.portfolio import PortfolioSummary
 from app.read_models.watchlist import WatchlistEntry, WatchlistState
@@ -234,7 +236,7 @@ def test_infrastructure_unknowns_are_not_rendered_as_healthy(
 def test_unknown_system_health_uses_neutral_palette(window) -> None:
     health = window.dashboard.runtime_header._metrics["System Health"]
 
-    assert health.text() == "UNKNOWN"
+    assert health.text() == "NOT STARTED"
     assert health.property("status") == "neutral"
 
 
@@ -277,7 +279,47 @@ def test_market_workspace_uses_selected_atlas_candidate_for_intelligence(
 
 def test_global_status_bar_includes_application_version(window) -> None:
     assert window.global_status.version.text().startswith("Atlas v")
-    assert "Unknown" in window.global_status.data_feed.text()
+    assert "Not Started" in window.global_status.data_feed.text()
+
+
+def test_fresh_workstation_is_intentionally_dormant(window, application) -> None:
+    window.show()
+    application.processEvents()
+    header = window.dashboard.runtime_header
+    workspace = window.dashboard.market_workspace
+
+    assert header._metrics["Runtime"].text() == "STOPPED"
+    assert header._metrics["Market Data"].text() == "NOT STARTED"
+    assert header._metrics["Broker"].text() == "NOT STARTED"
+    assert header._metrics["Scanner"].text() == "NOT STARTED"
+    assert window.sidebar.connection.text().endswith("Not started")
+    assert "Not started" in window.sidebar.connection_detail.text()
+    assert workspace.watchlist._scanner_status.text().endswith("Not Started")
+    assert "atlas is scanning" not in workspace.watchlist._table._empty_state.text().lower()
+    assert workspace.crypto_research.status_label.text() == "Status: NOT STARTED"
+    assert workspace.crypto_research.table.rowCount() == 0
+    assert workspace.trade_intelligence._lifecycle_empty.isVisible()
+    assert not workspace.trade_intelligence._header.isVisible()
+    assert window.dashboard.positions_panel._symbol.text() == "POSITION STATE NOT LOADED"
+    assert all(card._value.text() == "--" for card in window.dashboard.portfolio_summary._cards.values())
+    assert "?" not in window.global_status.capabilities.text()
+
+
+def test_stopped_after_run_marks_retained_scanner_and_intelligence_stale(
+    application,
+) -> None:
+    del application
+    workspace = MarketWorkspace()
+    workspace.set_runtime_phase(RuntimeState.RUNNING, account_loaded=True)
+    workspace.set_runtime_phase(RuntimeState.STOPPING, account_loaded=True)
+    workspace.set_runtime_phase(RuntimeState.STOPPED, account_loaded=True)
+    workspace.render(WatchlistSnapshot())
+
+    assert "last snapshot" in workspace.watchlist._scanner_status.text().lower()
+    assert "stale" in workspace.watchlist._scanner_status.text().lower()
+    assert workspace.trade_intelligence._lifecycle_empty.text() == (
+        "LAST SNAPSHOT · STALE · RUNTIME STOPPED"
+    )
 
 
 def test_existing_projection_snapshots_populate_dashboard_surfaces(
@@ -285,6 +327,7 @@ def test_existing_projection_snapshots_populate_dashboard_surfaces(
 ) -> None:
     window._render_state(
         ApplicationState(
+            runtime=OperationsRuntimeState(phase=RuntimePhase.RUNNING),
             broker_account=BrokerNeutralAccountInformation(
                 account_id="******ount",
                 account_type="CASH",

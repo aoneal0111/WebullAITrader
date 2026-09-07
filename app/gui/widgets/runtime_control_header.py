@@ -17,6 +17,8 @@ class RuntimeControlHeader(QFrame):
 
     def __init__(self, runtime_controls: QWidget | None = None) -> None:
         super().__init__()
+        self._runtime_phase = RuntimeState.STOPPED
+        self._runtime_started = False
         if runtime_controls is None:
             from app.gui.widgets.workstation_panels import RuntimeControlsPanel
 
@@ -105,6 +107,7 @@ class RuntimeControlHeader(QFrame):
         self._metrics["Local Time"].setText(format_local_clock())
 
     def render(self, snapshot: RuntimeSnapshot) -> None:
+        self.set_runtime_phase(snapshot.state)
         level = {RuntimeState.RUNNING: "good", RuntimeState.STARTING: "warn", RuntimeState.STOPPING: "warn", RuntimeState.FAILED: "danger", RuntimeState.STOPPED: "danger"}.get(snapshot.state, "neutral")
         self._set("Runtime", snapshot.state.value.title(), level)
         feed = snapshot.market_feed_status or "Unknown"
@@ -125,9 +128,29 @@ class RuntimeControlHeader(QFrame):
 
     def render_health(self, snapshot: HealthDashboardSnapshot) -> None:
         metrics = dict(snapshot.metrics)
-        feed = metrics.get("Market Data", "Unknown")
-        broker = metrics.get("Broker", "Unknown")
-        scanner = metrics.get("Scanner", "Idle")
+        prestart = (
+            self._runtime_phase is RuntimeState.STOPPED
+            and not self._runtime_started
+        )
+        stopped_after_run = (
+            self._runtime_phase is RuntimeState.STOPPED
+            and self._runtime_started
+        )
+        feed = (
+            "NOT STARTED" if prestart
+            else "STOPPED" if stopped_after_run
+            else metrics.get("Market Data", "Unknown")
+        )
+        broker = (
+            "NOT STARTED" if prestart
+            else "STOPPED" if stopped_after_run
+            else metrics.get("Broker", "Unknown")
+        )
+        scanner = (
+            "NOT STARTED" if prestart
+            else "STOPPED" if stopped_after_run
+            else metrics.get("Scanner", "Idle")
+        )
         self._set("Market Data", feed, _status_level(feed))
         self._set("Broker", broker, _status_level(broker))
         self._set(
@@ -139,7 +162,17 @@ class RuntimeControlHeader(QFrame):
         self._set("System Health", status, level)
 
     def render_watchlist(self, snapshot: WatchlistSnapshot) -> None:
+        if self._runtime_phase is RuntimeState.STOPPED and not self._runtime_started:
+            self._set("Scanner", "NOT STARTED", "neutral")
+            return
         self._set("Scanner", "Active" if snapshot.candidate_count else "Idle", "good" if snapshot.candidate_count else "info")
+
+    def set_runtime_phase(self, phase: RuntimeState) -> None:
+        if not isinstance(phase, RuntimeState):
+            phase = RuntimeState(str(getattr(phase, "value", phase)))
+        if phase in {RuntimeState.STARTING, RuntimeState.RUNNING, RuntimeState.STOPPING}:
+            self._runtime_started = True
+        self._runtime_phase = phase
 
     def render_replay(self, snapshot: ReplayWorkspaceSnapshot) -> None:
         del snapshot

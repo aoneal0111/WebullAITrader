@@ -17,6 +17,8 @@ from app.gui.models import (
     PaperValidationDashboardSnapshot,
     PortfolioDashboardSnapshot,
     PositionsSnapshot,
+    PositionManagementRow,
+    RuntimeState,
     RuntimeSnapshot,
     WatchlistRow,
     WatchlistSnapshot,
@@ -306,6 +308,58 @@ def test_operator_tables_expose_reference_columns_and_real_rows(application) -> 
     assert orders._table.item(0, 9).text() == "WORKING"
 
 
+def test_position_lifecycle_converges_without_contradictory_empty_state(
+    application,
+) -> None:
+    del application
+    panel = PositionsPanel()
+    empty = PositionsSnapshot.initial()
+
+    panel.set_runtime_phase(RuntimeState.STOPPED)
+    panel.render(empty)
+    assert panel._symbol.text() == "POSITION STATE NOT LOADED"
+    assert "POSITION STATE NOT LOADED" in panel._table._empty_state.text()
+
+    panel.set_runtime_phase(RuntimeState.STARTING)
+    panel.render(empty)
+    assert panel._position_state.text() == "AWAITING BROKER SYNCHRONIZATION"
+    assert "AWAITING BROKER SYNCHRONIZATION" in panel._table._empty_state.text()
+
+    panel.set_runtime_phase(
+        RuntimeState.RUNNING,
+        positions_synchronized=True,
+        positions_status="AVAILABLE",
+    )
+    panel.render(empty)
+    assert panel._symbol.text() == "NO ACTIVE POSITION"
+    assert panel._position_state.text() == "NO ACTIVE POSITION"
+    assert panel._protection_status.text() == "NOT APPLICABLE"
+    assert panel._table._empty_state.text().startswith("NO ACTIVE POSITION")
+    assert "AWAITING" not in panel._table._empty_state.text()
+
+    row = ("PMI", "LONG", "2", "$10.00", "$11.00", "+$2.00", "+10.00%", "$0.00", "10:00:00")
+    management = PositionManagementRow(
+        symbol="PMI", side="LONG", quantity="2", average_entry="$10.00",
+        mark="$11.00", unrealized_pnl="+$2.00", unrealized_percent="+10.00%",
+        realized_pnl="$0.00", updated_at="10:00:00",
+    )
+    panel.render(PositionsSnapshot(rows=(row,), management=(management,)))
+    assert panel._symbol.text() == "PMI"
+    assert panel._table.item(0, 0).text() == "PMI"
+    assert "AWAITING" not in panel._table._empty_state.text()
+
+    panel.set_runtime_phase(
+        RuntimeState.FAILED,
+        positions_synchronized=False,
+        positions_status="FAILED",
+    )
+    panel.render(empty)
+    assert panel._symbol.text() == "POSITION STATE UNAVAILABLE"
+    assert "SNAPSHOT UNAVAILABLE" in panel._position_state.text()
+    assert "AWAITING" not in panel._table._empty_state.text()
+    panel.close()
+
+
 def test_health_diagnostics_and_paper_validation_remain_visible(application) -> None:
     del application
     dashboard = DashboardPage()
@@ -487,7 +541,7 @@ def test_status_bar_summarizes_capabilities(application) -> None:
     assert "Stocks \u2713" in status.capabilities.text()
     assert "Options \u2717" in status.capabilities.text()
     assert "Crypto Research \u2713" in status.capabilities.text()
-    assert "Crypto Trading ?" in status.capabilities.text()
+    assert "Crypto Trading \u2717" in status.capabilities.text()
     assert "Overnight \u2717" in status.capabilities.text()
 
 

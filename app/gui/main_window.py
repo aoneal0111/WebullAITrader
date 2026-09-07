@@ -442,6 +442,7 @@ class MainWindow(QMainWindow):
         )
 
     def _render_state(self, state: ApplicationState) -> None:
+        self.crypto_research.set_runtime_phase(state.runtime.phase)
         self._presentation.render(state)
 
     def _render_replay_state(self, state: ApplicationState) -> None:

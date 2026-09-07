@@ -19,13 +19,14 @@ def format_health(state: HealthState) -> HealthDashboardSnapshot:
         else "--"
     )
     incident = state.last_error or state.last_warning or "No incidents."
+    prestart = state.runtime_status is None
     return HealthDashboardSnapshot(
         overall_status=overall,
         status_level=level,
         metrics=(
-            ("Runtime", state.runtime_status or "--"),
-            ("Broker", state.broker_status or "--"),
-            ("Market Data", state.market_data_status or "--"),
+            ("Runtime", "STOPPED" if prestart else state.runtime_status or "--"),
+            ("Broker", "NOT STARTED" if prestart else state.broker_status or "--"),
+            ("Market Data", "NOT STARTED" if prestart else state.market_data_status or "--"),
             ("Trading Environment", state.trading_environment or "--"),
             ("Trading REST", state.trading_rest_status or state.broker_status or "--"),
             ("Account", state.account_status or "--"),
@@ -50,7 +51,7 @@ def format_health(state: HealthState) -> HealthDashboardSnapshot:
             ("Market Data Probe 4", state.probe_msft_status or "--"),
             ("Market Data Probe 5", state.probe_nvda_status or "--"),
             ("Supported Symbols", str(state.supported_symbols) if state.supported_symbols is not None else "--"),
-            ("AI Scanner", state.scanner_status or "--"),
+            ("AI Scanner", "NOT STARTED" if prestart else state.scanner_status or "--"),
             ("Universe", state.universe_status or "--"),
             ("Symbols", state.symbols_status or "--"),
             ("Reference Cache", state.reference_cache_status or "--"),
@@ -75,6 +76,8 @@ def format_health(state: HealthState) -> HealthDashboardSnapshot:
 
 
 def _overall(state: HealthState) -> tuple[str, str]:
+    if state.runtime_status is None:
+        return "NOT STARTED", "neutral"
     if state.healthy:
         return "HEALTHY", "good"
     if state.degraded:

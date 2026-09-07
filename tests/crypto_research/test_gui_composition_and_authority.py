@@ -140,6 +140,76 @@ def test_mission_control_crypto_panel_reads_shared_view_only(application) -> Non
     runtime.close()
 
 
+def test_crypto_research_cannot_populate_equity_trade_intelligence(application) -> None:
+    del application
+    store = CryptoResearchViewStore()
+
+    class MemoryStore:
+        def append(self, _record):
+            return None
+
+        def close(self):
+            return None
+
+    runtime = CryptoResearchRuntime(
+        enabled=True, store=MemoryStore(), view_store=store, clock=lambda: T0,
+    )
+    runtime._accepting = True
+    runtime._evaluate_and_persist(observation(0, "100", "10"))
+    workspace = MarketWorkspace(crypto_research_source=store)
+    workspace.set_runtime_phase("RUNNING", positions_synchronized=True)
+    workspace.crypto_research.refresh()
+    workspace.render(WatchlistSnapshot())
+
+    assert workspace.crypto_research.table.rowCount() == 1
+    assert "NO EQUITY OPPORTUNITY SELECTED" in (
+        workspace.trade_intelligence._lifecycle_empty.text()
+    )
+    assert workspace.trade_intelligence._header.isHidden()
+    assert workspace.trade_intelligence._body_widget.isHidden()
+    workspace.close()
+    runtime.close()
+
+
+def test_mission_control_crypto_suppresses_sidecar_before_main_runtime_start(
+    application,
+) -> None:
+    del application
+    store = CryptoResearchViewStore()
+    store.publish_status(CryptoResearchStatus.DISCOVERING)
+    panel = CryptoResearchPanel(store)
+    panel.set_runtime_phase("STOPPED")
+
+    assert panel.status_label.text() == "Status: NOT STARTED"
+    assert "DISCOVERING" not in panel.status_label.text()
+    assert panel.table.rowCount() == 0
+    assert panel.empty_label.text() == "Start Atlas to begin crypto research."
+    panel.close()
+
+
+def test_dedicated_crypto_page_uses_dormant_lifecycle_state(application) -> None:
+    del application
+
+    class Source:
+        def snapshot(self):
+            return ()
+
+        def status_snapshot(self):
+            return type("Status", (), {
+                "status": CryptoResearchStatus.DISCOVERING,
+                "last_failure_category": None,
+            })()
+
+    page = CryptoResearchPage(Source())
+    page.set_runtime_phase("STOPPED")
+    page.refresh()
+
+    assert page.status_label.text() == "Status: NOT STARTED"
+    assert page.table.rowCount() == 0
+    assert page.empty_label.text() == "Start Atlas to begin crypto research."
+    page.close()
+
+
 def test_disabled_crypto_leaves_equity_opportunity_projection_unchanged(
     application,
 ) -> None:

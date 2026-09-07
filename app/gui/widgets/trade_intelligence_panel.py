@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.models import WatchlistRow
+from app.gui.models.runtime import RuntimeState
 
 
 class TradeIntelligencePanel(QWidget):
@@ -20,6 +21,8 @@ class TradeIntelligencePanel(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self._runtime_phase: RuntimeState | None = None
+        self._runtime_started = False
         self.setMinimumHeight(488)
         self._last_row: WatchlistRow | None | object = object()
         self._render_count = 0
@@ -80,7 +83,16 @@ class TradeIntelligencePanel(QWidget):
         metrics.setColumnStretch(0, 1)
         metrics.setColumnStretch(1, 1)
         header_layout.addWidget(metrics_container)
+        self._header = header
         root.addWidget(header)
+
+        self._lifecycle_empty = QLabel(
+            "Atlas is ready.\nStart the runtime to begin live market analysis."
+        )
+        self._lifecycle_empty.setObjectName("muted")
+        self._lifecycle_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lifecycle_empty.setWordWrap(True)
+        root.addWidget(self._lifecycle_empty, 1)
 
         body = QVBoxLayout()
         body.setSpacing(8)
@@ -167,15 +179,23 @@ class TradeIntelligencePanel(QWidget):
         self._market = market
         self._plan = plan
         self._decision_panel = decision
-        root.addLayout(body)
+        body_widget = QWidget()
+        body_widget.setLayout(body)
+        self._body_widget = body_widget
+        root.addWidget(body_widget, 1)
+        self._lifecycle_empty.hide()
 
     def render(self, row: WatchlistRow | None) -> None:
+        if self._prestart:
+            return
         if row == self._last_row:
+            self._apply_presentation_state()
             return
         self._last_row = row
         self._render_count += 1
         if row is None:
             self._render_empty()
+            self._apply_presentation_state()
             return
 
         _set_text(self._symbol, row.symbol)
@@ -247,6 +267,62 @@ class TradeIntelligencePanel(QWidget):
             "Stop": row.stop_price,
         }
         _render_values(self._plan_values, plan)
+        self._apply_presentation_state()
+
+    @property
+    def _prestart(self) -> bool:
+        return (
+            self._runtime_phase is RuntimeState.STOPPED
+            and not self._runtime_started
+        )
+
+    def set_runtime_phase(self, phase: RuntimeState) -> None:
+        if not isinstance(phase, RuntimeState):
+            phase = RuntimeState(str(phase))
+        if phase in {RuntimeState.STARTING, RuntimeState.RUNNING, RuntimeState.STOPPING}:
+            self._runtime_started = True
+        self._runtime_phase = phase
+        self._apply_presentation_state()
+
+    def _apply_presentation_state(self) -> None:
+        phase = self._runtime_phase
+        prestart = self._prestart
+        starting = phase is RuntimeState.STARTING
+        no_opportunity = phase is RuntimeState.RUNNING and self._last_row is None
+        stopped_after_run = phase is RuntimeState.STOPPED and self._runtime_started
+        failed = phase is RuntimeState.FAILED
+        show_empty = prestart or starting or no_opportunity or stopped_after_run or failed
+        show_metrics = (
+            (phase is RuntimeState.RUNNING and self._last_row is not None)
+            or stopped_after_run
+            or (phase is None and self._last_row is not None)
+        )
+        self._lifecycle_empty.setVisible(show_empty)
+        self._header.setVisible(show_metrics)
+        self._body_widget.setVisible(show_metrics)
+        if prestart:
+            self._lifecycle_empty.setText(
+                "Atlas is ready.\nStart the runtime to begin live market analysis."
+            )
+        elif starting:
+            self._lifecycle_empty.setText(
+                "Initializing market analysis.\n"
+                "Waiting for scanner and market-data readiness."
+            )
+        elif no_opportunity:
+            self._lifecycle_empty.setText(
+                "NO EQUITY OPPORTUNITY SELECTED\n\n"
+                "Atlas is monitoring the market.\n"
+                "Trade Intelligence will populate when an equity opportunity is selected."
+            )
+        elif stopped_after_run:
+            self._lifecycle_empty.setText(
+                "LAST SNAPSHOT · STALE · RUNTIME STOPPED"
+            )
+        elif failed:
+            self._lifecycle_empty.setText(
+                "MARKET ANALYSIS UNAVAILABLE\nRuntime startup did not complete."
+            )
 
     def _render_empty(self) -> None:
         _set_text(self._symbol, "--")

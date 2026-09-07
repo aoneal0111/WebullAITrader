@@ -140,8 +140,10 @@ def test_position_is_prominent_and_protection_is_visually_correlated(application
     management = snapshot.management[0]
     assert management.protection is not None
     assert management.protection.remaining_quantity == "250"
-    assert page.market_workspace.positions_section.height() > (
-        page.market_workspace.opportunities_section.height()
+    upper_sizes = page.market_workspace.middle_splitter.sizes()
+    assert 0.58 <= upper_sizes[0] / sum(upper_sizes) <= 0.62
+    assert page.market_workspace.positions_section.width() > (
+        page.market_workspace.market_section.width()
     )
     assert page.positions_panel._protection_status.text() == "PARTIALLY FILLED"
     assert "250 REMAINING" in page.positions_panel._protection_detail.text()

@@ -55,6 +55,7 @@ def project_dashboard(state: ApplicationState) -> DashboardSnapshot:
                 else "--"
             ),
             runtime_duration="--",
+            positions_status=health.positions_status or "--",
         ),
         activity=project_timeline_activity(state, limit=10),
         positions=positions,

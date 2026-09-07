@@ -6,7 +6,12 @@ import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication
 
-from app.gui.models import WatchlistRow, WatchlistSnapshot
+from app.gui.models import (
+    PositionsSnapshot,
+    RuntimeState,
+    WatchlistRow,
+    WatchlistSnapshot,
+)
 from app.gui.pages.dashboard import DashboardPage
 from app.gui.widgets.market_workspace import ChartPlaceholder, MarketWorkspace
 from app.gui.widgets.trade_intelligence_panel import TradeIntelligencePanel
@@ -181,6 +186,7 @@ def test_trade_intelligence_fits_width_and_scrolls_vertically(
     application.processEvents()
 
     workspace = dashboard.market_workspace
+    workspace.set_runtime_phase(RuntimeState.RUNNING, account_loaded=True)
     workspace.ensure_middle_composition()
     application.processEvents()
     scroll = workspace.market_section.scroll_area
@@ -215,6 +221,104 @@ def test_trade_intelligence_fits_width_and_scrolls_vertically(
     assert workspace.lower_splitter.count() == 2
     assert workspace.opportunities_section.isVisible()
     assert workspace.crypto_scanner_section.isVisible()
+    assert workspace.opportunities_section.geometry().right() < (
+        workspace.crypto_scanner_section.geometry().left()
+    )
+    assert workspace.portfolio_section.isVisible()
+    dashboard.close()
+
+
+def test_trade_intelligence_lifecycle_empty_state_restores_metrics(
+    application,
+) -> None:
+    del application
+    panel = TradeIntelligencePanel()
+    panel.set_runtime_phase(RuntimeState.STOPPED)
+    assert not panel._lifecycle_empty.isHidden()
+    assert panel._header.isHidden()
+    assert "--" not in panel._lifecycle_empty.text()
+
+    panel.set_runtime_phase(RuntimeState.RUNNING)
+    panel.render(candidate())
+    assert panel._lifecycle_empty.isHidden()
+    assert not panel._header.isHidden()
+    assert panel._header_metrics["Rank"].text() == "#1"
+
+    panel.set_runtime_phase(RuntimeState.STOPPING)
+    panel.set_runtime_phase(RuntimeState.STOPPED)
+    assert "LAST SNAPSHOT" in panel._lifecycle_empty.text()
+    assert "STALE" in panel._lifecycle_empty.text()
+    panel.close()
+
+
+def test_trade_intelligence_distinguishes_starting_and_running_without_candidate(
+    application,
+) -> None:
+    del application
+    panel = TradeIntelligencePanel()
+
+    panel.set_runtime_phase(RuntimeState.STARTING)
+    panel.render(None)
+    assert "Initializing market analysis" in panel._lifecycle_empty.text()
+    assert panel._header.isHidden()
+    assert panel._body_widget.isHidden()
+
+    panel.set_runtime_phase(RuntimeState.RUNNING)
+    assert "NO EQUITY OPPORTUNITY SELECTED" in panel._lifecycle_empty.text()
+    assert "Atlas is monitoring the market" in panel._lifecycle_empty.text()
+    assert panel._header.isHidden()
+    assert panel._body_widget.isHidden()
+    assert "--" not in panel._lifecycle_empty.text()
+
+    panel.render(candidate())
+    assert panel._lifecycle_empty.isHidden()
+    assert not panel._header.isHidden()
+    assert not panel._body_widget.isHidden()
+    assert panel._header_metrics["Rank"].text() == "#1"
+
+    panel.render(None)
+    assert "NO EQUITY OPPORTUNITY SELECTED" in panel._lifecycle_empty.text()
+    assert panel._header.isHidden()
+    assert panel._body_widget.isHidden()
+    panel.close()
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    ((1280, 720), (1366, 768), (1440, 900), (1920, 1080)),
+)
+def test_running_empty_workstation_is_intentional_at_supported_sizes(
+    application, width, height,
+) -> None:
+    dashboard = DashboardPage()
+    dashboard.resize(width, height)
+    dashboard.show()
+    workspace = dashboard.market_workspace
+    workspace.set_runtime_phase(
+        RuntimeState.RUNNING,
+        positions_synchronized=True,
+        positions_status="AVAILABLE",
+    )
+    workspace.render(WatchlistSnapshot())
+    workspace.positions_panel.render(PositionsSnapshot.initial())
+    workspace.ensure_middle_composition()
+    application.processEvents()
+
+    intelligence = workspace.trade_intelligence
+    scroll = workspace.market_section.scroll_area
+    assert "NO EQUITY OPPORTUNITY SELECTED" in intelligence._lifecycle_empty.text()
+    assert intelligence._header.isHidden()
+    assert intelligence._body_widget.isHidden()
+    assert scroll.horizontalScrollBar().maximum() == 0
+    assert workspace.positions_panel._symbol.text() == "NO ACTIVE POSITION"
+    assert workspace.positions_panel._position_state.text() == "NO ACTIVE POSITION"
+    assert "AWAITING" not in workspace.positions_panel._table._empty_state.text()
+    assert workspace.positions_panel._table._empty_state.text().startswith(
+        "NO ACTIVE POSITION"
+    )
+    sizes = workspace.middle_splitter.sizes()
+    assert 0.58 <= sizes[0] / sum(sizes) <= 0.62
+    assert workspace.lower_splitter.count() == 2
     assert workspace.opportunities_section.geometry().right() < (
         workspace.crypto_scanner_section.geometry().left()
     )

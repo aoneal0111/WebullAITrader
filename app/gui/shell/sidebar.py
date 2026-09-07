@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from app.gui.design.tokens import Dimensions
 from app.gui.models import HealthDashboardSnapshot
+from app.gui.models.runtime import RuntimeState
 from app.gui.widgets.common import StatusIndicator
 
 
@@ -42,6 +43,8 @@ class Sidebar(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self._runtime_phase = RuntimeState.STOPPED
+        self._runtime_started = False
         self.setObjectName("navigationRail")
         self.setFixedWidth(Dimensions.NAV_WIDTH)
         self._compact = False
@@ -156,6 +159,16 @@ class Sidebar(QWidget):
             self.buttons[label].setChecked(route == page_index)
 
     def render(self, snapshot: HealthDashboardSnapshot) -> None:
+        if self._runtime_phase is RuntimeState.STOPPED and not self._runtime_started:
+            self.connection.set_status("Not started", "neutral")
+            self.connection_detail.setText("Broker: Not started · Feed: Not started")
+            return
+        if self._runtime_phase is RuntimeState.STOPPED and self._runtime_started:
+            self.connection.set_status("Stopped", "neutral")
+            self.connection_detail.setText(
+                "Broker: Stopped · Feed: Stopped · Last snapshot retained"
+            )
+            return
         metrics = dict(snapshot.metrics)
         broker = metrics.get("Broker", "--")
         feed = metrics.get("Market Data", "--")
@@ -174,3 +187,10 @@ class Sidebar(QWidget):
         self.connection_detail.setText(
             f"Broker {broker} \u00b7 Feed {feed}"
         )
+
+    def set_runtime_phase(self, phase: RuntimeState) -> None:
+        if not isinstance(phase, RuntimeState):
+            phase = RuntimeState(str(getattr(phase, "value", phase)))
+        if phase in {RuntimeState.STARTING, RuntimeState.RUNNING, RuntimeState.STOPPING}:
+            self._runtime_started = True
+        self._runtime_phase = phase

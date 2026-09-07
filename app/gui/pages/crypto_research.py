@@ -19,6 +19,7 @@ from app.crypto_research import (
     CryptoResearchStatus,
     default_crypto_research_view,
 )
+from app.gui.models.runtime import RuntimeState
 
 
 _EMPTY_MESSAGES = {
@@ -50,6 +51,8 @@ class CryptoResearchPage(QWidget):
 
     def __init__(self, source=None) -> None:
         super().__init__()
+        self._runtime_phase: RuntimeState | None = None
+        self._runtime_started = False
         self.setObjectName("cryptoResearchPage")
         self._source = source or default_crypto_research_view()
         layout = QVBoxLayout(self)
@@ -83,6 +86,22 @@ class CryptoResearchPage(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        if self._prestart:
+            self.status_label.setText("Status: NOT STARTED")
+            self.status_label.setToolTip("Start Atlas to begin crypto research.")
+            self.empty_label.setText("Start Atlas to begin crypto research.")
+            self.empty_label.setVisible(True)
+            self.table.setRowCount(0)
+            self.table.setVisible(False)
+            return
+        if self._stopped_after_run:
+            self.status_label.setText("Status: LAST SNAPSHOT · STALE · RUNTIME STOPPED")
+            self.status_label.setToolTip("Research is not current while Atlas is stopped.")
+            self.empty_label.setText("Last crypto research snapshot retained for reference.")
+            self.empty_label.setVisible(True)
+            self.table.setRowCount(0)
+            self.table.setVisible(False)
+            return
         rows = tuple(self._source.snapshot())
         status_getter = getattr(self._source, "status_snapshot", None)
         if callable(status_getter):
@@ -97,6 +116,23 @@ class CryptoResearchPage(QWidget):
             )
             failure = None
         self.render(rows, status=status, last_failure_category=failure)
+
+    @property
+    def _prestart(self) -> bool:
+        return self._runtime_phase is RuntimeState.STOPPED and not self._runtime_started
+
+    @property
+    def _stopped_after_run(self) -> bool:
+        return self._runtime_phase is RuntimeState.STOPPED and self._runtime_started
+
+    def set_runtime_phase(self, phase: RuntimeState) -> None:
+        if not isinstance(phase, RuntimeState):
+            phase = RuntimeState(str(getattr(phase, "value", phase)))
+        if phase in {RuntimeState.STARTING, RuntimeState.RUNNING, RuntimeState.STOPPING}:
+            self._runtime_started = True
+        self._runtime_phase = phase
+        if self._prestart or self._stopped_after_run:
+            self.refresh()
 
     def render(
         self,
@@ -157,6 +193,8 @@ class CryptoResearchPanel(QWidget):
         if maximum_rows <= 0:
             raise ValueError("maximum crypto research rows must be positive")
         self.setObjectName("missionControlCryptoResearch")
+        self._runtime_phase: RuntimeState | None = None
+        self._runtime_started = False
         self._source = source or default_crypto_research_view()
         self._maximum_rows = maximum_rows
         layout = QVBoxLayout(self)
@@ -193,6 +231,22 @@ class CryptoResearchPanel(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        if self._prestart:
+            self.status_label.setText("Status: NOT STARTED")
+            self.status_label.setToolTip("Start Atlas to begin crypto research.")
+            self.empty_label.setText("Start Atlas to begin crypto research.")
+            self.empty_label.setVisible(True)
+            self.table.setRowCount(0)
+            self.table.setVisible(False)
+            return
+        if self._stopped_after_run:
+            self.status_label.setText("Status: LAST SNAPSHOT · STALE · RUNTIME STOPPED")
+            self.status_label.setToolTip("Research is not current while Atlas is stopped.")
+            self.empty_label.setText("Last crypto research snapshot retained for reference.")
+            self.empty_label.setVisible(True)
+            self.table.setRowCount(0)
+            self.table.setVisible(False)
+            return
         rows = tuple(self._source.snapshot())[: self._maximum_rows]
         status_getter = getattr(self._source, "status_snapshot", None)
         if callable(status_getter):
@@ -236,6 +290,23 @@ class CryptoResearchPanel(QWidget):
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
                 self.table.setItem(row_index, column, item)
+
+    @property
+    def _prestart(self) -> bool:
+        return self._runtime_phase is RuntimeState.STOPPED and not self._runtime_started
+
+    @property
+    def _stopped_after_run(self) -> bool:
+        return self._runtime_phase is RuntimeState.STOPPED and self._runtime_started
+
+    def set_runtime_phase(self, phase: RuntimeState) -> None:
+        if not isinstance(phase, RuntimeState):
+            phase = RuntimeState(str(getattr(phase, "value", phase)))
+        if phase in {RuntimeState.STARTING, RuntimeState.RUNNING, RuntimeState.STOPPING}:
+            self._runtime_started = True
+        self._runtime_phase = phase
+        if self._prestart or self._stopped_after_run:
+            self.refresh()
 
 
 def _display(value: Decimal | None) -> str:

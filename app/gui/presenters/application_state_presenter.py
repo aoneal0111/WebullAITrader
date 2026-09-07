@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from typing import Protocol
 
 from PySide6.QtWidgets import QLabel, QMessageBox, QPushButton, QWidget
@@ -73,7 +74,15 @@ class PositionsPresenter:
 
     def render(self, state: ApplicationState) -> None:
         read_model = project_positions_read_model(state)
-        self._positions_panel.render(format_positions(read_model))
+        snapshot = format_positions(read_model)
+        set_runtime_phase = getattr(self._positions_panel, "set_runtime_phase", None)
+        if callable(set_runtime_phase):
+            set_runtime_phase(
+                state.runtime.phase,
+                positions_synchronized=state.runtime.cycles_completed > 0,
+                positions_status=state.health_projection.positions_status,
+            )
+        self._positions_panel.render(snapshot)
 
 
 class TimelinePresenter:
@@ -136,6 +145,7 @@ class PortfolioPresenter:
 
     def render(self, state: ApplicationState) -> None:
         account = state.broker_account
+        account_loaded = account is not None or state.paper_runtime is not None
         snapshot = format_portfolio(
             state.portfolio_projection,
             equity=(
@@ -162,6 +172,12 @@ class PortfolioPresenter:
                 else None
             ),
         )
+        if not account_loaded:
+            snapshot = replace(
+                snapshot,
+                metrics=tuple((label, "--") for label, _ in snapshot.metrics),
+                highlights=tuple((label, "--") for label, _ in snapshot.highlights),
+            )
         for view in self._portfolio_views:
             view.render(snapshot)
 
@@ -175,6 +191,9 @@ class HealthPresenter:
     def render(self, state: ApplicationState) -> None:
         snapshot = format_health(state.health_projection)
         for view in self._health_views:
+            set_runtime_phase = getattr(view, "set_runtime_phase", None)
+            if callable(set_runtime_phase):
+                set_runtime_phase(state.runtime.phase)
             view.render(snapshot)
 
 

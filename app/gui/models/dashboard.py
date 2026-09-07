@@ -26,6 +26,7 @@ class RuntimeSnapshot:
     status_message: str
     account: str = "--"
     runtime_duration: str = "--"
+    positions_status: str = "--"
 
     @classmethod
     def initial(cls) -> "RuntimeSnapshot":

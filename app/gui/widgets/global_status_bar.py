@@ -12,6 +12,7 @@ from app.gui.models import (
     HealthDashboardSnapshot,
 )
 from app.gui.widgets.common import StatusIndicator
+from app.gui.models.runtime import RuntimeState
 
 
 class GlobalStatusBar(QWidget):
@@ -19,6 +20,8 @@ class GlobalStatusBar(QWidget):
 
     def __init__(self, *, version: str, crypto_research_source=None) -> None:
         super().__init__()
+        self._runtime_phase: RuntimeState | None = None
+        self._runtime_started = False
         self._crypto_research_source = (
             crypto_research_source or default_crypto_research_view()
         )
@@ -68,6 +71,7 @@ class GlobalStatusBar(QWidget):
 
     def render_dashboard(self, snapshot: DashboardSnapshot) -> None:
         runtime = snapshot.runtime
+        self.set_runtime_phase(runtime.state)
         self.runtime.set_status(
             f"Runtime {runtime.state.value.title()}",
             "good" if runtime.state.value == "RUNNING" else "danger"
@@ -76,8 +80,16 @@ class GlobalStatusBar(QWidget):
 
     def render_health(self, snapshot: HealthDashboardSnapshot) -> None:
         metrics = dict(snapshot.metrics)
-        feed = metrics.get("Market Data", "--")
-        broker = metrics.get("Broker", "--")
+        stopped_after_run = (
+            self._runtime_phase is RuntimeState.STOPPED
+            and self._runtime_started
+        )
+        prestart = (
+            self._runtime_phase is RuntimeState.STOPPED
+            and not self._runtime_started
+        )
+        feed = "NOT STARTED" if prestart else "STOPPED" if stopped_after_run else metrics.get("Market Data", "--")
+        broker = "NOT STARTED" if prestart else "STOPPED" if stopped_after_run else metrics.get("Broker", "--")
         ai = metrics.get("AI", "--")
         feed = "UNKNOWN" if feed == "--" else feed
         broker = "UNKNOWN" if broker == "--" else broker
@@ -107,14 +119,14 @@ class GlobalStatusBar(QWidget):
             ("Crypto Research", _research_availability(research_status)),
             # Preserve the broker asset flag as the execution boundary. Never
             # infer it from the independent, read-only research sidecar.
-            ("Crypto Trading", capability_values.get("Crypto", "Unknown")),
+            ("Crypto Trading", capability_values.get("Crypto", "Unavailable")),
             ("Options", capability_values.get("Options", "Unknown")),
             ("Overnight", session_values.get("Overnight", "Unknown")),
         )
         self.capabilities.setText(
             "Capabilities: "
             + "  ".join(
-                f"{name} {_capability_indicator(value)}"
+                f"{name} {_capability_indicator(_capability_value(name, value))}"
                 for name, value in concise
             )
         )
@@ -123,6 +135,13 @@ class GlobalStatusBar(QWidget):
             f"{research_status.value.replace('_', ' ')}; "
             "Crypto Trading: broker execution capability"
         )
+
+    def set_runtime_phase(self, phase: RuntimeState) -> None:
+        if not isinstance(phase, RuntimeState):
+            phase = RuntimeState(str(getattr(phase, "value", phase)))
+        if phase in {RuntimeState.STARTING, RuntimeState.RUNNING, RuntimeState.STOPPING}:
+            self._runtime_started = True
+        self._runtime_phase = phase
 
 
 def _level(value: str) -> str:
@@ -140,8 +159,15 @@ def _capability_indicator(value: str) -> str:
     if value == "Available":
         return "✓"
     if value == "Unknown":
-        return "?"
+        return "–"
     return "✗"
+
+
+def _capability_value(name: str, value: str) -> str:
+    if name == "Crypto Trading" and value == "Unknown":
+        # Atlas has no crypto order boundary even before a provider probe.
+        return "Unavailable"
+    return value
 
 
 def _crypto_research_status(source) -> CryptoResearchStatus:

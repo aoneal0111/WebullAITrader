@@ -32,6 +32,7 @@ from app.gui.models import (
     ChartViewSnapshot,
     HealthDashboardSnapshot,
     MissionStatusSnapshot,
+    RuntimeState,
     WatchlistSnapshot,
 )
 from app.gui.formatters.prices import format_price
@@ -673,6 +674,8 @@ class CompactWatchlistPanel(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self._runtime_phase: RuntimeState | None = None
+        self._runtime_started = False
         self._last_render_fingerprint = None
         self._render_count = 0
         self._visible_rows = ()
@@ -745,6 +748,24 @@ class CompactWatchlistPanel(QWidget):
         self._table.cellClicked.connect(self._select_row)
 
     def render(self, snapshot: WatchlistSnapshot) -> None:
+        if self._runtime_phase is RuntimeState.STOPPED and not self._runtime_started:
+            snapshot = replace(
+                snapshot,
+                rows=(),
+                candidate_count=0,
+                scanner_status="NOT_STARTED",
+                empty_title="Scanner starts with Atlas.",
+                empty_detail="Start Atlas to begin equity scanning.",
+            )
+        elif self._runtime_phase is RuntimeState.STOPPED and self._runtime_started:
+            snapshot = replace(
+                snapshot,
+                scanner_status="LAST SNAPSHOT · STALE · RUNTIME STOPPED",
+                rows=tuple(
+                    replace(row, stale="STALE", freshness="STALE")
+                    for row in snapshot.rows
+                ),
+            )
         self._source_snapshot = snapshot
         # Scanner state may be published frequently during live markets.
         # Rebuilding the QTableWidget is expensive: clearSelection(),
@@ -839,6 +860,13 @@ class CompactWatchlistPanel(QWidget):
             if row.selected:
                 self._table.selectRow(row_index)
 
+    def set_runtime_phase(self, phase: RuntimeState) -> None:
+        if not isinstance(phase, RuntimeState):
+            phase = RuntimeState(str(getattr(phase, "value", phase)))
+        if phase in {RuntimeState.STARTING, RuntimeState.RUNNING, RuntimeState.STOPPING}:
+            self._runtime_started = True
+        self._runtime_phase = phase
+
     def _configure_columns(self, columns: tuple[str, ...]) -> None:
         """Install stable, user-resizable widths without per-tick autosizing."""
         header = self._table.horizontalHeader()
@@ -902,6 +930,9 @@ class MarketWorkspace(QWidget):
         crypto_research_source=None,
     ) -> None:
         super().__init__()
+        self._runtime_phase: RuntimeState | None = None
+        self._runtime_started = False
+        self._account_loaded = False
         if chart_view is not None and not isinstance(chart_view, QWidget):
             raise TypeError("chart_view must be a QWidget chart adapter")
 
@@ -1133,6 +1164,33 @@ class MarketWorkspace(QWidget):
         self.workspace_splitter.setSizes((390, 425))
         self._layout_mode = None
         self.set_responsive_width(width or self.width(), force=True)
+
+    def set_runtime_phase(
+        self,
+        phase: RuntimeState,
+        *,
+        account_loaded: bool = False,
+        positions_synchronized: bool | None = None,
+        positions_status: str | None = None,
+    ) -> None:
+        if not isinstance(phase, RuntimeState):
+            phase = RuntimeState(str(getattr(phase, "value", phase)))
+        if phase in {RuntimeState.STARTING, RuntimeState.RUNNING, RuntimeState.STOPPING}:
+            self._runtime_started = True
+        self._runtime_phase = phase
+        self._account_loaded = bool(account_loaded)
+        for widget in (
+            self.watchlist,
+            self.crypto_research,
+            self.trade_intelligence,
+        ):
+            widget.set_runtime_phase(phase)
+        self.positions_panel.set_runtime_phase(
+            phase,
+            account_loaded=account_loaded,
+            positions_synchronized=positions_synchronized,
+            positions_status=positions_status,
+        )
 
     def _emit_operator_symbol(self, symbol: str) -> None:
         self.operator_symbol_selected.emit(symbol)

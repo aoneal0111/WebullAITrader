@@ -2,7 +2,12 @@ from datetime import UTC, datetime
 
 from app.gui.models import PositionsSnapshot
 from app.gui.presenters import PositionsPresenter
-from app.operations_core import ApplicationState, OperationsPosition
+from app.operations_core import (
+    ApplicationState,
+    OperationsPosition,
+    RuntimePhase,
+    RuntimeState,
+)
 from app.read_models.positions.projector import project_operational_positions
 
 
@@ -12,6 +17,10 @@ NOW = datetime(2026, 7, 30, 15, 0, tzinfo=UTC)
 class PositionsPanelSpy:
     def __init__(self) -> None:
         self.snapshots = []
+        self.runtime_phases = []
+
+    def set_runtime_phase(self, phase, **evidence) -> None:
+        self.runtime_phases.append((phase, evidence))
 
     def render(self, snapshot) -> None:
         self.snapshots.append(snapshot)
@@ -74,3 +83,20 @@ def test_positions_presenter_formats_unknown_unrealized_pnl() -> None:
 
     assert panel.snapshots[0].rows[0][4:7] == ("--", "--", "--")
     assert panel.snapshots[0].rows[0][7] == "$0.00"
+
+
+def test_completed_runtime_cycle_is_position_synchronization_evidence() -> None:
+    panel = PositionsPanelSpy()
+    state = ApplicationState(
+        runtime=RuntimeState(
+            phase=RuntimePhase.RUNNING,
+            cycles_completed=1,
+        )
+    )
+
+    PositionsPresenter(panel).render(state)  # type: ignore[arg-type]
+
+    phase, evidence = panel.runtime_phases[0]
+    assert phase is RuntimePhase.RUNNING
+    assert evidence["positions_synchronized"] is True
+    assert panel.snapshots[0] == PositionsSnapshot.initial()
