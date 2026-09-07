@@ -33,7 +33,7 @@ def calculate_features(
             prices[-2], prices[-3]
         )
     volume_acceleration = None
-    if len(volumes) >= 3:
+    if len(volumes) >= 3 and all(value is not None for value in volumes[-3:]):
         previous_volume_change = volumes[-2] - volumes[-3]
         current_volume_change = volumes[-1] - volumes[-2]
         if previous_volume_change > ZERO and current_volume_change >= ZERO:
@@ -76,7 +76,9 @@ def calculate_features(
         percentage_change=change,
         short_window_acceleration=acceleration,
         volume=current.volume,
-        notional_volume=current.price * current.volume,
+        notional_volume=(
+            None if current.volume is None else current.price * current.volume
+        ),
         volume_acceleration=volume_acceleration,
         # A time-of-week baseline requires multiple prior weeks; unavailable
         # evidence remains explicit rather than borrowing an equity baseline.
@@ -123,10 +125,18 @@ def detect_events(
 def score_features(
     features: CryptoFeatures,
     events: Sequence[CryptoMomentumEventType],
-) -> tuple[Decimal, tuple[tuple[str, Decimal], ...]]:
+) -> tuple[Decimal, tuple[tuple[str, Decimal | None], ...]]:
     acceleration = _cap(_positive(features.short_window_acceleration) * 50, 25)
-    volume = _cap((_positive(features.volume_acceleration) - 1) * 10, 20)
-    liquidity = _cap(features.notional_volume / Decimal("1000000"), 15)
+    volume = (
+        None
+        if features.volume_acceleration is None
+        else _cap((_positive(features.volume_acceleration) - 1) * 10, 20)
+    )
+    liquidity = (
+        None
+        if features.notional_volume is None
+        else _cap(features.notional_volume / Decimal("1000000"), 15)
+    )
     spread_quality = (
         ZERO
         if features.spread_percent is None
@@ -144,7 +154,8 @@ def score_features(
         ("trend_persistence", trend),
         ("event_structure", structure),
     )
-    return min(HUNDRED, sum((value for _, value in components), ZERO)), components
+    available = (value for _, value in components if value is not None)
+    return min(HUNDRED, sum(available, ZERO)), components
 
 
 def _change(current: Decimal, previous: Decimal) -> Decimal:

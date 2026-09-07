@@ -14,7 +14,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.crypto_research import CryptoResearchDecision, default_crypto_research_view
+from app.crypto_research import (
+    CryptoResearchDecision,
+    CryptoResearchStatus,
+    default_crypto_research_view,
+)
+
+
+_EMPTY_MESSAGES = {
+    CryptoResearchStatus.DISABLED: "Crypto discovery is disabled.",
+    CryptoResearchStatus.DISCOVERING: "Discovering supported crypto pairs...",
+    CryptoResearchStatus.ACTIVE: "Crypto research is active.",
+    CryptoResearchStatus.NO_SUPPORTED_PAIRS: "No supported crypto pairs were discovered.",
+    CryptoResearchStatus.PROVIDER_ERROR: "Crypto provider request failed.",
+    CryptoResearchStatus.AWAITING_DATA: "Supported pairs found; awaiting research data.",
+}
 
 
 class CryptoResearchPage(QWidget):
@@ -43,6 +57,8 @@ class CryptoResearchPage(QWidget):
         disclosure = QLabel("24/7 | NO EXECUTION AUTHORITY")
         disclosure.setObjectName("cryptoResearchDisclosure")
         disclosure.setAccessibleName("Crypto research authority disclosure")
+        self.status_label = QLabel("Status: DISABLED")
+        self.status_label.setObjectName("cryptoResearchStatus")
         self.empty_label = QLabel("Crypto discovery is disabled or awaiting research data.")
         self.empty_label.setObjectName("muted")
         self.table = QTableWidget(0, len(self.COLUMNS))
@@ -56,6 +72,7 @@ class CryptoResearchPage(QWidget):
         self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(title)
         layout.addWidget(disclosure)
+        layout.addWidget(self.status_label)
         layout.addWidget(self.empty_label)
         layout.addWidget(self.table, 1)
         self._timer = QTimer(self)
@@ -65,9 +82,33 @@ class CryptoResearchPage(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
-        self.render(tuple(self._source.snapshot()))
+        rows = tuple(self._source.snapshot())
+        status_getter = getattr(self._source, "status_snapshot", None)
+        if callable(status_getter):
+            state = status_getter()
+            status = state.status
+            failure = state.last_failure_category
+        else:
+            status = (
+                CryptoResearchStatus.ACTIVE
+                if rows
+                else CryptoResearchStatus.AWAITING_DATA
+            )
+            failure = None
+        self.render(rows, status=status, last_failure_category=failure)
 
-    def render(self, rows: tuple[CryptoResearchDecision, ...]) -> None:
+    def render(
+        self,
+        rows: tuple[CryptoResearchDecision, ...],
+        *,
+        status: CryptoResearchStatus = CryptoResearchStatus.AWAITING_DATA,
+        last_failure_category: str | None = None,
+    ) -> None:
+        status_text = f"Status: {status.value}"
+        if last_failure_category:
+            status_text += f" ({last_failure_category})"
+        self.status_label.setText(status_text)
+        self.empty_label.setText(_EMPTY_MESSAGES[status])
         self.table.setRowCount(len(rows))
         self.empty_label.setVisible(not rows)
         self.table.setVisible(bool(rows))
@@ -79,8 +120,8 @@ class CryptoResearchPage(QWidget):
                 decision.pair.canonical_symbol,
                 str(decision.price),
                 _display(features.percentage_change),
-                str(decision.volume),
-                str(features.notional_volume),
+                _display(decision.volume),
+                _display(features.notional_volume),
                 str(decision.score),
                 str(decision.rank),
                 event,
@@ -99,7 +140,7 @@ class CryptoResearchPage(QWidget):
 
 
 def _display(value: Decimal | None) -> str:
-    return "N/A" if value is None else str(value)
+    return "--" if value is None else str(value)
 
 
 def _trend(value: Decimal | None) -> str:

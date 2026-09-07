@@ -81,7 +81,7 @@ class CryptoObservation:
     price: Decimal
     bid: Decimal | None
     ask: Decimal | None
-    volume: Decimal
+    volume: Decimal | None
     high: Decimal | None = None
     low: Decimal | None = None
     source: str = "WEBULL_CRYPTO_SNAPSHOT"
@@ -91,7 +91,7 @@ class CryptoObservation:
         timestamp = _aware(self.timestamp, "timestamp")
         if self.price <= ZERO:
             raise ValueError("price must be positive")
-        if self.volume < ZERO:
+        if self.volume is not None and self.volume < ZERO:
             raise ValueError("volume cannot be negative")
         if self.bid is not None and self.bid <= ZERO:
             raise ValueError("bid must be positive")
@@ -111,8 +111,8 @@ class CryptoObservation:
 class CryptoFeatures:
     percentage_change: Decimal | None
     short_window_acceleration: Decimal | None
-    volume: Decimal
-    notional_volume: Decimal
+    volume: Decimal | None
+    notional_volume: Decimal | None
     volume_acceleration: Decimal | None
     relative_volume_time_of_week: Decimal | None
     spread: Decimal | None
@@ -141,11 +141,11 @@ class CryptoResearchDecision:
     bid: Decimal | None
     ask: Decimal | None
     spread: Decimal | None
-    volume: Decimal
+    volume: Decimal | None
     features: CryptoFeatures
     event_types: tuple[CryptoMomentumEventType, ...]
     score: Decimal
-    score_components: tuple[tuple[str, Decimal], ...]
+    score_components: tuple[tuple[str, Decimal | None], ...]
     rank: int
     regime: CryptoResearchRegime
     session: CryptoMarketSession = CryptoMarketSession.CONTINUOUS_24_7
@@ -181,12 +181,12 @@ class CryptoResearchDecision:
             "bid": _decimal_text(self.bid),
             "ask": _decimal_text(self.ask),
             "spread": _decimal_text(self.spread),
-            "volume": str(self.volume),
+            "volume": _decimal_text(self.volume),
             "features": _mapping(self.features),
             "event_types": [item.value for item in self.event_types],
             "score": str(self.score),
             "score_components": {
-                key: str(value) for key, value in self.score_components
+                key: _decimal_text(value) for key, value in self.score_components
             },
             "rank": self.rank,
             "session": self.session.value,

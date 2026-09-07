@@ -18,7 +18,12 @@ from .provider import (
     pair_from_webull,
 )
 from .runtime import CryptoResearchMetrics, CryptoResearchRuntime
-from .view import CryptoResearchViewStore, default_crypto_research_view
+from .view import (
+    CryptoResearchStatus,
+    CryptoResearchViewStatus,
+    CryptoResearchViewStore,
+    default_crypto_research_view,
+)
 
 __all__ = [
     "CryptoFeatures",
@@ -32,7 +37,9 @@ __all__ = [
     "CryptoResearchMetrics",
     "CryptoResearchRegime",
     "CryptoResearchRuntime",
+    "CryptoResearchStatus",
     "CryptoResearchStore",
+    "CryptoResearchViewStatus",
     "CryptoResearchViewStore",
     "MalformedCryptoQuoteError",
     "UnsupportedCryptoSymbolError",

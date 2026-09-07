@@ -5,7 +5,14 @@ from decimal import Decimal
 import json
 from time import perf_counter, sleep
 
-from app.crypto_research import CryptoObservation, CryptoPair, CryptoResearchRuntime
+from app.crypto_research import (
+    CryptoObservation,
+    CryptoPair,
+    CryptoResearchRuntime,
+    CryptoResearchStatus,
+    CryptoResearchViewStore,
+    UnsupportedCryptoSymbolError,
+)
 
 
 T0 = datetime(2026, 9, 7, 12, tzinfo=UTC)
@@ -36,7 +43,8 @@ def observation(symbol="BTC", price="100", volume="10", at=T0):
     value = Decimal(price)
     return CryptoObservation(
         CryptoPair(symbol, "USD", symbol + "USD"), at, value,
-        value - Decimal("0.1"), value + Decimal("0.1"), Decimal(volume),
+        value - Decimal("0.1"), value + Decimal("0.1"),
+        None if volume is None else Decimal(volume),
         high=value + Decimal("0.2"), low=value - Decimal("0.2"),
     )
 
@@ -122,6 +130,8 @@ def test_retained_symbols_history_signatures_and_memory_metrics_are_bounded() ->
         "crypto_symbol_count", "crypto_retained_state_count",
         "crypto_queue_depth", "crypto_queue_high_water",
         "crypto_episodes_persisted", "crypto_duplicates_suppressed",
+        "crypto_provider_failures", "crypto_malformed_quotes",
+        "crypto_unsupported_symbols",
     }
 
 
@@ -138,8 +148,39 @@ def test_provider_failure_is_contained_without_touching_admission_worker() -> No
     while runtime.metrics().provider_failures == 0 and perf_counter() < deadline:
         sleep(0.01)
     assert runtime.metrics().provider_failures >= 1
+    assert runtime.memory_metrics()["crypto_provider_failures"] >= 1
     assert runtime.admit(observation())
     assert runtime.close(timeout_seconds=2)
+
+
+def test_provider_status_and_sanitized_failure_categories_are_observable() -> None:
+    class EmptyProvider:
+        def discover(self, _configured):
+            return ()
+
+    view = CryptoResearchViewStore()
+    runtime = CryptoResearchRuntime(
+        enabled=True, provider=EmptyProvider(), store=MemoryStore(),
+        view_store=view, clock=lambda: T0,
+    )
+    assert view.status_snapshot().status is CryptoResearchStatus.DISCOVERING
+    assert runtime.refresh_once() == 0
+    assert view.status_snapshot().status is CryptoResearchStatus.NO_SUPPORTED_PAIRS
+
+    class UnsupportedProvider:
+        def discover(self, _configured):
+            raise UnsupportedCryptoSymbolError("sensitive provider detail")
+
+    runtime._provider = UnsupportedProvider()
+    assert runtime.refresh_once() == 0
+    state = view.status_snapshot()
+    assert state.status is CryptoResearchStatus.PROVIDER_ERROR
+    assert state.last_failure_category == "UNSUPPORTED_SYMBOL"
+    metrics = runtime.memory_metrics()
+    assert metrics["crypto_provider_failures"] == 1
+    assert metrics["crypto_unsupported_symbols"] == 1
+    assert "sensitive" not in state.last_failure_category
+    assert runtime.close()
 
 
 def test_append_only_jsonl_contains_required_authority_and_point_in_time_fields(
@@ -161,3 +202,15 @@ def test_append_only_jsonl_contains_required_authority_and_point_in_time_fields(
     }
     assert rows[0]["research_only"] is True
     assert rows[0]["execution_authorized"] is False
+
+
+def test_append_only_jsonl_serializes_unavailable_volume_as_null(tmp_path) -> None:
+    path = tmp_path / "crypto-no-volume.jsonl"
+    runtime = CryptoResearchRuntime(enabled=True, path=path, clock=lambda: T0)
+    runtime.start()
+    assert runtime.admit(observation(volume=None))
+    assert runtime.close(timeout_seconds=2)
+    row = json.loads(path.read_text(encoding="utf-8"))
+    assert row["volume"] is None
+    assert row["features"]["volume"] is None
+    assert row["features"]["notional_volume"] is None

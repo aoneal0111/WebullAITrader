@@ -10,7 +10,11 @@ from PySide6.QtWidgets import QApplication
 
 import app.composition.desktop as desktop_module
 from app.configuration import load_configuration
-from app.crypto_research import CryptoResearchRuntime
+from app.crypto_research import (
+    CryptoResearchRuntime,
+    CryptoResearchStatus,
+    CryptoResearchViewStore,
+)
 from app.gui.pages.crypto_research import CryptoResearchPage
 
 from .test_models_and_analysis import T0, observation
@@ -85,6 +89,40 @@ def test_gui_is_segmented_and_has_no_execution_controls(application) -> None:
     assert page.table.item(0, 10).text() == "CRYPTO"
     assert page.table.item(0, 11).text() == "RESEARCH ONLY"
     assert not page.findChildren(__import__("PySide6.QtWidgets", fromlist=["QPushButton"]).QPushButton)
+    page.close()
+    runtime.close()
+
+
+def test_gui_renders_unavailable_volume_and_all_research_statuses(application) -> None:
+    del application
+    store = CryptoResearchViewStore()
+    page = CryptoResearchPage(store)
+    item = observation(0, "100", None)
+
+    class MemoryStore:
+        def append(self, _record):
+            return None
+
+        def close(self):
+            return None
+
+    runtime = CryptoResearchRuntime(
+        enabled=True, store=MemoryStore(), view_store=store, clock=lambda: T0,
+    )
+    runtime._accepting = True
+    runtime._evaluate_and_persist(item)
+    page.refresh()
+    assert page.table.item(0, 3).text() == "--"
+    assert page.table.item(0, 4).text() == "--"
+
+    for status in CryptoResearchStatus:
+        store.publish_status(
+            status, "PROVIDER_ERROR" if status is CryptoResearchStatus.PROVIDER_ERROR else None
+        )
+        page.refresh()
+        assert status.value in page.status_label.text()
+        if status is CryptoResearchStatus.PROVIDER_ERROR:
+            assert "PROVIDER_ERROR)" in page.status_label.text()
     page.close()
     runtime.close()
 

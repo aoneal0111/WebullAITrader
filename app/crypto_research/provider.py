@@ -67,7 +67,6 @@ class WebullCryptoResearchProvider:
                 lambda: self._instrument_api().get_crypto_instrument(
                     symbols=",".join(symbols) if symbols else None,
                     category="US_CRYPTO",
-                    status="LISTING",
                     last_instrument_id=cursor,
                     page_size=page_size,
                 ),
@@ -203,7 +202,9 @@ def observation_from_webull(
 ) -> CryptoObservation:
     try:
         price = _decimal(row, "price", "close", "last_price", required=True)
-        volume = _decimal(row, "volume", "volume_24h", required=True)
+        # The official crypto snapshot schema does not include traded volume.
+        # Absence is research evidence, not an observed zero.
+        volume = _decimal(row, "volume", "volume_24h")
         timestamp = _timestamp(
             row.get("quote_time", row.get("last_trade_time", row.get("timestamp"))),
             adopted_at,

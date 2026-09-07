@@ -17,8 +17,16 @@ from .models import (
     crypto_regime,
 )
 from .persistence import CryptoJsonLinesStore, CryptoResearchStore
-from .provider import WebullCryptoResearchProvider
-from .view import CryptoResearchViewStore, default_crypto_research_view
+from .provider import (
+    MalformedCryptoQuoteError,
+    UnsupportedCryptoSymbolError,
+    WebullCryptoResearchProvider,
+)
+from .view import (
+    CryptoResearchStatus,
+    CryptoResearchViewStore,
+    default_crypto_research_view,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +40,7 @@ class CryptoResearchMetrics:
     crypto_duplicates_suppressed: int
     provider_failures: int
     malformed_quotes: int
+    unsupported_symbols: int
     stale_quotes: int
     queue_rejections: int
     persistence_failures: int
@@ -93,6 +102,7 @@ class CryptoResearchRuntime:
         self._duplicates_suppressed = 0
         self._provider_failures = 0
         self._malformed_quotes = 0
+        self._unsupported_symbols = 0
         self._stale_quotes = 0
         self._queue_rejections = 0
         self._persistence_failures = 0
@@ -100,6 +110,9 @@ class CryptoResearchRuntime:
         self._stopped = not self.enabled
         if not self.enabled:
             self._view.publish(())
+            self._publish_status(CryptoResearchStatus.DISABLED)
+        else:
+            self._publish_status(CryptoResearchStatus.DISCOVERING)
 
     def start(self) -> bool:
         if not self.enabled:
@@ -109,6 +122,7 @@ class CryptoResearchRuntime:
                 return False
             self._accepting = True
             self._stopped = False
+            self._publish_status(CryptoResearchStatus.DISCOVERING)
             self._worker = Thread(
                 target=self._run_worker, name="atlas-crypto-research-writer", daemon=True
             )
@@ -126,20 +140,39 @@ class CryptoResearchRuntime:
         """Perform one isolated provider refresh; useful for controlled diagnostics."""
         if not self.enabled or self._provider is None:
             return 0
+        self._publish_status(CryptoResearchStatus.DISCOVERING)
         try:
             pairs = self._provider.discover(self._configured_pairs)
             with self._lock:
                 self._pairs = pairs[: self._retained_symbol_limit]
+            if not self._pairs:
+                self._publish_status(CryptoResearchStatus.NO_SUPPORTED_PAIRS)
+                return 0
             accepted = 0
+            received = 0
             for offset in range(0, len(self._pairs), 20):
                 observations = self._provider.snapshots(
                     self._pairs[offset : offset + 20]
                 )
+                received += len(observations)
                 accepted += sum(1 for item in observations if self.admit(item))
+            self._publish_status(
+                CryptoResearchStatus.ACTIVE
+                if received
+                else CryptoResearchStatus.AWAITING_DATA
+            )
             return accepted
-        except Exception:
+        except Exception as exc:
             with self._lock:
                 self._provider_failures += 1
+                if isinstance(exc, MalformedCryptoQuoteError):
+                    self._malformed_quotes += 1
+                if isinstance(exc, UnsupportedCryptoSymbolError):
+                    self._unsupported_symbols += 1
+            self._publish_status(
+                CryptoResearchStatus.PROVIDER_ERROR,
+                _failure_category(exc),
+            )
             return 0
 
     def admit(self, observation: CryptoObservation) -> bool:
@@ -196,6 +229,7 @@ class CryptoResearchRuntime:
                 self._duplicates_suppressed,
                 self._provider_failures,
                 self._malformed_quotes,
+                self._unsupported_symbols,
                 self._stale_quotes,
                 self._queue_rejections,
                 self._persistence_failures,
@@ -212,7 +246,19 @@ class CryptoResearchRuntime:
             "crypto_queue_high_water": metrics.crypto_queue_high_water,
             "crypto_episodes_persisted": metrics.crypto_episodes_persisted,
             "crypto_duplicates_suppressed": metrics.crypto_duplicates_suppressed,
+            "crypto_provider_failures": metrics.provider_failures,
+            "crypto_malformed_quotes": metrics.malformed_quotes,
+            "crypto_unsupported_symbols": metrics.unsupported_symbols,
         }
+
+    def _publish_status(
+        self,
+        status: CryptoResearchStatus,
+        last_failure_category: str | None = None,
+    ) -> None:
+        publisher = getattr(self._view, "publish_status", None)
+        if callable(publisher):
+            publisher(status, last_failure_category)
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         with self._lock:
@@ -327,6 +373,18 @@ def _observation_signature(observation: CryptoObservation) -> tuple[object, ...]
         observation.high,
         observation.low,
     )
+
+
+def _failure_category(exc: Exception) -> str:
+    if isinstance(exc, UnsupportedCryptoSymbolError):
+        return "UNSUPPORTED_SYMBOL"
+    if isinstance(exc, MalformedCryptoQuoteError):
+        return "MALFORMED_QUOTE"
+    if isinstance(exc, PermissionError):
+        return "PERMISSION_DENIED"
+    if isinstance(exc, ValueError):
+        return "NORMALIZATION_ERROR"
+    return "PROVIDER_ERROR"
 
 
 __all__ = ["CryptoResearchMetrics", "CryptoResearchRuntime"]

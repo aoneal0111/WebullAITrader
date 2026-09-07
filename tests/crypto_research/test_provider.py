@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 
@@ -9,6 +10,7 @@ from app.crypto_research import (
     CryptoProviderError,
     MalformedCryptoQuoteError,
     WebullCryptoResearchProvider,
+    observation_from_webull,
     pair_from_webull,
 )
 from app.configuration import (
@@ -69,16 +71,23 @@ class Lazy:
 
 def instrument(symbol="BTCUSD", base="BTC", quote="USD"):
     return {
-        "symbol": symbol, "base_currency": base, "currency_code": quote,
-        "instrument_id": "1", "status": "LISTING",
+        "category": "US_CRYPTO", "currency": quote,
+        "exchange_code": "CCC", "instrument_id": "1", "lot_size": "0.0001",
+        "max_trade_amt": "1000000", "max_trade_qty": "100",
+        "min_trade_amt": "1", "min_trade_qty": "0.0001",
+        "name": base, "price_step": "0.01", "status": "OC",
+        "symbol": symbol,
     }
 
 
 def snapshot(symbol="BTCUSD"):
     return {
         "symbol": symbol, "price": "60000", "bid": "59999",
-        "ask": "60001", "volume": "100", "high": "61000",
-        "low": "58000", "quote_time": 1788782400000,
+        "ask": "60001", "ask_size": "0.2", "bid_size": "0.1",
+        "change": "100", "change_ratio": "0.1", "close": "60000",
+        "high": "61000", "instrument_id": "1", "last_trade_time": 1788782400000,
+        "low": "58000", "open": "59000", "pre_close": "59900",
+        "quote_time": 1788782400000,
     }
 
 
@@ -102,8 +111,40 @@ def test_provider_is_lazy_bounded_and_uses_only_crypto_namespaces() -> None:
     assert lazy.gets == 2
     assert pairs[0].canonical_symbol == "BTC/USD"
     assert observations[0].pair.asset_type.value == "CRYPTO"
+    assert observations[0].volume is None
     assert client.instrument.calls[0]["category"] == "US_CRYPTO"
+    assert "status" not in client.instrument.calls[0]
     assert client.crypto_market_data.calls == [(["BTCUSD"], "US_CRYPTO")]
+
+
+def test_real_instrument_list_is_bounded_and_normalizes_symbol_plus_currency() -> None:
+    rows = [instrument(f"C{index:03d}USD", base=f"C{index:03d}") for index in range(342)]
+    assert len(tuple(pair_from_webull(row) for row in rows)) == 342
+    client = Client(rows, [])
+    provider = WebullCryptoResearchProvider(
+        client, minimum_request_interval_seconds=0, retry_attempts=0,
+    )
+
+    pairs = provider.discover()
+
+    assert len(pairs) == 256
+    assert pairs[0].quote_asset == "USD"
+    assert "status" not in client.instrument.calls[0]
+    assert "LISTING" not in client.instrument.calls[0].values()
+
+
+def test_real_snapshot_without_volume_preserves_quote_and_unavailable_volume() -> None:
+    pair = pair_from_webull(instrument())
+    item = observation_from_webull(
+        pair, snapshot(), datetime(2026, 9, 7, 12, tzinfo=UTC)
+    )
+
+    assert pair.canonical_symbol == "BTC/USD"
+    assert item.price == Decimal("60000")
+    assert item.bid == Decimal("59999")
+    assert item.ask == Decimal("60001")
+    assert item.volume is None
+    assert item.timestamp == datetime(2026, 9, 7, 12, tzinfo=UTC)
 
 
 def test_provider_retry_and_historical_bounds_are_explicit() -> None:

@@ -21,7 +21,7 @@ from app.crypto_research import (
 T0 = datetime(2026, 9, 7, 12, tzinfo=UTC)
 
 
-def observation(index: int, price: str, volume: str) -> CryptoObservation:
+def observation(index: int, price: str, volume: str | None) -> CryptoObservation:
     value = Decimal(price)
     return CryptoObservation(
         CryptoPair("btc", "usd", "XBT-USD"),
@@ -29,7 +29,7 @@ def observation(index: int, price: str, volume: str) -> CryptoObservation:
         value,
         value - Decimal("0.1"),
         value + Decimal("0.1"),
-        Decimal(volume),
+        None if volume is None else Decimal(volume),
         high=value + Decimal("0.2"),
         low=value - Decimal("0.2"),
     )
@@ -98,3 +98,36 @@ def test_serialization_preserves_authority_denials_and_pair_identity() -> None:
     assert record["production_promoted"] is False
     assert record["selection_authorized"] is False
     assert record["execution_authorized"] is False
+
+
+def test_missing_volume_is_unavailable_through_features_score_and_serialization() -> None:
+    history = (
+        observation(0, "100", None),
+        observation(1, "101", None),
+        observation(2, "103", None),
+    )
+    features = calculate_features(history, cutoff=T0 + timedelta(minutes=2))
+    events = detect_events(history, features)
+    score, components = score_features(features, events)
+
+    assert features.volume is None
+    assert features.notional_volume is None
+    assert features.volume_acceleration is None
+    assert CryptoMomentumEventType.VOLUME_EXPANSION not in events
+    assert dict(components)["volume_acceleration"] is None
+    assert dict(components)["liquidity"] is None
+    assert Decimal("0") <= score <= Decimal("100")
+    assert dict(components)["price_acceleration"] is not None
+
+    item = history[-1]
+    decision = CryptoResearchDecision(
+        "1", item.pair, item.timestamp, item.timestamp, item.price, item.bid,
+        item.ask, features.spread, item.volume, features, events, score,
+        components, 1, CryptoResearchRegime.WEEKEND,
+    )
+    record = decision.to_record()
+    assert record["volume"] is None
+    assert record["features"]["volume"] is None
+    assert record["features"]["notional_volume"] is None
+    assert record["score_components"]["volume_acceleration"] is None
+    assert record["score_components"]["liquidity"] is None
