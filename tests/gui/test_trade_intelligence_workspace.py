@@ -67,7 +67,7 @@ def test_primary_workspace_replaces_chart_with_trade_intelligence(application) -
     assert isinstance(workspace.trade_intelligence, TradeIntelligencePanel)
     assert workspace.findChildren(ChartPlaceholder) == []
     assert workspace.market_section.heading.text() == "ATLAS TRADE INTELLIGENCE"
-    assert workspace.focus_section.heading.text() == "OPPORTUNITIES"
+    assert workspace.focus_section.heading.text() == "EQUITY SCANNER"
     assert not hasattr(workspace, "focus_chart_button")
 
 

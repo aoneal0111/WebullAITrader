@@ -41,7 +41,8 @@ def test_workstation_exposes_reference_panels(application) -> None:
     dashboard = DashboardPage()
     workspace = dashboard.market_workspace
 
-    assert workspace.opportunities_section.heading.text() == "OPPORTUNITIES"
+    assert workspace.opportunities_section.heading.text() == "EQUITY SCANNER"
+    assert workspace.crypto_scanner_section.heading.text() == "CRYPTO SCANNER"
     assert workspace.market_overview_section.heading.text() == "MARKET OVERVIEW"
     assert workspace.runtime_controls_section.heading.text() == "RUNTIME CONTROLS"
     assert workspace.safety_section.heading.text() == "SAFETY"
@@ -60,7 +61,10 @@ def test_workstation_exposes_reference_panels(application) -> None:
     assert workspace.activity_section.heading.text() == "LIVE AUTONOMOUS ACTIVITY"
     assert workspace.portfolio_section.heading.text() == "ACCOUNT / RISK"
     assert workspace.positions_section.heading.text() == "ACTIVE POSITIONS / MANAGEMENT"
-    assert workspace.orders_section.heading.text() == "WORKING / RECENT ORDERS"
+    assert not hasattr(workspace, "orders_section")
+    assert not hasattr(workspace, "reasoning_section")
+    assert workspace.positions_panel.activity_tabs.tabText(2) == "RECENT ORDERS"
+    assert workspace.atlas_reasoning.parentWidget() is None
     assert workspace.market_overview_section.parentWidget() is None
 
 

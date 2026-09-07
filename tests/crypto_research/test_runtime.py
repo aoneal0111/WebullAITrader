@@ -131,8 +131,86 @@ def test_retained_symbols_history_signatures_and_memory_metrics_are_bounded() ->
         "crypto_queue_depth", "crypto_queue_high_water",
         "crypto_episodes_persisted", "crypto_duplicates_suppressed",
         "crypto_provider_failures", "crypto_malformed_quotes",
-        "crypto_unsupported_symbols",
+        "crypto_unsupported_symbols", "crypto_snapshot_batches_requested",
+        "crypto_snapshot_batches_succeeded", "crypto_snapshot_batches_failed",
+        "crypto_snapshot_symbols_requested", "crypto_snapshot_symbols_returned",
+        "crypto_refreshes_partial", "crypto_refreshes_complete",
     }
+
+
+def test_failed_snapshot_batch_does_not_prevent_later_batches() -> None:
+    pairs = tuple(CryptoPair(f"S{index:02}", "USD", f"S{index:02}USD") for index in range(45))
+
+    class Provider:
+        def __init__(self):
+            self.calls = []
+
+        def discover(self, _configured):
+            return pairs
+
+        def snapshots(self, batch):
+            self.calls.append(tuple(pair.canonical_symbol for pair in batch))
+            if batch[0].base_asset == "S20":
+                raise RuntimeError("sensitive provider failure")
+            return tuple(observation(pair.base_asset) for pair in batch)
+
+    provider = Provider()
+    view = CryptoResearchViewStore()
+    runtime = CryptoResearchRuntime(
+        enabled=True, provider=provider, store=MemoryStore(),
+        view_store=view, queue_capacity=64, clock=lambda: T0,
+    )
+    runtime._accepting = True
+
+    assert runtime.refresh_once() == 25
+    assert len(provider.calls) == 3
+    assert provider.calls[-1] == tuple(f"S{index:02}/USD" for index in range(40, 45))
+    metrics = runtime.metrics()
+    assert metrics.provider_failures == 1
+    assert metrics.snapshot_batches_requested == 3
+    assert metrics.snapshot_batches_succeeded == 2
+    assert metrics.snapshot_batches_failed == 1
+    assert metrics.snapshot_symbols_requested == 45
+    assert metrics.snapshot_symbols_returned == 25
+    assert metrics.refreshes_partial == 1
+    assert metrics.refreshes_complete == 0
+    state = view.status_snapshot()
+    assert state.status is CryptoResearchStatus.PARTIAL_DATA
+    assert state.last_failure_category == "PROVIDER_ERROR"
+    runtime.close()
+
+
+def test_all_success_and_total_snapshot_failure_statuses_are_honest() -> None:
+    pairs = tuple(CryptoPair(symbol, "USD", symbol + "USD") for symbol in ("BTC", "ETH"))
+
+    class Provider:
+        fail = False
+
+        def discover(self, _configured):
+            return pairs
+
+        def snapshots(self, batch):
+            if self.fail:
+                raise RuntimeError("provider detail")
+            return tuple(observation(pair.base_asset) for pair in batch)
+
+    provider = Provider()
+    view = CryptoResearchViewStore()
+    runtime = CryptoResearchRuntime(
+        enabled=True, provider=provider, store=MemoryStore(),
+        view_store=view, clock=lambda: T0,
+    )
+    runtime._accepting = True
+    assert runtime.refresh_once() == 2
+    assert view.status_snapshot().status is CryptoResearchStatus.ACTIVE
+    assert runtime.metrics().refreshes_complete == 1
+
+    provider.fail = True
+    assert runtime.refresh_once() == 0
+    assert view.status_snapshot().status is CryptoResearchStatus.PROVIDER_ERROR
+    assert runtime.metrics().provider_failures == 1
+    assert runtime.metrics().snapshot_batches_failed == 1
+    runtime.close()
 
 
 def test_provider_failure_is_contained_without_touching_admission_worker() -> None:

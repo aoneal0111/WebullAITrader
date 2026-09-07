@@ -45,9 +45,9 @@ from app.gui.widgets.trade_intelligence_panel import TradeIntelligencePanel
 from app.gui.widgets.activity_panel import ActivityPanel
 from app.gui.widgets.portfolio_summary_strip import PortfolioSummaryStrip
 from app.gui.widgets.positions_panel import PositionsPanel
-from app.gui.widgets.orders_panel import OrdersPanel
 from app.gui.widgets.atlas_reasoning_panel import AtlasReasoningPanel
 from app.gui.widgets.workstation_panels import MarketOverviewPanel, RuntimeControlsPanel
+from app.gui.pages.crypto_research import CryptoResearchPanel
 
 
 class ChartView(Protocol):
@@ -681,13 +681,10 @@ class CompactWatchlistPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
         status_row = QHBoxLayout()
-        scanner_title = QLabel("ATLAS SCANNER")
-        scanner_title.setObjectName("sectionTitle")
         self._scanner_status = QLabel("Unknown")
         self._scanner_status.setObjectName("statusPill")
         self._candidate_count = QLabel("Candidates: 0")
         self._candidate_count.setObjectName("monoValue")
-        status_row.addWidget(scanner_title)
         status_row.addWidget(self._scanner_status)
         status_row.addWidget(self._candidate_count)
         status_row.addStretch(1)
@@ -741,6 +738,7 @@ class CompactWatchlistPanel(QWidget):
             icon="",
         )
         self._configure_columns(self._columns)
+        self._table.setColumnHidden(8, True)
         self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         layout.addWidget(self._table, 1)
@@ -897,7 +895,12 @@ class MarketWorkspace(QWidget):
     focus_mode_changed = Signal(bool)
     inspector_requested = Signal(bool)
 
-    def __init__(self, chart_view: ChartView | None = None) -> None:
+    def __init__(
+        self,
+        chart_view: ChartView | None = None,
+        *,
+        crypto_research_source=None,
+    ) -> None:
         super().__init__()
         if chart_view is not None and not isinstance(chart_view, QWidget):
             raise TypeError("chart_view must be a QWidget chart adapter")
@@ -913,6 +916,7 @@ class MarketWorkspace(QWidget):
         self._chart_snapshot = ChartViewSnapshot()
 
         self.watchlist = CompactWatchlistPanel()
+        self.crypto_research = CryptoResearchPanel(crypto_research_source)
         self.watchlist.candidate_selected.connect(self._select_candidate)
         self.watchlist.focus_mode_changed.connect(self._change_focus_mode)
         self.trade_intelligence = TradeIntelligencePanel()
@@ -925,7 +929,7 @@ class MarketWorkspace(QWidget):
         self.activity_panel = ActivityPanel()
         self.portfolio_summary = PortfolioSummaryStrip()
         self.positions_panel = PositionsPanel()
-        self.orders_panel = OrdersPanel()
+        self.orders_panel = self.positions_panel.recent_orders_panel
         self.atlas_reasoning = AtlasReasoningPanel()
         self.market_overview = MarketOverviewPanel()
         self.runtime_controls = RuntimeControlsPanel()
@@ -948,12 +952,6 @@ class MarketWorkspace(QWidget):
         self.positions_section = SectionPanel(
             "ACTIVE POSITIONS / MANAGEMENT", self.positions_panel
         )
-        self.reasoning_section = SectionPanel(
-            "ATLAS REASONING", self.atlas_reasoning
-        )
-        self.orders_section = SectionPanel(
-            "WORKING / RECENT ORDERS", self.orders_panel
-        )
         self.runtime_controls_section = SectionPanel("RUNTIME CONTROLS", QWidget())
         # Compatibility-only reference for integrations that inspected the
         # former separate panel. Safety commands now live in the visible,
@@ -971,10 +969,14 @@ class MarketWorkspace(QWidget):
         opportunities_action.setText("...")
         opportunities_action.setToolTip("Opportunity display settings")
         self.opportunities_section = SectionPanel(
-            "OPPORTUNITIES", self.watchlist, action=opportunities_action
+            "EQUITY SCANNER", self.watchlist, action=opportunities_action
         )
         self.focus_section = self.opportunities_section
         self.opportunities_section.setMinimumWidth(0)
+        self.crypto_scanner_section = SectionPanel(
+            "CRYPTO SCANNER", self.crypto_research
+        )
+        self.crypto_scanner_section.setMinimumWidth(0)
         self.market_section = SectionPanel(
             "ATLAS TRADE INTELLIGENCE",
             self.trade_intelligence,
@@ -1001,15 +1003,13 @@ class MarketWorkspace(QWidget):
         # the production middle splitter, so no stale wrapper can detach it.
         self.right_workspace = self.market_section
         lower = QSplitter(Qt.Orientation.Horizontal)
-        lower.addWidget(self.reasoning_section)
         lower.addWidget(self.opportunities_section)
-        lower.addWidget(self.orders_section)
+        lower.addWidget(self.crypto_scanner_section)
         self.lower_splitter = lower
         lower.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
-        lower.setStretchFactor(0, 24)
-        lower.setStretchFactor(1, 24)
-        lower.setStretchFactor(2, 52)
-        lower.setSizes((365, 365, 790))
+        lower.setStretchFactor(0, 1)
+        lower.setStretchFactor(1, 1)
+        lower.setSizes((760, 760))
 
         self.middle_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.middle_splitter.setObjectName("workstationMainSplitter")
@@ -1028,9 +1028,9 @@ class MarketWorkspace(QWidget):
         self.workspace_splitter.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
         self.workspace_splitter.addWidget(self.middle_splitter)
         self.workspace_splitter.addWidget(lower)
-        self.workspace_splitter.setStretchFactor(0, 61)
-        self.workspace_splitter.setStretchFactor(1, 39)
-        self.workspace_splitter.setSizes((500, 315))
+        self.workspace_splitter.setStretchFactor(0, 48)
+        self.workspace_splitter.setStretchFactor(1, 52)
+        self.workspace_splitter.setSizes((390, 425))
         layout.addWidget(self.workspace_splitter, 1)
         layout.addWidget(self.portfolio_section)
 
@@ -1129,8 +1129,8 @@ class MarketWorkspace(QWidget):
         self.set_chart_focus(False)
         self.right_splitter.setSizes((210, 150, 190, 150, 150))
         self.left_splitter.setSizes((500,))
-        self.lower_splitter.setSizes((365, 365, 790))
-        self.workspace_splitter.setSizes((500, 315))
+        self.lower_splitter.setSizes((760, 760))
+        self.workspace_splitter.setSizes((390, 425))
         self._layout_mode = None
         self.set_responsive_width(width or self.width(), force=True)
 

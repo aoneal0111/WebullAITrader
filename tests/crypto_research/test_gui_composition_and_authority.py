@@ -15,7 +15,9 @@ from app.crypto_research import (
     CryptoResearchStatus,
     CryptoResearchViewStore,
 )
-from app.gui.pages.crypto_research import CryptoResearchPage
+from app.gui.pages.crypto_research import CryptoResearchPage, CryptoResearchPanel
+from app.gui.models import WatchlistRow, WatchlistSnapshot
+from app.gui.widgets.market_workspace import MarketWorkspace
 
 from .test_models_and_analysis import T0, observation
 
@@ -82,7 +84,7 @@ def test_gui_is_segmented_and_has_no_execution_controls(application) -> None:
     page = CryptoResearchPage(Source())
     page.refresh()
     assert page.findChild(type(page.empty_label), "cryptoResearchDisclosure").text() == (
-        "24/7 | NO EXECUTION AUTHORITY"
+        "24/7 | RESEARCH ONLY | NO EXECUTION AUTHORITY"
     )
     assert page.table.rowCount() == 1
     assert page.table.item(0, 0).text() == "BTC/USD"
@@ -91,6 +93,137 @@ def test_gui_is_segmented_and_has_no_execution_controls(application) -> None:
     assert not page.findChildren(__import__("PySide6.QtWidgets", fromlist=["QPushButton"]).QPushButton)
     page.close()
     runtime.close()
+
+
+def test_mission_control_crypto_panel_reads_shared_view_only(application) -> None:
+    del application
+    store = CryptoResearchViewStore()
+
+    class MemoryStore:
+        def append(self, _record):
+            return None
+
+        def close(self):
+            return None
+
+    runtime = CryptoResearchRuntime(
+        enabled=True, store=MemoryStore(), view_store=store, clock=lambda: T0,
+    )
+    runtime._accepting = True
+    runtime._evaluate_and_persist(observation(0, "100", "10"))
+    store.publish_status(CryptoResearchStatus.PARTIAL_DATA, "PROVIDER_ERROR")
+    workspace = MarketWorkspace(crypto_research_source=store)
+    panel = workspace.crypto_research
+    panel.refresh()
+
+    assert isinstance(panel, CryptoResearchPanel)
+    assert workspace.opportunities_section.heading.text() == "EQUITY SCANNER"
+    assert workspace.crypto_scanner_section.heading.text() == "CRYPTO SCANNER"
+    assert workspace.lower_splitter.indexOf(workspace.opportunities_section) == 0
+    assert workspace.lower_splitter.indexOf(workspace.crypto_scanner_section) == 1
+    assert workspace.lower_splitter.count() == 2
+    assert panel.disclosure.text() == "24/7 | RESEARCH ONLY | NO EXECUTION AUTHORITY"
+    assert panel.status_label.text() == "Status: PARTIAL DATA (PROVIDER_ERROR)"
+    assert panel.table.rowCount() == 1
+    assert panel.table.item(0, 0).text() == "1"
+    assert panel.table.item(0, 1).text() == "BTC/USD"
+    assert panel.table.columnCount() == 8
+    assert not panel.findChildren(
+        __import__("PySide6.QtWidgets", fromlist=["QPushButton"]).QPushButton
+    )
+    assert not any(
+        hasattr(panel, name)
+        for name in ("place_order", "submit_order", "authorize", "execute")
+    )
+    workspace.close()
+    runtime.close()
+
+
+def test_disabled_crypto_leaves_equity_opportunity_projection_unchanged(
+    application,
+) -> None:
+    del application
+    crypto = CryptoResearchViewStore()
+    workspace = MarketWorkspace(crypto_research_source=crypto)
+    equity = WatchlistSnapshot(
+        rows=(
+            WatchlistRow(
+                symbol="AAPL",
+                selected=True,
+                latest_price="101.00",
+                change="+1.00",
+                change_percent="+1.00%",
+                bid="100.90",
+                ask="101.10",
+                volume="1,000",
+                market_status="OPEN",
+                last_update="12:00:00",
+                stale="LIVE",
+                rank="1",
+            ),
+        ),
+        candidate_count=1,
+    )
+    workspace.render(equity)
+    before = tuple(
+        workspace.watchlist._table.item(0, column).text()
+        for column in range(workspace.watchlist._table.columnCount())
+    )
+
+    workspace.crypto_research.refresh()
+    after = tuple(
+        workspace.watchlist._table.item(0, column).text()
+        for column in range(workspace.watchlist._table.columnCount())
+    )
+
+    assert crypto.status_snapshot().status is CryptoResearchStatus.DISABLED
+    assert workspace.crypto_research.table.rowCount() == 0
+    assert before == after
+    assert after[1] == "● AAPL"
+    workspace.close()
+
+
+def test_mission_control_crypto_has_no_runtime_or_provider_construction(
+    application,
+) -> None:
+    del application
+
+    class ReadOnlySource:
+        def __init__(self):
+            self.snapshot_calls = 0
+            self.status_calls = 0
+
+        def snapshot(self):
+            self.snapshot_calls += 1
+            return ()
+
+        def status_snapshot(self):
+            self.status_calls += 1
+            return CryptoResearchViewStore().status_snapshot()
+
+        def __getattr__(self, name):
+            raise AssertionError(
+                f"Mission Control requested forbidden source API: {name}"
+            )
+
+    source = ReadOnlySource()
+    panel = CryptoResearchPanel(source)
+    panel.refresh()
+    assert source.snapshot_calls == 2
+    assert source.status_calls == 2
+
+    gui_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            Path(__file__).parents[2]
+            / "app" / "gui" / "pages" / "crypto_research.py",
+            Path(__file__).parents[2]
+            / "app" / "gui" / "widgets" / "market_workspace.py",
+        )
+    )
+    assert "CryptoResearchRuntime(" not in gui_sources
+    assert "WebullCryptoResearchProvider(" not in gui_sources
+    panel.close()
 
 
 def test_gui_renders_unavailable_volume_and_all_research_statuses(application) -> None:

@@ -412,11 +412,14 @@ def test_commercial_dashboard_preserves_panels_at_target_viewports(
 
     ai = page.market_workspace.ai_thinking_section
     focus = page.market_workspace.focus_section
-    reasoning = page.market_workspace.reasoning_section
+    crypto = page.market_workspace.crypto_scanner_section
 
     assert not ai.isVisible()
-    assert reasoning.isVisible()
     assert focus.isVisible()
+    assert crypto.isVisible()
+    assert not hasattr(page.market_workspace, "reasoning_section")
+    assert page.market_workspace.lower_splitter.count() == 2
+    assert page.market_workspace.lower_splitter.orientation() == Qt.Orientation.Horizontal
 
     assert page.market_workspace.splitter.widget(0) is page.market_workspace.left_column
     assert page.market_workspace.splitter.widget(1) is page.market_workspace.right_workspace
@@ -445,7 +448,10 @@ def test_dashboard_uses_atlas_operator_terminology(application) -> None:
         for label in root.findChildren(QLabel)
     }
 
-    assert "OPPORTUNITIES" in labels
+    assert "EQUITY SCANNER" in labels
+    assert "CRYPTO SCANNER" in labels
+    assert "ATLAS REASONING" not in labels
+    assert "WORKING / RECENT ORDERS" not in labels
     assert "ATLAS TRADE INTELLIGENCE" in labels
     assert "Atlas Activity" in labels
     assert "Mission Status" in labels

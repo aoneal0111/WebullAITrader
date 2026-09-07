@@ -221,7 +221,8 @@ def test_atlas_reasoning_is_compact_observational_position_management(applicatio
     page = DashboardPage()
     page.market_workspace.render_atlas_reasoning(reasoning)
 
-    assert page.market_workspace.reasoning_section.parent() is not None
+    assert not hasattr(page.market_workspace, "reasoning_section")
+    assert page.market_workspace.atlas_reasoning.parentWidget() is None
     assert page.market_workspace.atlas_reasoning.current_action.text() == (
         "Managing active positions."
     )
@@ -263,7 +264,8 @@ def test_trade_intelligence_remains_available_with_reduced_primary_footprint(
     assert workspace.trade_intelligence.isVisible()
     assert workspace.left_column.width() > workspace.market_section.width()
     assert workspace.positions_section.isVisible()
-    assert workspace.orders_section.isVisible()
+    assert not hasattr(workspace, "orders_section")
+    assert workspace.positions_panel.recent_orders_panel is workspace.orders_panel
     assert workspace.portfolio_section.maximumHeight() == 116
 
 

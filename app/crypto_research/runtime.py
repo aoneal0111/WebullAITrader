@@ -39,6 +39,13 @@ class CryptoResearchMetrics:
     crypto_episodes_persisted: int
     crypto_duplicates_suppressed: int
     provider_failures: int
+    snapshot_batches_requested: int
+    snapshot_batches_succeeded: int
+    snapshot_batches_failed: int
+    snapshot_symbols_requested: int
+    snapshot_symbols_returned: int
+    refreshes_partial: int
+    refreshes_complete: int
     malformed_quotes: int
     unsupported_symbols: int
     stale_quotes: int
@@ -101,6 +108,13 @@ class CryptoResearchRuntime:
         self._episodes_persisted = 0
         self._duplicates_suppressed = 0
         self._provider_failures = 0
+        self._snapshot_batches_requested = 0
+        self._snapshot_batches_succeeded = 0
+        self._snapshot_batches_failed = 0
+        self._snapshot_symbols_requested = 0
+        self._snapshot_symbols_returned = 0
+        self._refreshes_partial = 0
+        self._refreshes_complete = 0
         self._malformed_quotes = 0
         self._unsupported_symbols = 0
         self._stale_quotes = 0
@@ -150,17 +164,54 @@ class CryptoResearchRuntime:
                 return 0
             accepted = 0
             received = 0
+            succeeded = 0
+            failed = 0
+            last_failure_category: str | None = None
             for offset in range(0, len(self._pairs), 20):
-                observations = self._provider.snapshots(
-                    self._pairs[offset : offset + 20]
-                )
+                batch = self._pairs[offset : offset + 20]
+                with self._lock:
+                    self._snapshot_batches_requested += 1
+                    self._snapshot_symbols_requested += len(batch)
+                try:
+                    observations = self._provider.snapshots(batch)
+                except Exception as exc:
+                    category = _failure_category(exc)
+                    with self._lock:
+                        self._provider_failures += 1
+                        self._snapshot_batches_failed += 1
+                        if isinstance(exc, MalformedCryptoQuoteError):
+                            self._malformed_quotes += 1
+                        if isinstance(exc, UnsupportedCryptoSymbolError):
+                            self._unsupported_symbols += 1
+                    failed += 1
+                    last_failure_category = category
+                    continue
+                with self._lock:
+                    self._snapshot_batches_succeeded += 1
+                    self._snapshot_symbols_returned += len(observations)
+                succeeded += 1
                 received += len(observations)
                 accepted += sum(1 for item in observations if self.admit(item))
-            self._publish_status(
-                CryptoResearchStatus.ACTIVE
-                if received
-                else CryptoResearchStatus.AWAITING_DATA
-            )
+            if failed and received:
+                with self._lock:
+                    self._refreshes_partial += 1
+                self._publish_status(
+                    CryptoResearchStatus.PARTIAL_DATA,
+                    last_failure_category,
+                )
+            elif failed:
+                self._publish_status(
+                    CryptoResearchStatus.PROVIDER_ERROR,
+                    last_failure_category,
+                )
+            elif succeeded:
+                with self._lock:
+                    self._refreshes_complete += 1
+                self._publish_status(
+                    CryptoResearchStatus.ACTIVE
+                    if received
+                    else CryptoResearchStatus.AWAITING_DATA
+                )
             return accepted
         except Exception as exc:
             with self._lock:
@@ -228,6 +279,13 @@ class CryptoResearchRuntime:
                 self._episodes_persisted,
                 self._duplicates_suppressed,
                 self._provider_failures,
+                self._snapshot_batches_requested,
+                self._snapshot_batches_succeeded,
+                self._snapshot_batches_failed,
+                self._snapshot_symbols_requested,
+                self._snapshot_symbols_returned,
+                self._refreshes_partial,
+                self._refreshes_complete,
                 self._malformed_quotes,
                 self._unsupported_symbols,
                 self._stale_quotes,
@@ -247,6 +305,13 @@ class CryptoResearchRuntime:
             "crypto_episodes_persisted": metrics.crypto_episodes_persisted,
             "crypto_duplicates_suppressed": metrics.crypto_duplicates_suppressed,
             "crypto_provider_failures": metrics.provider_failures,
+            "crypto_snapshot_batches_requested": metrics.snapshot_batches_requested,
+            "crypto_snapshot_batches_succeeded": metrics.snapshot_batches_succeeded,
+            "crypto_snapshot_batches_failed": metrics.snapshot_batches_failed,
+            "crypto_snapshot_symbols_requested": metrics.snapshot_symbols_requested,
+            "crypto_snapshot_symbols_returned": metrics.snapshot_symbols_returned,
+            "crypto_refreshes_partial": metrics.refreshes_partial,
+            "crypto_refreshes_complete": metrics.refreshes_complete,
             "crypto_malformed_quotes": metrics.malformed_quotes,
             "crypto_unsupported_symbols": metrics.unsupported_symbols,
         }

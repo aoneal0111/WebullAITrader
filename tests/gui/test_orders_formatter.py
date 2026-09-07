@@ -94,6 +94,10 @@ def test_format_orders_creates_dashboard_rows() -> None:
         "AAPL", "BUY", "LIMIT", "10", "0", "10",
         "101.25", "\u2014", "\u2014", "ACCEPTED",
     )
+    assert snapshot.updated_at == (
+        NOW.astimezone().strftime("%H:%M:%S"),
+        NOW.astimezone().strftime("%H:%M:%S"),
+    )
 
 
 def test_format_orders_preserves_immutable_rows() -> None:

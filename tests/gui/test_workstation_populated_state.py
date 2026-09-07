@@ -104,14 +104,14 @@ def test_populated_candidate_renders_without_overflow(
 
     workspace = dashboard.market_workspace
     assert workspace.runtime_controls_section.isHidden()
-    assert (
-        workspace.opportunities_section.height()
-        / (workspace.opportunities_section.height() + workspace.positions_section.height())
-    ) < 0.40
-    assert workspace.positions_section.height() > workspace.opportunities_section.height()
+    assert workspace.opportunities_section.height() >= workspace.positions_section.height()
+    assert workspace.crypto_scanner_section.height() == workspace.opportunities_section.height()
     assert workspace.market_section.height() >= 350
-    assert workspace.reasoning_section.isVisible()
-    assert workspace.orders_section.isVisible()
+    assert not hasattr(workspace, "reasoning_section")
+    assert not hasattr(workspace, "orders_section")
+    assert workspace.positions_panel.activity_tabs.indexOf(
+        workspace.positions_panel.recent_orders_panel
+    ) == 2
     assert workspace.portfolio_section.height() <= 116
     assert workspace.portfolio_summary._columns == 8
     for card in workspace.portfolio_summary._card_order:
@@ -132,9 +132,10 @@ def test_empty_workstation_keeps_scanner_and_activity_states_compact(
 
     workspace = dashboard.market_workspace
     assert workspace.watchlist._table._empty_state.isVisible()
-    assert workspace.opportunities_section.height() < workspace.market_section.height()
+    assert workspace.opportunities_section.height() >= workspace.market_section.height()
+    assert workspace.crypto_scanner_section.height() == workspace.opportunities_section.height()
     assert workspace.activity_section.parentWidget() is workspace.right_splitter
     assert workspace.activity_panel._table.rowCount() == 0
-    assert workspace.reasoning_section.isVisible()
+    assert not hasattr(workspace, "reasoning_section")
     assert workspace.portfolio_summary._columns == 8
     assert all(card.height() >= 48 for card in workspace.portfolio_summary._card_order)

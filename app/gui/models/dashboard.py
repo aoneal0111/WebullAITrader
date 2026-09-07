@@ -123,6 +123,7 @@ class PositionsSnapshot:
 class OrdersSnapshot:
     rows: tuple[tuple[str, ...], ...]
     protective_rows: frozenset[int] = frozenset()
+    updated_at: tuple[str, ...] = ()
 
     @classmethod
     def initial(cls) -> "OrdersSnapshot":

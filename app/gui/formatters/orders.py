@@ -39,6 +39,10 @@ def format_orders(snapshot: OrdersReadModelSnapshot) -> OrdersSnapshot:
             index for index, order in enumerate(visible)
             if has_explicit_protection_evidence(order)
         ),
+        updated_at=tuple(
+            order.updated_at.astimezone().strftime("%H:%M:%S")
+            for order in visible
+        ),
     )
 
 

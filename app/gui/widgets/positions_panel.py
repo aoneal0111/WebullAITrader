@@ -3,13 +3,14 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QTableWidgetItem, QVBoxLayout,
-    QWidget,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QTabWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from app.gui.design.tokens import Colors
 from app.gui.models import PositionsSnapshot
 from app.gui.widgets.data_table import StyledDataTable
+from app.gui.widgets.orders_panel import MissionControlOrdersPanel
 
 
 class PositionsPanel(QWidget):
@@ -70,10 +71,6 @@ class PositionsPanel(QWidget):
         management_layout.addLayout(protection)
         layout.addWidget(self._management)
 
-        self._active_heading = QLabel("ACTIVE")
-        self._active_heading.setObjectName("sectionTitle")
-        layout.addWidget(self._active_heading)
-
         self._table = StyledDataTable(
             (
                 "Symbol", "Side", "Size", "Average Entry", "Mark",
@@ -86,11 +83,6 @@ class PositionsPanel(QWidget):
             icon="\u25ce",
         )
 
-        layout.addWidget(self._table)
-
-        self._closed_heading = QLabel("CLOSED / RECENT")
-        self._closed_heading.setObjectName("sectionTitle")
-        layout.addWidget(self._closed_heading)
         self._closed_table = StyledDataTable(
             (
                 "Symbol", "Side", "Size", "Average Entry", "Mark",
@@ -102,7 +94,20 @@ class PositionsPanel(QWidget):
             "Recently closed PAPER positions will appear here.",
             icon="\u25ce",
         )
-        layout.addWidget(self._closed_table)
+        self.recent_orders_panel = MissionControlOrdersPanel()
+        self.activity_tabs = QTabWidget()
+        self.activity_tabs.setObjectName("positionOrderActivityTabs")
+        self.activity_tabs.addTab(self._table, "ACTIVE")
+        self.activity_tabs.addTab(self._closed_table, "CLOSED / RECENT")
+        self.activity_tabs.addTab(self.recent_orders_panel, "RECENT ORDERS")
+        self.recent_orders_panel.active_orders_changed.connect(
+            self._show_active_orders
+        )
+        layout.addWidget(self.activity_tabs, 1)
+
+    def _show_active_orders(self, has_active_orders: bool) -> None:
+        if has_active_orders:
+            self.activity_tabs.setCurrentWidget(self.recent_orders_panel)
 
     def render(self, snapshot: PositionsSnapshot) -> None:
         rows = snapshot.rows

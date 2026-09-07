@@ -68,9 +68,15 @@ def test_production_main_window_keeps_trade_intelligence_in_middle_row(
         assert trade.height() > 300
         assert workspace.trade_intelligence.isVisible()
         assert workspace.opportunities_section.isVisible()
-        assert 350 < workspace.opportunities_section.width() < 600
+        assert workspace.crypto_scanner_section.isVisible()
+        assert workspace.lower_splitter.count() == 2
+        assert workspace.lower_splitter.orientation() == Qt.Orientation.Horizontal
+        assert workspace.opportunities_section.width() > 500
+        assert abs(
+            workspace.opportunities_section.width()
+            - workspace.crypto_scanner_section.width()
+        ) <= workspace.lower_splitter.handleWidth() + 2
         assert workspace.positions_section.isVisible()
-        assert workspace.positions_section.width() > workspace.opportunities_section.width()
 
         total = sum(middle.sizes())
         left_ratio = middle.sizes()[0] / total

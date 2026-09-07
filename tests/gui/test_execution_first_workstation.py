@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication
 from app.composition import create_desktop_composition
 from app.gui.main_window import MainWindow
 from app.gui.pages.orders import OrdersPage
+from app.gui.formatters import format_orders
 from app.gui.models import PositionsSnapshot, WatchlistSnapshot
 from app.operations_core import OperationsOrder
 from app.read_models.orders import OrderReadModel, OrdersReadModelSnapshot
@@ -132,7 +133,8 @@ def test_mission_control_prioritizes_positions_orders_and_compact_account(
 
     workspace = window.dashboard.market_workspace
     assert workspace.positions_section.isVisible()
-    assert workspace.orders_section.isVisible()
+    assert not hasattr(workspace, "orders_section")
+    assert workspace.positions_panel.activity_tabs.tabText(2) == "RECENT ORDERS"
     assert workspace.market_overview_section.parentWidget() is None
     assert tuple(workspace.portfolio_summary._cards) == (
         "Equity", "Cash", "Buying Power", "Unrealized P/L",
@@ -147,6 +149,23 @@ def test_mission_control_prioritizes_positions_orders_and_compact_account(
     workspace.render(WatchlistSnapshot())
     application.processEvents()
     assert workspace.positions_panel._table.item(0, 0).text() == "PMI"
+
+    workspace.orders_panel.render(format_orders(OrdersReadModelSnapshot((
+        OrderReadModel(
+            order_id="working-1", symbol="PMI", side="BUY", quantity="400",
+            status="WORKING", updated_at=NOW, order_type="LIMIT",
+            limit_price="5.09", remaining_quantity="400",
+        ),
+    ))))
+    compact = workspace.orders_panel._table
+    assert workspace.positions_panel.activity_tabs.currentWidget() is (
+        workspace.orders_panel
+    )
+    assert compact.rowCount() == 1
+    assert tuple(compact.item(0, column).text() for column in range(6)) == (
+        "PMI", "BUY", "400", "LMT 5.09", "WORKING",
+        NOW.astimezone().strftime("%H:%M:%S"),
+    )
 
 
 def test_projection_rendering_does_not_call_execution_services() -> None:

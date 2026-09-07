@@ -88,6 +88,16 @@ def test_shell_retains_existing_pages_and_command_boundaries(window) -> None:
     assert window.flatten_button.isEnabled() is False
 
 
+def test_detailed_scanner_page_retains_equity_crypto_tabs(window) -> None:
+    assert window.scanner_research_tabs.count() == 2
+    assert tuple(
+        window.scanner_research_tabs.tabText(index)
+        for index in range(window.scanner_research_tabs.count())
+    ) == ("Equity Scanner", "Crypto Research")
+    assert window.scanner_research_tabs.widget(0) is window.watchlist
+    assert window.scanner_research_tabs.widget(1) is window.crypto_research
+
+
 def test_supported_minimum_size_has_no_horizontal_dashboard_scroll(
     application,
     window,
@@ -148,6 +158,16 @@ def test_dashboard_preserves_content_at_supported_resolutions(
     market_workspace = window.dashboard.market_workspace
 
     assert market_workspace.splitter.orientation() == Qt.Orientation.Horizontal
+    assert market_workspace.lower_splitter.orientation() == Qt.Orientation.Horizontal
+    assert market_workspace.lower_splitter.count() == 2
+    assert market_workspace.opportunities_section.isVisible()
+    assert market_workspace.crypto_scanner_section.isVisible()
+    assert market_workspace.watchlist._table.horizontalScrollBarPolicy() == (
+        Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    )
+    assert market_workspace.crypto_research.table.horizontalScrollBarPolicy() == (
+        Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    )
 
     # Responsive behavior is based on the workspace's actual usable width,
     # not the outer window width. Sidebar and page margins reduce the space
@@ -366,7 +386,11 @@ def test_laptop_position_management_owns_primary_workspace(application, window) 
     assert market.layout_mode == "compact"
     assert market.positions_section.height() > market.focus_section.height()
     assert market.left_column.width() > market.market_section.width()
-    assert market.reasoning_section.isVisible()
+    assert not hasattr(market, "reasoning_section")
+    assert not hasattr(market, "orders_section")
+    assert market.lower_splitter.orientation() == Qt.Orientation.Horizontal
+    assert market.lower_splitter.count() == 2
+    assert market.crypto_scanner_section.isVisible()
     assert market.splitter.widget(0) is market.left_column
     assert market.splitter.widget(1) is market.right_workspace
     assert market.splitter.count() == 2
