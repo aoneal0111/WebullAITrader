@@ -99,6 +99,25 @@ def test_scanner_universe_observability_is_explicit_and_dedicated(tmp_path):
     assert enabled.scanner_universe_observability_queue_capacity == 211
 
 
+def test_memory_observability_is_explicit_bounded_and_dedicated(tmp_path):
+    default = load_configuration({})
+    enabled = load_configuration({
+        "ATLAS_MEMORY_OBSERVABILITY_ENABLED": "true",
+        "ATLAS_MEMORY_OBSERVABILITY_PATH": str(tmp_path / "memory.jsonl"),
+        "ATLAS_MEMORY_OBSERVABILITY_INTERVAL_SECONDS": "12",
+        "ATLAS_MEMORY_TRACEMALLOC_ENABLED": "true",
+    })
+
+    assert default.memory_observability_enabled is False
+    assert default.memory_tracemalloc_enabled is False
+    assert default.memory_observability_interval_seconds == 60.0
+    assert default.memory_observability_path.name == "memory-observability.jsonl"
+    assert enabled.memory_observability_enabled is True
+    assert enabled.memory_tracemalloc_enabled is True
+    assert enabled.memory_observability_interval_seconds == 30.0
+    assert enabled.memory_observability_path == (tmp_path / "memory.jsonl").resolve()
+
+
 def test_dynamic_momentum_discovery_is_disabled_and_dedicated(tmp_path):
     default = load_configuration({})
     enabled = load_configuration({

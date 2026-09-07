@@ -124,17 +124,20 @@ class MemoryObservability:
             return None
 
     def close(self, *, timeout_seconds: float = 2.0) -> bool:
+        if timeout_seconds < 0:
+            raise ValueError("timeout_seconds must be nonnegative")
+        deadline = monotonic() + timeout_seconds
         self._stop.set()
         thread = self._thread
         if thread is not None:
-            thread.join(timeout_seconds)
+            thread.join(max(0.0, deadline - monotonic()))
         try:
-            self._queue.put_nowait(None)
+            self._queue.put(None, timeout=max(0.0, deadline - monotonic()))
         except Full:
             pass
         writer = self._writer
         if writer is not None:
-            writer.join(timeout_seconds)
+            writer.join(max(0.0, deadline - monotonic()))
         return (thread is None or not thread.is_alive()) and (writer is None or not writer.is_alive())
 
     def metrics(self) -> Mapping[str, int]:

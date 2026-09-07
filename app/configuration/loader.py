@@ -359,6 +359,18 @@ def load_configuration(env=None):
         _int(e, "DYNAMIC_MOMENTUM_DISCOVERY_QUEUE_CAPACITY", 1024),
         _int(e, "DYNAMIC_MOMENTUM_DISCOVERY_BREADTH", 100),
         _int(e, "DYNAMIC_MOMENTUM_DISCOVERY_REFRESH_SECONDS", 60),
+        _bool(e.get("ATLAS_MEMORY_OBSERVABILITY_ENABLED", "false")),
+        Path(
+            e.get("ATLAS_MEMORY_OBSERVABILITY_PATH", "").strip()
+            or "memory-observability.jsonl"
+        ).resolve(),
+        max(
+            30.0,
+            _positive_float(
+                e, "ATLAS_MEMORY_OBSERVABILITY_INTERVAL_SECONDS", 60.0
+            ),
+        ),
+        _bool(e.get("ATLAS_MEMORY_TRACEMALLOC_ENABLED", "false")),
     )
 
 

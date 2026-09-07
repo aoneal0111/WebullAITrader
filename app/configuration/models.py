@@ -154,3 +154,7 @@ class OperationalConfiguration:
     dynamic_momentum_discovery_queue_capacity: int = 1024
     dynamic_momentum_discovery_breadth: int = 100
     dynamic_momentum_discovery_refresh_seconds: int = 60
+    memory_observability_enabled: bool = False
+    memory_observability_path: Path = Path("memory-observability.jsonl")
+    memory_observability_interval_seconds: float = 60.0
+    memory_tracemalloc_enabled: bool = False

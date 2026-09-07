@@ -33,6 +33,7 @@ from app.strategies.warrior_momentum.forward_runtime import management_context_a
 from app.trade_intelligence.runtime import TradeIntelligenceRuntimeObserver
 from app.entry_opportunity_value import EntryOpportunityValueRuntimeObserver
 from app.adaptive_entry_research import AdaptiveWorkingEntryObserver
+from app.memory_observability import MemoryObservability
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -66,10 +67,26 @@ class DesktopComposition:
     trade_intelligence_observer: TradeIntelligenceRuntimeObserver | None = None
     entry_opportunity_value_observer: EntryOpportunityValueRuntimeObserver | None = None
     adaptive_entry_research_observer: AdaptiveWorkingEntryObserver | None = None
+    memory_observability: MemoryObservability | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         """Close composed resources in lifecycle order."""
 
+        diagnostics = self.memory_observability
+        if diagnostics is not None and diagnostics.enabled:
+            try:
+                diagnostics.record_lifecycle("shutdown")
+            except Exception:
+                pass
+            try:
+                diagnostics.sample()
+            except Exception:
+                pass
+            try:
+                diagnostics.close(timeout_seconds=min(timeout_seconds, 2.0))
+            except Exception:
+                # Diagnostics have no authority over production shutdown.
+                pass
         runtime_stopped = self.runtime_service.close(
             timeout_seconds=timeout_seconds
         )
@@ -373,6 +390,60 @@ def create_desktop_composition(
         position_source=adaptive_position,
         warrior_source=warrior_forward_sidecar.adaptive_entry_context,
     )
+
+    def optional_metrics(root: object | None, *attributes: str) -> dict[str, int]:
+        """Resolve a live diagnostic owner without creating or retaining one."""
+
+        current = root
+        for attribute in attributes:
+            current = getattr(current, attribute, None)
+            if current is None:
+                return {}
+        provider = getattr(current, "memory_metrics", None)
+        return {} if not callable(provider) else dict(provider())
+
+    runtime_service_holder: dict[str, object] = {}
+
+    def realtime_scanner_metrics() -> dict[str, int]:
+        service = runtime_service_holder.get("service")
+        lock = getattr(service, "_lock", None)
+        if lock is None:
+            return {}
+        with lock:
+            driver = getattr(service, "_driver", None)
+        return optional_metrics(driver, "_scanner", "_engine")
+
+    memory_observability = MemoryObservability(
+        {
+            "warrior_forward_runtime": lambda: optional_metrics(
+                warrior_forward_sidecar, "_service"
+            ),
+            "trade_intelligence_runtime": trade_intelligence_observer.memory_metrics,
+            "trade_intelligence_discovery_worker": lambda: optional_metrics(
+                trade_intelligence_observer, "_service", "_discovery_worker"
+            ),
+            "multi_strategy_discovery_engine": lambda: optional_metrics(
+                trade_intelligence_observer,
+                "_service",
+                "_discovery_worker",
+                "engine",
+            ),
+            "realtime_scanner": realtime_scanner_metrics,
+            "adaptive_entry_runtime": adaptive_entry_research_observer.memory_metrics,
+            "adaptive_entry_worker": lambda: optional_metrics(
+                adaptive_entry_research_observer, "_worker"
+            ),
+            "timeline_projection": runtime_projections.timeline_projection.memory_metrics,
+        },
+        enabled=operational_configuration.memory_observability_enabled,
+        path=operational_configuration.memory_observability_path,
+        interval_seconds=(
+            operational_configuration.memory_observability_interval_seconds
+        ),
+        tracemalloc_enabled=(
+            operational_configuration.memory_tracemalloc_enabled
+        ),
+    )
     if warrior_forward_sidecar.enabled or trade_intelligence_observer.enabled:
         market_event_observer = CompositeMarketEventObserver(
             market_event_observer, warrior_forward_sidecar,
@@ -386,11 +457,15 @@ def create_desktop_composition(
         event_sink=runtime_projections.sink,
         market_event_observer=market_event_observer,
     )
+    runtime_service_holder["service"] = runtime_service
 
     trading_service = TradingService(
         placement_runtime,
         cancellation_runtime,
     )
+    if memory_observability.enabled:
+        memory_observability.record_lifecycle("startup")
+        memory_observability.start()
 
     return DesktopComposition(
         bus=bus,
@@ -413,6 +488,7 @@ def create_desktop_composition(
         trade_intelligence_observer=trade_intelligence_observer,
         entry_opportunity_value_observer=entry_opportunity_value_observer,
         adaptive_entry_research_observer=adaptive_entry_research_observer,
+        memory_observability=memory_observability,
     )
 __all__ = [
     "DesktopComposition",

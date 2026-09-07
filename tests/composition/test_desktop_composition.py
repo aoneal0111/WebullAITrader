@@ -1,6 +1,10 @@
+import json
 from threading import Event
+from time import monotonic, sleep
 
 import app.composition.desktop_runtime as desktop_runtime_module
+import app.composition.desktop as desktop_module
+from app.configuration import load_configuration
 from app.composition import (
     DesktopComposition,
     create_desktop_composition,
@@ -37,8 +41,126 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
         assert composition.entry_opportunity_value_observer.metrics().enabled is False
         assert composition.adaptive_entry_research_observer is not None
         assert composition.adaptive_entry_research_observer.metrics().enabled is False
+        assert composition.memory_observability is not None
+        assert composition.memory_observability.enabled is False
     finally:
         composition.close(timeout_seconds=1.0)
+
+
+def test_disabled_memory_observability_has_no_output(monkeypatch, tmp_path) -> None:
+    output = tmp_path / "disabled-memory.jsonl"
+    configuration = load_configuration({
+        "ATLAS_MEMORY_OBSERVABILITY_PATH": str(output),
+    })
+    monkeypatch.setattr(desktop_module, "load_configuration", lambda: configuration)
+
+    composition = create_desktop_composition(
+        paper_persistence_path=tmp_path / "paper.sqlite3",
+    )
+    try:
+        assert composition.memory_observability is not None
+        assert composition.memory_observability.enabled is False
+        assert not output.exists()
+    finally:
+        composition.close(timeout_seconds=1.0)
+
+    assert not output.exists()
+
+
+def test_enabled_memory_observability_composes_real_providers_and_jsonl(
+    monkeypatch, tmp_path,
+) -> None:
+    output = tmp_path / "premarket-memory.jsonl"
+    configuration = load_configuration({
+        "ATLAS_MEMORY_OBSERVABILITY_ENABLED": "true",
+        "ATLAS_MEMORY_OBSERVABILITY_PATH": str(output),
+    })
+    monkeypatch.setattr(desktop_module, "load_configuration", lambda: configuration)
+
+    composition = create_desktop_composition(
+        paper_persistence_path=tmp_path / "paper.sqlite3",
+    )
+    diagnostics = composition.memory_observability
+    try:
+        assert diagnostics is not None and diagnostics.enabled
+        assert diagnostics._thread is not None and diagnostics._thread.is_alive()
+        assert set(diagnostics._providers) == {
+            "warrior_forward_runtime",
+            "trade_intelligence_runtime",
+            "trade_intelligence_discovery_worker",
+            "multi_strategy_discovery_engine",
+            "realtime_scanner",
+            "adaptive_entry_runtime",
+            "adaptive_entry_worker",
+            "timeline_projection",
+        }
+        deadline = monotonic() + 1.0
+        while not output.exists() and monotonic() < deadline:
+            sleep(0.01)
+        assert output.exists()
+        failures = diagnostics.metrics()["failures"]
+        diagnostics._providers["failing_provider"] = lambda: (
+            _ for _ in ()
+        ).throw(RuntimeError("provider failure"))
+        snapshot = diagnostics.sample()
+        assert snapshot is not None
+        assert diagnostics.metrics()["failures"] == failures + 1
+    finally:
+        composition.close(timeout_seconds=1.0)
+
+    rows = [
+        json.loads(line)
+        for line in output.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert rows
+    assert rows[0]["metrics"]["lifecycle_startup"] == 1
+    assert "timeline_projection_timeline_count" in rows[0]["metrics"]
+    assert rows[-1]["metrics"]["lifecycle_shutdown"] == 1
+
+
+def test_memory_provider_and_close_failures_cannot_block_runtime_shutdown(
+    monkeypatch, tmp_path,
+) -> None:
+    class FailingMemoryObservability:
+        enabled = True
+
+        def __init__(self, providers, **_kwargs):
+            self.providers = providers
+            self.started = False
+            self.closed = False
+
+        def record_lifecycle(self, _event):
+            return None
+
+        def start(self):
+            self.started = True
+            self.providers["timeline_projection"] = lambda: (_ for _ in ()).throw(
+                RuntimeError("provider failure")
+            )
+
+        def close(self, **_kwargs):
+            self.closed = True
+            raise RuntimeError("diagnostic close failure")
+
+    configuration = load_configuration({
+        "ATLAS_MEMORY_OBSERVABILITY_ENABLED": "true",
+        "ATLAS_MEMORY_OBSERVABILITY_PATH": str(tmp_path / "memory.jsonl"),
+    })
+    monkeypatch.setattr(desktop_module, "load_configuration", lambda: configuration)
+    monkeypatch.setattr(
+        desktop_module, "MemoryObservability", FailingMemoryObservability,
+    )
+    composition = create_desktop_composition(
+        driver_factory=lambda: FakeDriver(),
+        paper_persistence_path=tmp_path / "paper.sqlite3",
+    )
+    diagnostics = composition.memory_observability
+    assert diagnostics is not None and diagnostics.started
+    assert composition.runtime_service.start()
+    assert composition.close(timeout_seconds=1.0)
+    assert diagnostics.closed
+    assert composition.runtime_service.status is RuntimeServiceStatus.STOPPED
 
 
 def test_desktop_composition_reconciles_paper_execution_before_ready(tmp_path) -> None:
