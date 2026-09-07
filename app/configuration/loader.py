@@ -371,6 +371,14 @@ def load_configuration(env=None):
             ),
         ),
         _bool(e.get("ATLAS_MEMORY_TRACEMALLOC_ENABLED", "false")),
+        _bool(e.get("CRYPTO_DISCOVERY_ENABLED", "false")),
+        _symbols(e.get("CRYPTO_DISCOVERY_SYMBOLS", "")),
+        _int(e, "CRYPTO_DISCOVERY_REFRESH_SECONDS", 60),
+        _int(e, "CRYPTO_DISCOVERY_QUEUE_CAPACITY", 256),
+        Path(
+            e.get("CRYPTO_DISCOVERY_PATH", "").strip()
+            or "crypto-research.jsonl"
+        ).resolve(),
     )
 
 

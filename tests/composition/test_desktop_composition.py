@@ -92,6 +92,7 @@ def test_enabled_memory_observability_composes_real_providers_and_jsonl(
             "realtime_scanner",
             "adaptive_entry_runtime",
             "adaptive_entry_worker",
+            "crypto_research",
             "timeline_projection",
         }
         deadline = monotonic() + 1.0

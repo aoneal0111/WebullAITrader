@@ -120,7 +120,13 @@ class AuditedMarketDataClient:
 
     def __getattr__(self, name: str):
         value = getattr(self._client, name)
-        if name in {"market_data", "instrument", "screener", "fundamentals"}:
+        if name in {
+            "market_data",
+            "crypto_market_data",
+            "instrument",
+            "screener",
+            "fundamentals",
+        }:
             return _AuditedNamespace(
                 value, self._guard, self._identity, self._endpoint, name
             )

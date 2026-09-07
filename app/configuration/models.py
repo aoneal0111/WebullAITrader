@@ -158,3 +158,8 @@ class OperationalConfiguration:
     memory_observability_path: Path = Path("memory-observability.jsonl")
     memory_observability_interval_seconds: float = 60.0
     memory_tracemalloc_enabled: bool = False
+    crypto_discovery_enabled: bool = False
+    crypto_discovery_symbols: tuple[str, ...] = ()
+    crypto_discovery_refresh_seconds: int = 60
+    crypto_discovery_queue_capacity: int = 256
+    crypto_discovery_path: Path = Path("crypto-research.jsonl")

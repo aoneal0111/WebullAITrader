@@ -34,6 +34,11 @@ from app.trade_intelligence.runtime import TradeIntelligenceRuntimeObserver
 from app.entry_opportunity_value import EntryOpportunityValueRuntimeObserver
 from app.adaptive_entry_research import AdaptiveWorkingEntryObserver
 from app.memory_observability import MemoryObservability
+from app.crypto_research import (
+    CryptoPair,
+    CryptoResearchRuntime,
+    WebullCryptoResearchProvider,
+)
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -67,11 +72,19 @@ class DesktopComposition:
     trade_intelligence_observer: TradeIntelligenceRuntimeObserver | None = None
     entry_opportunity_value_observer: EntryOpportunityValueRuntimeObserver | None = None
     adaptive_entry_research_observer: AdaptiveWorkingEntryObserver | None = None
+    crypto_research_runtime: CryptoResearchRuntime | None = None
     memory_observability: MemoryObservability | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         """Close composed resources in lifecycle order."""
 
+        crypto = self.crypto_research_runtime
+        if crypto is not None:
+            try:
+                crypto.close(timeout_seconds=min(timeout_seconds, 2.0))
+            except Exception:
+                # Research has no authority over application shutdown.
+                pass
         diagnostics = self.memory_observability
         if diagnostics is not None and diagnostics.enabled:
             try:
@@ -391,6 +404,27 @@ def create_desktop_composition(
         warrior_source=warrior_forward_sidecar.adaptive_entry_context,
     )
 
+    crypto_data_client = LazyOfficialDataClient(
+        lambda: AuditedMarketDataClient(
+            MarketDataClientFactory(chart_market_configuration).create(
+                timeout_seconds=5.0
+            ),
+            chart_request_guard,
+            chart_market_configuration,
+        )
+    )
+    crypto_research_runtime = CryptoResearchRuntime(
+        enabled=operational_configuration.crypto_discovery_enabled,
+        provider=WebullCryptoResearchProvider(crypto_data_client),
+        configured_pairs=tuple(
+            CryptoPair.configured(value)
+            for value in operational_configuration.crypto_discovery_symbols
+        ),
+        path=operational_configuration.crypto_discovery_path,
+        queue_capacity=operational_configuration.crypto_discovery_queue_capacity,
+        refresh_seconds=operational_configuration.crypto_discovery_refresh_seconds,
+    )
+
     def optional_metrics(root: object | None, *attributes: str) -> dict[str, int]:
         """Resolve a live diagnostic owner without creating or retaining one."""
 
@@ -433,6 +467,7 @@ def create_desktop_composition(
             "adaptive_entry_worker": lambda: optional_metrics(
                 adaptive_entry_research_observer, "_worker"
             ),
+            "crypto_research": crypto_research_runtime.memory_metrics,
             "timeline_projection": runtime_projections.timeline_projection.memory_metrics,
         },
         enabled=operational_configuration.memory_observability_enabled,
@@ -449,6 +484,9 @@ def create_desktop_composition(
             market_event_observer, warrior_forward_sidecar,
             trade_intelligence_observer, adaptive_entry_research_observer,
         )
+
+    if crypto_research_runtime.enabled:
+        crypto_research_runtime.start()
 
     runtime_service = create_desktop_runtime_service(
         bus,
@@ -488,6 +526,7 @@ def create_desktop_composition(
         trade_intelligence_observer=trade_intelligence_observer,
         entry_opportunity_value_observer=entry_opportunity_value_observer,
         adaptive_entry_research_observer=adaptive_entry_research_observer,
+        crypto_research_runtime=crypto_research_runtime,
         memory_observability=memory_observability,
     )
 __all__ = [

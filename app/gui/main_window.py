@@ -13,12 +13,14 @@ from PySide6.QtWidgets import (
     QMenu,
     QStackedWidget,
     QStatusBar,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from app.gui.design.theme import application_stylesheet
 from app.gui.pages.dashboard import DashboardPage
+from app.gui.pages.crypto_research import CryptoResearchPage
 from app.gui.pages.orders import OrdersPage
 from app.gui.pages.placeholder import PlaceholderPage
 from app.gui.pages.replay import ReplayPage
@@ -177,7 +179,12 @@ class MainWindow(QMainWindow):
         self.decisions = DecisionsPanel()
         self.pages.addWidget(self.decisions)  # 6
         self.watchlist = WatchlistPanel()
-        self.pages.addWidget(self.watchlist)  # 7
+        self.scanner_research_tabs = QTabWidget()
+        self.scanner_research_tabs.setObjectName("scannerResearchTabs")
+        self.scanner_research_tabs.addTab(self.watchlist, "Equity Scanner")
+        self.crypto_research = CryptoResearchPage()
+        self.scanner_research_tabs.addTab(self.crypto_research, "Crypto Research")
+        self.pages.addWidget(self.scanner_research_tabs)  # 7
         self.replay = ReplayPage()
         self.pages.addWidget(self.replay)  # 8
         self.operations = self.dashboard.operator_workspace
