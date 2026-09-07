@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import FrozenInstanceError
+import os
+
 import pytest
 
 from app.memory_observability import MemoryObservability, summarize_jsonl
+from app.memory_observability import runtime as memory_runtime
 
 
 def test_disabled_by_default_has_no_sampling_or_side_effect(tmp_path):
@@ -83,3 +86,58 @@ def test_repeated_identical_events_are_counted_without_semantic_assumptions():
     second = diagnostics.sample()
     assert second is not None and dict(second.metrics)["stream_unique_symbols"] == 1
     diagnostics.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process-memory contract")
+def test_windows_process_memory_returns_current_positive_values():
+    rss_bytes, private_bytes = memory_runtime._process_memory()
+
+    assert isinstance(rss_bytes, int) and rss_bytes > 0
+    assert isinstance(private_bytes, int) and private_bytes > 0
+
+
+def test_process_memory_values_are_preserved_by_snapshot_serialization(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(memory_runtime.os, "name", "nt")
+    monkeypatch.setattr(
+        memory_runtime, "_windows_process_memory", lambda: (12_345, 67_890)
+    )
+    diagnostics = MemoryObservability(enabled=True, path=tmp_path / "memory.jsonl")
+
+    snapshot = diagnostics.sample()
+
+    assert snapshot is not None
+    assert snapshot.to_dict()["rss_bytes"] == 12_345
+    assert snapshot.to_dict()["private_bytes"] == 67_890
+    assert diagnostics.metrics()["process_memory_query_failures"] == 0
+    diagnostics.close()
+
+
+def test_process_memory_query_failure_is_contained_and_classified(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(memory_runtime.os, "name", "nt")
+
+    def fail_query():
+        raise OSError("synthetic query failure")
+
+    monkeypatch.setattr(memory_runtime, "_windows_process_memory", fail_query)
+    diagnostics = MemoryObservability(enabled=True, path=tmp_path / "memory.jsonl")
+
+    snapshot = diagnostics.sample()
+
+    assert snapshot is not None
+    assert snapshot.rss_bytes is None
+    assert snapshot.private_bytes is None
+    assert diagnostics.metrics()["process_memory_query_failures"] == 1
+    assert diagnostics.metrics()["process_memory_unavailable"] == 0
+    diagnostics.close()
+
+
+def test_unsupported_process_memory_mechanism_is_classified(monkeypatch):
+    failures: list[str] = []
+    monkeypatch.setattr(memory_runtime.os, "name", "unsupported")
+
+    assert memory_runtime._process_memory(failures.append) == (None, None)
+    assert failures == ["unavailable"]

@@ -6,6 +6,7 @@ all state/queues are bounded; failures are isolated from callers.
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import threading
@@ -70,6 +71,8 @@ class MemoryObservability:
         self._writer: threading.Thread | None = None
         self._failures = 0
         self._dropped = 0
+        self._process_memory_unavailable = 0
+        self._process_memory_query_failures = 0
         self._lifecycle: dict[str, int] = {}
 
     def record_lifecycle(self, event: str) -> None:
@@ -113,7 +116,15 @@ class MemoryObservability:
                 current, peak = tracemalloc.get_traced_memory()
                 stats = tracemalloc.take_snapshot().statistics("traceback")[: self._top_allocations]
                 top = tuple((str(item.traceback[0]), item.size, item.count) for item in stats)
-            snapshot = MemoryDiagnosticSnapshot(datetime.now(UTC), *_process_memory(), threading.active_count(), tuple(sorted(values.items())), current, peak, top)
+            snapshot = MemoryDiagnosticSnapshot(
+                datetime.now(UTC),
+                *_process_memory(self._record_process_memory_failure),
+                threading.active_count(),
+                tuple(sorted(values.items())),
+                current,
+                peak,
+                top,
+            )
             try:
                 self._queue.put_nowait(snapshot)
             except Full:
@@ -141,7 +152,19 @@ class MemoryObservability:
         return (thread is None or not thread.is_alive()) and (writer is None or not writer.is_alive())
 
     def metrics(self) -> Mapping[str, int]:
-        return {"queue_depth": self._queue.qsize(), "failures": self._failures, "drops": self._dropped}
+        return {
+            "queue_depth": self._queue.qsize(),
+            "failures": self._failures,
+            "drops": self._dropped,
+            "process_memory_unavailable": self._process_memory_unavailable,
+            "process_memory_query_failures": self._process_memory_query_failures,
+        }
+
+    def _record_process_memory_failure(self, reason: str) -> None:
+        if reason == "unavailable":
+            self._process_memory_unavailable += 1
+        else:
+            self._process_memory_query_failures += 1
 
     def _sample_loop(self) -> None:
         while not self._stop.wait(self.interval_seconds):
@@ -169,12 +192,58 @@ def _env_bool(name: str, default: bool) -> bool:
     return default if value is None else value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _process_memory() -> tuple[int | None, int | None]:
+class _ProcessMemoryCountersEx(ctypes.Structure):
+    """Windows PROCESS_MEMORY_COUNTERS_EX layout."""
+
+    _fields_ = [
+        ("cb", ctypes.c_ulong),
+        ("PageFaultCount", ctypes.c_ulong),
+        ("PeakWorkingSetSize", ctypes.c_size_t),
+        ("WorkingSetSize", ctypes.c_size_t),
+        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+        ("PagefileUsage", ctypes.c_size_t),
+        ("PeakPagefileUsage", ctypes.c_size_t),
+        ("PrivateUsage", ctypes.c_size_t),
+    ]
+
+
+def _windows_process_memory() -> tuple[int, int]:
+    """Return current Windows working set and private commit, in bytes."""
+    counters = _ProcessMemoryCountersEx()
+    counters.cb = ctypes.sizeof(counters)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    psapi.GetProcessMemoryInfo.argtypes = (
+        ctypes.c_void_p,
+        ctypes.POINTER(_ProcessMemoryCountersEx),
+        ctypes.c_ulong,
+    )
+    psapi.GetProcessMemoryInfo.restype = ctypes.c_int
+    process = kernel32.GetCurrentProcess()
+    if not psapi.GetProcessMemoryInfo(
+        process, ctypes.byref(counters), counters.cb
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return int(counters.WorkingSetSize), int(counters.PrivateUsage)
+
+
+def _process_memory(
+    report_failure: Callable[[str], None] | None = None,
+) -> tuple[int | None, int | None]:
+    """Collect process memory without allowing diagnostics to affect callers."""
+    if os.name != "nt":
+        if report_failure is not None:
+            report_failure("unavailable")
+        return None, None
     try:
-        import psutil  # type: ignore
-        info = psutil.Process().memory_info()
-        return int(info.rss), int(getattr(info, "private", 0) or 0) or None
+        return _windows_process_memory()
     except Exception:
+        if report_failure is not None:
+            report_failure("query_failed")
         return None, None
 
 
