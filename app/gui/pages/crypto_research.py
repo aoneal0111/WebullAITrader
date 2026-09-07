@@ -105,10 +105,8 @@ class CryptoResearchPage(QWidget):
         status: CryptoResearchStatus = CryptoResearchStatus.AWAITING_DATA,
         last_failure_category: str | None = None,
     ) -> None:
-        status_text = f"Status: {status.value}"
-        if last_failure_category:
-            status_text += f" ({last_failure_category})"
-        self.status_label.setText(status_text)
+        self.status_label.setText(_operator_status(status))
+        self.status_label.setToolTip(_diagnostic_status(last_failure_category))
         self.empty_label.setText(_EMPTY_MESSAGES[status])
         self.table.setRowCount(len(rows))
         self.empty_label.setVisible(not rows)
@@ -208,10 +206,8 @@ class CryptoResearchPanel(QWidget):
                 else CryptoResearchStatus.AWAITING_DATA
             )
             failure = None
-        status_text = f"Status: {status.value.replace('_', ' ')}"
-        if failure:
-            status_text += f" ({failure})"
-        self.status_label.setText(status_text)
+        self.status_label.setText(_operator_status(status))
+        self.status_label.setToolTip(_diagnostic_status(failure))
         self.empty_label.setText(_EMPTY_MESSAGES[status])
         self.empty_label.setVisible(not rows)
         self.table.setVisible(bool(rows))
@@ -254,6 +250,18 @@ def _trend(value: Decimal | None) -> str:
     if value < 0:
         return "FALLING"
     return "FLAT"
+
+
+def _operator_status(status: CryptoResearchStatus) -> str:
+    """Keep the primary state distinct from supporting failure telemetry."""
+
+    return f"Status: {status.value.replace('_', ' ')}"
+
+
+def _diagnostic_status(last_failure_category: str | None) -> str:
+    if not last_failure_category:
+        return "No provider failure reported."
+    return f"Last provider failure category: {last_failure_category}"
 
 
 __all__ = ["CryptoResearchPage", "CryptoResearchPanel"]

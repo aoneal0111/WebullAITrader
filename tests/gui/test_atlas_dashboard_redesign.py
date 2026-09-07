@@ -7,6 +7,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QLabel, QScrollArea, QWidget
 
+from app.crypto_research import CryptoResearchStatus, CryptoResearchViewStore
 from app.gui.models import (
     AtlasActivityRow,
     AtlasActivitySnapshot,
@@ -467,7 +468,9 @@ def test_dashboard_uses_atlas_operator_terminology(application) -> None:
 
 def test_status_bar_summarizes_capabilities(application) -> None:
     del application
-    status = GlobalStatusBar(version="test")
+    crypto = CryptoResearchViewStore()
+    crypto.publish_status(CryptoResearchStatus.ACTIVE)
+    status = GlobalStatusBar(version="test", crypto_research_source=crypto)
     status.render_health(HealthDashboardSnapshot(
         overall_status="HEALTHY",
         status_level="good",
@@ -483,8 +486,32 @@ def test_status_bar_summarizes_capabilities(application) -> None:
 
     assert "Stocks \u2713" in status.capabilities.text()
     assert "Options \u2717" in status.capabilities.text()
-    assert "Crypto ?" in status.capabilities.text()
+    assert "Crypto Research \u2713" in status.capabilities.text()
+    assert "Crypto Trading ?" in status.capabilities.text()
     assert "Overnight \u2717" in status.capabilities.text()
+
+
+def test_status_bar_reports_disabled_research_without_trading_authority(
+    application,
+) -> None:
+    del application
+    crypto = CryptoResearchViewStore()
+    status = GlobalStatusBar(version="test", crypto_research_source=crypto)
+    status.render_health(HealthDashboardSnapshot(
+        overall_status="HEALTHY",
+        status_level="good",
+        metrics=(),
+        incident="No incidents.",
+        capabilities=(("Crypto", "Unavailable (Broker Not Supported)"),),
+    ))
+
+    assert "Crypto Research \u2717" in status.capabilities.text()
+    assert "Crypto Trading \u2717" in status.capabilities.text()
+
+    crypto.publish_status(CryptoResearchStatus.PARTIAL_DATA, "PROVIDER_ERROR")
+    status._update_time()
+    assert "Crypto Research \u2713" in status.capabilities.text()
+    assert "Crypto Trading \u2717" in status.capabilities.text()
 
 
 def test_market_workspace_puts_trade_intelligence_in_primary_splitter(application) -> None:

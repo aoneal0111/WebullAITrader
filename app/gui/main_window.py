@@ -61,7 +61,7 @@ from app.gui.formatters.warrior_paper import format_warrior_paper
 
 
 class MainWindow(QMainWindow):
-    _PRIMARY_LAYOUT_VERSION = 3
+    _PRIMARY_LAYOUT_VERSION = 4
 
     def __init__(
         self,

@@ -123,7 +123,8 @@ def test_mission_control_crypto_panel_reads_shared_view_only(application) -> Non
     assert workspace.lower_splitter.indexOf(workspace.crypto_scanner_section) == 1
     assert workspace.lower_splitter.count() == 2
     assert panel.disclosure.text() == "24/7 | RESEARCH ONLY | NO EXECUTION AUTHORITY"
-    assert panel.status_label.text() == "Status: PARTIAL DATA (PROVIDER_ERROR)"
+    assert panel.status_label.text() == "Status: PARTIAL DATA"
+    assert "PROVIDER_ERROR" in panel.status_label.toolTip()
     assert panel.table.rowCount() == 1
     assert panel.table.item(0, 0).text() == "1"
     assert panel.table.item(0, 1).text() == "BTC/USD"
@@ -253,9 +254,10 @@ def test_gui_renders_unavailable_volume_and_all_research_statuses(application) -
             status, "PROVIDER_ERROR" if status is CryptoResearchStatus.PROVIDER_ERROR else None
         )
         page.refresh()
-        assert status.value in page.status_label.text()
+        assert status.value.replace("_", " ") in page.status_label.text()
         if status is CryptoResearchStatus.PROVIDER_ERROR:
-            assert "PROVIDER_ERROR)" in page.status_label.text()
+            assert page.status_label.text() == "Status: PROVIDER ERROR"
+            assert "PROVIDER_ERROR" in page.status_label.toolTip()
     page.close()
     runtime.close()
 

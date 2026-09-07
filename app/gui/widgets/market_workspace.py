@@ -1018,9 +1018,9 @@ class MarketWorkspace(QWidget):
         self.middle_splitter.addWidget(self.market_section)
         for index in range(self.middle_splitter.count()):
             self.middle_splitter.setCollapsible(index, False)
-        self.middle_splitter.setStretchFactor(0, 64)
-        self.middle_splitter.setStretchFactor(1, 36)
-        self.middle_splitter.setSizes((970, 550))
+        self.middle_splitter.setStretchFactor(0, 60)
+        self.middle_splitter.setStretchFactor(1, 40)
+        self.middle_splitter.setSizes((912, 608))
         self.splitter = self.middle_splitter
 
         self.workspace_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -1089,18 +1089,18 @@ class MarketWorkspace(QWidget):
             return
         self._layout_mode = mode
         left_minimum, intelligence_minimum = (
-            (700, 350) if mode == "compact" else (820, 420)
+            (620, 400) if mode == "compact" else (660, 440)
         )
         self.left_stack.setMinimumWidth(left_minimum)
         self.market_section.setMinimumWidth(intelligence_minimum)
-        self.splitter.setStretchFactor(0, 64)
-        self.splitter.setStretchFactor(1, 36)
+        self.splitter.setStretchFactor(0, 60)
+        self.splitter.setStretchFactor(1, 40)
         self.splitter.setSizes(
-            (820 if mode == "compact" else 970, 430 if mode == "compact" else 550)
+            (750 if mode == "compact" else 900, 500 if mode == "compact" else 600)
         )
 
     def ensure_middle_composition(self) -> None:
-        """Keep the execution-first 42/58 middle row usable after restore."""
+        """Keep the 60/40 position/intelligence middle row usable after restore."""
         self.market_section.show()
         self.trade_intelligence.show()
         available = max(
@@ -1118,7 +1118,7 @@ class MarketWorkspace(QWidget):
             or sizes[1] < intelligence_minimum
         )
         if invalid:
-            left = max(left_minimum, round(available * 0.64))
+            left = max(left_minimum, round(available * 0.60))
             right = available - left
             if right < intelligence_minimum:
                 right = intelligence_minimum

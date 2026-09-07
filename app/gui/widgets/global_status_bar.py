@@ -3,6 +3,10 @@ from __future__ import annotations
 from PySide6.QtCore import QDateTime, QTimer
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QWidget
 
+from app.crypto_research import (
+    CryptoResearchStatus,
+    default_crypto_research_view,
+)
 from app.gui.models import (
     DashboardSnapshot,
     HealthDashboardSnapshot,
@@ -13,8 +17,13 @@ from app.gui.widgets.common import StatusIndicator
 class GlobalStatusBar(QWidget):
     """Render immutable application and infrastructure status summaries."""
 
-    def __init__(self, *, version: str) -> None:
+    def __init__(self, *, version: str, crypto_research_source=None) -> None:
         super().__init__()
+        self._crypto_research_source = (
+            crypto_research_source or default_crypto_research_view()
+        )
+        self._capability_values: dict[str, str] = {}
+        self._session_values: dict[str, str] = {}
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 0, 10, 0)
         layout.setSpacing(10)
@@ -55,6 +64,7 @@ class GlobalStatusBar(QWidget):
         self.local_time.setText(
             QDateTime.currentDateTime().toString("yyyy-MM-dd  hh:mm:ss AP")
         )
+        self._render_capabilities()
 
     def render_dashboard(self, snapshot: DashboardSnapshot) -> None:
         runtime = snapshot.runtime
@@ -84,12 +94,21 @@ class GlobalStatusBar(QWidget):
             f"AI {ai.title()}",
             _level(ai),
         )
-        capability_values = dict(snapshot.capabilities)
-        session_values = dict(snapshot.sessions)
+        self._capability_values = dict(snapshot.capabilities)
+        self._session_values = dict(snapshot.sessions)
+        self._render_capabilities()
+
+    def _render_capabilities(self) -> None:
+        capability_values = self._capability_values
+        session_values = self._session_values
+        research_status = _crypto_research_status(self._crypto_research_source)
         concise = (
             ("Stocks", capability_values.get("Stocks", "Unknown")),
+            ("Crypto Research", _research_availability(research_status)),
+            # Preserve the broker asset flag as the execution boundary. Never
+            # infer it from the independent, read-only research sidecar.
+            ("Crypto Trading", capability_values.get("Crypto", "Unknown")),
             ("Options", capability_values.get("Options", "Unknown")),
-            ("Crypto", capability_values.get("Crypto", "Unknown")),
             ("Overnight", session_values.get("Overnight", "Unknown")),
         )
         self.capabilities.setText(
@@ -98,6 +117,11 @@ class GlobalStatusBar(QWidget):
                 f"{name} {_capability_indicator(value)}"
                 for name, value in concise
             )
+        )
+        self.capabilities.setToolTip(
+            "Crypto Research: "
+            f"{research_status.value.replace('_', ' ')}; "
+            "Crypto Trading: broker execution capability"
         )
 
 
@@ -118,6 +142,29 @@ def _capability_indicator(value: str) -> str:
     if value == "Unknown":
         return "?"
     return "✗"
+
+
+def _crypto_research_status(source) -> CryptoResearchStatus:
+    status_getter = getattr(source, "status_snapshot", None)
+    if not callable(status_getter):
+        return CryptoResearchStatus.DISABLED
+    status = getattr(status_getter(), "status", None)
+    return (
+        status
+        if isinstance(status, CryptoResearchStatus)
+        else CryptoResearchStatus.DISABLED
+    )
+
+
+def _research_availability(status: CryptoResearchStatus) -> str:
+    if status in {
+        CryptoResearchStatus.DISCOVERING,
+        CryptoResearchStatus.ACTIVE,
+        CryptoResearchStatus.PARTIAL_DATA,
+        CryptoResearchStatus.AWAITING_DATA,
+    }:
+        return "Available"
+    return "Unavailable"
 
 
 __all__ = ["GlobalStatusBar"]

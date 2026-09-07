@@ -3,6 +3,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication
 
 from app.gui.models import WatchlistRow, WatchlistSnapshot
@@ -162,6 +163,63 @@ def test_opportunity_selector_is_compact_and_has_no_placeholder_controls(applica
     )
     assert not hasattr(workspace.watchlist, "columns_button")
     assert not hasattr(workspace.watchlist, "filters_button")
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    ((1280, 720), (1366, 768), (1440, 900), (1920, 1080)),
+)
+def test_trade_intelligence_fits_width_and_scrolls_vertically(
+    application, width, height
+) -> None:
+    dashboard = DashboardPage()
+    dashboard.resize(width, height)
+    dashboard.show()
+    dashboard.market_workspace.render(
+        WatchlistSnapshot(rows=(candidate(),), candidate_count=1)
+    )
+    application.processEvents()
+
+    workspace = dashboard.market_workspace
+    workspace.ensure_middle_composition()
+    application.processEvents()
+    scroll = workspace.market_section.scroll_area
+    panel = workspace.trade_intelligence
+    assert scroll is not None
+    assert scroll.widgetResizable()
+    assert scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert scroll.horizontalScrollBar().maximum() == 0
+    assert scroll.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    assert scroll.verticalScrollBar().maximum() > 0
+    assert panel.width() <= scroll.viewport().width()
+
+    labels = (
+        *panel._header_metrics.values(),
+        *panel._watching_values.values(),
+        panel._passed_rules,
+        panel._failed_rules,
+        *panel._market_values.values(),
+        *panel._plan_values.values(),
+    )
+    assert all(
+        label.mapTo(panel, QPoint(0, 0)).x() + label.width() <= panel.width()
+        for label in labels
+    )
+
+    sizes = workspace.middle_splitter.sizes()
+    left_ratio = sizes[0] / sum(sizes)
+    assert 0.58 <= left_ratio <= 0.62
+    assert workspace.left_stack.width() >= 620
+    assert workspace.positions_section.isVisible()
+    assert workspace.positions_panel.activity_tabs.count() == 3
+    assert workspace.lower_splitter.count() == 2
+    assert workspace.opportunities_section.isVisible()
+    assert workspace.crypto_scanner_section.isVisible()
+    assert workspace.opportunities_section.geometry().right() < (
+        workspace.crypto_scanner_section.geometry().left()
+    )
+    assert workspace.portfolio_section.isVisible()
+    dashboard.close()
 
 
 def test_dashboard_keeps_real_controls_and_shows_authoritative_performance(application) -> None:

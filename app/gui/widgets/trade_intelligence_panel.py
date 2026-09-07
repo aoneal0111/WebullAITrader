@@ -48,27 +48,41 @@ class TradeIntelligencePanel(QWidget):
         candidate_line.addStretch(1)
         header_layout.addLayout(candidate_line)
 
-        metrics = QHBoxLayout()
-        metrics.setSpacing(18)
+        metrics_container = QWidget()
+        metrics_container.setMinimumWidth(0)
+        metrics = QGridLayout(metrics_container)
+        metrics.setContentsMargins(0, 0, 0, 0)
+        metrics.setHorizontalSpacing(8)
+        metrics.setVerticalSpacing(4)
         self._header_metrics: dict[str, QLabel] = {}
-        for name in (
+        for index, name in enumerate((
             "Rank", "Scanner score", "Scanner status", "Warrior momentum",
             "Session", "Freshness"
-        ):
-            block = QVBoxLayout()
+        )):
+            block_widget = QWidget()
+            block_widget.setMinimumWidth(0)
+            block = QVBoxLayout(block_widget)
+            block.setContentsMargins(0, 0, 0, 0)
+            block.setSpacing(1)
             title = QLabel(name.upper())
             title.setObjectName("metricTitle")
+            title.setWordWrap(True)
+            title.setMinimumWidth(0)
             value = QLabel("--")
             value.setObjectName("headerMetricValue")
+            value.setWordWrap(True)
+            value.setMinimumWidth(0)
             block.addWidget(title)
             block.addWidget(value)
-            metrics.addLayout(block)
+            row, column = divmod(index, 2)
+            metrics.addWidget(block_widget, row, column)
             self._header_metrics[name] = value
-        metrics.addStretch(1)
-        header_layout.addLayout(metrics)
+        metrics.setColumnStretch(0, 1)
+        metrics.setColumnStretch(1, 1)
+        header_layout.addWidget(metrics_container)
         root.addWidget(header)
 
-        body = QHBoxLayout()
+        body = QVBoxLayout()
         body.setSpacing(8)
         watching, watching_layout = _section("WHY ATLAS IS WATCHING")
         self._reason = QLabel("Select an opportunity to inspect Atlas state.")
@@ -83,11 +97,11 @@ class TradeIntelligencePanel(QWidget):
                 "Float", "Spread", "Catalyst", "Warrior score",
                 "Warrior status", "Setup", "Warrior session",
             ),
-            columns=3,
+            columns=2,
         )
         self._passed_rules = _fact_label(watching_layout, "PASSED RULES")
         self._failed_rules = _fact_label(watching_layout, "FAILED RULES")
-        body.addWidget(watching, 1)
+        body.addWidget(watching)
 
         decision, decision_layout = _section("CURRENT DECISION")
         self._decision = QLabel("--")
@@ -127,7 +141,6 @@ class TradeIntelligencePanel(QWidget):
         self._autonomous_paper.setWordWrap(True)
         self._autonomous_paper.setMinimumHeight(16)
         decision_layout.addWidget(self._autonomous_paper)
-        decision_layout.addStretch(1)
         market, market_layout = _section("CURRENT MARKET CONDITIONS")
         self._market_values = _metric_grid(
             market_layout,
@@ -137,7 +150,7 @@ class TradeIntelligencePanel(QWidget):
             ),
             columns=2,
         )
-        body.addWidget(market, 1)
+        body.addWidget(market)
 
         plan, plan_layout = _section("TRADE PLAN")
         self._plan_values = _metric_grid(
@@ -148,20 +161,13 @@ class TradeIntelligencePanel(QWidget):
             ),
             columns=2,
         )
-        plan_layout.addStretch(1)
-        body.addWidget(plan, 1)
-        body.addWidget(decision, 1)
-        body.setStretch(0, 24)
-        body.setStretch(1, 22)
-        body.setStretch(2, 26)
-        body.setStretch(3, 28)
+        body.addWidget(plan)
+        body.addWidget(decision)
         self._watching = watching
         self._market = market
         self._plan = plan
         self._decision_panel = decision
-        for panel in (watching, market, plan, decision):
-            panel.setMinimumHeight(250)
-        root.addLayout(body, 1)
+        root.addLayout(body)
 
     def render(self, row: WatchlistRow | None) -> None:
         if row == self._last_row:
@@ -273,6 +279,8 @@ def _section(title: str) -> tuple[QFrame, QVBoxLayout]:
     layout.setSpacing(6)
     heading = QLabel(title)
     heading.setObjectName("sectionTitle")
+    heading.setWordWrap(True)
+    heading.setMinimumWidth(0)
     layout.addWidget(heading)
     frame.heading = heading
     return frame, layout
@@ -285,6 +293,7 @@ def _metric_grid(
     columns: int,
 ) -> dict[str, QLabel]:
     container = QWidget()
+    container.setMinimumWidth(0)
     grid = QGridLayout(container)
     grid.setContentsMargins(0, 2, 0, 2)
     grid.setHorizontalSpacing(4)
@@ -293,14 +302,18 @@ def _metric_grid(
     for index, name in enumerate(names):
         row, column = divmod(index, columns)
         block = QWidget()
+        block.setMinimumWidth(0)
         block_layout = QVBoxLayout(block)
         block_layout.setContentsMargins(0, 0, 0, 0)
         block_layout.setSpacing(1)
         title = QLabel(name.upper())
         title.setObjectName("metricTitle")
+        title.setWordWrap(True)
+        title.setMinimumWidth(0)
         value = QLabel("--")
         value.setObjectName("monoValue")
         value.setWordWrap(True)
+        value.setMinimumWidth(0)
         value.setMinimumHeight(16)
         block_layout.addWidget(title)
         block_layout.addWidget(value)
