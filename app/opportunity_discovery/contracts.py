@@ -8,6 +8,14 @@ from decimal import Decimal
 from enum import StrEnum
 from hashlib import sha256
 
+from app.assets import AssetType
+from app.research_core import (
+    AssetResearchIdentity,
+    EvidenceProvenance,
+    ResearchDetection,
+    ResearchOpportunity,
+)
+
 DISCOVERY_SCHEMA_VERSION = 1
 TAXONOMY_VERSION = "ATLAS_MOMENTUM_TAXONOMY_V1"
 DETECTOR_VERSION = "ATLAS_DISCOVERY_RULES_V1"
@@ -231,6 +239,38 @@ class StrategyDetection:
         material = f"{self.strategy_id}|{self.symbol.upper()}|{self.session_date}|{self.session}|{self.setup_anchor}"
         return sha256(material.encode()).hexdigest()
 
+    def to_research_detection(self) -> ResearchDetection:
+        """Project the unchanged equity DTO into the asset-neutral contract."""
+
+        identity = AssetResearchIdentity(
+            AssetType.EQUITY,
+            self.symbol,
+            self.strategy_id,
+            self.strategy_version,
+            self.decision_cutoff,
+            self.opportunity_anchor,
+            self.detector_episode_id,
+        )
+        return ResearchDetection(
+            identity=identity,
+            family=self.family.value,
+            state=self.state.value,
+            reference_price=self.reference_price,
+            trigger_level=self.trigger_level,
+            structural_stop=self.structural_stop,
+            quality_components=self.quality_components,
+            observed_evidence=(
+                self.required_features_observed + self.optional_features_observed
+            ),
+            missing_evidence=self.missing_features,
+            reasons=self.reason_codes,
+            provenance=EvidenceProvenance(
+                observed_at=self.decision_cutoff,
+                decision_cutoff=self.decision_cutoff,
+            ),
+            research_only=self.research_only,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class StrategyMembership:
@@ -266,6 +306,31 @@ class NormalizedOpportunity:
             raise ValueError("normalized opportunity is non-executable and requires membership")
         if len({item.strategy_id for item in self.memberships}) != len(self.memberships):
             raise ValueError("strategy memberships must be unique")
+
+    def to_research_opportunity(self) -> ResearchOpportunity:
+        """Project equity lifecycle state without exporting equity sessions."""
+
+        primary = next(
+            item for item in self.memberships
+            if item.strategy_id == self.primary_strategy_id
+        )
+        return ResearchOpportunity(
+            identity=AssetResearchIdentity(
+                AssetType.EQUITY,
+                self.symbol,
+                primary.strategy_id,
+                primary.strategy_version,
+                self.decision_cutoff,
+                self.opportunity_id,
+                primary.detector_episode_id,
+            ),
+            primary_strategy_id=self.primary_strategy_id,
+            strategy_memberships=tuple(item.strategy_id for item in self.memberships),
+            reference_price=self.reference_price,
+            structural_stop=self.structural_stop,
+            complete_r_plan=self.complete_r_plan,
+            research_only=self.research_only,
+        )
 
 
 @dataclass(frozen=True, slots=True)

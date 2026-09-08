@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Callable, Protocol
+from typing import Callable
+
+from app.research_core.detectors import (
+    Detector as GenericDetector,
+    DetectorRegistry as GenericDetectorRegistry,
+)
 
 from app.strategies.warrior_momentum.models import MinuteBar
 from app.strategies.warrior_momentum.post_gap_reclaim_research import (
@@ -21,9 +26,7 @@ from .taxonomy import STRATEGY_TAXONOMY
 HUNDRED = Decimal("100")
 
 
-class ResearchDetector(Protocol):
-    definition: StrategyDefinition
-    def detect(self, context: DiscoveryContext) -> StrategyDetection: ...
+ResearchDetector = GenericDetector[DiscoveryContext, StrategyDetection]
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,21 +67,8 @@ class UnavailableDetector:
                        self.definition.required_features)
 
 
-class DetectorRegistry:
-    def __init__(self, detectors: tuple[ResearchDetector, ...]) -> None:
-        identities = [item.definition.strategy_id for item in detectors]
-        if len(identities) != len(set(identities)):
-            raise ValueError("detector strategy IDs must be unique")
-        if any(not item.definition.research_only for item in detectors):
-            raise ValueError("all registered detectors must be research-only")
-        self._detectors = detectors
-
-    @property
-    def detectors(self):
-        return self._detectors
-
-    def evaluate(self, context: DiscoveryContext):
-        return tuple(detector.detect(context) for detector in self._detectors)
+class DetectorRegistry(GenericDetectorRegistry[DiscoveryContext, StrategyDetection]):
+    """Equity compatibility name over the asset-neutral ordered registry."""
 
 
 def default_registry() -> DetectorRegistry:

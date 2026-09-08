@@ -6,6 +6,8 @@ from collections import OrderedDict
 from dataclasses import dataclass, replace
 from hashlib import sha256
 
+from app.research_core import remember_bounded
+
 from .contracts import (
     DetectionState, DiscoveryBatch, DiscoveryContext, NormalizedOpportunity,
     StrategyDetection, StrategyMembership,
@@ -71,9 +73,12 @@ class MultiStrategyDiscoveryEngine:
 
     def observe(self, context: DiscoveryContext) -> DiscoveryBatch:
         self._observations += 1
-        self._symbols[context.symbol.upper()] = context.decision_cutoff
-        self._symbols.move_to_end(context.symbol.upper())
-        _trim(self._symbols, self.maximum_symbols)
+        remember_bounded(
+            self._symbols,
+            context.symbol.upper(),
+            context.decision_cutoff,
+            limit=self.maximum_symbols,
+        )
         detections = self.registry.evaluate(context)
         self._evaluations += len(detections)
         firings = tuple(item for item in detections if item.state in {DetectionState.DETECTED, DetectionState.STRENGTHENING})
@@ -82,9 +87,12 @@ class MultiStrategyDiscoveryEngine:
         for item in firings:
             if item.detector_episode_id not in self._episodes:
                 new_episodes.append(item.detector_episode_id)
-            self._episodes[item.detector_episode_id] = item.decision_cutoff
-            self._episodes.move_to_end(item.detector_episode_id)
-        _trim(self._episodes, self.maximum_episodes)
+            remember_bounded(
+                self._episodes,
+                item.detector_episode_id,
+                item.decision_cutoff,
+                limit=self.maximum_episodes,
+            )
         current = normalize_detections(firings)
         new_opportunities = []
         merged = []
@@ -102,10 +110,13 @@ class MultiStrategyDiscoveryEngine:
                                 memberships=members, reference_price=primary.reference_price,
                                 structural_stop=primary.structural_stop,
                                 complete_r_plan=any(entry.trigger_level is not None and entry.structural_stop is not None for entry in members))
-            self._opportunities[item.opportunity_id] = value
-            self._opportunities.move_to_end(item.opportunity_id)
+            remember_bounded(
+                self._opportunities,
+                item.opportunity_id,
+                value,
+                limit=self.maximum_opportunities,
+            )
             merged.append(value)
-        _trim(self._opportunities, self.maximum_opportunities)
         return DiscoveryBatch(detections, tuple(new_episodes), tuple(merged), tuple(new_opportunities))
 
     def metrics(self) -> DiscoveryMetrics:
@@ -121,8 +132,3 @@ class MultiStrategyDiscoveryEngine:
                 "episode_count": len(self._episodes),
                 "opportunity_count": len(self._opportunities),
                 "membership_count": sum(len(item.memberships) for item in self._opportunities.values())}
-
-
-def _trim(values: OrderedDict, limit: int) -> None:
-    while len(values) > limit:
-        values.popitem(last=False)

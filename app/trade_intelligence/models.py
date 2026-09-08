@@ -10,6 +10,8 @@ from hashlib import sha256
 import json
 from typing import Any, Mapping
 
+from app.research_core import PerUnitRiskGeometry
+
 SCHEMA_VERSION = 1
 FEATURE_VERSION = "ATLAS_DECISION_FEATURES_V1"
 PARTITION_POLICY_VERSION = "ATLAS_TEMPORAL_SPLIT_V1"
@@ -223,6 +225,22 @@ class DecisionTimeSnapshot:
                 raise ValueError(f"{name} exceeds bounded decision payload limit")
         if len({name for name, _ in self.features}) != len(self.features):
             raise ValueError("feature names must be unique")
+
+    @property
+    def per_unit_risk_geometry(self) -> PerUnitRiskGeometry | None:
+        """Asset-neutral research view; existing equity fields remain intact."""
+
+        if (
+            self.trigger_price is None
+            or self.structural_stop is None
+            or self.risk_per_share is None
+        ):
+            return None
+        return PerUnitRiskGeometry(
+            entry_reference=self.trigger_price,
+            structural_stop=self.structural_stop,
+            risk_per_unit=self.risk_per_share,
+        )
 
 
 @dataclass(frozen=True, slots=True)
