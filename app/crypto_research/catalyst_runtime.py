@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict, deque
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import replace
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from threading import Event, Lock, Thread
@@ -37,6 +38,72 @@ class CatalystProvider(Protocol):
     provider_id: str
 
     def collect(self, as_of: datetime) -> Iterable[CryptoCatalystEvidence]: ...
+
+
+DEFAULT_INITIAL_LOOKBACK_SECONDS: dict[str, float] = {
+    "SEC_EDGAR": 30.0 * 86_400.0,
+    "FEDERAL_REGISTER": 7.0 * 86_400.0,
+    "STATUSPAGE": 7.0 * 86_400.0,
+}
+
+
+class FetchSinceCatalystProviderAdapter:
+    """Adapt an existing cutoff-aware ``fetch_since`` provider to ``collect``."""
+
+    def __init__(
+        self,
+        provider: object,
+        *,
+        initial_lookback_seconds: float | None = None,
+    ) -> None:
+        provider_id = str(getattr(provider, "provider_id", "")).strip()
+        fetch_since = getattr(provider, "fetch_since", None)
+        if not provider_id or not callable(fetch_since):
+            raise TypeError("provider must expose provider_id and fetch_since")
+        lookback = (
+            DEFAULT_INITIAL_LOOKBACK_SECONDS.get(provider_id, 7.0 * 86_400.0)
+            if initial_lookback_seconds is None
+            else float(initial_lookback_seconds)
+        )
+        if lookback <= 0:
+            raise ValueError("initial lookback must be positive")
+        self.provider_id = provider_id
+        self.provider = provider
+        self.initial_lookback = timedelta(seconds=lookback)
+        self._watermark: datetime | None = None
+
+    @property
+    def watermark(self) -> datetime | None:
+        return self._watermark
+
+    def collect(self, as_of: datetime) -> tuple[CryptoCatalystEvidence, ...]:
+        observed = as_of.astimezone(UTC)
+        since = self._watermark or (observed - self.initial_lookback)
+        evidence = tuple(self.provider.fetch_since(since, observed_at=observed))
+        self._watermark = observed
+        return evidence
+
+
+def adapt_catalyst_provider(provider: object) -> CatalystProvider:
+    """Preserve native ``collect`` providers and bridge ``fetch_since`` providers."""
+
+    if callable(getattr(provider, "collect", None)):
+        return provider  # type: ignore[return-value]
+    return FetchSinceCatalystProviderAdapter(provider)
+
+
+def set_catalyst_provider_enabled(provider: object, enabled: bool) -> object:
+    """Align an injected provider policy with the outer provider enable flag."""
+
+    policy = getattr(provider, "policy", None)
+    if policy is None or not hasattr(policy, "enabled"):
+        return provider
+    try:
+        provider.policy = replace(policy, enabled=bool(enabled))
+    except (AttributeError, TypeError, ValueError):
+        # Providers without replaceable policies retain their own policy semantics.
+        pass
+    return provider
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,4 +301,12 @@ def _failure_category(exc: Exception) -> str:
     return "BLOCKED_BY_PROVIDER_GEOGRAPHIC_POLICY" if _is_blocked(exc) else type(exc).__name__.upper()
 
 
-__all__ = ["DEFAULT_CADENCES", "CryptoCatalystAcquisitionMetrics", "CryptoCatalystAcquisitionRuntime"]
+__all__ = [
+    "DEFAULT_CADENCES",
+    "DEFAULT_INITIAL_LOOKBACK_SECONDS",
+    "CryptoCatalystAcquisitionMetrics",
+    "CryptoCatalystAcquisitionRuntime",
+    "FetchSinceCatalystProviderAdapter",
+    "adapt_catalyst_provider",
+    "set_catalyst_provider_enabled",
+]

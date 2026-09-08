@@ -39,6 +39,8 @@ from app.crypto_research import (
     CryptoCatalystCollectionSink,
     CryptoIntelligenceResearchRuntime,
     CryptoCatalystAcquisitionRuntime,
+    adapt_catalyst_provider,
+    set_catalyst_provider_enabled,
     CryptoPair,
     CryptoResearchRuntime,
     WebullCryptoResearchProvider,
@@ -450,21 +452,31 @@ def create_desktop_composition(
     )
     crypto_catalyst_acquisition_runtime = None
     if operational_configuration.crypto_catalyst_acquisition_enabled:
+        provider_flags = {
+            "SEC_EDGAR": operational_configuration.crypto_catalyst_sec_enabled,
+            "FEDERAL_REGISTER": operational_configuration.crypto_catalyst_federal_register_enabled,
+            "STATUSPAGE": operational_configuration.crypto_catalyst_statuspage_enabled,
+            "BYBIT": operational_configuration.crypto_catalyst_bybit_enabled,
+        }
+        composed_catalyst_providers = tuple(
+            adapt_catalyst_provider(
+                set_catalyst_provider_enabled(
+                    provider,
+                    provider_flags.get(str(getattr(provider, "provider_id", "")), False),
+                )
+            )
+            for provider in catalyst_providers
+        )
         crypto_catalyst_acquisition_runtime = CryptoCatalystAcquisitionRuntime(
             enabled=True,
-            providers=tuple(catalyst_providers),
+            providers=composed_catalyst_providers,
             cadences={
                 "SEC_EDGAR": operational_configuration.crypto_catalyst_sec_cadence_seconds,
                 "FEDERAL_REGISTER": operational_configuration.crypto_catalyst_federal_register_cadence_seconds,
                 "STATUSPAGE": operational_configuration.crypto_catalyst_statuspage_cadence_seconds,
                 "BYBIT": operational_configuration.crypto_catalyst_bybit_cadence_seconds,
             },
-            provider_enabled={
-                "SEC_EDGAR": operational_configuration.crypto_catalyst_sec_enabled,
-                "FEDERAL_REGISTER": operational_configuration.crypto_catalyst_federal_register_enabled,
-                "STATUSPAGE": operational_configuration.crypto_catalyst_statuspage_enabled,
-                "BYBIT": operational_configuration.crypto_catalyst_bybit_enabled,
-            },
+            provider_enabled=provider_flags,
             scheduler_tick_seconds=operational_configuration.crypto_catalyst_scheduler_tick_seconds,
         )
     crypto_intelligence_runtime = None

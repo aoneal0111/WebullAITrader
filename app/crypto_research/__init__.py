@@ -120,8 +120,12 @@ from .intelligence_runtime import (
 )
 from .catalyst_runtime import (
     DEFAULT_CADENCES,
+    DEFAULT_INITIAL_LOOKBACK_SECONDS,
     CryptoCatalystAcquisitionMetrics,
     CryptoCatalystAcquisitionRuntime,
+    FetchSinceCatalystProviderAdapter,
+    adapt_catalyst_provider,
+    set_catalyst_provider_enabled,
 )
 from .catalysts import (
     SCHEMA_VERSION as CRYPTO_CATALYST_SCHEMA_VERSION,
@@ -426,6 +430,10 @@ __all__ = [
     "CryptoIntelligenceMetrics",
     "CryptoIntelligenceResearchRuntime",
     "DEFAULT_CADENCES",
+    "DEFAULT_INITIAL_LOOKBACK_SECONDS",
     "CryptoCatalystAcquisitionMetrics",
     "CryptoCatalystAcquisitionRuntime",
+    "FetchSinceCatalystProviderAdapter",
+    "adapt_catalyst_provider",
+    "set_catalyst_provider_enabled",
 ]
