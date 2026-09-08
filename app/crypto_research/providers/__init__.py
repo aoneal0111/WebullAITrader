@@ -11,6 +11,18 @@ from .bybit_announcements import (
     BybitProviderMetrics,
     NORMALIZATION_VERSION,
 )
+from .sec_edgar import (
+    SEC_PROVIDER_ID,
+    SEC_SUBMISSIONS_URL,
+    SEC_NORMALIZATION_VERSION,
+    SECCryptoFailureKind,
+    SECCryptoProviderError,
+    SECETFProductIdentity,
+    SECProviderPolicy,
+    SECFilingRecord,
+    SECCryptoProviderMetrics,
+    SECCryptoEdgarProvider,
+)
 
 __all__ = [
     "BYBIT_PROVIDER_ID",
@@ -22,4 +34,14 @@ __all__ = [
     "BybitProviderError",
     "BybitProviderMetrics",
     "NORMALIZATION_VERSION",
+    "SEC_PROVIDER_ID",
+    "SEC_SUBMISSIONS_URL",
+    "SEC_NORMALIZATION_VERSION",
+    "SECCryptoFailureKind",
+    "SECCryptoProviderError",
+    "SECETFProductIdentity",
+    "SECProviderPolicy",
+    "SECFilingRecord",
+    "SECCryptoProviderMetrics",
+    "SECCryptoEdgarProvider",
 ]
