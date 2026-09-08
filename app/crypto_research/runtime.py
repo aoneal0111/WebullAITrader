@@ -3,19 +3,28 @@
 from __future__ import annotations
 
 from collections import OrderedDict, deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from queue import Empty, Full, Queue
 from threading import Event, RLock, Thread
 
 from .analysis import calculate_features, detect_events, score_features
+from .evidence import (
+    BoundedCryptoBarHistory,
+    CryptoBarInterval,
+    CryptoCompletedBar,
+    build_crypto_evidence_context,
+    normalize_crypto_rows,
+)
 from .models import (
     CryptoObservation,
     CryptoPair,
     CryptoResearchDecision,
     crypto_regime,
 )
+from .outcomes import CryptoOutcomeDecision
+from .strategies import CryptoDiscoveryContext
 from .persistence import CryptoJsonLinesStore, CryptoResearchStore
 from .provider import (
     MalformedCryptoQuoteError,
@@ -53,6 +62,27 @@ class CryptoResearchMetrics:
     persistence_failures: int
     accepting: bool
     stopped: bool
+    history_requests_attempted: int = 0
+    history_requests_succeeded: int = 0
+    history_requests_failed: int = 0
+    history_rows_seen: int = 0
+    history_bars_admitted: int = 0
+    history_bars_duplicate: int = 0
+    history_bars_rejected: int = 0
+    history_series_count: int = 0
+    history_retained_bars: int = 0
+    shortlist_size: int = 0
+    shortlist_high_water: int = 0
+    shortlist_admissions: int = 0
+    shortlist_removals: int = 0
+    shortlist_deferred: int = 0
+    m1_requests: int = 0
+    m5_requests: int = 0
+    phase_b_contexts_built: int = 0
+    phase_b_contexts_unavailable: int = 0
+    intelligence_contexts_published: int = 0
+    intelligence_submit_failures: int = 0
+    outcome_update_cycles: int = 0
 
 
 class CryptoResearchRuntime:
@@ -74,6 +104,13 @@ class CryptoResearchRuntime:
         store: CryptoResearchStore | None = None,
         view_store: CryptoResearchViewStore | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        intelligence_context_sink: Callable[[CryptoDiscoveryContext], object] | None = None,
+        intelligence_outcome_sink: Callable[..., object] | None = None,
+        intelligence_history_max_symbols: int = 10,
+        intelligence_history_bar_count: int = 64,
+        intelligence_history_request_budget: int = 20,
+        intelligence_m1_refresh_seconds: float = 60.0,
+        intelligence_m5_refresh_seconds: float = 60.0,
     ) -> None:
         if min(
             queue_capacity,
@@ -84,6 +121,12 @@ class CryptoResearchRuntime:
             raise ValueError("crypto research bounds must be positive")
         if refresh_seconds <= 0 or maximum_quote_age_seconds <= 0:
             raise ValueError("crypto research timing bounds must be positive")
+        if not 3 <= intelligence_history_max_symbols <= 256:
+            raise ValueError("intelligence history symbol bound must be 3..256")
+        if not 1 <= intelligence_history_bar_count <= 64:
+            raise ValueError("intelligence history bar count must be 1..64")
+        if intelligence_history_request_budget <= 0 or intelligence_m1_refresh_seconds <= 0 or intelligence_m5_refresh_seconds <= 0:
+            raise ValueError("intelligence history timing/budget bounds must be positive")
         self.enabled = bool(enabled)
         self._provider = provider
         self._configured_pairs = tuple(configured_pairs)
@@ -96,6 +139,21 @@ class CryptoResearchRuntime:
         self._signature_capacity = signature_capacity
         self._maximum_quote_age_seconds = maximum_quote_age_seconds
         self._clock = clock
+        self._intelligence_context_sink = intelligence_context_sink
+        self._intelligence_outcome_sink = intelligence_outcome_sink
+        self._bar_history = BoundedCryptoBarHistory(
+            maximum_symbols=intelligence_history_max_symbols,
+            bars_per_series=intelligence_history_bar_count,
+        )
+        self._history_max_symbols = intelligence_history_max_symbols
+        self._history_bar_count = intelligence_history_bar_count
+        self._history_request_budget = intelligence_history_request_budget
+        self._m1_refresh_seconds = intelligence_m1_refresh_seconds
+        self._m5_refresh_seconds = intelligence_m5_refresh_seconds
+        self._history_cycle = 0
+        self._history_last_requested: dict[tuple[str, CryptoBarInterval], datetime] = {}
+        self._shortlist: tuple[CryptoPair, ...] = ()
+        self._intelligence_decisions: dict[str, CryptoOutcomeDecision] = {}
         self._lock = RLock()
         self._stop = Event()
         self._worker: Thread | None = None
@@ -120,6 +178,24 @@ class CryptoResearchRuntime:
         self._stale_quotes = 0
         self._queue_rejections = 0
         self._persistence_failures = 0
+        self._history_requests_attempted = 0
+        self._history_requests_succeeded = 0
+        self._history_requests_failed = 0
+        self._history_rows_seen = 0
+        self._history_bars_admitted = 0
+        self._history_bars_duplicate = 0
+        self._history_bars_rejected = 0
+        self._shortlist_high_water = 0
+        self._shortlist_admissions = 0
+        self._shortlist_removals = 0
+        self._shortlist_deferred = 0
+        self._m1_requests = 0
+        self._m5_requests = 0
+        self._phase_b_contexts_built = 0
+        self._phase_b_contexts_unavailable = 0
+        self._intelligence_contexts_published = 0
+        self._intelligence_submit_failures = 0
+        self._outcome_update_cycles = 0
         self._accepting = False
         self._stopped = not self.enabled
         if not self.enabled:
@@ -149,6 +225,170 @@ class CryptoResearchRuntime:
                 )
                 self._poller.start()
             return True
+
+    def configure_intelligence(
+        self,
+        *,
+        context_sink: Callable[[CryptoDiscoveryContext], object] | None,
+        outcome_sink: Callable[..., object] | None,
+    ) -> None:
+        """Attach the downstream research bridge without importing its internals."""
+        with self._lock:
+            self._intelligence_context_sink = context_sink
+            self._intelligence_outcome_sink = outcome_sink
+
+    def _research_shortlist(self) -> tuple[CryptoPair, ...]:
+        with self._lock:
+            available = {pair.canonical_symbol: pair for pair in self._pairs}
+            ranked = sorted(
+                self._latest.values(),
+                key=lambda item: (-item.score, item.pair.canonical_symbol),
+            )
+            ordered: list[CryptoPair] = []
+            for pair in self._configured_pairs:
+                available.setdefault(pair.canonical_symbol, pair)
+            for symbol in ("BTC/USD", "ETH/USD"):
+                pair = available.get(symbol) or CryptoPair.configured(symbol)
+                available[symbol] = pair
+                if pair not in ordered:
+                    ordered.append(pair)
+            for decision in ranked:
+                pair = available.get(decision.pair.canonical_symbol)
+                if pair is not None and pair not in ordered:
+                    ordered.append(pair)
+            for pair in sorted(available.values(), key=lambda item: item.canonical_symbol):
+                if pair not in ordered:
+                    ordered.append(pair)
+            selected = tuple(ordered[: self._history_max_symbols])
+            previous = {item.canonical_symbol for item in self._shortlist}
+            current = {item.canonical_symbol for item in selected}
+            self._shortlist = selected
+            self._shortlist_admissions += len(current - previous)
+            self._shortlist_removals += len(previous - current)
+            self._shortlist_high_water = max(self._shortlist_high_water, len(selected))
+            self._history_last_requested = {
+                key: value
+                for key, value in self._history_last_requested.items()
+                if key[0] in current
+            }
+            self._shortlist_deferred += max(0, len(available) - len(selected))
+            return selected
+
+    def _refresh_completed_bars(self) -> None:
+        sink = self._intelligence_context_sink
+        if sink is None or self._provider is None or not self.enabled:
+            return
+        shortlist = self._research_shortlist()
+        cutoff = self._clock()
+        due: list[tuple[CryptoPair, CryptoBarInterval]] = []
+        for pair in shortlist:
+            for interval, cadence in (
+                (CryptoBarInterval.M1, self._m1_refresh_seconds),
+                (CryptoBarInterval.M5, self._m5_refresh_seconds),
+            ):
+                key = (pair.canonical_symbol, interval)
+                last = self._history_last_requested.get(key)
+                if last is None or (cutoff - last).total_seconds() >= cadence:
+                    due.append((pair, interval))
+        due = due[: self._history_request_budget]
+        for pair, interval in due:
+            self._history_last_requested[(pair.canonical_symbol, interval)] = cutoff
+            with self._lock:
+                self._history_requests_attempted += 1
+                if interval is CryptoBarInterval.M1:
+                    self._m1_requests += 1
+                else:
+                    self._m5_requests += 1
+            try:
+                rows = self._provider.historical_bars(
+                    pair,
+                    timespan=interval.value,
+                    count=self._history_bar_count,
+                    real_time_required=False,
+                )
+                observed_at = self._clock()
+                result = normalize_crypto_rows(
+                    pair,
+                    rows,
+                    interval=interval,
+                    observed_at=observed_at,
+                    decision_cutoff=observed_at,
+                )
+                before = self._bar_history.metrics().crypto_evidence_duplicates_suppressed
+                admitted = self._bar_history.add_many(result.bars)
+                after = self._bar_history.metrics().crypto_evidence_duplicates_suppressed
+                with self._lock:
+                    self._history_requests_succeeded += 1
+                    self._history_rows_seen += len(rows)
+                    self._history_bars_admitted += admitted
+                    self._history_bars_duplicate += max(0, after - before) + result.duplicate_rows
+                    self._history_bars_rejected += result.malformed_rows + result.incomplete_rows
+            except Exception:
+                with self._lock:
+                    self._history_requests_failed += 1
+                continue
+        cutoff = self._clock()
+        self._update_intelligence_outcomes()
+        self._publish_discovery_contexts(shortlist, cutoff)
+
+    def _update_intelligence_outcomes(self) -> None:
+        sink = self._intelligence_outcome_sink
+        if sink is None:
+            return
+        for decision_id, decision in tuple(self._intelligence_decisions.items()):
+            bars = self._bar_history.bars(decision.canonical_symbol, CryptoBarInterval.M1)
+            if not bars:
+                bars = self._bar_history.bars(decision.canonical_symbol, CryptoBarInterval.M5)
+            try:
+                result = sink(
+                    decision_id,
+                    bars,
+                    btc_bars=self._bar_history.bars("BTC/USD", CryptoBarInterval.M1),
+                    eth_bars=self._bar_history.bars("ETH/USD", CryptoBarInterval.M1),
+                )
+                if isinstance(result, Iterable):
+                    horizons = {getattr(item, "horizon_seconds", None) for item in result}
+                    if {60, 300, 900, 1800}.issubset(horizons):
+                        self._intelligence_decisions.pop(decision_id, None)
+                self._outcome_update_cycles += 1
+            except Exception:
+                continue
+
+    def _publish_discovery_contexts(self, shortlist: Sequence[CryptoPair], cutoff: datetime) -> None:
+        sink = self._intelligence_context_sink
+        if sink is None:
+            return
+        for pair in shortlist:
+            if pair.canonical_symbol in {"BTC/USD", "ETH/USD"}:
+                continue
+            try:
+                if not self._bar_history.bars(pair.canonical_symbol, CryptoBarInterval.M5):
+                    with self._lock:
+                        self._phase_b_contexts_unavailable += 1
+                    continue
+                context = CryptoDiscoveryContext(
+                    build_crypto_evidence_context(
+                        pair,
+                        self._bar_history,
+                        decision_cutoff=cutoff,
+                        interval=CryptoBarInterval.M5,
+                        observed_universe_size=len(shortlist),
+                    )
+                )
+                result = sink(context)
+                with self._lock:
+                    self._phase_b_contexts_built += 1
+                    self._intelligence_contexts_published += 1
+                if isinstance(result, Iterable):
+                    for decision in result:
+                        if isinstance(decision, CryptoOutcomeDecision):
+                            self._intelligence_decisions[decision.identity.deterministic_id] = decision
+                            while len(self._intelligence_decisions) > 4096:
+                                self._intelligence_decisions.pop(next(iter(self._intelligence_decisions)))
+            except Exception:
+                with self._lock:
+                    self._phase_b_contexts_unavailable += 1
+                    self._intelligence_submit_failures += 1
 
     def refresh_once(self) -> int:
         """Perform one isolated provider refresh; useful for controlled diagnostics."""
@@ -212,6 +452,7 @@ class CryptoResearchRuntime:
                     if received
                     else CryptoResearchStatus.AWAITING_DATA
                 )
+            self._refresh_completed_bars()
             return accepted
         except Exception as exc:
             with self._lock:
@@ -293,6 +534,27 @@ class CryptoResearchRuntime:
                 self._persistence_failures,
                 self._accepting,
                 self._stopped,
+                self._history_requests_attempted,
+                self._history_requests_succeeded,
+                self._history_requests_failed,
+                self._history_rows_seen,
+                self._history_bars_admitted,
+                self._history_bars_duplicate,
+                self._history_bars_rejected,
+                self._bar_history.metrics().crypto_bar_series,
+                self._bar_history.metrics().crypto_completed_bars_retained,
+                len(self._shortlist),
+                self._shortlist_high_water,
+                self._shortlist_admissions,
+                self._shortlist_removals,
+                self._shortlist_deferred,
+                self._m1_requests,
+                self._m5_requests,
+                self._phase_b_contexts_built,
+                self._phase_b_contexts_unavailable,
+                self._intelligence_contexts_published,
+                self._intelligence_submit_failures,
+                self._outcome_update_cycles,
             )
 
     def memory_metrics(self) -> dict[str, int]:

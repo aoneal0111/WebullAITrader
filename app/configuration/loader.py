@@ -379,6 +379,13 @@ def load_configuration(env=None):
             e.get("CRYPTO_DISCOVERY_PATH", "").strip()
             or "crypto-research.jsonl"
         ).resolve(),
+        _bool(e.get("CRYPTO_INTELLIGENCE_RESEARCH_ENABLED", "false")),
+        _int(e, "CRYPTO_INTELLIGENCE_MAX_ACTIVE_DECISIONS", 4096),
+        _int(e, "CRYPTO_INTELLIGENCE_HISTORY_MAX_SYMBOLS", 10),
+        _int(e, "CRYPTO_INTELLIGENCE_HISTORY_BAR_COUNT", 64),
+        _int(e, "CRYPTO_INTELLIGENCE_HISTORY_REQUEST_BUDGET", 20),
+        _int(e, "CRYPTO_INTELLIGENCE_M1_REFRESH_SECONDS", 60),
+        _int(e, "CRYPTO_INTELLIGENCE_M5_REFRESH_SECONDS", 60),
     )
 
 

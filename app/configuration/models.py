@@ -163,3 +163,10 @@ class OperationalConfiguration:
     crypto_discovery_refresh_seconds: int = 60
     crypto_discovery_queue_capacity: int = 256
     crypto_discovery_path: Path = Path("crypto-research.jsonl")
+    crypto_intelligence_enabled: bool = False
+    crypto_intelligence_max_active_decisions: int = 4096
+    crypto_intelligence_history_max_symbols: int = 10
+    crypto_intelligence_history_bar_count: int = 64
+    crypto_intelligence_history_request_budget: int = 20
+    crypto_intelligence_m1_refresh_seconds: int = 60
+    crypto_intelligence_m5_refresh_seconds: int = 60

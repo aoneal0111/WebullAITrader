@@ -35,6 +35,9 @@ from app.entry_opportunity_value import EntryOpportunityValueRuntimeObserver
 from app.adaptive_entry_research import AdaptiveWorkingEntryObserver
 from app.memory_observability import MemoryObservability
 from app.crypto_research import (
+    CryptoCatalystCollectionConfig,
+    CryptoCatalystCollectionSink,
+    CryptoIntelligenceResearchRuntime,
     CryptoPair,
     CryptoResearchRuntime,
     WebullCryptoResearchProvider,
@@ -73,6 +76,7 @@ class DesktopComposition:
     entry_opportunity_value_observer: EntryOpportunityValueRuntimeObserver | None = None
     adaptive_entry_research_observer: AdaptiveWorkingEntryObserver | None = None
     crypto_research_runtime: CryptoResearchRuntime | None = None
+    crypto_intelligence_runtime: CryptoIntelligenceResearchRuntime | None = None
     memory_observability: MemoryObservability | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
@@ -84,6 +88,12 @@ class DesktopComposition:
                 crypto.close(timeout_seconds=min(timeout_seconds, 2.0))
             except Exception:
                 # Research has no authority over application shutdown.
+                pass
+        intelligence = self.crypto_intelligence_runtime
+        if intelligence is not None:
+            try:
+                intelligence.close(timeout_seconds=min(timeout_seconds, 2.0))
+            except Exception:
                 pass
         diagnostics = self.memory_observability
         if diagnostics is not None and diagnostics.enabled:
@@ -423,7 +433,29 @@ def create_desktop_composition(
         path=operational_configuration.crypto_discovery_path,
         queue_capacity=operational_configuration.crypto_discovery_queue_capacity,
         refresh_seconds=operational_configuration.crypto_discovery_refresh_seconds,
+        intelligence_history_max_symbols=operational_configuration.crypto_intelligence_history_max_symbols,
+        intelligence_history_bar_count=operational_configuration.crypto_intelligence_history_bar_count,
+        intelligence_history_request_budget=operational_configuration.crypto_intelligence_history_request_budget,
+        intelligence_m1_refresh_seconds=operational_configuration.crypto_intelligence_m1_refresh_seconds,
+        intelligence_m5_refresh_seconds=operational_configuration.crypto_intelligence_m5_refresh_seconds,
     )
+    crypto_intelligence_runtime = None
+    if operational_configuration.crypto_intelligence_enabled:
+        collection_config = CryptoCatalystCollectionConfig.from_environment()
+        collection_sink = (
+            CryptoCatalystCollectionSink(collection_config)
+            if collection_config.enabled
+            else None
+        )
+        crypto_intelligence_runtime = CryptoIntelligenceResearchRuntime(
+            enabled=True,
+            collection=collection_sink,
+            maximum_active_decisions=operational_configuration.crypto_intelligence_max_active_decisions,
+        )
+        crypto_research_runtime.configure_intelligence(
+            context_sink=crypto_intelligence_runtime.submit_context,
+            outcome_sink=crypto_intelligence_runtime.update_outcomes,
+        )
 
     def optional_metrics(root: object | None, *attributes: str) -> dict[str, int]:
         """Resolve a live diagnostic owner without creating or retaining one."""
@@ -487,6 +519,8 @@ def create_desktop_composition(
 
     if crypto_research_runtime.enabled:
         crypto_research_runtime.start()
+    if crypto_intelligence_runtime is not None and crypto_intelligence_runtime.enabled:
+        crypto_intelligence_runtime.start()
 
     runtime_service = create_desktop_runtime_service(
         bus,
@@ -527,6 +561,7 @@ def create_desktop_composition(
         entry_opportunity_value_observer=entry_opportunity_value_observer,
         adaptive_entry_research_observer=adaptive_entry_research_observer,
         crypto_research_runtime=crypto_research_runtime,
+        crypto_intelligence_runtime=crypto_intelligence_runtime,
         memory_observability=memory_observability,
     )
 __all__ = [
