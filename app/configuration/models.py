@@ -170,3 +170,13 @@ class OperationalConfiguration:
     crypto_intelligence_history_request_budget: int = 20
     crypto_intelligence_m1_refresh_seconds: int = 60
     crypto_intelligence_m5_refresh_seconds: int = 60
+    crypto_catalyst_acquisition_enabled: bool = False
+    crypto_catalyst_sec_enabled: bool = False
+    crypto_catalyst_federal_register_enabled: bool = False
+    crypto_catalyst_statuspage_enabled: bool = False
+    crypto_catalyst_bybit_enabled: bool = False
+    crypto_catalyst_scheduler_tick_seconds: int = 5
+    crypto_catalyst_sec_cadence_seconds: int = 3600
+    crypto_catalyst_federal_register_cadence_seconds: int = 7200
+    crypto_catalyst_statuspage_cadence_seconds: int = 300
+    crypto_catalyst_bybit_cadence_seconds: int = 900

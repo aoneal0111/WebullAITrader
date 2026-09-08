@@ -895,6 +895,12 @@ class CryptoCatalystAggregator:
             evidence = ()
         return self.aggregate(evidence, decision_cutoff=decision_cutoff)
 
+    def evidence_at(self, cutoff: datetime) -> tuple[CryptoCatalystEvidence, ...]:
+        """Return bounded normalized evidence eligible at a historical cutoff."""
+        boundary = _aware(cutoff, "cutoff", required=True)
+        values = [item for revisions in self._events.values() for item in revisions if item.eligible_at(boundary)]
+        return tuple(sorted(values, key=lambda item: (item.published_at, item.provider_id, item.event_identity, item.revision_identity)))
+
     def metrics(self) -> CryptoCatalystMetrics:
         projects = {item.project.project_id for values in self._events.values() for item in values if item.project is not None}
         ambiguous = sum(1 for values in self._events.values() for item in values if item.association_confidence is CryptoAssociationConfidence.AMBIGUOUS)

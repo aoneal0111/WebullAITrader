@@ -118,6 +118,11 @@ from .intelligence_runtime import (
     CryptoIntelligenceMetrics,
     CryptoIntelligenceResearchRuntime,
 )
+from .catalyst_runtime import (
+    DEFAULT_CADENCES,
+    CryptoCatalystAcquisitionMetrics,
+    CryptoCatalystAcquisitionRuntime,
+)
 from .catalysts import (
     SCHEMA_VERSION as CRYPTO_CATALYST_SCHEMA_VERSION,
     MAX_PROJECTS,
@@ -420,4 +425,7 @@ __all__ = [
     "CatalystEvidenceView",
     "CryptoIntelligenceMetrics",
     "CryptoIntelligenceResearchRuntime",
+    "DEFAULT_CADENCES",
+    "CryptoCatalystAcquisitionMetrics",
+    "CryptoCatalystAcquisitionRuntime",
 ]

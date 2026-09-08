@@ -386,6 +386,16 @@ def load_configuration(env=None):
         _int(e, "CRYPTO_INTELLIGENCE_HISTORY_REQUEST_BUDGET", 20),
         _int(e, "CRYPTO_INTELLIGENCE_M1_REFRESH_SECONDS", 60),
         _int(e, "CRYPTO_INTELLIGENCE_M5_REFRESH_SECONDS", 60),
+        _bool(e.get("CRYPTO_CATALYST_ACQUISITION_ENABLED", "false")),
+        _bool(e.get("CRYPTO_CATALYST_SEC_ENABLED", "false")),
+        _bool(e.get("CRYPTO_CATALYST_FEDERAL_REGISTER_ENABLED", "false")),
+        _bool(e.get("CRYPTO_CATALYST_STATUSPAGE_ENABLED", "false")),
+        _bool(e.get("CRYPTO_CATALYST_BYBIT_ENABLED", "false")),
+        _int(e, "CRYPTO_CATALYST_SCHEDULER_TICK_SECONDS", 5),
+        _int(e, "CRYPTO_CATALYST_SEC_CADENCE_SECONDS", 3600),
+        _int(e, "CRYPTO_CATALYST_FEDERAL_REGISTER_CADENCE_SECONDS", 7200),
+        _int(e, "CRYPTO_CATALYST_STATUSPAGE_CADENCE_SECONDS", 300),
+        _int(e, "CRYPTO_CATALYST_BYBIT_CADENCE_SECONDS", 900),
     )
 
 

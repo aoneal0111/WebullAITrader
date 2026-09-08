@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -38,6 +38,7 @@ from app.crypto_research import (
     CryptoCatalystCollectionConfig,
     CryptoCatalystCollectionSink,
     CryptoIntelligenceResearchRuntime,
+    CryptoCatalystAcquisitionRuntime,
     CryptoPair,
     CryptoResearchRuntime,
     WebullCryptoResearchProvider,
@@ -77,6 +78,7 @@ class DesktopComposition:
     adaptive_entry_research_observer: AdaptiveWorkingEntryObserver | None = None
     crypto_research_runtime: CryptoResearchRuntime | None = None
     crypto_intelligence_runtime: CryptoIntelligenceResearchRuntime | None = None
+    crypto_catalyst_acquisition_runtime: CryptoCatalystAcquisitionRuntime | None = None
     memory_observability: MemoryObservability | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
@@ -88,6 +90,12 @@ class DesktopComposition:
                 crypto.close(timeout_seconds=min(timeout_seconds, 2.0))
             except Exception:
                 # Research has no authority over application shutdown.
+                pass
+        acquisition = self.crypto_catalyst_acquisition_runtime
+        if acquisition is not None:
+            try:
+                acquisition.close(timeout_seconds=min(timeout_seconds, 2.0))
+            except Exception:
                 pass
         intelligence = self.crypto_intelligence_runtime
         if intelligence is not None:
@@ -133,6 +141,7 @@ def create_desktop_composition(
     paper_order_book: PaperOrderBook | None = None,
     paper_persistence_path: str | Path | None = None,
     paper_clock: Callable[[], datetime] | None = None,
+    catalyst_providers: Sequence[object] = (),
 ) -> DesktopComposition:
     """Construct the desktop application dependency graph."""
 
@@ -439,6 +448,25 @@ def create_desktop_composition(
         intelligence_m1_refresh_seconds=operational_configuration.crypto_intelligence_m1_refresh_seconds,
         intelligence_m5_refresh_seconds=operational_configuration.crypto_intelligence_m5_refresh_seconds,
     )
+    crypto_catalyst_acquisition_runtime = None
+    if operational_configuration.crypto_catalyst_acquisition_enabled:
+        crypto_catalyst_acquisition_runtime = CryptoCatalystAcquisitionRuntime(
+            enabled=True,
+            providers=tuple(catalyst_providers),
+            cadences={
+                "SEC_EDGAR": operational_configuration.crypto_catalyst_sec_cadence_seconds,
+                "FEDERAL_REGISTER": operational_configuration.crypto_catalyst_federal_register_cadence_seconds,
+                "STATUSPAGE": operational_configuration.crypto_catalyst_statuspage_cadence_seconds,
+                "BYBIT": operational_configuration.crypto_catalyst_bybit_cadence_seconds,
+            },
+            provider_enabled={
+                "SEC_EDGAR": operational_configuration.crypto_catalyst_sec_enabled,
+                "FEDERAL_REGISTER": operational_configuration.crypto_catalyst_federal_register_enabled,
+                "STATUSPAGE": operational_configuration.crypto_catalyst_statuspage_enabled,
+                "BYBIT": operational_configuration.crypto_catalyst_bybit_enabled,
+            },
+            scheduler_tick_seconds=operational_configuration.crypto_catalyst_scheduler_tick_seconds,
+        )
     crypto_intelligence_runtime = None
     if operational_configuration.crypto_intelligence_enabled:
         collection_config = CryptoCatalystCollectionConfig.from_environment()
@@ -449,6 +477,7 @@ def create_desktop_composition(
         )
         crypto_intelligence_runtime = CryptoIntelligenceResearchRuntime(
             enabled=True,
+            catalyst_view=(None if crypto_catalyst_acquisition_runtime is None else crypto_catalyst_acquisition_runtime),
             collection=collection_sink,
             maximum_active_decisions=operational_configuration.crypto_intelligence_max_active_decisions,
         )
@@ -519,6 +548,8 @@ def create_desktop_composition(
 
     if crypto_research_runtime.enabled:
         crypto_research_runtime.start()
+    if crypto_catalyst_acquisition_runtime is not None:
+        crypto_catalyst_acquisition_runtime.start()
     if crypto_intelligence_runtime is not None and crypto_intelligence_runtime.enabled:
         crypto_intelligence_runtime.start()
 
@@ -562,6 +593,7 @@ def create_desktop_composition(
         adaptive_entry_research_observer=adaptive_entry_research_observer,
         crypto_research_runtime=crypto_research_runtime,
         crypto_intelligence_runtime=crypto_intelligence_runtime,
+        crypto_catalyst_acquisition_runtime=crypto_catalyst_acquisition_runtime,
         memory_observability=memory_observability,
     )
 __all__ = [
