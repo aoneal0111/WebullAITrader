@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 import sqlite3
+from threading import Lock
 
 from .forward_models import CAPTURE_SCHEMA_VERSION, CaptureRecord, CaptureRecordType
 
@@ -16,6 +17,8 @@ class CaptureSchemaError(RuntimeError):
 class ForwardCaptureStore:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
+        self._materialization_lock = Lock()
+        self._records_materialized_total = 0
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -98,10 +101,18 @@ class ForwardCaptureStore:
                 "SELECT schema_version,record_id,record_type,symbol,timestamp,payload_json "
                 f"FROM capture_records{where} ORDER BY sequence", values,
             ).fetchall()
+        with self._materialization_lock:
+            self._records_materialized_total += len(rows)
         return tuple(CaptureRecord(
             row[0], row[1], CaptureRecordType(row[2]), row[3],
             datetime.fromisoformat(row[4]), row[5],
         ) for row in rows)
+
+    def records_materialized_total(self) -> int:
+        """Cumulative rows returned by ``records`` without retaining them."""
+
+        with self._materialization_lock:
+            return self._records_materialized_total
 
     def count(self) -> int:
         with self._connect() as connection:

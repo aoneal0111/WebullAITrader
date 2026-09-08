@@ -51,6 +51,14 @@ class PositionProjection:
         with self._lock:
             return self._snapshot
 
+    def memory_metrics(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "position_count": len(self._snapshot.positions),
+                "processed_fill_id_count": len(self._processed_fill_ids),
+                "source_sequence_count": len(self._last_sequence_by_source),
+            }
+
     def position_for_symbol(self, symbol: str) -> PositionReadModel | None:
         """Return current symbol state without scanning historical events."""
 

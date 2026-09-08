@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import FrozenInstanceError
+import gc
 import os
+import weakref
 
 import pytest
 
@@ -141,3 +143,162 @@ def test_unsupported_process_memory_mechanism_is_classified(monkeypatch):
 
     assert memory_runtime._process_memory(failures.append) == (None, None)
     assert failures == ["unavailable"]
+
+
+def test_gc_and_allocated_block_metrics_are_emitted_without_forced_collection(
+    monkeypatch, tmp_path,
+) -> None:
+    monkeypatch.setattr(memory_runtime.gc, "get_count", lambda: (1, 2, 3))
+    monkeypatch.setattr(memory_runtime.gc, "get_stats", lambda: [
+        {"collections": 4, "collected": 5, "uncollectable": 6},
+        {"collections": 7, "collected": 8, "uncollectable": 9},
+        {"collections": 10, "collected": 11, "uncollectable": 12},
+    ])
+    monkeypatch.setattr(
+        memory_runtime.gc,
+        "get_objects",
+        lambda: (_ for _ in ()).throw(AssertionError("opt-in only")),
+    )
+    monkeypatch.setattr(
+        memory_runtime.gc,
+        "collect",
+        lambda: (_ for _ in ()).throw(AssertionError("must not collect")),
+    )
+    monkeypatch.setattr(memory_runtime.sys, "getallocatedblocks", lambda: 1234)
+    diagnostics = MemoryObservability(
+        enabled=True,
+        path=tmp_path / "memory.jsonl",
+        gc_tracked_objects_enabled=False,
+    )
+
+    snapshot = diagnostics.sample()
+
+    assert snapshot is not None
+    assert snapshot.gc_generation_counts == (1, 2, 3)
+    assert snapshot.gc_collection_stats == ((4, 5, 6), (7, 8, 9), (10, 11, 12))
+    assert snapshot.gc_tracked_objects is None
+    assert snapshot.python_allocated_blocks == 1234
+    assert diagnostics.close()
+
+
+def test_gc_tracked_object_count_is_explicitly_opt_in(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(memory_runtime.gc, "get_objects", lambda: [1, 2, 3])
+    diagnostics = MemoryObservability(
+        enabled=True,
+        path=tmp_path / "memory.jsonl",
+        gc_tracked_objects_enabled=True,
+    )
+
+    snapshot = diagnostics.sample()
+
+    assert snapshot is not None and snapshot.gc_tracked_objects == 3
+    assert diagnostics.close()
+
+
+def test_tracemalloc_disabled_never_takes_snapshot(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        memory_runtime.tracemalloc,
+        "take_snapshot",
+        lambda: (_ for _ in ()).throw(AssertionError("snapshot work disabled")),
+    )
+    diagnostics = MemoryObservability(
+        enabled=True,
+        tracemalloc_enabled=False,
+        path=tmp_path / "memory.jsonl",
+    )
+
+    snapshot = diagnostics.sample()
+
+    assert snapshot is not None
+    assert snapshot.tracemalloc_current_bytes is None
+    assert snapshot.tracemalloc_top == ()
+    assert not snapshot.tracemalloc_snapshot_captured
+    assert diagnostics.close()
+
+
+def test_tracemalloc_summary_is_bounded_slow_cadence_and_snapshot_is_released(
+    monkeypatch, tmp_path,
+) -> None:
+    tracing = {"active": False}
+    snapshot_references: list[weakref.ReferenceType] = []
+
+    class Frame:
+        def __init__(self, index: int) -> None:
+            self.filename = f"site-{index}.py"
+            self.lineno = index + 10
+
+        def __str__(self) -> str:
+            return f"{self.filename}:{self.lineno}"
+
+    class Stat:
+        def __init__(self, index: int) -> None:
+            self.traceback = (Frame(index),)
+            self.size = 100 - index
+            self.count = index + 1
+
+    class AllocationSnapshot:
+        def statistics(self, _grouping):
+            return [Stat(index) for index in range(5)]
+
+    def take_snapshot():
+        result = AllocationSnapshot()
+        snapshot_references.append(weakref.ref(result))
+        return result
+
+    monkeypatch.setattr(memory_runtime.tracemalloc, "is_tracing", lambda: tracing["active"])
+    monkeypatch.setattr(memory_runtime.tracemalloc, "start", lambda _frames: tracing.update(active=True))
+    monkeypatch.setattr(memory_runtime.tracemalloc, "get_traced_memory", lambda: (111, 222))
+    monkeypatch.setattr(memory_runtime.tracemalloc, "take_snapshot", take_snapshot)
+    diagnostics = MemoryObservability(
+        enabled=True,
+        tracemalloc_enabled=True,
+        tracemalloc_snapshot_interval_seconds=600,
+        top_allocations=2,
+        path=tmp_path / "memory.jsonl",
+    )
+    diagnostics.start()
+
+    first = diagnostics.sample()
+    second = diagnostics.sample()
+
+    assert first is not None and first.tracemalloc_snapshot_captured
+    assert first.tracemalloc_current_bytes == 111
+    assert first.tracemalloc_peak_bytes == 222
+    assert len(first.tracemalloc_top) == 2
+    serialized = first.to_dict()["tracemalloc_top"]
+    assert serialized[0] == {
+        "location": "site-0.py:10",
+        "filename": "site-0.py",
+        "line_number": 10,
+        "size_bytes": 100,
+        "count": 1,
+    }
+    assert second is not None and not second.tracemalloc_snapshot_captured
+    assert second.tracemalloc_top == ()
+    gc.collect()
+    assert snapshot_references and snapshot_references[0]() is None
+    assert not hasattr(diagnostics, "_tracemalloc_snapshots")
+    assert diagnostics.close()
+
+
+def test_tracemalloc_snapshot_failure_is_isolated(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(memory_runtime.tracemalloc, "is_tracing", lambda: True)
+    monkeypatch.setattr(memory_runtime.tracemalloc, "get_traced_memory", lambda: (11, 22))
+    monkeypatch.setattr(
+        memory_runtime.tracemalloc,
+        "take_snapshot",
+        lambda: (_ for _ in ()).throw(RuntimeError("synthetic failure")),
+    )
+    diagnostics = MemoryObservability(
+        enabled=True,
+        tracemalloc_enabled=True,
+        path=tmp_path / "memory.jsonl",
+    )
+
+    snapshot = diagnostics.sample()
+
+    assert snapshot is not None
+    assert snapshot.tracemalloc_current_bytes == 11
+    assert not snapshot.tracemalloc_snapshot_captured
+    assert diagnostics.metrics()["tracemalloc_snapshot_failures"] == 1
+    assert diagnostics.close()

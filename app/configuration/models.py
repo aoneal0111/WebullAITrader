@@ -158,6 +158,8 @@ class OperationalConfiguration:
     memory_observability_path: Path = Path("memory-observability.jsonl")
     memory_observability_interval_seconds: float = 60.0
     memory_tracemalloc_enabled: bool = False
+    memory_tracemalloc_snapshot_interval_seconds: float = 600.0
+    memory_gc_tracked_objects_enabled: bool = False
     crypto_discovery_enabled: bool = False
     crypto_discovery_symbols: tuple[str, ...] = ()
     crypto_discovery_refresh_seconds: int = 60

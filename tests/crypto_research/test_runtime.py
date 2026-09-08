@@ -120,10 +120,17 @@ def test_retained_symbols_history_signatures_and_memory_metrics_are_bounded() ->
     runtime.start()
     for symbol in ("BTC", "ETH", "SOL"):
         assert runtime.admit(observation(symbol))
+    assert runtime.admit(observation("SOL", price="101"))
     assert runtime.close(timeout_seconds=2)
     metrics = runtime.memory_metrics()
     assert metrics["crypto_symbol_count"] == 2
     assert metrics["crypto_retained_state_count"] == 2
+    assert metrics["crypto_history_total_observation_count"] == 3
+    assert metrics["crypto_history_max_observations_per_symbol"] == 2
+    assert metrics["crypto_history_per_symbol_maximum"] == 2
+    assert metrics["crypto_history_admissions"] == 4
+    assert metrics["crypto_history_symbol_evictions"] == 1
+    assert metrics["crypto_history_observation_evictions"] == 1
     assert len(runtime._admission_signatures) == 2
     assert all(len(values) <= 2 for values in runtime._history.values())
     assert set(metrics) == {
@@ -135,6 +142,11 @@ def test_retained_symbols_history_signatures_and_memory_metrics_are_bounded() ->
         "crypto_snapshot_batches_succeeded", "crypto_snapshot_batches_failed",
         "crypto_snapshot_symbols_requested", "crypto_snapshot_symbols_returned",
         "crypto_refreshes_partial", "crypto_refreshes_complete",
+        "crypto_history_total_observation_count",
+        "crypto_history_max_observations_per_symbol",
+        "crypto_history_per_symbol_maximum", "crypto_history_admissions",
+        "crypto_history_observation_evictions",
+        "crypto_history_symbol_evictions",
     }
 
 

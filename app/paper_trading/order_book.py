@@ -147,6 +147,13 @@ class PaperOrderBook:
     def __len__(self) -> int:
         return len(self._orders)
 
+    def memory_metrics(self) -> dict[str, int]:
+        return {
+            "order_count": len(self._orders),
+            "active_order_count": len(self._active_order_ids),
+            "active_symbol_count": len(self._active_order_ids_by_symbol),
+        }
+
     def _index(
         self,
         order: PaperOrder,

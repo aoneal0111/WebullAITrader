@@ -105,6 +105,28 @@ def test_same_session_identity_owns_connect_registration_and_subscription() -> N
     assert "session-one" not in repr(diagnostics)
 
 
+def test_callback_queue_memory_metrics_track_depth_high_water_and_totals() -> None:
+    sdk = Client("session-one")
+    stream = backend(sdk)
+
+    for index in range(3):
+        sdk.on_quotes_message(sdk, f"topic-{index}", object())
+
+    assert stream.memory_metrics() == {
+        "current_depth": 3,
+        "high_water_depth": 3,
+        "messages_enqueued": 3,
+        "messages_dequeued": 0,
+    }
+    assert stream.receive_nowait() is not None
+    assert stream.memory_metrics() == {
+        "current_depth": 2,
+        "high_water_depth": 3,
+        "messages_enqueued": 3,
+        "messages_dequeued": 1,
+    }
+
+
 def test_stale_session_identity_is_rejected_and_replaced_once() -> None:
     stale = Client("stale-session", callback_session_id="different-session")
     fresh = Client("fresh-session")

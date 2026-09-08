@@ -187,6 +187,14 @@ class MomentumScannerPipeline:
     ) -> ScannerDecision | None:
         return self._latest.get(symbol.strip().upper())
 
+    def memory_metrics(self) -> dict[str, int]:
+        adapter_metrics = self.adapter.memory_metrics()
+        return {
+            "latest_decision_count": len(self._latest),
+            "processing_delay_count": self._processing_delay_count,
+            **adapter_metrics,
+        }
+
     def ranked(
         self,
         *,

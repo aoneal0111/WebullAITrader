@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import gc
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from threading import Event, current_thread
+import weakref
 
 import pytest
 
@@ -78,6 +80,56 @@ class _RequestOnlyWorker:
         return ReportWorkerMetrics(
             requests=len(self.requests), stopped=self.closed,
         )
+
+
+def test_report_memory_metrics_count_materialized_rows_without_retaining_report(
+    tmp_path: Path,
+) -> None:
+    class Report:
+        pass
+
+    path = tmp_path / "report-metrics.sqlite3"
+    store = ForwardCaptureStore(path)
+    store.append_batch(tuple(
+        CaptureRecord.create(
+            CaptureRecordType.DISCOVERY,
+            f"S{index}",
+            NOW,
+            {"index": index},
+            identity_parts=(str(index),),
+        )
+        for index in range(3)
+    ))
+    completed = Event()
+    references: list[weakref.ReferenceType] = []
+
+    def builder(source, _trading_date, **_kwargs):
+        assert len(source.records()) == 3
+        return Report()
+
+    def sink(report):
+        references.append(weakref.ref(report))
+        completed.set()
+
+    worker = WarriorReportWorker(
+        store,
+        report_sink=sink,
+        failure_sink=lambda _error: None,
+        builder=builder,
+    )
+    worker.request_refresh(NOW.date(), configuration_fingerprint=None)
+    assert completed.wait(1.0)
+    assert worker.close(timeout_seconds=1.0)
+
+    metrics = worker.memory_metrics()
+    assert metrics["report_request_count"] == 1
+    assert metrics["report_generation_count"] == 1
+    assert metrics["report_build_count"] == 1
+    assert metrics["report_last_records_materialized"] == 3
+    assert metrics["report_maximum_records_materialized"] == 3
+    assert metrics["report_build_active"] == 0
+    gc.collect()
+    assert references and references[0]() is None
 
 
 @pytest.mark.parametrize("history_size", (0, 100, 1000))

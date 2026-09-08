@@ -33,6 +33,11 @@ class ReportWorkerMetrics:
     busy: bool = False
     pending: bool = False
     stopped: bool = False
+    build_count: int = 0
+    last_build_duration_milliseconds: int = 0
+    maximum_build_duration_milliseconds: int = 0
+    last_records_materialized: int = 0
+    maximum_records_materialized: int = 0
 
 
 ReportBuilder = Callable[..., DailyForwardReport]
@@ -69,6 +74,11 @@ class WarriorReportWorker:
         self._failures = 0
         self._generation = 0
         self._completed_generation = 0
+        self._build_count = 0
+        self._last_build_duration_milliseconds = 0
+        self._maximum_build_duration_milliseconds = 0
+        self._last_records_materialized = 0
+        self._maximum_records_materialized = 0
         self._thread = Thread(
             target=self._run,
             name="warrior-report-refresh",
@@ -127,7 +137,39 @@ class WarriorReportWorker:
                 busy=self._busy,
                 pending=self._pending is not None,
                 stopped=self._stopped,
+                build_count=self._build_count,
+                last_build_duration_milliseconds=(
+                    self._last_build_duration_milliseconds
+                ),
+                maximum_build_duration_milliseconds=(
+                    self._maximum_build_duration_milliseconds
+                ),
+                last_records_materialized=self._last_records_materialized,
+                maximum_records_materialized=self._maximum_records_materialized,
             )
+
+    def memory_metrics(self) -> dict[str, int]:
+        metrics = self.metrics()
+        return {
+            "report_request_count": metrics.requests,
+            "report_coalesced_request_count": metrics.coalesced_requests,
+            "report_build_count": metrics.build_count,
+            "report_generation_count": metrics.latest_generation,
+            "report_completed_generation": metrics.completed_generation,
+            "report_last_build_duration_milliseconds": (
+                metrics.last_build_duration_milliseconds
+            ),
+            "report_maximum_build_duration_milliseconds": (
+                metrics.maximum_build_duration_milliseconds
+            ),
+            "report_last_records_materialized": metrics.last_records_materialized,
+            "report_maximum_records_materialized": (
+                metrics.maximum_records_materialized
+            ),
+            "report_build_active": int(metrics.busy),
+            "report_request_pending": int(metrics.pending),
+            "report_failure_count": metrics.failures,
+        }
 
     @property
     def thread(self) -> Thread:
@@ -147,6 +189,8 @@ class WarriorReportWorker:
             assert request is not None
             generation, trading_date, fingerprint, persist = request
             started = perf_counter()
+            materialized_before = self._store.records_materialized_total()
+            report = None
             try:
                 report = self._builder(
                     self._store,
@@ -162,11 +206,30 @@ class WarriorReportWorker:
             except BaseException as error:
                 self._record_failure(error)
             finally:
-                performance_diagnostics.record_report_build_duration(
-                    (perf_counter() - started) * 1000.0
+                duration_ms = (perf_counter() - started) * 1000.0
+                materialized = max(
+                    0,
+                    self._store.records_materialized_total()
+                    - materialized_before,
                 )
+                performance_diagnostics.record_report_build_duration(duration_ms)
                 with self._condition:
+                    rounded_duration = max(0, round(duration_ms))
+                    self._build_count += 1
+                    self._last_build_duration_milliseconds = rounded_duration
+                    self._maximum_build_duration_milliseconds = max(
+                        self._maximum_build_duration_milliseconds,
+                        rounded_duration,
+                    )
+                    self._last_records_materialized = materialized
+                    self._maximum_records_materialized = max(
+                        self._maximum_records_materialized,
+                        materialized,
+                    )
                     self._busy = False
+                # The worker retains only primitive diagnostics.  Do not leave
+                # the completed report in this long-lived thread frame.
+                del report
 
     def _record_failure(self, error: BaseException) -> None:
         with self._condition:

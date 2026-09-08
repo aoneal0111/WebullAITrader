@@ -106,14 +106,20 @@ def test_memory_observability_is_explicit_bounded_and_dedicated(tmp_path):
         "ATLAS_MEMORY_OBSERVABILITY_PATH": str(tmp_path / "memory.jsonl"),
         "ATLAS_MEMORY_OBSERVABILITY_INTERVAL_SECONDS": "12",
         "ATLAS_MEMORY_TRACEMALLOC_ENABLED": "true",
+        "ATLAS_MEMORY_TRACEMALLOC_SNAPSHOT_INTERVAL_SECONDS": "900",
+        "ATLAS_MEMORY_GC_TRACKED_OBJECTS_ENABLED": "true",
     })
 
     assert default.memory_observability_enabled is False
     assert default.memory_tracemalloc_enabled is False
+    assert default.memory_tracemalloc_snapshot_interval_seconds == 600.0
+    assert default.memory_gc_tracked_objects_enabled is False
     assert default.memory_observability_interval_seconds == 60.0
     assert default.memory_observability_path.name == "memory-observability.jsonl"
     assert enabled.memory_observability_enabled is True
     assert enabled.memory_tracemalloc_enabled is True
+    assert enabled.memory_tracemalloc_snapshot_interval_seconds == 900.0
+    assert enabled.memory_gc_tracked_objects_enabled is True
     assert enabled.memory_observability_interval_seconds == 30.0
     assert enabled.memory_observability_path == (tmp_path / "memory.jsonl").resolve()
 

@@ -7,8 +7,10 @@ all state/queues are bounded; failures are isolated from callers.
 from __future__ import annotations
 
 import ctypes
+import gc
 import json
 import os
+import sys
 import threading
 import tracemalloc
 from dataclasses import dataclass
@@ -28,7 +30,12 @@ class MemoryDiagnosticSnapshot:
     metrics: tuple[tuple[str, int], ...] = ()
     tracemalloc_current_bytes: int | None = None
     tracemalloc_peak_bytes: int | None = None
-    tracemalloc_top: tuple[tuple[str, int, int], ...] = ()
+    tracemalloc_top: tuple[tuple[str, str, int, int, int], ...] = ()
+    tracemalloc_snapshot_captured: bool = False
+    gc_generation_counts: tuple[int, int, int] = (0, 0, 0)
+    gc_collection_stats: tuple[tuple[int, int, int], ...] = ()
+    gc_tracked_objects: int | None = None
+    python_allocated_blocks: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -40,9 +47,29 @@ class MemoryDiagnosticSnapshot:
             "tracemalloc_current_bytes": self.tracemalloc_current_bytes,
             "tracemalloc_peak_bytes": self.tracemalloc_peak_bytes,
             "tracemalloc_top": [
-                {"location": location, "size_bytes": size, "count": count}
-                for location, size, count in self.tracemalloc_top
+                {
+                    "location": location,
+                    "filename": filename,
+                    "line_number": line_number,
+                    "size_bytes": size,
+                    "count": count,
+                }
+                for location, filename, line_number, size, count
+                in self.tracemalloc_top
             ],
+            "tracemalloc_snapshot_captured": self.tracemalloc_snapshot_captured,
+            "gc_generation_counts": list(self.gc_generation_counts),
+            "gc_collection_stats": [
+                {
+                    "collections": collections,
+                    "collected": collected,
+                    "uncollectable": uncollectable,
+                }
+                for collections, collected, uncollectable
+                in self.gc_collection_stats
+            ],
+            "gc_tracked_objects": self.gc_tracked_objects,
+            "python_allocated_blocks": self.python_allocated_blocks,
         }
 
 
@@ -56,10 +83,28 @@ class MemoryObservability:
                  *, enabled: bool | None = None, path: str | Path | None = None,
                  interval_seconds: float | None = None,
                  tracemalloc_enabled: bool | None = None,
+                 tracemalloc_snapshot_interval_seconds: float | None = None,
+                 gc_tracked_objects_enabled: bool | None = None,
                  queue_capacity: int = 8, top_allocations: int = 10) -> None:
         self.enabled = _env_bool("ATLAS_MEMORY_OBSERVABILITY_ENABLED", False) if enabled is None else bool(enabled)
         self.tracemalloc_enabled = _env_bool("ATLAS_MEMORY_TRACEMALLOC_ENABLED", False) if tracemalloc_enabled is None else bool(tracemalloc_enabled)
         self.interval_seconds = max(30.0, float(interval_seconds if interval_seconds is not None else os.getenv("ATLAS_MEMORY_OBSERVABILITY_INTERVAL_SECONDS", "60")))
+        self.tracemalloc_snapshot_interval_seconds = max(
+            self.interval_seconds,
+            float(
+                tracemalloc_snapshot_interval_seconds
+                if tracemalloc_snapshot_interval_seconds is not None
+                else os.getenv(
+                    "ATLAS_MEMORY_TRACEMALLOC_SNAPSHOT_INTERVAL_SECONDS",
+                    "600",
+                )
+            ),
+        )
+        self.gc_tracked_objects_enabled = (
+            _env_bool("ATLAS_MEMORY_GC_TRACKED_OBJECTS_ENABLED", False)
+            if gc_tracked_objects_enabled is None
+            else bool(gc_tracked_objects_enabled)
+        )
         self.path = Path(path or os.getenv("ATLAS_MEMORY_OBSERVABILITY_PATH", "memory-observability.jsonl"))
         if queue_capacity <= 0 or top_allocations <= 0:
             raise ValueError("diagnostic bounds must be positive")
@@ -73,6 +118,8 @@ class MemoryObservability:
         self._dropped = 0
         self._process_memory_unavailable = 0
         self._process_memory_query_failures = 0
+        self._tracemalloc_snapshot_failures = 0
+        self._next_tracemalloc_snapshot_at = 0.0
         self._lifecycle: dict[str, int] = {}
 
     def record_lifecycle(self, event: str) -> None:
@@ -111,11 +158,57 @@ class MemoryObservability:
             for key, value in tuple(self._lifecycle.items()):
                 values[f"lifecycle_{key}"] = value
             current = peak = None
-            top: tuple[tuple[str, int, int], ...] = ()
+            top: tuple[tuple[str, str, int, int, int], ...] = ()
+            tracemalloc_snapshot_captured = False
             if self.tracemalloc_enabled and tracemalloc.is_tracing():
                 current, peak = tracemalloc.get_traced_memory()
-                stats = tracemalloc.take_snapshot().statistics("traceback")[: self._top_allocations]
-                top = tuple((str(item.traceback[0]), item.size, item.count) for item in stats)
+                now = monotonic()
+                if now >= self._next_tracemalloc_snapshot_at:
+                    try:
+                        allocation_snapshot = tracemalloc.take_snapshot()
+                        try:
+                            stats = allocation_snapshot.statistics("traceback")[
+                                : self._top_allocations
+                            ]
+                            top = tuple(
+                                (
+                                    str(item.traceback[0]),
+                                    item.traceback[0].filename,
+                                    item.traceback[0].lineno,
+                                    item.size,
+                                    item.count,
+                                )
+                                for item in stats
+                            )
+                            tracemalloc_snapshot_captured = True
+                        finally:
+                            del allocation_snapshot
+                    except Exception:
+                        self._tracemalloc_snapshot_failures += 1
+                    finally:
+                        self._next_tracemalloc_snapshot_at = (
+                            now + self.tracemalloc_snapshot_interval_seconds
+                        )
+            gc_counts = tuple(int(value) for value in gc.get_count())
+            gc_stats = tuple(
+                (
+                    int(item.get("collections", 0)),
+                    int(item.get("collected", 0)),
+                    int(item.get("uncollectable", 0)),
+                )
+                for item in gc.get_stats()
+            )
+            tracked_objects = (
+                len(gc.get_objects())
+                if self.gc_tracked_objects_enabled
+                else None
+            )
+            allocated_blocks_source = getattr(sys, "getallocatedblocks", None)
+            allocated_blocks = (
+                max(0, int(allocated_blocks_source()))
+                if callable(allocated_blocks_source)
+                else None
+            )
             snapshot = MemoryDiagnosticSnapshot(
                 datetime.now(UTC),
                 *_process_memory(self._record_process_memory_failure),
@@ -124,6 +217,11 @@ class MemoryObservability:
                 current,
                 peak,
                 top,
+                tracemalloc_snapshot_captured,
+                gc_counts,
+                gc_stats,
+                tracked_objects,
+                allocated_blocks,
             )
             try:
                 self._queue.put_nowait(snapshot)
@@ -158,6 +256,7 @@ class MemoryObservability:
             "drops": self._dropped,
             "process_memory_unavailable": self._process_memory_unavailable,
             "process_memory_query_failures": self._process_memory_query_failures,
+            "tracemalloc_snapshot_failures": self._tracemalloc_snapshot_failures,
         }
 
     def _record_process_memory_failure(self, reason: str) -> None:

@@ -199,6 +199,14 @@ class ApplicationStateStore:
         with self._lock:
             return self._state
 
+    def memory_metrics(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "listener_count": len(self._listeners),
+                "timeline_count": len(self._state.timeline),
+                "revision": self._state.revision,
+            }
+
     def subscribe(self, listener: StateListener) -> int:
         if not callable(listener):
             raise TypeError("listener must be callable")

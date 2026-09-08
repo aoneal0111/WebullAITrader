@@ -371,6 +371,15 @@ def load_configuration(env=None):
             ),
         ),
         _bool(e.get("ATLAS_MEMORY_TRACEMALLOC_ENABLED", "false")),
+        max(
+            30.0,
+            _positive_float(
+                e,
+                "ATLAS_MEMORY_TRACEMALLOC_SNAPSHOT_INTERVAL_SECONDS",
+                600.0,
+            ),
+        ),
+        _bool(e.get("ATLAS_MEMORY_GC_TRACKED_OBJECTS_ENABLED", "false")),
         _bool(e.get("CRYPTO_DISCOVERY_ENABLED", "false")),
         _symbols(e.get("CRYPTO_DISCOVERY_SYMBOLS", "")),
         _int(e, "CRYPTO_DISCOVERY_REFRESH_SECONDS", 60),

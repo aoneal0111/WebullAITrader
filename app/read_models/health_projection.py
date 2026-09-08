@@ -54,6 +54,13 @@ class HealthProjection:
         with self._lock:
             return self._snapshot
 
+    def memory_metrics(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "source_sequence_count": len(self._latest_sequence),
+                "field_timestamp_count": len(self._field_timestamps),
+            }
+
     def __call__(self, event: PaperRuntimeEvent) -> None:
         if not isinstance(event, PaperRuntimeEvent):
             raise TypeError("event must be a PaperRuntimeEvent")

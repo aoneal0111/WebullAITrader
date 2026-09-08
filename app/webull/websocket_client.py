@@ -86,6 +86,11 @@ class OfficialSdkStreamBackend:
         self._clock = clock
         self._sdk_client_factory = sdk_client_factory
         self._messages: Queue[object] = Queue()
+        self._message_metrics_lock = Lock()
+        self._message_queue_depth = 0
+        self._messages_enqueued = 0
+        self._messages_dequeued = 0
+        self._message_queue_high_water = 0
         self._connected = Event()
         self._registration_ready = Event()
         self._identity_mismatch = Event()
@@ -109,6 +114,17 @@ class OfficialSdkStreamBackend:
         """Current callback FIFO depth for aggregate runtime diagnostics."""
 
         return self._messages.qsize()
+
+    def memory_metrics(self) -> dict[str, int]:
+        """Return primitive callback-FIFO cardinalities without retaining payloads."""
+
+        with self._message_metrics_lock:
+            return {
+                "current_depth": self._message_queue_depth,
+                "high_water_depth": self._message_queue_high_water,
+                "messages_enqueued": self._messages_enqueued,
+                "messages_dequeued": self._messages_dequeued,
+            }
 
     @staticmethod
     def _hash(value: object) -> str:
@@ -162,11 +178,19 @@ class OfficialSdkStreamBackend:
         if client is not self.client:
             self._emit_diagnostic("CROSS_CLIENT_MESSAGE_REJECTED")
             return
-        self._messages.put(
-            _ReceivedStreamPayload(topic, quotes, self._clock())
-        )
+        with self._message_metrics_lock:
+            self._messages.put(
+                _ReceivedStreamPayload(topic, quotes, self._clock())
+            )
+            self._message_queue_depth += 1
+            self._messages_enqueued += 1
+            depth = self._message_queue_depth
+            self._message_queue_high_water = max(
+                self._message_queue_high_water,
+                depth,
+            )
         performance_diagnostics.record_market_event_callback(
-            self._messages.qsize()
+            depth
         )
         if callable(self._original_on_quotes_message):
             self._original_on_quotes_message(client, topic, quotes)
@@ -353,6 +377,9 @@ class OfficialSdkStreamBackend:
     def receive(self) -> object | None:
         try:
             message = self._messages.get(timeout=self._receive_timeout_seconds)
+            with self._message_metrics_lock:
+                self._messages_dequeued += 1
+                self._message_queue_depth -= 1
             if not self._consumption_started:
                 self._consumption_started = True
                 self._notify("active_event_consumption")
@@ -363,6 +390,9 @@ class OfficialSdkStreamBackend:
     def receive_nowait(self) -> object | None:
         try:
             message = self._messages.get_nowait()
+            with self._message_metrics_lock:
+                self._messages_dequeued += 1
+                self._message_queue_depth -= 1
             if not self._consumption_started:
                 self._consumption_started = True
                 self._notify("active_event_consumption")

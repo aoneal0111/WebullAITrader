@@ -358,9 +358,19 @@ class RealtimeScannerEngine:
         return self._ignored_events
 
     def memory_metrics(self) -> dict[str, int]:
-        return {"candidate_count": len(self._decisions),
-                "subscription_count": len(self._subscription_symbols),
-                "current_quote_symbol_count": len(self._active_symbols)}
+        pipeline_metrics = getattr(self._pipeline, "memory_metrics", None)
+        nested = {} if not callable(pipeline_metrics) else pipeline_metrics()
+        return {
+            "candidate_count": len(self._decisions),
+            "subscription_count": len(self._subscription_symbols),
+            "current_quote_symbol_count": len(self._active_symbols),
+            "active_asset_class_count": len(self._active_asset_classes),
+            "reference_failure_count": len(self._reference_failures),
+            **{
+                f"pipeline_{key}": value
+                for key, value in nested.items()
+            },
+        }
 
     def asset_class_for(
         self,

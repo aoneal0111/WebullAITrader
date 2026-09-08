@@ -178,6 +178,9 @@ class CryptoResearchRuntime:
         self._stale_quotes = 0
         self._queue_rejections = 0
         self._persistence_failures = 0
+        self._history_admissions = 0
+        self._history_observation_evictions = 0
+        self._history_symbol_evictions = 0
         self._history_requests_attempted = 0
         self._history_requests_succeeded = 0
         self._history_requests_failed = 0
@@ -558,25 +561,39 @@ class CryptoResearchRuntime:
             )
 
     def memory_metrics(self) -> dict[str, int]:
-        metrics = self.metrics()
-        return {
-            "crypto_symbol_count": metrics.crypto_symbol_count,
-            "crypto_retained_state_count": metrics.crypto_retained_state_count,
-            "crypto_queue_depth": metrics.crypto_queue_depth,
-            "crypto_queue_high_water": metrics.crypto_queue_high_water,
-            "crypto_episodes_persisted": metrics.crypto_episodes_persisted,
-            "crypto_duplicates_suppressed": metrics.crypto_duplicates_suppressed,
-            "crypto_provider_failures": metrics.provider_failures,
-            "crypto_snapshot_batches_requested": metrics.snapshot_batches_requested,
-            "crypto_snapshot_batches_succeeded": metrics.snapshot_batches_succeeded,
-            "crypto_snapshot_batches_failed": metrics.snapshot_batches_failed,
-            "crypto_snapshot_symbols_requested": metrics.snapshot_symbols_requested,
-            "crypto_snapshot_symbols_returned": metrics.snapshot_symbols_returned,
-            "crypto_refreshes_partial": metrics.refreshes_partial,
-            "crypto_refreshes_complete": metrics.refreshes_complete,
-            "crypto_malformed_quotes": metrics.malformed_quotes,
-            "crypto_unsupported_symbols": metrics.unsupported_symbols,
-        }
+        with self._lock:
+            history_lengths = tuple(
+                len(values) for values in self._history.values()
+            )
+            metrics = self.metrics()
+            return {
+                "crypto_symbol_count": metrics.crypto_symbol_count,
+                "crypto_retained_state_count": metrics.crypto_retained_state_count,
+                "crypto_history_total_observation_count": sum(history_lengths),
+                "crypto_history_max_observations_per_symbol": max(
+                    history_lengths, default=0,
+                ),
+                "crypto_history_per_symbol_maximum": self._history_capacity,
+                "crypto_history_admissions": self._history_admissions,
+                "crypto_history_observation_evictions": (
+                    self._history_observation_evictions
+                ),
+                "crypto_history_symbol_evictions": self._history_symbol_evictions,
+                "crypto_queue_depth": metrics.crypto_queue_depth,
+                "crypto_queue_high_water": metrics.crypto_queue_high_water,
+                "crypto_episodes_persisted": metrics.crypto_episodes_persisted,
+                "crypto_duplicates_suppressed": metrics.crypto_duplicates_suppressed,
+                "crypto_provider_failures": metrics.provider_failures,
+                "crypto_snapshot_batches_requested": metrics.snapshot_batches_requested,
+                "crypto_snapshot_batches_succeeded": metrics.snapshot_batches_succeeded,
+                "crypto_snapshot_batches_failed": metrics.snapshot_batches_failed,
+                "crypto_snapshot_symbols_requested": metrics.snapshot_symbols_requested,
+                "crypto_snapshot_symbols_returned": metrics.snapshot_symbols_returned,
+                "crypto_refreshes_partial": metrics.refreshes_partial,
+                "crypto_refreshes_complete": metrics.refreshes_complete,
+                "crypto_malformed_quotes": metrics.malformed_quotes,
+                "crypto_unsupported_symbols": metrics.unsupported_symbols,
+            }
 
     def _publish_status(
         self,
@@ -639,10 +656,15 @@ class CryptoResearchRuntime:
             if history is None:
                 history = deque(maxlen=self._history_capacity)
                 self._history[key] = history
+            if len(history) == self._history_capacity:
+                self._history_observation_evictions += 1
             history.append(observation)
+            self._history_admissions += 1
             self._history.move_to_end(key)
             while len(self._history) > self._retained_symbol_limit:
-                removed, _ = self._history.popitem(last=False)
+                removed, removed_history = self._history.popitem(last=False)
+                self._history_symbol_evictions += 1
+                self._history_observation_evictions += len(removed_history)
                 self._latest.pop(removed, None)
             evidence = tuple(history)
         features = calculate_features(evidence, cutoff=cutoff)

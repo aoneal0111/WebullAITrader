@@ -44,6 +44,13 @@ class DecisionProjection:
         with self._lock:
             return self._snapshot
 
+    def memory_metrics(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "decision_count": len(self._snapshot.decisions),
+                "order_outcome_count": len(self._outcomes_by_order_id),
+            }
+
     def __call__(self, event: PaperRuntimeEvent) -> None:
         if not isinstance(event, PaperRuntimeEvent):
             raise TypeError("event must be a PaperRuntimeEvent")

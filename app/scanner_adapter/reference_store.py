@@ -34,3 +34,6 @@ class ScannerReferenceStore:
 
     def __len__(self) -> int:
         return len(self._values)
+
+    def memory_metrics(self) -> dict[str, int]:
+        return {"reference_count": len(self._values)}

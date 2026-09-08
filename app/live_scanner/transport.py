@@ -43,6 +43,10 @@ class ReceiveTransportAdapter:
     def client(self) -> Any:
         return self._client
 
+    def memory_metrics(self) -> dict[str, int]:
+        provider = getattr(self._client, "memory_metrics", None)
+        return {} if not callable(provider) else dict(provider())
+
     def set_lifecycle_sink(self, sink) -> None:
         setter = getattr(self._client, "set_lifecycle_sink", None)
         if not callable(setter):

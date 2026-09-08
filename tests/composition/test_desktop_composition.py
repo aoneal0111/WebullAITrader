@@ -86,14 +86,25 @@ def test_enabled_memory_observability_composes_real_providers_and_jsonl(
         assert diagnostics._thread is not None and diagnostics._thread.is_alive()
         assert set(diagnostics._providers) == {
             "warrior_forward_runtime",
+            "warrior_forward_report",
+            "websocket_callback_queue",
             "trade_intelligence_runtime",
             "trade_intelligence_discovery_worker",
             "multi_strategy_discovery_engine",
             "realtime_scanner",
+            "scanner_snapshot_publisher",
             "adaptive_entry_runtime",
             "adaptive_entry_worker",
             "crypto_research",
+            "paper_order_book",
+            "order_projection",
+            "position_projection",
+            "decision_projection",
+            "health_projection",
+            "watchlist_projection",
             "timeline_projection",
+            "application_state",
+            "operations_bus",
         }
         deadline = monotonic() + 1.0
         while not output.exists() and monotonic() < deadline:
@@ -105,6 +116,12 @@ def test_enabled_memory_observability_composes_real_providers_and_jsonl(
         ).throw(RuntimeError("provider failure"))
         snapshot = diagnostics.sample()
         assert snapshot is not None
+        cardinalities = dict(snapshot.metrics)
+        assert cardinalities["paper_order_book_order_count"] == 0
+        assert cardinalities["order_projection_order_count"] == 0
+        assert cardinalities["position_projection_processed_fill_id_count"] == 0
+        assert cardinalities["decision_projection_order_outcome_count"] == 0
+        assert cardinalities["operations_bus_subscription_count"] > 0
         assert diagnostics.metrics()["failures"] == failures + 1
     finally:
         composition.close(timeout_seconds=1.0)

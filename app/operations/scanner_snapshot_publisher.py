@@ -92,6 +92,18 @@ class ScannerSnapshotPublisher:
         """Return the latest full immutable scanner snapshot for recovery."""
         return self._latest_snapshot
 
+    def memory_metrics(self) -> dict[str, int]:
+        return {
+            "published_symbol_count": len(self._published_symbols),
+            "displayed_symbol_count": len(self._displayed_symbols),
+            "published_decision_count": len(self._published_decisions),
+            "last_decision_count": len(self._last_decisions),
+            "display_fingerprint_count": len(
+                self._published_display_fingerprints
+            ),
+            "experiment_fingerprint_count": len(self._published_experiments),
+        }
+
     def publish(
         self,
         snapshot: ScannerSnapshot,

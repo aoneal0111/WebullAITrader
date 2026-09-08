@@ -112,6 +112,12 @@ class MarketEventScannerAdapter:
     def state_for(self, symbol: str) -> SymbolScannerState | None:
         return self._states.get(symbol.strip().upper())
 
+    def memory_metrics(self) -> dict[str, int]:
+        return {
+            "symbol_state_count": len(self._states),
+            "reference_count": len(self.reference_store),
+        }
+
     def reset_symbol(self, symbol: str) -> None:
         self._states.pop(symbol.strip().upper(), None)
 
