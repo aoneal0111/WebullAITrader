@@ -148,6 +148,17 @@ from .providers import (
     SECCryptoProviderMetrics,
     SECCryptoEdgarProvider,
 )
+from .providers import (
+    FEDERAL_REGISTER_PROVIDER_ID,
+    FEDERAL_REGISTER_DOCUMENTS_URL,
+    FEDERAL_REGISTER_NORMALIZATION_VERSION,
+    FederalRegisterFailureKind,
+    FederalRegisterProviderError,
+    FederalRegisterPolicy,
+    FederalRegisterDocumentRecord,
+    FederalRegisterProviderMetrics,
+    FederalRegisterProvider,
+)
 
 __all__ = [
     "CryptoFeatures",
@@ -263,6 +274,15 @@ __all__ = [
     "SECFilingRecord",
     "SECCryptoProviderMetrics",
     "SECCryptoEdgarProvider",
+    "FEDERAL_REGISTER_PROVIDER_ID",
+    "FEDERAL_REGISTER_DOCUMENTS_URL",
+    "FEDERAL_REGISTER_NORMALIZATION_VERSION",
+    "FederalRegisterFailureKind",
+    "FederalRegisterProviderError",
+    "FederalRegisterPolicy",
+    "FederalRegisterDocumentRecord",
+    "FederalRegisterProviderMetrics",
+    "FederalRegisterProvider",
     "CryptoRegimeEvidence",
     "CryptoRegimeLabel",
     "CryptoRelativeStrengthEvidence",

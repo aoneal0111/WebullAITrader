@@ -23,6 +23,17 @@ from .sec_edgar import (
     SECCryptoProviderMetrics,
     SECCryptoEdgarProvider,
 )
+from .federal_register import (
+    FEDERAL_REGISTER_PROVIDER_ID,
+    FEDERAL_REGISTER_DOCUMENTS_URL,
+    FEDERAL_REGISTER_NORMALIZATION_VERSION,
+    FederalRegisterFailureKind,
+    FederalRegisterProviderError,
+    FederalRegisterPolicy,
+    FederalRegisterDocumentRecord,
+    FederalRegisterProviderMetrics,
+    FederalRegisterProvider,
+)
 
 __all__ = [
     "BYBIT_PROVIDER_ID",
@@ -44,4 +55,13 @@ __all__ = [
     "SECFilingRecord",
     "SECCryptoProviderMetrics",
     "SECCryptoEdgarProvider",
+    "FEDERAL_REGISTER_PROVIDER_ID",
+    "FEDERAL_REGISTER_DOCUMENTS_URL",
+    "FEDERAL_REGISTER_NORMALIZATION_VERSION",
+    "FederalRegisterFailureKind",
+    "FederalRegisterProviderError",
+    "FederalRegisterPolicy",
+    "FederalRegisterDocumentRecord",
+    "FederalRegisterProviderMetrics",
+    "FederalRegisterProvider",
 ]
