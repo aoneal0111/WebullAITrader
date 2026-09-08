@@ -122,14 +122,19 @@ class WebullCryptoResearchProvider:
         return tuple(observations)
 
     def historical_bars(
-        self, pair: CryptoPair, *, timespan: str = "M1", count: int = 200
+        self,
+        pair: CryptoPair,
+        *,
+        timespan: str = "M1",
+        count: int = 200,
+        real_time_required: bool = False,
     ) -> tuple[Mapping[str, object], ...]:
         if not 1 <= count <= 1200:
             raise ValueError("crypto historical bar count must be 1..1200")
         response = self._request(
             "historical bars",
             lambda: self._market_api().get_crypto_history_bar(
-                pair.provider_symbol, "US_CRYPTO", timespan, str(count)
+                pair.provider_symbol, "US_CRYPTO", timespan, str(count), real_time_required
             ),
         )
         return _rows(response)
@@ -234,7 +239,20 @@ def _rows(response: object) -> tuple[Mapping[str, object], ...]:
         )
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         raise CryptoProviderError("Webull crypto response schema is unsupported")
-    return tuple(item for item in value if isinstance(item, Mapping))
+    rows: list[Mapping[str, object]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        # The official crypto history endpoint returns one envelope per symbol:
+        # {symbol, instrument_id, result: [{time, open, high, low, close, ...}]}.
+        # Snapshot/instrument endpoints return ordinary row mappings, so only a
+        # list-valued result is expanded here.
+        result = item.get("result")
+        if isinstance(result, Sequence) and not isinstance(result, (str, bytes)):
+            rows.extend(entry for entry in result if isinstance(entry, Mapping))
+        else:
+            rows.append(item)
+    return tuple(rows)
 
 
 def _cursor(response: object, rows: Sequence[Mapping[str, object]]) -> str | None:

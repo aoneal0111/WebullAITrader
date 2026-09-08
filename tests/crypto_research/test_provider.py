@@ -155,8 +155,76 @@ def test_provider_retry_and_historical_bounds_are_explicit() -> None:
     pair = provider.discover()[0]
     assert len(client.instrument.calls) == 2
     assert provider.historical_bars(pair, count=1200)
+    assert client.crypto_market_data.history_calls[-1] == (
+        "BTCUSD", "US_CRYPTO", "M1", "1200", False
+    )
+    assert client.crypto_market_data.history_calls[-1][-1] is False
     with pytest.raises(ValueError, match="1..1200"):
         provider.historical_bars(pair, count=1201)
+
+
+def test_historical_provider_extracts_official_result_envelope() -> None:
+    pair = CryptoPair.configured("BTC/USD")
+
+    class HistoricalMarket(MarketApi):
+        def get_crypto_history_bar(self, *args):
+            self.history_calls.append(args)
+            return Response([{
+                "instrument_id": "950160802",
+                "symbol": "BTCUSD",
+                "result": [
+                    {
+                        "time": "2026-09-08T10:16:00.000+0000",
+                        "open": "78733.39",
+                        "high": "78733.39",
+                        "close": "78729.11",
+                        "low": "78718.14",
+                    },
+                ],
+            }])
+
+    client = Client([instrument()], [])
+    client.crypto_market_data = HistoricalMarket([])
+    provider = WebullCryptoResearchProvider(
+        client, minimum_request_interval_seconds=0, retry_attempts=0,
+    )
+
+    rows = provider.historical_bars(pair, timespan="M1", count=5)
+
+    assert rows == ({
+        "time": "2026-09-08T10:16:00.000+0000",
+        "open": "78733.39",
+        "high": "78733.39",
+        "close": "78729.11",
+        "low": "78718.14",
+    },)
+
+
+def test_historical_error_envelope_is_contained_without_synthetic_bars() -> None:
+    pair = CryptoPair.configured("BTC/USD")
+
+    class ErrorMarket(MarketApi):
+        def get_crypto_history_bar(self, *args):
+            self.history_calls.append(args)
+            return Response([{
+                "instrument_id": "950160802",
+                "symbol": "BTCUSD",
+                "result": {"error_code": "UNSUPPORTED_SYMBOL"},
+            }])
+
+    client = Client([instrument()], [])
+    client.crypto_market_data = ErrorMarket([])
+    provider = WebullCryptoResearchProvider(
+        client, minimum_request_interval_seconds=0, retry_attempts=0,
+    )
+
+    rows = provider.historical_bars(pair, timespan="M1", count=5)
+
+    assert rows == ({
+        "instrument_id": "950160802",
+        "symbol": "BTCUSD",
+        "result": {"error_code": "UNSUPPORTED_SYMBOL"},
+    },)
 
 
 def test_malformed_quote_and_provider_failure_do_not_return_partial_objects() -> None:
