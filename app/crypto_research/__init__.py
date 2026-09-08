@@ -86,6 +86,21 @@ from .outcomes import (
     replay_crypto_outcomes,
     summarize_crypto_outcomes,
 )
+from .catalyst_outcomes import (
+    MAX_COHORT_KEYS,
+    MAX_OBSERVATIONS,
+    CryptoCatalystCohortState,
+    CryptoCatalystOutcomeCohort,
+    CryptoCatalystOutcomeEvaluation,
+    CryptoCatalystOutcomeObservation,
+    CryptoCatalystObservedDifference,
+    CryptoCatalystSampleState,
+    SCHEMA_VERSION as CATALYST_OUTCOMES_SCHEMA_VERSION,
+    build_catalyst_outcome_observation,
+    build_crypto_catalyst_outcome_observation,
+    evaluate_catalyst_outcomes,
+    evaluate_crypto_catalyst_outcomes,
+)
 from .catalysts import (
     SCHEMA_VERSION as CRYPTO_CATALYST_SCHEMA_VERSION,
     MAX_PROJECTS,
