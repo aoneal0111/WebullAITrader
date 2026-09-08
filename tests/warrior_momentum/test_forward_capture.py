@@ -581,6 +581,85 @@ def test_daily_report_uses_na_for_zero_trade_sample(capture) -> None:
     assert persist_daily_report(store, report) == (0, 1)
 
 
+def test_daily_report_excludes_authoritative_projection_exit_from_performance(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "authoritative-report.sqlite3")
+    store.append_batch((CaptureRecord.create(
+        CaptureRecordType.STATE_TRANSITION,
+        "AUTH",
+        T0,
+        {
+            "from": ForwardTransition.PAPER_EXIT_WORKING,
+            "to": ForwardTransition.PAPER_EXIT,
+            "reason_codes": [],
+            "authoritative_remaining": 0,
+            "authority": "AUTHORITATIVE_POSITION_PROJECTION",
+        },
+        identity_parts=("AUTHORITATIVE",),
+    ),))
+
+    report = build_daily_report(store, T0.date())
+
+    assert report.wins is None
+    assert report.losses is None
+    assert report.scratches is None
+    assert report.total_r is None
+    assert report.expectancy_r is None
+    assert report.profit_factor is None
+    assert report.maximum_intraday_drawdown_r is None
+    assert report.average_mae_r is None
+    assert report.average_mfe_r is None
+
+
+def test_daily_report_mixed_exits_include_only_analytical_performance(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "mixed-report.sqlite3")
+    store.append_batch((
+        CaptureRecord.create(
+            CaptureRecordType.STATE_TRANSITION,
+            "AUTH",
+            T0,
+            {
+                "from": ForwardTransition.PAPER_EXIT_WORKING,
+                "to": ForwardTransition.PAPER_EXIT,
+                "reason_codes": [],
+                "authoritative_remaining": 0,
+                "authority": "AUTHORITATIVE_POSITION_PROJECTION",
+            },
+            identity_parts=("AUTHORITATIVE",),
+        ),
+        CaptureRecord.create(
+            CaptureRecordType.STATE_TRANSITION,
+            "ANALYTICAL",
+            T0 + timedelta(seconds=1),
+            {
+                "from": ForwardTransition.PAPER_ENTRY,
+                "to": ForwardTransition.PAPER_EXIT,
+                "reason_codes": [],
+                "realized_r": "1.25",
+                "mae_r": "-0.40",
+                "mfe_r": "1.80",
+                "hold_seconds": "60",
+            },
+            identity_parts=("ANALYTICAL",),
+        ),
+    ))
+
+    report = build_daily_report(store, T0.date())
+
+    assert report.wins == 1
+    assert report.losses == 0
+    assert report.scratches == 0
+    assert report.total_r == D("1.25")
+    assert report.expectancy_r == D("1.25")
+    assert report.profit_factor is None
+    assert report.maximum_intraday_drawdown_r == D("0")
+    assert report.average_mae_r == D("-0.40")
+    assert report.average_mfe_r == D("1.80")
+
+
 def test_capture_writer_is_bounded_fail_closed_and_gui_isolated(tmp_path: Path) -> None:
     entered = Event()
     release = Event()

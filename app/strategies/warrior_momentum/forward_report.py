@@ -14,6 +14,7 @@ from .forward_models import CaptureRecordType, ForwardTransition
 from .forward_store import ForwardCaptureStore
 
 EASTERN = ZoneInfo("America/New_York")
+_AUTHORITATIVE_POSITION_PROJECTION = "AUTHORITATIVE_POSITION_PROJECTION"
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,10 +115,14 @@ def build_daily_report(
         ("ENTRY_READY", stage_count(ForwardTransition.ENTRY_READY.value)),
         ("PAPER_TRADE", stage_count(ForwardTransition.PAPER_ENTRY.value)),
     )
-    exits = [
-        item.payload for item in transition_records
-        if item.payload.get("to") == ForwardTransition.PAPER_EXIT.value
-    ]
+    exits = []
+    for record in transition_records:
+        payload = record.payload
+        if payload.get("to") != ForwardTransition.PAPER_EXIT.value:
+            continue
+        if payload.get("authority") == _AUTHORITATIVE_POSITION_PROJECTION:
+            continue
+        exits.append(payload)
     realized = [Decimal(item["realized_r"]) for item in exits]
     maes = [Decimal(item["mae_r"]) for item in exits]
     mfes = [Decimal(item["mfe_r"]) for item in exits]
