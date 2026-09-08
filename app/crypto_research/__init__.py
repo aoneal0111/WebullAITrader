@@ -127,6 +127,17 @@ from .catalysts import (
     material_event_signature,
     summarize_crypto_catalysts,
 )
+from .providers import (
+    BYBIT_PROVIDER_ID,
+    BYBIT_ANNOUNCEMENTS_URL,
+    BybitAnnouncementPolicy,
+    BybitAnnouncementRaw,
+    BybitAnnouncementsProvider,
+    BybitFailureKind,
+    BybitProviderError,
+    BybitProviderMetrics,
+    NORMALIZATION_VERSION,
+)
 
 __all__ = [
     "CryptoFeatures",
@@ -223,6 +234,15 @@ __all__ = [
     "CryptoCatalystAggregator",
     "material_event_signature",
     "summarize_crypto_catalysts",
+    "BYBIT_PROVIDER_ID",
+    "BYBIT_ANNOUNCEMENTS_URL",
+    "BybitAnnouncementPolicy",
+    "BybitAnnouncementRaw",
+    "BybitAnnouncementsProvider",
+    "BybitFailureKind",
+    "BybitProviderError",
+    "BybitProviderMetrics",
+    "NORMALIZATION_VERSION",
     "CryptoRegimeEvidence",
     "CryptoRegimeLabel",
     "CryptoRelativeStrengthEvidence",
