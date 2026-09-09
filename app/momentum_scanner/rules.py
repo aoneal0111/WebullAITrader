@@ -22,11 +22,11 @@ CONSERVATIVE_POLICY_VERSION = "CONSERVATIVE_V1"
 @dataclass(frozen=True, slots=True)
 class MomentumScannerConfig:
     minimum_price: Decimal = Decimal("1")
-    maximum_price: Decimal = Decimal("30")
+    maximum_price: Decimal = Decimal("100")
     minimum_percentage_change: Decimal = Decimal("5")
     minimum_relative_volume: Decimal = Decimal("2")
     maximum_float_shares: Decimal = Decimal("50000000")
-    minimum_dollar_volume: Decimal = Decimal("1000000")
+    minimum_dollar_volume: Decimal = Decimal("250000")
     maximum_spread_percent: Decimal = Decimal("1.50")
     require_catalyst: bool = False
     policy_version: str = BALANCED_POLICY_VERSION

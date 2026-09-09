@@ -45,6 +45,71 @@ def test_strong_candidate_qualifies() -> None:
     assert decision.failed_rules == ()
 
 
+def test_balanced_accepts_price_above_old_cap_and_at_new_cap() -> None:
+    decision = evaluate_candidate(
+        observation(
+            price=D("100"),
+            previous_close=D("80"),
+            current_volume=D("5000"),
+            average_30_day_volume=D("2500"),
+            bid=D("99.25"),
+            ask=D("100.75"),
+        )
+    )
+
+    assert decision.qualified is True
+    assert "price_range" in decision.passed_rules
+    assert "dollar_volume" in decision.passed_rules
+
+
+def test_balanced_rejects_price_above_new_cap() -> None:
+    decision = evaluate_candidate(
+        observation(
+            price=D("100.01"),
+            previous_close=D("80"),
+            current_volume=D("5000"),
+            average_30_day_volume=D("2500"),
+            bid=D("99.26"),
+            ask=D("100.76"),
+        )
+    )
+
+    assert decision.qualified is False
+    assert "price_range" in decision.failed_rules
+
+
+def test_balanced_keeps_one_dollar_floor_and_uses_new_dollar_volume_floor() -> None:
+    at_floor = evaluate_candidate(
+        observation(
+            price=D("1"),
+            previous_close=D("0.8"),
+            current_volume=D("250000"),
+            average_30_day_volume=D("125000"),
+            bid=D("0.995"),
+            ask=D("1.005"),
+        )
+    )
+    at_dollar_volume_floor = evaluate_candidate(
+        observation(
+            current_volume=D("50000"),
+            average_30_day_volume=D("25000"),
+        )
+    )
+    below_dollar_volume_floor = evaluate_candidate(
+        observation(
+            current_volume=D("49999"),
+            average_30_day_volume=D("24999.5"),
+        )
+    )
+
+    assert at_floor.qualified is True
+    assert at_floor.metrics.dollar_volume == D("250000")
+    assert at_dollar_volume_floor.qualified is True
+    assert "dollar_volume" in at_dollar_volume_floor.passed_rules
+    assert below_dollar_volume_floor.qualified is False
+    assert "dollar_volume" in below_dollar_volume_floor.failed_rules
+
+
 def test_candidate_without_news_fails() -> None:
     decision = evaluate_candidate(
         observation(

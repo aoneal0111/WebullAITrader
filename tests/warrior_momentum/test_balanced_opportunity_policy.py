@@ -78,8 +78,8 @@ def test_balanced_configuration_and_conservative_reconstruction_are_explicit() -
         scanner.maximum_float_shares, scanner.minimum_dollar_volume,
         scanner.maximum_spread_percent, scanner.require_catalyst,
         scanner.policy_version,
-    ) == (D("1"), D("30"), D("5"), D("2"), D("50000000"),
-          D("1000000"), D("1.50"), False, "BALANCED_V1")
+    ) == (D("1"), D("100"), D("5"), D("2"), D("50000000"),
+          D("250000"), D("1.50"), False, "BALANCED_V1")
     assert (
         warrior.entry.minimum_momentum_score,
         warrior.entry.minimum_setup_score,
@@ -90,7 +90,18 @@ def test_balanced_configuration_and_conservative_reconstruction_are_explicit() -
         warrior.policy_version,
     ) == (D("55"), D("55"), D("2500000"), D("1.25"), False,
           D("100"), "BALANCED_V1")
-    assert MomentumScannerConfig.conservative_v1().require_catalyst is True
+    conservative = MomentumScannerConfig.conservative_v1()
+    assert (
+        conservative.minimum_price,
+        conservative.maximum_price,
+        conservative.minimum_percentage_change,
+        conservative.minimum_relative_volume,
+        conservative.maximum_float_shares,
+        conservative.minimum_dollar_volume,
+        conservative.maximum_spread_percent,
+        conservative.require_catalyst,
+    ) == (D("1"), D("20"), D("10"), D("5"), D("20000000"),
+          D("5000000"), D("1"), True)
     assert WarriorMomentumConfig.conservative_v1().entry.require_catalyst_for_entry is True
 
 
@@ -162,7 +173,7 @@ def test_bjdx_like_candidate_passes_without_5x_rvol_or_catalyst() -> None:
     (
         ({"rvol": "1.5"}, "relative_volume"),
         ({"float_shares": "55000000"}, "low_float"),
-        ({"dollar_volume": "750000"}, "dollar_volume"),
+        ({"dollar_volume": "249000"}, "dollar_volume"),
         ({"spread": "1.7"}, "spread"),
         ({"halted": True}, "not_halted"),
         ({"tradable": False}, "tradable"),
