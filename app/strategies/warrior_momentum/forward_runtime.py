@@ -102,6 +102,7 @@ class _PaperState:
     authoritative_position_seen: bool = False
     exit_reason: str | None = None
     exit_price: Decimal | None = None
+    protective_stop_activated_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -855,7 +856,36 @@ class WarriorForwardCaptureService:
             self._last_transition[signal.symbol] = ForwardTransition.PAPER_PARTIAL
 
         requested: tuple[Decimal, int, str] | None = None
-        if bar.low <= state.stop:
+        stop_breach = bar.low <= state.stop
+        stop_eligible = stop_breach and (
+            state.protective_stop_activated_at is not None
+            and state.protective_stop_activated_at <= bar.timestamp
+        )
+        if stop_breach and not stop_eligible:
+            # Establish protection, but do not infer that an OHLC extreme
+            # occurred after a stop that became active inside this bar.
+            result = self._submit_exit(state, state.stop, quantity, "STOP")
+            self._capture_stop_activation(state, result, bar)
+            active = (
+                result.protection_active
+                if isinstance(result, PaperExitSubmissionDecision)
+                else bool(result)
+            )
+            if not active:
+                records.append(CaptureRecord.create(
+                    CaptureRecordType.STATE_TRANSITION, signal.symbol, observed_at,
+                    {"from": self._last_transition.get(signal.symbol, ForwardTransition.PAPER_ENTRY).value,
+                     "to": ForwardTransition.PAPER_EXIT_REQUIRED.value,
+                     "reason_codes": ["STOP_PROTECTION_UNAVAILABLE"],
+                     "authoritative_remaining": quantity},
+                    identity_parts=(ForwardTransition.PAPER_EXIT_REQUIRED.value,
+                                    "STOP_PROTECTION_UNAVAILABLE",
+                                    bar.timestamp.isoformat()),
+                ))
+                records.append(self._position_contradiction_record(
+                    state, observed_at, reason="PROTECTIVE_EXIT_UNAVAILABLE",
+                ))
+        if stop_eligible:
             requested = (state.stop, quantity, "STOP")
         elif state.exit_reason is not None and state.exit_price is not None:
             requested = (state.exit_price, quantity, state.exit_reason)
@@ -871,6 +901,8 @@ class WarriorForwardCaptureService:
             state.exit_reason = reason
             state.exit_price = price
             result = self._submit_exit(state, price, requested_quantity, reason)
+            if reason == "STOP":
+                self._capture_stop_activation(state, result, bar)
             active = (
                 result.protection_active
                 if isinstance(result, PaperExitSubmissionDecision)
@@ -904,6 +936,24 @@ class WarriorForwardCaptureService:
             phase=("EXIT_WORKING" if state.exit_reason is not None else "MANAGING"),
         ))
         return tuple(records)
+
+    @staticmethod
+    def _capture_stop_activation(state: _PaperState, result: object, bar: MinuteBar) -> None:
+        active = (
+            result.protection_active
+            if isinstance(result, PaperExitSubmissionDecision)
+            else bool(result)
+        )
+        if not active:
+            return
+        activation = getattr(result, "activation_timestamp", None)
+        if activation is None:
+            # A legacy boolean submitter cannot provide order timing.  Treat
+            # protection as active at bar close; the next complete bar is the
+            # first bar whose OHLC can prove a breach.
+            activation = bar.timestamp + timedelta(minutes=1)
+        if state.protective_stop_activated_at is None or activation > state.protective_stop_activated_at:
+            state.protective_stop_activated_at = activation
 
     def _authoritative_exit_record(
         self, state: _PaperState, bar: MinuteBar, observed_at,
@@ -1076,6 +1126,10 @@ class WarriorForwardCaptureService:
                     None if payload.get("exit_price") is None
                     else Decimal(payload["exit_price"])
                 )
+                state.protective_stop_activated_at = (
+                    None if payload.get("protective_stop_activated_at") is None
+                    else datetime.fromisoformat(payload["protective_stop_activated_at"])
+                )
             except (KeyError, TypeError, ValueError):
                 self._paper.pop(record.symbol, None)
 
@@ -1242,6 +1296,7 @@ def _management_context_record(
             "authoritative_position_seen": state.authoritative_position_seen,
             "exit_reason": state.exit_reason,
             "exit_price": state.exit_price,
+            "protective_stop_activated_at": state.protective_stop_activated_at,
             "phase": phase,
         },
         identity_parts=(lifecycle_identity(signal), phase, timestamp.isoformat()),

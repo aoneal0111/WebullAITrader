@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from threading import RLock
 from typing import Callable
@@ -78,6 +79,7 @@ class PaperExitSubmissionDecision:
     lifecycle_id: str | None
     reason: str
     order_id: str | None = None
+    activation_timestamp: datetime | None = None
 
     @property
     def protection_active(self) -> bool:
@@ -477,12 +479,19 @@ class AutonomousPaperExecutionBridge:
                     identity, reason_key,
                 )
             if self.order_book is not None:
+                self._reconcile_protective_quantity(normalized, identity)
                 working_sell = next((
                     order for order in self.order_book.open_orders_for_symbol(normalized)
                     if order.request.side is OrderSide.SELL
+                    and order.request.strategy_lifecycle_id == identity
                 ), None)
                 if working_sell is not None:
                     protective = reason_key in {"STOP", "STOP_LOSS"}
+                    if not protective and working_sell.request.order_type is OrderType.STOP:
+                        return self._place_target_with_correlated_protection(
+                            normalized, quantity, price, reason_key, identity,
+                            working_sell,
+                        )
                     if (
                         protective
                         and working_sell.request.order_type is not OrderType.STOP
@@ -510,6 +519,7 @@ class AutonomousPaperExecutionBridge:
                     return PaperExitSubmissionDecision(
                         PaperExitSubmissionState.WORKING, normalized,
                         identity, reason_key, working_sell.order_id,
+                        working_sell.created_at,
                     )
             key = (identity, reason_key)
             if key in self._exit_keys:
@@ -556,7 +566,125 @@ class AutonomousPaperExecutionBridge:
         return PaperExitSubmissionDecision(
             PaperExitSubmissionState.SUBMITTED, normalized,
             identity, reason_key, result.broker_order_id,
+            self._order_created_at(result.broker_order_id),
         )
+
+    def _order_created_at(self, order_id: str | None) -> datetime | None:
+        if self.order_book is None or order_id is None:
+            return None
+        try:
+            return self.order_book.get(order_id).created_at
+        except Exception:
+            return None
+
+    def _cancel_working_order(self, order) -> bool:
+        try:
+            cancellation = self.trading_service.cancel_order(
+                self.order_command_factory.create_cancellation_request(
+                    order.order_id,
+                    order.request.client_order_id,
+                    source="autonomous-paper-correlated-exit",
+                )
+            )
+        except Exception:
+            return False
+        return cancellation is not None and cancellation.success
+
+    def _place_target_with_correlated_protection(
+        self, normalized: str, quantity: int, price: Decimal,
+        reason_key: str, identity: str, protective_order,
+    ) -> PaperExitSubmissionDecision:
+        """Reserve a target quantity while retaining bounded protection.
+
+        A target and a stop may coexist only as one correlated bracket: their
+        open quantities must never exceed the authoritative position.  The
+        old full-size stop is cancelled before the target is placed, then a
+        replacement stop protects the unreserved remainder.
+        """
+        if self.position_quantity_source is None or not self._cancel_working_order(protective_order):
+            return PaperExitSubmissionDecision(
+                PaperExitSubmissionState.WORKING, normalized,
+                identity, reason_key, protective_order.order_id,
+                protective_order.created_at,
+            )
+        self._exit_orders.pop((identity, "STOP"), None)
+        self._exit_keys.pop((identity, "STOP"), None)
+        self._reconcile_terminal_exits()
+        target = self._place_exit(normalized, quantity, price, reason_key, identity)
+        if not target.protection_active:
+            self._place_exit(
+                normalized,
+                int(self.position_quantity_source(normalized)),
+                protective_order.request.stop_price,
+                "STOP",
+                identity,
+            )
+            return target
+        remainder = max(
+            0,
+            int(self.position_quantity_source(normalized)) - quantity,
+        )
+        if remainder:
+            protection = self._place_exit(
+                normalized, remainder, protective_order.request.stop_price,
+                "STOP", identity,
+            )
+            if not protection.protection_active:
+                self._management_incomplete.add(normalized)
+                try:
+                    target_order = self.order_book.get(target.order_id)
+                except Exception:
+                    target_order = None
+                if target_order is not None and not target_order.is_terminal:
+                    self._cancel_working_order(target_order)
+                self._exit_orders.pop((identity, reason_key), None)
+                self._exit_keys.pop((identity, reason_key), None)
+                self._reconcile_terminal_exits()
+                restored = self._place_exit(
+                    normalized,
+                    int(self.position_quantity_source(normalized)),
+                    protective_order.request.stop_price,
+                    "STOP",
+                    identity,
+                )
+                if not restored.protection_active:
+                    self._management_incomplete.add(normalized)
+                return PaperExitSubmissionDecision(
+                    PaperExitSubmissionState.UNAVAILABLE, normalized,
+                    identity, reason_key, target.order_id,
+                )
+        return target
+
+    def _reconcile_protective_quantity(self, normalized: str, identity: str) -> None:
+        if self.order_book is None or self.position_quantity_source is None:
+            return
+        open_orders = tuple(
+            order for order in self.order_book.open_orders_for_symbol(normalized)
+            if order.request.side is OrderSide.SELL
+            and order.request.strategy_lifecycle_id == identity
+        )
+        stop = next((order for order in open_orders if order.request.order_type is OrderType.STOP), None)
+        if stop is None:
+            return
+        reserved = sum(
+            (int(order.remaining_quantity) for order in open_orders
+             if order.request.order_type is not OrderType.STOP),
+            0,
+        )
+        desired = max(0, int(self.position_quantity_source(normalized)) - reserved)
+        if int(stop.remaining_quantity) == desired:
+            return
+        if not self._cancel_working_order(stop):
+            self._management_incomplete.add(normalized)
+            return
+        self._exit_orders.pop((identity, "STOP"), None)
+        self._exit_keys.pop((identity, "STOP"), None)
+        self._reconcile_terminal_exits()
+        if desired:
+            self._place_exit(
+                normalized, desired, stop.request.stop_price,
+                "STOP", identity,
+            )
 
     def _reconcile_terminal_exits(self) -> None:
         if self.order_book is None:

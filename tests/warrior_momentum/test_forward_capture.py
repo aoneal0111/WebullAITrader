@@ -372,7 +372,10 @@ def test_authoritative_exit_submission_and_partial_fill_do_not_close(tmp_path: P
         transitions = [item.payload["to"] for item in store.records(
             record_type=CaptureRecordType.STATE_TRANSITION
         )]
-        assert "PAPER_EXIT_WORKING" in transitions
+        # The stop was established from an ambiguous activation bar, but the
+        # bar cannot retroactively prove that its low occurred after activation.
+        assert "PAPER_EXIT_WORKING" not in transitions
+        assert "PAPER_EXIT_REQUIRED" not in transitions
         assert "PAPER_EXIT" not in transitions
         assert "XYZ" in service.open_paper_symbols
 
@@ -394,6 +397,7 @@ def test_authoritative_exit_submission_and_partial_fill_do_not_close(tmp_path: P
         assert "XYZ" in service.open_paper_symbols
         assert service._paper["XYZ"].remaining == shares - 1
         assert composition.order_book.get(sell.order_id).remaining_quantity == Decimal(shares - 1)
+        assert service._paper["XYZ"].exit_reason == "STOP"
         assert not any(
             item.payload.get("to") == "PAPER_EXIT"
             for item in store.records(record_type=CaptureRecordType.STATE_TRANSITION)
@@ -418,6 +422,86 @@ def test_authoritative_exit_submission_and_partial_fill_do_not_close(tmp_path: P
         assert len(terminal) == 1
         assert terminal[0]["authority"] == "AUTHORITATIVE_POSITION_PROJECTION"
         assert "XYZ" not in service.open_paper_symbols
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_activation_bar_cannot_retroactively_stop_and_targets_remain_eligible(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "sune_activation.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": Decimal("0")}
+    composition = create_paper_trading_command_composition(
+        at=T0 + timedelta(minutes=20),
+        position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+        position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+    )
+    service = WarriorForwardCaptureService(
+        store, writer, paper_entry_submitter=bridge.submit_entry,
+        paper_exit_submitter=bridge.ensure_exit,
+        paper_position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+    )
+    def paper_quote(sequence: int, bid: str, ask: str) -> None:
+        composition.gateway.process_market_event(MarketEvent(
+            sequence, session_timestamp(sequence, at=T0 + timedelta(minutes=20)),
+            "XYZ", "test", MarketEventType.QUOTE,
+            QuotePayload(D(bid), D(ask), D("10000"), D("10000")),
+        ))
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        shares = int(composition.order_book.open_orders()[0].quantity)
+        paper_quote(1, str(signal.entry_trigger - D("0.01")), str(signal.entry_trigger))
+        position["XYZ"] = Decimal(shares)
+
+        ambiguous = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=1), signal.entry_trigger,
+            signal.entry_trigger, signal.stop_price - D("0.01"), signal.entry_trigger,
+            D("100"),
+        )
+        service.observe_market_bar("XYZ", ambiguous, ambiguous.timestamp + timedelta(minutes=1))
+        state = service._paper["XYZ"]
+        assert state.exit_reason is None
+        assert state.protective_stop_activated_at is not None
+
+        first_bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=2), signal.entry_trigger,
+            signal.target_levels[0] + D("0.01"), signal.entry_trigger,
+            signal.target_levels[0], D("100"),
+        )
+        service.observe_market_bar("XYZ", first_bar, first_bar.timestamp + timedelta(minutes=1))
+        state = service._paper["XYZ"]
+        assert state.exit_reason == "FIRST_TARGET"
+        assert state.first_taken is False
+        first_quantity = state.first_quantity
+
+        paper_quote(2, str(signal.target_levels[0]), str(signal.target_levels[0] + D("0.01")))
+        position["XYZ"] = Decimal(shares - first_quantity)
+        second_bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=3), signal.target_levels[0],
+            signal.target_levels[1] + D("0.01"), signal.target_levels[0],
+            signal.target_levels[1], D("100"),
+        )
+        service.observe_market_bar("XYZ", second_bar, second_bar.timestamp + timedelta(minutes=1))
+        state = service._paper["XYZ"]
+        assert state.first_taken is True
+        assert state.exit_reason == "SECOND_TARGET"
+        second_quantity = state.second_quantity
+
+        paper_quote(3, str(signal.target_levels[1]), str(signal.target_levels[1] + D("0.01")))
+        position["XYZ"] = Decimal(shares - first_quantity - second_quantity)
+        final_bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=4), signal.target_levels[1],
+            signal.target_levels[1], signal.target_levels[1], signal.target_levels[1], D("100"),
+        )
+        service.observe_market_bar("XYZ", final_bar, final_bar.timestamp + timedelta(minutes=1))
+        state = service._paper["XYZ"]
+        assert state.second_taken is True
+        assert state.remaining == shares - first_quantity - second_quantity
     finally:
         writer.close()
         composition.close()
@@ -566,6 +650,7 @@ def test_management_context_restores_stop_and_trailing_state(tmp_path: Path) -> 
     before = service._paper["XYZ"]
     before.stop = signal.entry_trigger
     before.maximum_high = signal.entry_trigger + Decimal("2")
+    before.protective_stop_activated_at = signal.timestamp + timedelta(minutes=1)
     service.observe_market_bar("XYZ", MinuteBar("XYZ", signal.timestamp + timedelta(minutes=1), signal.entry_trigger + D("0.015"), signal.entry_trigger + D("0.02"), signal.entry_trigger + D("0.01"), signal.entry_trigger + D("0.015"), D("100")), signal.timestamp + timedelta(minutes=2))
     writer.flush()
     writer.close()
@@ -576,6 +661,7 @@ def test_management_context_restores_stop_and_trailing_state(tmp_path: Path) -> 
     state = restarted._paper["XYZ"]
     assert state.stop == signal.entry_trigger
     assert state.maximum_high == signal.entry_trigger + Decimal("2")
+    assert state.protective_stop_activated_at == signal.timestamp + timedelta(minutes=1)
     restarted_writer.close()
 
 

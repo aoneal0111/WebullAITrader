@@ -260,6 +260,53 @@ def test_duplicate_stop_signal_keeps_one_working_protective_order() -> None:
     composition.close()
 
 
+def test_target_coordinates_with_protection_and_authoritative_partial_remainder() -> None:
+    position = {"PMI": Decimal("0")}
+    composition = create_paper_trading_command_composition(
+        position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+        position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+    )
+    def full_quote(sequence: int, bid: str, ask: str) -> None:
+        composition.gateway.process_market_event(MarketEvent(
+            sequence, session_timestamp(sequence), "PMI", "test", MarketEventType.QUOTE,
+            QuotePayload(Decimal(bid), Decimal(ask), Decimal("759"), Decimal("759")),
+        ))
+    try:
+        assert bridge.submit_entry(Signal(), 759, Decimal("50"))
+        full_quote(1, "9.99", "10")
+        position["PMI"] = Decimal("759")
+        protection = bridge.ensure_exit("PMI", 759, Decimal("9.50"), "STOP", "trade-a")
+        assert protection.protection_active
+
+        first = bridge.ensure_exit("PMI", 379, Decimal("10.50"), "FIRST_TARGET", "trade-a")
+        sells = [order for order in composition.order_book.open_orders_for_symbol("PMI")
+                 if order.request.side.value == "SELL"]
+        assert {order.request.order_type.value for order in sells} == {"LIMIT", "STOP"}
+        assert sorted(int(order.quantity) for order in sells) == [379, 380]
+
+        full_quote(2, "10.50", "10.51")
+        position["PMI"] = Decimal("380")
+        second = bridge.ensure_exit("PMI", 189, Decimal("11.00"), "SECOND_TARGET", "trade-a")
+        assert second.protection_active
+        sells = [order for order in composition.order_book.open_orders_for_symbol("PMI")
+                 if order.request.side.value == "SELL"]
+        assert sorted(int(order.quantity) for order in sells) == [189, 191]
+
+        full_quote(3, "11.00", "11.01")
+        position["PMI"] = Decimal("191")
+        bridge.ensure_exit("PMI", 191, Decimal("9.50"), "STOP", "trade-a")
+        stops = [order for order in composition.order_book.open_orders_for_symbol("PMI")
+                 if order.request.order_type.value == "STOP"]
+        assert len(stops) == 1 and int(stops[0].quantity) == 191
+        assert first.order_id != second.order_id
+    finally:
+        composition.close()
+
+
 def test_cancelled_protective_exit_retries_for_authoritative_remainder() -> None:
     composition = create_paper_trading_command_composition(
         position_quantity_source=lambda _symbol: Decimal("100"),
