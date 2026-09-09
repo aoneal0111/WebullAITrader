@@ -25,6 +25,7 @@ from app.strategies.warrior_momentum.forward_models import (
     CaptureRecordType,
 )
 from app.strategies.warrior_momentum.forward_store import ForwardCaptureStore
+from app.strategies.warrior_momentum.forward_report import build_daily_report
 from app.strategies.warrior_momentum.report_worker import (
     ReportWorkerMetrics,
     WarriorReportWorker,
@@ -130,6 +131,35 @@ def test_report_memory_metrics_count_materialized_rows_without_retaining_report(
     assert metrics["report_build_active"] == 0
     gc.collect()
     assert references and references[0]() is None
+
+
+def test_daily_report_does_not_materialize_irrelevant_lifetime_records(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "bounded-materialization.sqlite3")
+    irrelevant = tuple(
+        CaptureRecord.create(
+            CaptureRecordType.MINUTE_BAR,
+            f"OLD{index}",
+            NOW - timedelta(days=30),
+            {"large": "x" * 1000},
+            identity_parts=(str(index),),
+        )
+        for index in range(100)
+    )
+    store.append_batch((*irrelevant, CaptureRecord.create(
+        CaptureRecordType.DISCOVERY,
+        "TARGET",
+        NOW,
+        {"stocks_in_play": []},
+        identity_parts=("target",),
+    )))
+    materialized_before = store.records_materialized_total()
+
+    report = build_daily_report(store, NOW.date())
+
+    assert dict(report.funnel)["DISCOVERED"] == 1
+    assert store.records_materialized_total() - materialized_before == 1
 
 
 @pytest.mark.parametrize("history_size", (0, 100, 1000))

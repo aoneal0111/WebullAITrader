@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from statistics import mean
@@ -76,7 +76,11 @@ def build_daily_report(
     store: ForwardCaptureStore, trading_date: date,
     *, configuration_fingerprint: str | None = None,
 ) -> DailyForwardReport:
-    all_records = store.records()
+    start_utc, end_utc = _eastern_day_utc_bounds(trading_date)
+    all_records = store.records_for_daily_report(
+        start_utc=start_utc,
+        end_utc=end_utc,
+    )
     if configuration_fingerprint is not None:
         records = tuple(
             record for record, fingerprint in _records_with_fingerprint(all_records)
@@ -208,13 +212,16 @@ def build_daily_report(
 
 
 def persist_daily_report(store: ForwardCaptureStore, report: DailyForwardReport) -> tuple[int, int]:
-    from datetime import datetime, time
     from .forward_models import CaptureRecord
 
+    start_utc, end_utc = _eastern_day_utc_bounds(report.trading_date)
     same_day = tuple(
-        record.timestamp for record in store.records()
-        if record.record_type is not CaptureRecordType.DAILY_REPORT
-        and record.timestamp.astimezone(EASTERN).date() == report.trading_date
+        timestamp for timestamp in store.record_timestamps_between(
+            start_utc=start_utc,
+            end_utc=end_utc,
+            exclude_record_type=CaptureRecordType.DAILY_REPORT,
+        )
+        if timestamp.astimezone(EASTERN).date() == report.trading_date
     )
     timestamp = max(
         same_day,
@@ -247,6 +254,14 @@ def persist_daily_report(store: ForwardCaptureStore, report: DailyForwardReport)
         ),
     )
     return store.append_batch((record,))
+
+
+def _eastern_day_utc_bounds(trading_date: date) -> tuple[datetime, datetime]:
+    start_eastern = datetime.combine(trading_date, time.min, tzinfo=EASTERN)
+    end_eastern = datetime.combine(
+        trading_date + timedelta(days=1), time.min, tzinfo=EASTERN,
+    )
+    return start_eastern.astimezone(UTC), end_eastern.astimezone(UTC)
 
 
 def evidence_maturity(trades: int) -> EvidenceMaturity:

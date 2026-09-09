@@ -10,6 +10,9 @@ from threading import Lock
 from .forward_models import CAPTURE_SCHEMA_VERSION, CaptureRecord, CaptureRecordType
 
 
+_SQL_BOUNDARY_MARGIN_DAYS = 1.0 / 86_400.0
+
+
 class CaptureSchemaError(RuntimeError):
     pass
 
@@ -101,6 +104,90 @@ class ForwardCaptureStore:
                 "SELECT schema_version,record_id,record_type,symbol,timestamp,payload_json "
                 f"FROM capture_records{where} ORDER BY sequence", values,
             ).fetchall()
+        return self._materialize(rows)
+
+    def records_for_daily_report(
+        self,
+        *,
+        start_utc: datetime,
+        end_utc: datetime,
+    ) -> tuple[CaptureRecord, ...]:
+        """Return the sequence-ordered subset needed by one daily report."""
+
+        _validate_utc_window(start_utc, end_utc)
+        columns = (
+            "sequence,schema_version,record_id,record_type,symbol,timestamp,"
+            "payload_json"
+        )
+        # SQLite time conversion is deliberately only a conservative prefilter.
+        # Python retains authority over exact Eastern-day membership, so widen
+        # both boundaries to prevent conversion precision from dropping a row.
+        query = f"""
+            SELECT schema_version,record_id,record_type,symbol,timestamp,payload_json
+            FROM (
+                SELECT {columns}
+                FROM capture_records
+                WHERE record_type=?
+                UNION ALL
+                SELECT {columns}
+                FROM capture_records
+                WHERE record_type IN (?,?)
+                  AND julianday(timestamp) <
+                      julianday(?) + {_SQL_BOUNDARY_MARGIN_DAYS!r}
+                UNION ALL
+                SELECT {columns}
+                FROM capture_records
+                WHERE record_type IN (?,?,?)
+                  AND julianday(timestamp) >=
+                      julianday(?) - {_SQL_BOUNDARY_MARGIN_DAYS!r}
+                  AND julianday(timestamp) <
+                      julianday(?) + {_SQL_BOUNDARY_MARGIN_DAYS!r}
+            ) AS daily_report_records
+            ORDER BY sequence
+        """
+        values = (
+            CaptureRecordType.OBSERVATION_SESSION.value,
+            CaptureRecordType.PAPER_FILL.value,
+            CaptureRecordType.COUNTERFACTUAL.value,
+            end_utc.isoformat(),
+            CaptureRecordType.DISCOVERY.value,
+            CaptureRecordType.STATE_TRANSITION.value,
+            CaptureRecordType.DATA_QUALITY.value,
+            start_utc.isoformat(),
+            end_utc.isoformat(),
+        )
+        with self._connect() as connection:
+            rows = connection.execute(query, values).fetchall()
+        return self._materialize(rows)
+
+    def record_timestamps_between(
+        self,
+        *,
+        start_utc: datetime,
+        end_utc: datetime,
+        exclude_record_type: CaptureRecordType | None = None,
+    ) -> tuple[datetime, ...]:
+        """Return timestamp values in a conservative UTC window without payloads."""
+
+        _validate_utc_window(start_utc, end_utc)
+        clause = ""
+        values: list[str] = [start_utc.isoformat(), end_utc.isoformat()]
+        if exclude_record_type is not None:
+            clause = " AND record_type<>?"
+            values.append(exclude_record_type.value)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT timestamp FROM capture_records "
+                "WHERE julianday(timestamp) >= "
+                f"julianday(?) - {_SQL_BOUNDARY_MARGIN_DAYS!r} "
+                "AND julianday(timestamp) < "
+                f"julianday(?) + {_SQL_BOUNDARY_MARGIN_DAYS!r}"
+                f"{clause} ORDER BY sequence",
+                values,
+            ).fetchall()
+        return tuple(datetime.fromisoformat(row[0]) for row in rows)
+
+    def _materialize(self, rows: list[tuple]) -> tuple[CaptureRecord, ...]:
         with self._materialization_lock:
             self._records_materialized_total += len(rows)
         return tuple(CaptureRecord(
@@ -126,6 +213,19 @@ class ForwardCaptureStore:
                 if not isinstance(json.loads(payload), dict):
                     raise CaptureSchemaError("stored payload is not an object")
         return result
+
+
+def _validate_utc_window(start_utc: datetime, end_utc: datetime) -> None:
+    if (
+        start_utc.tzinfo is None
+        or end_utc.tzinfo is None
+        or start_utc.utcoffset() is None
+        or end_utc.utcoffset() is None
+        or start_utc.utcoffset().total_seconds() != 0
+        or end_utc.utcoffset().total_seconds() != 0
+        or start_utc >= end_utc
+    ):
+        raise ValueError("daily report bounds must be an increasing UTC window")
 
 
 __all__ = ["CaptureSchemaError", "ForwardCaptureStore"]

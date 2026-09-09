@@ -660,6 +660,223 @@ def test_daily_report_mixed_exits_include_only_analytical_performance(
     assert report.average_mfe_r == D("1.80")
 
 
+def test_daily_report_preserves_historical_balances_and_fingerprint_boundaries(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "bounded-report.sqlite3")
+    target = date(2026, 8, 11)
+    start = datetime(2026, 8, 11, 4, tzinfo=UTC)
+
+    def session(action: str, at: datetime, fingerprint: str, identity: str):
+        return CaptureRecord.create(
+            CaptureRecordType.OBSERVATION_SESSION,
+            "WARRIOR_MOMENTUM_V1",
+            at,
+            {"action": action, "configuration_fingerprint": fingerprint},
+            identity_parts=(identity,),
+        )
+
+    store.append_batch((
+        session("START", start - timedelta(days=2), "old", "old-start"),
+        CaptureRecord.create(
+            CaptureRecordType.PAPER_FILL, "OLD", start - timedelta(days=2),
+            {"action": "ENTRY"}, identity_parts=("old-entry",),
+        ),
+        session("END", start - timedelta(days=1, hours=2), "old", "old-end"),
+        session("START", start - timedelta(hours=2), "target", "target-start"),
+        CaptureRecord.create(
+            CaptureRecordType.PAPER_FILL, "OPEN", start - timedelta(hours=1),
+            {"action": "ENTRY"}, identity_parts=("target-entry",),
+        ),
+        CaptureRecord.create(
+            CaptureRecordType.COUNTERFACTUAL, "TRACKED", start - timedelta(minutes=30),
+            {"action": "START"}, identity_parts=("counter-start",),
+        ),
+        CaptureRecord.create(
+            CaptureRecordType.DISCOVERY, "TODAY", start + timedelta(hours=2),
+            {"stocks_in_play": ["HIGH_RELATIVE_VOLUME"]},
+            identity_parts=("today",),
+        ),
+        CaptureRecord.create(
+            CaptureRecordType.DATA_QUALITY, "TODAY", start + timedelta(hours=2),
+            {"missing_bid_ask": True}, identity_parts=("quality",),
+        ),
+        CaptureRecord.create(
+            CaptureRecordType.PAPER_FILL, "OPEN", start + timedelta(days=1),
+            {"action": "EXIT"}, identity_parts=("future-exit",),
+        ),
+        CaptureRecord.create(
+            CaptureRecordType.COUNTERFACTUAL, "TRACKED", start + timedelta(days=1),
+            {"action": "END"}, identity_parts=("future-counter-end",),
+        ),
+        CaptureRecord.create(
+            CaptureRecordType.DISCOVERY, "FUTURE", start + timedelta(days=1),
+            {"stocks_in_play": ["HIGH_RELATIVE_VOLUME"]},
+            identity_parts=("future-discovery",),
+        ),
+        CaptureRecord.create(
+            CaptureRecordType.STATE_TRANSITION, "FUTURE", start + timedelta(days=1),
+            {"to": ForwardTransition.NEAR}, identity_parts=("future-transition",),
+        ),
+        CaptureRecord.create(
+            CaptureRecordType.DATA_QUALITY, "FUTURE", start + timedelta(days=1),
+            {"missing_volume": True}, identity_parts=("future-quality",),
+        ),
+        session("END", start + timedelta(days=1, hours=1), "target", "target-end"),
+    ))
+
+    report = build_daily_report(
+        store, target, configuration_fingerprint="target",
+    )
+
+    assert dict(report.funnel)["DISCOVERED"] == 1
+    assert dict(report.funnel)["STOCKS_IN_PLAY"] == 1
+    assert dict(report.funnel)["NEAR"] == 0
+    assert dict(report.missing_data_counts) == {"missing_bid_ask": 1}
+    assert report.open_paper_positions == 1
+    assert report.counterfactual_starts == 0
+    assert report.tracked_counterfactuals == 1
+
+
+def test_daily_report_uses_sequence_order_for_intraday_drawdown(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "sequence-report.sqlite3")
+    values = ("2", "-1", "-1", "-1", "2")
+    chronological_positions = (0, 1, 4, 2, 3)
+    records = tuple(
+        CaptureRecord.create(
+            CaptureRecordType.STATE_TRANSITION,
+            f"S{index}",
+            T0 + timedelta(minutes=chronological_positions[index]),
+            {
+                "to": ForwardTransition.PAPER_EXIT,
+                "realized_r": value,
+                "mae_r": "-0.5",
+                "mfe_r": "2",
+            },
+            identity_parts=(str(index),),
+        )
+        for index, value in enumerate(values)
+    )
+    store.append_batch(records)
+
+    report = build_daily_report(store, T0.date())
+
+    assert report.total_r == D("1")
+    assert report.maximum_intraday_drawdown_r == D("3")
+
+
+@pytest.mark.parametrize(
+    ("target", "expected_start", "expected_end", "hours"),
+    (
+        (
+            date(2026, 3, 8),
+            datetime(2026, 3, 8, 5, tzinfo=UTC),
+            datetime(2026, 3, 9, 4, tzinfo=UTC),
+            23,
+        ),
+        (
+            date(2026, 11, 1),
+            datetime(2026, 11, 1, 4, tzinfo=UTC),
+            datetime(2026, 11, 2, 5, tzinfo=UTC),
+            25,
+        ),
+    ),
+)
+def test_daily_report_builds_independent_eastern_midnight_bounds(
+    target: date,
+    expected_start: datetime,
+    expected_end: datetime,
+    hours: int,
+) -> None:
+    class RecordingStore:
+        bounds = None
+
+        def records_for_daily_report(self, *, start_utc, end_utc):
+            self.bounds = (start_utc, end_utc)
+            return ()
+
+    store = RecordingStore()
+
+    build_daily_report(store, target)
+
+    assert store.bounds == (expected_start, expected_end)
+    assert (expected_end - expected_start).total_seconds() == hours * 3600
+
+
+def test_daily_report_python_eastern_boundary_filter_remains_authoritative(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "eastern-boundary.sqlite3")
+    start = datetime.fromisoformat("2026-03-08T00:00:00-05:00")
+    end = datetime.fromisoformat("2026-03-09T00:00:00-04:00")
+    timestamps = (
+        ("BEFORE", start - timedelta(microseconds=1)),
+        ("START", start),
+        ("INSIDE", datetime(2026, 3, 8, 12, tzinfo=UTC)),
+        ("BEFORE_END", end - timedelta(microseconds=1)),
+        ("END", end),
+        ("AFTER", end + timedelta(microseconds=1)),
+    )
+    store.append_batch(tuple(
+        CaptureRecord.create(
+            CaptureRecordType.DISCOVERY, symbol, timestamp,
+            {"stocks_in_play": []}, identity_parts=(symbol,),
+        )
+        for symbol, timestamp in timestamps
+    ))
+
+    report = build_daily_report(store, date(2026, 3, 8))
+
+    assert dict(report.funnel)["DISCOVERED"] == 3
+
+
+def test_daily_report_malformed_analytical_exit_still_fails(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "malformed-report.sqlite3")
+    store.append_batch((CaptureRecord.create(
+        CaptureRecordType.STATE_TRANSITION,
+        "MALFORMED",
+        T0,
+        {"to": ForwardTransition.PAPER_EXIT, "mae_r": "-0.4", "mfe_r": "1.8"},
+        identity_parts=("missing-realized",),
+    ),))
+
+    with pytest.raises(KeyError, match="realized_r"):
+        build_daily_report(store, T0.date())
+
+
+def test_persist_daily_report_uses_same_day_timestamp_without_materializing_payloads(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "bounded-persistence.sqlite3")
+    target_timestamp = T0 + timedelta(hours=1)
+    store.append_batch((
+        CaptureRecord.create(
+            CaptureRecordType.MINUTE_BAR, "TARGET", target_timestamp,
+            {"large": "x" * 10_000}, identity_parts=("target",),
+        ),
+        CaptureRecord.create(
+            CaptureRecordType.DAILY_REPORT, "WARRIOR_MOMENTUM_V1",
+            target_timestamp + timedelta(hours=1), {"existing": True},
+            identity_parts=("existing-report",),
+        ),
+        CaptureRecord.create(
+            CaptureRecordType.MINUTE_BAR, "FUTURE", T0 + timedelta(days=1),
+            {"large": "y" * 10_000}, identity_parts=("future",),
+        ),
+    ))
+    report = build_daily_report(store, T0.date())
+    materialized_before = store.records_materialized_total()
+
+    assert persist_daily_report(store, report) == (1, 0)
+    assert store.records_materialized_total() == materialized_before
+    persisted = tuple(
+        record for record in store.records(record_type=CaptureRecordType.DAILY_REPORT)
+        if record.payload.get("trading_date") == T0.date().isoformat()
+    )
+    assert len(persisted) == 1
+    assert persisted[0].timestamp == target_timestamp
+
+
 def test_capture_writer_is_bounded_fail_closed_and_gui_isolated(tmp_path: Path) -> None:
     entered = Event()
     release = Event()

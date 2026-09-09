@@ -52,6 +52,7 @@ def test_worker_report_is_equivalent_and_persists_same_report(tmp_path: Path) ->
     assert worker.close(timeout_seconds=2.0)
     assert failures == []
     assert reports == [expected]
+    assert worker.metrics().last_records_materialized == 2
     persisted = store.records(record_type=CaptureRecordType.DAILY_REPORT)
     assert len(persisted) == 1
     assert persisted[0].payload["funnel"] == [list(item) for item in expected.funnel]
