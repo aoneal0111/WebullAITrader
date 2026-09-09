@@ -170,6 +170,7 @@ class WarriorForwardCaptureService:
         account_refresh_source: Callable[[], PaperAccountContext | None] | None = None,
         entry_value_observer: Callable[..., None] | None = None,
         configuration_fingerprint: str | None = None,
+        paper_campaign_id: str | None = None,
     ) -> None:
         self.store = store
         self.writer = writer
@@ -189,6 +190,7 @@ class WarriorForwardCaptureService:
         self._account_refresh_source = account_refresh_source
         self._entry_value_observer = entry_value_observer
         self.configuration_fingerprint = configuration_fingerprint
+        self.paper_campaign_id = paper_campaign_id
         self.runtime = WarriorMomentumRuntime(config)
         self._last_transition: dict[str, ForwardTransition] = {}
         self._seen_bars: set[tuple[str, datetime]] = set()
@@ -500,7 +502,7 @@ class WarriorForwardCaptureService:
                 # EOV is a one-way research consumer. It cannot change this
                 # decision, record publication, or order outcome.
                 pass
-        self.writer.submit_many(tuple(records))
+        self._submit_records(tuple(records))
         return assessed, signal
 
     def observe_intraminute_shadow(
@@ -512,7 +514,7 @@ class WarriorForwardCaptureService:
             return
         records = self._latched_shadow.observe(market)
         if records:
-            self.writer.submit_many(records)
+            self._submit_records(records)
 
     def invalidate_intraminute_shadow(
         self, symbol: str, timestamp: datetime,
@@ -526,14 +528,14 @@ class WarriorForwardCaptureService:
             processing_time=processing_time,
         )
         if records:
-            self.writer.submit_many(records)
+            self._submit_records(records)
 
     def shutdown_intraminute_shadow(self, timestamp: datetime) -> None:
         if self._latched_shadow is None:
             return
         records = self._latched_shadow.shutdown(timestamp)
         if records:
-            self.writer.submit_many(records)
+            self._submit_records(records)
 
     def observe_market_bar(self, symbol: str, bar: MinuteBar, observed_at) -> None:
         """Advance retained paper/counterfactual state independent of ranking."""
@@ -573,12 +575,34 @@ class WarriorForwardCaptureService:
         if self._shadow is not None:
             records.extend(self._shadow.observe_bar(bar))
         if records:
-            self.writer.submit_many(tuple(records))
+            self._submit_records(tuple(records))
 
     def finalize_shadow_outcomes(self, observed_at: datetime) -> None:
         """Persist due incomplete windows without granting execution authority."""
         if self._shadow is not None:
-            self.writer.submit_many(self._shadow.finalize_due(observed_at))
+            self._submit_records(self._shadow.finalize_due(observed_at))
+
+    def _submit_records(self, records: Iterable[CaptureRecord]) -> None:
+        """Attach campaign provenance to new active PAPER lifecycle records."""
+        prepared: list[CaptureRecord] = []
+        for record in records:
+            if (
+                self.paper_campaign_id is not None
+                and record.record_type in {
+                    CaptureRecordType.PAPER_FILL,
+                    CaptureRecordType.MANAGEMENT_CONTEXT,
+                }
+                and record.payload.get("paper_campaign_id") != self.paper_campaign_id
+            ):
+                payload = record.payload
+                payload["paper_campaign_id"] = self.paper_campaign_id
+                record = CaptureRecord.create(
+                    record.record_type, record.symbol, record.timestamp, payload,
+                    identity_parts=(record.record_id, "paper-campaign"),
+                )
+            prepared.append(record)
+        if prepared:
+            self.writer.submit_many(tuple(prepared))
 
     def _evidence_records(self, value: PointInTimeObservation) -> tuple[CaptureRecord, ...]:
         observation = value.observation
@@ -1110,6 +1134,15 @@ class WarriorForwardCaptureService:
 
     def _recover(self) -> None:
         attributed = tuple(records_with_configuration_fingerprint(self.store.records()))
+        if self.paper_campaign_id is not None:
+            attributed = tuple(
+                (record, fingerprint) for record, fingerprint in attributed
+                if record.record_type not in {
+                    CaptureRecordType.PAPER_FILL,
+                    CaptureRecordType.MANAGEMENT_CONTEXT,
+                }
+                or record.payload.get("paper_campaign_id") == self.paper_campaign_id
+            )
         records = tuple(
             record for record, fingerprint in attributed
             if self.configuration_fingerprint is not None

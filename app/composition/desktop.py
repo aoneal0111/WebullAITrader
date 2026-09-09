@@ -59,6 +59,7 @@ from app.paper_trading.command_composition import (
     PaperTradingCommandComposition,
     create_paper_trading_command_composition,
 )
+from app.paper_gateway.durable_store import NO_ACTIVE_PAPER_CAMPAIGN_ID
 from app.portfolio_intelligence import PortfolioAccount, PortfolioIntelligenceService, PortfolioRiskLimits, load_portfolio_intelligence_configuration
 
 
@@ -411,6 +412,11 @@ def create_desktop_composition(
         execution_quote_source=execution_quote_source,
         research_observer=trade_intelligence_observer,
         entry_value_observer=entry_opportunity_value_observer,
+        paper_campaign_id=(
+            None if paper_trading_commands is None
+            else paper_trading_commands.paper_campaign_id
+            or NO_ACTIVE_PAPER_CAMPAIGN_ID
+        ),
     )
 
     adaptive_entry_research_observer = AdaptiveWorkingEntryObserver(

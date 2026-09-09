@@ -81,6 +81,11 @@ class PaperTradingCommandComposition:
     account_id: str
     durable_store: DurablePaperExecutionStore | None = None
 
+    @property
+    def paper_campaign_id(self) -> str | None:
+        """The durable campaign currently allowed to become operational state."""
+        return None if self.durable_store is None else self.durable_store.active_campaign_id
+
     def close(self) -> None:
         """Invalidate the local paper command session and authentication."""
 

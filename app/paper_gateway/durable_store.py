@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from uuid import uuid4
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from decimal import Decimal
@@ -22,6 +23,8 @@ from app.paper_trading.order_models import (
 
 
 SCHEMA_VERSION = 1
+LEGACY_PAPER_CAMPAIGN_ID = "legacy-paper-campaign"
+NO_ACTIVE_PAPER_CAMPAIGN_ID = "no-active-paper-campaign"
 DEFAULT_BUSY_TIMEOUT_SECONDS = 1.0
 
 
@@ -65,6 +68,18 @@ class DurablePaperExecutionStore:
                     CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
                     CREATE TABLE IF NOT EXISTS orders(order_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                     CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY, event_type TEXT NOT NULL, payload TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS paper_campaigns(
+                        campaign_id TEXT PRIMARY KEY,
+                        status TEXT NOT NULL,
+                        started_at TEXT NOT NULL,
+                        ended_at TEXT,
+                        reason TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS paper_campaign_operations(
+                        operation_key TEXT PRIMARY KEY,
+                        campaign_id TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    );
                     """
                 )
                 self._ensure_metadata(connection, "schema_version", str(SCHEMA_VERSION))
@@ -75,6 +90,7 @@ class DurablePaperExecutionStore:
                     or self._metadata(connection, "account_id") != account_id
                 ):
                     raise ValueError("PAPER execution store identity mismatch")
+                self._ensure_initial_campaign(connection)
             finally:
                 connection.close()
 
@@ -98,10 +114,15 @@ class DurablePaperExecutionStore:
             connection = self._open_connection()
             try:
                 connection.execute("BEGIN IMMEDIATE")
+                campaign_id = self._active_campaign_id(connection)
+                if campaign_id is None:
+                    raise RuntimeError(
+                        "no active PAPER campaign; start a new campaign explicitly"
+                    )
                 if order is not None:
                     connection.execute(
                         "INSERT INTO orders(order_id,payload) VALUES(?,?) ON CONFLICT(order_id) DO UPDATE SET payload=excluded.payload",
-                        (order.order_id, json.dumps(_order_payload(order), sort_keys=True)),
+                        (order.order_id, json.dumps(_order_payload(order, campaign_id), sort_keys=True)),
                     )
                 for event in event_values:
                     connection.execute(
@@ -109,7 +130,7 @@ class DurablePaperExecutionStore:
                         (
                             event.sequence,
                             event.event_type,
-                            json.dumps(_event_payload(event), sort_keys=True),
+                            json.dumps(_event_payload(event, campaign_id), sort_keys=True),
                         ),
                     )
                 connection.commit()
@@ -130,7 +151,11 @@ class DurablePaperExecutionStore:
                 rows = connection.execute(
                     "SELECT payload FROM orders ORDER BY order_id"
                 ).fetchall()
-                return tuple(_order_from_payload(json.loads(row[0])) for row in rows)
+                values = [json.loads(row[0]) for row in rows]
+                return tuple(
+                    _order_from_payload(value) for value in values
+                    if _payload_campaign(value) == self.active_campaign_id
+                )
             finally:
                 connection.close()
 
@@ -142,9 +167,155 @@ class DurablePaperExecutionStore:
                 rows = connection.execute(
                     "SELECT payload FROM events ORDER BY sequence"
                 ).fetchall()
+                values = [json.loads(row[0]) for row in rows]
+                # Validate every durable row before applying the active
+                # campaign filter; corruption must fail closed even when the
+                # row belongs to legacy history.
+                parsed = tuple(_event_from_payload(value) for value in values)
+                return tuple(
+                    event for event, value in zip(parsed, values)
+                    if _payload_campaign(value) == self.active_campaign_id
+                )
+            finally:
+                connection.close()
+
+    @property
+    def active_campaign_id(self) -> str | None:
+        with self._lock:
+            self._require_open()
+            connection = self._open_connection()
+            try:
+                return self._active_campaign_id(connection)
+            finally:
+                connection.close()
+
+    def historical_orders(self) -> tuple[PaperOrder, ...]:
+        return self._all_orders()
+
+    def historical_events(self) -> tuple[PaperRuntimeEvent, ...]:
+        with self._lock:
+            self._require_open()
+            connection = self._open_connection()
+            try:
+                rows = connection.execute("SELECT payload FROM events ORDER BY sequence").fetchall()
                 return tuple(_event_from_payload(json.loads(row[0])) for row in rows)
             finally:
                 connection.close()
+
+    def campaigns(self) -> tuple[dict[str, str | None], ...]:
+        """Return campaign metadata for audit/research, newest first."""
+        with self._lock:
+            self._require_open()
+            connection = self._open_connection()
+            try:
+                rows = connection.execute(
+                    "SELECT campaign_id,status,started_at,ended_at,reason FROM paper_campaigns ORDER BY started_at"
+                ).fetchall()
+                if not rows and self._has_legacy_rows(connection):
+                    rows = [
+                        (
+                            LEGACY_PAPER_CAMPAIGN_ID, "HISTORICAL", None, None,
+                            "pre-campaign legacy data",
+                        )
+                    ]
+                return tuple(
+                    {
+                        "campaign_id": row[0], "status": row[1],
+                        "started_at": row[2], "ended_at": row[3],
+                        "reason": row[4],
+                    }
+                    for row in rows
+                )
+            finally:
+                connection.close()
+
+    def start_new_paper_campaign(
+        self, *, operation_key: str, campaign_id: str | None = None,
+        started_at: datetime | None = None, reason: str = "explicit-rollover",
+    ) -> str:
+        """Create an auditable active campaign without rewriting old rows."""
+        if not operation_key.strip():
+            raise ValueError("operation_key is required")
+        campaign_id = campaign_id or f"paper-{uuid4().hex}"
+        started_at = started_at or datetime.now().astimezone()
+        if started_at.tzinfo is None or started_at.utcoffset() is None:
+            raise ValueError("started_at must be timezone-aware")
+        with self._lock:
+            self._require_open()
+            connection = self._open_connection()
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                prior = connection.execute(
+                    "SELECT campaign_id FROM paper_campaign_operations WHERE operation_key=?",
+                    (operation_key,),
+                ).fetchone()
+                if prior is not None:
+                    connection.commit()
+                    return str(prior[0])
+                active = self._active_campaign_id(connection)
+                if active is not None:
+                    connection.execute(
+                        "UPDATE paper_campaigns SET status='ENDED', ended_at=? WHERE campaign_id=? AND status='ACTIVE'",
+                        (started_at.isoformat(), active),
+                    )
+                if active is None and self._has_legacy_rows(connection):
+                    connection.execute(
+                        "INSERT OR IGNORE INTO paper_campaigns VALUES(?,?,?,?,?)",
+                        (LEGACY_PAPER_CAMPAIGN_ID, "HISTORICAL", started_at.isoformat(), started_at.isoformat(), "pre-campaign legacy data"),
+                    )
+                connection.execute(
+                    "INSERT INTO paper_campaigns VALUES(?,?,?,?,?)",
+                    (campaign_id, "ACTIVE", started_at.isoformat(), None, reason),
+                )
+                self._set_metadata(connection, "active_campaign_id", campaign_id)
+                connection.execute(
+                    "INSERT INTO paper_campaign_operations VALUES(?,?,?)",
+                    (operation_key, campaign_id, started_at.isoformat()),
+                )
+                connection.commit()
+                return campaign_id
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+
+    def _all_orders(self) -> tuple[PaperOrder, ...]:
+        with self._lock:
+            self._require_open()
+            connection = self._open_connection()
+            try:
+                rows = connection.execute("SELECT payload FROM orders ORDER BY order_id").fetchall()
+                return tuple(_order_from_payload(json.loads(row[0])) for row in rows)
+            finally:
+                connection.close()
+
+    def _ensure_initial_campaign(self, connection: sqlite3.Connection) -> None:
+        if self._metadata_optional(connection, "active_campaign_id") is not None:
+            return
+        if self._has_legacy_rows(connection):
+            return
+        now = datetime.now().astimezone().isoformat()
+        campaign_id = f"paper-{uuid4().hex}"
+        connection.execute("INSERT INTO paper_campaigns VALUES(?,?,?,?,?)", (campaign_id, "ACTIVE", now, None, "initial-empty-store"))
+        self._set_metadata(connection, "active_campaign_id", campaign_id)
+
+    @staticmethod
+    def _has_legacy_rows(connection: sqlite3.Connection) -> bool:
+        return bool(connection.execute("SELECT 1 FROM events LIMIT 1").fetchone() or connection.execute("SELECT 1 FROM orders LIMIT 1").fetchone())
+
+    @staticmethod
+    def _metadata_optional(connection: sqlite3.Connection, key: str) -> str | None:
+        row = connection.execute("SELECT value FROM metadata WHERE key=?", (key,)).fetchone()
+        return None if row is None else str(row[0])
+
+    @classmethod
+    def _active_campaign_id(cls, connection: sqlite3.Connection) -> str | None:
+        return cls._metadata_optional(connection, "active_campaign_id")
+
+    @staticmethod
+    def _set_metadata(connection: sqlite3.Connection, key: str, value: str) -> None:
+        connection.execute("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
 
     def _open_connection(self, *, initialize: bool = False) -> sqlite3.Connection:
         connection = self._connection_factory(
@@ -187,8 +358,9 @@ class DurablePaperExecutionStore:
             raise ValueError("unsupported PAPER execution store schema")
 
 
-def _order_payload(order: PaperOrder) -> dict:
+def _order_payload(order: PaperOrder, campaign_id: str) -> dict:
     return {
+        "paper_campaign_id": campaign_id,
         "order_id": order.order_id, "status": order.status.value,
         "created_at": order.created_at.isoformat(), "updated_at": order.updated_at.isoformat(),
         "filled_quantity": str(order.filled_quantity),
@@ -266,9 +438,13 @@ def _fill_from_payload(value: dict) -> Fill:
     return Fill(fill_id=value["fill_id"], order_id=value["order_id"], quantity=Decimal(value["quantity"]), price=Decimal(value["price"]), timestamp=datetime.fromisoformat(value["timestamp"]), commission=Decimal(value["commission"]), slippage=Decimal(value["slippage"]), venue=value["venue"], liquidity_flag=value["liquidity_flag"])
 
 
-def _event_payload(event: PaperRuntimeEvent) -> dict:
+def _event_payload(event: PaperRuntimeEvent, campaign_id: str) -> dict:
     order = event.order
-    return {"sequence": event.sequence, "event_type": event.event_type, "timestamp": event.timestamp.isoformat(), "message": event.message, "cycle": event.cycle, "symbol": event.symbol, "source": event.source, "order": None if order is None else {"order_id": order.order_id, "symbol": order.symbol, "side": order.side, "quantity": order.quantity, "status": order.status, "updated_at": order.updated_at.isoformat(), "order_type": order.order_type, "limit_price": order.limit_price, "stop_price": order.stop_price, "filled_quantity": order.filled_quantity, "remaining_quantity": order.remaining_quantity, "average_fill_price": order.average_fill_price, "submitted_at": None if order.submitted_at is None else order.submitted_at.isoformat(), "lifecycle_id": order.lifecycle_id, "execution_reason": order.execution_reason, "execution_source": order.execution_source}, "fill": None if event.fill is None else {"request_id": event.fill.request_id, "symbol": event.fill.symbol, "side": event.fill.side, "quantity": str(event.fill.quantity), "fill_price": str(event.fill.fill_price), "notional": str(event.fill.notional), "realized_pnl": str(event.fill.realized_pnl), "timestamp": event.fill.timestamp.isoformat()}}
+    return {"paper_campaign_id": campaign_id, "sequence": event.sequence, "event_type": event.event_type, "timestamp": event.timestamp.isoformat(), "message": event.message, "cycle": event.cycle, "symbol": event.symbol, "source": event.source, "order": None if order is None else {"order_id": order.order_id, "symbol": order.symbol, "side": order.side, "quantity": order.quantity, "status": order.status, "updated_at": order.updated_at.isoformat(), "order_type": order.order_type, "limit_price": order.limit_price, "stop_price": order.stop_price, "filled_quantity": order.filled_quantity, "remaining_quantity": order.remaining_quantity, "average_fill_price": order.average_fill_price, "submitted_at": None if order.submitted_at is None else order.submitted_at.isoformat(), "lifecycle_id": order.lifecycle_id, "execution_reason": order.execution_reason, "execution_source": order.execution_source}, "fill": None if event.fill is None else {"request_id": event.fill.request_id, "symbol": event.fill.symbol, "side": event.fill.side, "quantity": str(event.fill.quantity), "fill_price": str(event.fill.fill_price), "notional": str(event.fill.notional), "realized_pnl": str(event.fill.realized_pnl), "timestamp": event.fill.timestamp.isoformat()}}
+
+
+def _payload_campaign(value: dict) -> str:
+    return str(value.get("paper_campaign_id") or LEGACY_PAPER_CAMPAIGN_ID)
 
 
 def _event_from_payload(value: dict) -> PaperRuntimeEvent:
@@ -285,4 +461,6 @@ __all__ = [
     "DEFAULT_BUSY_TIMEOUT_SECONDS",
     "DurablePaperExecutionStore",
     "SCHEMA_VERSION",
+    "LEGACY_PAPER_CAMPAIGN_ID",
+    "NO_ACTIVE_PAPER_CAMPAIGN_ID",
 ]

@@ -146,6 +146,7 @@ class WarriorDesktopSidecar:
         execution_quote_source: ExecutionQuoteSource | None = None,
         research_observer: object | None = None,
         entry_value_observer: object | None = None,
+        paper_campaign_id: str | None = None,
         report_worker_factory: Callable[..., WarriorReportWorker] = WarriorReportWorker,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -163,6 +164,7 @@ class WarriorDesktopSidecar:
         self._execution_quote_source = execution_quote_source
         self._research_observer = research_observer
         self._entry_value_observer = entry_value_observer
+        self._paper_campaign_id = paper_campaign_id
         self._report_worker_factory = report_worker_factory
         self._accept_execution = False
         self._clock = clock
@@ -385,6 +387,7 @@ class WarriorDesktopSidecar:
                     entry_value_observer=getattr(
                         self._entry_value_observer, "observe_decision", None,
                     ),
+                    paper_campaign_id=self._paper_campaign_id,
                 )
                 self._restore_bars()
                 now = self._aware_now()
