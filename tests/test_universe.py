@@ -7,6 +7,7 @@ from app.universe import (
     SecurityType,
     UniverseService,
     UniverseSymbol,
+    UniverseFilterConfig,
     exclusion_reasons,
 )
 
@@ -51,11 +52,11 @@ def crypto(
     return UniverseSymbol(**values)
 
 
-def test_stock_between_one_and_twenty_is_included() -> None:
+def test_stock_between_one_and_one_hundred_is_included() -> None:
     provider = InMemoryUniverseProvider(
         (
             stock("LOW", price=D("1")),
-            stock("HIGH", price=D("20")),
+            stock("HIGH", price=D("100")),
         )
     )
 
@@ -81,8 +82,8 @@ def test_stock_below_one_is_excluded() -> None:
     assert "price_range" in exclusion_reasons(item)
 
 
-def test_stock_above_twenty_is_excluded() -> None:
-    item = stock(price=D("20.01"))
+def test_stock_above_one_hundred_is_excluded() -> None:
+    item = stock(price=D("100.01"))
     provider = InMemoryUniverseProvider((item,))
 
     selection = UniverseService(provider).select(
@@ -93,7 +94,7 @@ def test_stock_above_twenty_is_excluded() -> None:
     assert "price_range" in exclusion_reasons(item)
 
 
-def test_low_volume_stock_is_excluded() -> None:
+def test_low_average_volume_stock_is_observable() -> None:
     item = stock(
         average_30_day_volume=D("499999")
     )
@@ -103,8 +104,29 @@ def test_low_volume_stock_is_excluded() -> None:
         AssetClass.STOCK
     )
 
-    assert selection.included == ()
-    assert "average_volume" in exclusion_reasons(item)
+    assert selection.included == (item,)
+    assert "average_volume" not in exclusion_reasons(item)
+
+
+def test_historical_average_volume_can_still_be_an_explicit_filter() -> None:
+    item = stock(average_30_day_volume=D("499999"))
+    selection = UniverseService(
+        InMemoryUniverseProvider((item,)),
+    ).select(
+        AssetClass.STOCK,
+    )
+    assert selection.included == (item,)
+    strict_selection = UniverseService(
+        InMemoryUniverseProvider((item,)),
+        config=UniverseFilterConfig(
+            stock_minimum_average_volume=D("500000"),
+        ),
+    ).select(AssetClass.STOCK)
+    assert strict_selection.included == ()
+    assert "average_volume" in exclusion_reasons(
+        item,
+        UniverseFilterConfig(stock_minimum_average_volume=D("500000")),
+    )
 
 
 def test_etf_is_excluded_by_default() -> None:

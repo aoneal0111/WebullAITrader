@@ -7,7 +7,12 @@ from types import SimpleNamespace
 from app.momentum_scanner import AssetClass
 from app.realtime_scanner import RealtimeScannerEngine
 from app.scanner_universe_observability import UniverseAdmissionStage
-from app.universe import SecurityType, UniverseService, UniverseSymbol
+from app.universe import (
+    SecurityType,
+    UniverseFilterConfig,
+    UniverseService,
+    UniverseSymbol,
+)
 from app.webull.sdk_market_data import (
     LazyOfficialDataClient,
     WebullScannerUniverseProvider,
@@ -145,7 +150,9 @@ def test_existing_universe_filter_rejection_and_reason_are_observed_without_chan
         price=Decimal("5"), average_30_day_volume=Decimal("10"),
     )
     selection = UniverseService(
-        _StaticProvider((low_volume,)), admission_observer=observer
+        _StaticProvider((low_volume,)),
+        config=UniverseFilterConfig(stock_minimum_average_volume=Decimal("500000")),
+        admission_observer=observer,
     ).select(AssetClass.STOCK)
     assert selection.included == ()
     assert selection.excluded == (low_volume,)

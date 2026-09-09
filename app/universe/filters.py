@@ -15,8 +15,10 @@ ZERO = Decimal("0")
 @dataclass(frozen=True, slots=True)
 class UniverseFilterConfig:
     stock_minimum_price: Decimal = Decimal("1")
-    stock_maximum_price: Decimal = Decimal("20")
-    stock_minimum_average_volume: Decimal = Decimal("500000")
+    stock_maximum_price: Decimal = Decimal("100")
+    # Historical average volume is retained on UniverseSymbol for reference
+    # and RVOL calculations, but must not gate live equity observation.
+    stock_minimum_average_volume: Decimal = ZERO
     stock_exchanges: tuple[str, ...] = (
         "NASDAQ",
         "NYSE",
