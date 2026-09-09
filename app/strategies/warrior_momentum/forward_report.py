@@ -10,7 +10,9 @@ from enum import StrEnum
 from statistics import mean
 from zoneinfo import ZoneInfo
 
-from .forward_models import CaptureRecordType, ForwardTransition
+from .forward_models import (
+    CaptureRecordType, ForwardTransition, records_with_configuration_fingerprint,
+)
 from .forward_store import ForwardCaptureStore
 
 EASTERN = ZoneInfo("America/New_York")
@@ -332,19 +334,7 @@ def build_cumulative_reports(
 
 
 def _records_with_fingerprint(records):
-    current = None
-    for record in records:
-        if record.record_type is CaptureRecordType.OBSERVATION_SESSION:
-            payload = record.payload
-            if payload.get("action") == "START":
-                current = payload.get("configuration_fingerprint")
-                yield record, current
-                continue
-            yield record, current
-            if payload.get("action") == "END":
-                current = None
-            continue
-        yield record, current
+    yield from records_with_configuration_fingerprint(records)
 
 
 def _completed_trades(records):

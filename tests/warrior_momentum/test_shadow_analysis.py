@@ -254,7 +254,7 @@ def test_enabled_and_disabled_shadow_leave_production_decision_unchanged(tmp_pat
 
 def test_shadow_has_no_paper_or_live_execution_surface() -> None:
     parameters = tuple(signature(ShadowOpportunityAnalyzer).parameters)
-    assert parameters == ("store", "config")
+    assert parameters == ("store", "config", "configuration_fingerprint")
     forbidden = {
         "submit_entry", "submit_exit", "place_order", "authorize_live",
         "trading_service", "order_gateway", "paper_order_gateway",

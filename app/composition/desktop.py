@@ -25,6 +25,7 @@ from app.webull.sdk_market_data import LazyOfficialDataClient
 from app.webull.market_data_session import utc_now
 from app.strategies.warrior_momentum.desktop_sidecar import (
     CompositeMarketEventObserver, WarriorDesktopSidecar,
+    strategy_configuration_fingerprint,
 )
 from app.strategies.warrior_momentum.forward_models import PaperAccountContext
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
@@ -354,7 +355,8 @@ def create_desktop_composition(
             order_book=paper_trading_commands.order_book,
             position_quantity_source=position_quantity,
             management_context_source=lambda symbol: management_context_available(
-                operational_configuration.warrior_forward_capture_path, symbol
+                operational_configuration.warrior_forward_capture_path, symbol,
+                configuration_fingerprint=strategy_configuration_fingerprint(),
             ),
         )
         autonomous_paper_bridge.begin_reconciliation()

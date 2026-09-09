@@ -23,10 +23,12 @@ class ForwardCaptureWriter:
     def __init__(
         self, store: ForwardCaptureStore, *, capacity: int = 4096,
         batch_size: int = 128, flush_interval_seconds: float = 0.25,
+        configuration_fingerprint: str | None = None,
     ) -> None:
         if capacity <= 0 or batch_size <= 0 or flush_interval_seconds <= 0:
             raise ValueError("capture writer settings must be positive")
         self._store = store
+        self._configuration_fingerprint = configuration_fingerprint
         self._queue: Queue[CaptureRecord] = Queue(maxsize=capacity)
         # Sparse latency/queue diagnostics must never inherit the critical
         # capture lane's synchronous SQLite fallback on a market thread.
@@ -45,6 +47,7 @@ class ForwardCaptureWriter:
         self._thread.start()
 
     def submit(self, record: CaptureRecord, *, timeout_seconds: float = 1.0) -> None:
+        record = self._prepare_record(record)
         if self._fatal is not None:
             raise CaptureWriterError("capture writer failed") from self._fatal
         try:
@@ -68,6 +71,7 @@ class ForwardCaptureWriter:
 
     def submit_diagnostic(self, record: CaptureRecord) -> bool:
         """Enqueue sparse observability evidence without blocking its caller."""
+        record = self._prepare_record(record)
         if self._fatal is not None:
             return False
         try:
@@ -77,6 +81,11 @@ class ForwardCaptureWriter:
                 self._dropped += 1
             return False
         return True
+
+    def _prepare_record(self, record: CaptureRecord) -> CaptureRecord:
+        if self._configuration_fingerprint is None:
+            return record
+        return record.with_configuration_fingerprint(self._configuration_fingerprint)
 
     def flush(self) -> None:
         self._queue.join()

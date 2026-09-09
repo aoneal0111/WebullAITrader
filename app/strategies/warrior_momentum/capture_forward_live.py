@@ -34,6 +34,7 @@ from .forward_models import (
 from .forward_queue import ForwardCaptureWriter
 from .forward_report import EASTERN, build_daily_report, persist_daily_report
 from .forward_runtime import WarriorForwardCaptureService
+from .desktop_sidecar import strategy_configuration_fingerprint
 from .forward_store import ForwardCaptureStore
 from .models import MinuteBar
 
@@ -62,9 +63,11 @@ def capture_once(path: Path, *, limit: int = 10) -> dict[str, object]:
         store, capacity=capture_config.queue_capacity,
         batch_size=capture_config.batch_size,
         flush_interval_seconds=capture_config.flush_interval_seconds,
+        configuration_fingerprint=strategy_configuration_fingerprint(),
     )
     service = WarriorForwardCaptureService(
         store, writer, capture_config=capture_config,
+        configuration_fingerprint=strategy_configuration_fingerprint(),
     )
     paper = PaperAccountContext(
         equity=Decimal("25000"), buying_power=Decimal("25000"),

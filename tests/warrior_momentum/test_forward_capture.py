@@ -23,6 +23,7 @@ from app.strategies.warrior_momentum import (
     PointInTimeObservation, WarriorForwardCaptureService,
     build_daily_report, persist_daily_report, replay_captured_decision,
 )
+from app.strategies.warrior_momentum.desktop_sidecar import strategy_configuration_fingerprint
 from app.strategies.warrior_momentum.autonomous_paper import (
     AutonomousPaperExecutionBridge,
 )
@@ -523,8 +524,11 @@ def test_analytical_closed_authoritative_open_surfaces_critical_contradiction(tm
 
 def test_restart_recovery_duplicate_prevention_and_replay_equivalence(tmp_path: Path) -> None:
     store = ForwardCaptureStore(tmp_path / "recover.sqlite3")
-    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
-    service = WarriorForwardCaptureService(store, writer)
+    fingerprint = strategy_configuration_fingerprint()
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01,
+                                  configuration_fingerprint=fingerprint)
+    service = WarriorForwardCaptureService(store, writer,
+                                           configuration_fingerprint=fingerprint)
     _candidate, signal = service.observe(point(), account=account())
     assert signal is not None
     writer.flush()
@@ -534,8 +538,10 @@ def test_restart_recovery_duplicate_prevention_and_replay_equivalence(tmp_path: 
     assert store.append_batch((record, record)) == (1, 1)
     writer.close()
 
-    restarted_writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
-    restarted = WarriorForwardCaptureService(store, restarted_writer)
+    restarted_writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01,
+                                            configuration_fingerprint=fingerprint)
+    restarted = WarriorForwardCaptureService(store, restarted_writer,
+                                             configuration_fingerprint=fingerprint)
     stop_bar = MinuteBar("XYZ", signal.timestamp + timedelta(minutes=1), signal.entry_trigger,
                          signal.entry_trigger, signal.stop_price, signal.stop_price, D("100"))
     restarted.observe_market_bar("XYZ", stop_bar, stop_bar.timestamp + timedelta(minutes=1))
@@ -549,8 +555,11 @@ def test_restart_recovery_duplicate_prevention_and_replay_equivalence(tmp_path: 
 
 def test_management_context_restores_stop_and_trailing_state(tmp_path: Path) -> None:
     store = ForwardCaptureStore(tmp_path / "management.sqlite3")
-    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
-    service = WarriorForwardCaptureService(store, writer)
+    fingerprint = strategy_configuration_fingerprint()
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01,
+                                  configuration_fingerprint=fingerprint)
+    service = WarriorForwardCaptureService(store, writer,
+                                           configuration_fingerprint=fingerprint)
     _candidate, signal = service.observe(point(), account=account())
     assert signal is not None
     writer.flush()
@@ -560,8 +569,10 @@ def test_management_context_restores_stop_and_trailing_state(tmp_path: Path) -> 
     service.observe_market_bar("XYZ", MinuteBar("XYZ", signal.timestamp + timedelta(minutes=1), signal.entry_trigger + D("0.015"), signal.entry_trigger + D("0.02"), signal.entry_trigger + D("0.01"), signal.entry_trigger + D("0.015"), D("100")), signal.timestamp + timedelta(minutes=2))
     writer.flush()
     writer.close()
-    restarted_writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
-    restarted = WarriorForwardCaptureService(store, restarted_writer)
+    restarted_writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01,
+                                            configuration_fingerprint=fingerprint)
+    restarted = WarriorForwardCaptureService(store, restarted_writer,
+                                             configuration_fingerprint=fingerprint)
     state = restarted._paper["XYZ"]
     assert state.stop == signal.entry_trigger
     assert state.maximum_high == signal.entry_trigger + Decimal("2")

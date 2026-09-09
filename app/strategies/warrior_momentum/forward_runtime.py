@@ -17,6 +17,7 @@ from .forward_models import (
     ForwardCaptureConfiguration, ForwardTransition, PaperAccountContext,
     PaperSymbolAuthorization, PaperSymbolAuthorizationSource,
     PointInTimeObservation,
+    records_with_configuration_fingerprint,
 )
 from .autonomous_paper import lifecycle_identity
 from .execution_quote import ExecutionQuoteSource
@@ -44,7 +45,10 @@ ZERO = Decimal("0")
 HUNDRED = Decimal("100")
 
 
-def management_context_available(storage_path, symbol: str, lifecycle_id: str | None = None) -> str | None:
+def management_context_available(
+    storage_path, symbol: str, lifecycle_id: str | None = None,
+    configuration_fingerprint: str | None = None,
+) -> str | None:
     """Return the matching active PAPER lifecycle ID, when available.
 
     Matching is structural when a lifecycle is supplied; symbol is only the
@@ -53,6 +57,14 @@ def management_context_available(storage_path, symbol: str, lifecycle_id: str | 
     try:
         store = ForwardCaptureStore(storage_path)
         records = store.records(symbol=symbol, record_type=CaptureRecordType.MANAGEMENT_CONTEXT)
+        if configuration_fingerprint is not None:
+            records = tuple(
+                record for record, fingerprint in records_with_configuration_fingerprint(
+                    store.records()
+                ) if record.symbol == symbol
+                and record.record_type is CaptureRecordType.MANAGEMENT_CONTEXT
+                and fingerprint == configuration_fingerprint
+            )
         if not records:
             return None
         for record in reversed(records):
@@ -120,11 +132,17 @@ class WarriorForwardCaptureService:
         execution_permitted: Callable[[], bool] | None = None,
         account_refresh_source: Callable[[], PaperAccountContext | None] | None = None,
         entry_value_observer: Callable[..., None] | None = None,
+        configuration_fingerprint: str | None = None,
     ) -> None:
         self.store = store
         self.writer = writer
         self.config = config
         self.capture_config = capture_config
+        if configuration_fingerprint is None:
+            # Import lazily to preserve the existing fingerprint source of
+            # truth without introducing a module import cycle.
+            from .desktop_sidecar import strategy_configuration_fingerprint
+            configuration_fingerprint = strategy_configuration_fingerprint(config)
         self._paper_entry_submitter = paper_entry_submitter
         self._paper_exit_submitter = paper_exit_submitter
         self._paper_position_quantity_source = paper_position_quantity_source
@@ -133,13 +151,16 @@ class WarriorForwardCaptureService:
         self._execution_permitted = execution_permitted or (lambda: True)
         self._account_refresh_source = account_refresh_source
         self._entry_value_observer = entry_value_observer
+        self.configuration_fingerprint = configuration_fingerprint
         self.runtime = WarriorMomentumRuntime(config)
         self._last_transition: dict[str, ForwardTransition] = {}
         self._seen_bars: set[tuple[str, datetime]] = set()
         self._paper: dict[str, _PaperState] = {}
         self._counterfactual: dict[str, _CounterState] = {}
         self._shadow = (
-            ShadowOpportunityAnalyzer(store)
+            ShadowOpportunityAnalyzer(
+                store, configuration_fingerprint=configuration_fingerprint,
+            )
             if capture_config.shadow_analysis_enabled else None
         )
         self._latched_shadow = (
@@ -949,7 +970,15 @@ class WarriorForwardCaptureService:
         ),)
 
     def _recover(self) -> None:
-        for record in self.store.records(record_type=CaptureRecordType.MINUTE_BAR):
+        records = tuple(
+            record for record, fingerprint in records_with_configuration_fingerprint(
+                self.store.records()
+            ) if self.configuration_fingerprint is not None
+            and fingerprint == self.configuration_fingerprint
+        )
+        for record in records:
+            if record.record_type is not CaptureRecordType.MINUTE_BAR:
+                continue
             try:
                 self._seen_bars.add((
                     record.symbol,
@@ -957,13 +986,17 @@ class WarriorForwardCaptureService:
                 ))
             except (KeyError, ValueError):
                 continue
-        for record in self.store.records(record_type=CaptureRecordType.STATE_TRANSITION):
+        for record in records:
+            if record.record_type is not CaptureRecordType.STATE_TRANSITION:
+                continue
             payload = record.payload
             try:
                 self._last_transition[record.symbol] = ForwardTransition(payload["to"])
             except (KeyError, ValueError):
                 continue
-        for record in self.store.records(record_type=CaptureRecordType.COUNTERFACTUAL):
+        for record in records:
+            if record.record_type is not CaptureRecordType.COUNTERFACTUAL:
+                continue
             payload = record.payload
             action = payload.get("action")
             if action == "START":
@@ -980,7 +1013,9 @@ class WarriorForwardCaptureService:
             elif action == "END":
                 self._counterfactual.pop(record.symbol, None)
         # Rebuild still-open paper states from immutable fills.
-        for record in self.store.records(record_type=CaptureRecordType.PAPER_FILL):
+        for record in records:
+            if record.record_type is not CaptureRecordType.PAPER_FILL:
+                continue
             payload = record.payload
             if payload.get("action") == "ENTRY":
                 signal = _signal_from_entry(record, payload)
@@ -1004,7 +1039,9 @@ class WarriorForwardCaptureService:
                     state.stop = max(state.stop, state.entry_price)
                 if state.remaining <= 0:
                     self._paper.pop(record.symbol, None)
-        for record in self.store.records(record_type=CaptureRecordType.MANAGEMENT_CONTEXT):
+        for record in records:
+            if record.record_type is not CaptureRecordType.MANAGEMENT_CONTEXT:
+                continue
             payload = record.payload
             if payload.get("phase") == "CLOSED":
                 authoritative = (

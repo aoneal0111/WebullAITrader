@@ -73,6 +73,20 @@ def test_balanced_configuration_and_conservative_reconstruction_are_explicit() -
     scanner = MomentumScannerConfig()
     warrior = WarriorMomentumConfig()
     assert (
+        warrior.discovery.minimum_price,
+        warrior.discovery.maximum_price,
+        warrior.discovery.minimum_percentage_change,
+        warrior.discovery.minimum_relative_volume,
+        warrior.discovery.maximum_float,
+        warrior.discovery.minimum_volume,
+        warrior.discovery.minimum_dollar_volume,
+        warrior.discovery.maximum_spread_percent,
+        warrior.discovery.watch_score,
+        warrior.discovery.near_qualified_score,
+        warrior.discovery.qualified_score,
+    ) == (D("1.00"), D("100.00"), D("5"), D("2"), D("50000000"),
+          D("0"), D("250000"), D("1.50"), D("25"), D("45"), D("60"))
+    assert (
         scanner.minimum_price, scanner.maximum_price,
         scanner.minimum_percentage_change, scanner.minimum_relative_volume,
         scanner.maximum_float_shares, scanner.minimum_dollar_volume,
@@ -90,6 +104,12 @@ def test_balanced_configuration_and_conservative_reconstruction_are_explicit() -
         warrior.policy_version,
     ) == (D("55"), D("55"), D("2500000"), D("1.25"), False,
           D("100"), "BALANCED_V1")
+    assert warrior.entry.maximum_risk_per_share == D("1.00")
+    assert (
+        warrior.risk.equity_risk_percentage,
+        warrior.risk.maximum_quantity,
+        warrior.risk.maximum_position_dollars,
+    ) == (D("0.005"), 10000, D("25000"))
     conservative = MomentumScannerConfig.conservative_v1()
     assert (
         conservative.minimum_price,
@@ -102,7 +122,73 @@ def test_balanced_configuration_and_conservative_reconstruction_are_explicit() -
         conservative.require_catalyst,
     ) == (D("1"), D("20"), D("10"), D("5"), D("20000000"),
           D("5000000"), D("1"), True)
-    assert WarriorMomentumConfig.conservative_v1().entry.require_catalyst_for_entry is True
+    conservative_warrior = WarriorMomentumConfig.conservative_v1()
+    assert (
+        conservative_warrior.discovery.maximum_price,
+        conservative_warrior.discovery.minimum_percentage_change,
+        conservative_warrior.discovery.minimum_relative_volume,
+        conservative_warrior.discovery.maximum_float,
+        conservative_warrior.discovery.minimum_dollar_volume,
+        conservative_warrior.entry.minimum_dollar_volume,
+        conservative_warrior.entry.maximum_spread_percent,
+        conservative_warrior.entry.require_catalyst_for_entry,
+    ) == (D("20.00"), D("10"), D("5"), D("20000000"), D("250000"),
+          D("5000000"), D("1"), True)
+
+
+@pytest.mark.parametrize("price", ("30", "30.01", "50", "100"))
+def test_balanced_warrior_discovery_accepts_prices_through_one_hundred(price: str) -> None:
+    candidate = discover(observation(price=price))
+    assert ReasonCode.PRICE_TOO_HIGH not in candidate.reason_codes
+
+
+def test_balanced_warrior_discovery_rejects_price_above_one_hundred() -> None:
+    candidate = discover(observation(price="100.01"))
+    assert ReasonCode.PRICE_TOO_HIGH in candidate.reason_codes
+    assert candidate.discovery_qualified is False
+
+
+def test_balanced_warrior_discovery_keeps_one_dollar_floor() -> None:
+    candidate = discover(observation(price="0.99"))
+    assert ReasonCode.PRICE_TOO_LOW in candidate.reason_codes
+
+
+def test_balanced_warrior_discovery_rejects_liquidity_below_two_hundred_fifty_thousand() -> None:
+    candidate = discover(observation(dollar_volume="249999"))
+    assert ReasonCode.LIQUIDITY_LOW in candidate.reason_codes
+
+
+@pytest.mark.parametrize("dollar_volume", ("250000", "500000", "999999", "1000000"))
+def test_balanced_warrior_discovery_accepts_current_day_liquidity_floor(
+    dollar_volume: str,
+) -> None:
+    candidate = discover(observation(dollar_volume=dollar_volume))
+    assert ReasonCode.LIQUIDITY_LOW not in candidate.reason_codes
+
+
+def test_balanced_warrior_discovery_and_entry_liquidity_remain_separate() -> None:
+    value = observation(dollar_volume="1500000")
+    candidate = discover(value)
+    assert ReasonCode.LIQUIDITY_LOW not in candidate.reason_codes
+    runtime, (assessed, signal) = assess_with_trigger(value)
+    assert signal is None
+    assert runtime.config.entry.minimum_dollar_volume == D("2500000")
+    assert ReasonCode.LIQUIDITY_LOW in assessed.reason_codes
+
+
+def test_balanced_warrior_entry_liquidity_passes_at_two_point_five_million() -> None:
+    runtime = WarriorMomentumRuntime()
+    candidate = runtime.discover(
+        observation(dollar_volume="2500000"), (), session="REGULAR"
+    )
+    candidate = replace(
+        candidate,
+        score=replace(candidate.score, total=D("60")),
+        setup=triggered_setup(),
+    )
+    assessed, signal = runtime.assess_entry(candidate)
+    assert assessed.status is CandidateStatus.ENTRY_READY
+    assert signal is not None
 
 
 def test_aemd_like_missing_catalyst_passes_discovery_but_no_setup_blocks() -> None:

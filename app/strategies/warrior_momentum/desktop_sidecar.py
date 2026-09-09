@@ -25,7 +25,7 @@ from .features import contiguous_tail, current_completed_bar_tail
 from .forward_models import (
     CAPTURE_SCHEMA_VERSION, CaptureMetrics, CaptureRecord, CaptureRecordType,
     FloatProvenance, ForwardCaptureConfiguration, PaperAccountContext,
-    PointInTimeObservation, canonical_json,
+    PointInTimeObservation, canonical_json, records_with_configuration_fingerprint,
 )
 from .forward_queue import ForwardCaptureWriter
 from .forward_report import DailyForwardReport
@@ -369,10 +369,12 @@ class WarriorDesktopSidecar:
                     self._store, capacity=self.capture_config.queue_capacity,
                     batch_size=self.capture_config.batch_size,
                     flush_interval_seconds=self.capture_config.flush_interval_seconds,
+                    configuration_fingerprint=self.configuration_fingerprint,
                 )
                 self._service = WarriorForwardCaptureService(
                     self._store, self._writer, self.strategy_config,
                     self.capture_config,
+                    configuration_fingerprint=self.configuration_fingerprint,
                     paper_entry_submitter=self._paper_entry_submitter,
                     paper_exit_submitter=self._paper_exit_submitter,
                     paper_position_quantity_source=self._paper_position_quantity_source,
@@ -836,7 +838,13 @@ class WarriorDesktopSidecar:
 
     def _restore_bars(self) -> None:
         assert self._store is not None
-        for record in self._store.records(record_type=CaptureRecordType.MINUTE_BAR):
+        records = (
+            record for record, fingerprint in records_with_configuration_fingerprint(
+                self._store.records()
+            ) if fingerprint == self.configuration_fingerprint
+            and record.record_type is CaptureRecordType.MINUTE_BAR
+        )
+        for record in records:
             payload = record.payload
             bar = MinuteBar(
                 record.symbol, datetime.fromisoformat(payload["bar_timestamp"]),

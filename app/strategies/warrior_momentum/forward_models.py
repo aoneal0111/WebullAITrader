@@ -9,7 +9,7 @@ from enum import StrEnum
 from hashlib import sha256
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from app.configuration.models import PaperSymbolAuthorizationMode
 from app.momentum_scanner.models import ScannerObservation
@@ -216,6 +216,39 @@ class CaptureRecord:
         record_id = sha256(identity.encode("utf-8")).hexdigest()
         return cls(CAPTURE_SCHEMA_VERSION, record_id, record_type, normalized, timestamp, payload_json)
 
+    def with_configuration_fingerprint(self, fingerprint: str) -> "CaptureRecord":
+        if not fingerprint:
+            raise ValueError("configuration fingerprint is required")
+        payload = self.payload
+        existing = payload.get("configuration_fingerprint")
+        if existing is not None:
+            if existing != fingerprint:
+                raise ValueError("capture record configuration fingerprint mismatch")
+            return self
+        payload["configuration_fingerprint"] = fingerprint
+        return self.create(
+            self.record_type, self.symbol, self.timestamp, payload,
+            identity_parts=(self.record_id,),
+        )
+
+
+def records_with_configuration_fingerprint(
+    records: Iterable[CaptureRecord],
+) -> Iterator[tuple[CaptureRecord, str | None]]:
+    """Attach direct identity, or identity inherited from a session boundary."""
+    current: str | None = None
+    for record in records:
+        payload = record.payload
+        direct = payload.get("configuration_fingerprint")
+        fingerprint = direct if isinstance(direct, str) and direct else current
+        yield record, fingerprint
+        if record.record_type is CaptureRecordType.OBSERVATION_SESSION:
+            action = payload.get("action")
+            if action == "START":
+                current = direct if isinstance(direct, str) and direct else None
+            elif action == "END":
+                current = None
+
 
 @dataclass(frozen=True, slots=True)
 class CaptureMetrics:
@@ -275,4 +308,5 @@ __all__ = [
     "PaperSymbolAuthorization", "PaperSymbolAuthorizationSource",
     "ForwardCaptureConfiguration",
     "CaptureRecord", "CaptureMetrics", "canonical_json",
+    "records_with_configuration_fingerprint",
 ]

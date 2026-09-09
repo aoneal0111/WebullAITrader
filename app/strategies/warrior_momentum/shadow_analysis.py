@@ -16,7 +16,10 @@ from typing import Mapping, Protocol
 
 from app.live_scanner.session import scanner_session
 
-from .forward_models import CaptureRecord, CaptureRecordType, PointInTimeObservation
+from .forward_models import (
+    CaptureRecord, CaptureRecordType, PointInTimeObservation,
+    records_with_configuration_fingerprint,
+)
 from .forward_store import ForwardCaptureStore
 from .models import MinuteBar, MomentumCandidate, SetupState
 
@@ -100,9 +103,11 @@ class ShadowOpportunityAnalyzer:
         self,
         store: ForwardCaptureStore,
         config: ShadowAnalysisConfiguration = ShadowAnalysisConfiguration(),
+        configuration_fingerprint: str | None = None,
     ) -> None:
         self.store = store
         self.config = config
+        self.configuration_fingerprint = configuration_fingerprint
         self._active: dict[str, _TrackedEvaluation] = {}
         self._by_symbol: dict[str, set[str]] = {}
         self._recover()
@@ -304,20 +309,34 @@ class ShadowOpportunityAnalyzer:
         )
 
     def _recover(self) -> None:
+        if self.configuration_fingerprint is None:
+            records = tuple(self.store.records())
+        else:
+            records = tuple(
+                record for record, fingerprint in records_with_configuration_fingerprint(
+                    self.store.records()
+                ) if fingerprint == self.configuration_fingerprint
+            )
         completed: dict[str, set[int]] = {}
-        for record in self.store.records(record_type=CaptureRecordType.SHADOW_OUTCOME):
+        for record in records:
+            if record.record_type is not CaptureRecordType.SHADOW_OUTCOME:
+                continue
             payload = record.payload
             evaluation_id = str(payload.get("evaluation_record_id", ""))
             if evaluation_id:
                 completed.setdefault(evaluation_id, set()).add(int(payload["horizon_minutes"]))
-        for record in self.store.records(record_type=CaptureRecordType.SHADOW_EVALUATION):
+        for record in records:
+            if record.record_type is not CaptureRecordType.SHADOW_EVALUATION:
+                continue
             done = completed.get(record.record_id, set())
             if len(done) == len(self.config.horizons_minutes):
                 continue
             tracked = _TrackedEvaluation(record, record.payload, completed_horizons=set(done))
             self._active[record.record_id] = tracked
             self._by_symbol.setdefault(record.symbol, set()).add(record.record_id)
-        for record in self.store.records(record_type=CaptureRecordType.MINUTE_BAR):
+        for record in records:
+            if record.record_type is not CaptureRecordType.MINUTE_BAR:
+                continue
             payload = record.payload
             try:
                 bar = MinuteBar(
