@@ -77,7 +77,21 @@ def test_enabled_memory_observability_composes_real_providers_and_jsonl(
     })
     monkeypatch.setattr(desktop_module, "load_configuration", lambda: configuration)
 
+    class QueueMetrics:
+        def memory_metrics(self):
+            return {
+                "current_depth": 4,
+                "high_water_depth": 7,
+                "messages_enqueued": 11,
+                "messages_dequeued": 6,
+            }
+
+    class MetricsDriver(FakeDriver):
+        def __init__(self):
+            self._market_data = QueueMetrics()
+
     composition = create_desktop_composition(
+        driver_factory=MetricsDriver,
         paper_persistence_path=tmp_path / "paper.sqlite3",
     )
     diagnostics = composition.memory_observability
@@ -106,6 +120,8 @@ def test_enabled_memory_observability_composes_real_providers_and_jsonl(
             "application_state",
             "operations_bus",
         }
+        assert composition.runtime_service.start() is True
+        sleep(0.01)
         deadline = monotonic() + 1.0
         while not output.exists() and monotonic() < deadline:
             sleep(0.01)
@@ -117,6 +133,10 @@ def test_enabled_memory_observability_composes_real_providers_and_jsonl(
         snapshot = diagnostics.sample()
         assert snapshot is not None
         cardinalities = dict(snapshot.metrics)
+        assert cardinalities["websocket_callback_queue_current_depth"] == 4
+        assert cardinalities["websocket_callback_queue_high_water_depth"] == 7
+        assert cardinalities["websocket_callback_queue_messages_enqueued"] == 11
+        assert cardinalities["websocket_callback_queue_messages_dequeued"] == 6
         assert cardinalities["paper_order_book_order_count"] == 0
         assert cardinalities["order_projection_order_count"] == 0
         assert cardinalities["position_projection_processed_fill_id_count"] == 0
@@ -124,6 +144,8 @@ def test_enabled_memory_observability_composes_real_providers_and_jsonl(
         assert cardinalities["operations_bus_subscription_count"] > 0
         assert diagnostics.metrics()["failures"] == failures + 1
     finally:
+        composition.runtime_service.stop()
+        composition.runtime_service.wait(1.0)
         composition.close(timeout_seconds=1.0)
 
     rows = [

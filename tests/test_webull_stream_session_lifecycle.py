@@ -109,15 +109,27 @@ def test_callback_queue_memory_metrics_track_depth_high_water_and_totals() -> No
     sdk = Client("session-one")
     stream = backend(sdk)
 
+    assert stream.memory_metrics() == {
+        "current_depth": 0,
+        "high_water_depth": 0,
+        "messages_enqueued": 0,
+        "messages_dequeued": 0,
+    }
+
     for index in range(3):
         sdk.on_quotes_message(sdk, f"topic-{index}", object())
 
-    assert stream.memory_metrics() == {
+    metrics = stream.memory_metrics()
+    assert metrics == {
         "current_depth": 3,
         "high_water_depth": 3,
         "messages_enqueued": 3,
         "messages_dequeued": 0,
     }
+    assert all(type(value) is int for value in metrics.values())
+    metrics["current_depth"] = 999
+    assert stream.memory_metrics()["current_depth"] == 3
+
     assert stream.receive_nowait() is not None
     assert stream.memory_metrics() == {
         "current_depth": 2,
