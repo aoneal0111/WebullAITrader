@@ -7,6 +7,7 @@ from threading import RLock
 from typing import TypeVar, cast
 
 from app.operations_core.events import OperationsEvent
+from app.performance_diagnostics import PerformanceDiagnostics, performance_diagnostics
 
 
 EventT = TypeVar("EventT", bound=OperationsEvent)
@@ -29,13 +30,18 @@ class OperationsBus:
     trading logic and does not silently suppress handler failures.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        diagnostics: PerformanceDiagnostics = performance_diagnostics,
+    ) -> None:
         self._lock = RLock()
         self._next_subscription_id = 1
         self._handlers: dict[
             type[OperationsEvent],
             dict[int, EventHandler[OperationsEvent]],
         ] = defaultdict(dict)
+        self._diagnostics = diagnostics
 
     def subscribe(
         self,
@@ -91,10 +97,20 @@ class OperationsBus:
                 for handler in registered_handlers.values()
             )
 
-        for handler in handlers:
-            handler(event)
+        with self._diagnostics.operations_publication(type(event).__name__):
+            for handler in handlers:
+                handler(event)
 
     @property
     def subscription_count(self) -> int:
         with self._lock:
             return sum(len(handlers) for handlers in self._handlers.values())
+
+    def memory_metrics(self) -> dict[str, int]:
+        values = {
+            key.removeprefix("operations_bus_"): value
+            for key, value in self._diagnostics.forensic_metrics().items()
+            if key.startswith("operations_bus_")
+        }
+        values["subscription_count"] = self.subscription_count
+        return values

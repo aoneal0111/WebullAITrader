@@ -1180,17 +1180,19 @@ class DesktopBrokerRuntimeDriver:
             self._cycles_completed,
             message,
         )
-        self._emit(
-            PaperRuntimeEvent(
-                sequence=self._next_sequence(),
-                timestamp=self._timestamp(),
-                event_type=event_type,
-                message=message,
-                cycle=self._cycles_completed,
-                source=self._source,
-                health=health,
+        performance_diagnostics.record_scanner_event_emitted()
+        with performance_diagnostics.scanner_event_context():
+            self._emit(
+                PaperRuntimeEvent(
+                    sequence=self._next_sequence(),
+                    timestamp=self._timestamp(),
+                    event_type=event_type,
+                    message=message,
+                    cycle=self._cycles_completed,
+                    source=self._source,
+                    health=health,
+                )
             )
-        )
 
     def _observe_scanner_staleness(
         self,

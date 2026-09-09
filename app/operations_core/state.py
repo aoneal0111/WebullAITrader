@@ -33,6 +33,7 @@ from app.operations_core.events import (
     RuntimeStopping,
     TimelineUpdated,
 )
+from app.performance_diagnostics import PerformanceDiagnostics, performance_diagnostics
 
 if TYPE_CHECKING:
     from app.portfolio_intelligence.models import PortfolioIntelligenceSnapshot
@@ -167,6 +168,21 @@ class ApplicationState:
 
 StateListener = Callable[[ApplicationState], None]
 
+_STATE_EVENT_TYPE_NAMES = frozenset(
+    {
+        "OrdersUpdated", "PositionsUpdated", "BrokerAccountUpdated",
+        "WatchlistUpdated", "HealthUpdated", "PortfolioUpdated",
+        "PortfolioIntelligenceUpdated", "PortfolioObservationPublished",
+        "DecisionsUpdated", "TimelineUpdated", "RuntimeStarting",
+        "RuntimeStarted", "RuntimeCycleCompleted", "PaperRuntimeUpdated",
+        "RuntimeStopping", "RuntimeStopped", "RuntimeFailed",
+    }
+)
+
+
+def _state_event_type_bucket(event_type: str) -> str:
+    return event_type if event_type in _STATE_EVENT_TYPE_NAMES else "UNKNOWN"
+
 
 class ApplicationStateStore:
     """
@@ -180,6 +196,7 @@ class ApplicationStateStore:
         bus: OperationsBus,
         *,
         timeline_limit: int = 500,
+        diagnostics: PerformanceDiagnostics = performance_diagnostics,
     ) -> None:
         if timeline_limit <= 0:
             raise ValueError("timeline_limit must be positive")
@@ -190,6 +207,18 @@ class ApplicationStateStore:
         self._state = ApplicationState()
         self._listeners: dict[int, StateListener] = {}
         self._next_listener_id = 1
+        self._diagnostics = diagnostics
+        self._event_received_counts = {
+            name: 0 for name in (*sorted(_STATE_EVENT_TYPE_NAMES), "UNKNOWN")
+        }
+        self._revision_counts = {
+            name: 0 for name in (*sorted(_STATE_EVENT_TYPE_NAMES), "UNKNOWN")
+        }
+        self._events_received_total = 0
+        self._revisions_created_total = 0
+        self._events_without_revision = 0
+        self._application_timeline_updates = 0
+        self._application_timeline_entries_copied = 0
         self._subscription: Subscription = bus.subscribe(
             OperationsEvent,
             self._handle_event,
@@ -201,11 +230,22 @@ class ApplicationStateStore:
 
     def memory_metrics(self) -> dict[str, int]:
         with self._lock:
-            return {
+            values = {
                 "listener_count": len(self._listeners),
                 "timeline_count": len(self._state.timeline),
                 "revision": self._state.revision,
+                "events_received_total": self._events_received_total,
+                "revisions_created_total": self._revisions_created_total,
+                "events_without_revision": self._events_without_revision,
+                "timeline_updates": self._application_timeline_updates,
+                "timeline_entries_copied": self._application_timeline_entries_copied,
+                "scanner_related_state_revisions": self._diagnostics.forensic_metrics()[
+                    "scanner_related_state_revisions"
+                ],
             }
+            values.update({f"events_received_{key}": value for key, value in self._event_received_counts.items()})
+            values.update({f"revisions_created_{key}": value for key, value in self._revision_counts.items()})
+            return values
 
     def subscribe(self, listener: StateListener) -> int:
         if not callable(listener):
@@ -232,6 +272,9 @@ class ApplicationStateStore:
 
     def _handle_event(self, event: OperationsEvent) -> None:
         with self._lock:
+            bucket = _state_event_type_bucket(type(event).__name__)
+            self._events_received_total += 1
+            self._event_received_counts[bucket] += 1
             runtime = self._reduce_runtime(self._state.runtime, event)
             paper_runtime = self._reduce_paper_runtime(
                 self._state.paper_runtime,
@@ -346,7 +389,16 @@ class ApplicationStateStore:
                 and watchlist_projection == current.watchlist_projection
                 and timeline == current.timeline
             ):
+                self._events_without_revision += 1
                 return
+
+            self._revisions_created_total += 1
+            self._revision_counts[bucket] += 1
+            if timeline != current.timeline:
+                self._application_timeline_updates += 1
+                self._application_timeline_entries_copied += len(timeline)
+            if self._diagnostics.scanner_context_active():
+                self._diagnostics.record_scanner_state_revision()
 
             self._state = ApplicationState(
                 runtime=runtime,

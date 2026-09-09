@@ -567,9 +567,7 @@ def create_desktop_composition(
             ),
             "timeline_projection": runtime_projections.timeline_projection.memory_metrics,
             "application_state": state_store.memory_metrics,
-            "operations_bus": lambda: {
-                "subscription_count": bus.subscription_count,
-            },
+            "operations_bus": bus.memory_metrics,
         },
         enabled=operational_configuration.memory_observability_enabled,
         path=operational_configuration.memory_observability_path,

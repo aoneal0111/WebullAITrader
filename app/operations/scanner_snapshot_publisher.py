@@ -93,6 +93,9 @@ class ScannerSnapshotPublisher:
         return self._latest_snapshot
 
     def memory_metrics(self) -> dict[str, int]:
+        metrics = self._diagnostics.forensic_metrics()
+        published = metrics["scanner_snapshots_published"]
+        revisions = metrics["scanner_related_state_revisions"]
         return {
             "published_symbol_count": len(self._published_symbols),
             "displayed_symbol_count": len(self._displayed_symbols),
@@ -102,6 +105,14 @@ class ScannerSnapshotPublisher:
                 self._published_display_fingerprints
             ),
             "experiment_fingerprint_count": len(self._published_experiments),
+            "snapshots_generated": metrics["scanner_snapshots_generated"],
+            "snapshots_published": published,
+            "snapshots_suppressed": metrics["scanner_snapshots_suppressed"],
+            "related_events_emitted": metrics["scanner_related_events_emitted"],
+            "related_state_revisions": revisions,
+            "state_revisions_per_published_snapshot_x1000": (
+                (revisions * 1000) // published if published else 0
+            ),
         }
 
     def publish(
@@ -399,13 +410,15 @@ class ScannerSnapshotPublisher:
                 f"catalyst={decision.catalyst_status.value} cohorts="
                 f"{','.join(decision.cohort_flags) or 'none'} outcome={outcome}."
             )
-            self._sink(
-                PaperRuntimeEvent(
-                    sequence=self._sequence(), timestamp=now,
-                    event_type="EXPERIMENT_CANDIDATE", message=message,
-                    cycle=cycle, symbol=symbol, source=self._source,
+            self._diagnostics.record_scanner_event_emitted()
+            with self._diagnostics.scanner_event_context():
+                self._sink(
+                    PaperRuntimeEvent(
+                        sequence=self._sequence(), timestamp=now,
+                        event_type="EXPERIMENT_CANDIDATE", message=message,
+                        cycle=cycle, symbol=symbol, source=self._source,
+                    )
                 )
-            )
 
     def _log_candidate_transitions(
         self,
@@ -462,18 +475,20 @@ class ScannerSnapshotPublisher:
         symbol: str,
         update: RuntimeWatchlistUpdate,
     ) -> None:
-        self._sink(
-            PaperRuntimeEvent(
-                sequence=self._sequence(),
-                timestamp=timestamp,
-                event_type=event_type,
-                message=message,
-                cycle=cycle,
-                symbol=symbol,
-                source=self._source,
-                watchlist=update,
+        self._diagnostics.record_scanner_event_emitted()
+        with self._diagnostics.scanner_event_context():
+            self._sink(
+                PaperRuntimeEvent(
+                    sequence=self._sequence(),
+                    timestamp=timestamp,
+                    event_type=event_type,
+                    message=message,
+                    cycle=cycle,
+                    symbol=symbol,
+                    source=self._source,
+                    watchlist=update,
+                )
             )
-        )
 
 
 def _decimal(value: Decimal) -> str:

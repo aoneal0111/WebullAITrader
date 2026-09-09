@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from collections import deque
 from datetime import UTC, datetime
+from contextlib import contextmanager
 from threading import local, RLock
 from time import monotonic
 from typing import Any, Callable
@@ -12,6 +13,28 @@ from typing import Any, Callable
 
 _QUEUE_THRESHOLDS = (100, 500, 1000, 1500)
 DiagnosticSink = Callable[[str, dict[str, object]], None]
+
+_KNOWN_EVENT_TYPE_NAMES = frozenset(
+    {
+        "OrdersUpdated",
+        "PositionsUpdated",
+        "BrokerAccountUpdated",
+        "WatchlistUpdated",
+        "HealthUpdated",
+        "PortfolioUpdated",
+        "PortfolioIntelligenceUpdated",
+        "PortfolioObservationPublished",
+        "DecisionsUpdated",
+        "TimelineUpdated",
+        "RuntimeStarting",
+        "RuntimeStarted",
+        "RuntimeCycleCompleted",
+        "PaperRuntimeUpdated",
+        "RuntimeStopping",
+        "RuntimeStopped",
+        "RuntimeFailed",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +188,21 @@ class PerformanceDiagnostics:
         self._queue_thresholds_above: set[int] = set()
         self._diagnostic_sink: DiagnosticSink | None = None
         self._trace_local = local()
+        self._forensic_counters: dict[str, int] = {
+            "scanner_related_events_emitted": 0,
+            "scanner_related_state_revisions": 0,
+            "operations_bus_root_publications": 0,
+            "operations_bus_derived_publications": 0,
+            "operations_bus_max_cascade_depth": 0,
+        }
+        self._cascade_publications_by_depth = {
+            f"depth_{depth}": 0 for depth in range(1, 9)
+        }
+        self._cascade_publications_by_depth["depth_overflow"] = 0
+        self._derived_publications_by_root = {
+            name: 0 for name in _KNOWN_EVENT_TYPE_NAMES
+        }
+        self._derived_publications_by_root["UNKNOWN"] = 0
         self._trade_intelligence = {
             "trade_intelligence_enabled": False,
             "trade_intelligence_experiences_created": 0,
@@ -213,6 +251,89 @@ class PerformanceDiagnostics:
             raise ValueError("performance counter increment cannot be negative")
         with self._lock:
             self._counters[name] += amount
+
+    @contextmanager
+    def operations_publication(self, event_type: str):
+        """Track one synchronous publication without retaining payloads.
+
+        Publication depth is one-based: the root publication is depth 1 and
+        each nested synchronous publication increments the depth by one.
+        """
+        bucket = _event_type_bucket(event_type)
+        prior_depth = getattr(self._trace_local, "cascade_depth", 0)
+        prior_root = getattr(self._trace_local, "cascade_root", None)
+        depth = prior_depth + 1
+        root = bucket if prior_depth == 0 else prior_root or "UNKNOWN"
+        with self._lock:
+            if prior_depth == 0:
+                self._forensic_counters["operations_bus_root_publications"] += 1
+            else:
+                self._forensic_counters["operations_bus_derived_publications"] += 1
+                self._derived_publications_by_root[root] += 1
+            self._forensic_counters["operations_bus_max_cascade_depth"] = max(
+                self._forensic_counters["operations_bus_max_cascade_depth"], depth
+            )
+            depth_key = f"depth_{depth}" if depth <= 8 else "depth_overflow"
+            self._cascade_publications_by_depth[depth_key] += 1
+        self._trace_local.cascade_depth = depth
+        self._trace_local.cascade_root = root
+        try:
+            yield
+        finally:
+            self._trace_local.cascade_depth = prior_depth
+            self._trace_local.cascade_root = prior_root
+
+    def record_scanner_event_emitted(self) -> None:
+        with self._lock:
+            self._forensic_counters["scanner_related_events_emitted"] += 1
+
+    def scanner_context_active(self) -> bool:
+        return bool(getattr(self._trace_local, "scanner_event_depth", 0))
+
+    @contextmanager
+    def scanner_event_context(self):
+        """Mark a scanner-originated synchronous event without retaining it."""
+        prior = getattr(self._trace_local, "scanner_event_depth", 0)
+        self._trace_local.scanner_event_depth = prior + 1
+        try:
+            yield
+        finally:
+            self._trace_local.scanner_event_depth = prior
+
+    def record_scanner_state_revision(self) -> None:
+        with self._lock:
+            self._forensic_counters["scanner_related_state_revisions"] += 1
+
+    def forensic_metrics(self) -> dict[str, int]:
+        """Return bounded forensic counters for periodic observability."""
+        with self._lock:
+            values = dict(self._forensic_counters)
+            values.update(
+                {
+                    f"operations_bus_publications_{key}": value
+                    for key, value in self._cascade_publications_by_depth.items()
+                }
+            )
+            values.update(
+                {
+                    f"operations_bus_derived_from_{key}": value
+                    for key, value in self._derived_publications_by_root.items()
+                }
+            )
+            values.update(
+                {
+                    "scanner_snapshots_generated": self._counters[
+                        "scanner_snapshots_generated"
+                    ],
+                    "scanner_snapshots_published": self._counters[
+                        "scanner_snapshots_published"
+                    ],
+                    "scanner_snapshots_suppressed": self._counters[
+                        "scanner_snapshots_suppressed_unchanged"
+                    ],
+                }
+            )
+            return values
 
     def set_pending_gui_updates(self, value: int) -> None:
         if value < 0:
@@ -640,6 +761,10 @@ def _rate(count: int, started: float | None, latest: float | None) -> float:
 
 
 performance_diagnostics = PerformanceDiagnostics()
+
+
+def _event_type_bucket(event_type: str) -> str:
+    return event_type if event_type in _KNOWN_EVENT_TYPE_NAMES else "UNKNOWN"
 
 
 def _iso(value: object) -> str | None:

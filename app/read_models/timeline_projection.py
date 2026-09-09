@@ -56,6 +56,11 @@ class TimelineProjection:
         self._records: tuple[tuple[TimelineEntry, int], ...] = ()
         self._seen_events: frozenset[tuple[str, int]] = frozenset()
         self._snapshot = TimelineReadModelSnapshot.initial()
+        self._timeline_updates = 0
+        self._records_sorted = 0
+        self._entries_rebuilt = 0
+        self._seen_set_entries_rebuilt = 0
+        self._bus_entries_reconstructed = 0
 
     @property
     def snapshot(self) -> TimelineReadModelSnapshot:
@@ -64,7 +69,15 @@ class TimelineProjection:
 
     def memory_metrics(self) -> dict[str, int]:
         with self._lock:
-            return {"timeline_count": len(self._records), "seen_event_count": len(self._seen_events)}
+            return {
+                "timeline_count": len(self._records),
+                "seen_event_count": len(self._seen_events),
+                "updates": self._timeline_updates,
+                "records_sorted": self._records_sorted,
+                "entries_rebuilt": self._entries_rebuilt,
+                "seen_set_entries_rebuilt": self._seen_set_entries_rebuilt,
+                "bus_entries_reconstructed": self._bus_entries_reconstructed,
+            }
 
     def __call__(self, event: PaperRuntimeEvent) -> None:
         if not isinstance(event, PaperRuntimeEvent):
@@ -85,6 +98,7 @@ class TimelineProjection:
 
             current = self._snapshot
             records = (*self._records, (entry, event.sequence))
+            self._records_sorted += len(records)
             records = tuple(
                 sorted(
                     records,
@@ -103,6 +117,9 @@ class TimelineProjection:
             self._snapshot = TimelineReadModelSnapshot(
                 entries=tuple(record[0] for record in records)
             )
+            self._timeline_updates += 1
+            self._entries_rebuilt += len(records)
+            self._seen_set_entries_rebuilt += len(records)
             if self._snapshot == current:
                 return
             performance_diagnostics.increment("event_store_rows_added")
@@ -110,6 +127,7 @@ class TimelineProjection:
                 _to_operations_entry(item)
                 for item in self._snapshot.entries
             )
+            self._bus_entries_reconstructed += len(operations_entries)
 
         self._bus.publish(
             TimelineUpdated(
