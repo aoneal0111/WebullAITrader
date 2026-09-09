@@ -358,6 +358,7 @@ def create_desktop_composition(
             management_context_source=lambda symbol: management_context_available(
                 operational_configuration.warrior_forward_capture_path, symbol,
                 configuration_fingerprint=strategy_configuration_fingerprint(),
+                allow_compatible_generation=True,
             ),
         )
         autonomous_paper_bridge.begin_reconciliation()

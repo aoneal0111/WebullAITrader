@@ -1372,9 +1372,19 @@ class DesktopBrokerRuntimeDriver:
                 break
 
     def _retry_scanner_after_session_transition(self, stop_event: Event) -> None:
+        session = current_market_data_session(self._clock)
+        if session is MarketDataSession.AFTER_HOURS and self._scanner is not None:
+            maintain = getattr(self._scanner, "ensure_retained_channels", None)
+            if callable(maintain):
+                try:
+                    maintain()
+                except Exception as exc:
+                    self._scanner_error(
+                        "Unable to preserve market-data channels for open positions.",
+                        exc,
+                    )
         if self._market_data_probe is None:
             return
-        session = current_market_data_session(self._clock)
         session_changed = (
             self._scanner_pause_session is not None
             and session is not self._scanner_pause_session

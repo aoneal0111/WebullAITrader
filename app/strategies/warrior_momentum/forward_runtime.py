@@ -48,6 +48,7 @@ HUNDRED = Decimal("100")
 def management_context_available(
     storage_path, symbol: str, lifecycle_id: str | None = None,
     configuration_fingerprint: str | None = None,
+    *, allow_compatible_generation: bool = False,
 ) -> str | None:
     """Return the matching active PAPER lifecycle ID, when available.
 
@@ -58,13 +59,47 @@ def management_context_available(
         store = ForwardCaptureStore(storage_path)
         records = store.records(symbol=symbol, record_type=CaptureRecordType.MANAGEMENT_CONTEXT)
         if configuration_fingerprint is not None:
+            attributed = tuple(records_with_configuration_fingerprint(store.records()))
             records = tuple(
-                record for record, fingerprint in records_with_configuration_fingerprint(
-                    store.records()
-                ) if record.symbol == symbol
+                record for record, fingerprint in attributed
+                if record.symbol == symbol
                 and record.record_type is CaptureRecordType.MANAGEMENT_CONTEXT
                 and fingerprint == configuration_fingerprint
             )
+            if not records and allow_compatible_generation:
+                entries = {
+                    str(item.payload.get("lifecycle_id") or lifecycle_identity(
+                        _signal_from_entry(item, item.payload)
+                    )): item
+                    for item, _fingerprint in attributed
+                    if item.symbol == symbol
+                    and item.record_type is CaptureRecordType.PAPER_FILL
+                    and item.payload.get("action") == "ENTRY"
+                }
+                compatible: list[CaptureRecord] = []
+                for item, fingerprint in attributed:
+                    payload = item.payload
+                    entry = entries.get(str(payload.get("lifecycle_id")))
+                    try:
+                        trigger = Decimal(entry.payload["entry_trigger"])
+                        risk = Decimal(entry.payload["risk_per_share"])
+                        targets = tuple(Decimal(value) for value in entry.payload["targets"])
+                    except (AttributeError, KeyError, TypeError, ValueError):
+                        continue
+                    if (
+                        item.symbol == symbol
+                        and item.record_type is CaptureRecordType.MANAGEMENT_CONTEXT
+                        and fingerprint not in (None, configuration_fingerprint)
+                        and entry is not None
+                        and payload.get("environment") == "PAPER"
+                        and payload.get("strategy") == "WARRIOR_MOMENTUM_V1"
+                        and payload.get("phase") in {"MANAGING", "EXIT_WORKING"}
+                        and payload.get("structural_stop") == entry.payload.get("structural_stop")
+                        and payload.get("planned_entry") == entry.payload.get("fill_price")
+                        and targets == (trigger + risk, trigger + risk * 2, trigger + risk * 3)
+                    ):
+                        compatible.append(item)
+                records = tuple(compatible)
         if not records:
             return None
         for record in reversed(records):
@@ -103,6 +138,7 @@ class _PaperState:
     exit_reason: str | None = None
     exit_price: Decimal | None = None
     protective_stop_activated_at: datetime | None = None
+    protection_reconciled: bool = False
 
 
 @dataclass(slots=True)
@@ -658,6 +694,7 @@ class WarriorForwardCaptureService:
         fill = CaptureRecord.create(
             CaptureRecordType.PAPER_FILL, signal.symbol, signal.timestamp,
             {"action": "ENTRY", "setup": signal.setup_type.value,
+             "lifecycle_id": lifecycle_identity(signal),
              "entry_trigger": signal.entry_trigger, "fill_price": signal.entry_trigger,
              "structural_stop": signal.stop_price, "stop_model": signal.stop_model.value,
              "risk_per_share": signal.risk_per_share, "planned_shares": shares,
@@ -834,6 +871,51 @@ class WarriorForwardCaptureService:
         state.minimum_low = bar.low if state.minimum_low is None else min(state.minimum_low, bar.low)
         state.maximum_high = bar.high if state.maximum_high is None else max(state.maximum_high, bar.high)
 
+        # A fill creates exposure immediately.  Protection is therefore an
+        # invariant of the first authoritative position observation, not a
+        # consequence of a later bar touching the structural stop.  In
+        # particular, never let target evaluation run while a newly filled
+        # position is unprotected.
+        protection_active = (
+            state.protective_stop_activated_at is not None
+            and state.protection_reconciled
+        )
+        protection_activated_this_bar = False
+        if not protection_active:
+            result = self._submit_exit(state, state.stop, quantity, "STOP")
+            self._capture_stop_activation(state, result, bar)
+            # This is the first bar for which this service has authoritative
+            # protection ownership.  Even if a recovered gateway reports a
+            # coarse creation timestamp equal to the bar open, OHLC cannot
+            # prove the low happened after activation, so this bar remains
+            # ambiguous.
+            protection_activated_this_bar = True
+            protection_active = (
+                result.protection_active
+                if isinstance(result, PaperExitSubmissionDecision)
+                else bool(result)
+            )
+            state.protection_reconciled = protection_active
+            if not protection_active:
+                records.append(CaptureRecord.create(
+                    CaptureRecordType.STATE_TRANSITION, signal.symbol, observed_at,
+                    {"from": self._last_transition.get(signal.symbol, ForwardTransition.PAPER_ENTRY).value,
+                     "to": ForwardTransition.PAPER_EXIT_REQUIRED.value,
+                     "reason_codes": ["STOP_PROTECTION_UNAVAILABLE"],
+                     "authoritative_remaining": quantity},
+                    identity_parts=(ForwardTransition.PAPER_EXIT_REQUIRED.value,
+                                    "STOP_PROTECTION_UNAVAILABLE",
+                                    bar.timestamp.isoformat()),
+                ))
+                records.append(self._position_contradiction_record(
+                    state, observed_at, reason="PROTECTIVE_EXIT_UNAVAILABLE",
+                ))
+                state.prior_low = bar.low
+                records.append(_management_context_record(
+                    signal.symbol, observed_at, signal, state, phase="MANAGING",
+                ))
+                return tuple(records)
+
         if self._last_transition.get(signal.symbol) is ForwardTransition.PAPER_EXIT:
             records.append(self._position_contradiction_record(state, observed_at))
 
@@ -858,6 +940,8 @@ class WarriorForwardCaptureService:
         requested: tuple[Decimal, int, str] | None = None
         stop_breach = bar.low <= state.stop
         stop_eligible = stop_breach and (
+            not protection_activated_this_bar
+            and
             state.protective_stop_activated_at is not None
             and state.protective_stop_activated_at <= bar.timestamp
         )
@@ -885,6 +969,11 @@ class WarriorForwardCaptureService:
                 records.append(self._position_contradiction_record(
                     state, observed_at, reason="PROTECTIVE_EXIT_UNAVAILABLE",
                 ))
+                state.prior_low = bar.low
+                records.append(_management_context_record(
+                    signal.symbol, observed_at, signal, state, phase="MANAGING",
+                ))
+                return tuple(records)
         if stop_eligible:
             requested = (state.stop, quantity, "STOP")
         elif state.exit_reason is not None and state.exit_price is not None:
@@ -1020,12 +1109,60 @@ class WarriorForwardCaptureService:
         ),)
 
     def _recover(self) -> None:
+        attributed = tuple(records_with_configuration_fingerprint(self.store.records()))
         records = tuple(
-            record for record, fingerprint in records_with_configuration_fingerprint(
-                self.store.records()
-            ) if self.configuration_fingerprint is not None
+            record for record, fingerprint in attributed
+            if self.configuration_fingerprint is not None
             and fingerprint == self.configuration_fingerprint
         )
+        # Fingerprint isolation remains the default.  A prior generation may
+        # be resumed only when an immutable Warrior ENTRY fill and an active
+        # management context prove the same lifecycle, stop, and target
+        # model.  This is an explicit, auditable migration boundary; a bare
+        # broker position can never create a Warrior state here.
+        current_lifecycles = {
+            str(record.payload.get("lifecycle_id") or lifecycle_identity(
+                _signal_from_entry(record, record.payload)
+            ))
+            for record in records
+            if record.record_type is CaptureRecordType.PAPER_FILL
+            and record.payload.get("action") == "ENTRY"
+        }
+        entries: dict[str, CaptureRecord] = {}
+        contexts: dict[str, CaptureRecord] = {}
+        for record, fingerprint in attributed:
+            payload = record.payload
+            if record.record_type is CaptureRecordType.PAPER_FILL and payload.get("action") == "ENTRY":
+                lifecycle = payload.get("lifecycle_id") or lifecycle_identity(
+                    _signal_from_entry(record, payload)
+                )
+                entries[str(lifecycle)] = record
+            elif record.record_type is CaptureRecordType.MANAGEMENT_CONTEXT:
+                lifecycle = payload.get("lifecycle_id")
+                if not lifecycle:
+                    continue
+                contexts[str(lifecycle)] = record
+        for lifecycle, context in contexts.items():
+            if lifecycle in current_lifecycles:
+                continue
+            entry = entries.get(lifecycle)
+            if entry is None:
+                continue
+            context_fingerprint = next(
+                fingerprint for record, fingerprint in attributed
+                if record.record_id == context.record_id
+            )
+            if not self._compatible_recovery_context(
+                entry, context, context_fingerprint,
+            ):
+                continue
+            symbol_quantity = (
+                0 if self._paper_position_quantity_source is None else
+                max(0, int(self._paper_position_quantity_source(entry.symbol)))
+            )
+            if symbol_quantity <= 0:
+                continue
+            records += (entry, context)
         for record in records:
             if record.record_type is not CaptureRecordType.MINUTE_BAR:
                 continue
@@ -1121,6 +1258,13 @@ class WarriorForwardCaptureService:
                 state.authoritative_position_seen = bool(
                     payload.get("authoritative_position_seen", False)
                 )
+                if self._paper_position_quantity_source is not None:
+                    authoritative = max(
+                        0, int(self._paper_position_quantity_source(record.symbol))
+                    )
+                    if authoritative > 0:
+                        state.authoritative_position_seen = True
+                        state.remaining = authoritative
                 state.exit_reason = payload.get("exit_reason")
                 state.exit_price = (
                     None if payload.get("exit_price") is None
@@ -1130,8 +1274,41 @@ class WarriorForwardCaptureService:
                     None if payload.get("protective_stop_activated_at") is None
                     else datetime.fromisoformat(payload["protective_stop_activated_at"])
                 )
+                self._last_transition.setdefault(
+                    record.symbol, ForwardTransition.PAPER_ENTRY,
+                )
             except (KeyError, TypeError, ValueError):
                 self._paper.pop(record.symbol, None)
+
+    def _compatible_recovery_context(
+        self, entry: CaptureRecord, context: CaptureRecord,
+        context_fingerprint: str | None,
+    ) -> bool:
+        """Permit only structurally proven same-lifecycle migration."""
+        if context_fingerprint in (None, self.configuration_fingerprint):
+            return False
+        entry_payload = entry.payload
+        context_payload = context.payload
+        entry_lifecycle = entry_payload.get("lifecycle_id") or lifecycle_identity(
+            _signal_from_entry(entry, entry_payload)
+        )
+        if (
+            context_payload.get("environment") != "PAPER"
+            or context_payload.get("strategy") != "WARRIOR_MOMENTUM_V1"
+            or context_payload.get("phase") not in {"MANAGING", "EXIT_WORKING"}
+            or context_payload.get("lifecycle_id") != entry_lifecycle
+            or context_payload.get("structural_stop") != entry_payload.get("structural_stop")
+            or context_payload.get("planned_entry") != entry_payload.get("fill_price")
+        ):
+            return False
+        try:
+            trigger = Decimal(entry_payload["entry_trigger"])
+            risk = Decimal(entry_payload["risk_per_share"])
+            targets = tuple(Decimal(item) for item in entry_payload["targets"])
+            expected = (trigger + risk, trigger + risk * 2, trigger + risk * 3)
+        except (KeyError, TypeError, ValueError):
+            return False
+        return targets == expected and context_payload.get("stop") is not None
 
 
 def _bar_record(bar: MinuteBar, observed_at: datetime) -> CaptureRecord:

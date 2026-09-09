@@ -466,12 +466,28 @@ class AutonomousPaperExecutionBridge:
             self._reconcile_terminal_exits()
             if self._active_by_symbol.get(normalized, "").startswith("recovered:") and self._authoritative_quantity(normalized) > 0:
                 self._management_incomplete.add(normalized)
-            if self.management_readiness(normalized) is AutonomousManagementReadiness.RECONCILIATION_REQUIRED:
+            active = self._active_by_symbol.get(normalized)
+            management_ready = (
+                self.management_readiness(normalized)
+                is AutonomousManagementReadiness.READY
+            )
+            # The first protective stop may race the asynchronous capture
+            # writer immediately after an entry fill.  The bridge's own
+            # active, non-recovered lifecycle is sufficient authority for
+            # that stop only; target actions still require persisted context.
+            initial_protection_race = (
+                reason_key in {"STOP", "STOP_LOSS"}
+                and active is not None
+                and active == lifecycle_id
+                and not active.startswith("recovered:")
+                and self.management_context_source is not None
+                and self.management_context_source(normalized) is None
+            )
+            if not management_ready and not initial_protection_race:
                 return PaperExitSubmissionDecision(
                     PaperExitSubmissionState.UNAVAILABLE, normalized,
                     lifecycle_id, reason_key,
                 )
-            active = self._active_by_symbol.get(normalized)
             identity = lifecycle_id or active
             if identity is None or active != identity:
                 return PaperExitSubmissionDecision(

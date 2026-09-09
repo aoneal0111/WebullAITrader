@@ -204,6 +204,20 @@ def test_scanner_refresh_does_not_remove_retained_symbol() -> None:
     assert transport.subscriptions[-1] == ("WYHG",)
 
 
+def test_after_hours_maintenance_preserves_retained_management_channels() -> None:
+    transport = FakeTransport()
+    retained = ["SUNE"]
+    coordinator = LiveScannerCoordinator(
+        transport, FakeEngine(), retained_channels_source=lambda: retained,
+    )
+    coordinator.start()
+    subscriptions_before = len(transport.subscriptions)
+
+    assert coordinator.ensure_retained_channels() == coordinator.channels
+    assert "SUNE" in coordinator.channels
+    assert len(transport.subscriptions) == subscriptions_before
+
+
 def test_position_close_releases_retained_symbol() -> None:
     transport = FakeTransport()
     retained = ["WYHG"]

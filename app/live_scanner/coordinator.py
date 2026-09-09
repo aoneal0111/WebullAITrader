@@ -406,6 +406,18 @@ class LiveScannerCoordinator:
             return selected
         return self._subscribe_effective(self._scanner_channels)
 
+    def ensure_retained_channels(self) -> tuple[str, ...]:
+        """Keep open-position symbols subscribed across session changes.
+
+        Scanner-universe eligibility is an entry concern.  Retained Warrior
+        positions are a risk-management concern and must remain subscribed
+        through regular-to-after-hours transitions even when the next
+        screener refresh no longer includes them.
+        """
+        self._require_connected()
+        self._sync_subscription()
+        return self._channels
+
     def _require_connected(self) -> None:
         if not self._connected:
             raise RuntimeError(

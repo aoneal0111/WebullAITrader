@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from dataclasses import replace
 from decimal import Decimal, Decimal as D
 from pathlib import Path
 from threading import Event
@@ -25,6 +26,7 @@ from app.strategies.warrior_momentum import (
 )
 from app.strategies.warrior_momentum.desktop_sidecar import strategy_configuration_fingerprint
 from app.strategies.warrior_momentum.autonomous_paper import (
+    PaperExitSubmissionDecision, PaperExitSubmissionState,
     AutonomousPaperExecutionBridge,
 )
 
@@ -505,6 +507,81 @@ def test_activation_bar_cannot_retroactively_stop_and_targets_remain_eligible(tm
     finally:
         writer.close()
         composition.close()
+
+
+def test_authoritative_fill_establishes_protection_at_actual_quantity(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "actual-fill-protection.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": Decimal("50")}
+    submitted: list[tuple[int, str]] = []
+
+    def submit_exit(symbol, quantity, price, reason, lifecycle):
+        submitted.append((quantity, reason))
+        return PaperExitSubmissionDecision(
+            PaperExitSubmissionState.SUBMITTED, symbol, lifecycle, reason,
+            order_id=f"protect-{len(submitted)}",
+            activation_timestamp=T0 + timedelta(minutes=2),
+        )
+
+    service = WarriorForwardCaptureService(
+        store, writer,
+        paper_entry_submitter=lambda *_args: True,
+        paper_exit_submitter=submit_exit,
+        paper_position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+    )
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=1), signal.entry_trigger,
+            signal.entry_trigger, signal.entry_trigger, signal.entry_trigger, D("100"),
+        )
+        service.observe_market_bar("XYZ", bar, bar.timestamp + timedelta(minutes=1))
+        service.observe_market_bar(
+            "XYZ", replace(bar, timestamp=bar.timestamp + timedelta(minutes=1)),
+            bar.timestamp + timedelta(minutes=2),
+        )
+        assert submitted == [(50, "STOP")]
+        assert service._paper["XYZ"].remaining == 50
+        assert service._paper["XYZ"].protective_stop_activated_at == T0 + timedelta(minutes=2)
+    finally:
+        writer.close()
+
+
+def test_after_hours_management_bar_advances_retained_position(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "after-hours-management.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": Decimal("100")}
+    submissions: list[str] = []
+
+    def submit_exit(symbol, quantity, price, reason, lifecycle):
+        submissions.append(reason)
+        return PaperExitSubmissionDecision(
+            PaperExitSubmissionState.SUBMITTED, symbol, lifecycle, reason,
+            order_id=f"order-{len(submissions)}",
+            activation_timestamp=T0 + timedelta(minutes=2),
+        )
+
+    service = WarriorForwardCaptureService(
+        store, writer,
+        paper_entry_submitter=lambda *_args: True,
+        paper_exit_submitter=submit_exit,
+        paper_position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+    )
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        after_hours_bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=2), signal.entry_trigger,
+            signal.target_levels[0], signal.entry_trigger, signal.target_levels[0], D("100"),
+        )
+        service.observe_market_bar(
+            "XYZ", after_hours_bar, after_hours_bar.timestamp + timedelta(minutes=1),
+        )
+        assert submissions == ["STOP", "FIRST_TARGET"]
+        assert service._paper["XYZ"].exit_reason == "FIRST_TARGET"
+    finally:
+        writer.close()
 
 
 def test_unavailable_exit_keeps_authoritative_position_open_and_critical(tmp_path: Path) -> None:
