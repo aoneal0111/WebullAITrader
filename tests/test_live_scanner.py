@@ -171,6 +171,106 @@ def test_start_connects_subscribes_and_refreshes() -> None:
     assert coordinator.running is True
 
 
+def test_start_unions_retained_open_position_with_scanner_symbols() -> None:
+    transport = FakeTransport()
+    retained = ["WYHG"]
+    coordinator = LiveScannerCoordinator(
+        transport,
+        FakeEngine(),
+        retained_channels_source=lambda: retained,
+    )
+
+    coordinator.start()
+
+    assert coordinator.channels == ("AAA", "BTCUSD", "WYHG")
+    assert transport.subscriptions == [("AAA", "BTCUSD", "WYHG")]
+
+
+def test_scanner_refresh_does_not_remove_retained_symbol() -> None:
+    transport = FakeTransport()
+    engine = FakeEngine()
+    retained = ["WYHG"]
+    coordinator = LiveScannerCoordinator(
+        transport,
+        engine,
+        retained_channels_source=lambda: retained,
+    )
+    coordinator.start()
+    engine.active_symbols = ()
+
+    coordinator.refresh_universe()
+
+    assert coordinator.channels == ("WYHG",)
+    assert transport.subscriptions[-1] == ("WYHG",)
+
+
+def test_position_close_releases_retained_symbol() -> None:
+    transport = FakeTransport()
+    retained = ["WYHG"]
+    coordinator = LiveScannerCoordinator(
+        transport,
+        FakeEngine(),
+        retained_channels_source=lambda: retained,
+    )
+    coordinator.start()
+    retained.clear()
+
+    coordinator.run_once()
+
+    assert coordinator.channels == ("AAA", "BTCUSD")
+    assert transport.subscriptions[-1] == ("AAA", "BTCUSD")
+
+
+def test_position_close_clears_transport_subscription_when_no_scanner_symbols() -> None:
+    transport = FakeTransport()
+    retained = ["WYHG"]
+    engine = FakeEngine()
+    engine.active_symbols = ()
+    coordinator = LiveScannerCoordinator(
+        transport,
+        engine,
+        retained_channels_source=lambda: retained,
+    )
+    coordinator.start()
+    retained.clear()
+
+    coordinator.run_once()
+
+    assert coordinator.channels == ()
+    assert transport.subscriptions[-1] == ()
+
+
+def test_reconnect_recomputes_current_retained_union() -> None:
+    transport = FakeTransport()
+    retained = ["WYHG"]
+    coordinator = LiveScannerCoordinator(
+        transport,
+        FakeEngine(),
+        retained_channels_source=lambda: retained,
+    )
+    coordinator.start()
+    retained.append("SUNE")
+
+    recovered = coordinator.recover_stream()
+
+    assert recovered == ("AAA", "BTCUSD", "SUNE", "WYHG")
+    assert transport.subscriptions[-1] == recovered
+
+
+def test_scanner_and_retained_overlap_is_subscribed_once() -> None:
+    transport = FakeTransport()
+    coordinator = LiveScannerCoordinator(
+        transport,
+        FakeEngine(),
+        retained_channels_source=lambda: ("AAA", "aaa", "WYHG"),
+    )
+
+    coordinator.start()
+
+    assert coordinator.channels == ("AAA", "BTCUSD", "WYHG")
+    assert len(coordinator.channels) == len(set(coordinator.channels))
+
+
 def test_connect_is_idempotent() -> None:
     transport = FakeTransport()
     coordinator = LiveScannerCoordinator(

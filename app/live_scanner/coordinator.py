@@ -62,6 +62,7 @@ class LiveScannerCoordinator:
         self._retained_channels_source = retained_channels_source
 
         self._channels: tuple[str, ...] = ()
+        self._scanner_channels: tuple[str, ...] = self._default_channels
         self._connected = False
         self._running = False
         self._cycles_completed = 0
@@ -92,23 +93,13 @@ class LiveScannerCoordinator:
     ) -> tuple[str, ...]:
         self._require_connected()
 
-        selected = (
+        scanner_channels = (
             self._default_channels
             if channels is None
             else _normalize_channels(channels)
         )
-        if self._retained_channels_source is not None:
-            selected = (*selected, *self._retained_channels_source())
-        selected = _normalize_channels(selected)
-
-        if not selected:
-            raise ValueError(
-                "at least one channel is required"
-            )
-
-        self._transport.subscribe(selected)
-        self._channels = selected
-        return selected
+        self._scanner_channels = scanner_channels
+        return self._subscribe_effective(scanner_channels)
 
     def refresh_universe(
         self,
@@ -119,12 +110,18 @@ class LiveScannerCoordinator:
         *,
         force_reference_refresh: bool = False,
     ) -> tuple[str, ...]:
-        return self._engine.refresh_universe(
+        active_symbols = self._engine.refresh_universe(
             asset_classes,
             force_reference_refresh=(
                 force_reference_refresh
             ),
         )
+        self._scanner_channels = _normalize_channels(
+            getattr(self._engine, "subscription_symbols", active_symbols)
+        )
+        if self._running:
+            self._sync_subscription()
+        return active_symbols
 
     def start(
         self,
@@ -143,12 +140,6 @@ class LiveScannerCoordinator:
                 force_reference_refresh
             ),
         )
-        if not active_symbols:
-            # Keep the connected runtime responsive and publish the engine's
-            # explicit empty fail-closed snapshot. No subscription is sent.
-            self._channels = ()
-            self._running = True
-            return ()
         selected_channels = (
             self._default_channels
             or getattr(
@@ -159,6 +150,14 @@ class LiveScannerCoordinator:
             if channels is None
             else channels
         )
+        selected_channels = _normalize_channels(selected_channels)
+        if not self._effective_channels(selected_channels):
+            # Keep the connected runtime responsive when neither the scanner
+            # nor an active management lifecycle requires a subscription.
+            self._scanner_channels = ()
+            self._channels = ()
+            self._running = True
+            return ()
         self.subscribe(selected_channels)
 
         self._running = True
@@ -172,8 +171,7 @@ class LiveScannerCoordinator:
 
     def recover_stream(self) -> tuple[str, ...]:
         """Reconnect the transport and restore the current subscription."""
-        channels = self._channels
-        if not channels:
+        if not self._channels:
             raise RuntimeError(
                 "scanner stream recovery requires an active subscription"
             )
@@ -190,13 +188,13 @@ class LiveScannerCoordinator:
 
         try:
             self.connect()
-            self.subscribe(channels)
+            restored = self._subscribe_effective(self._scanner_channels)
         except Exception:
             self.disconnect()
             raise
 
         self._running = True
-        return channels
+        return restored
 
     def run_once(self) -> LiveScannerCycle:
         self._require_running()
@@ -204,6 +202,7 @@ class LiveScannerCoordinator:
         event = self._transport.read_event()
 
         if event is None:
+            self._sync_subscription()
             self._cycles_completed += 1
             return LiveScannerCycle(
                 events_read=0,
@@ -213,6 +212,7 @@ class LiveScannerCoordinator:
             )
 
         decision = self._consume(event)
+        self._sync_subscription()
 
         self._events_read += 1
         self._cycles_completed += 1
@@ -265,10 +265,12 @@ class LiveScannerCoordinator:
                 )
 
             if event is None:
+                self._sync_subscription()
                 stream_exhausted = True
                 break
 
             decision = self._consume(event)
+            self._sync_subscription()
             events_read += 1
 
             if decision is not None:
@@ -370,6 +372,40 @@ class LiveScannerCoordinator:
     def reconnect_ready(self) -> bool:
         return bool(getattr(self._transport, "reconnect_ready", False))
 
+    def _retained_channels(self) -> tuple[str, ...]:
+        if self._retained_channels_source is None:
+            return ()
+        return _normalize_channels(self._retained_channels_source())
+
+    def _effective_channels(
+        self,
+        scanner_channels: Iterable[str],
+    ) -> tuple[str, ...]:
+        return _normalize_channels_case_insensitive(
+            (*scanner_channels, *self._retained_channels())
+        )
+
+    def _subscribe_effective(
+        self,
+        scanner_channels: Iterable[str],
+    ) -> tuple[str, ...]:
+        selected = self._effective_channels(scanner_channels)
+        if not selected:
+            raise ValueError("at least one channel is required")
+        self._transport.subscribe(selected)
+        self._channels = selected
+        return selected
+
+    def _sync_subscription(self) -> tuple[str, ...]:
+        selected = self._effective_channels(self._scanner_channels)
+        if selected == self._channels:
+            return selected
+        if not selected:
+            self._transport.subscribe(())
+            self._channels = ()
+            return selected
+        return self._subscribe_effective(self._scanner_channels)
+
     def _require_connected(self) -> None:
         if not self._connected:
             raise RuntimeError(
@@ -426,3 +462,14 @@ def _normalize_channels(
     }
 
     return tuple(sorted(normalized))
+
+
+def _normalize_channels_case_insensitive(
+    channels: Iterable[str],
+) -> tuple[str, ...]:
+    normalized: dict[str, str] = {}
+    for channel in channels:
+        value = str(channel).strip()
+        if value:
+            normalized.setdefault(value.casefold(), value)
+    return tuple(sorted(normalized.values()))
