@@ -35,6 +35,7 @@ from app.trade_intelligence.runtime import TradeIntelligenceRuntimeObserver
 from app.entry_opportunity_value import EntryOpportunityValueRuntimeObserver
 from app.adaptive_entry_research import AdaptiveWorkingEntryObserver
 from app.memory_observability import MemoryObservability
+from app.performance_diagnostics import performance_diagnostics
 from app.crypto_research import (
     CryptoCatalystCollectionConfig,
     CryptoCatalystCollectionSink,
@@ -570,6 +571,7 @@ def create_desktop_composition(
             "timeline_projection": runtime_projections.timeline_projection.memory_metrics,
             "application_state": state_store.memory_metrics,
             "operations_bus": bus.memory_metrics,
+            "startup": performance_diagnostics.startup_metrics,
         },
         enabled=operational_configuration.memory_observability_enabled,
         path=operational_configuration.memory_observability_path,

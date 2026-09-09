@@ -14,6 +14,40 @@ from typing import Any, Callable
 _QUEUE_THRESHOLDS = (100, 500, 1000, 1500)
 DiagnosticSink = Callable[[str, dict[str, object]], None]
 
+_STARTUP_STAGES = (
+    "runtime_started", "transport_connected", "registration_ready", "universe_refresh_started",
+    "universe_refresh_completed", "reference_warmup_started",
+    "reference_warmup_completed", "subscription_requested",
+    "subscription_completed", "first_raw_callback", "first_callback_dequeued",
+    "first_payload_decode_attempt", "first_payload_decode_success",
+    "first_normalized_market_event", "first_scanner_ingestion",
+    "first_scanner_evaluation",
+)
+
+_STARTUP_COUNTERS = (
+    "reference_warmup_symbols_total", "reference_warmup_symbols_completed",
+    "reference_warmup_symbols_accepted", "reference_warmup_symbols_rejected",
+    "raw_callbacks_received", "callbacks_enqueued", "callbacks_dequeued",
+    "decode_attempts", "decode_successes", "decode_failures", "decode_ignored",
+    "normalized_market_events_emitted", "scanner_market_events_received",
+    "scanner_evaluations",
+)
+
+_STARTUP_DURATION_PAIRS = {
+    "transport_to_registration_ms": ("transport_connected", "registration_ready"),
+    "registration_to_refresh_start_ms": ("registration_ready", "universe_refresh_started"),
+    "universe_refresh_duration_ms": ("universe_refresh_started", "universe_refresh_completed"),
+    "reference_warmup_duration_ms": ("reference_warmup_started", "reference_warmup_completed"),
+    "subscription_duration_ms": ("subscription_requested", "subscription_completed"),
+    "subscription_to_first_raw_callback_ms": ("subscription_completed", "first_raw_callback"),
+    "raw_callback_to_first_dequeue_ms": ("first_raw_callback", "first_callback_dequeued"),
+    "first_dequeue_to_first_decode_success_ms": ("first_callback_dequeued", "first_payload_decode_success"),
+    "decode_success_to_first_normalized_event_ms": ("first_payload_decode_success", "first_normalized_market_event"),
+    "normalized_event_to_first_scanner_ingestion_ms": ("first_normalized_market_event", "first_scanner_ingestion"),
+    "scanner_ingestion_to_first_evaluation_ms": ("first_scanner_ingestion", "first_scanner_evaluation"),
+    "runtime_start_to_scanner_ready_ms": ("runtime_started", "subscription_completed"),
+}
+
 _KNOWN_EVENT_TYPE_NAMES = frozenset(
     {
         "OrdersUpdated",
@@ -203,6 +237,16 @@ class PerformanceDiagnostics:
             name: 0 for name in _KNOWN_EVENT_TYPE_NAMES
         }
         self._derived_publications_by_root["UNKNOWN"] = 0
+        self._startup_stage_timestamps: dict[str, str | None] = {
+            stage: None for stage in _STARTUP_STAGES
+        }
+        self._startup_stage_monotonic: dict[str, float | None] = {
+            stage: None for stage in _STARTUP_STAGES
+        }
+        self._startup_counters = {
+            counter: 0 for counter in _STARTUP_COUNTERS
+        }
+        self._startup_current_reference_symbol: str | None = None
         self._trade_intelligence = {
             "trade_intelligence_enabled": False,
             "trade_intelligence_experiences_created": 0,
@@ -303,6 +347,50 @@ class PerformanceDiagnostics:
     def record_scanner_state_revision(self) -> None:
         with self._lock:
             self._forensic_counters["scanner_related_state_revisions"] += 1
+
+    def record_startup_stage(self, stage: str) -> None:
+        """Record the first occurrence of one bounded startup stage."""
+        if stage not in _STARTUP_STAGES:
+            raise ValueError(f"unknown startup diagnostic stage: {stage}")
+        with self._lock:
+            if self._startup_stage_monotonic[stage] is None:
+                self._startup_stage_monotonic[stage] = monotonic()
+                self._startup_stage_timestamps[stage] = datetime.now(UTC).isoformat()
+
+    def increment_startup_counter(self, name: str, amount: int = 1) -> None:
+        """Increment a fixed startup counter without retaining runtime data."""
+        if name not in _STARTUP_COUNTERS:
+            raise ValueError(f"unknown startup diagnostic counter: {name}")
+        if amount < 0:
+            raise ValueError("startup diagnostic increment cannot be negative")
+        with self._lock:
+            self._startup_counters[name] += amount
+
+    def set_startup_reference_symbol(self, symbol: str | None) -> None:
+        with self._lock:
+            self._startup_current_reference_symbol = (
+                None if symbol is None else str(symbol).strip().upper() or None
+            )
+
+    def startup_metrics(self) -> dict[str, object]:
+        """Return bounded startup timestamps, durations, and counters."""
+        with self._lock:
+            values: dict[str, object] = {
+                f"{stage}_at": self._startup_stage_timestamps[stage]
+                for stage in _STARTUP_STAGES
+            }
+            for name, (start, end) in _STARTUP_DURATION_PAIRS.items():
+                started = self._startup_stage_monotonic[start]
+                finished = self._startup_stage_monotonic[end]
+                values[name] = (
+                    None if started is None or finished is None
+                    else round((finished - started) * 1000.0, 3)
+                )
+            values.update(self._startup_counters)
+            values["reference_warmup_current_symbol"] = (
+                self._startup_current_reference_symbol
+            )
+            return values
 
     def forensic_metrics(self) -> dict[str, int]:
         """Return bounded forensic counters for periodic observability."""

@@ -119,6 +119,7 @@ def test_enabled_memory_observability_composes_real_providers_and_jsonl(
             "timeline_projection",
             "application_state",
             "operations_bus",
+            "startup",
         }
         assert composition.runtime_service.start() is True
         sleep(0.01)

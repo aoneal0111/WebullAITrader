@@ -27,7 +27,7 @@ class MemoryDiagnosticSnapshot:
     rss_bytes: int | None
     private_bytes: int | None
     thread_count: int
-    metrics: tuple[tuple[str, int], ...] = ()
+    metrics: tuple[tuple[str, object], ...] = ()
     tracemalloc_current_bytes: int | None = None
     tracemalloc_peak_bytes: int | None = None
     tracemalloc_top: tuple[tuple[str, str, int, int, int], ...] = ()
@@ -73,7 +73,7 @@ class MemoryDiagnosticSnapshot:
         }
 
 
-MetricProvider = Callable[[], Mapping[str, int]]
+MetricProvider = Callable[[], Mapping[str, object]]
 
 
 class MemoryObservability:
@@ -148,11 +148,18 @@ class MemoryObservability:
         if not self.enabled:
             return None
         try:
-            values: dict[str, int] = {}
+            values: dict[str, object] = {}
             for name, provider in tuple(self._providers.items()):
                 try:
                     for key, value in provider().items():
-                        values[f"{name}_{key}"] = max(0, int(value))
+                        if value is None or isinstance(value, str):
+                            values[f"{name}_{key}"] = value
+                        elif isinstance(value, bool):
+                            values[f"{name}_{key}"] = int(value)
+                        elif isinstance(value, int):
+                            values[f"{name}_{key}"] = max(0, value)
+                        elif isinstance(value, float):
+                            values[f"{name}_{key}"] = max(0.0, value)
                 except Exception:
                     self._failures += 1
             for key, value in tuple(self._lifecycle.items()):

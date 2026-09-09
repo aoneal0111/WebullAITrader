@@ -20,6 +20,7 @@ from app.scanner_universe_observability import (
     UniverseAdmissionOutcome,
     UniverseAdmissionStage,
 )
+from app.performance_diagnostics import performance_diagnostics
 from app.realtime_scanner.protocols import (
     EventPipeline,
     ReferenceLoader,
@@ -74,6 +75,8 @@ class RealtimeScannerEngine:
         *,
         force_reference_refresh: bool = False,
     ) -> tuple[str, ...]:
+        performance_diagnostics.record_startup_stage("universe_refresh_started")
+        performance_diagnostics.record_startup_stage("reference_warmup_started")
         selection = self._universe_service.select_all(
             asset_classes
         )
@@ -89,8 +92,13 @@ class RealtimeScannerEngine:
         missing: list[ReferenceWarmupFailure] = []
         successful_records = []
 
+        performance_diagnostics.increment_startup_counter(
+            "reference_warmup_symbols_total", len(selection.included)
+        )
+
         for item in selection.included:
             symbol = item.symbol.strip().upper()
+            performance_diagnostics.set_startup_reference_symbol(symbol)
             _observe_admission(
                 self._admission_observer,
                 stage=UniverseAdmissionStage.REFERENCE_WARMUP_STARTED,
@@ -119,6 +127,12 @@ class RealtimeScannerEngine:
                         force_refresh=force_reference_refresh,
                     )
             except Exception as exc:
+                performance_diagnostics.increment_startup_counter(
+                    "reference_warmup_symbols_completed"
+                )
+                performance_diagnostics.increment_startup_counter(
+                    "reference_warmup_symbols_rejected"
+                )
                 failure = _warmup_failure(symbol, exc)
                 _observe_admission(
                     self._admission_observer,
@@ -144,6 +158,12 @@ class RealtimeScannerEngine:
                 continue
 
             successful_records.append(record)
+            performance_diagnostics.increment_startup_counter(
+                "reference_warmup_symbols_completed"
+            )
+            performance_diagnostics.increment_startup_counter(
+                "reference_warmup_symbols_accepted"
+            )
             _observe_admission(
                 self._admission_observer,
                 stage=UniverseAdmissionStage.REFERENCE_WARMUP_ACCEPTED,
@@ -195,6 +215,10 @@ class RealtimeScannerEngine:
         self._subscription_symbols = subscription_symbols
         self._reference_failures = failures
 
+        performance_diagnostics.set_startup_reference_symbol(None)
+        performance_diagnostics.record_startup_stage("reference_warmup_completed")
+        performance_diagnostics.record_startup_stage("universe_refresh_completed")
+
         return self.active_symbols
 
     def reset_stream_state(self) -> tuple[str, ...]:
@@ -230,6 +254,11 @@ class RealtimeScannerEngine:
                 ),
             },
         )
+
+        performance_diagnostics.increment_startup_counter(
+            "scanner_market_events_received"
+        )
+        performance_diagnostics.record_startup_stage("first_scanner_ingestion")
 
         decision = self._pipeline.consume(event)
         self._processed_events += 1

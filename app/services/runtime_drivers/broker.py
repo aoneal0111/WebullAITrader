@@ -254,6 +254,7 @@ class DesktopBrokerRuntimeDriver:
             observer_stop()
 
     def _start_market_data(self, stop_event: Event) -> None:
+        performance_diagnostics.record_startup_stage("runtime_started")
         if self._scanner is not None:
             self._scanner_log(
                 "scanner_initialized",
@@ -510,6 +511,7 @@ class DesktopBrokerRuntimeDriver:
             "universe_refresh_started",
             "Autonomous scanner universe discovery started.",
         )
+        performance_diagnostics.record_startup_stage("universe_refresh_started")
         try:
             active_symbols = scanner.start(
                 asset_classes=(AssetClass.STOCK,),
@@ -777,6 +779,12 @@ class DesktopBrokerRuntimeDriver:
                 if self._scanner is not None:
                     cycle = self._scanner.run_available()
                     performance_diagnostics.increment("scanner_evaluations")
+                    performance_diagnostics.increment_startup_counter(
+                        "scanner_evaluations"
+                    )
+                    performance_diagnostics.record_startup_stage(
+                        "first_scanner_evaluation"
+                    )
                     self._scanner_events_since_observation += cycle.events_read
                     if cycle.events_read == 0:
                         self._publish_scanner_observation_if_due()

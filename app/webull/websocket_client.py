@@ -189,6 +189,9 @@ class OfficialSdkStreamBackend:
                 self._message_queue_high_water,
                 depth,
             )
+        performance_diagnostics.increment_startup_counter("raw_callbacks_received")
+        performance_diagnostics.increment_startup_counter("callbacks_enqueued")
+        performance_diagnostics.record_startup_stage("first_raw_callback")
         performance_diagnostics.record_market_event_callback(
             depth
         )
@@ -207,6 +210,7 @@ class OfficialSdkStreamBackend:
             self._identity_mismatch.set()
             return
         self._connected.set()
+        performance_diagnostics.record_startup_stage("transport_connected")
         self._emit_diagnostic(
             "MQTT_CONNECTED",
             mqtt_connected_at=self._clock().isoformat(),
@@ -266,6 +270,7 @@ class OfficialSdkStreamBackend:
             if not self._connected.is_set():
                 raise RuntimeError("MQTT disconnected before session registration became ready")
             self._registration_ready.set()
+            performance_diagnostics.record_startup_stage("registration_ready")
             self._emit_diagnostic(
                 "REGISTRATION_READY",
                 registration_ready_at=self._clock().isoformat(),
@@ -279,6 +284,7 @@ class OfficialSdkStreamBackend:
         self._connected.set()
         self._sleeper(self._registration_grace_seconds)
         self._registration_ready.set()
+        performance_diagnostics.record_startup_stage("registration_ready")
         self._emit_diagnostic(
             "REGISTRATION_READY",
             registration_ready_at=self._clock().isoformat(),
@@ -313,6 +319,7 @@ class OfficialSdkStreamBackend:
             raise TypeError("official SDK streaming client has no subscribe method")
 
         self._subscription_acknowledged.clear()
+        performance_diagnostics.record_startup_stage("subscription_requested")
         mapped = normalized_channels if self._subscription_mapper is None else self._subscription_mapper(normalized_channels)
         for retry_count in range(self._maximum_registration_retries + 1):
             self._notify("rest_subscription_requested")
@@ -355,6 +362,7 @@ class OfficialSdkStreamBackend:
                 continue
             self._subscription_acknowledged.set()
             self._active_subscription = normalized_channels
+            performance_diagnostics.record_startup_stage("subscription_completed")
             self._notify("rest_subscription_active")
             self._emit_diagnostic(
                 "REGISTRATION_REQUEST_SUCCEEDED",
@@ -380,6 +388,8 @@ class OfficialSdkStreamBackend:
             with self._message_metrics_lock:
                 self._messages_dequeued += 1
                 self._message_queue_depth -= 1
+            performance_diagnostics.increment_startup_counter("callbacks_dequeued")
+            performance_diagnostics.record_startup_stage("first_callback_dequeued")
             if not self._consumption_started:
                 self._consumption_started = True
                 self._notify("active_event_consumption")
@@ -393,6 +403,8 @@ class OfficialSdkStreamBackend:
             with self._message_metrics_lock:
                 self._messages_dequeued += 1
                 self._message_queue_depth -= 1
+            performance_diagnostics.increment_startup_counter("callbacks_dequeued")
+            performance_diagnostics.record_startup_stage("first_callback_dequeued")
             if not self._consumption_started:
                 self._consumption_started = True
                 self._notify("active_event_consumption")
@@ -527,6 +539,11 @@ class WebullWebSocketClient:
             "samples": tuple(dict(sample) for sample in self._decode_failure_samples),
         }
 
+    def memory_metrics(self) -> dict[str, object]:
+        """Expose bounded backend queue metrics to memory observability."""
+        provider = getattr(self.backend, "memory_metrics", None)
+        return {} if not callable(provider) else dict(provider())
+
     def _notify(
         self,
         event: str,
@@ -611,6 +628,10 @@ class WebullWebSocketClient:
             try:
                 message = receiver()
                 if message is None: return None
+                performance_diagnostics.record_startup_stage(
+                    "first_payload_decode_attempt"
+                )
+                performance_diagnostics.increment_startup_counter("decode_attempts")
                 queue_depth = getattr(self.backend, "queue_depth", None)
                 if callable(queue_depth):
                     performance_diagnostics.set_callback_queue_depth(queue_depth())
@@ -639,6 +660,7 @@ class WebullWebSocketClient:
                     )
                 event = self.parser(message)
                 if event is None:
+                    performance_diagnostics.increment_startup_counter("decode_ignored")
                     recognized = classification != "UNKNOWN"
                     recovered = recognized and self.consecutive_decode_failures > 0
                     if recognized:
@@ -661,6 +683,10 @@ class WebullWebSocketClient:
                             decoder_selected=decoder,
                         )
                     return None
+                performance_diagnostics.increment_startup_counter("decode_successes")
+                performance_diagnostics.record_startup_stage(
+                    "first_payload_decode_success"
+                )
                 if received_timestamp is not None:
                     event = replace(
                         event,
@@ -781,6 +807,12 @@ class WebullWebSocketClient:
                 if event.event_type is MarketEventType.HEARTBEAT and isinstance(event.payload, HeartbeatPayload):
                     self.health = update_health(self.health, last_successful_heartbeat=event.timestamp)
                 self._successful_receive_count += 1
+                performance_diagnostics.increment_startup_counter(
+                    "normalized_market_events_emitted"
+                )
+                performance_diagnostics.record_startup_stage(
+                    "first_normalized_market_event"
+                )
                 if self._successful_receive_count == 1 or self._successful_receive_count % 1000 == 0:
                     self.logger.log(
                         "stream_receive", "succeeded",
@@ -792,6 +824,7 @@ class WebullWebSocketClient:
             except _StreamSequenceError:
                 raise
             except SerializationError as exc:
+                performance_diagnostics.increment_startup_counter("decode_failures")
                 self.consecutive_decode_failures += 1
                 failure_metadata = decoder_failure_metadata(message, exc)
                 failure_class = str(failure_metadata["message_classification"])
