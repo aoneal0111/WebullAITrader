@@ -92,6 +92,16 @@ class EntryAttemptSummary:
     actual_filled_quantity: Decimal = ZERO
 
 
+@dataclass(frozen=True, slots=True)
+class NewStructureAssessment:
+    eligible: bool
+    structure: str
+    reason: str | None = None
+    entry_anchor: Decimal | None = None
+    structural_stop: Decimal | None = None
+    risk_per_share: Decimal | None = None
+
+
 @dataclass(slots=True)
 class OpportunityMemoryRecord:
     opportunity_id: str
@@ -239,8 +249,11 @@ class OpportunityMemory:
             elif qualified:
                 record.opportunity_state = (
                     OpportunityMemoryState.ACTIONABLE
-                    if setup_state == "TRIGGERED" else OpportunityMemoryState.SETUP_DEVELOPING
-                ) if setup_state == "FORMING" else OpportunityMemoryState.ACTIVE
+                    if setup_state == "TRIGGERED"
+                    else OpportunityMemoryState.SETUP_DEVELOPING
+                    if setup_state == "FORMING"
+                    else OpportunityMemoryState.ACTIVE
+                )
             elif record.opportunity_state not in {OpportunityMemoryState.INVALIDATED, OpportunityMemoryState.CLOSED}:
                 record.opportunity_state = OpportunityMemoryState.ACTIVE
             signature = (setup, setup_state, qualified, blocking_reason, record.opportunity_state)
@@ -319,6 +332,34 @@ class OpportunityMemory:
                 at, price=level,
             )
 
+    def assess_new_structure(
+        self, trading_date: date, symbol: str, opportunity_id: str, *,
+        entry_anchor: Decimal, structural_stop: Decimal, spread_ok: bool,
+        liquidity_ok: bool, freshness_ok: bool, position_quantity: Decimal = ZERO,
+        working_entry: bool = False, lifecycle_count: int = 0,
+        max_lifecycles: int = 3, higher_low: bool = False,
+        reclaim: bool = False, momentum_reaccelerated: bool = False,
+    ) -> NewStructureAssessment:
+        record = self.get(trading_date, symbol, opportunity_id)
+        structure = "RECLAIM" if reclaim else "HIGHER_LOW_CONTINUATION" if higher_low else "MOMENTUM_REACCELERATION" if momentum_reaccelerated else "PULLBACK_CONTINUATION"
+        checks = (
+            (record is not None and record.opportunity_state not in {OpportunityMemoryState.INVALIDATED, OpportunityMemoryState.CLOSED}, "OPPORTUNITY_INACTIVE"),
+            (position_quantity <= ZERO, "POSITION_EXISTS"),
+            (not working_entry, "WORKING_ENTRY_EXISTS"),
+            (lifecycle_count < max_lifecycles, "LIFECYCLE_CAP"),
+            (entry_anchor > structural_stop, "INVALID_STRUCTURAL_STOP"),
+            (spread_ok, "SPREAD_BLOCKED"), (liquidity_ok, "LIQUIDITY_BLOCKED"),
+            (freshness_ok, "STALE_MARKET_DATA"),
+            (record is not None and record.original_entry_anchor != entry_anchor, "OLD_ENTRY_ANCHOR"),
+            (record is not None and record.highest_price_since_start is not None, "NO_PRIOR_IMPULSE"),
+            (higher_low or reclaim or momentum_reaccelerated, "NO_NEW_STRUCTURE"),
+        )
+        failed = next((reason for passed, reason in checks if not passed), None)
+        risk = entry_anchor - structural_stop
+        return NewStructureAssessment(
+            failed is None, structure, failed, entry_anchor, structural_stop, risk,
+        )
+
     def _emit_locked(self, record, kind, at, *, price=None, quantity=None, reason=None, setup=None):
         event = OpportunityTransition(kind, at, record.opportunity_id, record.symbol, record.trading_date, reason, setup, price, quantity)
         if record.transitions and record.transitions[-1].kind is kind and record.transitions[-1].reason == reason:
@@ -386,7 +427,7 @@ class AsyncOpportunityMemoryWriter:
 
 
 __all__ = [
-    "AsyncOpportunityMemoryWriter", "EntryAttemptSummary", "OpportunityMemory",
+    "AsyncOpportunityMemoryWriter", "EntryAttemptSummary", "NewStructureAssessment", "OpportunityMemory",
     "OpportunityMemoryRecord", "OpportunityMemoryState", "OpportunityTransition",
     "OpportunityTransitionType",
 ]

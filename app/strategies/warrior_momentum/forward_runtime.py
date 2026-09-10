@@ -733,6 +733,66 @@ class WarriorForwardCaptureService:
         except Exception:
             return
 
+    def authorize_new_structural_entry(
+        self, candidate: MomentumCandidate, signal: MomentumEntrySignal,
+        account: PaperAccountContext, *, higher_low: bool = False,
+        reclaim: bool = False, momentum_reaccelerated: bool = False,
+        working_entry: bool = False, freshness_ok: bool,
+    ) -> bool:
+        """Authorize a fresh structural thesis, separate from old-entry reprice.
+
+        The caller supplies a newly assessed signal.  This seam never changes
+        the ordinary observation path; it only permits an explicit new
+        lifecycle after memory and the existing risk gates approve it.
+        """
+        from app.trade_intelligence.opportunity_memory import OpportunityTransitionType
+        opportunity_id = self._memory_opportunity_ids.get(signal.symbol) or opportunity_identity(signal)
+        assessment = self.opportunity_memory.assess_new_structure(
+            signal.timestamp.date(), signal.symbol, opportunity_id,
+            entry_anchor=signal.entry_trigger, structural_stop=signal.stop_price,
+            spread_ok=(candidate.spread_percent is not None and candidate.spread_percent <= self.config.entry.maximum_spread_percent),
+            liquidity_ok=candidate.dollar_volume >= self.config.entry.minimum_dollar_volume,
+            freshness_ok=freshness_ok,
+            position_quantity=(self._paper_position_quantity_source(signal.symbol)
+                              if self._paper_position_quantity_source is not None else ZERO),
+            working_entry=working_entry,
+            lifecycle_count=(0 if self.opportunity_memory.get(signal.timestamp.date(), signal.symbol, opportunity_id) is None
+                             else len(self.opportunity_memory.get(signal.timestamp.date(), signal.symbol, opportunity_id).attempts)),
+            max_lifecycles=self.config.adaptive_entry.max_lifecycles_per_opportunity,
+            higher_low=higher_low, reclaim=reclaim,
+            momentum_reaccelerated=momentum_reaccelerated,
+        )
+        if not assessment.eligible:
+            self.opportunity_memory.record_transition(
+                signal.timestamp.date(), signal.symbol, opportunity_id,
+                signal.timestamp, OpportunityTransitionType.ENTRY_CANCELLED,
+                reason=assessment.reason,
+            )
+            return False
+        position = size_position(
+            signal, account_equity=account.equity, buying_power=account.buying_power,
+            allowed_symbols=account.allowed_symbols, existing_exposure=account.existing_exposure,
+            exposure_limit=account.exposure_limit, risk_engine_approved=account.risk_engine_approved,
+            broker_restriction=account.broker_restriction, config=self.config.risk,
+            symbol_authorized=_paper_symbol_authorization(signal, account).authorized,
+        )
+        if (
+            not position.approved or self._paper_entry_submitter is None
+            or candidate.halted or not candidate.tradable
+            or signal.session not in self.config.entry.allowed_sessions
+        ):
+            return False
+        result = self._paper_entry_submitter(signal, position.shares, position.risk_dollars)
+        authorized = result.authorized if isinstance(result, PaperEntryAuthorizationDecision) else bool(result)
+        if authorized:
+            self.opportunity_memory.record_transition(
+                signal.timestamp.date(), signal.symbol, opportunity_id,
+                signal.timestamp, OpportunityTransitionType.ENTRY_ATTEMPT,
+                reason="NEW_STRUCTURAL_ENTRY", price=signal.entry_trigger,
+                quantity=Decimal(position.shares),
+            )
+        return authorized
+
     def consider_add_on(
         self,
         candidate: MomentumCandidate,
