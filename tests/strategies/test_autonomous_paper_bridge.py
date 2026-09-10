@@ -41,6 +41,34 @@ def test_paper_bridge_submits_exactly_one_entry_and_exit_per_transition() -> Non
     composition.close()
 
 
+def test_add_on_is_one_correlated_limit_buy_and_is_idempotent() -> None:
+    composition = create_paper_trading_command_composition(
+        position_quantity_source=lambda _symbol: Decimal("100"),
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert bridge.submit_entry(Signal(), 100, Decimal("50")) is True
+    composition.gateway.process_market_event(MarketEvent(
+        1, session_timestamp(1), "PMI", "test", MarketEventType.QUOTE,
+        QuotePayload(Decimal("9.99"), Decimal("10"), Decimal("100"), Decimal("100")),
+    ))
+    first = bridge.submit_add_on(
+        Signal(entry_trigger=Decimal("10.10")), 25, Decimal("2.50"),
+        parent_lifecycle_id="trade-a", add_on_id="trade-a:ADD_ON_1",
+    )
+    assert first.authorized is True
+    add_on = composition.order_book.history()[-1]
+    assert add_on.request.order_type is OrderType.LIMIT
+    assert add_on.request.metadata["provenance"] == "AUTONOMOUS_ADD_ON_ENTRY"
+    assert bridge.submit_add_on(
+        Signal(entry_trigger=Decimal("10.10")), 25, Decimal("2.50"),
+        parent_lifecycle_id="trade-a", add_on_id="trade-a:ADD_ON_1",
+    ).authorized is False
+    composition.close()
+
+
 def test_bridge_refuses_non_paper_mode_without_invoking_order_port() -> None:
     composition = create_paper_trading_command_composition()
     bridge = AutonomousPaperExecutionBridge(

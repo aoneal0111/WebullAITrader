@@ -153,6 +153,7 @@ class TradeManagementConfig:
     profit_defense_tighten_giveback_r: Decimal = Decimal("0.30")
     profit_defense_exit_activation_r: Decimal = Decimal("2.0")
     profit_defense_exit_giveback_r: Decimal = Decimal("0.50")
+    max_add_on_legs: int = 1
 
     def __post_init__(self) -> None:
         if self.first_target_exit_percent + self.second_target_exit_percent + self.runner_percent != 1:
@@ -165,6 +166,8 @@ class TradeManagementConfig:
         ):
             if value < 0:
                 raise ValueError("profit-defense thresholds must be non-negative")
+        if self.max_add_on_legs != 1:
+            raise ValueError("Phase 1 supports exactly one add-on leg")
 
 
 @dataclass(frozen=True, slots=True)

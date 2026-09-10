@@ -591,6 +591,76 @@ def test_profit_defense_runner_exit_is_limited_and_preserves_milestones(tmp_path
         writer.close()
 
 
+def test_single_add_on_preserves_parent_milestones_and_exits_leg_only(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "add-on.sqlite3")
+    fingerprint = strategy_configuration_fingerprint()
+    writer = ForwardCaptureWriter(
+        store, flush_interval_seconds=0.01,
+        configuration_fingerprint=fingerprint,
+    )
+    position = {"XYZ": Decimal("200")}
+    exits: list[tuple[int, Decimal, str]] = []
+
+    def submit_exit(symbol, quantity, price, reason, _lifecycle):
+        exits.append((quantity, price, reason))
+        return True
+
+    service = WarriorForwardCaptureService(
+        store, writer,
+        paper_position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+        paper_exit_submitter=submit_exit,
+        configuration_fingerprint=fingerprint,
+    )
+    try:
+        assessed, signal = service.observe(point(), account=account())
+        assert signal is not None and assessed.setup is not None
+        state = service._paper["XYZ"]
+        state.first_taken = True
+        state.second_taken = True
+        state.remaining = state.initial_quantity // 2
+        state.maximum_high = signal.entry_trigger + signal.risk_per_share * D("3")
+        state.peak_r = D("3")
+
+        add_candidate = replace(
+            assessed,
+            price=signal.entry_trigger + D("0.10"),
+            setup=replace(
+                assessed.setup, trigger=signal.entry_trigger + D("0.10"),
+                stop_price=signal.stop_price,
+            ),
+        )
+        add_signal = service.runtime.entry_signal(add_candidate)
+        assert add_signal is not None
+        assert service.consider_add_on(add_candidate, add_signal, account()) is True
+        assert state.add_on is not None
+        add_on_id = state.add_on.add_on_id
+        assert state.add_on.requested_quantity > 0
+        assert state.first_taken is True and state.second_taken is True
+        assert state.peak_r == D("3")
+
+        assert service.consider_add_on(add_candidate, add_signal, account()) is False
+        assert service.exit_add_on("XYZ", D("10.30")) is True
+        add_on_exit = next(item for item in exits if item[2] == "AUTONOMOUS_ADD_ON_EXIT")
+        assert add_on_exit[0] == state.add_on.requested_quantity
+        assert add_on_exit[0] <= int(position["XYZ"])
+
+        writer.flush()
+        restarted_writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+        restarted = WarriorForwardCaptureService(
+            store, restarted_writer,
+            paper_position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+            configuration_fingerprint=fingerprint,
+        )
+        restored = restarted._paper["XYZ"]
+        assert restored.add_on_used is True
+        assert restored.add_on is not None
+        assert restored.add_on.add_on_id == add_on_id
+        assert restored.first_taken is True and restored.second_taken is True
+        restarted_writer.close()
+    finally:
+        writer.close()
+
+
 def test_authoritative_fill_establishes_protection_at_actual_quantity(tmp_path: Path) -> None:
     store = ForwardCaptureStore(tmp_path / "actual-fill-protection.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)

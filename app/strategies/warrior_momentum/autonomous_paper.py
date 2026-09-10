@@ -540,6 +540,79 @@ class AutonomousPaperExecutionBridge:
 
         return self.submit_entry_decision(signal, shares, risk_dollars).authorized
 
+    def submit_add_on(
+        self, signal: object, shares: int, risk_dollars: Decimal, *,
+        parent_lifecycle_id: str, add_on_id: str,
+    ) -> PaperEntryAuthorizationDecision:
+        """Submit one explicitly authorized add-on as a correlated LIMIT BUY."""
+        symbol = str(getattr(signal, "symbol", "")).strip().upper()
+        identity = str(parent_lifecycle_id).strip()
+        if not symbol or not identity or not add_on_id or shares <= 0:
+            return PaperEntryAuthorizationDecision(
+                PaperEntryAuthorizationResult.REFUSED,
+                PaperEntryAuthorizationReason.INVALID_QUANTITY, symbol, identity, (),
+            )
+        with self._lock:
+            if self.readiness is not AutonomousPaperReadiness.READY or self.order_book is None:
+                return PaperEntryAuthorizationDecision(
+                    PaperEntryAuthorizationResult.REFUSED,
+                    PaperEntryAuthorizationReason.BROKER_NOT_READY, symbol, identity, (),
+                )
+            if self._authoritative_quantity(symbol) <= 0:
+                return PaperEntryAuthorizationDecision(
+                    PaperEntryAuthorizationResult.REFUSED,
+                    PaperEntryAuthorizationReason.POSITION_EXISTS, symbol, identity, (),
+                )
+            history = self.order_book.history()
+            if any(item.request.metadata.get("add_on_id") == add_on_id for item in history):
+                return PaperEntryAuthorizationDecision(
+                    PaperEntryAuthorizationResult.REFUSED,
+                    PaperEntryAuthorizationReason.WORKING_ORDER_EXISTS, symbol, identity, (),
+                )
+            if any(
+                not item.is_terminal and item.request.side is OrderSide.BUY
+                and item.request.strategy_lifecycle_id == identity
+                for item in self.order_book.open_orders_for_symbol(symbol)
+            ):
+                return PaperEntryAuthorizationDecision(
+                    PaperEntryAuthorizationResult.REFUSED,
+                    PaperEntryAuthorizationReason.WORKING_ORDER_EXISTS, symbol, identity, (),
+                )
+            request = self.order_command_factory.create_placement_request(
+                OrderEntryCommand(
+                    symbol=symbol, side="BUY", quantity=Decimal(shares),
+                    order_type="LIMIT", limit_price=Decimal(getattr(signal, "entry_trigger")),
+                    stop_price=None, time_in_force="DAY",
+                    strategy_lifecycle_id=identity,
+                    metadata={
+                        "source": "autonomous-paper",
+                        "reason": "AUTONOMOUS_ADD_ON_ENTRY",
+                        "provenance": "AUTONOMOUS_ADD_ON_ENTRY",
+                        "lifecycle_id": identity,
+                        "parent_lifecycle_id": identity,
+                        "add_on_id": add_on_id,
+                        "risk_dollars": str(risk_dollars),
+                    },
+                )
+            )
+            try:
+                result = self.trading_service.place_order(request)
+            except Exception:
+                return PaperEntryAuthorizationDecision(
+                    PaperEntryAuthorizationResult.REFUSED,
+                    PaperEntryAuthorizationReason.GATEWAY_FAILURE, symbol, identity, (),
+                )
+            if not result.success:
+                return PaperEntryAuthorizationDecision(
+                    PaperEntryAuthorizationResult.REFUSED,
+                    PaperEntryAuthorizationReason.ORDER_REJECTED, symbol, identity, (),
+                )
+            return PaperEntryAuthorizationDecision(
+                PaperEntryAuthorizationResult.AUTHORIZED,
+                PaperEntryAuthorizationReason.AUTHORIZED, symbol, identity, (),
+                True, True, result.decision.value,
+            )
+
     def submit_rearmed_entry(
         self, signal: object, shares: int, risk_dollars: Decimal, *,
         opportunity_id: str | None = None,

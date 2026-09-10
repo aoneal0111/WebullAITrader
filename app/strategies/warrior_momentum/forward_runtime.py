@@ -26,7 +26,7 @@ from .forward_store import ForwardCaptureStore
 from .autonomous_paper import (
     PaperEntryAuthorizationDecision, PaperEntryAuthorizationReason,
     PaperEntryAuthorizationResult, PaperEntryGateDecision,
-    PaperExitSubmissionDecision, lifecycle_identity, opportunity_identity,
+    PaperExitSubmissionDecision, PaperExitSubmissionState, lifecycle_identity, opportunity_identity,
     PaperEntryReplacementDecision, PaperEntryReplacementPolicy,
 )
 from .models import (
@@ -120,6 +120,22 @@ def management_context_available(
 
 
 @dataclass(slots=True)
+class _AddOnLeg:
+    add_on_id: str
+    parent_lifecycle_id: str
+    signal: MomentumEntrySignal
+    requested_quantity: int
+    filled_quantity: int = 0
+    remaining: int = 0
+    active: bool = True
+    peak_price: Decimal | None = None
+    peak_r: Decimal | None = None
+    current_r: Decimal | None = None
+    stop: Decimal | None = None
+    risk_consumed: Decimal = ZERO
+
+
+@dataclass(slots=True)
 class _PaperState:
     signal: MomentumEntrySignal
     entry_price: Decimal
@@ -150,6 +166,8 @@ class _PaperState:
     protective_stop_activated_at: datetime | None = None
     protection_reconciled: bool = False
     risk_budget: Decimal = ZERO
+    add_on: _AddOnLeg | None = None
+    add_on_used: bool = False
 
 
 @dataclass(slots=True)
@@ -184,6 +202,7 @@ class WarriorForwardCaptureService:
         entry_value_observer: Callable[..., None] | None = None,
         configuration_fingerprint: str | None = None,
         paper_campaign_id: str | None = None,
+        paper_add_on_submitter: Callable[..., object] | None = None,
     ) -> None:
         self.store = store
         self.writer = writer
@@ -206,6 +225,7 @@ class WarriorForwardCaptureService:
         self._entry_value_observer = entry_value_observer
         self.configuration_fingerprint = configuration_fingerprint
         self.paper_campaign_id = paper_campaign_id
+        self._paper_add_on_submitter = paper_add_on_submitter
         self.runtime = WarriorMomentumRuntime(config)
         self._last_transition: dict[str, ForwardTransition] = {}
         self._seen_bars: set[tuple[str, datetime]] = set()
@@ -663,6 +683,178 @@ class WarriorForwardCaptureService:
             )
         except Exception:
             return
+
+    def consider_add_on(
+        self,
+        candidate: MomentumCandidate,
+        signal: MomentumEntrySignal,
+        account: PaperAccountContext,
+        *,
+        value: PointInTimeObservation | None = None,
+        continuation_valid: bool = True,
+    ) -> bool:
+        """Authorize at most one separately-proven add-on leg for a parent.
+
+        This is deliberately explicit; ordinary repeated entry observations do not
+        become add-ons.  The caller must supply a newly assessed Warrior setup.
+        """
+        state = self._paper.get(signal.symbol)
+        setup = candidate.setup
+        if (
+            state is None or state.add_on_used or state.add_on is not None
+            or self._paper_position_quantity_source is None
+            or self._paper_position_quantity_source(signal.symbol) <= 0
+            or not state.first_taken
+            or not continuation_valid
+            or setup is None or setup.state is not SetupState.TRIGGERED
+            or setup.trigger is None or setup.stop_price is None
+            or candidate.status is not CandidateStatus.ENTRY_READY
+            or candidate.price <= state.entry_price
+            or candidate.spread_percent is None
+            or candidate.spread_percent > self.config.entry.maximum_spread_percent
+            or candidate.dollar_volume < self.config.entry.minimum_dollar_volume
+            or not candidate.tradable or candidate.halted
+            or signal.session not in self.config.entry.allowed_sessions
+            or not account.risk_engine_approved or account.broker_restriction
+        ):
+            return False
+        if value is not None:
+            stale = self.capture_config.quote_stale_after_seconds
+            if (
+                not value.halt_state_known or not value.volume_known
+                or value.quote_freshness_seconds is None
+                or value.last_price_freshness_seconds is None
+                or value.quote_freshness_seconds > stale
+                or value.last_price_freshness_seconds > stale
+                or value.observation.bid is None or value.observation.ask is None
+            ):
+                return False
+        risk_per_share = signal.risk_per_share
+        if risk_per_share <= ZERO:
+            return False
+        parent_risk = state.signal.risk_per_share
+        remaining_risk = max(
+            ZERO, state.risk_budget - Decimal(max(0, state.remaining)) * parent_risk,
+        )
+        risk_quantity = int((remaining_risk / risk_per_share).to_integral_value(rounding=ROUND_FLOOR))
+        price = signal.entry_trigger
+        notional_room = max(
+            ZERO,
+            min(
+                self.config.risk.maximum_position_dollars,
+                account.equity * self.config.risk.maximum_position_equity_percentage,
+            ) - account.existing_exposure,
+        )
+        notional_quantity = int((notional_room / price).to_integral_value(rounding=ROUND_FLOOR))
+        buying_power_quantity = int((account.buying_power / price).to_integral_value(rounding=ROUND_FLOOR))
+        quantity = max(0, min(
+            risk_quantity, notional_quantity, buying_power_quantity,
+            self.config.risk.maximum_quantity,
+        ))
+        if quantity <= 0:
+            return False
+        add_on_id = f"{lifecycle_identity(state.signal)}:ADD_ON_1"
+        if self._paper_add_on_submitter is not None:
+            try:
+                result = self._paper_add_on_submitter(
+                    signal, quantity, risk_per_share * quantity,
+                    parent_lifecycle_id=lifecycle_identity(state.signal),
+                    add_on_id=add_on_id,
+                )
+            except Exception:
+                return False
+            accepted = result.authorized if isinstance(result, PaperEntryAuthorizationDecision) else bool(result)
+            if not accepted:
+                return False
+        leg = _AddOnLeg(
+            add_on_id, lifecycle_identity(state.signal), signal, quantity,
+            filled_quantity=quantity if self._paper_add_on_submitter is None else 0,
+            remaining=quantity if self._paper_add_on_submitter is None else 0,
+            stop=signal.stop_price,
+            peak_price=signal.entry_trigger if self._paper_add_on_submitter is None else None,
+            peak_r=ZERO if self._paper_add_on_submitter is None else None,
+            current_r=ZERO if self._paper_add_on_submitter is None else None,
+            risk_consumed=(risk_per_share * quantity if self._paper_add_on_submitter is None else ZERO),
+        )
+        state.add_on = leg
+        state.add_on_used = True
+        self._submit_records((_management_context_record(
+            signal.symbol, signal.timestamp, state.signal, state,
+        ),))
+        return True
+
+    def reconcile_add_on_fill(
+        self, symbol: str, quantity: int, fill_price: Decimal,
+    ) -> bool:
+        """Apply an authoritative add-on fill without changing parent milestones."""
+        state = self._paper.get(symbol.strip().upper())
+        if state is None or state.add_on is None or quantity <= 0:
+            return False
+        leg = state.add_on
+        remaining_requested = max(0, leg.requested_quantity - leg.filled_quantity)
+        filled = min(quantity, remaining_requested)
+        if filled <= 0:
+            return False
+        leg.filled_quantity += filled
+        leg.remaining += filled
+        leg.risk_consumed = leg.filled_quantity * max(
+            ZERO, fill_price - (leg.stop or fill_price),
+        )
+        if self._paper_position_quantity_source is not None:
+            authoritative = max(0, int(self._paper_position_quantity_source(symbol)))
+            if authoritative > 0:
+                state.remaining = authoritative
+                if self._paper_exit_submitter is not None:
+                    try:
+                        self._paper_exit_submitter(
+                            symbol, authoritative, state.stop,
+                            "STOP", leg.parent_lifecycle_id,
+                        )
+                    except Exception:
+                        # The position remains authoritative; subsequent
+                        # management will fail closed if protection is absent.
+                        pass
+        leg.peak_price = fill_price if leg.peak_price is None else max(leg.peak_price, fill_price)
+        if leg.signal.risk_per_share > ZERO:
+            leg.peak_r = (leg.peak_price - leg.signal.entry_trigger) / leg.signal.risk_per_share
+            leg.current_r = leg.peak_r
+        self._submit_records((_management_context_record(
+            symbol, state.signal.timestamp, state.signal, state,
+        ),))
+        return True
+
+    def exit_add_on(self, symbol: str, price: Decimal) -> bool:
+        """Request a bounded LIMIT exit for only the add-on leg."""
+        state = self._paper.get(symbol.strip().upper())
+        if state is None or state.add_on is None or not state.add_on.active:
+            return False
+        leg = state.add_on
+        if leg.remaining <= 0 or price <= 0:
+            return False
+        quantity = leg.remaining
+        if self._paper_position_quantity_source is not None:
+            quantity = min(quantity, max(0, int(self._paper_position_quantity_source(symbol))))
+        if quantity <= 0:
+            return False
+        if self._paper_exit_submitter is not None:
+            try:
+                result = self._paper_exit_submitter(
+                    symbol, quantity, price, "AUTONOMOUS_ADD_ON_EXIT",
+                    leg.parent_lifecycle_id,
+                )
+            except Exception:
+                return False
+            accepted = result.state is PaperExitSubmissionState.SUBMITTED if isinstance(result, PaperExitSubmissionDecision) else bool(result)
+            if not accepted:
+                return False
+        leg.remaining -= quantity
+        if leg.remaining <= 0:
+            leg.remaining = 0
+            leg.active = False
+        self._submit_records((_management_context_record(
+            symbol, state.signal.timestamp, state.signal, state,
+        ),))
+        return True
 
     def observe_intraminute_shadow(
         self, market: ShadowMarketObservation,
@@ -1556,6 +1748,27 @@ class WarriorForwardCaptureService:
                 state.profit_defense_stop_tightened = bool(payload.get("profit_defense_stop_tightened", False))
                 state.profit_defense_runner_exit = bool(payload.get("profit_defense_runner_exit", False))
                 state.profit_defense_last_action = payload.get("profit_defense_last_action")
+                add_on = payload.get("add_on")
+                if isinstance(add_on, dict):
+                    add_on_signal = replace(
+                        state.signal,
+                        timestamp=datetime.fromisoformat(str(add_on["timestamp"])),
+                        entry_trigger=Decimal(add_on["entry_price"]),
+                        reference_price=Decimal(add_on["entry_price"]),
+                        stop_price=Decimal(add_on["stop"]),
+                        risk_per_share=Decimal(add_on["risk_per_share"]),
+                    )
+                    state.add_on = _AddOnLeg(
+                        str(add_on["add_on_id"]), str(add_on["parent_lifecycle_id"]),
+                        add_on_signal, int(add_on["requested_quantity"]),
+                        int(add_on.get("filled_quantity", 0)),
+                        int(add_on.get("remaining", 0)), bool(add_on.get("active", True)),
+                        None if add_on.get("peak_price") is None else Decimal(add_on["peak_price"]),
+                        None if add_on.get("peak_r") is None else Decimal(add_on["peak_r"]),
+                        None if add_on.get("current_r") is None else Decimal(add_on["current_r"]),
+                        Decimal(add_on["stop"]), Decimal(add_on.get("risk_consumed", "0")),
+                    )
+                    state.add_on_used = True
                 state.first_taken = bool(payload.get("first_taken", False))
                 state.second_taken = bool(payload.get("second_taken", False))
                 state.remaining = int(payload.get("remaining", state.remaining))
@@ -1780,6 +1993,23 @@ def _management_context_record(
             "profit_defense_stop_tightened": state.profit_defense_stop_tightened,
             "profit_defense_runner_exit": state.profit_defense_runner_exit,
             "profit_defense_last_action": state.profit_defense_last_action,
+            "add_on": None if state.add_on is None else {
+                "add_on_id": state.add_on.add_on_id,
+                "parent_lifecycle_id": state.add_on.parent_lifecycle_id,
+                "timestamp": state.add_on.signal.timestamp,
+                "entry_price": state.add_on.signal.entry_trigger,
+                "stop": state.add_on.stop,
+                "risk_per_share": state.add_on.signal.risk_per_share,
+                "requested_quantity": state.add_on.requested_quantity,
+                "filled_quantity": state.add_on.filled_quantity,
+                "remaining": state.add_on.remaining,
+                "active": state.add_on.active,
+                "peak_price": state.add_on.peak_price,
+                "peak_r": state.add_on.peak_r,
+                "current_r": state.add_on.current_r,
+                "risk_consumed": state.add_on.risk_consumed,
+            },
+            "add_on_used": state.add_on_used,
             "first_taken": state.first_taken,
             "second_taken": state.second_taken,
             "remaining": state.remaining,
