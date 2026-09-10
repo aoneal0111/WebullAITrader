@@ -227,6 +227,11 @@ class WarriorForwardCaptureService:
         self.configuration_fingerprint = configuration_fingerprint
         self.paper_campaign_id = paper_campaign_id
         self._paper_add_on_submitter = paper_add_on_submitter
+        # Observation-only continuity state.  It never participates in entry
+        # authorization or order submission.
+        from app.trade_intelligence.opportunity_memory import OpportunityMemory
+        self.opportunity_memory = OpportunityMemory()
+        self._memory_opportunity_ids: dict[str, str] = {}
         self.runtime = WarriorMomentumRuntime(config)
         self._last_transition: dict[str, ForwardTransition] = {}
         self._seen_bars: set[tuple[str, datetime]] = set()
@@ -388,6 +393,31 @@ class WarriorForwardCaptureService:
                     ))),
                 )
                 signal = None
+        memory_signal = signal or technical_signal
+        memory_opportunity_id = (
+            None if memory_signal is None else opportunity_identity(memory_signal)
+        ) or self._memory_opportunity_ids.get(symbol)
+        if memory_opportunity_id is not None:
+            self._memory_opportunity_ids[symbol] = memory_opportunity_id
+            self.opportunity_memory.observe(
+                opportunity_id=memory_opportunity_id,
+                symbol=symbol,
+                trading_date=observation.timestamp.date(),
+                observed_at=observation.timestamp,
+                price=observation.price,
+                qualified=assessed.discovery_qualified,
+                setup=(None if assessed.setup is None else assessed.setup.setup_type.value),
+                setup_state=(None if assessed.setup is None else assessed.setup.state.value),
+                entry_anchor=(None if memory_signal is None else memory_signal.entry_trigger),
+                momentum_score=assessed.score.total,
+                spread=assessed.spread_percent,
+                dollar_volume=assessed.dollar_volume,
+                relative_volume=assessed.relative_volume,
+                hod=(None if assessed.distance_from_hod_percent is None or assessed.price is None
+                     else assessed.price / (Decimal("1") - assessed.distance_from_hod_percent / HUNDRED)),
+                vwap_relation=None,
+                blocking_reason=(None if not assessed.reason_codes else assessed.reason_codes[-1].value),
+            )
         if (
             signal is not None
             and account is not None
@@ -504,6 +534,24 @@ class WarriorForwardCaptureService:
                     records.extend(entry_records)
                     if execution_record is not None:
                         records.append(execution_record)
+                    if entry_records:
+                        from app.trade_intelligence.opportunity_memory import EntryAttemptSummary
+                        self.opportunity_memory.record_entry_attempt(
+                            observation.timestamp.date(), symbol,
+                            memory_opportunity_id,
+                            EntryAttemptSummary(
+                                lifecycle_id=lifecycle_identity(signal),
+                                setup=signal.setup_type.value,
+                                attempted_at=signal.timestamp,
+                                requested_price=signal.entry_trigger,
+                                requested_quantity=Decimal(position.shares),
+                                structural_stop=signal.stop_price,
+                                spread=signal.spread_percent,
+                                liquidity=signal.dollar_volume,
+                                risk=position.risk_dollars,
+                                result="ATTEMPTED",
+                            ),
+                        )
                     # A configured execution bridge is authoritative for the
                     # entry boundary.  If it rejects the command, do not
                     # return an apparently executable signal to callers.
