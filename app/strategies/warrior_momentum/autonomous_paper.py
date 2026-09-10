@@ -1035,6 +1035,17 @@ class AutonomousPaperExecutionBridge:
                         return self._place_exit(
                             normalized, quantity, price, reason_key, identity,
                         )
+                    if protective and working_sell.request.stop_price is not None and Decimal(price) > Decimal(working_sell.request.stop_price):
+                        if not self._cancel_working_order(working_sell):
+                            self._management_incomplete.add(normalized)
+                            return PaperExitSubmissionDecision(
+                                PaperExitSubmissionState.UNAVAILABLE, normalized,
+                                identity, reason_key, working_sell.order_id,
+                            )
+                        self._reconcile_terminal_exits()
+                        return self._place_exit(
+                            normalized, quantity, price, reason_key, identity,
+                        )
                     return PaperExitSubmissionDecision(
                         PaperExitSubmissionState.WORKING, normalized,
                         identity, reason_key, working_sell.order_id,

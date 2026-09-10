@@ -135,6 +135,15 @@ class _PaperState:
     prior_low: Decimal | None = None
     minimum_low: Decimal | None = None
     maximum_high: Decimal | None = None
+    peak_price: Decimal | None = None
+    peak_r: Decimal | None = None
+    current_r: Decimal | None = None
+    giveback_r: Decimal | None = None
+    giveback_fraction_of_peak: Decimal | None = None
+    profit_defense_armed: bool = False
+    profit_defense_stop_tightened: bool = False
+    profit_defense_runner_exit: bool = False
+    profit_defense_last_action: str | None = None
     authoritative_position_seen: bool = False
     exit_reason: str | None = None
     exit_price: Decimal | None = None
@@ -220,6 +229,22 @@ class WarriorForwardCaptureService:
     ) -> tuple[MomentumCandidate, MomentumEntrySignal | None]:
         observation = value.observation
         symbol = observation.symbol.strip().upper()
+        live_state = self._paper.get(symbol)
+        if (
+            live_state is not None
+            and observation.price is not None
+            and observation.timestamp >= live_state.signal.timestamp
+        ):
+            live_state.maximum_high = (
+                observation.price if live_state.maximum_high is None
+                else max(live_state.maximum_high, observation.price)
+            )
+            self._update_peak(live_state)
+            if live_state.signal.risk_per_share > ZERO:
+                live_state.current_r = (
+                    observation.price - live_state.entry_price
+                ) / live_state.signal.risk_per_share
+                self._update_peak(live_state)
         completed = completed_bars_as_of(value.bars, observation.timestamp)
         for bar in completed:
             self.observe_market_bar(symbol, bar, observation.timestamp)
@@ -816,6 +841,64 @@ class WarriorForwardCaptureService:
             self._last_transition[symbol] = transition
         return tuple(records)
 
+    def _update_peak(self, state: _PaperState) -> None:
+        risk = state.signal.risk_per_share
+        if state.maximum_high is None or risk <= ZERO:
+            return
+        state.peak_price = state.maximum_high
+        state.peak_r = (state.peak_price - state.entry_price) / risk
+        if state.current_r is not None:
+            state.giveback_r = state.peak_r - state.current_r
+            state.giveback_fraction_of_peak = (
+                None if state.peak_r <= ZERO else state.giveback_r / state.peak_r
+            )
+        state.profit_defense_armed = (
+            self.config.trade_management.profit_defense_enabled
+            and state.peak_r >= self.config.trade_management.profit_defense_activation_r
+        )
+
+    def _profit_defense_action(
+        self, state: _PaperState, bar: MinuteBar,
+    ) -> tuple[str, Decimal, int] | None:
+        config = self.config.trade_management
+        if not config.profit_defense_enabled or state.remaining <= 0:
+            return None
+        self._update_peak(state)
+        risk = state.signal.risk_per_share
+        if not state.profit_defense_armed or risk <= ZERO or state.peak_r is None:
+            return None
+        current_r = (bar.close - state.entry_price) / risk
+        state.current_r = current_r
+        self._update_peak(state)
+        giveback = state.peak_r - current_r
+        bearish_close = bar.close < bar.open
+        lower_than_prior = state.prior_low is not None and bar.close < state.prior_low
+        lower_high = state.maximum_high is not None and bar.high < state.maximum_high
+        if (
+            state.second_taken
+            and not state.profit_defense_runner_exit
+            and state.peak_r >= config.profit_defense_exit_activation_r
+            and giveback >= config.profit_defense_exit_giveback_r
+            and current_r > ZERO
+            and bearish_close and lower_high
+        ):
+            return "PROFIT_DEFENSE_RUNNER_EXIT", bar.close, state.remaining
+        if (
+            not state.profit_defense_stop_tightened
+            and state.peak_r >= config.profit_defense_activation_r
+            and giveback >= config.profit_defense_tighten_giveback_r
+            and current_r > ZERO
+            and (bearish_close or lower_than_prior)
+        ):
+            desired = state.entry_price + (
+                state.peak_r - config.profit_defense_tighten_giveback_r
+            ) * risk
+            desired = min(desired, bar.close)
+            floor = max(state.stop, state.entry_price if state.first_taken else state.stop)
+            if desired > floor:
+                return "PROFIT_DEFENSE_STOP_TIGHTENED", desired, state.remaining
+        return None
+
     def _open_paper(
         self, signal: MomentumEntrySignal, shares: int, risk_dollars: Decimal,
         float_provenance: FloatProvenance,
@@ -925,6 +1008,10 @@ class WarriorForwardCaptureService:
         else:
             state.minimum_low = bar.low if state.minimum_low is None else min(state.minimum_low, bar.low)
             state.maximum_high = bar.high if state.maximum_high is None else max(state.maximum_high, bar.high)
+            self._update_peak(state)
+            if signal.risk_per_share > ZERO:
+                state.current_r = (bar.close - state.entry_price) / signal.risk_per_share
+                self._update_peak(state)
             if not state.first_taken and bar.high >= signal.target_levels[0]:
                 quantity = min(state.first_quantity, state.remaining)
                 self._submit_exit(state, signal.target_levels[0], quantity, "FIRST_TARGET")
@@ -945,6 +1032,27 @@ class WarriorForwardCaptureService:
                 records.append(self._paper_fill(state, observed_at, "EXIT", "RUNNER_TARGET", signal.target_levels[2], state.remaining))
                 state.realized_pnl += (signal.target_levels[2] - state.entry_price) * state.remaining
                 state.remaining = 0
+            if state.remaining and not records:
+                defense = self._profit_defense_action(state, bar)
+                if defense is not None:
+                    reason, price, quantity = defense
+                    if reason == "PROFIT_DEFENSE_STOP_TIGHTENED":
+                        state.stop = price
+                        state.profit_defense_stop_tightened = True
+                        state.profit_defense_last_action = reason
+                    else:
+                        self._submit_exit(state, price, quantity, reason)
+                        records.append(self._paper_fill(
+                            state, observed_at, "EXIT", reason, price, quantity,
+                        ))
+                        state.realized_pnl += (price - state.entry_price) * quantity
+                        state.remaining -= quantity
+                        state.exit_reason = reason
+                        state.exit_price = price
+                        state.profit_defense_runner_exit = True
+                        state.profit_defense_last_action = reason
+                        if state.remaining <= 0:
+                            state.remaining = 0
         if state.remaining and state.first_taken and state.prior_low is not None and state.prior_low < bar.close:
             state.stop = max(state.stop, state.prior_low)
         state.prior_low = bar.low
@@ -1031,6 +1139,10 @@ class WarriorForwardCaptureService:
         state.remaining = quantity
         state.minimum_low = bar.low if state.minimum_low is None else min(state.minimum_low, bar.low)
         state.maximum_high = bar.high if state.maximum_high is None else max(state.maximum_high, bar.high)
+        self._update_peak(state)
+        if signal.risk_per_share > ZERO:
+            state.current_r = (bar.close - state.entry_price) / signal.risk_per_share
+            self._update_peak(state)
 
         # A fill creates exposure immediately.  Protection is therefore an
         # invariant of the first authoritative position observation, not a
@@ -1145,11 +1257,14 @@ class WarriorForwardCaptureService:
             requested = (signal.target_levels[1], min(state.second_quantity, quantity), "SECOND_TARGET")
         elif bar.high >= signal.target_levels[2]:
             requested = (signal.target_levels[2], quantity, "RUNNER_TARGET")
+        if requested is None:
+            requested = self._profit_defense_action(state, bar)
 
         if requested is not None:
             price, requested_quantity, reason = requested
-            state.exit_reason = reason
-            state.exit_price = price
+            if reason != "PROFIT_DEFENSE_STOP_TIGHTENED":
+                state.exit_reason = reason
+                state.exit_price = price
             result = self._submit_exit(state, price, requested_quantity, reason)
             if reason == "STOP":
                 self._capture_stop_activation(state, result, bar)
@@ -1177,6 +1292,13 @@ class WarriorForwardCaptureService:
                 records.append(self._position_contradiction_record(
                     state, observed_at, reason="PROTECTIVE_EXIT_UNAVAILABLE",
                 ))
+            elif reason == "PROFIT_DEFENSE_STOP_TIGHTENED":
+                state.stop = max(state.stop, price)
+                state.profit_defense_stop_tightened = True
+                state.profit_defense_last_action = reason
+            elif reason == "PROFIT_DEFENSE_RUNNER_EXIT":
+                state.profit_defense_runner_exit = True
+                state.profit_defense_last_action = reason
 
         if state.first_taken and state.prior_low is not None and state.prior_low < bar.close:
             state.stop = max(state.stop, state.prior_low)
@@ -1425,6 +1547,15 @@ class WarriorForwardCaptureService:
                 state.prior_low = None if payload.get("prior_low") is None else Decimal(payload["prior_low"])
                 state.minimum_low = None if payload.get("minimum_low") is None else Decimal(payload["minimum_low"])
                 state.maximum_high = None if payload.get("maximum_high") is None else Decimal(payload["maximum_high"])
+                state.peak_price = None if payload.get("peak_price") is None else Decimal(payload["peak_price"])
+                state.peak_r = None if payload.get("peak_r") is None else Decimal(payload["peak_r"])
+                state.current_r = None if payload.get("current_r") is None else Decimal(payload["current_r"])
+                state.giveback_r = None if payload.get("giveback_r") is None else Decimal(payload["giveback_r"])
+                state.giveback_fraction_of_peak = None if payload.get("giveback_fraction_of_peak") is None else Decimal(payload["giveback_fraction_of_peak"])
+                state.profit_defense_armed = bool(payload.get("profit_defense_armed", False))
+                state.profit_defense_stop_tightened = bool(payload.get("profit_defense_stop_tightened", False))
+                state.profit_defense_runner_exit = bool(payload.get("profit_defense_runner_exit", False))
+                state.profit_defense_last_action = payload.get("profit_defense_last_action")
                 state.first_taken = bool(payload.get("first_taken", False))
                 state.second_taken = bool(payload.get("second_taken", False))
                 state.remaining = int(payload.get("remaining", state.remaining))
@@ -1640,6 +1771,15 @@ def _management_context_record(
             "prior_low": state.prior_low,
             "minimum_low": state.minimum_low,
             "maximum_high": state.maximum_high,
+            "peak_price": state.peak_price,
+            "peak_r": state.peak_r,
+            "current_r": state.current_r,
+            "giveback_r": state.giveback_r,
+            "giveback_fraction_of_peak": state.giveback_fraction_of_peak,
+            "profit_defense_armed": state.profit_defense_armed,
+            "profit_defense_stop_tightened": state.profit_defense_stop_tightened,
+            "profit_defense_runner_exit": state.profit_defense_runner_exit,
+            "profit_defense_last_action": state.profit_defense_last_action,
             "first_taken": state.first_taken,
             "second_taken": state.second_taken,
             "remaining": state.remaining,

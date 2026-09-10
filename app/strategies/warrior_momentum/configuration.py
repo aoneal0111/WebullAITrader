@@ -148,10 +148,23 @@ class TradeManagementConfig:
     second_target_exit_percent: Decimal = Decimal("0.25")
     runner_percent: Decimal = Decimal("0.25")
     move_stop_to_breakeven_after_r: Decimal = Decimal("1")
+    profit_defense_enabled: bool = True
+    profit_defense_activation_r: Decimal = Decimal("1.25")
+    profit_defense_tighten_giveback_r: Decimal = Decimal("0.30")
+    profit_defense_exit_activation_r: Decimal = Decimal("2.0")
+    profit_defense_exit_giveback_r: Decimal = Decimal("0.50")
 
     def __post_init__(self) -> None:
         if self.first_target_exit_percent + self.second_target_exit_percent + self.runner_percent != 1:
             raise ValueError("trade exit percentages must total 1")
+        for value in (
+            self.profit_defense_activation_r,
+            self.profit_defense_tighten_giveback_r,
+            self.profit_defense_exit_activation_r,
+            self.profit_defense_exit_giveback_r,
+        ):
+            if value < 0:
+                raise ValueError("profit-defense thresholds must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)

@@ -509,6 +509,88 @@ def test_activation_bar_cannot_retroactively_stop_and_targets_remain_eligible(tm
         composition.close()
 
 
+def test_profit_defense_tracks_peak_and_tightens_after_confirmed_giveback(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "profit-defense.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(store, writer)
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        state = service._paper["XYZ"]
+        risk = signal.risk_per_share
+        first = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=1), signal.entry_trigger,
+            signal.target_levels[0] + D("0.01"), signal.entry_trigger,
+            signal.target_levels[0], D("100"),
+        )
+        service.observe_market_bar("XYZ", first, first.timestamp)
+        assert state.first_taken is True
+        peak = signal.entry_trigger + risk * D("1.6")
+        giveback = signal.entry_trigger + risk * D("1.3")
+        defense = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=2), peak, peak,
+            signal.entry_trigger + risk * D("1.2"), giveback, D("100"),
+        )
+        service.observe_market_bar("XYZ", defense, defense.timestamp)
+        assert state.peak_price == peak
+        assert state.peak_r == D("1.6")
+        assert state.profit_defense_armed is True
+        assert state.profit_defense_stop_tightened is True
+        assert state.stop == giveback
+        assert state.second_taken is False
+    finally:
+        writer.close()
+
+
+def test_profit_defense_runner_exit_is_limited_and_preserves_milestones(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "profit-defense-runner.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(store, writer)
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        state = service._paper["XYZ"]
+        risk = signal.risk_per_share
+        first = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=1), signal.entry_trigger,
+            signal.target_levels[0] + D("0.01"), signal.entry_trigger,
+            signal.target_levels[0], D("100"),
+        )
+        service.observe_market_bar("XYZ", first, first.timestamp)
+        second = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=2), signal.target_levels[0],
+            signal.target_levels[1] + D("0.01"), signal.target_levels[0],
+            signal.target_levels[1], D("100"),
+        )
+        service.observe_market_bar("XYZ", second, second.timestamp)
+        assert state.second_taken is True
+        peak = signal.entry_trigger + risk * D("2.8")
+        service.observe_market_bar(
+            "XYZ", MinuteBar(
+                "XYZ", signal.timestamp + timedelta(minutes=3), peak, peak,
+                signal.entry_trigger + risk * D("2.5"),
+                signal.entry_trigger + risk * D("2.7"), D("100"),
+            ), signal.timestamp + timedelta(minutes=3),
+        )
+        current = signal.entry_trigger + risk * D("2.3")
+        service.observe_market_bar(
+            "XYZ", MinuteBar(
+                    "XYZ", signal.timestamp + timedelta(minutes=4), current + D("0.01"),
+                        current + D("0.02"), signal.entry_trigger + risk * D("2.1"), current, D("100"),
+            ), signal.timestamp + timedelta(minutes=4),
+        )
+        assert state.peak_r == D("2.8")
+        assert state.profit_defense_runner_exit is True
+        assert state.first_taken is True and state.second_taken is True
+        writer.flush()
+        assert any(
+            record.payload.get("label") == "PROFIT_DEFENSE_RUNNER_EXIT"
+            for record in store.records(record_type=CaptureRecordType.PAPER_FILL)
+        )
+    finally:
+        writer.close()
+
+
 def test_authoritative_fill_establishes_protection_at_actual_quantity(tmp_path: Path) -> None:
     store = ForwardCaptureStore(tmp_path / "actual-fill-protection.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
@@ -726,7 +808,13 @@ def test_management_context_restores_stop_and_trailing_state(tmp_path: Path) -> 
     writer.flush()
     before = service._paper["XYZ"]
     before.stop = signal.entry_trigger
-    before.maximum_high = signal.entry_trigger + Decimal("2")
+    before.maximum_high = signal.entry_trigger + signal.risk_per_share * Decimal("2")
+    before.peak_price = before.maximum_high
+    before.peak_r = Decimal("2")
+    before.current_r = Decimal("1.5")
+    before.profit_defense_armed = True
+    before.profit_defense_stop_tightened = True
+    before.profit_defense_last_action = "PROFIT_DEFENSE_STOP_TIGHTENED"
     before.protective_stop_activated_at = signal.timestamp + timedelta(minutes=1)
     service.observe_market_bar("XYZ", MinuteBar("XYZ", signal.timestamp + timedelta(minutes=1), signal.entry_trigger + D("0.015"), signal.entry_trigger + D("0.02"), signal.entry_trigger + D("0.01"), signal.entry_trigger + D("0.015"), D("100")), signal.timestamp + timedelta(minutes=2))
     writer.flush()
@@ -737,7 +825,13 @@ def test_management_context_restores_stop_and_trailing_state(tmp_path: Path) -> 
                                              configuration_fingerprint=fingerprint)
     state = restarted._paper["XYZ"]
     assert state.stop == signal.entry_trigger
-    assert state.maximum_high == signal.entry_trigger + Decimal("2")
+    assert state.maximum_high == signal.entry_trigger + signal.risk_per_share * Decimal("2")
+    assert state.peak_price == signal.entry_trigger + signal.risk_per_share * Decimal("2")
+    assert state.peak_r == Decimal("2")
+    assert state.current_r == D("0.015") / signal.risk_per_share
+    assert state.profit_defense_armed is True
+    assert state.profit_defense_stop_tightened is True
+    assert state.profit_defense_last_action == "PROFIT_DEFENSE_STOP_TIGHTENED"
     assert state.protective_stop_activated_at == signal.timestamp + timedelta(minutes=1)
     restarted_writer.close()
 
