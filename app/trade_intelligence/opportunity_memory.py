@@ -106,6 +106,29 @@ class NewStructureAssessment:
     trigger_price: Decimal | None = None
 
 
+class PullbackClassification(StrEnum):
+    """Classification supplied by the completed-bar structural detector."""
+
+    HEALTHY = "PULLBACK_HEALTHY"
+    DEEP_BUT_VALID = "PULLBACK_DEEP_BUT_VALID"
+    FAILED = "PULLBACK_FAILED"
+    UNAVAILABLE = "PULLBACK_UNAVAILABLE"
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuationStructureAssessment:
+    """A completed-structure assessment before the live trigger."""
+
+    eligible: bool
+    structure: str
+    classification: PullbackClassification
+    reason: str | None = None
+    entry_anchor: Decimal | None = None
+    structural_stop: Decimal | None = None
+    reclaim_level: Decimal | None = None
+    risk_per_share: Decimal | None = None
+
+
 @dataclass(slots=True)
 class OpportunityMemoryRecord:
     opportunity_id: str
@@ -381,6 +404,55 @@ class OpportunityMemory:
             failed is None, structure, failed, entry_anchor, structural_stop, risk,
         )
 
+    def assess_continuation_structure(
+        self, trading_date: date, symbol: str, opportunity_id: str, *,
+        entry_anchor: Decimal, structural_stop: Decimal, spread_ok: bool,
+        liquidity_ok: bool, freshness_ok: bool,
+        classification: PullbackClassification,
+        structure: str,
+        structure_established: bool,
+        position_quantity: Decimal = ZERO, working_entry: bool = False,
+        lifecycle_count: int = 0, max_lifecycles: int = 3,
+        reclaim_level: Decimal | None = None,
+    ) -> ContinuationStructureAssessment:
+        """Validate a new continuation thesis without authorizing an order.
+
+        Completed-bar code owns the structural facts and classification.  This
+        method only applies continuity and existing execution-safety facts;
+        therefore a single live price cannot manufacture a pullback.
+        """
+        record = self.get(trading_date, symbol, opportunity_id)
+        checks = (
+            (record is not None and record.opportunity_state not in {
+                OpportunityMemoryState.INVALIDATED, OpportunityMemoryState.CLOSED,
+            }, "OPPORTUNITY_INACTIVE"),
+            (position_quantity <= ZERO, "POSITION_EXISTS"),
+            (not working_entry, "WORKING_ENTRY_EXISTS"),
+            (lifecycle_count < max_lifecycles, "LIFECYCLE_CAP"),
+            (entry_anchor > structural_stop, "INVALID_STRUCTURAL_STOP"),
+            (spread_ok, "SPREAD_BLOCKED"),
+            (liquidity_ok, "LIQUIDITY_BLOCKED"),
+            (freshness_ok, "STALE_MARKET_DATA"),
+            (record is not None and record.original_entry_anchor != entry_anchor,
+             "OLD_ENTRY_ANCHOR"),
+            (record is not None and record.highest_price_since_start is not None,
+             "NO_PRIOR_IMPULSE"),
+            (record is not None and record.post_peak_pullback_low is not None,
+             "NO_PULLBACK_CONTEXT"),
+            (structure_established, "STRUCTURE_NOT_ESTABLISHED"),
+            (classification in {
+                PullbackClassification.HEALTHY,
+                PullbackClassification.DEEP_BUT_VALID,
+            }, "PULLBACK_FAILED"),
+            (bool(structure.strip()), "NO_NEW_STRUCTURE"),
+        )
+        failed = next((reason for passed, reason in checks if not passed), None)
+        risk = entry_anchor - structural_stop
+        return ContinuationStructureAssessment(
+            failed is None, structure, classification, failed,
+            entry_anchor, structural_stop, reclaim_level, risk,
+        )
+
     def assess_live_trigger(
         self, trading_date: date, symbol: str, opportunity_id: str, *,
         entry_anchor: Decimal, structural_stop: Decimal, trigger_price: Decimal,
@@ -507,7 +579,8 @@ class AsyncOpportunityMemoryWriter:
 
 
 __all__ = [
-    "AsyncOpportunityMemoryWriter", "EntryAttemptSummary", "NewStructureAssessment", "OpportunityMemory",
+    "AsyncOpportunityMemoryWriter", "ContinuationStructureAssessment",
+    "EntryAttemptSummary", "NewStructureAssessment", "OpportunityMemory",
     "OpportunityMemoryRecord", "OpportunityMemoryState", "OpportunityTransition",
-    "OpportunityTransitionType",
+    "OpportunityTransitionType", "PullbackClassification",
 ]

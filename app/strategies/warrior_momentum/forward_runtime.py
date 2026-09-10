@@ -393,10 +393,18 @@ class WarriorForwardCaptureService:
                     ))),
                 )
                 signal = None
+        if self._try_recovered_continuation_from_observation(
+            value, assessed, signal or technical_signal, account, completed,
+        ):
+            # The recovered path owns both the accepted and rejected new
+            # thesis.  Do not let the ordinary entry branch submit the same
+            # signal as an initial entry after the seam has evaluated it.
+            signal = None
         memory_signal = signal or technical_signal
         memory_opportunity_id = (
-            None if memory_signal is None else opportunity_identity(memory_signal)
-        ) or self._memory_opportunity_ids.get(symbol)
+            self._memory_opportunity_ids.get(symbol)
+            or (None if memory_signal is None else opportunity_identity(memory_signal))
+        )
         if memory_opportunity_id is not None:
             self._memory_opportunity_ids[symbol] = memory_opportunity_id
             self.opportunity_memory.observe(
@@ -625,6 +633,101 @@ class WarriorForwardCaptureService:
         self._submit_records(tuple(records))
         return assessed, signal
 
+    def _try_recovered_continuation_from_observation(
+        self,
+        value: PointInTimeObservation,
+        candidate: MomentumCandidate,
+        signal: MomentumEntrySignal | None,
+        account: PaperAccountContext | None,
+        completed: tuple[MinuteBar, ...],
+    ) -> bool:
+        """Route an already-established continuation through the Phase 4 seam.
+
+        The ordinary Warrior detectors remain authoritative.  This branch is
+        entered only when they produce a current signal (or a technical signal
+        retained behind an execution block) whose anchor differs from the
+        remembered entry attempt, and the memory record already contains a
+        prior impulse/pullback.  Thus completed/history-derived setup context
+        is required; a live quote cannot create a recovered structure.
+        """
+        if signal is None:
+            return False
+        opportunity_id = (
+            self._memory_opportunity_ids.get(signal.symbol)
+            or opportunity_identity(signal)
+        )
+        record = self.opportunity_memory.get(
+            signal.timestamp.date(), signal.symbol, opportunity_id,
+        )
+        if (
+            record is None
+            or not record.attempts
+            or record.original_entry_anchor is None
+            or record.original_entry_anchor == signal.entry_trigger
+            or record.post_peak_pullback_low is None
+        ):
+            return False
+
+        # A triggered setup is derived from completed bars by
+        # WarriorMomentumRuntime.discover().  Persist that fact before using
+        # the fresh observation as the final trigger.
+        if candidate.setup is None or candidate.setup.state is not SetupState.TRIGGERED:
+            return False
+        if completed:
+            self.opportunity_memory.record_structure_established(
+                signal.timestamp.date(), signal.symbol, opportunity_id,
+                completed[-1].timestamp,
+            )
+        if record.structure_established_at is None:
+            from app.trade_intelligence.opportunity_memory import OpportunityTransitionType
+            self.opportunity_memory.record_transition(
+                signal.timestamp.date(), signal.symbol, opportunity_id,
+                signal.timestamp, OpportunityTransitionType.ENTRY_CANCELLED,
+                reason="STRUCTURE_NOT_ESTABLISHED",
+            )
+            return True
+
+        if account is None:
+            from app.trade_intelligence.opportunity_memory import OpportunityTransitionType
+            self.opportunity_memory.record_transition(
+                signal.timestamp.date(), signal.symbol, opportunity_id,
+                signal.timestamp, OpportunityTransitionType.ENTRY_CANCELLED,
+                reason="ACCOUNT_UNAVAILABLE",
+            )
+            return True
+        stale_after = self.capture_config.quote_stale_after_seconds
+        ages = (
+            value.quote_freshness_seconds,
+            value.last_price_freshness_seconds,
+        )
+        freshness_ok = all(
+            age is not None and age >= ZERO and age <= stale_after
+            for age in ages
+        )
+        setup_type = candidate.setup.setup_type
+        from app.trade_intelligence.opportunity_memory import PullbackClassification
+        if setup_type.value in {"MICRO_PULLBACK", "BULL_FLAG"}:
+            higher_low, reclaim = True, False
+        else:
+            higher_low, reclaim = False, True
+        classification = PullbackClassification.HEALTHY.value
+        self.authorize_recovered_continuation(
+            candidate, signal, account,
+            structure=setup_type.value,
+            classification=classification,
+            structure_established_at=record.structure_established_at,
+            live_price=value.observation.price,
+            trigger_price=signal.entry_trigger,
+            reclaim_level=(candidate.setup.resistance if reclaim else None),
+            higher_low=higher_low, reclaim=reclaim,
+            momentum_reaccelerated=False,
+            working_entry=False,
+            freshness_ok=freshness_ok,
+        )
+        # Whether accepted or blocked, this was a recovered candidate and
+        # must not fall through to ordinary initial-entry submission.
+        return True
+
     def _consider_adaptive_entry_replacement(
         self,
         value: PointInTimeObservation,
@@ -852,6 +955,11 @@ class WarriorForwardCaptureService:
         )
         if not position.approved or self._paper_entry_submitter is None:
             return False
+        if (
+            record.live_trigger_first_seen_at is not None
+            and record.live_trigger_anchor == signal.entry_trigger
+        ):
+            return False
         result = self._paper_entry_submitter(signal, position.shares, position.risk_dollars)
         authorized = result.authorized if isinstance(result, PaperEntryAuthorizationDecision) else bool(result)
         if authorized:
@@ -883,6 +991,80 @@ class WarriorForwardCaptureService:
                 quantity=Decimal(position.shares),
             )
         return authorized
+
+    def authorize_recovered_continuation(
+        self, candidate: MomentumCandidate, signal: MomentumEntrySignal,
+        account: PaperAccountContext, *, structure: str,
+        classification: str, structure_established_at: datetime,
+        live_price: Decimal, trigger_price: Decimal,
+        reclaim_level: Decimal | None = None,
+        higher_low: bool = False, reclaim: bool = False,
+        momentum_reaccelerated: bool = False, working_entry: bool = False,
+        freshness_ok: bool,
+    ) -> bool:
+        """Authorize a new continuation lifecycle from an existing thesis.
+
+        This is an explicit Phase 4 seam.  The ordinary ``observe`` path is
+        unchanged; callers must provide detector-established structure and a
+        fresh final trigger.  Re-evaluation after spread/liquidity recovery
+        therefore uses the same opportunity memory, but never the old entry
+        anchor or adaptive replacement path.
+        """
+        from app.trade_intelligence.opportunity_memory import (
+            OpportunityTransitionType, PullbackClassification,
+        )
+
+        try:
+            pullback_classification = PullbackClassification(classification)
+        except ValueError:
+            return False
+        opportunity_id = (
+            self._memory_opportunity_ids.get(signal.symbol)
+            or opportunity_identity(signal)
+        )
+        trading_date = signal.timestamp.date()
+        record = self.opportunity_memory.get(
+            trading_date, signal.symbol, opportunity_id,
+        )
+        if record is None:
+            return False
+        assessment = self.opportunity_memory.assess_continuation_structure(
+            trading_date, signal.symbol, opportunity_id,
+            entry_anchor=signal.entry_trigger,
+            structural_stop=signal.stop_price,
+            spread_ok=(candidate.spread_percent is not None and candidate.spread_percent <= self.config.entry.maximum_spread_percent),
+            liquidity_ok=candidate.dollar_volume >= self.config.entry.minimum_dollar_volume,
+            freshness_ok=freshness_ok,
+            classification=pullback_classification,
+            structure=structure,
+            structure_established=True,
+            position_quantity=(self._paper_position_quantity_source(signal.symbol)
+                               if self._paper_position_quantity_source is not None else ZERO),
+            working_entry=working_entry,
+            lifecycle_count=len(record.attempts),
+            max_lifecycles=self.config.adaptive_entry.max_lifecycles_per_opportunity,
+            reclaim_level=reclaim_level,
+        )
+        if not assessment.eligible:
+            self.opportunity_memory.record_transition(
+                trading_date, signal.symbol, opportunity_id, signal.timestamp,
+                OpportunityTransitionType.ENTRY_CANCELLED,
+                reason=assessment.reason,
+            )
+            return False
+        if reclaim_level is not None:
+            self.opportunity_memory.record_reclaim(
+                trading_date, signal.symbol, opportunity_id,
+                signal.timestamp, reclaim_level, confirmed=True,
+            )
+        return self.authorize_live_structural_entry(
+            candidate, signal, account,
+            structure_established_at=structure_established_at,
+            live_price=live_price, trigger_price=trigger_price,
+            higher_low=higher_low, reclaim=reclaim,
+            momentum_reaccelerated=momentum_reaccelerated,
+            working_entry=working_entry, freshness_ok=freshness_ok,
+        )
 
     def consider_add_on(
         self,
