@@ -850,6 +850,10 @@ class WarriorForwardCaptureService:
         """
         from app.trade_intelligence.opportunity_memory import OpportunityTransitionType
         opportunity_id = self._memory_opportunity_ids.get(signal.symbol) or opportunity_identity(signal)
+        memory_record = self.opportunity_memory.get(
+            signal.timestamp.date(), signal.symbol, opportunity_id,
+        )
+        lifecycle_count = 0 if memory_record is None else len(memory_record.attempts)
         assessment = self.opportunity_memory.assess_new_structure(
             signal.timestamp.date(), signal.symbol, opportunity_id,
             entry_anchor=signal.entry_trigger, structural_stop=signal.stop_price,
@@ -859,8 +863,7 @@ class WarriorForwardCaptureService:
             position_quantity=(self._paper_position_quantity_source(signal.symbol)
                               if self._paper_position_quantity_source is not None else ZERO),
             working_entry=working_entry,
-            lifecycle_count=(0 if self.opportunity_memory.get(signal.timestamp.date(), signal.symbol, opportunity_id) is None
-                             else len(self.opportunity_memory.get(signal.timestamp.date(), signal.symbol, opportunity_id).attempts)),
+            lifecycle_count=lifecycle_count,
             max_lifecycles=self.config.adaptive_entry.max_lifecycles_per_opportunity,
             higher_low=higher_low, reclaim=reclaim,
             momentum_reaccelerated=momentum_reaccelerated,
@@ -870,6 +873,22 @@ class WarriorForwardCaptureService:
                 signal.timestamp.date(), signal.symbol, opportunity_id,
                 signal.timestamp, OpportunityTransitionType.ENTRY_CANCELLED,
                 reason=assessment.reason,
+            )
+            return False
+        quality = self.opportunity_memory.assess_quality(
+            signal.timestamp.date(), signal.symbol, opportunity_id,
+            proposed_entry=signal.entry_trigger,
+            structural_stop=signal.stop_price,
+            evaluated_at=signal.timestamp,
+            session=signal.session,
+            reward_reference=(None if memory_record is None else memory_record.highest_price_since_start),
+            lifecycle_count=lifecycle_count,
+        )
+        if not quality.authorization_allowed:
+            self.opportunity_memory.record_transition(
+                signal.timestamp.date(), signal.symbol, opportunity_id,
+                signal.timestamp, OpportunityTransitionType.ENTRY_CANCELLED,
+                reason=f"QUALITY_{quality.classification.value}:{','.join(quality.reasons)}",
             )
             return False
         position = size_position(
@@ -1050,6 +1069,22 @@ class WarriorForwardCaptureService:
                 trading_date, signal.symbol, opportunity_id, signal.timestamp,
                 OpportunityTransitionType.ENTRY_CANCELLED,
                 reason=assessment.reason,
+            )
+            return False
+        quality = self.opportunity_memory.assess_quality(
+            trading_date, signal.symbol, opportunity_id,
+            proposed_entry=signal.entry_trigger,
+            structural_stop=signal.stop_price,
+            evaluated_at=signal.timestamp,
+            session=signal.session,
+            reward_reference=record.highest_price_since_start,
+            lifecycle_count=len(record.attempts),
+        )
+        if not quality.authorization_allowed:
+            self.opportunity_memory.record_transition(
+                trading_date, signal.symbol, opportunity_id,
+                signal.timestamp, OpportunityTransitionType.ENTRY_CANCELLED,
+                reason=f"QUALITY_{quality.classification.value}:{','.join(quality.reasons)}",
             )
             return False
         if reclaim_level is not None:

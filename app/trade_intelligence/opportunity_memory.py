@@ -106,6 +106,62 @@ class NewStructureAssessment:
     trigger_price: Decimal | None = None
 
 
+class OpportunityQuality(StrEnum):
+    STRONG = "STRONG"
+    ACCEPTABLE = "ACCEPTABLE"
+    DEGRADED = "DEGRADED"
+    EXHAUSTED = "EXHAUSTED"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+@dataclass(frozen=True, slots=True)
+class OpportunityQualityAssessment:
+    classification: OpportunityQuality
+    evaluated_at: datetime
+    reasons: tuple[str, ...] = ()
+    opportunity_age_minutes: Decimal | None = None
+    prior_expansion_percent: Decimal | None = None
+    entry_extension_percent: Decimal | None = None
+    vwap_extension_percent: Decimal | None = None
+    remaining_reward: Decimal | None = None
+    reward_risk_ratio: Decimal | None = None
+    session: str | None = None
+
+    @property
+    def acceptable(self) -> bool:
+        return self.classification in {
+            OpportunityQuality.STRONG,
+            OpportunityQuality.ACCEPTABLE,
+        }
+
+    @property
+    def authorization_allowed(self) -> bool:
+        """Allow degraded quality only while it is not exhausted."""
+        if self.acceptable:
+            return True
+        return (
+            self.classification is OpportunityQuality.DEGRADED
+            and self.opportunity_age_minutes is not None
+            and self.opportunity_age_minutes < Decimal("45")
+            and "LATE_SESSION_DECAY" not in self.reasons
+            and (
+                "REMAINING_REWARD_WEAK" not in self.reasons
+                or (
+                    self.prior_expansion_percent is not None
+                    and self.prior_expansion_percent < Decimal("40")
+                )
+            )
+            and (
+                self.reward_risk_ratio is None
+                or self.reward_risk_ratio >= Decimal("1.25")
+                or (
+                    self.prior_expansion_percent is not None
+                    and self.prior_expansion_percent < Decimal("40")
+                )
+            )
+        )
+
+
 class PullbackClassification(StrEnum):
     """Classification supplied by the completed-bar structural detector."""
 
@@ -176,6 +232,9 @@ class OpportunityMemoryRecord:
     live_trigger_anchor: Decimal | None = None
     entry_authorized_at: datetime | None = None
     order_submitted_at: datetime | None = None
+    quality_classification: OpportunityQuality | None = None
+    quality_reasons: tuple[str, ...] = ()
+    quality_evaluated_at: datetime | None = None
     attempts: deque[EntryAttemptSummary] = field(default_factory=lambda: deque(maxlen=8))
     transitions: deque[OpportunityTransition] = field(default_factory=lambda: deque(maxlen=64))
 
@@ -375,6 +434,119 @@ class OpportunityMemory:
                 OpportunityTransitionType.RECLAIM_CONFIRMED if confirmed else OpportunityTransitionType.RECLAIM_STARTED,
                 at, price=level,
             )
+
+    def assess_quality(
+        self, trading_date: date, symbol: str, opportunity_id: str, *,
+        proposed_entry: Decimal, structural_stop: Decimal,
+        evaluated_at: datetime, session: str | None = None,
+        vwap: Decimal | None = None, reward_reference: Decimal | None = None,
+        session_end_at: datetime | None = None,
+        lifecycle_count: int | None = None, failed_high: bool | None = None,
+    ) -> OpportunityQualityAssessment:
+        """Assess late-continuation quality without changing hard gates.
+
+        The inputs are compact opportunity aggregates, not a tick history.
+        Missing optional context remains explicit; it is never replaced with
+        a fabricated target or session boundary.
+        """
+        record = self.get(trading_date, symbol, opportunity_id)
+        if record is None:
+            return OpportunityQualityAssessment(
+                OpportunityQuality.UNAVAILABLE, evaluated_at,
+                ("OPPORTUNITY_MEMORY_UNAVAILABLE",), session=session,
+            )
+        reasons: list[str] = []
+        age: Decimal | None = None
+        if evaluated_at < record.first_seen_at:
+            reasons.append("EVALUATION_PRECEDES_OPPORTUNITY")
+        else:
+            age = Decimal(str((evaluated_at - record.first_seen_at).total_seconds())) / Decimal("60")
+
+        expansion: Decimal | None = None
+        if record.first_seen_price and record.first_seen_price > ZERO and record.highest_price_since_start:
+            expansion = (
+                (record.highest_price_since_start - record.first_seen_price)
+                / record.first_seen_price * Decimal("100")
+            )
+        entry_extension: Decimal | None = None
+        if record.original_entry_anchor and record.original_entry_anchor > ZERO:
+            entry_extension = (
+                (proposed_entry - record.original_entry_anchor)
+                / record.original_entry_anchor * Decimal("100")
+            )
+        vwap_extension: Decimal | None = None
+        if vwap is not None and vwap > ZERO:
+            vwap_extension = (proposed_entry - vwap) / vwap * Decimal("100")
+
+        risk = proposed_entry - structural_stop
+        remaining_reward: Decimal | None = None
+        reward_risk: Decimal | None = None
+        reference = reward_reference or record.highest_price_since_start
+        if reference is not None and reference > proposed_entry:
+            remaining_reward = reference - proposed_entry
+            if risk > ZERO:
+                reward_risk = remaining_reward / risk
+
+        count = record.lifecycle_count if lifecycle_count is None else lifecycle_count
+        if age is None or age < ZERO or proposed_entry <= ZERO or structural_stop <= ZERO:
+            reasons.append("QUALITY_CONTEXT_INVALID")
+        if expansion is None:
+            reasons.append("PRIOR_EXPANSION_UNAVAILABLE")
+        elif expansion >= Decimal("40"):
+            reasons.append("PRIOR_EXPANSION_CONSUMED")
+        if entry_extension is not None and entry_extension >= Decimal("15"):
+            reasons.append("EXTENDED_FROM_ORIGINAL_ANCHOR")
+        if vwap_extension is not None and vwap_extension >= Decimal("12"):
+            reasons.append("EXTENDED_FROM_VWAP")
+        if age is not None and age >= Decimal("45"):
+            reasons.append("OPPORTUNITY_AGE_DECAY")
+        if count >= 2:
+            reasons.append("REPEATED_LIFECYCLES")
+        if failed_high is True:
+            reasons.append("FAILED_HIGH_CONTEXT")
+        if reward_risk is None:
+            reasons.append("REMAINING_REWARD_UNAVAILABLE")
+        elif reward_risk < Decimal("1.25"):
+            reasons.append("REMAINING_REWARD_WEAK")
+        if session_end_at is not None:
+            remaining_session = Decimal(str((session_end_at - evaluated_at).total_seconds())) / Decimal("60")
+            if remaining_session < ZERO:
+                reasons.append("SESSION_TIME_EXPIRED")
+            elif remaining_session <= Decimal("15"):
+                reasons.append("LATE_SESSION_DECAY")
+
+        invalid = "QUALITY_CONTEXT_INVALID" in reasons or "EVALUATION_PRECEDES_OPPORTUNITY" in reasons
+        exhausted = (
+            "SESSION_TIME_EXPIRED" in reasons
+            or (
+                "REMAINING_REWARD_WEAK" in reasons
+                and any(reason in reasons for reason in (
+                    "PRIOR_EXPANSION_CONSUMED", "OPPORTUNITY_AGE_DECAY",
+                    "EXTENDED_FROM_ORIGINAL_ANCHOR", "EXTENDED_FROM_VWAP",
+                ))
+            )
+            or sum(reason in reasons for reason in (
+                "PRIOR_EXPANSION_CONSUMED", "OPPORTUNITY_AGE_DECAY",
+                "REPEATED_LIFECYCLES", "FAILED_HIGH_CONTEXT",
+            )) >= 3
+        )
+        if invalid:
+            classification = OpportunityQuality.UNAVAILABLE
+        elif exhausted:
+            classification = OpportunityQuality.EXHAUSTED
+        elif reasons:
+            classification = OpportunityQuality.DEGRADED
+        else:
+            classification = OpportunityQuality.STRONG
+        with self._lock:
+            record.quality_classification = classification
+            record.quality_reasons = tuple(reasons)
+            record.quality_evaluated_at = evaluated_at
+        return OpportunityQualityAssessment(
+            classification, evaluated_at, tuple(reasons), age, expansion,
+            entry_extension, vwap_extension, remaining_reward, reward_risk,
+            session,
+        )
 
     def assess_new_structure(
         self, trading_date: date, symbol: str, opportunity_id: str, *,
@@ -581,6 +753,7 @@ class AsyncOpportunityMemoryWriter:
 __all__ = [
     "AsyncOpportunityMemoryWriter", "ContinuationStructureAssessment",
     "EntryAttemptSummary", "NewStructureAssessment", "OpportunityMemory",
-    "OpportunityMemoryRecord", "OpportunityMemoryState", "OpportunityTransition",
+    "OpportunityMemoryRecord", "OpportunityMemoryState", "OpportunityQuality",
+    "OpportunityQualityAssessment", "OpportunityTransition",
     "OpportunityTransitionType", "PullbackClassification",
 ]

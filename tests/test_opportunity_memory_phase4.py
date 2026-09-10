@@ -246,8 +246,8 @@ def test_production_observe_routes_recovered_candidate_through_live_seam(tmp_pat
         service._memory_opportunity_ids["DBGI"] = "DBGI-OPP"
         service.opportunity_memory.observe(
             opportunity_id="DBGI-OPP", symbol="DBGI", trading_date=DAY,
-            observed_at=at(0), price=Decimal("5.67"), qualified=True,
-            entry_anchor=Decimal("5.67"),
+            observed_at=at(0), price=Decimal("9.67"), qualified=True,
+            entry_anchor=Decimal("9.67"),
         )
         service.opportunity_memory.observe(
             opportunity_id="DBGI-OPP", symbol="DBGI", trading_date=DAY,
