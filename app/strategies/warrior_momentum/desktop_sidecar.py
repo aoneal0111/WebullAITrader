@@ -33,6 +33,9 @@ from .report_worker import ReportWorkerMetrics, WarriorReportWorker
 from .forward_runtime import WarriorForwardCaptureService
 from .execution_quote import ExecutionQuoteSource
 from .forward_store import ForwardCaptureStore
+from .order_flow_runtime import (
+    OrderFlowPollingService, OrderFlowPriority,
+)
 from .models import CandidateStatus, MinuteBar, MomentumCandidate, SetupState
 from .runtime import WarriorMomentumRuntime
 from .shadow_latched import (
@@ -146,6 +149,7 @@ class WarriorDesktopSidecar:
         paper_position_quantity_source: Callable[[str], Decimal] | None = None,
         paper_execution_ownership_source: Callable[[str], bool] | None = None,
         execution_quote_source: ExecutionQuoteSource | None = None,
+        order_flow_client: object | None = None,
         research_observer: object | None = None,
         entry_value_observer: object | None = None,
         paper_campaign_id: str | None = None,
@@ -166,6 +170,7 @@ class WarriorDesktopSidecar:
         self._paper_position_quantity_source = paper_position_quantity_source
         self._paper_execution_ownership_source = paper_execution_ownership_source
         self._execution_quote_source = execution_quote_source
+        self._order_flow = OrderFlowPollingService(order_flow_client)
         self._research_observer = research_observer
         self._entry_value_observer = entry_value_observer
         self._paper_campaign_id = paper_campaign_id
@@ -413,6 +418,7 @@ class WarriorDesktopSidecar:
                 )
                 self._health = WarriorCaptureHealth.RUNNING
                 self._accept_execution = True
+                self._order_flow.start()
             except Exception as exc:
                 self._last_error_type = type(exc).__name__
                 self._health = WarriorCaptureHealth.DEGRADED
@@ -549,6 +555,23 @@ class WarriorDesktopSidecar:
                 metrics, self._last_error_type,
                 Decimal(str(self._publications / elapsed)),
             )
+
+    def management_context(self, symbol: str) -> dict[str, object] | None:
+        """Return the active Warrior management facts for read-only GUI use."""
+        normalized = symbol.strip().upper()
+        with self._lock:
+            service = self._service
+            state = None if service is None else service._paper.get(normalized)
+            if state is None:
+                return None
+            return {
+                "entry_price": state.entry_price,
+                "structural_stop": state.signal.stop_price,
+                "stop": state.stop,
+                "target_levels": state.signal.target_levels,
+                "first_taken": state.first_taken,
+                "second_taken": state.second_taken,
+            }
 
     def adaptive_entry_context(
         self, symbol: str, cutoff: datetime,
@@ -702,6 +725,7 @@ class WarriorDesktopSidecar:
                         event.payload.asks
                         if isinstance(event.payload, QuotePayload) else ()
                     ),
+                    order_flow=self._order_flow.assessment(symbol, now=evaluated_at),
                     quote_provenance="SHARED_SCANNER_ADAPTER",
                 )
             candidate, signal = service.observe(
@@ -739,6 +763,7 @@ class WarriorDesktopSidecar:
                 min(market_timestamps) if len(market_timestamps) == 2 else None
             )
             self._observe_stages(candidate, signal is not None)
+            self._update_order_flow_priority(symbol, candidate, signal is not None)
             research_decision = getattr(
                 self._research_observer, "observe_warrior_decision", None,
             )
@@ -785,6 +810,23 @@ class WarriorDesktopSidecar:
                 session=scanner_session(observation.timestamp).value,
                 execution_permitted=self._accept_execution,
             ))
+
+    def _update_order_flow_priority(
+        self, symbol: str, candidate: MomentumCandidate, entry_ready: bool,
+    ) -> None:
+        position_quantity = Decimal("0")
+        if self._paper_position_quantity_source is not None:
+            try:
+                position_quantity = Decimal(str(self._paper_position_quantity_source(symbol)))
+            except (ArithmeticError, TypeError, ValueError):
+                position_quantity = Decimal("0")
+        if entry_ready or position_quantity != 0:
+            priority = OrderFlowPriority.HIGH
+        elif symbol in self._stage_symbols["setup_forming"]:
+            priority = OrderFlowPriority.MEDIUM
+        else:
+            priority = OrderFlowPriority.LOW
+        self._order_flow.update_symbol(symbol, priority)
 
     def _aggregate_trade(self, event: MarketEvent, cumulative: Decimal) -> bool:
         assert event.symbol is not None and isinstance(event.payload, TradePayload)

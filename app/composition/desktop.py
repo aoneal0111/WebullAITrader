@@ -436,6 +436,7 @@ def create_desktop_composition(
             else autonomous_paper_bridge.has_execution_ownership
         ),
         execution_quote_source=execution_quote_source,
+        order_flow_client=shared_rest_market_data,
         research_observer=trade_intelligence_observer,
         entry_value_observer=entry_opportunity_value_observer,
         paper_campaign_id=(
