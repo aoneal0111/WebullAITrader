@@ -295,6 +295,7 @@ class PaperOrderGateway:
                     order,
                     created_at,
                 ),
+                metadata=dict(getattr(order, "metadata", {})),
             )
 
             paper_order = create_order(
@@ -1015,6 +1016,8 @@ def _cancellation_reason(
     source = str(request.metadata.get("source", "")).strip().lower()
     if source == "autonomous-paper-protective-replace":
         return OrderTerminalReason.PROTECTIVE_REPLACED
+    if source == "autonomous-paper-entry-replace":
+        return OrderTerminalReason.ENTRY_REPLACED
     return OrderTerminalReason.OPERATOR_CANCELLED
 
 

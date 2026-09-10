@@ -437,6 +437,7 @@ def _order_payload(order: PaperOrder, campaign_id: str) -> dict:
                 if order.request.entry_valid_until is None
                 else order.request.entry_valid_until.isoformat()
             ),
+            "metadata": dict(order.request.metadata),
         },
         "fills": [_fill_payload(fill) for fill in order.fills],
     }
@@ -474,6 +475,7 @@ def _order_from_payload(value: dict) -> PaperOrder:
                 if request.get("entry_valid_until") is None
                 else datetime.fromisoformat(request["entry_valid_until"])
             ),
+            metadata=request.get("metadata", {}),
         ),
         fills=tuple(_fill_from_payload(fill) for fill in value["fills"]),
     )

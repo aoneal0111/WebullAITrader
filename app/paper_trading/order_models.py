@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import Mapping
 
 from app.momentum_scanner import AssetClass
 from app.paper_trading.fill_models import Fill
@@ -47,6 +48,7 @@ class OrderTerminalReason(StrEnum):
     STRUCTURAL_STOP_INVALIDATED = "STRUCTURAL_STOP_INVALIDATED"
     OPERATOR_CANCELLED = "OPERATOR_CANCELLED"
     PROTECTIVE_REPLACED = "PROTECTIVE_REPLACED"
+    ENTRY_REPLACED = "ENTRY_REPLACED"
 
 
 TERMINAL_ORDER_STATUSES = frozenset(
@@ -74,6 +76,7 @@ class OrderRequest:
     structural_stop_price: Decimal | None = None
     execution_reason: str | None = None
     entry_valid_until: datetime | None = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         symbol = self.symbol.strip().upper()
@@ -127,6 +130,7 @@ class OrderRequest:
                 self.entry_valid_until,
                 "entry_valid_until",
             )
+        object.__setattr__(self, "metadata", dict(self.metadata))
 
 
 @dataclass(frozen=True, slots=True)

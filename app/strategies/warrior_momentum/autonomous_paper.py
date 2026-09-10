@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_FLOOR
 from threading import RLock
 from typing import Callable
 from enum import StrEnum
@@ -70,6 +70,29 @@ class PaperExitSubmissionState(StrEnum):
     SUBMITTED = "SUBMITTED"
     WORKING = "WORKING"
     UNAVAILABLE = "UNAVAILABLE"
+
+
+class PaperEntryReplacementState(StrEnum):
+    SUBMITTED = "SUBMITTED"
+    REFUSED = "REFUSED"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+@dataclass(frozen=True, slots=True)
+class PaperEntryReplacementDecision:
+    state: PaperEntryReplacementState
+    symbol: str
+    lifecycle_id: str
+    reason: str
+    predecessor_order_id: str | None = None
+    replacement_order_id: str | None = None
+    replacement_sequence: int = 0
+    requested_quantity: int = 0
+    cumulative_filled_quantity: Decimal = Decimal("0")
+
+    @property
+    def submitted(self) -> bool:
+        return self.state is PaperEntryReplacementState.SUBMITTED
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,8 +410,11 @@ class AutonomousPaperExecutionBridge:
                         metadata={
                             "source": "autonomous-paper",
                             "reason": "ENTRY",
+                            "provenance": "AUTONOMOUS_ORIGINAL_ENTRY",
                             "risk_dollars": str(risk_dollars),
                             "lifecycle_id": identity,
+                            "replacement_sequence": "0",
+                            "original_planned_entry": str(trigger),
                             "structural_stop": str(getattr(signal, "stop_price", "")),
                             "entry_validity_seconds": str(
                                 int(BAR_INTERVAL.total_seconds())
@@ -433,6 +459,199 @@ class AutonomousPaperExecutionBridge:
         """Compatibility boundary retaining the historical boolean contract."""
 
         return self.submit_entry_decision(signal, shares, risk_dollars).authorized
+
+    def replace_entry_order(
+        self,
+        *,
+        lifecycle_id: str,
+        replacement_limit: Decimal,
+        structural_stop: Decimal,
+        original_risk_budget: Decimal,
+        account_equity: Decimal,
+        buying_power: Decimal,
+        existing_exposure: Decimal = Decimal("0"),
+        maximum_position_equity_percentage: Decimal = Decimal("0.50"),
+        maximum_position_dollars: Decimal = Decimal("25000"),
+        maximum_quantity: int = 10000,
+        revalidate: Callable[[], bool] | None = None,
+        reason: str = "adaptive-entry-replacement",
+    ) -> PaperEntryReplacementDecision:
+        """Explicitly replace one working entry after full revalidation.
+
+        This is a dormant execution foundation: no runtime path calls it merely
+        because a quote moved.  The predecessor is cancelled and verified
+        terminal before a new LIMIT is authorized.  All quantity calculations
+        are for the same lifecycle, so a new broker order cannot reset its risk
+        budget or duplicate an already-filled quantity.
+        """
+        identity = str(lifecycle_id).strip()
+        normalized_reason = str(reason).strip() or "adaptive-entry-replacement"
+        if not identity or replacement_limit <= 0 or structural_stop <= 0:
+            return PaperEntryReplacementDecision(
+                PaperEntryReplacementState.REFUSED, "", identity,
+                "INVALID_REPLACEMENT_INPUT",
+            )
+        if not all(
+            value.is_finite() and value >= 0
+            for value in (original_risk_budget, account_equity, buying_power,
+                          existing_exposure, maximum_position_dollars)
+        ) or not maximum_position_equity_percentage.is_finite():
+            return PaperEntryReplacementDecision(
+                PaperEntryReplacementState.REFUSED, "", identity,
+                "INVALID_ACCOUNT_CONTEXT",
+            )
+        with self._lock:
+            if self.readiness is not AutonomousPaperReadiness.READY:
+                return self._replacement_refused(identity, "BROKER_NOT_READY")
+            if self.order_book is None:
+                return self._replacement_refused(identity, "ORDER_BOOK_UNAVAILABLE")
+            symbol = ""
+            predecessor_id = self._entry_orders.get(identity)
+            predecessor = None
+            if self.order_book is not None and predecessor_id is not None:
+                try:
+                    predecessor = self.order_book.get(predecessor_id)
+                except Exception:
+                    predecessor = None
+            if predecessor is None or predecessor.request.strategy_lifecycle_id != identity:
+                return self._replacement_refused(identity, "PREDECESSOR_NOT_FOUND")
+            symbol = predecessor.symbol
+            if predecessor.request.side is not OrderSide.BUY or predecessor.is_terminal:
+                return self._replacement_refused(identity, "PREDECESSOR_NOT_WORKING", symbol)
+            if predecessor.request.order_type is not OrderType.LIMIT:
+                return self._replacement_refused(identity, "PREDECESSOR_NOT_LIMIT", symbol)
+            try:
+                sequence = int(predecessor.request.metadata.get("replacement_sequence", 0)) + 1
+            except (TypeError, ValueError):
+                return self._replacement_refused(identity, "INVALID_REPLACEMENT_SEQUENCE", symbol)
+            if revalidate is None:
+                return self._replacement_refused(identity, "REVALIDATION_REQUIRED", symbol, predecessor_id, sequence)
+            try:
+                valid = bool(revalidate())
+            except Exception:
+                valid = False
+            if not valid:
+                return self._replacement_refused(identity, "REVALIDATION_FAILED", symbol, predecessor_id, sequence)
+            if replacement_limit <= structural_stop:
+                return self._replacement_refused(identity, "STRUCTURAL_STOP_INVALID", symbol, predecessor_id, sequence)
+
+            if not self._cancel_entry_predecessor(predecessor):
+                return self._replacement_refused(identity, "CANCELLATION_NOT_CONFIRMED", symbol, predecessor_id, sequence)
+            try:
+                cancelled = self.order_book.get(predecessor.order_id)
+            except Exception:
+                return self._replacement_refused(identity, "PREDECESSOR_STATE_UNAVAILABLE", symbol, predecessor_id, sequence)
+            if not cancelled.is_terminal or cancelled.status.value != "CANCELLED":
+                return self._replacement_refused(identity, "CANCELLATION_NOT_CONFIRMED", symbol, predecessor_id, sequence)
+
+            filled, consumed_risk, average_fill = self._lifecycle_fill_state(identity, structural_stop)
+            remaining_risk = max(Decimal("0"), original_risk_budget - consumed_risk)
+            risk_per_share = replacement_limit - structural_stop
+            risk_quantity = int((remaining_risk / risk_per_share).to_integral_value(rounding=ROUND_FLOOR)) if risk_per_share > 0 else 0
+            position_quantity = self._authoritative_quantity(symbol)
+            predecessor_remaining = int(cancelled.remaining_quantity)
+            if self.position_quantity_source is not None:
+                position_quantity = Decimal(self.position_quantity_source(symbol))
+            if position_quantity < filled:
+                return self._replacement_refused(identity, "POSITION_STATE_CONTRADICTS_FILLS", symbol, predecessor_id, sequence)
+            notional_room = max(
+                Decimal("0"),
+                min(maximum_position_dollars, account_equity * maximum_position_equity_percentage)
+                - existing_exposure,
+            )
+            notional_quantity = int((notional_room / replacement_limit).to_integral_value(rounding=ROUND_FLOOR))
+            buying_power_quantity = int((buying_power / replacement_limit).to_integral_value(rounding=ROUND_FLOOR))
+            quantity = max(0, min(
+                predecessor_remaining, risk_quantity, notional_quantity,
+                buying_power_quantity, int(maximum_quantity),
+            ))
+            if quantity <= 0:
+                return self._replacement_refused(identity, "REMAINING_AUTHORIZATION_EXHAUSTED", symbol, predecessor_id, sequence)
+            original_planned = predecessor.request.metadata.get(
+                "original_planned_entry", predecessor.request.limit_price,
+            )
+            try:
+                request = self.order_command_factory.create_placement_request(
+                    OrderEntryCommand(
+                        symbol=symbol, side="BUY", quantity=Decimal(quantity),
+                        order_type="LIMIT", limit_price=replacement_limit,
+                        stop_price=None, time_in_force="DAY",
+                        strategy_lifecycle_id=identity,
+                        metadata={
+                            "source": "autonomous-paper",
+                            "reason": "ENTRY_REPLACEMENT",
+                            "provenance": "AUTONOMOUS_ADAPTIVE_ENTRY_REPLACEMENT",
+                            "lifecycle_id": identity,
+                            "predecessor_order_id": predecessor.order_id,
+                            "replacement_sequence": str(sequence),
+                            "replacement_reason": normalized_reason,
+                            "original_planned_entry": str(original_planned),
+                            "structural_stop": str(structural_stop),
+                            "risk_dollars": str(original_risk_budget),
+                            "risk_consumed": str(consumed_risk),
+                            "cumulative_filled_quantity": str(filled),
+                            "remaining_requested_quantity": str(quantity),
+                            "entry_validity_seconds": str(int(BAR_INTERVAL.total_seconds())),
+                        },
+                    )
+                )
+                result = self.trading_service.place_order(request)
+            except Exception:
+                return self._replacement_refused(identity, "REPLACEMENT_SUBMISSION_FAILED", symbol, predecessor_id, sequence, quantity, filled)
+            if not result.success:
+                return self._replacement_refused(identity, "REPLACEMENT_REJECTED", symbol, predecessor_id, sequence, quantity, filled)
+            replacement_id = result.broker_order_id
+            try:
+                replacement = self.order_book.get(replacement_id)
+            except Exception:
+                return self._replacement_refused(identity, "REPLACEMENT_STATE_UNAVAILABLE", symbol, predecessor_id, sequence, quantity, filled)
+            if replacement.is_terminal or replacement.request.order_type is not OrderType.LIMIT:
+                return self._replacement_refused(identity, "REPLACEMENT_NOT_WORKING_LIMIT", symbol, predecessor_id, sequence, quantity, filled)
+            self._entry_orders[identity] = replacement_id
+            return PaperEntryReplacementDecision(
+                PaperEntryReplacementState.SUBMITTED, symbol, identity, "SUBMITTED",
+                predecessor_id, replacement_id, sequence, quantity, filled,
+            )
+
+    # Explicit alias for callers that name the coordinator operation directly.
+    replace_entry = replace_entry_order
+
+    def _cancel_entry_predecessor(self, order: object) -> bool:
+        try:
+            cancellation = self.trading_service.cancel_order(
+                self.order_command_factory.create_cancellation_request(
+                    order.order_id, order.request.client_order_id,
+                    source="autonomous-paper-entry-replace",
+                )
+            )
+        except Exception:
+            return False
+        return cancellation is not None and cancellation.success
+
+    def _lifecycle_fill_state(self, identity: str, structural_stop: Decimal) -> tuple[Decimal, Decimal, Decimal | None]:
+        filled = Decimal("0")
+        notional = Decimal("0")
+        if self.order_book is None:
+            return filled, Decimal("0"), None
+        for order in self.order_book.history():
+            if order.request.strategy_lifecycle_id != identity or order.request.side is not OrderSide.BUY:
+                continue
+            filled += order.filled_quantity
+            if order.average_fill_price is not None:
+                notional += order.filled_quantity * order.average_fill_price
+        average = notional / filled if filled else None
+        consumed = Decimal("0") if average is None else filled * max(Decimal("0"), average - structural_stop)
+        return filled, consumed, average
+
+    @staticmethod
+    def _replacement_refused(
+        identity: str, reason: str, symbol: str = "", predecessor: str | None = None,
+        sequence: int = 0, quantity: int = 0, filled: Decimal = Decimal("0"),
+    ) -> PaperEntryReplacementDecision:
+        return PaperEntryReplacementDecision(
+            PaperEntryReplacementState.REFUSED, symbol, identity, reason,
+            predecessor, None, sequence, quantity, filled,
+        )
 
     def submit_exit(
         self, symbol: str, quantity: int, price: Decimal, reason: str,
@@ -786,5 +1005,6 @@ __all__ = [
     "AutonomousPaperReadiness", "PaperEntryAuthorizationDecision",
     "PaperEntryAuthorizationReason", "PaperEntryAuthorizationResult",
     "PaperEntryGateDecision", "lifecycle_identity",
+    "PaperEntryReplacementDecision", "PaperEntryReplacementState",
     "PaperExitSubmissionDecision", "PaperExitSubmissionState",
 ]
