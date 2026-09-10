@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+from decimal import Decimal
 from typing import Callable
 
 from app.operations.runtime import RuntimeEventSink
@@ -13,6 +14,8 @@ from app.read_models.health_projection import HealthProjection
 from app.read_models.order_projection import OrderProjection
 from app.read_models.portfolio_projection import PortfolioProjection
 from app.read_models.position_projection import PositionProjection
+from app.read_models.paper_account_projection import PaperAccountProjection
+from app.paper_gateway.durable_store import DEFAULT_ATLAS_PAPER_STARTING_CASH
 from app.read_models.timeline_projection import TimelineProjection
 from app.read_models.watchlist_projection import WatchlistProjection
 from app.portfolio_intelligence.projection import PortfolioIntelligenceProjection
@@ -33,6 +36,7 @@ class RuntimeProjectionPipeline:
     timeline_projection: TimelineProjection
     decision_projection: DecisionProjection
     portfolio_intelligence_projection: PortfolioIntelligenceProjection
+    paper_account_projection: PaperAccountProjection
     sink: CompositeRuntimeEventSink
 
     @property
@@ -49,6 +53,10 @@ def create_runtime_projection_pipeline(
     watchlist_stale_after: timedelta = timedelta(seconds=30),
     portfolio_account_source: Callable[[], PortfolioAccount] | None = None,
     portfolio_intelligence_service: PortfolioIntelligenceService | None = None,
+    paper_account_starting_cash=DEFAULT_ATLAS_PAPER_STARTING_CASH,
+    paper_account_buying_power_multiplier=None,
+    paper_account_campaign_id_source: Callable[[], str | None] | None = None,
+    paper_account_capital_source: Callable[[], dict[str, Decimal] | None] | None = None,
 ) -> RuntimeProjectionPipeline:
     """Build the authoritative ordered projection fan-out."""
 
@@ -67,6 +75,19 @@ def create_runtime_projection_pipeline(
     health_projection = HealthProjection(
         operations_bus,
         market_data_stale_after=watchlist_stale_after,
+    )
+    paper_account_projection = PaperAccountProjection(
+        campaign_id="runtime-paper-campaign",
+        starting_cash=paper_account_starting_cash,
+        position_projection=position_projection,
+        order_projection=order_projection,
+        bus=operations_bus,
+        buying_power_multiplier=(
+            Decimal("1") if paper_account_buying_power_multiplier is None
+            else paper_account_buying_power_multiplier
+        ),
+        campaign_id_source=paper_account_campaign_id_source,
+        capital_source=paper_account_capital_source,
     )
     watchlist_projection = WatchlistProjection(
         operations_bus,
@@ -104,6 +125,7 @@ def create_runtime_projection_pipeline(
         (
             order_projection,
             position_projection,
+            paper_account_projection,
             portfolio_projection,
             health_projection,
             watchlist_projection,
@@ -121,6 +143,7 @@ def create_runtime_projection_pipeline(
         timeline_projection=timeline_projection,
         decision_projection=decision_projection,
         portfolio_intelligence_projection=portfolio_intelligence_projection,
+        paper_account_projection=paper_account_projection,
         sink=sink,
     )
 

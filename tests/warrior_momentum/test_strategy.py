@@ -376,6 +376,47 @@ def test_after_hours_position_sizing_still_requires_risk_approval() -> None:
     assert ReasonCode.RISK_REJECTED in denied.reason_codes
 
 
+def test_position_notional_ceiling_is_half_of_current_equity():
+    capped = replace(signal(), entry_trigger=D("100"), stop_price=D("99.99"),
+                     reference_price=D("100"), risk_per_share=D("0.01"))
+    size = size_position(capped, account_equity=D("10000"), buying_power=D("10000"),
+                         allowed_symbols=frozenset({"XYZ"}))
+    assert size.approved and size.shares == 50
+
+
+def test_structural_risk_remains_tighter_than_notional_ceiling():
+    size = size_position(signal(), account_equity=D("10000"), buying_power=D("10000"),
+                         allowed_symbols=frozenset({"XYZ"}))
+    assert size.approved and size.shares == 200
+
+
+def test_notional_ceiling_can_be_tighter_than_risk_derived_quantity():
+    low_risk = replace(signal(), risk_per_share=D("0.01"))
+    size = size_position(low_risk, account_equity=D("10000"), buying_power=D("10000"),
+                         allowed_symbols=frozenset({"XYZ"}))
+    assert size.approved and size.shares == 500
+
+
+def test_notional_ceiling_tracks_declining_and_increasing_equity():
+    low_risk = replace(signal(), risk_per_share=D("0.01"))
+    lower = size_position(low_risk, account_equity=D("9000"), buying_power=D("9000"),
+                          allowed_symbols=frozenset({"XYZ"}))
+    higher = size_position(low_risk, account_equity=D("12000"), buying_power=D("12000"),
+                           allowed_symbols=frozenset({"XYZ"}))
+    assert lower.shares == 450
+    assert higher.shares == 600
+
+
+def test_multiple_positions_share_available_buying_power():
+    low_risk = replace(signal(), risk_per_share=D("0.01"))
+    first = size_position(low_risk, account_equity=D("10000"), buying_power=D("6000"),
+                          allowed_symbols=frozenset({"XYZ"}))
+    second = size_position(low_risk, account_equity=D("10000"), buying_power=D("1000"),
+                           allowed_symbols=frozenset({"XYZ"}))
+    assert first.shares == 500 and second.shares == 100
+    assert (first.position_dollars + second.position_dollars) <= D("6000")
+
+
 def test_paper_plan_is_authorized_only_after_existing_safeguards() -> None:
     plan = prepare_paper_plan(signal(), account_equity=D("50000"), buying_power=D("10000"),
                               allowed_symbols=frozenset({"XYZ"}), risk_engine_approved=True)

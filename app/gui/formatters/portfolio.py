@@ -15,41 +15,40 @@ def format_portfolio(
     cash: Decimal | None = None,
     intelligence: PortfolioIntelligenceSnapshot | None = None,
     current_drawdown: Decimal | None = None,
+    paper_account=None,
 ) -> PortfolioDashboardSnapshot:
     if not isinstance(summary, PortfolioSummary):
         raise TypeError("summary must be a PortfolioSummary")
+    metrics = (
+        ("Equity", _decimal_money(equity)),
+        ("Buying Power", _decimal_money(buying_power)),
+        ("Cash", _decimal_money(cash)),
+        ("Market Value", _money(summary.total_market_value)),
+        ("Cost Basis", _money(summary.total_cost_basis)),
+        ("Total P/L", _money(summary.total_pnl, signed=True)),
+        ("Realized P/L", _money(summary.realized_pnl, signed=True)),
+        ("Unrealized P/L", _money(summary.unrealized_pnl, signed=True)),
+        ("Gross Exposure", _money(summary.gross_exposure)),
+        ("Exposure", _exposure_percent(summary.gross_exposure, equity)),
+        ("Long / Short", _exposure(summary)),
+        ("Working Orders", str(summary.working_orders)),
+        ("Open Positions", str(summary.open_positions)),
+        ("Net Exposure", _intelligence_money(intelligence, "net_exposure")),
+        ("Current Drawdown", _current_drawdown(intelligence, current_drawdown)),
+        ("Positions / Orders", f"{summary.open_positions} / {summary.working_orders}"),
+        ("Winning / Losing Positions", _counts(summary.winning_positions, summary.losing_positions)),
+    )
+    if paper_account is not None:
+        metrics += (
+            ("ATLAS PAPER Equity", _decimal_money(paper_account.current_equity)),
+            ("ATLAS PAPER Cash", _decimal_money(paper_account.current_cash)),
+            ("ATLAS PAPER Buying Power", _decimal_money(paper_account.buying_power)),
+            ("ATLAS PAPER Realized P/L", _money(str(paper_account.realized_pnl), signed=True)),
+            ("ATLAS PAPER Unrealized P/L", _money(None if paper_account.unrealized_pnl is None else str(paper_account.unrealized_pnl), signed=True)),
+            ("ATLAS PAPER Total P/L", _money(None if paper_account.total_pnl is None else str(paper_account.total_pnl), signed=True)),
+        )
     return PortfolioDashboardSnapshot(
-        metrics=(
-            ("Equity", _decimal_money(equity)),
-            ("Buying Power", _decimal_money(buying_power)),
-            ("Cash", _decimal_money(cash)),
-            ("Market Value", _money(summary.total_market_value)),
-            ("Cost Basis", _money(summary.total_cost_basis)),
-            ("Total P/L", _money(summary.total_pnl, signed=True)),
-            ("Realized P/L", _money(summary.realized_pnl, signed=True)),
-            ("Unrealized P/L", _money(summary.unrealized_pnl, signed=True)),
-            ("Gross Exposure", _money(summary.gross_exposure)),
-            ("Exposure", _exposure_percent(summary.gross_exposure, equity)),
-            ("Long / Short", _exposure(summary)),
-            (
-                "Working Orders",
-                str(summary.working_orders),
-            ),
-            ("Open Positions", str(summary.open_positions)),
-            ("Net Exposure", _intelligence_money(intelligence, "net_exposure")),
-            ("Current Drawdown", _current_drawdown(intelligence, current_drawdown)),
-            (
-                "Positions / Orders",
-                f"{summary.open_positions} / {summary.working_orders}",
-            ),
-            (
-                "Winning / Losing Positions",
-                _counts(
-                    summary.winning_positions,
-                    summary.losing_positions,
-                ),
-            ),
-        ),
+        metrics=metrics,
         highlights=(
             ("Largest Position", _highlight(summary.largest_position)),
             (
@@ -62,9 +61,12 @@ def format_portfolio(
             ),
             ("Top-Five Concentration", _concentration(intelligence)),
             ("Highest Correlation", _correlation(intelligence)),
-            ("Win Rate", _performance_percent(intelligence, "win_rate")),
-            ("Profit Factor", _performance_value(intelligence, "profit_factor")),
-            ("Risk Budget", intelligence.risk_budget.overall.value if intelligence is not None else "--"),
+            ("HISTORICAL Win Rate", _performance_percent(intelligence, "win_rate")),
+            ("HISTORICAL Profit Factor", _performance_value(intelligence, "profit_factor")),
+            (
+                "ATLAS PAPER Risk Budget" if paper_account is not None else "Risk Budget",
+                intelligence.risk_budget.overall.value if intelligence is not None else "--",
+            ),
         ),
     )
 

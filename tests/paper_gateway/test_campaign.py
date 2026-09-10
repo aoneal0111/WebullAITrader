@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from app.operations.runtime import PaperRuntimeEvent
 from app.paper_gateway.campaign import start_new_paper_campaign
@@ -34,6 +35,11 @@ def test_rollover_keeps_history_but_starts_empty_active_campaign(tmp_path):
     assert campaign == "paper-clean-1"
     assert campaign != old_campaign
     assert store.active_campaign_id == campaign
+    assert store.active_campaign_capital() == {
+        "starting_equity": Decimal("10000"),
+        "starting_cash": Decimal("10000"),
+        "buying_power_multiplier": Decimal("1"),
+    }
     assert store.events() == ()
     assert len(store.historical_events()) == 1
     store.close()
@@ -65,9 +71,16 @@ def test_pre_campaign_ledger_is_legacy_until_explicit_rollover(tmp_path):
     assert legacy.events() == ()
     assert len(legacy.historical_events()) == 1
     campaign = start_new_paper_campaign(
-        path, operation_key="legacy-rollover", campaign_id="paper-after-legacy"
+        path, operation_key="legacy-rollover", campaign_id="paper-after-legacy",
+        starting_equity=Decimal("25000"), starting_cash=Decimal("25000"),
+        buying_power_multiplier=Decimal("2"),
     )
     assert campaign == "paper-after-legacy"
     assert legacy.active_campaign_id == campaign
+    assert legacy.active_campaign_capital() == {
+        "starting_equity": Decimal("25000"),
+        "starting_cash": Decimal("25000"),
+        "buying_power_multiplier": Decimal("2"),
+    }
     assert LEGACY_PAPER_CAMPAIGN_ID == "legacy-paper-campaign"
     legacy.close()

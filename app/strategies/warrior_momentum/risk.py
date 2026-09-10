@@ -18,7 +18,9 @@ def size_position(
     risk_budget = min(config.configured_per_trade_risk, config.equity_risk_percentage * account_equity)
     raw = int((risk_budget / signal.risk_per_share).to_integral_value(rounding=ROUND_FLOOR))
     affordable = int((buying_power / signal.reference_price).to_integral_value(rounding=ROUND_FLOOR))
-    position_cap = int((config.maximum_position_dollars / signal.reference_price).to_integral_value(rounding=ROUND_FLOOR))
+    equity_position_cap = account_equity * config.maximum_position_equity_percentage
+    position_cap_dollars = min(config.maximum_position_dollars, equity_position_cap)
+    position_cap = int((position_cap_dollars / signal.reference_price).to_integral_value(rounding=ROUND_FLOOR))
     shares = max(0, min(raw, affordable, position_cap, config.maximum_quantity))
     reasons: list[ReasonCode] = []
     symbol_allowed = (

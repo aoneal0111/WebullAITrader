@@ -112,6 +112,7 @@ class RiskConfig:
     equity_risk_percentage: Decimal = Decimal("0.005")
     maximum_quantity: int = 10000
     maximum_position_dollars: Decimal = Decimal("25000")
+    maximum_position_equity_percentage: Decimal = Decimal("0.50")
 
 
 @dataclass(frozen=True, slots=True)

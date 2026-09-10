@@ -178,9 +178,17 @@ def create_desktop_composition(
     # Subscriptions and execution permissions are not chart selections. Atlas
     # candidates and explicit operator interaction own chart focus.
     chart_default_symbol = None
+    paper_campaign_holder: dict[str, object] = {"id": None, "capital": None}
     def portfolio_account_source() -> PortfolioAccount:
         state = state_store.snapshot()
         account = state.broker_account
+        if operational_configuration.environment.value == "PAPER":
+            paper_account = state.paper_account
+            if paper_account is not None:
+                return PortfolioAccount(
+                    paper_account.campaign_id, paper_account.current_equity,
+                    paper_account.current_cash, paper_account.buying_power,
+                )
         if account is not None:
             return PortfolioAccount(account.account_id, account.equity, account.cash_balance, account.buying_power, account.currency)
         paper = state.paper_runtime
@@ -209,6 +217,8 @@ def create_desktop_composition(
                 maximum_open_positions=operational_configuration.max_open_positions,
             )
         ),
+        paper_account_campaign_id_source=lambda: paper_campaign_holder["id"],
+        paper_account_capital_source=lambda: paper_campaign_holder["capital"],
     )
     trade_intelligence_observer.bind_authoritative_focus_sources(
         position_source=lambda: runtime_projections.position_projection.snapshot,
@@ -315,6 +325,12 @@ def create_desktop_composition(
             position_quantity_source=position_quantity,
             clock=paper_clock,
         )
+        paper_campaign_holder["id"] = paper_trading_commands.paper_campaign_id
+        paper_campaign_holder["capital"] = (
+            paper_trading_commands.durable_store.active_campaign_capital()
+            if paper_trading_commands.durable_store is not None else None
+        )
+        runtime_projections.paper_account_projection.refresh()
         placement_runtime = paper_trading_commands.placement_runtime
         cancellation_runtime = paper_trading_commands.cancellation_runtime
         order_command_factory = (
@@ -329,7 +345,15 @@ def create_desktop_composition(
     def warrior_account_context() -> PaperAccountContext | None:
         state = state_store.snapshot()
         account = state.broker_account
-        if account is not None:
+        paper_account = (
+            state.paper_account
+            if operational_configuration.environment.value == "PAPER"
+            else None
+        )
+        if paper_account is not None:
+            equity = paper_account.current_equity
+            buying_power = paper_account.buying_power
+        elif account is not None:
             equity = getattr(account, "equity", None)
             buying_power = getattr(account, "buying_power", None)
         else:

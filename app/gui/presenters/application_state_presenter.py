@@ -145,23 +145,32 @@ class PortfolioPresenter:
 
     def render(self, state: ApplicationState) -> None:
         account = state.broker_account
+        paper_account = state.paper_account if state.runtime.environment == "PAPER" else None
+        # The projection publishes an initial zero-activity snapshot at composition
+        # time; it is not account readiness until the runtime has produced state.
         account_loaded = account is not None or state.paper_runtime is not None
         snapshot = format_portfolio(
             state.portfolio_projection,
             equity=(
-                account.equity
+                paper_account.current_equity
+                if paper_account is not None
+                else account.equity
                 if account is not None
                 else state.paper_runtime.current_equity
                 if state.paper_runtime is not None
                 else None
             ),
             buying_power=(
-                account.buying_power
+                paper_account.buying_power
+                if paper_account is not None
+                else account.buying_power
                 if account is not None
                 else None
             ),
             cash=(
-                account.cash_balance
+                paper_account.current_cash
+                if paper_account is not None
+                else account.cash_balance
                 if account is not None
                 else None
             ),
@@ -171,6 +180,7 @@ class PortfolioPresenter:
                 if state.paper_runtime is not None
                 else None
             ),
+            paper_account=paper_account,
         )
         if not account_loaded:
             snapshot = replace(

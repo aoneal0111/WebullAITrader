@@ -25,6 +25,7 @@ from app.paper_trading.order_models import (
 SCHEMA_VERSION = 1
 LEGACY_PAPER_CAMPAIGN_ID = "legacy-paper-campaign"
 NO_ACTIVE_PAPER_CAMPAIGN_ID = "no-active-paper-campaign"
+DEFAULT_ATLAS_PAPER_STARTING_CASH = Decimal("10000")
 DEFAULT_BUSY_TIMEOUT_SECONDS = 1.0
 
 
@@ -79,6 +80,12 @@ class DurablePaperExecutionStore:
                         operation_key TEXT PRIMARY KEY,
                         campaign_id TEXT NOT NULL,
                         created_at TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS paper_campaign_capital(
+                        campaign_id TEXT PRIMARY KEY,
+                        starting_equity TEXT NOT NULL,
+                        starting_cash TEXT NOT NULL,
+                        buying_power_multiplier TEXT NOT NULL
                     );
                     """
                 )
@@ -229,13 +236,47 @@ class DurablePaperExecutionStore:
             finally:
                 connection.close()
 
+    def active_campaign_capital(self) -> dict[str, Decimal] | None:
+        """Return immutable starting-capital metadata for the active campaign."""
+        with self._lock:
+            self._require_open()
+            connection = self._open_connection()
+            try:
+                campaign_id = self._active_campaign_id(connection)
+                if campaign_id is None:
+                    return None
+                row = connection.execute(
+                    "SELECT starting_equity,starting_cash,buying_power_multiplier FROM paper_campaign_capital WHERE campaign_id=?",
+                    (campaign_id,),
+                ).fetchone()
+                if row is None:
+                    return {
+                        "starting_equity": DEFAULT_ATLAS_PAPER_STARTING_CASH,
+                        "starting_cash": DEFAULT_ATLAS_PAPER_STARTING_CASH,
+                        "buying_power_multiplier": Decimal("1"),
+                    }
+                return {
+                    "starting_equity": Decimal(row[0]),
+                    "starting_cash": Decimal(row[1]),
+                    "buying_power_multiplier": Decimal(row[2]),
+                }
+            finally:
+                connection.close()
+
     def start_new_paper_campaign(
         self, *, operation_key: str, campaign_id: str | None = None,
         started_at: datetime | None = None, reason: str = "explicit-rollover",
+        starting_equity: Decimal = DEFAULT_ATLAS_PAPER_STARTING_CASH,
+        starting_cash: Decimal = DEFAULT_ATLAS_PAPER_STARTING_CASH,
+        buying_power_multiplier: Decimal = Decimal("1"),
     ) -> str:
         """Create an auditable active campaign without rewriting old rows."""
         if not operation_key.strip():
             raise ValueError("operation_key is required")
+        if not all(_valid_nonnegative(value) for value in (starting_equity, starting_cash)):
+            raise ValueError("starting capital must be finite and nonnegative")
+        if not _valid_positive(buying_power_multiplier):
+            raise ValueError("buying_power_multiplier must be positive")
         campaign_id = campaign_id or f"paper-{uuid4().hex}"
         started_at = started_at or datetime.now().astimezone()
         if started_at.tzinfo is None or started_at.utcoffset() is None:
@@ -266,6 +307,10 @@ class DurablePaperExecutionStore:
                 connection.execute(
                     "INSERT INTO paper_campaigns VALUES(?,?,?,?,?)",
                     (campaign_id, "ACTIVE", started_at.isoformat(), None, reason),
+                )
+                connection.execute(
+                    "INSERT INTO paper_campaign_capital VALUES(?,?,?,?)",
+                    (campaign_id, str(starting_equity), str(starting_cash), str(buying_power_multiplier)),
                 )
                 self._set_metadata(connection, "active_campaign_id", campaign_id)
                 connection.execute(
@@ -298,6 +343,10 @@ class DurablePaperExecutionStore:
         now = datetime.now().astimezone().isoformat()
         campaign_id = f"paper-{uuid4().hex}"
         connection.execute("INSERT INTO paper_campaigns VALUES(?,?,?,?,?)", (campaign_id, "ACTIVE", now, None, "initial-empty-store"))
+        connection.execute(
+            "INSERT INTO paper_campaign_capital VALUES(?,?,?,?)",
+            (campaign_id, str(DEFAULT_ATLAS_PAPER_STARTING_CASH), str(DEFAULT_ATLAS_PAPER_STARTING_CASH), "1"),
+        )
         self._set_metadata(connection, "active_campaign_id", campaign_id)
 
     @staticmethod
@@ -447,6 +496,14 @@ def _payload_campaign(value: dict) -> str:
     return str(value.get("paper_campaign_id") or LEGACY_PAPER_CAMPAIGN_ID)
 
 
+def _valid_nonnegative(value: object) -> bool:
+    return isinstance(value, Decimal) and value.is_finite() and value >= 0
+
+
+def _valid_positive(value: object) -> bool:
+    return isinstance(value, Decimal) and value.is_finite() and value > 0
+
+
 def _event_from_payload(value: dict) -> PaperRuntimeEvent:
     order = value["order"]
     fill = value["fill"]
@@ -463,4 +520,5 @@ __all__ = [
     "SCHEMA_VERSION",
     "LEGACY_PAPER_CAMPAIGN_ID",
     "NO_ACTIVE_PAPER_CAMPAIGN_ID",
+    "DEFAULT_ATLAS_PAPER_STARTING_CASH",
 ]
