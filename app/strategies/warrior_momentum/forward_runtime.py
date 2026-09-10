@@ -21,6 +21,10 @@ from .forward_models import (
 )
 from .autonomous_paper import lifecycle_identity
 from .execution_quote import ExecutionQuoteSource
+from .execution_pursuit import (
+    ExecutionPursuitAssessment, ExecutionPursuitDecision,
+    assess_top_of_book_pursuit,
+)
 from .forward_queue import ForwardCaptureWriter
 from .forward_store import ForwardCaptureStore
 from .autonomous_paper import (
@@ -234,6 +238,9 @@ class WarriorForwardCaptureService:
         self._memory_opportunity_ids: dict[str, str] = {}
         self.runtime = WarriorMomentumRuntime(config)
         self._last_transition: dict[str, ForwardTransition] = {}
+        # Compact, latest-only execution-pursuit diagnostics.  This is not a
+        # per-tick history and never becomes an execution authority.
+        self._last_execution_pursuit: dict[str, ExecutionPursuitAssessment] = {}
         self._seen_bars: set[tuple[str, datetime]] = set()
         self._paper: dict[str, _PaperState] = {}
         self._counterfactual: dict[str, _CounterState] = {}
@@ -758,6 +765,51 @@ class WarriorForwardCaptureService:
             or any(age is None or age > stale_limit for age in freshness)
         ):
             return
+
+        spread = candidate.spread_percent
+        if (
+            value.best_bid_size is not None
+            and value.best_ask_size is not None
+            and spread is not None
+        ):
+            replacement_budget = True
+            quality_ok = True
+            from app.trade_intelligence.opportunity_memory import OpportunityQuality
+            opportunity_id = self._memory_opportunity_ids.get(signal.symbol)
+            if opportunity_id is not None:
+                memory = self.opportunity_memory.get(
+                    signal.timestamp.date(), signal.symbol, opportunity_id,
+                )
+                quality_ok = memory is None or memory.quality_classification not in {
+                    # Quality is an explicit blocker when already assessed as
+                    # exhausted/unavailable; absent quality remains compatible
+                    # with the pre-existing adaptive-entry path.
+                    OpportunityQuality.EXHAUSTED,
+                    OpportunityQuality.UNAVAILABLE,
+                }
+            assessment = assess_top_of_book_pursuit(
+                evaluated_at=value.evaluation_timestamp or value.observation.timestamp,
+                working_limit=signal.entry_trigger,
+                best_bid=bid, best_ask=ask,
+                bid_size=value.best_bid_size, ask_size=value.best_ask_size,
+                spread_percent=spread,
+                maximum_spread_percent=self.config.entry.maximum_spread_percent,
+                quote_fresh=all(
+                    age is not None and age >= ZERO and age <= stale_limit
+                    for age in freshness
+                ),
+                liquidity_ok=signal.dollar_volume >= self.config.entry.minimum_dollar_volume,
+                thesis_valid=signal.setup_type is not None, quality_ok=quality_ok,
+                replacement_budget_available=replacement_budget,
+                structural_stop=state.signal.stop_price,
+                expected_reward=(
+                    None if not state.signal.target_levels
+                    else state.signal.target_levels[-1] - state.signal.entry_trigger
+                ),
+            )
+            self._last_execution_pursuit[signal.symbol] = assessment
+            if assessment.decision is not ExecutionPursuitDecision.PURSUE_ONE_LEVEL:
+                return
 
         def current_gates_valid() -> bool:
             return bool(
