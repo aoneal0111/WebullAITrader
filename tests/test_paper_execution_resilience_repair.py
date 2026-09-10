@@ -158,7 +158,7 @@ def test_partial_position_protection_is_immediate_and_resizes(tmp_path):
         _, signal = service.observe(point(), account=account())
         assert signal is not None
         assert service.reconcile_authoritative_protection("XYZ", NOW)
-        assert submissions == [(1124, "STOP")]
+        assert submissions == [(1124, "STOP"), (1124, "STOP")]
         assert service._paper["XYZ"].protection_reconciled is True
 
         position["XYZ"] = Decimal("1300")

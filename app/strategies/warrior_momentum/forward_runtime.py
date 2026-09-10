@@ -1511,6 +1511,94 @@ class WarriorForwardCaptureService:
             first, second, shares, risk_budget=risk_dollars,
         )
         self._paper[signal.symbol] = state
+        protection_records: list[CaptureRecord] = []
+        # PAPER placement can synchronously publish a fill before this
+        # service has installed its in-memory lifecycle state.  Reconcile
+        # immediately after installation so that a nonzero authoritative
+        # position can never pass through an implicit unmanaged state.  A
+        # later callback remains responsible for fills that arrive after the
+        # placement call returns.
+        if (
+            self._paper_entry_submitter is not None
+            and self._paper_position_quantity_source is not None
+        ):
+            try:
+                authoritative_quantity = max(
+                    0, int(self._paper_position_quantity_source(signal.symbol))
+                )
+            except Exception:
+                authoritative_quantity = 0
+            if authoritative_quantity > 0:
+                state.authoritative_position_seen = True
+                state.remaining = authoritative_quantity
+                if not state.first_taken and not state.second_taken:
+                    state.managed_quantity = authoritative_quantity
+                    state.first_quantity = int(
+                        (
+                            Decimal(authoritative_quantity)
+                            * self.config.trade_management.first_target_exit_percent
+                        ).to_integral_value(rounding=ROUND_FLOOR)
+                    )
+                    state.second_quantity = int(
+                        (
+                            Decimal(authoritative_quantity)
+                            * self.config.trade_management.second_target_exit_percent
+                        ).to_integral_value(rounding=ROUND_FLOOR)
+                    )
+                try:
+                    protection = self._submit_exit(
+                        state, state.stop, authoritative_quantity, "STOP",
+                    )
+                    protection_active = (
+                        protection.protection_active
+                        if isinstance(protection, PaperExitSubmissionDecision)
+                        else bool(protection)
+                    )
+                except Exception:
+                    protection = None
+                    protection_active = False
+                state.protection_reconciled = protection_active
+                if protection_active:
+                    state.protective_stop_activated_at = (
+                        getattr(protection, "activation_timestamp", None)
+                        or signal.timestamp
+                    )
+                    protection_records.append(CaptureRecord.create(
+                        CaptureRecordType.STATE_TRANSITION,
+                        signal.symbol, signal.timestamp,
+                        {
+                            "from": ForwardTransition.PAPER_ENTRY.value,
+                            "to": ForwardTransition.PAPER_EXIT_WORKING.value,
+                            "reason_codes": ["PROTECTION_REQUIRED"],
+                            "authoritative_remaining": authoritative_quantity,
+                            "exit_order_id": getattr(protection, "order_id", None),
+                        },
+                        identity_parts=(
+                            ForwardTransition.PAPER_EXIT_WORKING.value,
+                            "PROTECTION_REQUIRED",
+                            lifecycle_identity(signal),
+                        ),
+                    ))
+                else:
+                    protection_records.append(CaptureRecord.create(
+                        CaptureRecordType.STATE_TRANSITION,
+                        signal.symbol, signal.timestamp,
+                        {
+                            "from": ForwardTransition.PAPER_ENTRY.value,
+                            "to": ForwardTransition.PAPER_EXIT_REQUIRED.value,
+                            "reason_codes": ["STOP_PROTECTION_UNAVAILABLE"],
+                            "authoritative_remaining": authoritative_quantity,
+                        },
+                        identity_parts=(
+                            ForwardTransition.PAPER_EXIT_REQUIRED.value,
+                            "STOP_PROTECTION_UNAVAILABLE",
+                            lifecycle_identity(signal),
+                        ),
+                    ))
+                    protection_records.append(self._position_contradiction_record(
+                        state, signal.timestamp,
+                        reason="PROTECTIVE_EXIT_UNAVAILABLE",
+                    ))
         fill = CaptureRecord.create(
             CaptureRecordType.PAPER_FILL, signal.symbol, signal.timestamp,
             {"action": "ENTRY", "setup": signal.setup_type.value,
@@ -1536,9 +1624,8 @@ class WarriorForwardCaptureService:
         )
         self._last_transition[signal.symbol] = ForwardTransition.PAPER_ENTRY
         return (
-            (fill, transition, _management_context_record(
-                signal.symbol, signal.timestamp, signal, state,
-            )),
+            (fill, transition, *protection_records,
+             _management_context_record(signal.symbol, signal.timestamp, signal, state)),
             execution_record,
             authorization_decision,
         )
