@@ -60,6 +60,9 @@ class OpportunityTransitionType(StrEnum):
     POSITION_ADDED = "POSITION_ADDED"
     PARTIAL_EXIT = "PARTIAL_EXIT"
     POSITION_CLOSED = "POSITION_CLOSED"
+    STRUCTURE_ESTABLISHED = "STRUCTURE_ESTABLISHED"
+    LIVE_TRIGGER_FIRST_SEEN = "LIVE_TRIGGER_FIRST_SEEN"
+    NEW_STRUCTURE_ENTRY_READY = "NEW_STRUCTURE_ENTRY_READY"
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +103,7 @@ class NewStructureAssessment:
     entry_anchor: Decimal | None = None
     structural_stop: Decimal | None = None
     risk_per_share: Decimal | None = None
+    trigger_price: Decimal | None = None
 
 
 @dataclass(slots=True)
@@ -144,6 +148,11 @@ class OpportunityMemoryRecord:
     latest_blocking_reason: str | None = None
     opportunity_state: OpportunityMemoryState = OpportunityMemoryState.DISCOVERED
     last_meaningful_change_at: datetime | None = None
+    structure_established_at: datetime | None = None
+    live_trigger_first_seen_at: datetime | None = None
+    live_trigger_anchor: Decimal | None = None
+    entry_authorized_at: datetime | None = None
+    order_submitted_at: datetime | None = None
     attempts: deque[EntryAttemptSummary] = field(default_factory=lambda: deque(maxlen=8))
     transitions: deque[OpportunityTransition] = field(default_factory=lambda: deque(maxlen=64))
 
@@ -303,7 +312,11 @@ class OpportunityMemory:
             return event
 
     def record_entry_attempt(self, trading_date: date, symbol: str, opportunity_id: str,
-                             attempt: EntryAttemptSummary) -> None:
+                             attempt: EntryAttemptSummary, *,
+                             structure_established_at: datetime | None = None,
+                             live_trigger_first_seen_at: datetime | None = None,
+                             entry_authorized_at: datetime | None = None,
+                             order_submitted_at: datetime | None = None) -> None:
         record = self.get(trading_date, symbol, opportunity_id)
         if record is None:
             raise KeyError("opportunity must be observed before recording an entry attempt")
@@ -313,6 +326,14 @@ class OpportunityMemory:
             record.latest_entry_attempt_price = attempt.requested_price
             record.latest_entry_result = attempt.result
             record.latest_blocking_reason = attempt.reason
+            if structure_established_at is not None:
+                record.structure_established_at = structure_established_at
+            if live_trigger_first_seen_at is not None:
+                record.live_trigger_first_seen_at = live_trigger_first_seen_at
+            if entry_authorized_at is not None:
+                record.entry_authorized_at = entry_authorized_at
+            if order_submitted_at is not None:
+                record.order_submitted_at = order_submitted_at
             self._emit_locked(
                 record, OpportunityTransitionType.ENTRY_ATTEMPT, attempt.attempted_at,
                 price=attempt.requested_price, quantity=attempt.requested_quantity,
@@ -359,6 +380,65 @@ class OpportunityMemory:
         return NewStructureAssessment(
             failed is None, structure, failed, entry_anchor, structural_stop, risk,
         )
+
+    def assess_live_trigger(
+        self, trading_date: date, symbol: str, opportunity_id: str, *,
+        entry_anchor: Decimal, structural_stop: Decimal, trigger_price: Decimal,
+        live_price: Decimal, spread_ok: bool, liquidity_ok: bool,
+        freshness_ok: bool, position_quantity: Decimal = ZERO,
+        working_entry: bool = False, lifecycle_count: int = 0,
+        max_lifecycles: int = 3, higher_low: bool = False,
+        reclaim: bool = False, momentum_reaccelerated: bool = False,
+    ) -> NewStructureAssessment:
+        """Assess only the final trigger from a fresh observation.
+
+        The record must already contain a prior impulse and pullback/reclaim
+        context.  Consequently a single tick cannot manufacture a structure.
+        """
+        assessment = self.assess_new_structure(
+            trading_date, symbol, opportunity_id,
+            entry_anchor=entry_anchor, structural_stop=structural_stop,
+            spread_ok=spread_ok, liquidity_ok=liquidity_ok,
+            freshness_ok=freshness_ok, position_quantity=position_quantity,
+            working_entry=working_entry, lifecycle_count=lifecycle_count,
+            max_lifecycles=max_lifecycles, higher_low=higher_low,
+            reclaim=reclaim, momentum_reaccelerated=momentum_reaccelerated,
+        )
+        record = self.get(trading_date, symbol, opportunity_id)
+        if assessment.eligible and record is not None:
+            if record.structure_established_at is None:
+                return NewStructureAssessment(False, assessment.structure, "NO_ESTABLISHED_STRUCTURE", entry_anchor, structural_stop, assessment.risk_per_share, trigger_price)
+            if record.post_peak_pullback_low is None:
+                return NewStructureAssessment(False, assessment.structure, "NO_ESTABLISHED_PULLBACK", entry_anchor, structural_stop, assessment.risk_per_share, trigger_price)
+            if live_price < trigger_price:
+                return NewStructureAssessment(False, assessment.structure, "LIVE_TRIGGER_NOT_REACHED", entry_anchor, structural_stop, assessment.risk_per_share, trigger_price)
+            if any(a.requested_price == entry_anchor and a.result in {"AUTHORIZED", "NEW_STRUCTURAL_ENTRY"} for a in record.attempts):
+                return NewStructureAssessment(False, assessment.structure, "DUPLICATE_LIVE_TRIGGER", entry_anchor, structural_stop, assessment.risk_per_share, trigger_price)
+        return NewStructureAssessment(assessment.eligible, assessment.structure, assessment.reason, assessment.entry_anchor, assessment.structural_stop, assessment.risk_per_share, trigger_price)
+
+    def record_structure_established(self, trading_date: date, symbol: str, opportunity_id: str,
+                                     at: datetime, *, reason: str = "COMPLETED_BAR_STRUCTURE") -> None:
+        record = self.get(trading_date, symbol, opportunity_id)
+        if record is None:
+            raise KeyError("opportunity must be observed before recording structure")
+        with self._lock:
+            if record.structure_established_at is None:
+                record.structure_established_at = at
+                self._emit_locked(record, OpportunityTransitionType.STRUCTURE_ESTABLISHED, at, reason=reason)
+
+    def record_live_trigger(self, trading_date: date, symbol: str, opportunity_id: str,
+                            at: datetime, *, price: Decimal,
+                            anchor: Decimal | None = None) -> bool:
+        record = self.get(trading_date, symbol, opportunity_id)
+        if record is None:
+            raise KeyError("opportunity must be observed before recording a live trigger")
+        with self._lock:
+            if record.live_trigger_first_seen_at is not None and record.live_trigger_anchor == anchor:
+                return False
+            record.live_trigger_first_seen_at = at
+            record.live_trigger_anchor = anchor
+            self._emit_locked(record, OpportunityTransitionType.LIVE_TRIGGER_FIRST_SEEN, at, price=price)
+            return True
 
     def _emit_locked(self, record, kind, at, *, price=None, quantity=None, reason=None, setup=None):
         event = OpportunityTransition(kind, at, record.opportunity_id, record.symbol, record.trading_date, reason, setup, price, quantity)

@@ -793,6 +793,97 @@ class WarriorForwardCaptureService:
             )
         return authorized
 
+    def authorize_live_structural_entry(
+        self, candidate: MomentumCandidate, signal: MomentumEntrySignal,
+        account: PaperAccountContext, *, structure_established_at: datetime,
+        live_price: Decimal, trigger_price: Decimal,
+        higher_low: bool = False, reclaim: bool = False,
+        momentum_reaccelerated: bool = False, working_entry: bool = False,
+        freshness_ok: bool,
+    ) -> bool:
+        """Authorize the final trigger from a fresh quote/trade observation.
+
+        Completed bars (or an equivalent trusted detector) must establish the
+        structure first.  This method only removes the needless wait for a
+        subsequent bar close; it does not bypass any execution gate.
+        """
+        from app.trade_intelligence.opportunity_memory import (
+            EntryAttemptSummary, OpportunityTransitionType,
+        )
+        opportunity_id = self._memory_opportunity_ids.get(signal.symbol) or opportunity_identity(signal)
+        trading_date = signal.timestamp.date()
+        record = self.opportunity_memory.get(trading_date, signal.symbol, opportunity_id)
+        if record is None:
+            return False
+        self.opportunity_memory.record_structure_established(
+            trading_date, signal.symbol, opportunity_id, structure_established_at,
+        )
+        position_quantity = (
+            self._paper_position_quantity_source(signal.symbol)
+            if self._paper_position_quantity_source is not None else ZERO
+        )
+        assessment = self.opportunity_memory.assess_live_trigger(
+            trading_date, signal.symbol, opportunity_id,
+            entry_anchor=signal.entry_trigger, structural_stop=signal.stop_price,
+            trigger_price=trigger_price, live_price=live_price,
+            spread_ok=(candidate.spread_percent is not None and candidate.spread_percent <= self.config.entry.maximum_spread_percent),
+            liquidity_ok=candidate.dollar_volume >= self.config.entry.minimum_dollar_volume,
+            freshness_ok=freshness_ok, position_quantity=position_quantity,
+            working_entry=working_entry,
+            lifecycle_count=len(record.attempts),
+            max_lifecycles=self.config.adaptive_entry.max_lifecycles_per_opportunity,
+            higher_low=higher_low, reclaim=reclaim,
+            momentum_reaccelerated=momentum_reaccelerated,
+        )
+        if not assessment.eligible:
+            self.opportunity_memory.record_transition(
+                trading_date, signal.symbol, opportunity_id, signal.timestamp,
+                OpportunityTransitionType.ENTRY_CANCELLED, reason=assessment.reason,
+            )
+            return False
+        if candidate.halted or not candidate.tradable or signal.session not in self.config.entry.allowed_sessions:
+            return False
+        position = size_position(
+            signal, account_equity=account.equity, buying_power=account.buying_power,
+            allowed_symbols=account.allowed_symbols, existing_exposure=account.existing_exposure,
+            exposure_limit=account.exposure_limit, risk_engine_approved=account.risk_engine_approved,
+            broker_restriction=account.broker_restriction, config=self.config.risk,
+            symbol_authorized=_paper_symbol_authorization(signal, account).authorized,
+        )
+        if not position.approved or self._paper_entry_submitter is None:
+            return False
+        result = self._paper_entry_submitter(signal, position.shares, position.risk_dollars)
+        authorized = result.authorized if isinstance(result, PaperEntryAuthorizationDecision) else bool(result)
+        if authorized:
+            first_trigger = self.opportunity_memory.record_live_trigger(
+                trading_date, signal.symbol, opportunity_id, signal.timestamp,
+                price=live_price, anchor=signal.entry_trigger,
+            )
+            if not first_trigger:
+                return False
+            self.opportunity_memory.record_entry_attempt(
+                trading_date, signal.symbol, opportunity_id,
+                EntryAttemptSummary(
+                    lifecycle_id=lifecycle_identity(signal), setup=signal.setup_type,
+                    attempted_at=signal.timestamp, requested_price=signal.entry_trigger,
+                    requested_quantity=Decimal(position.shares), structural_stop=signal.stop_price,
+                    spread=candidate.spread_percent, liquidity=candidate.dollar_volume,
+                    risk=signal.risk_per_share, result="NEW_STRUCTURAL_ENTRY",
+                    reason="LIVE_TRIGGER",
+                ),
+                structure_established_at=structure_established_at,
+                live_trigger_first_seen_at=signal.timestamp,
+                entry_authorized_at=signal.timestamp,
+                order_submitted_at=signal.timestamp,
+            )
+            self.opportunity_memory.record_transition(
+                trading_date, signal.symbol, opportunity_id, signal.timestamp,
+                OpportunityTransitionType.NEW_STRUCTURE_ENTRY_READY,
+                reason="LIVE_TRIGGER", price=signal.entry_trigger,
+                quantity=Decimal(position.shares),
+            )
+        return authorized
+
     def consider_add_on(
         self,
         candidate: MomentumCandidate,
