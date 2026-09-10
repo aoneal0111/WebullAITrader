@@ -1571,6 +1571,47 @@ class WarriorForwardCaptureService:
             )
         return False
 
+    def reconcile_authoritative_protection(
+        self, symbol: str, observed_at: datetime,
+    ) -> bool:
+        """Protect a nonzero PAPER position as soon as its fill is visible.
+
+        Entry remainder is deliberately independent from this quantity.  The
+        position projection is the only authority used for the protective
+        order, so a partial entry cannot leave an unprotected gap until the
+        next completed bar.
+        """
+        state = self._paper.get(symbol.strip().upper())
+        if state is None or self._paper_position_quantity_source is None:
+            return False
+        quantity = max(0, int(self._paper_position_quantity_source(symbol)))
+        if quantity <= 0:
+            return False
+        state.authoritative_position_seen = True
+        state.remaining = quantity
+        result = self._submit_exit(state, state.stop, quantity, "STOP")
+        active = (
+            result.protection_active
+            if isinstance(result, PaperExitSubmissionDecision)
+            else bool(result)
+        )
+        if not active:
+            state.protection_reconciled = False
+            return False
+        activation = getattr(result, "activation_timestamp", None) or observed_at
+        if (
+            state.protective_stop_activated_at is None
+            or activation > state.protective_stop_activated_at
+        ):
+            state.protective_stop_activated_at = activation
+        state.protection_reconciled = True
+        if self.writer is not None:
+            self.writer.submit(_management_context_record(
+                symbol.strip().upper(), observed_at, state.signal, state,
+                phase="MANAGING",
+            ))
+        return True
+
     def _paper_fill(self, state: _PaperState, timestamp, action: str, label: str,
                     price: Decimal, quantity: int) -> CaptureRecord:
         return CaptureRecord.create(

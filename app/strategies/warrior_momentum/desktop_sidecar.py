@@ -499,6 +499,10 @@ class WarriorDesktopSidecar:
                 return
             try:
                 self._consume(event)
+                if event.symbol is not None and self._service is not None:
+                    self._service.reconcile_authoritative_protection(
+                        event.symbol, event.timestamp,
+                    )
                 self._update_health()
             except Exception as exc:
                 # Capture health is deliberately isolated from stream health.

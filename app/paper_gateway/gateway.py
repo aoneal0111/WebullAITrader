@@ -725,9 +725,25 @@ class PaperOrderGateway:
             )
             if reason is None:
                 continue
+            transition_at = max(evaluated_at, order.updated_at)
+            if transition_at != evaluated_at:
+                _LOGGER.warning(
+                    "event_type=paper_temporal_expiry_time_reconciled "
+                    "classification=TEMPORAL_EXPIRY_ORDER_TIME_FLOOR "
+                    "symbol=%s order_id=%s lifecycle_id=%s "
+                    "order_status=%s order_updated_at=%s "
+                    "local_evaluated_at=%s transition_at=%s "
+                    "delta_seconds=%s reason=%s",
+                    order.symbol, order.order_id,
+                    order.request.strategy_lifecycle_id,
+                    order.status.value, order.updated_at.isoformat(),
+                    evaluated_at.isoformat(), transition_at.isoformat(),
+                    (order.updated_at - evaluated_at).total_seconds(),
+                    reason.value,
+                )
             expired = transition_expire_order(
                 order,
-                at=evaluated_at,
+                at=transition_at,
                 reason=reason,
             )
             message = (
@@ -744,7 +760,7 @@ class PaperOrderGateway:
             self._append_journal(
                 JournalEventType.EXPIRATION,
                 order.order_id,
-                evaluated_at,
+                transition_at,
                 message,
                 (("reason", reason.value),),
             )

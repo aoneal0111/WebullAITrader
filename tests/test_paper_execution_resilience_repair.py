@@ -5,9 +5,14 @@ from types import SimpleNamespace
 from app.market_data.models import MarketEvent, MarketEventType, QuotePayload
 from app.paper_gateway import PaperOrderGateway
 from app.paper_trading.order_book import PaperOrderBook
+from app.paper_trading.matching_engine import MarketQuote
 from app.services import OrderCommandFactory, OrderEntryCommand
 from app.strategies.warrior_momentum.forward_runtime import (
     WarriorForwardCaptureService,
+)
+from app.strategies.warrior_momentum.autonomous_paper import (
+    PaperExitSubmissionDecision,
+    PaperExitSubmissionState,
 )
 from app.webull.websocket_client import OfficialSdkStreamBackend
 
@@ -15,7 +20,7 @@ from app.webull.websocket_client import OfficialSdkStreamBackend
 NOW = datetime(2026, 9, 10, 15, 0, tzinfo=UTC)
 
 
-def _placement(symbol: str) -> object:
+def _placement(symbol: str, *, quantity: int = 10, valid_until=None) -> object:
     factory = OrderCommandFactory(
         session_id_provider=lambda: "session",
         account_id_provider=lambda: "paper-account",
@@ -23,9 +28,15 @@ def _placement(symbol: str) -> object:
         client_order_id_factory=lambda: f"client-{symbol}",
     )
     return factory.create_placement_request(OrderEntryCommand(
-        symbol=symbol, side="BUY", quantity=Decimal("10"),
+        symbol=symbol, side="BUY", quantity=Decimal(quantity),
         order_type="LIMIT", limit_price=Decimal("10"), stop_price=None,
-        time_in_force="DAY",
+        time_in_force="DAY", metadata=(
+            None if valid_until is None else {
+                "source": "autonomous-paper",
+                "reason": "ENTRY",
+                "chase_deadline": valid_until.isoformat(),
+            }
+        ),
     ))
 
 
@@ -47,6 +58,39 @@ def test_stale_paper_fill_is_order_local_and_next_symbols_continue(caplog):
     reports = gateway.process_market_event(_quote("MSFT", NOW, 2))
     assert reports and reports[0].order.filled_quantity == Decimal("10")
     assert "STALE_ORDER_MARKET_EVENT" in caplog.text
+
+
+def test_ahma_partial_fill_expiry_floors_local_transition_time(caplog):
+    deadline = datetime(2026, 9, 10, 17, 36, 57, 794739, tzinfo=UTC)
+    final_fill = datetime(2026, 9, 10, 17, 37, 0, 136000, tzinfo=UTC)
+    local_clock = [datetime(2026, 9, 10, 17, 36, 57, 500000, tzinfo=UTC)]
+    book = PaperOrderBook()
+    gateway = PaperOrderGateway(
+        book, clock=lambda: local_clock[0],
+    )
+    placed = gateway.place_order(_placement(
+        "AHMA", quantity=3236, valid_until=deadline,
+    ))
+    order = book.get(placed.broker_order_id)
+    report = gateway.execution_engine.process_quote(MarketQuote(
+        symbol="AHMA", bid_price=Decimal("1.77"),
+        ask_price=Decimal("1.78"), available_volume=Decimal("1124"),
+        timestamp=final_fill,
+    ))
+    assert report[0].fills[0].quantity == Decimal("1124")
+    assert book.get(order.order_id).updated_at == final_fill
+
+    local_clock[0] = datetime(2026, 9, 10, 17, 36, 59, tzinfo=UTC)
+    expired = gateway.reconcile_temporal_validity(at=local_clock[0])
+    restored = book.get(order.order_id)
+    assert len(expired) == 1
+    assert restored.status.value == "EXPIRED"
+    assert restored.filled_quantity == Decimal("1124")
+    assert restored.remaining_quantity == Decimal("2112")
+    assert restored.average_fill_price == Decimal("1.78")
+    assert restored.updated_at == final_fill
+    assert restored.fills[0].timestamp == final_fill
+    assert "TEMPORAL_EXPIRY_ORDER_TIME_FLOOR" in caplog.text
 
 
 def test_actual_position_rebases_warrior_milestones(tmp_path):
@@ -83,6 +127,46 @@ def test_actual_position_rebases_warrior_milestones(tmp_path):
         assert state.first_quantity + state.second_quantity + (
             state.managed_quantity - state.first_quantity - state.second_quantity
         ) == 2028
+    finally:
+        writer.close()
+
+
+def test_partial_position_protection_is_immediate_and_resizes(tmp_path):
+    from app.strategies.warrior_momentum import (
+        ForwardCaptureStore, ForwardCaptureWriter,
+    )
+    from tests.warrior_momentum.test_forward_capture import account, point
+
+    position = {"XYZ": Decimal("1124")}
+    submissions: list[tuple[int, str]] = []
+    store = ForwardCaptureStore(tmp_path / "partial-protection.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+
+    def submit_exit(symbol, quantity, price, reason, lifecycle):
+        submissions.append((quantity, reason))
+        return PaperExitSubmissionDecision(
+            PaperExitSubmissionState.SUBMITTED, symbol, lifecycle, reason,
+            order_id=f"stop-{len(submissions)}", activation_timestamp=NOW,
+        )
+
+    service = WarriorForwardCaptureService(
+        store, writer, paper_entry_submitter=lambda *_: True,
+        paper_exit_submitter=submit_exit,
+        paper_position_quantity_source=lambda symbol: position[symbol],
+    )
+    try:
+        _, signal = service.observe(point(), account=account())
+        assert signal is not None
+        assert service.reconcile_authoritative_protection("XYZ", NOW)
+        assert submissions == [(1124, "STOP")]
+        assert service._paper["XYZ"].protection_reconciled is True
+
+        position["XYZ"] = Decimal("1300")
+        assert service.reconcile_authoritative_protection(
+            "XYZ", NOW + timedelta(seconds=1),
+        )
+        assert submissions[-1] == (1300, "STOP")
+        assert service._paper["XYZ"].remaining == 1300
     finally:
         writer.close()
 
