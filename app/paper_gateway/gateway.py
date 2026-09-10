@@ -154,6 +154,7 @@ class PaperOrderGateway:
         self._journal = PaperJournal()
         self._lock = RLock()
         self._durability_error: Exception | None = None
+        self._stale_market_event_count = 0
         if self._durable_store is not None:
             restored_events = self._durable_store.events()
             for restored in self._durable_store.orders():
@@ -609,6 +610,7 @@ class PaperOrderGateway:
                 reports = self._execution_engine.process_quote(
                     quote,
                     before_update=persist_before_update,
+                    on_stale_market_event=self._observe_stale_market_event,
                 )
             except PaperDurabilityError:
                 return ()
@@ -628,6 +630,29 @@ class PaperOrderGateway:
                 )
                 self._emit_event(event)
             return reports
+
+    def _observe_stale_market_event(self, order: PaperOrder, result: object) -> None:
+        """Record a bounded diagnostic for a rejected stale PAPER fill."""
+        self._stale_market_event_count += 1
+        if self._stale_market_event_count != 1 and self._stale_market_event_count % 100 == 0:
+            return
+        event_timestamp = getattr(result, "timestamp", None)
+        delta = (
+            (order.updated_at - event_timestamp).total_seconds()
+            if isinstance(event_timestamp, datetime) else None
+        )
+        _LOGGER.warning(
+            "event_type=paper_stale_order_market_event "
+            "classification=STALE_ORDER_MARKET_EVENT symbol=%s order_id=%s "
+            "lifecycle_id=%s order_status=%s order_updated_at=%s "
+            "market_event_timestamp=%s attempted_transition_timestamp=%s "
+            "delta_seconds=%s stale_count=%s",
+            order.symbol, order.order_id, order.request.strategy_lifecycle_id,
+            order.status.value, order.updated_at.isoformat(),
+            event_timestamp.isoformat() if isinstance(event_timestamp, datetime) else "--",
+            event_timestamp.isoformat() if isinstance(event_timestamp, datetime) else "--",
+            delta, self._stale_market_event_count,
+        )
 
     def _invalidate_entry_orders(
         self,

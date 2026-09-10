@@ -94,11 +94,14 @@ class PaperExecutionEngine:
         quote: MarketQuote,
         *,
         before_update: Callable[[ExecutionReport], None] | None = None,
+        on_stale_market_event: Callable[[PaperOrder, MatchResult], None] | None = None,
     ) -> tuple[ExecutionReport, ...]:
         """Process a quote, optionally durably recording before each mutation."""
 
         if before_update is not None and not callable(before_update):
             raise TypeError("before_update must be callable or None")
+        if on_stale_market_event is not None and not callable(on_stale_market_event):
+            raise TypeError("on_stale_market_event must be callable or None")
 
         with self._lock:
             reports: list[ExecutionReport] = []
@@ -126,6 +129,16 @@ class PaperExecutionEngine:
                     raise ExecutionEngineError(
                         "matched result did not contain an execution price"
                     )
+
+                # Market-event time is evidence, not a local order transition
+                # time.  A delayed quote can still be useful to other orders,
+                # but it cannot fill this order after a newer local state was
+                # persisted.  Keep apply_fill's validation strict for all
+                # other invalid transitions.
+                if result.timestamp < order.updated_at:
+                    if on_stale_market_event is not None:
+                        on_stale_market_event(order, result)
+                    continue
 
                 updated = apply_fill(
                     order,

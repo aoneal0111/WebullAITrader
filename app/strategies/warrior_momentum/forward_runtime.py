@@ -144,6 +144,7 @@ class _PaperState:
     stop: Decimal
     first_quantity: int
     second_quantity: int
+    managed_quantity: int = 0
     first_taken: bool = False
     second_taken: bool = False
     realized_pnl: Decimal = ZERO
@@ -1126,7 +1127,7 @@ class WarriorForwardCaptureService:
         second = int((Decimal(shares) * self.config.trade_management.second_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
         state = _PaperState(
             signal, signal.entry_trigger, shares, shares, signal.stop_price,
-            first, second, risk_budget=risk_dollars,
+            first, second, shares, risk_budget=risk_dollars,
         )
         self._paper[signal.symbol] = state
         fill = CaptureRecord.create(
@@ -1330,6 +1331,20 @@ class WarriorForwardCaptureService:
             return tuple(records)
 
         state.authoritative_position_seen = True
+        # Entry planning quantity is not a management authority.  Once the
+        # position projection proves the actual filled basis, derive the
+        # milestones from that quantity and leave the runner as the exact
+        # remainder.  After a milestone is complete, its quantities are
+        # immutable so restart/late position observations cannot rewrite
+        # completed target state.
+        if (
+            not state.first_taken
+            and not state.second_taken
+            and state.managed_quantity != quantity
+        ):
+            state.managed_quantity = quantity
+            state.first_quantity = int((Decimal(quantity) * self.config.trade_management.first_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
+            state.second_quantity = int((Decimal(quantity) * self.config.trade_management.second_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
         state.remaining = quantity
         state.minimum_low = bar.low if state.minimum_low is None else min(state.minimum_low, bar.low)
         state.maximum_high = bar.high if state.maximum_high is None else max(state.maximum_high, bar.high)
@@ -1697,7 +1712,7 @@ class WarriorForwardCaptureService:
                 second = int((Decimal(quantity) * self.config.trade_management.second_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
                 self._paper[record.symbol] = _PaperState(
                     signal, Decimal(payload["fill_price"]), quantity, quantity,
-                    Decimal(payload["structural_stop"]), first, second,
+                    Decimal(payload["structural_stop"]), first, second, quantity,
                 )
                 self._paper[record.symbol].risk_budget = Decimal(
                     payload.get("risk_dollars", signal.risk_per_share * quantity)
@@ -1774,6 +1789,9 @@ class WarriorForwardCaptureService:
                 state.first_taken = bool(payload.get("first_taken", False))
                 state.second_taken = bool(payload.get("second_taken", False))
                 state.remaining = int(payload.get("remaining", state.remaining))
+                state.managed_quantity = int(payload.get(
+                    "managed_quantity", state.managed_quantity or state.remaining
+                ))
                 state.authoritative_position_seen = bool(
                     payload.get("authoritative_position_seen", False)
                 )
@@ -2014,6 +2032,7 @@ def _management_context_record(
             "add_on_used": state.add_on_used,
             "first_taken": state.first_taken,
             "second_taken": state.second_taken,
+            "managed_quantity": state.managed_quantity,
             "remaining": state.remaining,
             "authoritative_position_seen": state.authoritative_position_seen,
             "exit_reason": state.exit_reason,

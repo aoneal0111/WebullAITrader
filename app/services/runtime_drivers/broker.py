@@ -425,8 +425,17 @@ class DesktopBrokerRuntimeDriver:
                 ),
             )
         except Exception as exc:
+            transport = self._market_data_transport()
+            halt_ingestion = getattr(transport, "halt_callback_ingestion", None)
+            if callable(halt_ingestion):
+                halt_ingestion()
             self._publish_terminal_market_data_failure(exc)
+            # The receive worker is part of this runtime session.  Stop the
+            # owning driver as well so RuntimeService cannot remain RUNNING
+            # with REST_ONLY health and no live consumer.
             self._market_data_stop.set()
+            if not stop_event.is_set():
+                stop_event.set()
             try:
                 if self._scanner is not None:
                     self._scanner.disconnect()
@@ -881,7 +890,14 @@ class DesktopBrokerRuntimeDriver:
                     )
                 self._handle_market_event(event)
         except Exception as exc:
+            transport = self._market_data_transport()
+            halt_ingestion = getattr(transport, "halt_callback_ingestion", None)
+            if callable(halt_ingestion):
+                halt_ingestion()
             self._publish_terminal_market_data_failure(exc)
+            self._market_data_stop.set()
+            if not stop_event.is_set():
+                stop_event.set()
 
     def _publish_scanner_observation_if_due(self, *, force: bool = False) -> None:
         observed_at = monotonic()

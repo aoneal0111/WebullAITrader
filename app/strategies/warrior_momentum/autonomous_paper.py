@@ -286,6 +286,23 @@ class AutonomousPaperExecutionBridge:
             for symbol, orders in by_symbol.items():
                 buys = [item for item in orders if item.request.side is OrderSide.BUY]
                 sells = [item for item in orders if item.request.side is OrderSide.SELL]
+                stops = [item for item in sells if item.request.order_type is OrderType.STOP]
+                if len(stops) > 1:
+                    identities = {item.request.strategy_lifecycle_id for item in stops}
+                    if len(identities) != 1:
+                        self._readiness = AutonomousPaperReadiness.BLOCKED
+                        return self._readiness
+                    keeper = max(stops, key=lambda item: (item.updated_at, item.order_id))
+                    if any(
+                        not self._cancel_working_order(item)
+                        for item in stops if item.order_id != keeper.order_id
+                    ):
+                        self._readiness = AutonomousPaperReadiness.BLOCKED
+                        return self._readiness
+                    sells = [
+                        item for item in self.order_book.open_orders_for_symbol(symbol)
+                        if item.request.side is OrderSide.SELL
+                    ]
                 if len(buys) > 1 or (sells and self._authoritative_quantity(symbol) <= 0):
                     self._readiness = AutonomousPaperReadiness.BLOCKED
                     return self._readiness
@@ -1071,7 +1088,18 @@ class AutonomousPaperExecutionBridge:
                     identity, reason_key,
                 )
             if self.order_book is not None:
-                self._reconcile_protective_quantity(normalized, identity)
+                if not self._reconcile_correlated_exits(normalized, identity):
+                    self._management_incomplete.add(normalized)
+                    return PaperExitSubmissionDecision(
+                        PaperExitSubmissionState.UNAVAILABLE, normalized,
+                        identity, reason_key,
+                    )
+                if not self._reconcile_protective_quantity(normalized, identity):
+                    self._management_incomplete.add(normalized)
+                    return PaperExitSubmissionDecision(
+                        PaperExitSubmissionState.UNAVAILABLE, normalized,
+                        identity, reason_key,
+                    )
                 working_sell = next((
                     order for order in self.order_book.open_orders_for_symbol(normalized)
                     if order.request.side is OrderSide.SELL
@@ -1258,9 +1286,34 @@ class AutonomousPaperExecutionBridge:
                 )
         return target
 
-    def _reconcile_protective_quantity(self, normalized: str, identity: str) -> None:
+    def _reconcile_correlated_exits(self, normalized: str, identity: str) -> bool:
+        """Collapse duplicate working protection before any new exit exists."""
+        if self.order_book is None:
+            return True
+        sells = tuple(
+            order for order in self.order_book.open_orders_for_symbol(normalized)
+            if order.request.side is OrderSide.SELL
+            and order.request.strategy_lifecycle_id == identity
+        )
+        stops = tuple(order for order in sells if order.request.order_type is OrderType.STOP)
+        if len(stops) <= 1:
+            return True
+        # Keep the newest confirmed protection and retire every predecessor.
+        keeper = max(stops, key=lambda order: (order.updated_at, order.order_id))
+        for order in stops:
+            if order.order_id == keeper.order_id:
+                continue
+            if not self._cancel_working_order(order):
+                return False
+        self._reconcile_terminal_exits()
+        return all(
+            self.order_book.get(order.order_id).is_terminal
+            for order in stops if order.order_id != keeper.order_id
+        )
+
+    def _reconcile_protective_quantity(self, normalized: str, identity: str) -> bool:
         if self.order_book is None or self.position_quantity_source is None:
-            return
+            return True
         open_orders = tuple(
             order for order in self.order_book.open_orders_for_symbol(normalized)
             if order.request.side is OrderSide.SELL
@@ -1268,7 +1321,7 @@ class AutonomousPaperExecutionBridge:
         )
         stop = next((order for order in open_orders if order.request.order_type is OrderType.STOP), None)
         if stop is None:
-            return
+            return True
         reserved = sum(
             (int(order.remaining_quantity) for order in open_orders
              if order.request.order_type is not OrderType.STOP),
@@ -1276,18 +1329,20 @@ class AutonomousPaperExecutionBridge:
         )
         desired = max(0, int(self.position_quantity_source(normalized)) - reserved)
         if int(stop.remaining_quantity) == desired:
-            return
+            return True
         if not self._cancel_working_order(stop):
             self._management_incomplete.add(normalized)
-            return
+            return False
         self._exit_orders.pop((identity, "STOP"), None)
         self._exit_keys.pop((identity, "STOP"), None)
         self._reconcile_terminal_exits()
         if desired:
-            self._place_exit(
+            replacement = self._place_exit(
                 normalized, desired, stop.request.stop_price,
                 "STOP", identity,
             )
+            return replacement.protection_active
+        return True
 
     def _reconcile_terminal_exits(self) -> None:
         if self.order_book is None:

@@ -98,6 +98,12 @@ class OfficialSdkStreamBackend:
         self._lifecycle_sink: StreamLifecycleSink | None = None
         self._diagnostic_sink: DiagnosticSink | None = None
         self._deliberate_shutdown = False
+        self._accepting_callbacks = Event()
+        # Preserve the established startup-burst contract: callbacks may be
+        # buffered before connect completes.  Terminal lifecycle code calls
+        # halt_callback_ingestion() to close this gate permanently for that
+        # session.
+        self._accepting_callbacks.set()
         self._last_raw_callback_monotonic: float | None = None
         self._last_raw_callback_at: datetime | None = None
 
@@ -181,6 +187,9 @@ class OfficialSdkStreamBackend:
             self._emit_diagnostic("CROSS_CLIENT_MESSAGE_REJECTED")
             return
         with self._message_metrics_lock:
+            if not self._accepting_callbacks.is_set():
+                self._emit_diagnostic("CALLBACK_INGESTION_HALTED")
+                return
             self._last_raw_callback_monotonic = monotonic()
             self._last_raw_callback_at = self._clock()
             self._messages.put(
@@ -246,6 +255,7 @@ class OfficialSdkStreamBackend:
         self._identity_mismatch.clear()
         self._subscription_acknowledged.clear()
         self._deliberate_shutdown = False
+        self._accepting_callbacks.set()
         self._consumption_started = False
         connect_and_loop_start = getattr(self.client, "connect_and_loop_start", None)
         if callable(connect_and_loop_start):
@@ -296,6 +306,7 @@ class OfficialSdkStreamBackend:
 
     def disconnect(self) -> None:
         self._deliberate_shutdown = True
+        self.halt_callback_ingestion()
         self._connected.clear()
         self._registration_ready.clear()
         self._subscription_acknowledged.clear()
@@ -310,6 +321,27 @@ class OfficialSdkStreamBackend:
         if not callable(disconnect):
             raise TypeError("official SDK streaming client has no disconnect method")
         disconnect()
+
+    def halt_callback_ingestion(self) -> None:
+        """Stop accepting callbacks after the sole consumer is gone.
+
+        The FIFO is intentionally not given an arbitrary small capacity: a
+        normal startup burst remains supported.  Once the consumer lifecycle
+        is terminal, however, retaining producer payloads is unsafe, so the
+        ingress gate closes and queued payloads are released.
+        """
+        self._accepting_callbacks.clear()
+        drained = 0
+        while True:
+            try:
+                self._messages.get_nowait()
+                drained += 1
+            except Empty:
+                break
+        if drained:
+            with self._message_metrics_lock:
+                self._message_queue_depth = max(0, self._message_queue_depth - drained)
+        self._emit_diagnostic("CALLBACK_INGESTION_HALTED", drained=drained)
 
     def subscribe(self, channels: tuple[str, ...]) -> None:
         if not self._connected.is_set() or not self._registration_ready.is_set():
