@@ -15,7 +15,7 @@ from typing import Callable, Iterable
 
 from app.live_scanner.session import scanner_session
 from app.market.calendar import EASTERN
-from app.market_data.models import MarketEvent, MarketEventType, TradePayload
+from app.market_data.models import MarketEvent, MarketEventType, QuotePayload, TradePayload
 from app.scanner_adapter.adapter import MarketEventScannerAdapter
 from app.performance_diagnostics import performance_diagnostics
 from app.services.runtime_diagnostics import log_runtime_exception
@@ -694,6 +694,14 @@ class WarriorDesktopSidecar:
                     ),
                     best_bid_size=(None if state is None else state.bid_size),
                     best_ask_size=(None if state is None else state.ask_size),
+                    depth_bids=(
+                        event.payload.bids
+                        if isinstance(event.payload, QuotePayload) else ()
+                    ),
+                    depth_asks=(
+                        event.payload.asks
+                        if isinstance(event.payload, QuotePayload) else ()
+                    ),
                     quote_provenance="SHARED_SCANNER_ADAPTER",
                 )
             candidate, signal = service.observe(

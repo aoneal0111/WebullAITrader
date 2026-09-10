@@ -23,7 +23,7 @@ from .autonomous_paper import lifecycle_identity
 from .execution_quote import ExecutionQuoteSource
 from .execution_pursuit import (
     ExecutionPursuitAssessment, ExecutionPursuitDecision,
-    assess_top_of_book_pursuit,
+    assess_top_of_book_pursuit, depth_features, depth_transition,
 )
 from .forward_queue import ForwardCaptureWriter
 from .forward_store import ForwardCaptureStore
@@ -241,6 +241,7 @@ class WarriorForwardCaptureService:
         # Compact, latest-only execution-pursuit diagnostics.  This is not a
         # per-tick history and never becomes an execution authority.
         self._last_execution_pursuit: dict[str, ExecutionPursuitAssessment] = {}
+        self._last_depth_by_symbol: dict[str, tuple[tuple, tuple]] = {}
         self._seen_bars: set[tuple[str, datetime]] = set()
         self._paper: dict[str, _PaperState] = {}
         self._counterfactual: dict[str, _CounterState] = {}
@@ -787,6 +788,17 @@ class WarriorForwardCaptureService:
                     OpportunityQuality.EXHAUSTED,
                     OpportunityQuality.UNAVAILABLE,
                 }
+            depth = depth_features(value.depth_bids, value.depth_asks)
+            prior_depth = self._last_depth_by_symbol.get(signal.symbol)
+            ask_state, bid_advancing = depth_transition(
+                None if prior_depth is None else prior_depth[0],
+                None if prior_depth is None else prior_depth[1],
+                value.depth_bids, value.depth_asks,
+            )
+            if value.depth_bids and value.depth_asks:
+                self._last_depth_by_symbol[signal.symbol] = (
+                    value.depth_bids, value.depth_asks,
+                )
             assessment = assess_top_of_book_pursuit(
                 evaluated_at=value.evaluation_timestamp or value.observation.timestamp,
                 working_limit=signal.entry_trigger,
@@ -806,6 +818,8 @@ class WarriorForwardCaptureService:
                     None if not state.signal.target_levels
                     else state.signal.target_levels[-1] - state.signal.entry_trigger
                 ),
+                depth=depth, ask_state=ask_state,
+                bid_advancing=bid_advancing,
             )
             self._last_execution_pursuit[signal.symbol] = assessment
             if assessment.decision is not ExecutionPursuitDecision.PURSUE_ONE_LEVEL:

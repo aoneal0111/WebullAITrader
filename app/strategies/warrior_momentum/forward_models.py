@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 
 from app.configuration.models import PaperSymbolAuthorizationMode
+from app.market_data.models import BookLevel
 from app.momentum_scanner.models import ScannerObservation
 
 from .models import MinuteBar
@@ -98,6 +99,8 @@ class PointInTimeObservation:
     scanner_failed_rules: tuple[str, ...] = ()
     best_bid_size: Decimal | None = None
     best_ask_size: Decimal | None = None
+    depth_bids: tuple[BookLevel, ...] = ()
+    depth_asks: tuple[BookLevel, ...] = ()
     quote_provenance: str = "SHARED_SCANNER_ADAPTER"
 
     def __post_init__(self) -> None:

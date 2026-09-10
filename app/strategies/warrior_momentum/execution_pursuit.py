@@ -12,6 +12,8 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 
+from app.market_data.models import BookLevel
+
 
 class ExecutionPursuitDecision(StrEnum):
     HOLD_PASSIVE = "HOLD_PASSIVE"
@@ -35,6 +37,63 @@ class ExecutionPursuitAssessment:
     ask_size: Decimal | None = None
     advancing_pressure: bool = False
     data_mode: str = "TOP_OF_BOOK"
+    depth_imbalance: Decimal | None = None
+    near_touch_bid_depth: Decimal | None = None
+    near_touch_ask_depth: Decimal | None = None
+    microprice: Decimal | None = None
+    ask_state: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DepthFeatures:
+    bid_depth: Decimal
+    ask_depth: Decimal
+    near_touch_bid_depth: Decimal
+    near_touch_ask_depth: Decimal
+    imbalance: Decimal | None
+    microprice: Decimal | None
+
+
+def depth_features(
+    bids: tuple[BookLevel, ...], asks: tuple[BookLevel, ...], *, near_levels: int = 3,
+) -> DepthFeatures | None:
+    """Calculate bounded depth features from one validated snapshot."""
+    if not bids or not asks or near_levels <= 0:
+        return None
+    bid_depth = sum((level.size for level in bids), Decimal("0"))
+    ask_depth = sum((level.size for level in asks), Decimal("0"))
+    near_bid = sum((level.size for level in bids[:near_levels]), Decimal("0"))
+    near_ask = sum((level.size for level in asks[:near_levels]), Decimal("0"))
+    total = bid_depth + ask_depth
+    imbalance = None if total <= 0 else (bid_depth - ask_depth) / total
+    touch_total = bids[0].size + asks[0].size
+    microprice = (
+        None if touch_total <= 0
+        else (asks[0].price * bids[0].size + bids[0].price * asks[0].size) / touch_total
+    )
+    return DepthFeatures(bid_depth, ask_depth, near_bid, near_ask, imbalance, microprice)
+
+
+def depth_transition(
+    previous_bids: tuple[BookLevel, ...] | None,
+    previous_asks: tuple[BookLevel, ...] | None,
+    current_bids: tuple[BookLevel, ...],
+    current_asks: tuple[BookLevel, ...],
+) -> tuple[str, bool]:
+    """Return cautious ask depletion/replenishment and bid advancement signals."""
+    if not previous_bids or not previous_asks or not current_bids or not current_asks:
+        return "UNKNOWN", False
+    previous_ask = previous_asks[0]
+    current_ask = current_asks[0]
+    if current_ask.price > previous_ask.price or (
+        current_ask.price == previous_ask.price and current_ask.size < previous_ask.size
+    ):
+        ask_state = "DEPTH_DEPLETION"
+    elif current_ask.price == previous_ask.price and current_ask.size > previous_ask.size:
+        ask_state = "DEPTH_REPLENISHMENT"
+    else:
+        ask_state = "UNCHANGED"
+    return ask_state, current_bids[0].price > previous_bids[0].price
 
 
 def assess_top_of_book_pursuit(
@@ -54,6 +113,9 @@ def assess_top_of_book_pursuit(
     replacement_budget_available: bool,
     structural_stop: Decimal,
     expected_reward: Decimal | None = None,
+    depth: DepthFeatures | None = None,
+    ask_state: str | None = None,
+    bid_advancing: bool = False,
 ) -> ExecutionPursuitAssessment:
     """Assess a single bounded pursuit opportunity from top-of-book data.
 
@@ -66,6 +128,10 @@ def assess_top_of_book_pursuit(
             ExecutionPursuitDecision.BLOCKED, evaluated_at, reason,
             working_limit=working_limit, best_bid=best_bid, best_ask=best_ask,
             spread_percent=spread_percent, bid_size=bid_size, ask_size=ask_size,
+            depth_imbalance=None if depth is None else depth.imbalance,
+            near_touch_bid_depth=None if depth is None else depth.near_touch_bid_depth,
+            near_touch_ask_depth=None if depth is None else depth.near_touch_ask_depth,
+            microprice=None if depth is None else depth.microprice, ask_state=ask_state,
         )
 
     if not quote_fresh:
@@ -108,12 +174,21 @@ def assess_top_of_book_pursuit(
     if bid_size is None or ask_size is None:
         return blocked("ORDER_FLOW_SIZE_UNAVAILABLE")
     advancing = bid_size >= ask_size and best_bid >= working_limit
+    if depth is not None:
+        advancing = bool(
+            depth.imbalance is not None and depth.imbalance > Decimal("0")
+            and (bid_advancing or ask_state == "DEPTH_DEPLETION")
+        )
     if not advancing:
         return ExecutionPursuitAssessment(
             ExecutionPursuitDecision.HOLD_PASSIVE, evaluated_at,
             "ADVANCING_PRESSURE_NOT_CONFIRMED", working_limit=working_limit,
             proposed_limit=best_ask, best_bid=best_bid, best_ask=best_ask,
             spread_percent=spread_percent, bid_size=bid_size, ask_size=ask_size,
+            depth_imbalance=None if depth is None else depth.imbalance,
+            near_touch_bid_depth=None if depth is None else depth.near_touch_bid_depth,
+            near_touch_ask_depth=None if depth is None else depth.near_touch_ask_depth,
+            microprice=None if depth is None else depth.microprice, ask_state=ask_state,
         )
     if not replacement_budget_available:
         return ExecutionPursuitAssessment(
@@ -128,7 +203,14 @@ def assess_top_of_book_pursuit(
         working_limit=working_limit, proposed_limit=best_ask,
         best_bid=best_bid, best_ask=best_ask, spread_percent=spread_percent,
         bid_size=bid_size, ask_size=ask_size, advancing_pressure=True,
+        depth_imbalance=None if depth is None else depth.imbalance,
+        near_touch_bid_depth=None if depth is None else depth.near_touch_bid_depth,
+        near_touch_ask_depth=None if depth is None else depth.near_touch_ask_depth,
+        microprice=None if depth is None else depth.microprice, ask_state=ask_state,
     )
 
 
-__all__ = ["ExecutionPursuitAssessment", "ExecutionPursuitDecision", "assess_top_of_book_pursuit"]
+__all__ = [
+    "DepthFeatures", "ExecutionPursuitAssessment", "ExecutionPursuitDecision",
+    "assess_top_of_book_pursuit", "depth_features", "depth_transition",
+]

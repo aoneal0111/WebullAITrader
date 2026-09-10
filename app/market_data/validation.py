@@ -30,6 +30,15 @@ def validate_event(event):
 def _validate_payload(payload):
  if isinstance(payload,QuotePayload):
   _positive(payload.bid,"bid");_positive(payload.ask,"ask");_nonnegative(payload.bid_size,"bid_size");_nonnegative(payload.ask_size,"ask_size")
+  if payload.bids or payload.asks:
+   for level in payload.bids: _level(level)
+   for level in payload.asks: _level(level)
+   if payload.bids and tuple(payload.bids) != tuple(sorted(payload.bids, key=lambda x: x.price, reverse=True)):
+    raise ValueError("quote bid levels must be descending")
+   if payload.asks and tuple(payload.asks) != tuple(sorted(payload.asks, key=lambda x: x.price)):
+    raise ValueError("quote ask levels must be ascending")
+   if payload.bids and payload.asks and payload.bids[0].price > payload.asks[0].price:
+    raise ValueError("quote book must not be crossed")
   if payload.bid>payload.ask:raise ValueError("bid must not exceed ask")
  elif isinstance(payload,TradePayload):_positive(payload.price,"price");_nonnegative(payload.size,"size");_text(payload.trade_id,"trade_id")
  elif isinstance(payload,OrderBookSnapshotPayload):

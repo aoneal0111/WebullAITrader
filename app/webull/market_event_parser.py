@@ -12,7 +12,7 @@ import json
 import re
 import zlib
 
-from app.market_data.models import MarketEvent, MarketEventType, QuotePayload, TradePayload
+from app.market_data.models import BookLevel, MarketEvent, MarketEventType, QuotePayload, TradePayload
 from app.webull.errors import SerializationError
 
 
@@ -276,6 +276,8 @@ def _decode_sdk_result(topic: object, value: object) -> Mapping[str, object] | N
             "event_type": "QUOTE", "symbol": symbol, "timestamp": timestamp,
             "bid": getattr(bid, "price", None), "ask": getattr(ask, "price", None),
             "bid_size": getattr(bid, "size", None), "ask_size": getattr(ask, "size", None),
+            "bids": tuple({"price": getattr(item, "price", None), "size": getattr(item, "size", None)} for item in bids),
+            "asks": tuple({"price": getattr(item, "price", None), "size": getattr(item, "size", None)} for item in asks),
         }
     if classification is StreamMessageClass.TRADE:
         tick_time = getattr(value, "time", None)
@@ -344,6 +346,26 @@ def _decimal(message: Mapping[str, object], *names: str) -> Decimal:
             field=names[0], stage="event_normalize",
         )
     return result
+
+
+def _book_levels(message: Mapping[str, object], name: str, *, maximum: int = 10) -> tuple[BookLevel, ...]:
+    """Normalize at most ten provider levels; invalid depth is omitted safely."""
+    raw = message.get(name)
+    if not isinstance(raw, (tuple, list)):
+        return ()
+    levels: list[BookLevel] = []
+    try:
+        for item in raw[:maximum]:
+            if not isinstance(item, Mapping):
+                return ()
+            price = item.get("price")
+            size = item.get("size")
+            if price is None or size is None:
+                return ()
+            levels.append(BookLevel(Decimal(str(price)), Decimal(str(size))))
+    except (InvalidOperation, TypeError, ValueError):
+        return ()
+    return tuple(levels)
 
 
 def _timestamp(value: object | None, clock: Clock) -> datetime:
@@ -421,6 +443,14 @@ class WebullMarketEventParser:
                 _decimal(message, "bid", "bid_price"), _decimal(message, "ask", "ask_price"),
                 _decimal(message, "bid_size", "bid_volume", "bid_qty"),
                 _decimal(message, "ask_size", "ask_volume", "ask_qty"),
+                _book_levels(message, "bids") or (
+                    BookLevel(_decimal(message, "bid", "bid_price"),
+                              _decimal(message, "bid_size", "bid_volume", "bid_qty")),
+                ),
+                _book_levels(message, "asks") or (
+                    BookLevel(_decimal(message, "ask", "ask_price"),
+                              _decimal(message, "ask_size", "ask_volume", "ask_qty")),
+                ),
             )
         elif event_name in {"TRADE", "TICK", "DEAL", "SNAPSHOT"} or _first(message, "trade_price", "last_price") is not None:
             event_type = MarketEventType.TRADE

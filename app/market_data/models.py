@@ -16,7 +16,10 @@ class CorporateActionType(StrEnum):
 @dataclass(frozen=True,slots=True)
 class BookLevel:price:Decimal;size:Decimal
 @dataclass(frozen=True,slots=True)
-class QuotePayload:bid:Decimal;ask:Decimal;bid_size:Decimal;ask_size:Decimal
+class QuotePayload:
+ bid:Decimal;ask:Decimal;bid_size:Decimal;ask_size:Decimal
+ bids:tuple[BookLevel,...]=()
+ asks:tuple[BookLevel,...]=()
 @dataclass(frozen=True,slots=True)
 class TradePayload:price:Decimal;size:Decimal;trade_id:str
 @dataclass(frozen=True,slots=True)
