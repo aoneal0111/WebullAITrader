@@ -107,6 +107,31 @@ class EntryConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class AdaptiveEntryConfig:
+    """Bounded, observation-driven entry replacement policy."""
+
+    enabled: bool = True
+    max_replacements: int = 2
+    min_reprice_interval_seconds: Decimal = Decimal("5.0")
+    max_lifecycles_per_opportunity: int = 3
+    max_displacement_percent: Decimal = Decimal("1.5")
+    max_displacement_absolute: Decimal = Decimal("0.05")
+
+    def __post_init__(self) -> None:
+        if self.max_replacements < 0:
+            raise ValueError("adaptive entry replacement count cannot be negative")
+        if self.max_lifecycles_per_opportunity <= 0:
+            raise ValueError("adaptive entry lifecycle count must be positive")
+        if self.min_reprice_interval_seconds < 0:
+            raise ValueError("adaptive entry reprice interval cannot be negative")
+        if (
+            self.max_displacement_percent <= 0
+            or self.max_displacement_absolute <= 0
+        ):
+            raise ValueError("adaptive entry displacement caps must be positive")
+
+
+@dataclass(frozen=True, slots=True)
 class RiskConfig:
     configured_per_trade_risk: Decimal = Decimal("100")
     equity_risk_percentage: Decimal = Decimal("0.005")
@@ -135,6 +160,7 @@ class WarriorMomentumConfig:
     weights: ScoreWeights = field(default_factory=ScoreWeights)
     setups: SetupConfig = field(default_factory=SetupConfig)
     entry: EntryConfig = field(default_factory=EntryConfig)
+    adaptive_entry: AdaptiveEntryConfig = field(default_factory=AdaptiveEntryConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     trade_management: TradeManagementConfig = field(default_factory=TradeManagementConfig)
     top_gapper_count: int = 10
@@ -171,7 +197,7 @@ class WarriorMomentumConfig:
 
 __all__ = [
     "AtlasStrategy", "StrategySelection", "ScoreWeights", "DiscoveryConfig",
-    "SetupConfig", "EntryConfig", "RiskConfig", "TradeManagementConfig",
+    "SetupConfig", "EntryConfig", "AdaptiveEntryConfig", "RiskConfig", "TradeManagementConfig",
     "WarriorMomentumConfig", "WARRIOR_ENTRY_ALLOWED_SESSIONS",
     "BALANCED_POLICY_VERSION", "CONSERVATIVE_POLICY_VERSION",
 ]

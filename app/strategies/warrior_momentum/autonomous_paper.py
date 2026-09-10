@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_FLOOR
 from threading import RLock
 from typing import Callable
@@ -64,6 +64,9 @@ class PaperEntryAuthorizationReason(StrEnum):
     BROKER_RESTRICTED = "BROKER_RESTRICTED"
     BUYING_POWER_INSUFFICIENT = "BUYING_POWER_INSUFFICIENT"
     EXPOSURE_LIMIT = "EXPOSURE_LIMIT"
+    CHASE_WINDOW_EXPIRED = "CHASE_WINDOW_EXPIRED"
+    OPPORTUNITY_LIFECYCLE_LIMIT_EXHAUSTED = "OPPORTUNITY_LIFECYCLE_LIMIT_EXHAUSTED"
+    PARTIAL_POSITION_EXISTS = "PARTIAL_POSITION_EXISTS"
 
 
 class PaperExitSubmissionState(StrEnum):
@@ -93,6 +96,22 @@ class PaperEntryReplacementDecision:
     @property
     def submitted(self) -> bool:
         return self.state is PaperEntryReplacementState.SUBMITTED
+
+
+@dataclass(frozen=True, slots=True)
+class PaperEntryReplacementPolicy:
+    max_replacements: int = 2
+    min_reprice_interval_seconds: Decimal = Decimal("5.0")
+    max_displacement_percent: Decimal = Decimal("1.5")
+    max_displacement_absolute: Decimal = Decimal("0.05")
+
+    def __post_init__(self) -> None:
+        if self.max_replacements < 0:
+            raise ValueError("replacement count cannot be negative")
+        if self.min_reprice_interval_seconds < 0:
+            raise ValueError("reprice interval cannot be negative")
+        if self.max_displacement_percent <= 0 or self.max_displacement_absolute <= 0:
+            raise ValueError("displacement caps must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +167,21 @@ def lifecycle_identity(signal: object) -> str:
         str(getattr(signal, "symbol", "")).strip().upper(),
         getattr(signal, "timestamp", None),
         getattr(signal, "setup_type", ""),
+        getattr(signal, "entry_trigger", ""),
+        getattr(signal, "stop_price", ""),
+    )
+    return "|".join(str(value) for value in values)
+
+
+def opportunity_identity(signal: object) -> str:
+    """Return the stable anchor for one strategy-qualified opportunity."""
+    explicit = getattr(signal, "opportunity_id", None)
+    if explicit is not None and str(explicit).strip():
+        return str(explicit).strip()
+    values = (
+        getattr(signal, "strategy_id", "warrior_momentum"),
+        str(getattr(signal, "symbol", "")).strip().upper(),
+        getattr(getattr(signal, "setup_type", None), "value", getattr(signal, "setup_type", "")),
         getattr(signal, "entry_trigger", ""),
         getattr(signal, "stop_price", ""),
     )
@@ -348,12 +382,21 @@ class AutonomousPaperExecutionBridge:
 
     def submit_entry_decision(
         self, signal: object, shares: int, risk_dollars: Decimal,
+        *, opportunity_id: str | None = None,
+        opportunity_anchor: Decimal | None = None,
+        opportunity_deadline: datetime | None = None,
+        lifecycle_number: int = 1,
+        max_lifecycles_per_opportunity: int = 3,
+        max_displacement_percent: Decimal = Decimal("1.5"),
+        max_displacement_absolute: Decimal = Decimal("0.05"),
+        provenance: str = "AUTONOMOUS_ORIGINAL_ENTRY",
     ) -> PaperEntryAuthorizationDecision:
         """Run the unchanged PAPER entry path and expose its terminal gate."""
 
         symbol = str(getattr(signal, "symbol", "")).strip().upper()
         trigger = Decimal(getattr(signal, "entry_trigger"))
         identity = lifecycle_identity(signal)
+        opportunity = opportunity_id or opportunity_identity(signal)
         gates: list[PaperEntryGateDecision] = []
 
         def gate(name: str, passed: bool, observed: object, required: object) -> bool:
@@ -400,6 +443,38 @@ class AutonomousPaperExecutionBridge:
             duplicate = self._identity_seen(identity)
             if not gate("lifecycle_clear", not duplicate, duplicate, False):
                 return refused(PaperEntryAuthorizationReason.DUPLICATE_LIFECYCLE)
+            historical_lifecycles = set()
+            if self.order_book is not None:
+                historical_lifecycles = {
+                    str(item.request.strategy_lifecycle_id)
+                    for item in self.order_book.history()
+                    if item.request.strategy_lifecycle_id
+                    and item.request.metadata.get("opportunity_id") == opportunity
+                    and item.request.side is OrderSide.BUY
+                }
+            if len(historical_lifecycles) >= max_lifecycles_per_opportunity:
+                return refused(PaperEntryAuthorizationReason.DUPLICATE_LIFECYCLE)
+            anchor = opportunity_anchor
+            deadline = opportunity_deadline
+            if self.order_book is not None:
+                for item in self.order_book.history():
+                    if item.request.metadata.get("opportunity_id") == opportunity:
+                        prior = item.request.metadata
+                        if anchor is None and prior.get("opportunity_original_entry") is not None:
+                            anchor = Decimal(str(prior["opportunity_original_entry"]))
+                        if deadline is None and prior.get("opportunity_deadline") is not None:
+                            deadline = datetime.fromisoformat(str(prior["opportunity_deadline"]))
+                        break
+            anchor = trigger if anchor is None else anchor
+            if deadline is None:
+                signal_timestamp = getattr(signal, "timestamp", None)
+                if isinstance(signal_timestamp, datetime):
+                    deadline = signal_timestamp + BAR_INTERVAL
+            if trigger > min(
+                anchor * (Decimal("1") + max_displacement_percent / Decimal("100")),
+                anchor + max_displacement_absolute,
+            ):
+                return refused(PaperEntryAuthorizationReason.EXPOSURE_LIMIT)
             try:
                 request = self.order_command_factory.create_placement_request(
                     OrderEntryCommand(
@@ -410,7 +485,12 @@ class AutonomousPaperExecutionBridge:
                         metadata={
                             "source": "autonomous-paper",
                             "reason": "ENTRY",
-                            "provenance": "AUTONOMOUS_ORIGINAL_ENTRY",
+                            "provenance": provenance,
+                            "opportunity_id": opportunity,
+                            "opportunity_original_entry": str(anchor),
+                            "opportunity_deadline": None if deadline is None else deadline.isoformat(),
+                            "lifecycle_number": str(lifecycle_number),
+                            "max_lifecycles_per_opportunity": str(max_lifecycles_per_opportunity),
                             "risk_dollars": str(risk_dollars),
                             "lifecycle_id": identity,
                             "replacement_sequence": "0",
@@ -460,6 +540,92 @@ class AutonomousPaperExecutionBridge:
 
         return self.submit_entry_decision(signal, shares, risk_dollars).authorized
 
+    def submit_rearmed_entry(
+        self, signal: object, shares: int, risk_dollars: Decimal, *,
+        opportunity_id: str | None = None,
+        opportunity_anchor: Decimal | None = None,
+        max_lifecycles_per_opportunity: int = 3,
+        max_displacement_percent: Decimal = Decimal("1.5"),
+        max_displacement_absolute: Decimal = Decimal("0.05"),
+        now: datetime | None = None,
+    ) -> PaperEntryAuthorizationDecision:
+        """Start an explicitly re-armed lifecycle without resetting its anchor."""
+        opportunity = opportunity_id or opportunity_identity(signal)
+        symbol = str(getattr(signal, "symbol", "")).strip().upper()
+        identity = lifecycle_identity(signal)
+        if max_lifecycles_per_opportunity <= 0:
+            return PaperEntryAuthorizationDecision(
+                PaperEntryAuthorizationResult.REFUSED,
+                PaperEntryAuthorizationReason.EXPOSURE_LIMIT, symbol, identity, (),
+            )
+        with self._lock:
+            if self.order_book is None:
+                return PaperEntryAuthorizationDecision(
+                    PaperEntryAuthorizationResult.REFUSED,
+                    PaperEntryAuthorizationReason.BROKER_NOT_READY, symbol, identity, (),
+                )
+            if self._authoritative_quantity(symbol) > 0:
+                return PaperEntryAuthorizationDecision(
+                    PaperEntryAuthorizationResult.REFUSED,
+                    PaperEntryAuthorizationReason.POSITION_EXISTS, symbol, identity, (),
+                )
+            if self.order_book.open_orders_for_symbol(symbol):
+                return PaperEntryAuthorizationDecision(
+                    PaperEntryAuthorizationResult.REFUSED,
+                    PaperEntryAuthorizationReason.WORKING_ORDER_EXISTS, symbol, identity, (),
+                )
+            entries = [
+                item for item in self.order_book.history()
+                if item.request.side is OrderSide.BUY
+                and item.request.metadata.get("opportunity_id") == opportunity
+            ]
+            lifecycle_ids = {
+                item.request.strategy_lifecycle_id for item in entries
+                if item.request.strategy_lifecycle_id
+            }
+            if len(lifecycle_ids) >= max_lifecycles_per_opportunity:
+                return PaperEntryAuthorizationDecision(
+                    PaperEntryAuthorizationResult.REFUSED,
+                    PaperEntryAuthorizationReason.OPPORTUNITY_LIFECYCLE_LIMIT_EXHAUSTED,
+                    symbol, identity, (),
+                )
+            anchor = opportunity_anchor
+            deadline = None
+            for item in entries:
+                value = item.request.metadata.get("opportunity_original_entry")
+                if value is not None:
+                    anchor = Decimal(str(value))
+                if deadline is None and item.request.metadata.get("opportunity_deadline"):
+                    deadline = datetime.fromisoformat(
+                        str(item.request.metadata["opportunity_deadline"])
+                    )
+                if anchor is not None and deadline is not None:
+                    break
+            if deadline is not None and now is not None and now > deadline:
+                return PaperEntryAuthorizationDecision(
+                    PaperEntryAuthorizationResult.REFUSED,
+                    PaperEntryAuthorizationReason.CHASE_WINDOW_EXPIRED,
+                    symbol, identity, (),
+                )
+            trigger = Decimal(str(getattr(signal, "entry_trigger")))
+            if anchor is not None and trigger > min(
+                anchor * (Decimal("1") + max_displacement_percent / Decimal("100")),
+                anchor + max_displacement_absolute,
+            ):
+                return PaperEntryAuthorizationDecision(
+                    PaperEntryAuthorizationResult.REFUSED,
+                    PaperEntryAuthorizationReason.EXPOSURE_LIMIT, symbol, identity, (),
+                )
+            lifecycle_number = len(lifecycle_ids) + 1
+        return self.submit_entry_decision(
+            signal, shares, risk_dollars, opportunity_id=opportunity,
+            opportunity_anchor=anchor, lifecycle_number=lifecycle_number,
+            max_lifecycles_per_opportunity=max_lifecycles_per_opportunity,
+            max_displacement_percent=max_displacement_percent,
+            max_displacement_absolute=max_displacement_absolute,
+            provenance="AUTONOMOUS_FAST_MOMENTUM_REARM",
+        )
+
     def replace_entry_order(
         self,
         *,
@@ -475,6 +641,8 @@ class AutonomousPaperExecutionBridge:
         maximum_quantity: int = 10000,
         revalidate: Callable[[], bool] | None = None,
         reason: str = "adaptive-entry-replacement",
+        now: datetime | None = None,
+        max_replacements: int = 2,
     ) -> PaperEntryReplacementDecision:
         """Explicitly replace one working entry after full revalidation.
 
@@ -524,14 +692,23 @@ class AutonomousPaperExecutionBridge:
                 sequence = int(predecessor.request.metadata.get("replacement_sequence", 0)) + 1
             except (TypeError, ValueError):
                 return self._replacement_refused(identity, "INVALID_REPLACEMENT_SEQUENCE", symbol)
+            if sequence > max_replacements:
+                return self._replacement_refused(identity, "REPLACEMENT_LIMIT_EXHAUSTED", symbol, predecessor_id, sequence)
+            deadline = predecessor.request.metadata.get("chase_deadline")
+            if deadline is None:
+                deadline = predecessor.request.entry_valid_until
+            if deadline is not None and now is not None:
+                try:
+                    deadline_value = (
+                        deadline if isinstance(deadline, datetime)
+                        else datetime.fromisoformat(str(deadline))
+                    )
+                except (TypeError, ValueError):
+                    return self._replacement_refused(identity, "INVALID_CHASE_DEADLINE", symbol, predecessor_id, sequence)
+                if now > deadline_value:
+                    return self._replacement_refused(identity, "CHASE_WINDOW_EXPIRED", symbol, predecessor_id, sequence)
             if revalidate is None:
                 return self._replacement_refused(identity, "REVALIDATION_REQUIRED", symbol, predecessor_id, sequence)
-            try:
-                valid = bool(revalidate())
-            except Exception:
-                valid = False
-            if not valid:
-                return self._replacement_refused(identity, "REVALIDATION_FAILED", symbol, predecessor_id, sequence)
             if replacement_limit <= structural_stop:
                 return self._replacement_refused(identity, "STRUCTURAL_STOP_INVALID", symbol, predecessor_id, sequence)
 
@@ -543,6 +720,12 @@ class AutonomousPaperExecutionBridge:
                 return self._replacement_refused(identity, "PREDECESSOR_STATE_UNAVAILABLE", symbol, predecessor_id, sequence)
             if not cancelled.is_terminal or cancelled.status.value != "CANCELLED":
                 return self._replacement_refused(identity, "CANCELLATION_NOT_CONFIRMED", symbol, predecessor_id, sequence)
+            try:
+                valid = bool(revalidate())
+            except Exception:
+                valid = False
+            if not valid:
+                return self._replacement_refused(identity, "REVALIDATION_FAILED", symbol, predecessor_id, sequence)
 
             filled, consumed_risk, average_fill = self._lifecycle_fill_state(identity, structural_stop)
             remaining_risk = max(Decimal("0"), original_risk_budget - consumed_risk)
@@ -586,12 +769,25 @@ class AutonomousPaperExecutionBridge:
                             "replacement_sequence": str(sequence),
                             "replacement_reason": normalized_reason,
                             "original_planned_entry": str(original_planned),
+                            "opportunity_id": predecessor.request.metadata.get("opportunity_id"),
+                            "opportunity_original_entry": predecessor.request.metadata.get(
+                                "opportunity_original_entry", str(original_planned),
+                            ),
+                            "opportunity_deadline": predecessor.request.metadata.get(
+                                "opportunity_deadline",
+                            ),
                             "structural_stop": str(structural_stop),
                             "risk_dollars": str(original_risk_budget),
                             "risk_consumed": str(consumed_risk),
                             "cumulative_filled_quantity": str(filled),
                             "remaining_requested_quantity": str(quantity),
                             "entry_validity_seconds": str(int(BAR_INTERVAL.total_seconds())),
+                            "chase_deadline": (
+                                None if deadline is None else str(deadline)
+                            ),
+                            "last_entry_mutation_at": (
+                                None if now is None else now.isoformat()
+                            ),
                         },
                     )
                 )
@@ -612,6 +808,94 @@ class AutonomousPaperExecutionBridge:
                 PaperEntryReplacementState.SUBMITTED, symbol, identity, "SUBMITTED",
                 predecessor_id, replacement_id, sequence, quantity, filled,
             )
+
+    def consider_entry_replacement(
+        self,
+        *,
+        lifecycle_id: str,
+        current_ask: Decimal,
+        now: datetime,
+        structural_stop: Decimal,
+        original_risk_budget: Decimal,
+        account_equity: Decimal,
+        buying_power: Decimal,
+        existing_exposure: Decimal = Decimal("0"),
+        maximum_position_equity_percentage: Decimal = Decimal("0.50"),
+        maximum_position_dollars: Decimal = Decimal("25000"),
+        maximum_quantity: int = 10000,
+        revalidate: Callable[[], bool] | None = None,
+        policy: PaperEntryReplacementPolicy = PaperEntryReplacementPolicy(),
+        reason: str = "adaptive-entry-chase",
+    ) -> PaperEntryReplacementDecision:
+        """Evaluate one fresh observation for a bounded LIMIT replacement.
+
+        This method is intentionally explicit and observation-driven.  Nothing
+        calls it on a timer or solely because a quote increased.
+        """
+        identity = str(lifecycle_id).strip()
+        if current_ask <= 0 or now.tzinfo is None or now.utcoffset() is None:
+            return self._replacement_refused(identity, "CURRENT_QUOTE_UNAVAILABLE")
+        with self._lock:
+            predecessor_id = self._entry_orders.get(identity)
+            if self.order_book is None or predecessor_id is None:
+                return self._replacement_refused(identity, "PREDECESSOR_NOT_FOUND")
+            try:
+                predecessor = self.order_book.get(predecessor_id)
+            except Exception:
+                return self._replacement_refused(identity, "PREDECESSOR_NOT_FOUND")
+            if predecessor.is_terminal or predecessor.request.order_type is not OrderType.LIMIT:
+                return self._replacement_refused(identity, "PREDECESSOR_NOT_WORKING", predecessor.symbol)
+            predecessor_limit = predecessor.request.limit_price
+            original = predecessor.request.metadata.get(
+                "original_planned_entry", predecessor_limit,
+            )
+            try:
+                original_price = Decimal(str(original))
+            except Exception:
+                return self._replacement_refused(identity, "ORIGINAL_ENTRY_UNAVAILABLE", predecessor.symbol)
+            sequence = int(predecessor.request.metadata.get("replacement_sequence", 0))
+            if sequence >= policy.max_replacements:
+                return self._replacement_refused(identity, "REPLACEMENT_LIMIT_EXHAUSTED", predecessor.symbol, predecessor_id, sequence + 1)
+            if predecessor_limit is None or current_ask <= predecessor_limit:
+                return self._replacement_refused(identity, "PRICE_NOT_MOVED_ABOVE_PREDECESSOR", predecessor.symbol, predecessor_id, sequence + 1)
+            last_mutation = predecessor.request.metadata.get(
+                "last_entry_mutation_at",
+            ) or predecessor.created_at
+            try:
+                last_mutation = (
+                    last_mutation if isinstance(last_mutation, datetime)
+                    else datetime.fromisoformat(str(last_mutation))
+                )
+            except (TypeError, ValueError):
+                return self._replacement_refused(
+                    identity, "INVALID_REPRICE_TIMESTAMP", predecessor.symbol,
+                )
+            if now - last_mutation < timedelta(seconds=float(
+                policy.min_reprice_interval_seconds
+            )):
+                return self._replacement_refused(
+                    identity, "REPRICE_INTERVAL_NOT_ELAPSED", predecessor.symbol,
+                    predecessor_id, sequence + 1,
+                )
+            maximum = min(
+                original_price * (Decimal("1") + policy.max_displacement_percent / Decimal("100")),
+                original_price + policy.max_displacement_absolute,
+            )
+            if current_ask > maximum:
+                return self._replacement_refused(identity, "CHASE_LIMIT_EXCEEDED", predecessor.symbol, predecessor_id, sequence + 1)
+            replacement_limit = min(current_ask, maximum)
+        return self.replace_entry_order(
+            lifecycle_id=identity, replacement_limit=replacement_limit,
+            structural_stop=structural_stop, original_risk_budget=original_risk_budget,
+            account_equity=account_equity, buying_power=buying_power,
+            existing_exposure=existing_exposure,
+            maximum_position_equity_percentage=maximum_position_equity_percentage,
+            maximum_position_dollars=maximum_position_dollars,
+            maximum_quantity=maximum_quantity, revalidate=revalidate,
+            reason=reason, now=now, max_replacements=policy.max_replacements,
+        )
+
+    consider_adaptive_entry = consider_entry_replacement
 
     # Explicit alias for callers that name the coordinator operation directly.
     replace_entry = replace_entry_order
@@ -1004,7 +1288,7 @@ __all__ = [
     "AutonomousPaperExecutionBridge", "AutonomousManagementReadiness",
     "AutonomousPaperReadiness", "PaperEntryAuthorizationDecision",
     "PaperEntryAuthorizationReason", "PaperEntryAuthorizationResult",
-    "PaperEntryGateDecision", "lifecycle_identity",
+    "PaperEntryGateDecision", "lifecycle_identity", "opportunity_identity",
     "PaperEntryReplacementDecision", "PaperEntryReplacementState",
     "PaperExitSubmissionDecision", "PaperExitSubmissionState",
 ]

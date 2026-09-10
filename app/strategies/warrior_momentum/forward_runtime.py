@@ -26,7 +26,8 @@ from .forward_store import ForwardCaptureStore
 from .autonomous_paper import (
     PaperEntryAuthorizationDecision, PaperEntryAuthorizationReason,
     PaperEntryAuthorizationResult, PaperEntryGateDecision,
-    PaperExitSubmissionDecision, lifecycle_identity,
+    PaperExitSubmissionDecision, lifecycle_identity, opportunity_identity,
+    PaperEntryReplacementDecision, PaperEntryReplacementPolicy,
 )
 from .models import (
     CandidateStatus, MinuteBar, MomentumCandidate, MomentumEntrySignal,
@@ -139,6 +140,7 @@ class _PaperState:
     exit_price: Decimal | None = None
     protective_stop_activated_at: datetime | None = None
     protection_reconciled: bool = False
+    risk_budget: Decimal = ZERO
 
 
 @dataclass(slots=True)
@@ -163,6 +165,8 @@ class WarriorForwardCaptureService:
             bool | PaperEntryAuthorizationDecision,
         ] | None = None,
         paper_exit_submitter: Callable[[str, int, Decimal, str, str | None], object] | None = None,
+        paper_entry_replacer: Callable[..., PaperEntryReplacementDecision] | None = None,
+        paper_entry_rearmer: Callable[..., object] | None = None,
         paper_position_quantity_source: Callable[[str], Decimal] | None = None,
         paper_execution_ownership_source: Callable[[str], bool] | None = None,
         execution_quote_source: ExecutionQuoteSource | None = None,
@@ -183,6 +187,8 @@ class WarriorForwardCaptureService:
             configuration_fingerprint = strategy_configuration_fingerprint(config)
         self._paper_entry_submitter = paper_entry_submitter
         self._paper_exit_submitter = paper_exit_submitter
+        self._paper_entry_replacer = paper_entry_replacer
+        self._paper_entry_rearmer = paper_entry_rearmer
         self._paper_position_quantity_source = paper_position_quantity_source
         self._paper_execution_ownership_source = paper_execution_ownership_source
         self._execution_quote_source = execution_quote_source
@@ -336,6 +342,26 @@ class WarriorForwardCaptureService:
                     ))),
                 )
                 signal = None
+        if (
+            signal is not None
+            and account is not None
+            and self._paper_entry_replacer is not None
+            and self.config.adaptive_entry.enabled
+            and signal.symbol in self._paper
+        ):
+            self._consider_adaptive_entry_replacement(
+                value, assessed, signal, account,
+            )
+        if (
+            signal is not None
+            and account is not None
+            and self._paper_entry_rearmer is not None
+            and self.config.adaptive_entry.enabled
+            and signal.symbol in self._paper
+            and self._paper_position_quantity_source is not None
+            and self._paper_position_quantity_source(signal.symbol) <= 0
+        ):
+            self._consider_fast_momentum_rearm(value, assessed, signal, account)
         latched_rejections = entry_rejections(assessed, self.config)
         create_latched_shadow = (
             technical_signal is not None
@@ -504,6 +530,114 @@ class WarriorForwardCaptureService:
                 pass
         self._submit_records(tuple(records))
         return assessed, signal
+
+    def _consider_adaptive_entry_replacement(
+        self,
+        value: PointInTimeObservation,
+        candidate: MomentumCandidate,
+        signal: MomentumEntrySignal,
+        account: PaperAccountContext,
+    ) -> None:
+        """Use one fresh observation to consider a bounded entry replacement."""
+        state = self._paper.get(signal.symbol)
+        ask = value.observation.ask
+        bid = value.observation.bid
+        if state is None or ask is None or bid is None:
+            return
+
+        stale_limit = self.capture_config.quote_stale_after_seconds
+        freshness = (
+            value.quote_freshness_seconds,
+            value.last_price_freshness_seconds,
+            value.processing_age_seconds,
+            value.delivery_age_seconds,
+        )
+        if (
+            not value.halt_state_known
+            or not value.volume_known
+            or not value.observation.tradable
+            or value.observation.halted
+            or signal.session not in self.config.entry.allowed_sessions
+            or any(age is None or age > stale_limit for age in freshness)
+        ):
+            return
+
+        def current_gates_valid() -> bool:
+            return bool(
+                value.halt_state_known
+                and value.volume_known
+                and value.observation.tradable
+                and not value.observation.halted
+                and signal.session in self.config.entry.allowed_sessions
+                and signal.spread_percent is not None
+                and signal.spread_percent <= self.config.entry.maximum_spread_percent
+                and signal.dollar_volume >= self.config.entry.minimum_dollar_volume
+                and account.risk_engine_approved
+                and not account.broker_restriction
+                and self._execution_permitted()
+            )
+
+        try:
+            self._paper_entry_replacer(
+                lifecycle_id=lifecycle_identity(signal),
+                current_ask=Decimal(ask),
+                now=value.evaluation_timestamp or value.observation.timestamp,
+                structural_stop=state.signal.stop_price,
+                original_risk_budget=state.risk_budget,
+                account_equity=account.equity,
+                buying_power=account.buying_power,
+                existing_exposure=account.existing_exposure,
+                maximum_position_equity_percentage=self.config.risk.maximum_position_equity_percentage,
+                maximum_position_dollars=self.config.risk.maximum_position_dollars,
+                maximum_quantity=self.config.risk.maximum_quantity,
+                revalidate=current_gates_valid,
+                policy=PaperEntryReplacementPolicy(
+                    max_replacements=self.config.adaptive_entry.max_replacements,
+                    min_reprice_interval_seconds=self.config.adaptive_entry.min_reprice_interval_seconds,
+                    max_displacement_percent=self.config.adaptive_entry.max_displacement_percent,
+                    max_displacement_absolute=self.config.adaptive_entry.max_displacement_absolute,
+                ),
+            )
+        except Exception:
+            # Replacement is optional execution enhancement.  Its failure must
+            # never change the primary observation or entry decision.
+            return
+
+    def _consider_fast_momentum_rearm(
+        self,
+        value: PointInTimeObservation,
+        candidate: MomentumCandidate,
+        signal: MomentumEntrySignal,
+        account: PaperAccountContext,
+    ) -> None:
+        """Re-arm only after a terminal unfilled lifecycle, never a position."""
+        if self._paper_entry_rearmer is None:
+            return
+        position = size_position(
+            signal, account_equity=account.equity,
+            buying_power=account.buying_power,
+            allowed_symbols=account.allowed_symbols,
+            existing_exposure=account.existing_exposure,
+            exposure_limit=account.exposure_limit,
+            risk_engine_approved=account.risk_engine_approved,
+            broker_restriction=account.broker_restriction,
+            config=self.config.risk,
+            symbol_authorized=_paper_symbol_authorization(signal, account).authorized,
+        )
+        if not position.approved:
+            return
+        try:
+            self._paper_entry_rearmer(
+                signal, position.shares, position.risk_dollars,
+                opportunity_id=opportunity_identity(signal),
+                opportunity_anchor=self._paper[signal.symbol].signal.entry_trigger,
+                max_lifecycles_per_opportunity=self.config.adaptive_entry.max_lifecycles_per_opportunity,
+                max_displacement_percent=self.config.adaptive_entry.max_displacement_percent,
+                max_displacement_absolute=self.config.adaptive_entry.max_displacement_absolute,
+                now=value.evaluation_timestamp or value.observation.timestamp,
+            )
+        except Exception:
+            return
 
     def observe_intraminute_shadow(
         self, market: ShadowMarketObservation,
@@ -713,7 +847,10 @@ class WarriorForwardCaptureService:
                 return (), execution_record, authorization_decision
         first = int((Decimal(shares) * self.config.trade_management.first_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
         second = int((Decimal(shares) * self.config.trade_management.second_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
-        state = _PaperState(signal, signal.entry_trigger, shares, shares, signal.stop_price, first, second)
+        state = _PaperState(
+            signal, signal.entry_trigger, shares, shares, signal.stop_price,
+            first, second, risk_budget=risk_dollars,
+        )
         self._paper[signal.symbol] = state
         fill = CaptureRecord.create(
             CaptureRecordType.PAPER_FILL, signal.symbol, signal.timestamp,
@@ -1245,6 +1382,9 @@ class WarriorForwardCaptureService:
                 self._paper[record.symbol] = _PaperState(
                     signal, Decimal(payload["fill_price"]), quantity, quantity,
                     Decimal(payload["structural_stop"]), first, second,
+                )
+                self._paper[record.symbol].risk_budget = Decimal(
+                    payload.get("risk_dollars", signal.risk_per_share * quantity)
                 )
             elif record.symbol in self._paper:
                 state = self._paper[record.symbol]

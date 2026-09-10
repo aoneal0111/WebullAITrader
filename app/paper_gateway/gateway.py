@@ -276,6 +276,17 @@ class PaperOrderGateway:
                 )
 
             created_at = self._now()
+            entry_valid_until = _entry_valid_until_from_placement(
+                order, created_at,
+            )
+            paper_metadata = dict(getattr(order, "metadata", {}))
+            if entry_valid_until is not None and order.side.value == "BUY":
+                paper_metadata.setdefault(
+                    "chase_deadline", entry_valid_until.isoformat(),
+                )
+                paper_metadata.setdefault(
+                    "last_entry_mutation_at", created_at.isoformat(),
+                )
             paper_request = PaperOrderRequest(
                 symbol=order.symbol,
                 asset_class=AssetClass.STOCK,
@@ -291,11 +302,8 @@ class PaperOrderGateway:
                 strategy_lifecycle_id=order.strategy_lifecycle_id,
                 structural_stop_price=_structural_stop_from_placement(order),
                 execution_reason=_execution_reason_from_placement(order),
-                entry_valid_until=_entry_valid_until_from_placement(
-                    order,
-                    created_at,
-                ),
-                metadata=dict(getattr(order, "metadata", {})),
+                entry_valid_until=entry_valid_until,
+                metadata=paper_metadata,
             )
 
             paper_order = create_order(
@@ -998,6 +1006,14 @@ def _entry_valid_until_from_placement(
     """Persist the authorization-time validity supplied by Warrior PAPER."""
 
     metadata = getattr(order, "metadata", {})
+    deadline = metadata.get("chase_deadline")
+    if deadline is not None:
+        try:
+            parsed = datetime.fromisoformat(str(deadline))
+        except (TypeError, ValueError):
+            parsed = None
+        if parsed is not None and parsed.tzinfo is not None:
+            return parsed
     if metadata.get("source") != "autonomous-paper":
         return None
     value = metadata.get("entry_validity_seconds")

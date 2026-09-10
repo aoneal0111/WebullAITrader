@@ -141,6 +141,8 @@ class WarriorDesktopSidecar:
         account_context_source: Callable[[], PaperAccountContext | None] | None = None,
         paper_entry_submitter: Callable[[object, int, Decimal], bool] | None = None,
         paper_exit_submitter: Callable[[str, int, Decimal, str, str | None], object] | None = None,
+        paper_entry_replacer: Callable[..., object] | None = None,
+        paper_entry_rearmer: Callable[..., object] | None = None,
         paper_position_quantity_source: Callable[[str], Decimal] | None = None,
         paper_execution_ownership_source: Callable[[str], bool] | None = None,
         execution_quote_source: ExecutionQuoteSource | None = None,
@@ -159,6 +161,8 @@ class WarriorDesktopSidecar:
         self._account_source = account_context_source or (lambda: None)
         self._paper_entry_submitter = paper_entry_submitter
         self._paper_exit_submitter = paper_exit_submitter
+        self._paper_entry_replacer = paper_entry_replacer
+        self._paper_entry_rearmer = paper_entry_rearmer
         self._paper_position_quantity_source = paper_position_quantity_source
         self._paper_execution_ownership_source = paper_execution_ownership_source
         self._execution_quote_source = execution_quote_source
@@ -379,6 +383,8 @@ class WarriorDesktopSidecar:
                     configuration_fingerprint=self.configuration_fingerprint,
                     paper_entry_submitter=self._paper_entry_submitter,
                     paper_exit_submitter=self._paper_exit_submitter,
+                    paper_entry_replacer=self._paper_entry_replacer,
+                    paper_entry_rearmer=self._paper_entry_rearmer,
                     paper_position_quantity_source=self._paper_position_quantity_source,
                     paper_execution_ownership_source=self._paper_execution_ownership_source,
                     execution_quote_source=self._execution_quote_source,

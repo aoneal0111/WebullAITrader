@@ -5,6 +5,7 @@ from unittest.mock import patch
 from app.composition.runtime_mode import RuntimeMode
 from app.market_data.models import MarketEvent, MarketEventType, QuotePayload
 from app.order_cancellation import OrderCancellationRequest
+from app.paper_trading.order_models import OrderType
 from tests.test_support.session_clock import (
     create_session_paper_composition as create_paper_trading_command_composition,
     session_timestamp,
@@ -13,7 +14,7 @@ from app.services.order_command_factory import OrderEntryCommand
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
 from app.strategies.warrior_momentum.autonomous_paper import (
     AutonomousManagementReadiness, AutonomousPaperReadiness,
-    PaperEntryReplacementState,
+    PaperEntryReplacementPolicy, PaperEntryReplacementState,
 )
 
 
@@ -360,6 +361,163 @@ def test_replacement_metadata_survives_restart_without_duplicate_entry(tmp_path)
     assert replacement.request.metadata["predecessor_order_id"] == decision.predecessor_order_id
     assert recovered.submit_entry(Signal(), 1000, Decimal("1000")) is False
     second.close()
+
+
+def test_bounded_chase_uses_both_displacement_caps_and_stops_after_two_replacements() -> None:
+    composition = create_paper_trading_command_composition()
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert bridge.submit_entry(Signal(entry_trigger=Decimal("1.25")), 100, Decimal("50"))
+    policy = PaperEntryReplacementPolicy(min_reprice_interval_seconds=Decimal("0"))
+    common = dict(
+        lifecycle_id="trade-a", structural_stop=Decimal("1.20"),
+        original_risk_budget=Decimal("50"), account_equity=Decimal("10000"),
+        buying_power=Decimal("10000"), revalidate=lambda: True,
+        policy=policy, now=session_timestamp(1),
+    )
+    first = bridge.consider_entry_replacement(current_ask=Decimal("1.26"), **common)
+    assert first.submitted
+    assert first.replacement_sequence == 1
+    second = bridge.consider_entry_replacement(
+        current_ask=Decimal("1.268"), now=session_timestamp(2), **{k: v for k, v in common.items() if k != "now"},
+    )
+    assert second.submitted
+    assert second.replacement_sequence == 2
+    exhausted = bridge.consider_entry_replacement(
+        current_ask=Decimal("1.2685"), now=session_timestamp(3), **{k: v for k, v in common.items() if k != "now"},
+    )
+    assert exhausted.reason == "REPLACEMENT_LIMIT_EXHAUSTED"
+    over_chase = bridge.consider_entry_replacement(
+        current_ask=Decimal("1.275"), now=session_timestamp(4), **{k: v for k, v in common.items() if k != "now"},
+    )
+    assert over_chase.reason == "REPLACEMENT_LIMIT_EXHAUSTED"
+    assert all(order.request.order_type.value == "LIMIT" for order in composition.order_book.history())
+    composition.close()
+
+
+def test_bounded_chase_preserves_original_deadline_and_rejects_unrevalidated_state() -> None:
+    composition = create_paper_trading_command_composition()
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert bridge.submit_entry(Signal(entry_trigger=Decimal("10")), 100, Decimal("50"))
+    refused = bridge.consider_entry_replacement(
+        lifecycle_id="trade-a", current_ask=Decimal("10.02"),
+        now=session_timestamp(61), structural_stop=Decimal("9.50"),
+        original_risk_budget=Decimal("50"), account_equity=Decimal("10000"),
+        buying_power=Decimal("10000"), revalidate=lambda: True,
+    )
+    assert refused.reason == "CHASE_WINDOW_EXPIRED"
+    assert len(composition.order_book.open_orders()) == 1
+    refused = bridge.consider_entry_replacement(
+        lifecycle_id="trade-a", current_ask=Decimal("10.02"),
+        now=session_timestamp(1), structural_stop=Decimal("9.50"),
+        original_risk_budget=Decimal("50"), account_equity=Decimal("10000"),
+        buying_power=Decimal("10000"), revalidate=lambda: False,
+        policy=PaperEntryReplacementPolicy(min_reprice_interval_seconds=Decimal("0")),
+    )
+    assert refused.reason == "REVALIDATION_FAILED"
+    assert len(composition.order_book.open_orders()) == 0
+    assert all(order.request.order_type.value != "MARKET" for order in composition.order_book.history())
+    composition.close()
+
+
+def test_bounded_chase_rejects_price_beyond_effective_cap_before_count_is_used() -> None:
+    composition = create_paper_trading_command_composition()
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert bridge.submit_entry(Signal(entry_trigger=Decimal("10")), 100, Decimal("50"))
+    refused = bridge.consider_entry_replacement(
+        lifecycle_id="trade-a", current_ask=Decimal("10.06"),
+        now=session_timestamp(1), structural_stop=Decimal("9.50"),
+        original_risk_budget=Decimal("50"), account_equity=Decimal("10000"),
+        buying_power=Decimal("10000"), revalidate=lambda: True,
+        policy=PaperEntryReplacementPolicy(min_reprice_interval_seconds=Decimal("0")),
+    )
+    assert refused.reason == "CHASE_LIMIT_EXCEEDED"  # 1.5%/$0.05 cap => $10.05.
+    assert len(composition.order_book.open_orders()) == 1
+    composition.close()
+
+
+def test_reprice_cadence_throttles_orders_but_not_observation_evaluation() -> None:
+    composition = create_paper_trading_command_composition()
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert bridge.submit_entry(Signal(entry_trigger=Decimal("1.25")), 100, Decimal("50"))
+    common = dict(
+        lifecycle_id="trade-a", structural_stop=Decimal("1.20"),
+        original_risk_budget=Decimal("50"), account_equity=Decimal("10000"),
+        buying_power=Decimal("10000"), revalidate=lambda: True,
+    )
+    early = bridge.consider_entry_replacement(
+        current_ask=Decimal("1.255"), now=session_timestamp(4.9),
+        **common,
+    )
+    # The fixed composition clock is the original order timestamp; use an
+    # explicit policy interval to make the boundary deterministic below.
+    assert early.reason == "REPRICE_INTERVAL_NOT_ELAPSED"
+    policy = PaperEntryReplacementPolicy(min_reprice_interval_seconds=Decimal("5"))
+    first = bridge.consider_entry_replacement(
+        current_ask=Decimal("1.255"), now=session_timestamp(5), policy=policy, **common,
+    )
+    assert first.submitted
+    too_soon = bridge.consider_entry_replacement(
+        current_ask=Decimal("1.260"), now=session_timestamp(9), policy=policy, **common,
+    )
+    assert too_soon.reason == "REPRICE_INTERVAL_NOT_ELAPSED"
+    second = bridge.consider_entry_replacement(
+        current_ask=Decimal("1.260"), now=session_timestamp(10), policy=policy, **common,
+    )
+    assert second.submitted
+    composition.close()
+
+
+def test_rearmed_lifecycles_share_opportunity_anchor_and_are_capped() -> None:
+    composition = create_paper_trading_command_composition()
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    first = Signal(entry_trigger=Decimal("1.25"), lifecycle_id="trade-a")
+    assert bridge.submit_entry_decision(
+        first, 100, Decimal("50"), opportunity_id="opp-a",
+    ).authorized
+    first_order = composition.order_book.open_orders_for_symbol("PMI")[0]
+    assert bridge._cancel_entry_predecessor(first_order)
+    second = Signal(entry_trigger=Decimal("1.26"), lifecycle_id="trade-b")
+    decision = bridge.submit_rearmed_entry(
+        second, 100, Decimal("50"), opportunity_id="opp-a",
+    )
+    assert decision.authorized
+    second_order = composition.order_book.open_orders_for_symbol("PMI")[0]
+    assert second_order.request.metadata["opportunity_id"] == "opp-a"
+    assert second_order.request.metadata["opportunity_original_entry"] == "1.25"
+    assert second_order.request.order_type is OrderType.LIMIT
+    assert bridge._cancel_entry_predecessor(second_order)
+    third = Signal(entry_trigger=Decimal("1.268"), lifecycle_id="trade-c")
+    assert bridge.submit_rearmed_entry(
+        third, 100, Decimal("50"), opportunity_id="opp-a",
+    ).authorized
+    third_order = composition.order_book.open_orders_for_symbol("PMI")[0]
+    assert third_order.request.metadata["opportunity_original_entry"] == "1.25"
+    assert bridge._cancel_entry_predecessor(third_order)
+    fourth = Signal(entry_trigger=Decimal("1.2685"), lifecycle_id="trade-d")
+    refused = bridge.submit_rearmed_entry(
+        fourth, 100, Decimal("50"), opportunity_id="opp-a",
+    )
+    assert refused.reason.name == "OPPORTUNITY_LIFECYCLE_LIMIT_EXHAUSTED"
+    assert all(
+        order.request.order_type is OrderType.LIMIT
+        for order in composition.order_book.history()
+    )
+    composition.close()
 
 
 def test_partial_entry_invalidation_preserves_fill_and_cancels_remainder() -> None:
