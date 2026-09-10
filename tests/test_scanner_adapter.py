@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from app.market_data.models import (
@@ -632,3 +632,99 @@ def test_stream_session_reset_allows_lower_timestamp_new_baseline() -> None:
     assert recovered.timestamp == replacement_session_timestamp
     assert recovered.bid == Decimal("12.00")
     assert recovered.ask == Decimal("12.10")
+
+
+def _dated_event(event: MarketEvent, timestamp: datetime, sequence: int) -> MarketEvent:
+    return replace(event, timestamp=timestamp, sequence=sequence)
+
+
+def _dated_trade(timestamp: datetime, sequence: int, size: str, symbol: str = "TEST") -> MarketEvent:
+    return MarketEvent(
+        sequence=sequence,
+        timestamp=timestamp,
+        symbol=symbol,
+        source="WEBULL",
+        event_type=MarketEventType.TRADE,
+        payload=TradePayload(
+            price=Decimal("6"),
+            size=Decimal(size),
+            trade_id=f"trade-{sequence}",
+        ),
+    )
+
+
+def test_volume_keeps_accumulating_across_same_day_sessions() -> None:
+    store = ScannerReferenceStore((reference_data(current_volume=Decimal("100")),))
+    adapter = MarketEventScannerAdapter(store)
+    premarket = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+
+    adapter.consume(_dated_event(quote_event(), premarket, 1))
+    adapter.consume(_dated_trade(premarket + timedelta(minutes=1), 2, "10"))
+    adapter.consume(_dated_trade(datetime(2026, 7, 20, 15, 0, tzinfo=timezone.utc), 3, "20"))
+    adapter.consume(_dated_trade(datetime(2026, 7, 20, 21, 0, tzinfo=timezone.utc), 4, "30"))
+
+    state = adapter.state_for("TEST")
+    assert state is not None
+    assert state.trading_date == date(2026, 7, 20)
+    assert state.cumulative_volume == Decimal("160")
+
+
+def test_next_trading_date_resets_all_symbols_and_ignores_late_events() -> None:
+    store = ScannerReferenceStore((reference_data(), ScannerReferenceData(
+        symbol="OTHER", previous_close=Decimal("5"),
+        average_30_day_volume=Decimal("100000"), float_shares=Decimal("5000000"),
+        updated_at=NOW,
+    )))
+    adapter = MarketEventScannerAdapter(store)
+    day_one = datetime(2026, 7, 20, 15, 0, tzinfo=timezone.utc)
+    day_two = datetime(2026, 7, 21, 13, 0, tzinfo=timezone.utc)
+
+    adapter.consume(_dated_event(quote_event(), day_one, 1))
+    adapter.consume(_dated_trade(day_one + timedelta(seconds=1), 2, "100"))
+    adapter.consume(_dated_event(replace(quote_event(), symbol="OTHER"), day_one, 3))
+    adapter.consume(_dated_trade(day_one + timedelta(seconds=2), 4, "200", "OTHER"))
+
+    # The first event on the new date advances every symbol, including OTHER
+    # before OTHER receives a new-date event of its own.
+    adapter.consume(_dated_event(quote_event(), day_two, 5))
+    for symbol in ("TEST", "OTHER"):
+        state = adapter.state_for(symbol)
+        assert state is not None
+        assert state.trading_date == date(2026, 7, 21)
+        assert state.cumulative_volume == Decimal("0")
+
+    adapter.consume(_dated_trade(day_two + timedelta(seconds=1), 6, "7", "OTHER"))
+    assert adapter.state_for("OTHER").cumulative_volume == Decimal("7")
+
+    # A late prior-date trade cannot contaminate the new-day numerator.
+    assert adapter.consume(_dated_trade(day_one, 7, "999")) is None
+    assert adapter.state_for("TEST").cumulative_volume == Decimal("0")
+
+
+def test_same_day_reference_volume_seeds_but_stale_reference_volume_does_not() -> None:
+    same_day = reference_data(current_volume=Decimal("500"))
+    stale = replace(
+        same_day,
+        updated_at=datetime(2026, 7, 17, 15, 0, tzinfo=timezone.utc),
+    )
+    adapter = MarketEventScannerAdapter(ScannerReferenceStore((stale,)))
+    next_day = datetime(2026, 7, 21, 13, 0, tzinfo=timezone.utc)
+
+    adapter.consume(_dated_event(quote_event(), next_day, 1))
+    state = adapter.state_for("TEST")
+    assert state is not None
+    assert state.cumulative_volume == Decimal("0")
+
+
+def test_rvol_and_dollar_volume_use_current_day_volume_only() -> None:
+    store = ScannerReferenceStore((reference_data(current_volume=Decimal("100")),))
+    adapter = MarketEventScannerAdapter(store)
+    timestamp = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+
+    adapter.consume(_dated_event(quote_event(), timestamp, 1))
+    result = adapter.consume(_dated_trade(timestamp + timedelta(seconds=1), 2, "25"))
+
+    assert result.observation is not None
+    assert result.observation.current_volume == Decimal("125")
+    assert result.observation.current_volume / result.observation.average_30_day_volume == Decimal("0.00125")
+    assert result.observation.price * result.observation.current_volume == Decimal("750")

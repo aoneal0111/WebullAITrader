@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from app.momentum_scanner.models import (
@@ -79,6 +79,7 @@ class SymbolScannerState:
     ask_size: Decimal | None = None
     cumulative_volume: Decimal = Decimal("0")
     halted: bool = False
+    trading_date: date | None = None
 
     def __post_init__(self) -> None:
         symbol = self.symbol.strip().upper()
@@ -94,6 +95,9 @@ class SymbolScannerState:
             value = getattr(self, name)
             if value is not None and value.tzinfo is None:
                 raise ValueError(f"{name} must be timezone-aware")
+
+        if self.trading_date is not None and not isinstance(self.trading_date, date):
+            raise ValueError("trading_date must be a date when provided")
 
         if self.last_price is not None and self.last_price <= 0:
             raise ValueError("last_price must be positive")

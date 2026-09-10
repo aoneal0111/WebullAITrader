@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from app.market_data.models import (
@@ -14,6 +14,7 @@ from app.market_data.models import (
     TradePayload,
     TradingHaltPayload,
 )
+from app.market.calendar import EASTERN, trading_day_schedule
 from app.momentum_scanner.models import ScannerObservation
 from app.scanner_adapter.models import AdapterResult, SymbolScannerState
 from app.scanner_adapter.reference_store import ScannerReferenceStore
@@ -35,6 +36,7 @@ class MarketEventScannerAdapter:
     ) -> None:
         self.reference_store = reference_store
         self._states: dict[str, SymbolScannerState] = {}
+        self._active_trading_date: date | None = None
         self._price_observer = price_observer
 
     def consume(self, event: MarketEvent) -> AdapterResult | None:
@@ -45,17 +47,21 @@ class MarketEventScannerAdapter:
         if not symbol:
             return None
 
+        trading_date = _effective_trading_date(event.timestamp)
+        if trading_date is None:
+            return None
+        if self._active_trading_date is not None and trading_date < self._active_trading_date:
+            return None
+        if self._active_trading_date is None:
+            self._active_trading_date = trading_date
+        elif trading_date > self._active_trading_date:
+            self._advance_trading_date(trading_date)
+
         previous = self._states.get(symbol)
         if previous is None:
-            reference = self.reference_store.get(symbol)
-            previous = SymbolScannerState(
-                symbol=symbol,
-                cumulative_volume=(
-                    reference.current_volume
-                    if reference is not None and reference.current_volume is not None
-                    else Decimal("0")
-                ),
-            )
+            previous = self._new_state(symbol, trading_date)
+        elif previous.trading_date != trading_date:
+            previous = self._new_state(symbol, trading_date)
 
         state = self._apply(previous, event)
         self._states[symbol] = state
@@ -130,6 +136,39 @@ class MarketEventScannerAdapter:
                 current,
                 cumulative_volume=Decimal("0"),
             )
+
+    def _new_state(self, symbol: str, trading_date: date) -> SymbolScannerState:
+        reference = self.reference_store.get(symbol)
+        reference_date = (
+            _effective_trading_date(reference.updated_at)
+            if reference is not None and reference.updated_at is not None
+            else None
+        )
+        seed = (
+            reference.current_volume
+            if (
+                reference is not None
+                and reference.current_volume is not None
+                and reference_date == trading_date
+            )
+            else Decimal("0")
+        )
+        return SymbolScannerState(
+            symbol=symbol,
+            trading_date=trading_date,
+            cumulative_volume=seed,
+        )
+
+    def _advance_trading_date(self, trading_date: date) -> None:
+        self._active_trading_date = trading_date
+        self._states = {
+            symbol: replace(
+                state,
+                trading_date=trading_date,
+                cumulative_volume=Decimal("0"),
+            )
+            for symbol, state in self._states.items()
+        }
 
     def observations(self) -> tuple[ScannerObservation, ...]:
         completed: list[ScannerObservation] = []
@@ -407,4 +446,11 @@ def _latest_timestamp(
     if right is None:
         return left
     return max(left, right)
+
+
+def _effective_trading_date(value: datetime | None) -> date | None:
+    if value is None or value.tzinfo is None or value.utcoffset() is None:
+        return None
+    schedule = trading_day_schedule(value.astimezone(EASTERN))
+    return None if schedule is None else schedule.trading_date
 
