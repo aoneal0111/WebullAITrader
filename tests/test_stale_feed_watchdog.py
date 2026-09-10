@@ -84,3 +84,21 @@ def test_temporal_reconciliation_is_independent_of_market_events():
 
     assert len(calls) == 1
     assert "at" in calls[0]
+
+
+def test_fresh_payload_during_long_housekeeping_gap_does_not_reconnect(monkeypatch):
+    scanner = _Scanner()
+    scanner._transport.last_normalized_event_monotonic = 10.0
+    driver = _driver(scanner)
+    driver._last_watchdog_payload_monotonic = 0.0
+    clock = iter((11.0,))
+    monkeypatch.setattr(broker_module, "monotonic", lambda: next(clock))
+
+    # The loop was delayed beyond the suspend threshold, but a normalized
+    # payload arrived during that interval.  This is a busy/backlogged runtime,
+    # not a stale stream.
+    driver._run_feed_watchdog()
+
+    assert scanner.recoveries == 0
+    assert driver._feed_stale is False
+    assert driver._health == []

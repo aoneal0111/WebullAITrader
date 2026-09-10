@@ -142,6 +142,7 @@ class DesktopBrokerRuntimeDriver:
         self._feed_recovery_pending = False
         self._last_feed_recovery_at = 0.0
         self._feed_recovery_started_monotonic: float | None = None
+        self._last_watchdog_payload_monotonic: float | None = None
         observer_owner = getattr(market_event_observer, "__self__", None)
         if observer_owner is None:
             primary = getattr(market_event_observer, "primary", None)
@@ -273,6 +274,7 @@ class DesktopBrokerRuntimeDriver:
         self._last_driver_market_event_monotonic = None
         self._feed_stale = False
         self._feed_recovery_pending = False
+        self._last_watchdog_payload_monotonic = None
         performance_diagnostics.record_startup_stage("runtime_started")
         if self._scanner is not None:
             self._scanner_log(
@@ -1234,13 +1236,20 @@ class DesktopBrokerRuntimeDriver:
         return self._market_data
 
     def _feed_age_seconds(self, now: float) -> float:
-        transport = self._market_data_transport()
-        observed = getattr(transport, "last_normalized_event_monotonic", None)
-        if observed is None:
-            observed = self._last_driver_market_event_monotonic
+        observed = self._feed_payload_monotonic()
         if observed is None:
             observed = getattr(self, "_market_data_started_monotonic", now)
         return max(0.0, now - observed)
+
+    def _feed_payload_monotonic(self) -> float | None:
+        transport = self._market_data_transport()
+        markers = (
+            getattr(transport, "last_raw_callback_monotonic", None),
+            getattr(transport, "last_normalized_event_monotonic", None),
+            getattr(self, "_last_driver_market_event_monotonic", None),
+        )
+        available = tuple(value for value in markers if value is not None)
+        return max(available) if available else None
 
     def _run_feed_watchdog(self) -> None:
         if not hasattr(self, "_configuration"):
@@ -1250,6 +1259,19 @@ class DesktopBrokerRuntimeDriver:
             self, "_last_runtime_iteration_monotonic", now
         )
         self._last_runtime_iteration_monotonic = now
+        payload_marker = self._feed_payload_monotonic()
+        previous_payload_marker = getattr(
+            self, "_last_watchdog_payload_monotonic", None
+        )
+        fresh_payload_since_watchdog = (
+            payload_marker is not None
+            and (
+                previous_payload_marker is None
+                or payload_marker > previous_payload_marker
+            )
+        )
+        if payload_marker is not None:
+            self._last_watchdog_payload_monotonic = payload_marker
         stale_after = max(
             0.1, float(self._configuration.maximum_market_data_age_seconds)
         )
@@ -1262,7 +1284,14 @@ class DesktopBrokerRuntimeDriver:
             float(self._configuration.suspend_gap_detection_seconds),
         )
         age = self._feed_age_seconds(now)
-        discontinuity = loop_gap >= suspend_gap
+        # A large driver-loop gap is only a suspend/runtime discontinuity when
+        # no payload arrived during the gap.  Scanner startup can legitimately
+        # spend several seconds draining a callback burst; fresh payloads
+        # prove the process/feed were active and must not be invalidated by
+        # that housekeeping delay.
+        discontinuity = (
+            loop_gap >= suspend_gap and not fresh_payload_since_watchdog
+        )
         if age <= stale_after and not discontinuity:
             return
         if not getattr(self, "_feed_stale", False):
