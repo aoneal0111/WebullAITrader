@@ -820,6 +820,7 @@ class WarriorForwardCaptureService:
                 ),
                 depth=depth, ask_state=ask_state,
                 bid_advancing=bid_advancing,
+                flow=value.order_flow,
             )
             self._last_execution_pursuit[signal.symbol] = assessment
             if assessment.decision is not ExecutionPursuitDecision.PURSUE_ONE_LEVEL:

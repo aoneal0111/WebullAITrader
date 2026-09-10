@@ -13,6 +13,7 @@ from decimal import Decimal
 from enum import StrEnum
 
 from app.market_data.models import BookLevel
+from .order_flow import OrderFlowAssessment
 
 
 class ExecutionPursuitDecision(StrEnum):
@@ -42,6 +43,8 @@ class ExecutionPursuitAssessment:
     near_touch_ask_depth: Decimal | None = None
     microprice: Decimal | None = None
     ask_state: str | None = None
+    flow_classification: str | None = None
+    flow_delta: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +119,7 @@ def assess_top_of_book_pursuit(
     depth: DepthFeatures | None = None,
     ask_state: str | None = None,
     bid_advancing: bool = False,
+    flow: OrderFlowAssessment | None = None,
 ) -> ExecutionPursuitAssessment:
     """Assess a single bounded pursuit opportunity from top-of-book data.
 
@@ -132,6 +136,8 @@ def assess_top_of_book_pursuit(
             near_touch_bid_depth=None if depth is None else depth.near_touch_bid_depth,
             near_touch_ask_depth=None if depth is None else depth.near_touch_ask_depth,
             microprice=None if depth is None else depth.microprice, ask_state=ask_state,
+            flow_classification=None if flow is None else flow.classification,
+            flow_delta=None if flow is None else flow.delta,
         )
 
     if not quote_fresh:
@@ -144,6 +150,8 @@ def assess_top_of_book_pursuit(
         )
     if not quality_ok:
         return blocked("OPPORTUNITY_QUALITY_BLOCKED")
+    if flow is not None and flow.fresh and flow.contradicts_pursuit:
+        return blocked("ORDER_FLOW_DISTRIBUTION")
     if not liquidity_ok:
         return blocked("LIQUIDITY_BLOCKED")
     if best_bid is None or best_ask is None or spread_percent is None:
@@ -189,6 +197,8 @@ def assess_top_of_book_pursuit(
             near_touch_bid_depth=None if depth is None else depth.near_touch_bid_depth,
             near_touch_ask_depth=None if depth is None else depth.near_touch_ask_depth,
             microprice=None if depth is None else depth.microprice, ask_state=ask_state,
+            flow_classification=None if flow is None else flow.classification,
+            flow_delta=None if flow is None else flow.delta,
         )
     if not replacement_budget_available:
         return ExecutionPursuitAssessment(
@@ -207,6 +217,8 @@ def assess_top_of_book_pursuit(
         near_touch_bid_depth=None if depth is None else depth.near_touch_bid_depth,
         near_touch_ask_depth=None if depth is None else depth.near_touch_ask_depth,
         microprice=None if depth is None else depth.microprice, ask_state=ask_state,
+        flow_classification=None if flow is None else flow.classification,
+        flow_delta=None if flow is None else flow.delta,
     )
 
 
