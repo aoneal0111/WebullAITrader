@@ -23,6 +23,8 @@ _UNHEALTHY = frozenset(
         "FAILED",
         "STOPPED",
         "UNAVAILABLE",
+        "STALE",
+        "BLOCKED - STALE DATA",
     }
 )
 
@@ -181,6 +183,7 @@ def _health_changes(
             "ranking_status",
             "ai_status",
             "risk_status",
+            "execution_status",
             "persistence_status",
             "last_error",
             "last_warning",
@@ -264,6 +267,7 @@ def _apply_inferred_statuses(
             "market_data_status",
             "DISCONNECTED",
         ),
+        "MARKET_DATA_STALE": ("market_data_status", "STALE"),
         "MARKET_DATA_LOST": ("market_data_status", "DISCONNECTED"),
         "MARKET_FEED_DISCONNECTED": (
             "market_data_status",
@@ -314,6 +318,14 @@ def _apply_inferred_statuses(
             streaming_status="CONNECTED",
             last_error=None,
         )
+    elif event_type == "MARKET_DATA_STALE":
+        changes.update(
+            runtime_status="DEGRADED",
+            market_data_status="STALE",
+            streaming_status="STALE",
+            scanner_status="STALE_INPUT",
+            execution_status="BLOCKED - STALE DATA",
+        )
     elif event_type in {"MARKET_DATA_SUBSCRIBED", "CHANNELS_SUBSCRIBED"}:
         changes.update(
             runtime_status="RUNNING",
@@ -358,7 +370,11 @@ def _derive_flags(state: HealthState) -> tuple[bool, bool]:
     )
     market_status = "CONNECTED" if market_data_authoritative else state.market_data_status
     required = (state.broker_status, market_status)
-    optional = (state.risk_status, state.persistence_status)
+    optional = (
+        state.risk_status,
+        state.persistence_status,
+        state.execution_status,
+    )
     unhealthy = any(value in _UNHEALTHY for value in (*required, *optional))
     complete = all(value in _HEALTHY for value in required)
     optional_healthy = all(
@@ -465,6 +481,7 @@ def _to_operations(state: HealthState) -> OperationsHealthState:
         subscription_symbols=state.subscription_symbols,
         ai_status=state.ai_status,
         risk_status=state.risk_status,
+        execution_status=state.execution_status,
         persistence_status=state.persistence_status,
         last_error=state.last_error,
         last_warning=state.last_warning,

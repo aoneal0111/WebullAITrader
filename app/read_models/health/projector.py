@@ -43,6 +43,7 @@ def project_operational_health(state: OperationsHealthState) -> HealthState:
         subscription_symbols=state.subscription_symbols,
         ai_status=state.ai_status,
         risk_status=state.risk_status,
+        execution_status=state.execution_status,
         persistence_status=state.persistence_status,
         last_error=state.last_error,
         last_warning=state.last_warning,

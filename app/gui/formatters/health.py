@@ -58,6 +58,7 @@ def format_health(state: HealthState) -> HealthDashboardSnapshot:
             ("Ranking", state.ranking_status or "--"),
             ("AI", state.ai_status or "--"),
             ("Risk", state.risk_status or "--"),
+            ("Execution", state.execution_status or "--"),
             ("Persistence", state.persistence_status or "--"),
             ("Heartbeat", heartbeat),
             ("Latency", latency),

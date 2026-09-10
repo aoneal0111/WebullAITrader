@@ -135,6 +135,20 @@ class DesktopBrokerRuntimeDriver:
         self._last_stale_recovery_at = 0.0
         self._stale_recovery_pending = False
         self._stale_recovery_symbols: tuple[str, ...] = ()
+        self._last_runtime_iteration_monotonic = monotonic()
+        self._market_data_started_monotonic = monotonic()
+        self._last_driver_market_event_monotonic: float | None = None
+        self._feed_stale = False
+        self._feed_recovery_pending = False
+        self._last_feed_recovery_at = 0.0
+        self._feed_recovery_started_monotonic: float | None = None
+        observer_owner = getattr(market_event_observer, "__self__", None)
+        if observer_owner is None:
+            primary = getattr(market_event_observer, "primary", None)
+            observer_owner = getattr(primary, "__self__", None)
+        self._temporal_reconciler = getattr(
+            observer_owner, "reconcile_temporal_validity", None
+        )
         self._scanner_publisher = ScannerSnapshotPublisher(
             self._event_sink,
             self._next_sequence,
@@ -254,6 +268,11 @@ class DesktopBrokerRuntimeDriver:
             observer_stop()
 
     def _start_market_data(self, stop_event: Event) -> None:
+        self._market_data_started_monotonic = monotonic()
+        self._last_runtime_iteration_monotonic = self._market_data_started_monotonic
+        self._last_driver_market_event_monotonic = None
+        self._feed_stale = False
+        self._feed_recovery_pending = False
         performance_diagnostics.record_startup_stage("runtime_started")
         if self._scanner is not None:
             self._scanner_log(
@@ -328,7 +347,10 @@ class DesktopBrokerRuntimeDriver:
         self._publish_health(
             "MARKET_DATA_CONNECTING",
             "Connecting to Webull market data.",
-            RuntimeHealthUpdate(market_data_status="CONNECTING"),
+            RuntimeHealthUpdate(
+                market_data_status="CONNECTING",
+                execution_status="BLOCKED - STALE DATA",
+            ),
         )
         lifecycle_setter = getattr(
             self._market_data,
@@ -365,7 +387,10 @@ class DesktopBrokerRuntimeDriver:
             self._publish_health(
                 "MARKET_DATA_CONNECTED",
                 "Connected to Webull market data.",
-                RuntimeHealthUpdate(market_data_status="CONNECTED"),
+                RuntimeHealthUpdate(
+                    market_data_status="CONNECTED",
+                    execution_status="BLOCKED - STALE DATA",
+                ),
             )
             self._market_data.subscribe(
                 self._configuration.market_data_symbols
@@ -394,6 +419,7 @@ class DesktopBrokerRuntimeDriver:
                     market_data_status="CONNECTED",
                     streaming_status="CONNECTED",
                     subscription_status="ACCEPTED",
+                    execution_status="BLOCKED - STALE DATA",
                 ),
             )
         except Exception as exc:
@@ -776,6 +802,8 @@ class DesktopBrokerRuntimeDriver:
                 not stop_event.is_set()
                 and not self._market_data_stop.is_set()
             ):
+                self._run_feed_watchdog()
+                self._reconcile_temporal_orders()
                 if self._scanner is not None:
                     cycle = self._scanner.run_available()
                     performance_diagnostics.increment("scanner_evaluations")
@@ -788,6 +816,7 @@ class DesktopBrokerRuntimeDriver:
                     self._scanner_events_since_observation += cycle.events_read
                     if cycle.events_read == 0:
                         self._publish_scanner_observation_if_due()
+                        self._run_feed_watchdog()
                         # An exhausted/nonblocking transport must not create a
                         # worker-side busy loop. This wait is interruptible and
                         # never occurs on the Qt thread.
@@ -831,13 +860,18 @@ class DesktopBrokerRuntimeDriver:
                     continue
                 event = self._market_data.read_event()
                 if event is None:
-                    self._publish_health(
-                        "MARKET_DATA_HEARTBEAT",
-                        "Webull market-data receive loop is healthy.",
-                        RuntimeHealthUpdate(
-                            market_data_status="CONNECTED",
-                        ),
-                    )
+                    self._run_feed_watchdog()
+                    if not getattr(self, "_feed_stale", False) and not getattr(
+                        self, "_feed_recovery_pending", False
+                    ):
+                        self._publish_health(
+                            "MARKET_DATA_HEARTBEAT",
+                            "Webull market-data receive loop is healthy.",
+                            RuntimeHealthUpdate(
+                                market_data_status="CONNECTED",
+                                streaming_status="CONNECTED",
+                            ),
+                        )
                     continue
                 if not isinstance(event, MarketEvent):
                     raise TypeError(
@@ -973,12 +1007,20 @@ class DesktopBrokerRuntimeDriver:
         elif lifecycle == "reconnected":
             self._capability_refresh_requested = True
             self._observe_probe_success("STREAM_RECONNECT")
+            recovering = getattr(self, "_feed_recovery_pending", False)
             self._publish_health(
                 "MARKET_DATA_RECONNECTED",
-                "Reconnected to Webull market data.",
+                (
+                    "Transport reconnected; awaiting a fresh market-data payload."
+                    if recovering
+                    else "Reconnected to Webull market data."
+                ),
                 RuntimeHealthUpdate(
-                    market_data_status="CONNECTED",
-                    streaming_status="CONNECTED",
+                    market_data_status=("RECONNECTING" if recovering else "CONNECTED"),
+                    streaming_status=("RECONNECTING" if recovering else "CONNECTED"),
+                    execution_status=(
+                        "BLOCKED - STALE DATA" if recovering else "ENABLED"
+                    ),
                     reconnect_attempts=attempt,
                 ),
             )
@@ -1096,6 +1138,7 @@ class DesktopBrokerRuntimeDriver:
         if not isinstance(event, MarketEvent):
             raise TypeError("market-data transport returned a non-MarketEvent")
         performance_diagnostics.increment("market_events_processed")
+        self._last_driver_market_event_monotonic = monotonic()
         translated = self._market_event_translator(
             event,
             sequence=self._next_sequence(),
@@ -1112,6 +1155,7 @@ class DesktopBrokerRuntimeDriver:
                     streaming_status="CONNECTED",
                     subscription_status="ACCEPTED",
                     quotes_status="AVAILABLE",
+                    execution_status="ENABLED",
                     last_warning=None,
                 ),
             )
@@ -1124,6 +1168,7 @@ class DesktopBrokerRuntimeDriver:
                     market_data_status="CONNECTED",
                     streaming_status="CONNECTED",
                     subscription_status="ACCEPTED",
+                    execution_status="ENABLED",
                     last_warning=None,
                 ),
             )
@@ -1140,6 +1185,7 @@ class DesktopBrokerRuntimeDriver:
                     market_data_status="CONNECTED",
                     streaming_status="CONNECTED",
                     subscription_status="ACCEPTED",
+                    execution_status="ENABLED",
                     last_warning=None,
                 ),
             )
@@ -1167,6 +1213,157 @@ class DesktopBrokerRuntimeDriver:
             self._emit(translated)
         if self._market_event_observer is not None:
             self._market_event_observer(event)
+        if getattr(self, "_feed_recovery_pending", False):
+            transport = self._market_data_transport()
+            payload_at = getattr(
+                transport, "last_normalized_event_monotonic", None
+            )
+            recovery_started = getattr(
+                self, "_feed_recovery_started_monotonic", None
+            )
+            if (
+                recovery_started is None
+                or payload_at is None
+                or payload_at > recovery_started
+            ):
+                self._complete_feed_recovery()
+
+    def _market_data_transport(self) -> object | None:
+        if self._scanner is not None:
+            return getattr(self._scanner, "_transport", None)
+        return self._market_data
+
+    def _feed_age_seconds(self, now: float) -> float:
+        transport = self._market_data_transport()
+        observed = getattr(transport, "last_normalized_event_monotonic", None)
+        if observed is None:
+            observed = self._last_driver_market_event_monotonic
+        if observed is None:
+            observed = getattr(self, "_market_data_started_monotonic", now)
+        return max(0.0, now - observed)
+
+    def _run_feed_watchdog(self) -> None:
+        if not hasattr(self, "_configuration"):
+            return
+        now = monotonic()
+        loop_gap = now - getattr(
+            self, "_last_runtime_iteration_monotonic", now
+        )
+        self._last_runtime_iteration_monotonic = now
+        stale_after = max(
+            0.1, float(self._configuration.maximum_market_data_age_seconds)
+        )
+        reconnect_after = max(
+            stale_after,
+            float(self._configuration.market_data_reconnect_after_seconds),
+        )
+        suspend_gap = max(
+            stale_after,
+            float(self._configuration.suspend_gap_detection_seconds),
+        )
+        age = self._feed_age_seconds(now)
+        discontinuity = loop_gap >= suspend_gap
+        if age <= stale_after and not discontinuity:
+            return
+        if not getattr(self, "_feed_stale", False):
+            self._feed_stale = True
+            reason = "SUSPEND_OR_RUNTIME_GAP" if discontinuity else "PAYLOAD_STALE"
+            self._publish_health(
+                "MARKET_DATA_STALE",
+                f"Market-data payload age is {age:.1f}s ({reason}).",
+                RuntimeHealthUpdate(
+                    runtime_status="DEGRADED",
+                    market_data_status="STALE",
+                    streaming_status="STALE",
+                    scanner_status="STALE_INPUT",
+                    execution_status="BLOCKED - STALE DATA",
+                    last_warning=f"Market data stale for {age:.1f}s; {reason}.",
+                ),
+            )
+        if age < reconnect_after and not discontinuity:
+            return
+        if getattr(self, "_feed_recovery_pending", False):
+            return
+        backoff = max(
+            1.0, float(self._configuration.stream_reconnect_backoff_seconds)
+        )
+        if self._last_feed_recovery_at and now - self._last_feed_recovery_at < backoff:
+            return
+        self._last_feed_recovery_at = now
+        self._feed_recovery_pending = True
+        self._feed_recovery_started_monotonic = now
+        self._publish_health(
+            "MARKET_DATA_RECONNECTING",
+            "Market-data inactivity exceeded the reconnect threshold.",
+            RuntimeHealthUpdate(
+                runtime_status="DEGRADED",
+                market_data_status="RECONNECTING",
+                streaming_status="RECONNECTING",
+                scanner_status="STALE_INPUT",
+                execution_status="BLOCKED - STALE DATA",
+                last_warning="Awaiting a fresh market-data payload after recovery.",
+            ),
+        )
+        try:
+            recover = getattr(self._scanner, "recover_stream", None)
+            if callable(recover):
+                recover()
+            elif self._market_data is not None:
+                self._market_data.disconnect()
+                self._market_data.connect()
+                self._market_data.subscribe(self._configuration.market_data_symbols)
+            else:
+                raise RuntimeError("market-data transport is unavailable")
+        except Exception as exc:
+            self._feed_recovery_pending = False
+            self._publish_health(
+                "MARKET_DATA_RECOVERY_FAILED",
+                "Market-data recovery failed; execution remains blocked.",
+                RuntimeHealthUpdate(
+                    runtime_status="DEGRADED",
+                    market_data_status="DISCONNECTED",
+                    streaming_status="DISCONNECTED",
+                    scanner_status="STALE_INPUT",
+                    execution_status="BLOCKED - STALE DATA",
+                    last_error=type(exc).__name__,
+                ),
+            )
+
+    def _complete_feed_recovery(self) -> None:
+        self._feed_recovery_pending = False
+        self._feed_recovery_started_monotonic = None
+        self._feed_stale = False
+        self._publish_health(
+            "MARKET_DATA_RECONNECTED",
+            "Fresh market-data payload received after recovery.",
+            RuntimeHealthUpdate(
+                runtime_status="RUNNING",
+                market_data_status="CONNECTED",
+                streaming_status="CONNECTED",
+                subscription_status="ACCEPTED",
+                scanner_status="RUNNING",
+                execution_status="ENABLED",
+                last_warning=None,
+                last_error=None,
+            ),
+        )
+
+    def _reconcile_temporal_orders(self) -> None:
+        reconciler = getattr(self, "_temporal_reconciler", None)
+        if not callable(reconciler):
+            return
+        try:
+            reconciler(at=self._timestamp())
+        except Exception as exc:
+            self._publish_health(
+                "PAPER_TEMPORAL_RECONCILIATION_FAILED",
+                "Paper order temporal reconciliation failed.",
+                RuntimeHealthUpdate(
+                    runtime_status="DEGRADED",
+                    execution_status="BLOCKED - STALE DATA",
+                    last_error=type(exc).__name__,
+                ),
+            )
 
     def _observe_probe_success(self, capability: str) -> None:
         if self._market_data_probe is None:

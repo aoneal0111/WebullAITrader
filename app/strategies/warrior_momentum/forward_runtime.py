@@ -700,6 +700,8 @@ class WarriorForwardCaptureService:
         """
         state = self._paper.get(signal.symbol)
         setup = candidate.setup
+        if value is None:
+            return False
         if (
             state is None or state.add_on_used or state.add_on is not None
             or self._paper_position_quantity_source is None

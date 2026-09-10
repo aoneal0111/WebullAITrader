@@ -115,6 +115,8 @@ class OperationalConfiguration:
     market_data_symbols: tuple[str, ...] = ()
     stream_reconnect_attempts: int = 3
     stream_reconnect_backoff_seconds: Decimal = Decimal("1")
+    market_data_reconnect_after_seconds: float = 10.0
+    suspend_gap_detection_seconds: float = 10.0
 
     trading: TradingConfiguration | None = None
     market_data: MarketDataConfiguration | None = None

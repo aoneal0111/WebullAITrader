@@ -66,3 +66,19 @@ class ReceiveTransportAdapter:
     @property
     def reconnect_ready(self) -> bool:
         return bool(getattr(self._client, "reconnect_ready", False))
+
+    @property
+    def last_raw_callback_monotonic(self):
+        return getattr(self._client, "last_raw_callback_monotonic", None)
+
+    @property
+    def last_raw_callback_at(self):
+        return getattr(self._client, "last_raw_callback_at", None)
+
+    @property
+    def last_normalized_event_monotonic(self):
+        return getattr(self._client, "last_normalized_event_monotonic", None)
+
+    @property
+    def last_normalized_event_at(self):
+        return getattr(self._client, "last_normalized_event_at", None)

@@ -148,9 +148,9 @@ def _level(value: str) -> str:
     normalized = value.upper()
     if normalized in {"CONNECTED", "READY", "RUNNING", "HEALTHY"}:
         return "good"
-    if normalized in {"FAILED", "ERROR", "DISCONNECTED", "UNAVAILABLE"}:
+    if normalized in {"FAILED", "ERROR", "DISCONNECTED", "UNAVAILABLE", "BLOCKED - STALE DATA"}:
         return "danger"
-    if normalized in {"DEGRADED", "STARTING", "RECONNECTING"}:
+    if normalized in {"DEGRADED", "STARTING", "RECONNECTING", "STALE"}:
         return "warn"
     return "neutral"
 

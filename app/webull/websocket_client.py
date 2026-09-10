@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from queue import Empty, Queue
 from threading import Event, Lock
-from time import sleep
+from time import monotonic, sleep
 from typing import Callable, Protocol
 
 from app.market_data.models import HeartbeatPayload, MarketEventLog, MarketEventType
@@ -98,6 +98,8 @@ class OfficialSdkStreamBackend:
         self._lifecycle_sink: StreamLifecycleSink | None = None
         self._diagnostic_sink: DiagnosticSink | None = None
         self._deliberate_shutdown = False
+        self._last_raw_callback_monotonic: float | None = None
+        self._last_raw_callback_at: datetime | None = None
 
         self._consumption_started = False
         self._has_connected = False
@@ -179,6 +181,8 @@ class OfficialSdkStreamBackend:
             self._emit_diagnostic("CROSS_CLIENT_MESSAGE_REJECTED")
             return
         with self._message_metrics_lock:
+            self._last_raw_callback_monotonic = monotonic()
+            self._last_raw_callback_at = self._clock()
             self._messages.put(
                 _ReceivedStreamPayload(topic, quotes, self._clock())
             )
@@ -375,6 +379,14 @@ class OfficialSdkStreamBackend:
         return self._connected.is_set()
 
     @property
+    def last_raw_callback_monotonic(self) -> float | None:
+        return self._last_raw_callback_monotonic
+
+    @property
+    def last_raw_callback_at(self) -> datetime | None:
+        return self._last_raw_callback_at
+
+    @property
     def subscription_acknowledged(self) -> bool:
         return self._subscription_acknowledged.is_set()
 
@@ -480,6 +492,8 @@ class WebullWebSocketClient:
         self._stale_counts_by_event_type: dict[str, int] = {}
         self._stale_counts_by_symbol: dict[str, int] = {}
         self._cross_timeline_regression_count = 0
+        self._last_normalized_event_monotonic: float | None = None
+        self._last_normalized_event_at: datetime | None = None
         self._ordering_samples: list[dict[str, object]] = []
         self._decode_failure_counts: dict[str, int] = {}
         self._decode_failure_samples: list[dict[str, object]] = []
@@ -612,6 +626,22 @@ class WebullWebSocketClient:
     @property
     def reconnect_ready(self):
         return self.policy.maximum_attempts > 0
+
+    @property
+    def last_raw_callback_monotonic(self) -> float | None:
+        return getattr(self.backend, "last_raw_callback_monotonic", None)
+
+    @property
+    def last_raw_callback_at(self) -> datetime | None:
+        return getattr(self.backend, "last_raw_callback_at", None)
+
+    @property
+    def last_normalized_event_monotonic(self) -> float | None:
+        return getattr(self, "_last_normalized_event_monotonic", None)
+
+    @property
+    def last_normalized_event_at(self) -> datetime | None:
+        return getattr(self, "_last_normalized_event_at", None)
 
     def receive(self):
         return self._receive_from(self.backend.receive)
@@ -797,6 +827,8 @@ class WebullWebSocketClient:
                             reason="independent_timeline_timestamp_regression",
                         )
                 self._events.append(event)
+                self._last_normalized_event_monotonic = monotonic()
+                self._last_normalized_event_at = event.timestamp
                 self._event_identities.add((event.source, event.sequence))
                 self._last_event_by_ordering_key[_timestamp_ordering_key(event)] = event
                 recovered = self.consecutive_decode_failures > 0

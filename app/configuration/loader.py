@@ -315,6 +315,8 @@ def load_configuration(env=None):
         _symbols(e.get("MARKET_DATA_SYMBOLS", "")),
         _int(e, "STREAM_RECONNECT_ATTEMPTS", 3),
         _decimal(e, "STREAM_RECONNECT_BACKOFF_SECONDS", "1"),
+        _positive_float(e, "MARKET_DATA_RECONNECT_AFTER_SECONDS", 10.0),
+        _positive_float(e, "SUSPEND_GAP_DETECTION_SECONDS", 10.0),
         trading_configuration,
         market_data_configuration,
         _bool(e.get("WARRIOR_FORWARD_PAPER_ENABLED", "false")),

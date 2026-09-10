@@ -468,6 +468,7 @@ class OperationsHealthState:
     subscription_symbols: tuple[str, ...] | None = None
     ai_status: str | None = None
     risk_status: str | None = None
+    execution_status: str | None = None
     persistence_status: str | None = None
     last_error: str | None = None
     last_warning: str | None = None
@@ -517,6 +518,7 @@ class OperationsHealthState:
             "ranking_status",
             "ai_status",
             "risk_status",
+            "execution_status",
             "persistence_status",
             "last_error",
             "last_warning",

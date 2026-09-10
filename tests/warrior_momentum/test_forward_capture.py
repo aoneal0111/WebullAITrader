@@ -631,14 +631,18 @@ def test_single_add_on_preserves_parent_milestones_and_exits_leg_only(tmp_path: 
         )
         add_signal = service.runtime.entry_signal(add_candidate)
         assert add_signal is not None
-        assert service.consider_add_on(add_candidate, add_signal, account()) is True
+        assert service.consider_add_on(
+            add_candidate, add_signal, account(), value=point()
+        ) is True
         assert state.add_on is not None
         add_on_id = state.add_on.add_on_id
         assert state.add_on.requested_quantity > 0
         assert state.first_taken is True and state.second_taken is True
         assert state.peak_r == D("3")
 
-        assert service.consider_add_on(add_candidate, add_signal, account()) is False
+        assert service.consider_add_on(
+            add_candidate, add_signal, account(), value=point()
+        ) is False
         assert service.exit_add_on("XYZ", D("10.30")) is True
         add_on_exit = next(item for item in exits if item[2] == "AUTONOMOUS_ADD_ON_EXIT")
         assert add_on_exit[0] == state.add_on.requested_quantity
