@@ -80,8 +80,28 @@ class ExecutionCandidate:
         """Project validated geometry into the existing Warrior setup shape."""
         setup_types = {
             "MICRO_PULLBACK": (SetupType.MICRO_PULLBACK, StopModel.MICRO_PULLBACK_LOW),
+            "FIRST_PULLBACK": (SetupType.MICRO_PULLBACK, StopModel.MICRO_PULLBACK_LOW),
+            "HIGHER_LOW_CONTINUATION": (SetupType.MICRO_PULLBACK, StopModel.MICRO_PULLBACK_LOW),
+            "SHALLOW_PULLBACK_CONTINUATION": (SetupType.MICRO_PULLBACK, StopModel.MICRO_PULLBACK_LOW),
+            "VOLUME_CONTRACTION_PULLBACK": (SetupType.MICRO_PULLBACK, StopModel.MICRO_PULLBACK_LOW),
+            "MOMENTUM_REACCELERATION": (SetupType.MICRO_PULLBACK, StopModel.MICRO_PULLBACK_LOW),
+            "DEEP_PULLBACK_RECLAIM": (SetupType.MICRO_PULLBACK, StopModel.MICRO_PULLBACK_LOW),
             "HIGH_OF_DAY_BREAKOUT": (SetupType.HIGH_OF_DAY_BREAKOUT, StopModel.RECENT_SWING_LOW),
             "FLAT_TOP_BREAKOUT": (SetupType.FLAT_TOP_BREAKOUT, StopModel.BREAKOUT_LEVEL),
+            "CONSOLIDATION_BREAKOUT": (SetupType.HIGH_OF_DAY_BREAKOUT, StopModel.RECENT_SWING_LOW),
+            "ASCENDING_BASE_BREAKOUT": (SetupType.HIGH_OF_DAY_BREAKOUT, StopModel.RECENT_SWING_LOW),
+            "RANGE_COMPRESSION_BREAKOUT": (SetupType.HIGH_OF_DAY_BREAKOUT, StopModel.RECENT_SWING_LOW),
+            "BREAKOUT_RETEST_CONTINUATION": (SetupType.HIGH_OF_DAY_BREAKOUT, StopModel.RECENT_SWING_LOW),
+            "OPENING_RANGE_BREAKOUT": (SetupType.HIGH_OF_DAY_BREAKOUT, StopModel.RECENT_SWING_LOW),
+            "PREMARKET_HIGH_BREAKOUT": (SetupType.HIGH_OF_DAY_BREAKOUT, StopModel.RECENT_SWING_LOW),
+            "PREMARKET_CONSOLIDATION_BREAKOUT": (SetupType.HIGH_OF_DAY_BREAKOUT, StopModel.RECENT_SWING_LOW),
+            "OPENING_DRIVE_CONTINUATION": (SetupType.HIGH_OF_DAY_BREAKOUT, StopModel.RECENT_SWING_LOW),
+            "FAILED_BREAKOUT_RECLAIM": (SetupType.HIGH_OF_DAY_BREAKOUT, StopModel.RECENT_SWING_LOW),
+            "HOD_RECLAIM": (SetupType.HIGH_OF_DAY_BREAKOUT, StopModel.RECENT_SWING_LOW),
+            "GAP_AND_GO_CONTINUATION": (SetupType.HIGH_OF_DAY_BREAKOUT, StopModel.RECENT_SWING_LOW),
+            "POST_GAP_RECLAIM": (SetupType.MICRO_PULLBACK, StopModel.MICRO_PULLBACK_LOW),
+            "DIP_AND_RIP": (SetupType.MICRO_PULLBACK, StopModel.MICRO_PULLBACK_LOW),
+            "MOMENTUM_SQUEEZE_EXPANSION": (SetupType.HIGH_OF_DAY_BREAKOUT, StopModel.RECENT_SWING_LOW),
         }
         setup_type, stop_model = setup_types.get(self.strategy_type, (None, None))
         if setup_type is None:

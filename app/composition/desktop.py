@@ -32,6 +32,7 @@ from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExec
 from app.strategies.warrior_momentum.execution_quote import WebullExecutionQuoteSource
 from app.strategies.warrior_momentum.forward_runtime import management_context_available
 from app.trade_intelligence.runtime import TradeIntelligenceRuntimeObserver
+from app.trade_intelligence.taxonomy_paper_bridge import TaxonomyPaperExecutionBridge
 from app.entry_opportunity_value import EntryOpportunityValueRuntimeObserver
 from app.adaptive_entry_research import AdaptiveWorkingEntryObserver
 from app.memory_observability import MemoryObservability
@@ -436,6 +437,9 @@ def create_desktop_composition(
         order_correlation_source=eov_order_correlation,
     )
 
+    taxonomy_execution_bridge = None
+    if operational_configuration.environment.value == "PAPER":
+        taxonomy_execution_bridge = TaxonomyPaperExecutionBridge()
     warrior_forward_sidecar = WarriorDesktopSidecar(
         enabled=operational_configuration.warrior_forward_paper_enabled,
         storage_path=operational_configuration.warrior_forward_capture_path,
@@ -463,6 +467,7 @@ def create_desktop_composition(
             else paper_trading_commands.paper_campaign_id
             or NO_ACTIVE_PAPER_CAMPAIGN_ID
         ),
+        taxonomy_execution_bridge=taxonomy_execution_bridge,
     )
 
     adaptive_entry_research_observer = AdaptiveWorkingEntryObserver(

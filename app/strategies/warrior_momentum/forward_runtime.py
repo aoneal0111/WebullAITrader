@@ -49,7 +49,6 @@ from .shadow_latched import (
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
 
-
 def management_context_available(
     storage_path, symbol: str, lifecycle_id: str | None = None,
     configuration_fingerprint: str | None = None,
@@ -209,6 +208,7 @@ class WarriorForwardCaptureService:
         configuration_fingerprint: str | None = None,
         paper_campaign_id: str | None = None,
         paper_add_on_submitter: Callable[..., object] | None = None,
+        taxonomy_execution_bridge: object | None = None,
     ) -> None:
         self.store = store
         self.writer = writer
@@ -233,6 +233,7 @@ class WarriorForwardCaptureService:
         self.configuration_fingerprint = configuration_fingerprint
         self.paper_campaign_id = paper_campaign_id
         self._paper_add_on_submitter = paper_add_on_submitter
+        self._taxonomy_execution_bridge = taxonomy_execution_bridge
         # Observation-only continuity state.  It never participates in entry
         # authorization or order submission.
         from app.trade_intelligence.opportunity_memory import OpportunityMemory
@@ -406,6 +407,19 @@ class WarriorForwardCaptureService:
                                 account = self._account_refresh_source()
                             if not self._execution_permitted():
                                 signal = None
+        taxonomy_bridge = self._taxonomy_execution_bridge
+        taxonomy_candidate, taxonomy_signal = (
+            (None, None)
+            if taxonomy_bridge is None
+            else taxonomy_bridge.evaluate(
+                value, candidate, signal,
+                market_data_stale or processing_delayed,
+                self.runtime, self.capture_config.quote_stale_after_seconds,
+            )
+        )
+        if taxonomy_signal is not None and signal is None and taxonomy_candidate is not None:
+            candidate, assessed, signal = taxonomy_candidate, taxonomy_candidate, taxonomy_signal
+            technical_signal = taxonomy_signal
         if signal is not None:
             if self._account_refresh_source is not None:
                 account = self._account_refresh_source()
