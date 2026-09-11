@@ -50,7 +50,6 @@ class MarketOverviewPanel(QWidget):
 
 class RuntimeControlsPanel(QWidget):
     emergency_stop_requested = Signal()
-    inspector_requested = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__()
@@ -69,23 +68,13 @@ class RuntimeControlsPanel(QWidget):
         self.stop_button.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
         )
-        self.inspector_button = QPushButton("INSPECTOR")
-        self.inspector_button.setObjectName("inspectorButton")
         self.emergency_stop_button = QPushButton("EMERGENCY STOP")
         self.emergency_stop_button.setObjectName("dangerButton")
         self.emergency_stop_button.clicked.connect(self.emergency_stop_requested.emit)
-        self.flatten_unavailable_button = QPushButton("FLATTEN UNAVAILABLE")
-        self.flatten_unavailable_button.setObjectName("secondaryButton")
-        self.flatten_unavailable_button.setEnabled(False)
-        self.flatten_unavailable_button.setToolTip(
-            "No flatten command boundary is configured."
-        )
         for button in (
             self.start_button,
             self.stop_button,
-            self.inspector_button,
             self.emergency_stop_button,
-            self.flatten_unavailable_button,
         ):
             buttons.addWidget(button)
         layout.addLayout(buttons)
@@ -98,9 +87,6 @@ class RuntimeControlsPanel(QWidget):
         status.addWidget(self.runtime_label)
         status.addStretch(1)
         layout.addLayout(status)
-
-        self.inspector_button.setCheckable(True)
-        self.inspector_button.toggled.connect(self.inspector_requested.emit)
 
     def set_runtime_status(self, mode: str, runtime: str) -> None:
         normalized_mode = mode.upper() or "--"

@@ -98,6 +98,11 @@ class PositionManagementRow:
     unrealized_percent: str
     realized_pnl: str
     updated_at: str
+    entry_notional: str = "--"
+    market_value: str = "--"
+    current_r: str = "--"
+    current_stop: str = "--"
+    next_target: str = "--"
     strategy: str = "—"
     setup: str = "—"
     management_state: str = "Protection not evidenced"

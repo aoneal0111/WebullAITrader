@@ -97,10 +97,6 @@ def test_production_main_window_keeps_trade_intelligence_in_middle_row(
             workspace.watchlist._table.verticalScrollBarPolicy()
             == Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
-        assert (
-            workspace.activity_panel._table.verticalScrollBarPolicy()
-            == Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
     finally:
         window.close()
         composition.close()

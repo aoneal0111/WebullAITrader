@@ -70,6 +70,8 @@ def test_positions_event_flows_to_dashboard_snapshot() -> None:
                     "+2.56%",
                     "\u2014",
                     NOW.astimezone().strftime("%H:%M:%S"),
+                    "$1,852.50",
+                    "$1,900.00",
                 ),
                 (
                     "MSFT",
@@ -81,6 +83,8 @@ def test_positions_event_flows_to_dashboard_snapshot() -> None:
                     "-1.22%",
                     "\u2014",
                     NOW.astimezone().strftime("%H:%M:%S"),
+                    "$2,050.00",
+                    "$1,900.00",
                 ),
         )
     finally:

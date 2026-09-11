@@ -3,7 +3,6 @@ from __future__ import annotations
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from app.gui.models import DashboardSnapshot
-from app.gui.widgets.activity_panel import ActivityPanel
 from app.gui.widgets.market_workspace import MarketWorkspace
 from app.gui.widgets.operator_workspace import OperatorWorkspace
 from app.gui.widgets.runtime_control_header import RuntimeControlHeader
@@ -28,7 +27,6 @@ class DashboardPage(QWidget):
         # Presenter compatibility aliases point at the visible workstation controls.
         self.runtime_header.resume_button = self.market_workspace.runtime_controls.start_button
         self.runtime_header.stop_button = self.market_workspace.runtime_controls.stop_button
-        self.runtime_header.inspector_button = self.market_workspace.runtime_controls.inspector_button
         self.workstation_footer = WorkstationFooter()
         self.market_workspace.runtime_controls.set_footer_view(
             self.workstation_footer
@@ -39,15 +37,17 @@ class DashboardPage(QWidget):
         self.main_splitter = self.market_workspace.splitter
         root.addWidget(self.runtime_header)
         root.addWidget(self.market_workspace, 1)
-        root.addWidget(self.workstation_footer)
+        # The legacy metadata footer duplicated the visible runtime/status
+        # surfaces and consumed scarce workstation height. Keep the
+        # compatibility object for integrations, but do not display it.
 
         self.portfolio_summary = self.market_workspace.portfolio_summary
-        self.live_activity = self.market_workspace.activity_panel
-        self.live_activity_section = self.market_workspace.activity_section
-        self.activity_panel = self.live_activity
         self.positions_panel = self.market_workspace.positions_panel
         self.orders_panel = self.market_workspace.orders_panel
         self.operations_activity_panel = self.operator_workspace.timeline
+        # Compatibility alias points to the required operator timeline; the
+        # removed duplicate live activity feed is no longer constructed.
+        self.activity_panel = self.operations_activity_panel
         self.decisions_panel = self.operator_workspace.decisions
         self.portfolio_panel = self.portfolio_summary
         self.operator_health_panel = self.operator_workspace.health
@@ -80,6 +80,18 @@ class DashboardPage(QWidget):
         self.market_workspace.render_ai_thinking(snapshot.ai_thinking)
         self.market_workspace.render_atlas_reasoning(snapshot.atlas_reasoning)
         self.positions_panel.render(snapshot.positions)
+        selected_management = next(
+            (
+                row for row in snapshot.positions.management
+                if row.symbol.strip().upper()
+                == (self.market_workspace.selected_symbol or "").upper()
+            ),
+            None,
+        )
+        self.market_workspace.trade_intelligence.render_active_position(
+            selected_management,
+            symbol=self.market_workspace.selected_symbol,
+        )
         self.orders_panel.render(snapshot.orders)
         self.operator_workspace.positions.render(snapshot.positions)
         self.operator_workspace.orders.render(snapshot.orders)

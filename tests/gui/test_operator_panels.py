@@ -226,6 +226,60 @@ def test_watchlist_panel_emits_sort_field_and_renders_selection(
     assert panel._table.item(0, 12).text() == "REGULAR"
 
 
+def test_positions_panel_selects_closed_history_without_active_management(
+    application,
+) -> None:
+    del application
+    panel = PositionsPanel()
+    row = (
+        "SUNE", "LONG", "759", "$3.14", "$3.85", "+$534.00",
+        "+22.00%", "$0.00", "12:13:59", "$2,384.00", "$2,922.15",
+    )
+    panel.render(PositionsSnapshot(rows=(), closed_rows=(row,)))
+    panel.activity_tabs.setCurrentIndex(1)
+    panel._closed_table.cellClicked.emit(0, 0)
+
+    assert panel._symbol.text() == "SUNE"
+    assert panel._position_state.text() == "CLOSED POSITION"
+    assert panel._facts["ENTRY NOTIONAL"].text() == "$2,384.00"
+    assert panel._facts["MARKET VALUE"].text() == "$2,922.15"
+    assert panel._facts["MANAGEMENT STATE"].text() == "--"
+    assert panel._protection_status.text() == "NOT APPLICABLE"
+
+
+def test_recent_order_selection_uses_separate_compact_detail(application) -> None:
+    del application
+    panel = PositionsPanel()
+    panel.render(PositionsSnapshot(rows=()))
+    panel.activity_tabs.setCurrentIndex(2)
+    panel.recent_orders_panel.render(OrdersSnapshot(
+        rows=((
+            "SUNE", "SELL", "STOP", "759", "0", "759", "--", "3.06",
+            "--", "WORKING",
+        ),),
+        updated_at=("12:13:59",),
+    ))
+    panel.recent_orders_panel._table.cellClicked.emit(0, 0)
+
+    assert panel._order_detail_title.text() == "SUNE  SELL ORDER"
+    assert "Quantity 759" in panel._order_detail_values.text()
+    assert "Status WORKING" in panel._order_detail_values.text()
+    assert not panel._management.isVisible()
+
+
+def test_selection_clears_when_selected_closed_record_disappears(application) -> None:
+    del application
+    panel = PositionsPanel()
+    row = ("ODD", "LONG", "10", "$15.00", "$16.00", "+$10.00", "+6.67%", "$0.00", "now")
+    panel.render(PositionsSnapshot(rows=(), closed_rows=(row,)))
+    panel.activity_tabs.setCurrentIndex(1)
+    panel._closed_table.cellClicked.emit(0, 0)
+    panel.render(PositionsSnapshot(rows=(), closed_rows=()))
+
+    assert panel._symbol.text() == "SELECT A CLOSED RECORD"
+    assert panel._position_state.text() == "NO CLOSED POSITION SELECTED"
+
+
 def test_dashboard_replay_status_renders_presenter_model(application) -> None:
     del application
     panel = ReplayStatusPanel()

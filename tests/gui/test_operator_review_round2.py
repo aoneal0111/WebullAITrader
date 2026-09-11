@@ -135,6 +135,8 @@ def test_position_is_prominent_and_protection_is_visually_correlated(application
     page.resize(1366, 768)
     page.show()
     page.positions_panel.render(snapshot)
+    page.positions_panel.select_symbol("PMI")
+    page.positions_panel.render(snapshot)
     application.processEvents()
 
     management = snapshot.management[0]
@@ -176,6 +178,8 @@ def test_flat_history_has_no_management_focus_or_protection_warning(application)
     )
     page = DashboardPage()
     page.positions_panel.render(snapshot)
+    page.positions_panel.select_symbol("PMI")
+    page.positions_panel.render(snapshot)
     application.processEvents()
 
     assert snapshot.rows == ()
@@ -195,6 +199,8 @@ def test_conflicting_protection_evidence_fails_visibly(application) -> None:
         )),
     )
     page = DashboardPage()
+    page.positions_panel.render(snapshot)
+    page.positions_panel.select_symbol("PMI")
     page.positions_panel.render(snapshot)
     application.processEvents()
 

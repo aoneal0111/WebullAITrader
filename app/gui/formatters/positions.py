@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 
 from app.gui.formatters.prices import format_price
@@ -8,6 +9,61 @@ from app.gui.models import PositionManagementRow, ProtectionSnapshot
 from app.gui.formatters.orders import has_explicit_protection_evidence
 from app.read_models.orders import OrderReadModel, OrdersReadModelSnapshot
 from app.read_models.positions import PositionsReadModelSnapshot
+
+
+def enrich_position_management(
+    snapshot: PositionsSnapshot,
+    context_source,
+) -> PositionsSnapshot:
+    """Add only canonical Warrior management facts available at render time."""
+    if context_source is None:
+        return snapshot
+    rows = []
+    for row in snapshot.management:
+        context = context_source(row.symbol)
+        if not context:
+            rows.append(row)
+            continue
+        try:
+            entry = Decimal(str(context["entry_price"]))
+            structural_stop = Decimal(str(context["structural_stop"]))
+            mark = _display_decimal(row.mark)
+            risk = entry - structural_stop
+            current_r = (
+                f"{((mark - entry) / risk):+.2f}R"
+                if row.side == "LONG" and mark is not None and risk > 0
+                else "--"
+            )
+            targets = tuple(Decimal(str(item)) for item in context["target_levels"])
+            first_taken = bool(context["first_taken"])
+            second_taken = bool(context["second_taken"])
+            if second_taken:
+                next_target = "RUNNER / TRAIL"
+            elif first_taken and len(targets) > 1:
+                next_target = f"{format_price(targets[1])} (+2R)"
+            elif targets:
+                next_target = f"{format_price(targets[0])} (+1R)"
+            else:
+                next_target = "--"
+            rows.append(replace(
+                row,
+                current_r=current_r,
+                current_stop=format_price(Decimal(str(context["stop"]))),
+                next_target=next_target,
+            ))
+        except (KeyError, TypeError, InvalidOperation, ValueError, ZeroDivisionError):
+            rows.append(row)
+    return replace(snapshot, management=tuple(rows))
+
+
+def _display_decimal(value: str) -> Decimal | None:
+    if value in {"--", "—", "-"}:
+        return None
+    cleaned = value.replace(",", "").replace("$", "").strip()
+    try:
+        return Decimal(cleaned)
+    except InvalidOperation:
+        return None
 
 
 def format_positions(
@@ -62,13 +118,18 @@ def _management_row(position, row, orders) -> PositionManagementRow:
         if protection_applicable
         else (None, False)
     )
+    target_active = _has_active_profit_target(position, orders)
     strategy, setup = _strategy_setup(protection, orders)
     return PositionManagementRow(
         symbol=row[0], side=row[1], quantity=row[2], average_entry=row[3],
         mark=row[4], unrealized_pnl=row[5], unrealized_percent=row[6],
-        realized_pnl=row[7], updated_at=row[8], strategy=strategy, setup=setup,
+        realized_pnl=row[7], updated_at=row[8],
+        entry_notional=row[9], market_value=row[10],
+        strategy=strategy, setup=setup,
         management_state=(
-            "Protection not applicable"
+            "Profit target active"
+            if target_active and protection is None
+            else "Protection not applicable"
             if not protection_applicable
             else "Conflicting protection evidence"
             if protection_conflict
@@ -126,6 +187,28 @@ def _correlated_protection(
         stop_price=format_price(_decimal(order.stop_price or "0", "stop price")),
         order_id=order.order_id,
     ), False
+
+
+def _has_active_profit_target(position, orders) -> bool:
+    if orders is None:
+        return False
+    symbol = position.symbol.strip().upper()
+    active = {
+        "NEW", "PENDING", "SUBMITTED", "ACCEPTED", "WORKING",
+        "PARTIALLY_FILLED",
+    }
+    return any(
+        order.symbol.strip().upper() == symbol
+        and order.side.upper() == "SELL"
+        and (order.order_type or "").upper() == "LIMIT"
+        and order.status.upper() in active
+        and "TARGET" in (order.execution_reason or "").upper()
+        and (
+            order.remaining_quantity is None
+            or _decimal(order.remaining_quantity, "remaining quantity") > 0
+        )
+        for order in orders.orders
+    )
 
 
 def _strategy_setup(protection, orders) -> tuple[str, str]:
@@ -191,7 +274,22 @@ def _format_position(
         pnl_percent,
         realized_label,
         updated_at.astimezone().strftime("%H:%M:%S"),
+        _format_money_value(
+            abs(quantity_value * _decimal(average_cost, "average cost")),
+            currency=currency,
+        ),
+        (
+            _format_money_value(
+                _decimal(market_value, "market value"), currency=currency
+            )
+            if market_value is not None else "--"
+        ),
     )
+
+
+def _format_money_value(value: Decimal, *, currency: str) -> str:
+    prefix = "$" if currency == "USD" else f"{currency} "
+    return f"{prefix}{value:,.2f}"
 
 
 def _format_quantity(value: str) -> str:

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.gui.formatters import format_positions
+from app.gui.formatters import enrich_position_management, format_positions
 from app.gui.models import PositionsSnapshot
 from app.read_models.positions import (
     PositionReadModel,
@@ -75,6 +75,8 @@ def test_format_positions_creates_dashboard_rows() -> None:
             "+2.56%",
                 "\u2014",
             NOW.astimezone().strftime("%H:%M:%S"),
+            "$1,852.50",
+            "$1,900.00",
         ),
         (
             "MSFT",
@@ -86,6 +88,8 @@ def test_format_positions_creates_dashboard_rows() -> None:
             "-1.22%",
                 "\u2014",
             NOW.astimezone().strftime("%H:%M:%S"),
+            "$2,050.00",
+            "$2,025.00",
         ),
     )
 
@@ -153,6 +157,36 @@ def test_format_positions_preserves_source_ordering() -> None:
         "AAPL",
         "MSFT",
     )
+
+
+def test_enrich_position_management_uses_authoritative_warrior_context() -> None:
+    snapshot = format_positions(PositionsReadModelSnapshot(
+        positions=(make_read_model_position(
+            average_cost="185.25", market_value="1900.00",
+        ),),
+    ))
+    context = {
+        "entry_price": "185.25", "structural_stop": "180.25",
+        "stop": "185.25", "target_levels": ("190.25", "195.25", "200.25"),
+        "first_taken": False, "second_taken": False,
+    }
+    enriched = enrich_position_management(snapshot, lambda _symbol: context)
+    row = enriched.management[0]
+    assert row.current_r == "+0.95R"
+    assert row.current_stop == "185.25"
+    assert row.next_target == "190.25 (+1R)"
+
+    after_first = enrich_position_management(
+        snapshot,
+        lambda _symbol: {**context, "first_taken": True},
+    ).management[0]
+    assert after_first.next_target == "195.25 (+2R)"
+
+    runner = enrich_position_management(
+        snapshot,
+        lambda _symbol: {**context, "first_taken": True, "second_taken": True},
+    ).management[0]
+    assert runner.next_target == "RUNNER / TRAIL"
 
 
 def test_format_positions_returns_immutable_rows() -> None:

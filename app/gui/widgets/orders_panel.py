@@ -58,6 +58,7 @@ class MissionControlOrdersPanel(QWidget):
     """Bounded recent-order view that never elides an active order."""
 
     active_orders_changed = Signal(bool)
+    order_selected = Signal(object)
     RECENT_TERMINAL_LIMIT = 5
 
     def __init__(self) -> None:
@@ -73,9 +74,20 @@ class MissionControlOrdersPanel(QWidget):
             "Exposure-affecting working orders will always appear here.",
             icon="☷",
         )
-        self._table.setSelectionMode(self._table.SelectionMode.NoSelection)
+        self._table.setSelectionMode(self._table.SelectionMode.SingleSelection)
+        self._table.cellClicked.connect(self._select_row)
         layout.addWidget(self._table)
         self._active_order_count = 0
+        self._selected_signature: tuple[str, ...] | None = None
+
+    def _select_row(self, row: int, _column: int) -> None:
+        values = tuple(
+            self._table.item(row, column).text()
+            if self._table.item(row, column) is not None else "--"
+            for column in range(self._table.columnCount())
+        )
+        self._selected_signature = values
+        self.order_selected.emit(values)
 
     def render(self, snapshot: OrdersSnapshot) -> None:
         indexed = tuple(enumerate(snapshot.rows))
@@ -124,6 +136,22 @@ class MissionControlOrdersPanel(QWidget):
                     item.setBackground(QBrush(QColor(Colors.DANGER_SOFT)))
                     item.setToolTip("Protective exit order")
                 self._table.setItem(row_index, column_index, item)
+        self._table.clearSelection()
+        selected_present = False
+        if self._selected_signature is not None:
+            for row_index in range(self._table.rowCount()):
+                values = tuple(
+                    self._table.item(row_index, column).text()
+                    if self._table.item(row_index, column) is not None else "--"
+                    for column in range(self._table.columnCount())
+                )
+                if values == self._selected_signature:
+                    self._table.selectRow(row_index)
+                    selected_present = True
+                    break
+        if not selected_present:
+            self._selected_signature = None
+            self.order_selected.emit(None)
 
 
 def _normalized_status(value: str) -> str:

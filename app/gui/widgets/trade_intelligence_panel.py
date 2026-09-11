@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.gui.models import WatchlistRow
+from app.gui.models import PositionManagementRow, WatchlistRow
 from app.gui.models.runtime import RuntimeState
 
 
@@ -85,6 +85,20 @@ class TradeIntelligencePanel(QWidget):
         header_layout.addWidget(metrics_container)
         self._header = header
         root.addWidget(header)
+
+        management, management_layout = _section("ACTIVE POSITION MANAGEMENT")
+        self._management_values = _metric_grid(
+            management_layout,
+            (
+                "Qty", "Avg Entry", "Mark", "Market Value",
+                "Unrealized", "Current R", "Current Stop",
+                "Next Target", "Management State",
+            ),
+            columns=3,
+        )
+        management.hide()
+        self._management = management
+        root.addWidget(management)
 
         self._lifecycle_empty = QLabel(
             "Atlas is ready.\nStart the runtime to begin live market analysis."
@@ -268,6 +282,34 @@ class TradeIntelligencePanel(QWidget):
         }
         _render_values(self._plan_values, plan)
         self._apply_presentation_state()
+
+    def render_active_position(
+        self,
+        row: PositionManagementRow | None,
+        *,
+        symbol: str | None,
+    ) -> None:
+        """Show management facts only when the selected intelligence symbol is held."""
+        selected = symbol.strip().upper() if symbol else None
+        active = row is not None and row.symbol.strip().upper() == selected
+        self._management.setVisible(active)
+        if not active:
+            _render_values(self._management_values, {})
+            return
+        assert row is not None
+        _render_values(self._management_values, {
+            "Qty": row.quantity,
+            "Avg Entry": row.average_entry,
+            "Mark": row.mark,
+            "Market Value": row.market_value,
+            "Unrealized": f"{row.unrealized_pnl}  {row.unrealized_percent}",
+            "Current R": row.current_r,
+            "Current Stop": row.current_stop if row.current_stop != "--" else (
+                row.protection.stop_price if row.protection is not None else "--"
+            ),
+            "Next Target": row.next_target,
+            "Management State": row.management_state,
+        })
 
     @property
     def _prestart(self) -> bool:

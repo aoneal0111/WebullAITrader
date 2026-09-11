@@ -2,11 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor
-from PySide6.QtWidgets import (
-    QTableWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QHeaderView, QTableWidgetItem, QVBoxLayout, QWidget
 
 from app.gui.models import WatchlistSnapshot
 from app.gui.design.tokens import Colors
@@ -52,10 +48,44 @@ class WatchlistPanel(QWidget):
             icon="\u2606",
         )
         self._table.horizontalHeader().setSortIndicatorShown(True)
+        header = self._table.horizontalHeader()
+        # Keep the information-dense rules columns user-resizable while
+        # reserving predictable space for the fields operators scan first.
+        header.setStretchLastSection(True)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        widths = {
+            "Rank": 42, "Symbol": 72, "Score": 58, "Price": 72,
+            "Change %": 76, "Rel Vol": 74, "Dollar Vol": 108,
+            "Spread": 72, "Catalyst": 120, "Passed Rules": 110,
+            "Failed Rules": 110, "Freshness": 110,
+        }
+        for index, name in enumerate(self._table.horizontalHeader().model().headerData(
+            column, Qt.Orientation.Horizontal
+        ) for column in range(self._table.columnCount())):
+            if name in widths:
+                header.resizeSection(index, widths[name])
         self._table.horizontalHeader().sectionClicked.connect(
             self._request_sort
         )
         layout.addWidget(self._table)
+
+    def reset_header_layout(self) -> None:
+        header = self._table.horizontalHeader()
+        header.setStretchLastSection(True)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        widths = {
+            "Rank": 42, "Symbol": 72, "Score": 58, "Price": 72,
+            "Change %": 76, "Rel Vol": 74, "Dollar Vol": 108,
+            "Spread": 72, "Catalyst": 120, "Passed Rules": 110,
+            "Failed Rules": 110, "Freshness": 110,
+        }
+        for index, name in enumerate(
+            self._table.horizontalHeader().model().headerData(
+                column, Qt.Orientation.Horizontal
+            ) for column in range(self._table.columnCount())
+        ):
+            if name in widths:
+                header.resizeSection(index, widths[name])
 
     def render(self, snapshot: WatchlistSnapshot) -> None:
         self._table.set_empty_state(
@@ -91,6 +121,8 @@ class WatchlistPanel(QWidget):
                 color = _semantic_color(column_index, value)
                 if color is not None:
                     item.setForeground(QBrush(QColor(color)))
+                if column_index in (9, 10):
+                    item.setToolTip(value)
                 self._table.setItem(row_index, column_index, item)
             if row.selected:
                 self._table.selectRow(row_index)

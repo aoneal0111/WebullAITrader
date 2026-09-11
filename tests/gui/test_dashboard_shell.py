@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QByteArray, QEvent, QSettings, Qt
-from PySide6.QtWidgets import QApplication, QHeaderView, QScrollArea
+from PySide6.QtWidgets import QApplication, QHeaderView, QPushButton, QScrollArea
 
 from app.account_information.models import BrokerNeutralAccountInformation
 from app.composition import create_desktop_composition
@@ -87,7 +87,10 @@ def test_shell_retains_existing_pages_and_command_boundaries(window) -> None:
         window.dashboard.runtime_header.resume_button
     )
     assert window.stop_button is window.dashboard.runtime_header.stop_button
-    assert window.flatten_button.isEnabled() is False
+    assert all(
+        button.text().upper() != "FLATTEN UNAVAILABLE"
+        for button in window.dashboard.market_workspace.runtime_controls.findChildren(QPushButton)
+    )
 
 
 def test_detailed_scanner_page_retains_equity_crypto_tabs(window) -> None:
@@ -120,7 +123,6 @@ def test_supported_minimum_size_has_no_horizontal_dashboard_scroll(
         window.start_button,
         window.pause_button,
         window.stop_button,
-        window.flatten_button,
     ):
         assert button.width() >= button.minimumSizeHint().width()
 
@@ -153,7 +155,6 @@ def test_dashboard_preserves_content_at_supported_resolutions(
         window.start_button,
         window.pause_button,
         window.stop_button,
-        window.flatten_button,
     ):
         assert button.width() >= button.minimumSizeHint().width()
     assert window.dashboard.market_workspace.height() > 300
@@ -183,7 +184,6 @@ def test_dashboard_preserves_content_at_supported_resolutions(
         assert market_workspace.splitter.indexOf(
             market_workspace.intelligence_rail
         ) == -1
-        assert window.intelligence_inspector.isHidden()
         assert all(
             button.toolTip() and button.accessibleName()
             for button in window.sidebar.buttons.values()
@@ -300,7 +300,7 @@ def test_fresh_workstation_is_intentionally_dormant(window, application) -> None
     assert workspace.crypto_research.table.rowCount() == 0
     assert workspace.trade_intelligence._lifecycle_empty.isVisible()
     assert not workspace.trade_intelligence._header.isVisible()
-    assert window.dashboard.positions_panel._symbol.text() == "POSITION STATE NOT LOADED"
+    assert window.dashboard.positions_panel._symbol.text() == "NO ACTIVE POSITION"
     assert all(card._value.text() == "--" for card in window.dashboard.portfolio_summary._cards.values())
     assert "?" not in window.global_status.capabilities.text()
 
@@ -437,7 +437,6 @@ def test_laptop_position_management_owns_primary_workspace(application, window) 
     assert market.splitter.widget(0) is market.left_column
     assert market.splitter.widget(1) is market.right_workspace
     assert market.splitter.count() == 2
-    assert window.intelligence_inspector.isHidden()
 
 
 def test_splitter_handles_and_user_sizes_survive_ordinary_resize(
@@ -477,28 +476,16 @@ def test_chart_focus_control_is_removed_from_primary_workspace(application) -> N
     assert not hasattr(workspace, "focus_chart_button")
 
 
-def test_secondary_inspector_is_hidden_by_default_and_user_controlled(
+def test_normal_operator_workstation_has_no_inspector_control_or_dock(
     application, window
 ) -> None:
-    window.resize(1366, 768)
     window.show()
     application.processEvents()
 
-    inspector = window.intelligence_inspector
-    button = window.dashboard.runtime_header.inspector_button
-    assert inspector.isHidden()
-    assert not button.isChecked()
-    assert inspector.widget() is window.dashboard.market_workspace.intelligence_rail
-
-    button.click()
-    application.processEvents()
-    assert inspector.isVisible()
-    assert button.isChecked()
-
-    inspector.close()
-    application.processEvents()
-    assert inspector.isHidden()
-    assert not button.isChecked()
+    assert not hasattr(window, "intelligence_inspector")
+    assert not hasattr(window.dashboard.runtime_header, "inspector_button")
+    assert not hasattr(window.dashboard.market_workspace.runtime_controls, "inspector_button")
+    assert window.dashboard.market_workspace.intelligence_rail is not None
 
 
 def test_compact_opportunity_selector_avoids_horizontal_scrolling(application) -> None:
@@ -518,11 +505,33 @@ def test_compact_opportunity_selector_avoids_horizontal_scrolling(application) -
     table = workspace.watchlist._table
     assert table.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     assert table.horizontalScrollBar().maximum() == 0
-    assert all(
-        table.horizontalHeader().sectionResizeMode(index)
-        == QHeaderView.ResizeMode.Interactive
-        for index in range(table.columnCount())
-    )
+    header = table.horizontalHeader()
+    assert header.sectionResizeMode(6) == QHeaderView.ResizeMode.Stretch
+    assert header.sectionResizeMode(7) == QHeaderView.ResizeMode.Stretch
+    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
+
+
+def test_scanner_header_rejects_pathological_persisted_widths(window, application) -> None:
+    window.show()
+    application.processEvents()
+    table = window.dashboard.market_workspace.watchlist._table
+    header = table.horizontalHeader()
+    header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+    for index in range(table.columnCount()):
+        table.setColumnWidth(index, 20)
+    stale_state = header.saveState()
+
+    window._restore_scanner_header(table, stale_state)
+    application.processEvents()
+
+    assert table.width() > 200
+    assert header.length() >= round(table.viewport().width() * 0.80)
+    assert header.sectionResizeMode(6) == QHeaderView.ResizeMode.Stretch
+    assert header.sectionResizeMode(7) == QHeaderView.ResizeMode.Stretch
+    window.reset_layout()
+    application.processEvents()
+    assert table.columnWidth(0) <= 60
+    assert table.columnWidth(5) <= 70
 
 
 def test_qsettings_restores_splitters_and_sidebar(application, tmp_path) -> None:
@@ -620,7 +629,6 @@ def test_repeated_window_open_close_cycles_destroy_native_widgets_cleanly(
         window.resize(1280, 720)
         window.show()
         application.processEvents()
-        window.dashboard.runtime_header.inspector_button.click()
         application.processEvents()
         window.close()
         application.processEvents()

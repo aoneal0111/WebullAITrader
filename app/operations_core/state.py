@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from app.operations_core.bus import OperationsBus, Subscription
 from app.operations_core.events import (
     BrokerAccountUpdated,
+    PaperAccountUpdated,
     OperationsEvent,
     DecisionsUpdated,
     PortfolioUpdated,
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
     from app.read_models.portfolio.models import PortfolioSummary
     from app.read_models.health.models import HealthState
     from app.read_models.watchlist.models import WatchlistState
+    from app.read_models.paper_account_projection import PaperAccountSnapshot
 
 
 def _initial_order_projection() -> "OrdersReadModelSnapshot":
@@ -130,6 +132,7 @@ class ApplicationState:
     runtime: RuntimeState = field(default_factory=RuntimeState)
     paper_runtime: PaperRuntimeSnapshot | None = None
     broker_account: "BrokerNeutralAccountInformation | None" = None
+    paper_account: "PaperAccountSnapshot | None" = None
     orders: tuple[OperationsOrder, ...] = ()
     positions: tuple[OperationsPosition, ...] = ()
     broker_orders: tuple[OperationsOrder, ...] = ()
@@ -170,7 +173,7 @@ StateListener = Callable[[ApplicationState], None]
 
 _STATE_EVENT_TYPE_NAMES = frozenset(
     {
-        "OrdersUpdated", "PositionsUpdated", "BrokerAccountUpdated",
+        "OrdersUpdated", "PositionsUpdated", "BrokerAccountUpdated", "PaperAccountUpdated",
         "WatchlistUpdated", "HealthUpdated", "PortfolioUpdated",
         "PortfolioIntelligenceUpdated", "PortfolioObservationPublished",
         "DecisionsUpdated", "TimelineUpdated", "RuntimeStarting",
@@ -300,6 +303,9 @@ class ApplicationStateStore:
                 event,
                 environment=runtime.environment,
             )
+            paper_account = self._reduce_paper_account(
+                self._state.paper_account, event,
+            )
             timeline_projection = self._reduce_timeline_projection(
                 self._state.timeline_projection,
                 event,
@@ -373,6 +379,7 @@ class ApplicationStateStore:
                 runtime == current.runtime
                 and paper_runtime == current.paper_runtime
                 and broker_account == current.broker_account
+                and paper_account == current.paper_account
                 and orders == current.orders
                 and order_projection == current.order_projection
                 and positions == current.positions
@@ -404,6 +411,7 @@ class ApplicationStateStore:
                 runtime=runtime,
                 paper_runtime=paper_runtime,
                 broker_account=broker_account,
+                paper_account=paper_account,
                 orders=orders,
                 order_projection=order_projection,
                 positions=positions,
@@ -651,6 +659,15 @@ class ApplicationStateStore:
 
             return project_operational_portfolio(event.summary)
 
+        return current
+
+    @staticmethod
+    def _reduce_paper_account(
+        current: "PaperAccountSnapshot | None",
+        event: OperationsEvent,
+    ) -> "PaperAccountSnapshot | None":
+        if isinstance(event, PaperAccountUpdated):
+            return event.account
         return current
 
     @staticmethod

@@ -5,7 +5,6 @@ from importlib.metadata import PackageNotFoundError, version
 from PySide6.QtCore import QByteArray, QSettings, Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QResizeEvent
 from PySide6.QtWidgets import (
-    QDockWidget,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -62,6 +61,7 @@ from app.gui.formatters.warrior_paper import format_warrior_paper
 
 class MainWindow(QMainWindow):
     _PRIMARY_LAYOUT_VERSION = 4
+    _SCANNER_HEADER_LAYOUT_VERSION = 2
 
     def __init__(
         self,
@@ -100,7 +100,24 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1024, 640)
         self.resize(1440, 900)
         self._build()
-        self._build_intelligence_inspector()
+        self._layout_save_timer = QTimer(self)
+        self._layout_save_timer.setSingleShot(True)
+        self._layout_save_timer.setInterval(250)
+        self._layout_save_timer.timeout.connect(self._save_layout)
+        for splitter in (
+            self.dashboard.market_workspace.middle_splitter,
+            self.dashboard.market_workspace.right_splitter,
+            self.dashboard.market_workspace.workspace_splitter,
+            self.dashboard.market_workspace.lower_splitter,
+        ):
+            splitter.splitterMoved.connect(self._schedule_layout_save)
+        for table in (
+            self.watchlist._table,
+            self.dashboard.market_workspace.watchlist._table,
+        ):
+            table.horizontalHeader().sectionResized.connect(
+                self._schedule_layout_save
+            )
         self._restore_layout()
         self._build_presentation()
         self.setStyleSheet(application_stylesheet())
@@ -125,6 +142,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, "dashboard"):
             self.dashboard.set_viewport_width(event.size().width())
         super().resizeEvent(event)
+        self._schedule_layout_save()
+
+    def _schedule_layout_save(self, *_args) -> None:
+        timer = getattr(self, "_layout_save_timer", None)
+        if timer is not None and not getattr(self, "_restoring_layout", False):
+            timer.start()
 
     def _refresh_warrior_paper(self) -> None:
         sidecar = self._warrior_forward_sidecar
@@ -134,6 +157,13 @@ class MainWindow(QMainWindow):
             format_warrior_paper(sidecar.snapshot())
         )
         sidecar.mark_gui_refresh()
+
+    def _warrior_management_context(self, symbol: str):
+        sidecar = self._warrior_forward_sidecar
+        if sidecar is None:
+            return None
+        source = getattr(sidecar, "management_context", None)
+        return source(symbol) if callable(source) else None
 
     def _build(self) -> None:
         root = QWidget()
@@ -201,7 +231,6 @@ class MainWindow(QMainWindow):
         self.start_button = controls.start_button
         self.stop_button = controls.stop_button
         self.pause_button = header.pause_button
-        self.flatten_button = header.flatten_button
         self.emergency_button = controls.emergency_stop_button
         self.start_button.clicked.connect(self._runtime_service.start)
         self.stop_button.clicked.connect(
@@ -209,7 +238,6 @@ class MainWindow(QMainWindow):
         )
         self.pause_button.clicked.connect(self._toggle_replay)
         header.reset_layout_requested.connect(self.reset_layout)
-        controls.inspector_requested.connect(self._set_inspector_visible)
         header.settings_requested.connect(lambda: self.pages.setCurrentIndex(4))
         header.menu_requested.connect(self._show_menu)
         # Persistent navigation supersedes the former dashboard-only controls.
@@ -225,33 +253,6 @@ class MainWindow(QMainWindow):
         status.addWidget(self.status_label)
         self.setStatusBar(status)
 
-    def _build_intelligence_inspector(self) -> None:
-        self.intelligence_inspector = QDockWidget("Atlas Inspector", self)
-        self.intelligence_inspector.setObjectName("atlasIntelligenceInspector")
-        self.intelligence_inspector.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea
-            | Qt.DockWidgetArea.RightDockWidgetArea
-        )
-        self.intelligence_inspector.setMinimumWidth(340)
-        self.intelligence_inspector.setWidget(
-            self.dashboard.market_workspace.intelligence_rail
-        )
-        self.addDockWidget(
-            Qt.DockWidgetArea.RightDockWidgetArea,
-            self.intelligence_inspector,
-        )
-        self.intelligence_inspector.visibilityChanged.connect(
-            self._sync_inspector_toggle
-        )
-        # Secondary information is opt-in at every viewport, including large
-        # displays. Operators can dock, float, and resize it when needed.
-        self.intelligence_inspector.hide()
-
-    def _set_inspector_visible(self, visible: bool) -> None:
-        self.intelligence_inspector.setVisible(bool(visible))
-        if visible:
-            self.intelligence_inspector.raise_()
-
     def _show_menu(self) -> None:
         menu = QMenu(self)
         for label, index in zip(self.sidebar.ITEMS, self.sidebar.ROUTES):
@@ -259,18 +260,9 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda _checked=False, page=index: self.pages.setCurrentIndex(page))
         menu.exec(self.dashboard.runtime_header.menu_button.mapToGlobal(self.dashboard.runtime_header.menu_button.rect().bottomLeft()))
 
-    def _sync_inspector_toggle(self, visible: bool) -> None:
-        button = self.dashboard.runtime_header.inspector_button
-        if button.isChecked() != visible:
-            button.blockSignals(True)
-            button.setChecked(visible)
-            button.blockSignals(False)
-
     def _build_presentation(self) -> None:
         self._timeline_presenter = TimelinePresenter(
-            self.activity,
-            self.dashboard.activity_panel,
-            self.dashboard.operations_activity_panel,
+            self.activity, self.dashboard.operations_activity_panel,
         )
         self._decisions_presenter = DecisionsPresenter(
             self.decisions,
@@ -293,9 +285,10 @@ class MainWindow(QMainWindow):
                 DashboardPresenter(
                     self.dashboard,
                     RenderAdapter(self.global_status.render_dashboard),
+                    management_context_source=self._warrior_management_context,
                 ),
                 OrdersPresenter(self.orders),
-                PositionsPresenter(self.positions),
+                PositionsPresenter(self.positions, self._warrior_management_context),
                 self._timeline_presenter,
                 self._decisions_presenter,
                 PortfolioPresenter(
@@ -330,11 +323,7 @@ class MainWindow(QMainWindow):
                 RuntimeErrorPresenter(self),
             )
         )
-        for activity in (
-            self.activity,
-            self.dashboard.activity_panel,
-            self.dashboard.operations_activity_panel,
-        ):
+        for activity in (self.activity, self.dashboard.operations_activity_panel):
             activity.filters_changed.connect(
                 self._timeline_presenter.set_filters
             )
@@ -358,6 +347,7 @@ class MainWindow(QMainWindow):
         )
 
     def _restore_layout(self) -> None:
+        self._restoring_layout = True
         settings = self._settings
         geometry = settings.value("layout/window_geometry")
         restored_geometry = (
@@ -382,6 +372,18 @@ class MainWindow(QMainWindow):
         self.dashboard.set_viewport_width(self.width(), force=True)
 
         workspace = self.dashboard.market_workspace
+        for key, version_key, table in (
+            ("layout/scanner_header", "layout/scanner_header_version", self.watchlist._table),
+            ("layout/dashboard_scanner_header", "layout/dashboard_scanner_header_version", workspace.watchlist._table),
+        ):
+            header_state = settings.value(key)
+            version = settings.value(version_key, 0, type=int)
+            if (
+                version == self._SCANNER_HEADER_LAYOUT_VERSION
+                and isinstance(header_state, QByteArray)
+                and not header_state.isEmpty()
+            ):
+                self._restore_scanner_header(table, header_state)
         saved_mode = settings.value("layout/responsive_mode", "")
         if saved_mode == workspace.layout_mode:
             splitter_states = [
@@ -403,6 +405,21 @@ class MainWindow(QMainWindow):
         # geometry. Validate again on the next event-loop turn so an old or
         # collapsed production state cannot leave Trade Intelligence at 0 px.
         QTimer.singleShot(0, workspace.ensure_middle_composition)
+        self._restoring_layout = False
+
+    def _restore_scanner_header(self, table, state: QByteArray) -> None:
+        header = table.horizontalHeader()
+        if not header.restoreState(state):
+            return
+        # A valid serialized state can still be structurally stale (for
+        # example, all columns saved at their old narrow widths). Reject only
+        # states that visibly fail to use the current viewport; user sizing
+        # remains persistent for sane states.
+        viewport_width = table.viewport().width()
+        if viewport_width > 200 and header.length() < round(viewport_width * 0.80):
+            resetter = getattr(table.parentWidget(), "reset_header_layout", None)
+            if callable(resetter):
+                resetter()
 
     def _save_layout(self) -> None:
         workspace = self.dashboard.market_workspace
@@ -415,6 +432,21 @@ class MainWindow(QMainWindow):
         settings.setValue("layout/chart_scanner_splitter", workspace.splitter.saveState())
         settings.setValue("layout/right_rail_splitter", workspace.right_splitter.saveState())
         settings.setValue("layout/sidebar_compact", self._sidebar_user_compact)
+        settings.setValue(
+            "layout/scanner_header",
+            self.watchlist._table.horizontalHeader().saveState(),
+        )
+        settings.setValue(
+            "layout/scanner_header_version", self._SCANNER_HEADER_LAYOUT_VERSION,
+        )
+        settings.setValue(
+            "layout/dashboard_scanner_header",
+            workspace.watchlist._table.horizontalHeader().saveState(),
+        )
+        settings.setValue(
+            "layout/dashboard_scanner_header_version",
+            self._SCANNER_HEADER_LAYOUT_VERSION,
+        )
         settings.sync()
 
     def reset_layout(self) -> None:
@@ -422,8 +454,8 @@ class MainWindow(QMainWindow):
         self._sidebar_user_compact = False
         self.resize(1440, 900)
         self.sidebar.set_compact(False)
-        self.intelligence_inspector.hide()
         self.dashboard.market_workspace.reset_layout(self.width())
+        self._schedule_layout_save()
 
     def _toggle_replay(self) -> None:
         workspace = self._replay_workspace

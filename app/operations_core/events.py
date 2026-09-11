@@ -4,12 +4,16 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from datetime import datetime, timezone
 from enum import StrEnum
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from app.account_information.models import BrokerNeutralAccountInformation
 from app.portfolio_intelligence.models import PortfolioIntelligenceSnapshot
 from app.portfolio_intelligence.events import PortfolioObservationEvent
 from app.capabilities import CapabilitySnapshot
+
+if TYPE_CHECKING:
+    from app.read_models.paper_account_projection import PaperAccountSnapshot
 
 
 def utc_now() -> datetime:
@@ -249,6 +253,18 @@ class BrokerAccountUpdated(OperationsEvent):
             raise TypeError(
                 "account must be BrokerNeutralAccountInformation"
             )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PaperAccountUpdated(OperationsEvent):
+    """Publish the campaign-scoped local PAPER account projection."""
+
+    account: "PaperAccountSnapshot"
+
+    def __post_init__(self) -> None:
+        OperationsEvent.__post_init__(self)
+        if self.account is None:
+            raise TypeError("account projection is required")
 
 
 @dataclass(frozen=True, slots=True)

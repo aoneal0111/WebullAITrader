@@ -52,6 +52,7 @@ def test_positions_presenter_prepares_immutable_view_model() -> None:
         "AAPL", "LONG", "10", "$100.00", "$110.00",
         "+$100.00", "+10.00%", "$0.00",
         NOW.astimezone().strftime("%H:%M:%S"),
+        "$1,000.00", "$1,100.00",
     ),)
     assert panel.snapshots[0].management[0].symbol == "AAPL"
     assert panel.snapshots[0].management[0].protection is None

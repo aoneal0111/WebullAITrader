@@ -35,7 +35,9 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
         assert isinstance(composition, DesktopComposition)
         assert composition.runtime_service.status is RuntimeServiceStatus.STOPPED
         assert composition.runtime_service.cycles_completed == 0
-        assert composition.state_store.snapshot().revision == 0
+        state = composition.state_store.snapshot()
+        assert state.revision == 4
+        assert state.paper_account is not None
         assert composition.chart_default_symbol is None
         assert composition.entry_opportunity_value_observer is not None
         assert composition.entry_opportunity_value_observer.metrics().enabled is False

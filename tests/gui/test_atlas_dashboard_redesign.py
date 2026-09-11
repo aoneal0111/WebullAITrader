@@ -302,7 +302,7 @@ def test_operator_tables_expose_reference_columns_and_real_rows(application) -> 
         "Not available", "Not available", "WORKING",
     ),)))
 
-    assert positions._table.columnCount() == 9
+    assert positions._table.columnCount() == 11
     assert positions._table.item(0, 0).text() == "XYZ"
     assert orders._table.columnCount() == 10
     assert orders._table.item(0, 9).text() == "WORKING"
@@ -343,6 +343,8 @@ def test_position_lifecycle_converges_without_contradictory_empty_state(
         mark="$11.00", unrealized_pnl="+$2.00", unrealized_percent="+10.00%",
         realized_pnl="$0.00", updated_at="10:00:00",
     )
+    panel.render(PositionsSnapshot(rows=(row,), management=(management,)))
+    panel.select_symbol("PMI")
     panel.render(PositionsSnapshot(rows=(row,), management=(management,)))
     assert panel._symbol.text() == "PMI"
     assert panel._table.item(0, 0).text() == "PMI"
@@ -577,6 +579,5 @@ def test_market_workspace_puts_trade_intelligence_in_primary_splitter(applicatio
     assert workspace.splitter.widget(0) is workspace.left_column
     assert workspace.splitter.widget(1) is workspace.right_workspace
     assert workspace.ai_thinking_section.parent() is not None
-    assert workspace.activity_section.parent() is not None
     assert workspace.top_splitter.count() == 2
     assert workspace.splitter.indexOf(workspace.intelligence_rail) == -1

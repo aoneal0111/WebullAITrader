@@ -337,4 +337,3 @@ def test_dashboard_keeps_real_controls_and_shows_authoritative_performance(appli
     assert not dashboard.market_workspace.runtime_controls.mode_label.isHidden()
     assert not dashboard.runtime_header._metrics["Risk"].isHidden()
     assert dashboard.runtime_header.pause_button.isHidden()
-    assert dashboard.runtime_header.flatten_button.isHidden()

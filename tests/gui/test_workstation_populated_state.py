@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 import pytest
 
-from app.gui.models import ActivityEntry, ActivitySnapshot, PortfolioDashboardSnapshot, WatchlistRow, WatchlistSnapshot
+from app.gui.models import PortfolioDashboardSnapshot, WatchlistRow, WatchlistSnapshot
 from app.gui.pages.dashboard import DashboardPage
 
 
@@ -41,10 +41,6 @@ def test_populated_candidate_renders_without_overflow(
     dashboard.market_workspace.render(
         WatchlistSnapshot(rows=(_candidate(),), candidate_count=1, scanner_status="Active")
     )
-    dashboard.market_workspace.activity_panel.render(ActivitySnapshot(entries=(
-        ActivityEntry(datetime.now(timezone.utc), "BUY filled", "TRADES", related_symbol="PMI"),
-        ActivityEntry(datetime.now(timezone.utc), "Entry conditions satisfied", "DECISIONS", related_symbol="PMI"),
-    )))
     dashboard.market_workspace.portfolio_summary.render(PortfolioDashboardSnapshot(
         metrics=(("Equity", "$25,000"), ("Cash", "$20,280"),
                  ("Buying Power", "$18,000"), ("Open Positions", "1"),
@@ -64,7 +60,6 @@ def test_populated_candidate_renders_without_overflow(
     assert panel._header_metrics["Scanner score"].text() == "91"
     assert panel._decision.text() == "EVALUATING"
     assert panel._blocking.text() == "--"
-    assert dashboard.market_workspace.activity_panel._table.rowCount() == 2
     assert dashboard.market_workspace.portfolio_summary._cards["Unrealized P/L"]._value.text() == "+$180"
     assert 100 <= dashboard.runtime_header.height() <= 125
 
@@ -134,8 +129,7 @@ def test_empty_workstation_keeps_scanner_and_activity_states_compact(
     assert workspace.watchlist._table._empty_state.isVisible()
     assert workspace.opportunities_section.height() >= workspace.market_section.height()
     assert workspace.crypto_scanner_section.height() == workspace.opportunities_section.height()
-    assert workspace.activity_section.parentWidget() is workspace.right_splitter
-    assert workspace.activity_panel._table.rowCount() == 0
+    assert not hasattr(workspace, "activity_section")
     assert not hasattr(workspace, "reasoning_section")
     assert workspace.portfolio_summary._columns == 8
     assert all(card.height() >= 48 for card in workspace.portfolio_summary._card_order)

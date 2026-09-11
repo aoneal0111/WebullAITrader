@@ -5,7 +5,7 @@ Qt widgets. They contain no runtime, broker, or domain behavior.
 """
 
 from app.gui.formatters.orders import format_orders
-from app.gui.formatters.positions import format_positions
+from app.gui.formatters.positions import format_positions, enrich_position_management
 from app.gui.formatters.decisions import format_decisions
 from app.gui.formatters.portfolio import format_portfolio
 from app.gui.formatters.health import format_health
@@ -18,6 +18,7 @@ from app.gui.formatters.warrior_paper import format_warrior_paper
 __all__ = [
     "format_orders",
     "format_positions",
+    "enrich_position_management",
     "format_decisions",
     "format_portfolio",
     "format_health",

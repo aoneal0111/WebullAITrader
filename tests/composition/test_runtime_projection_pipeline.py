@@ -15,6 +15,7 @@ def test_shared_projection_pipeline_exposes_production_sink_order() -> None:
     assert pipeline.sinks == (
         pipeline.order_projection,
         pipeline.position_projection,
+        pipeline.paper_account_projection,
         pipeline.portfolio_projection,
         pipeline.health_projection,
         pipeline.watchlist_projection,

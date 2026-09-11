@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QScrollArea, QTableWidgetItem
+from PySide6.QtWidgets import QApplication, QHeaderView, QScrollArea, QTableWidgetItem
 
 from app.gui.pages.dashboard import DashboardPage
 
@@ -29,7 +29,6 @@ def test_dashboard_uses_only_section_scrolling(application) -> None:
         for area in scroll_areas
     )
     assert workspace.watchlist._table.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
-    assert workspace.activity_panel._table.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
     assert dashboard.workstation_header is dashboard.runtime_header
     assert dashboard.market_workspace.left_column is not None
     assert dashboard.market_workspace.right_workspace is not None
@@ -51,14 +50,12 @@ def test_workstation_exposes_reference_panels(application) -> None:
         workspace.runtime_controls.emergency_stop_button
     )
     assert not workspace.runtime_controls.emergency_stop_button.isHidden()
-    assert not workspace.runtime_controls.flatten_unavailable_button.isHidden()
-    assert not workspace.runtime_controls.flatten_unavailable_button.isEnabled()
     assert workspace.market_section.heading.text() == "ATLAS TRADE INTELLIGENCE"
     assert workspace.trade_intelligence._watching.heading.text() == "WHY ATLAS IS WATCHING"
     assert workspace.trade_intelligence._market.heading.text() == "CURRENT MARKET CONDITIONS"
     assert workspace.trade_intelligence._plan.heading.text() == "TRADE PLAN"
     assert workspace.trade_intelligence._decision_panel.heading.text() == "CURRENT DECISION"
-    assert workspace.activity_section.heading.text() == "LIVE AUTONOMOUS ACTIVITY"
+    assert not hasattr(workspace, "activity_section")
     assert workspace.portfolio_section.heading.text() == "ACCOUNT / RISK"
     assert workspace.positions_section.heading.text() == "ACTIVE POSITIONS / MANAGEMENT"
     assert not hasattr(workspace, "orders_section")
@@ -88,16 +85,39 @@ def test_major_regions_keep_overflow_inside_their_assigned_geometry(application)
     workspace = dashboard.market_workspace
     original_height = workspace.opportunities_section.height()
 
-    for table in (workspace.watchlist._table, workspace.activity_panel._table):
-        table.setRowCount(50)
-        for row in range(50):
-            table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
+    table = workspace.watchlist._table
+    table.setRowCount(50)
+    for row in range(50):
+        table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
     application.processEvents()
 
     assert workspace.watchlist._table.verticalScrollBar().maximum() > 0
-    assert workspace.activity_section.parentWidget() is workspace.right_splitter
-    assert workspace.activity_panel._table.rowCount() == 50
     assert original_height == workspace.opportunities_section.height()
+
+
+def test_equity_scanner_table_tracks_panel_width_and_expands_useful_columns(application) -> None:
+    dashboard = DashboardPage()
+    dashboard.resize(1600, 900)
+    dashboard.show()
+    application.processEvents()
+    workspace = dashboard.market_workspace
+    table = workspace.watchlist._table
+    assert table.width() >= workspace.opportunities_section.width() - 24
+    assert table.viewport().width() >= table.width() - 4
+    header = table.horizontalHeader()
+    assert header.sectionResizeMode(6) == QHeaderView.ResizeMode.Stretch
+    assert header.sectionResizeMode(7) == QHeaderView.ResizeMode.Stretch
+    assert table.columnWidth(6) >= 80
+    assert table.columnWidth(7) >= 80
+    assert table.columnWidth(3) >= 45
+    assert table.columnWidth(4) >= 45
+
+    narrow_width = table.width()
+    dashboard.resize(1900, 900)
+    application.processEvents()
+    assert table.width() > narrow_width
+    assert table.columnWidth(6) >= 80
+    assert table.columnWidth(7) >= 80
 
 
 def test_market_overview_is_honest_when_projection_is_unavailable(application) -> None:

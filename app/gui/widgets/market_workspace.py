@@ -43,7 +43,6 @@ from app.gui.widgets.infrastructure_strip import InfrastructureStrip
 from app.gui.widgets.mission_status_panel import MissionStatusPanel
 from app.gui.widgets.panel import SectionPanel
 from app.gui.widgets.trade_intelligence_panel import TradeIntelligencePanel
-from app.gui.widgets.activity_panel import ActivityPanel
 from app.gui.widgets.portfolio_summary_strip import PortfolioSummaryStrip
 from app.gui.widgets.positions_panel import PositionsPanel
 from app.gui.widgets.atlas_reasoning_panel import AtlasReasoningPanel
@@ -881,6 +880,12 @@ class CompactWatchlistPanel(QWidget):
         }
         for index, name in enumerate(columns):
             self._table.setColumnWidth(index, widths.get(name, 118))
+        for name in ("Setup", "Status"):
+            index = columns.index(name)
+            header.setSectionResizeMode(index, QHeaderView.ResizeMode.Stretch)
+
+    def reset_header_layout(self) -> None:
+        self._configure_columns(self._columns)
 
     def _set_view_filter(self, view: str) -> None:
         button = self._view_buttons.get(view)
@@ -921,7 +926,6 @@ class MarketWorkspace(QWidget):
     atlas_symbol_selected = Signal(str)
     chart_timeframe_selected = Signal(str)
     focus_mode_changed = Signal(bool)
-    inspector_requested = Signal(bool)
 
     def __init__(
         self,
@@ -957,14 +961,12 @@ class MarketWorkspace(QWidget):
         self._warrior_view = None
 
         self.atlas_activity = AtlasActivityPanel()
-        self.activity_panel = ActivityPanel()
         self.portfolio_summary = PortfolioSummaryStrip()
         self.positions_panel = PositionsPanel()
         self.orders_panel = self.positions_panel.recent_orders_panel
         self.atlas_reasoning = AtlasReasoningPanel()
         self.market_overview = MarketOverviewPanel()
         self.runtime_controls = RuntimeControlsPanel()
-        self.runtime_controls.inspector_requested.connect(self._inspector_requested)
         self.ai_thinking = AIThinkingPanel()
         self.mission_status = MissionStatusPanel()
         self.infrastructure = InfrastructureStrip()
@@ -972,7 +974,6 @@ class MarketWorkspace(QWidget):
         self.ai_thinking_section = SectionPanel(
             "AI Thinking", self.ai_thinking, collapsible=True
         )
-        self.activity_section = SectionPanel("LIVE AUTONOMOUS ACTIVITY", self.activity_panel)
         self.portfolio_section = SectionPanel(
             "ACCOUNT / RISK", self.portfolio_summary
         )
@@ -1065,7 +1066,8 @@ class MarketWorkspace(QWidget):
         layout.addWidget(self.workspace_splitter, 1)
         layout.addWidget(self.portfolio_section)
 
-        # Secondary intelligence remains available to the inspector dock.
+        # Keep the intelligence rail available to internal integrations; it is
+        # not part of the normal operator workstation.
         intelligence_rail = QWidget()
         intelligence_rail.setMinimumWidth(340)
         self.intelligence_rail = intelligence_rail
@@ -1078,7 +1080,6 @@ class MarketWorkspace(QWidget):
         for section in (
             self.ai_thinking_section,
             SectionPanel("Atlas Activity", self.atlas_activity, collapsible=True),
-            self.activity_section,
             self.mission_section,
             self.infrastructure_section,
         ):
@@ -1090,9 +1091,6 @@ class MarketWorkspace(QWidget):
         rail_layout.addWidget(self.right_splitter)
 
         self.top_splitter = self.splitter
-
-    def _inspector_requested(self, visible: bool) -> None:
-        self.inspector_requested.emit(visible)
 
     @property
     def chart_focused(self) -> bool:
@@ -1243,6 +1241,10 @@ class MarketWorkspace(QWidget):
         self._selected_symbol = symbol
         self._render_focus(snapshot)
         self._emit_operator_symbol(symbol)
+
+    @property
+    def selected_symbol(self) -> str | None:
+        return self._selected_symbol
 
     def render_warrior(self, view) -> None:
         self._warrior_view = view

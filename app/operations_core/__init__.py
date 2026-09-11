@@ -3,6 +3,7 @@
 from app.operations_core.bus import OperationsBus, Subscription
 from app.operations_core.events import (
     BrokerAccountUpdated,
+    PaperAccountUpdated,
     OperationsEvent,
     OperationsDecisionRecord,
     OperationsPortfolioHighlight,
@@ -44,6 +45,7 @@ __all__ = [
     "ApplicationState",
     "ApplicationStateStore",
     "BrokerAccountUpdated",
+    "PaperAccountUpdated",
     "OperationsBus",
     "OperationsEvent",
     "OperationsDecisionRecord",

@@ -24,11 +24,11 @@ class PortfolioSummaryStrip(QWidget):
         self._layout.setVerticalSpacing(6)
 
         specifications = (
-            ("Equity", "Net Equity", "primary"),
-            ("Cash", "Cash", "medium"),
-            ("Buying Power", "Buying Power", "medium"),
-            ("Unrealized P/L", "Unrealized PnL", "primary"),
-            ("Realized P/L", "Realized PnL", "primary"),
+            ("Equity", "ACCOUNT EQUITY", "primary"),
+            ("Cash", "ACCOUNT CASH", "medium"),
+            ("Buying Power", "ACCOUNT BUYING POWER", "medium"),
+            ("Unrealized P/L", "ACCOUNT UNREALIZED P/L", "primary"),
+            ("Realized P/L", "ACCOUNT REALIZED P/L", "primary"),
             ("Open Positions", "Positions", "standard"),
             ("Exposure", "Exposure", "standard"),
             ("Working Orders", "Working Orders", "standard"),

@@ -11,7 +11,6 @@ class RuntimeControlHeader(QFrame):
     """Compact command and authoritative status surface for the workstation."""
 
     reset_layout_requested = Signal()
-    inspector_requested = Signal(bool)
     settings_requested = Signal()
     menu_requested = Signal()
 
@@ -92,10 +91,7 @@ class RuntimeControlHeader(QFrame):
         self.resume_button = QPushButton("Start")
         self.pause_button = QPushButton("Pause")
         self.stop_button = QPushButton("Stop")
-        self.flatten_button = QPushButton("Flatten")
-        self.flatten_button.setEnabled(False)
-        self.inspector_button = QPushButton("Inspector")
-        for button in (self.resume_button, self.pause_button, self.stop_button, self.flatten_button, self.inspector_button):
+        for button in (self.resume_button, self.pause_button, self.stop_button):
             button.hide()
 
         self._clock = QTimer(self)

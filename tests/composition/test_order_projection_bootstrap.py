@@ -7,6 +7,7 @@ from app.composition.runtime_event_sink import CompositeRuntimeEventSink
 from app.operations_core import OperationsBus
 from app.read_models.order_projection import OrderProjection
 from app.read_models.position_projection import PositionProjection
+from app.read_models.paper_account_projection import PaperAccountProjection
 from app.read_models.timeline_projection import TimelineProjection
 from app.read_models.decision_projection import DecisionProjection
 from app.read_models.portfolio_projection import PortfolioProjection
@@ -62,6 +63,9 @@ def test_desktop_bootstrap_composes_order_projection_with_runtime_sinks(
     assert isinstance(composed, CompositeRuntimeEventSink)
     assert isinstance(result.order_projection, OrderProjection)
     assert isinstance(result.position_projection, PositionProjection)
+    paper_account_projection = next(
+        sink for sink in composed.sinks if isinstance(sink, PaperAccountProjection)
+    )
     assert isinstance(result.timeline_projection, TimelineProjection)
     assert isinstance(result.decision_projection, DecisionProjection)
     assert isinstance(result.portfolio_projection, PortfolioProjection)
@@ -72,6 +76,7 @@ def test_desktop_bootstrap_composes_order_projection_with_runtime_sinks(
         existing_sink,
         result.order_projection,
         result.position_projection,
+        paper_account_projection,
         result.portfolio_projection,
         result.health_projection,
         result.watchlist_projection,
