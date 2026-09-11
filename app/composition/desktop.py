@@ -450,6 +450,10 @@ def create_desktop_composition(
             None if autonomous_paper_bridge is None
             else autonomous_paper_bridge.has_execution_ownership
         ),
+        paper_working_entry_source=(
+            None if autonomous_paper_bridge is None
+            else autonomous_paper_bridge.has_working_entry
+        ),
         execution_quote_source=execution_quote_source,
         order_flow_client=shared_rest_market_data,
         research_observer=trade_intelligence_observer,

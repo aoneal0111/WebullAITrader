@@ -1608,6 +1608,26 @@ class AutonomousPaperExecutionBridge:
             self._reconcile_terminal_exits()
             return normalized in self._active_by_symbol
 
+    def has_working_entry(self, symbol: str, lifecycle_id: str) -> bool:
+        """Return whether a specific lifecycle still has a working entry."""
+        normalized = symbol.strip().upper()
+        identity = str(lifecycle_id).strip()
+        with self._lock:
+            self._reconcile_terminal_entries()
+            order_id = self._entry_orders.get(identity)
+            if order_id is None:
+                return False
+            try:
+                order = self.order_book.get(order_id) if self.order_book is not None else None
+            except Exception:
+                return False
+            return bool(
+                order is not None
+                and order.symbol == normalized
+                and not order.is_terminal
+                and order.remaining_quantity > 0
+            )
+
     def _reconcile_terminal_entries(self) -> None:
         if self.order_book is None:
             return

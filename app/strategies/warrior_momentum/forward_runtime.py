@@ -201,6 +201,7 @@ class WarriorForwardCaptureService:
         paper_entry_rearmer: Callable[..., object] | None = None,
         paper_position_quantity_source: Callable[[str], Decimal] | None = None,
         paper_execution_ownership_source: Callable[[str], bool] | None = None,
+        paper_working_entry_source: Callable[[str, str], bool] | None = None,
         execution_quote_source: ExecutionQuoteSource | None = None,
         execution_permitted: Callable[[], bool] | None = None,
         account_refresh_source: Callable[[], PaperAccountContext | None] | None = None,
@@ -224,6 +225,7 @@ class WarriorForwardCaptureService:
         self._paper_entry_rearmer = paper_entry_rearmer
         self._paper_position_quantity_source = paper_position_quantity_source
         self._paper_execution_ownership_source = paper_execution_ownership_source
+        self._paper_working_entry_source = paper_working_entry_source
         self._execution_quote_source = execution_quote_source
         self._execution_permitted = execution_permitted or (lambda: True)
         self._account_refresh_source = account_refresh_source
@@ -422,6 +424,23 @@ class WarriorForwardCaptureService:
             # thesis.  Do not let the ordinary entry branch submit the same
             # signal as an initial entry after the seam has evaluated it.
             signal = None
+        # Capture the lifecycle's thesis state before the observation-only
+        # memory is updated.  A qualified observation must not reopen an
+        # opportunity that was explicitly invalidated earlier in this tick.
+        pursuit_signal = signal
+        pursuit_signal_source = "CURRENT_ENTRY_SIGNAL"
+        pursuit_thesis_valid = True
+        working_state = self._paper.get(symbol)
+        if (
+            pursuit_signal is None
+            and working_state is not None
+            and working_state.remaining > 0
+            and self._working_entry_is_active(working_state)
+        ):
+            pursuit_signal = working_state.signal
+            pursuit_signal_source = "RETAINED_WORKING_LIFECYCLE"
+            pursuit_thesis_valid = self._working_entry_thesis_valid(working_state)
+
         memory_signal = signal or technical_signal
         memory_opportunity_id = (
             self._memory_opportunity_ids.get(symbol)
@@ -448,15 +467,21 @@ class WarriorForwardCaptureService:
                 vwap_relation=None,
                 blocking_reason=(None if not assessed.reason_codes else assessed.reason_codes[-1].value),
             )
+        # An authorized entry owns its execution lifecycle after submission.
+        # The next Warrior assessment may temporarily have no entry signal
+        # while the working order still needs the bounded pursuit checks.  Do
+        # not use that transient absence as an execution cancellation signal.
         if (
-            signal is not None
+            pursuit_signal is not None
             and account is not None
             and self._paper_entry_replacer is not None
             and self.config.adaptive_entry.enabled
-            and signal.symbol in self._paper
+            and pursuit_signal.symbol in self._paper
         ):
             self._consider_adaptive_entry_replacement(
-                value, assessed, signal, account,
+                value, assessed, pursuit_signal, account,
+                thesis_valid=pursuit_thesis_valid,
+                signal_source=pursuit_signal_source,
             )
         else:
             performance_diagnostics.record_entry_counter(
@@ -754,12 +779,52 @@ class WarriorForwardCaptureService:
         # must not fall through to ordinary initial-entry submission.
         return True
 
+    def _working_entry_thesis_valid(self, state: _PaperState) -> bool:
+        """Return whether an active opportunity explicitly invalidated itself.
+
+        A missing current signal is intentionally not invalidation.  Only the
+        observation-only opportunity memory's terminal states can explicitly
+        end a retained working-entry thesis here; the execution bridge still
+        owns order-terminal checks and all replacement policy gates.
+        """
+        from app.trade_intelligence.opportunity_memory import (
+            OpportunityMemoryState,
+        )
+
+        opportunity_id = (
+            self._memory_opportunity_ids.get(state.signal.symbol)
+            or opportunity_identity(state.signal)
+        )
+        record = self.opportunity_memory.get(
+            state.signal.timestamp.date(), state.signal.symbol, opportunity_id,
+        )
+        return record is None or record.opportunity_state not in {
+            OpportunityMemoryState.INVALIDATED,
+            OpportunityMemoryState.CLOSED,
+        }
+
+    def _working_entry_is_active(self, state: _PaperState) -> bool:
+        """Ask the execution owner whether this lifecycle still has an entry."""
+        if self._paper_working_entry_source is None:
+            # Standalone analytical callers do not expose order ownership;
+            # preserve their existing in-memory lifecycle behavior.
+            return state.remaining > 0
+        try:
+            return bool(self._paper_working_entry_source(
+                state.signal.symbol, lifecycle_identity(state.signal),
+            ))
+        except Exception:
+            return False
+
     def _consider_adaptive_entry_replacement(
         self,
         value: PointInTimeObservation,
         candidate: MomentumCandidate,
         signal: MomentumEntrySignal,
         account: PaperAccountContext,
+        *,
+        thesis_valid: bool = True,
+        signal_source: str = "CURRENT_ENTRY_SIGNAL",
     ) -> None:
         """Use one fresh observation to consider a bounded entry replacement."""
         state = self._paper.get(signal.symbol)
@@ -783,6 +848,8 @@ class WarriorForwardCaptureService:
                 structural_stop=(None if state is None else state.signal.stop_price),
                 replacement_count=0,
                 max_replacements=self.config.adaptive_entry.max_replacements,
+                signal_source=signal_source,
+                thesis_valid=thesis_valid,
             )
         if state is not None and state.remaining < state.initial_quantity:
             performance_diagnostics.record_entry_counter(
@@ -853,8 +920,8 @@ class WarriorForwardCaptureService:
                     age is not None and age >= ZERO and age <= stale_limit
                     for age in freshness
                 ),
-                liquidity_ok=signal.dollar_volume >= self.config.entry.minimum_dollar_volume,
-                thesis_valid=signal.setup_type is not None, quality_ok=quality_ok,
+                liquidity_ok=candidate.dollar_volume >= self.config.entry.minimum_dollar_volume,
+                thesis_valid=thesis_valid, quality_ok=quality_ok,
                 replacement_budget_available=replacement_budget,
                 structural_stop=state.signal.stop_price,
                 expected_reward=(
@@ -877,11 +944,12 @@ class WarriorForwardCaptureService:
                 and value.observation.tradable
                 and not value.observation.halted
                 and signal.session in self.config.entry.allowed_sessions
-                and signal.spread_percent is not None
-                and signal.spread_percent <= self.config.entry.maximum_spread_percent
-                and signal.dollar_volume >= self.config.entry.minimum_dollar_volume
+                and candidate.spread_percent is not None
+                and candidate.spread_percent <= self.config.entry.maximum_spread_percent
+                and candidate.dollar_volume >= self.config.entry.minimum_dollar_volume
                 and account.risk_engine_approved
                 and not account.broker_restriction
+                and thesis_valid
                 and self._execution_permitted()
             )
 

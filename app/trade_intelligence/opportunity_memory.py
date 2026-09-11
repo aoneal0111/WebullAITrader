@@ -337,6 +337,15 @@ class OpportunityMemory:
                 record.latest_blocking_reason = blocking_reason
             if opportunity_state is not None:
                 record.opportunity_state = opportunity_state
+            elif record.opportunity_state in {
+                OpportunityMemoryState.INVALIDATED,
+                OpportunityMemoryState.CLOSED,
+            }:
+                # Terminal thesis states are authoritative until an explicit
+                # caller changes them.  A later qualified observation may
+                # describe the symbol, but cannot silently reopen a working
+                # execution lifecycle.
+                pass
             elif qualified:
                 record.opportunity_state = (
                     OpportunityMemoryState.ACTIONABLE

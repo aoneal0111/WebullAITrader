@@ -149,6 +149,7 @@ class WarriorDesktopSidecar:
         paper_entry_rearmer: Callable[..., object] | None = None,
         paper_position_quantity_source: Callable[[str], Decimal] | None = None,
         paper_execution_ownership_source: Callable[[str], bool] | None = None,
+        paper_working_entry_source: Callable[[str, str], bool] | None = None,
         execution_quote_source: ExecutionQuoteSource | None = None,
         order_flow_client: object | None = None,
         research_observer: object | None = None,
@@ -170,6 +171,7 @@ class WarriorDesktopSidecar:
         self._paper_entry_rearmer = paper_entry_rearmer
         self._paper_position_quantity_source = paper_position_quantity_source
         self._paper_execution_ownership_source = paper_execution_ownership_source
+        self._paper_working_entry_source = paper_working_entry_source
         self._execution_quote_source = execution_quote_source
         self._order_flow = OrderFlowPollingService(order_flow_client)
         self._research_observer = research_observer
@@ -396,6 +398,7 @@ class WarriorDesktopSidecar:
                     paper_entry_rearmer=self._paper_entry_rearmer,
                     paper_position_quantity_source=self._paper_position_quantity_source,
                     paper_execution_ownership_source=self._paper_execution_ownership_source,
+                    paper_working_entry_source=self._paper_working_entry_source,
                     execution_quote_source=self._execution_quote_source,
                     execution_permitted=lambda: self._accept_execution,
                     account_refresh_source=self._account_source,
