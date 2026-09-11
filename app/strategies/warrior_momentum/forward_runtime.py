@@ -287,6 +287,20 @@ class WarriorForwardCaptureService:
         )
         assessed, signal = self.runtime.assess_entry(candidate)
         technical_signal = self.runtime.technical_entry_signal(candidate)
+        setup = candidate.setup
+        setup_state = "ENTRY_READY" if signal is not None else (
+            "NO_SETUP" if setup is None else str(setup.state.value).upper()
+        )
+        performance_diagnostics.record_setup_transition(
+            symbol=symbol,
+            state=setup_state,
+            lifecycle_id=(None if signal is None else lifecycle_identity(signal)),
+            setup_type=(None if setup is None else setup.setup_type.value),
+            timestamp=value.evaluation_timestamp or observation.timestamp,
+            trigger=(None if setup is None else setup.trigger),
+            stop=(None if setup is None else setup.stop_price),
+            reason=(None if not assessed.reason_codes else assessed.reason_codes[-1].value),
+        )
         market_data_stale = (
             value.last_price_freshness_seconds is None
             or value.quote_freshness_seconds is None
@@ -443,6 +457,10 @@ class WarriorForwardCaptureService:
         ):
             self._consider_adaptive_entry_replacement(
                 value, assessed, signal, account,
+            )
+        else:
+            performance_diagnostics.record_entry_counter(
+                "pursuit_not_invoked_due_to_state"
             )
         if (
             signal is not None
@@ -747,7 +765,31 @@ class WarriorForwardCaptureService:
         state = self._paper.get(signal.symbol)
         ask = value.observation.ask
         bid = value.observation.bid
+        def record_pursuit(reason: str) -> None:
+            performance_diagnostics.record_pursuit_evaluation(
+                reason=reason,
+                phase="RUNTIME_GATE",
+                timestamp=value.evaluation_timestamp or value.observation.timestamp,
+                symbol=signal.symbol,
+                lifecycle_id=lifecycle_identity(signal),
+                current_limit=signal.entry_trigger,
+                bid=bid,
+                ask=ask,
+                last=value.observation.price,
+                quote_age=value.quote_freshness_seconds,
+                signal_age=value.last_price_freshness_seconds,
+                spread=candidate.spread_percent,
+                original_entry=signal.entry_trigger,
+                structural_stop=(None if state is None else state.signal.stop_price),
+                replacement_count=0,
+                max_replacements=self.config.adaptive_entry.max_replacements,
+            )
+        if state is not None and state.remaining < state.initial_quantity:
+            performance_diagnostics.record_entry_counter(
+                "post_partial_pursuit_evaluations"
+            )
         if state is None or ask is None or bid is None:
+            record_pursuit("MISSING_BID_ASK")
             return
 
         stale_limit = self.capture_config.quote_stale_after_seconds
@@ -765,6 +807,7 @@ class WarriorForwardCaptureService:
             or signal.session not in self.config.entry.allowed_sessions
             or any(age is None or age > stale_limit for age in freshness)
         ):
+            record_pursuit("QUOTE_STALE")
             return
 
         spread = candidate.spread_percent
@@ -823,6 +866,7 @@ class WarriorForwardCaptureService:
                 flow=value.order_flow,
             )
             self._last_execution_pursuit[signal.symbol] = assessment
+            record_pursuit(assessment.reason or assessment.decision.value)
             if assessment.decision is not ExecutionPursuitDecision.PURSUE_ONE_LEVEL:
                 return
 

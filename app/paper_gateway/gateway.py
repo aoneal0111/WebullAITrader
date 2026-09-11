@@ -577,6 +577,35 @@ class PaperOrderGateway:
 
             def persist_before_update(report: ExecutionReport) -> None:
                 fill = report.fills[0]
+                lifecycle_id = report.order.request.strategy_lifecycle_id
+                if (
+                    lifecycle_id
+                    and report.order.request.side is PaperOrderSide.BUY
+                    and _execution_reason_from_placement(report.order.request) == "ENTRY"
+                ):
+                    filled_before = report.order.filled_quantity - fill.quantity
+                    performance_diagnostics.record_entry_lifecycle(
+                        lifecycle_id,
+                        symbol=report.order.symbol,
+                        fill_timestamp=fill.timestamp,
+                        filled_before=filled_before,
+                        newly_filled=fill.quantity,
+                        filled_quantity=report.order.filled_quantity,
+                        remaining_quantity=report.order.remaining_quantity,
+                        average_fill_price=report.order.average_fill_price,
+                        terminal_state=report.order.status.value,
+                    )
+                    if report.order.remaining_quantity > 0:
+                        performance_diagnostics.record_partial_fill(
+                            lifecycle_id=lifecycle_id,
+                            symbol=report.order.symbol,
+                            filled_before=filled_before,
+                            newly_filled=fill.quantity,
+                            filled_quantity=report.order.filled_quantity,
+                            remaining_quantity=report.order.remaining_quantity,
+                            average_fill_price=report.order.average_fill_price,
+                            fill_timestamp=fill.timestamp,
+                        )
                 realized_pnl = self._realized_pnl(
                     report.order,
                     fill.price,
@@ -776,6 +805,20 @@ class PaperOrderGateway:
             )
             self._persist_event(event, expired)
             self._order_book.update(expired)
+            lifecycle_id = order.request.strategy_lifecycle_id
+            if lifecycle_id and _execution_reason_from_placement(order.request) == "ENTRY":
+                performance_diagnostics.record_entry_counter("entry_expirations")
+                performance_diagnostics.record_entry_lifecycle(
+                    lifecycle_id,
+                    symbol=order.symbol,
+                    expiry_timestamp=transition_at,
+                    expiry_reason=reason.value,
+                    filled_quantity=expired.filled_quantity,
+                    remaining_quantity=expired.remaining_quantity,
+                    same_lifecycle_terminal=True,
+                    new_lifecycle_eligibility="EVALUATED_ON_NEXT_AUTHORIZATION",
+                    terminal_state=expired.status.value,
+                )
             self._append_journal(
                 JournalEventType.EXPIRATION,
                 order.order_id,

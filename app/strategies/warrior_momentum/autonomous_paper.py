@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_FLOOR
 from threading import RLock
 from typing import Callable
@@ -16,6 +16,7 @@ from app.order_placement import OrderPlacementDecision
 from app.services.order_command_factory import OrderCommandFactory, OrderEntryCommand
 from app.services.trading_service import TradingService
 from app.strategies.warrior_momentum.features import BAR_INTERVAL
+from app.performance_diagnostics import performance_diagnostics
 
 
 _RECENT_LIFECYCLE_LIMIT = 1024
@@ -479,6 +480,17 @@ class AutonomousPaperExecutionBridge:
         identity = lifecycle_identity(signal)
         opportunity = opportunity_id or opportunity_identity(signal)
         gates: list[PaperEntryGateDecision] = []
+        performance_diagnostics.record_entry_counter("entry_authorizations")
+        performance_diagnostics.record_entry_lifecycle(
+            identity,
+            symbol=symbol,
+            setup_type=getattr(getattr(signal, "setup_type", None), "value", getattr(signal, "setup_type", None)),
+            trigger_price=trigger,
+            structural_stop=getattr(signal, "stop_price", None),
+            authorization_timestamp=datetime.now(UTC),
+            requested_quantity=shares,
+            initial_limit=trigger,
+        )
 
         def gate(name: str, passed: bool, observed: object, required: object) -> bool:
             gates.append(PaperEntryGateDecision(
@@ -490,6 +502,16 @@ class AutonomousPaperExecutionBridge:
             reason: PaperEntryAuthorizationReason, *, constructed: bool = False,
             attempted: bool = False, placement: str | None = None,
         ) -> PaperEntryAuthorizationDecision:
+            if reason is PaperEntryAuthorizationReason.DUPLICATE_LIFECYCLE:
+                performance_diagnostics.record_entry_counter(
+                    "same_lifecycle_suppression_after_expiry"
+                )
+            performance_diagnostics.record_entry_lifecycle(
+                identity,
+                risk_approved=False,
+                terminal_state="AUTHORIZATION_REFUSED",
+                expiry_reason=reason.value,
+            )
             return PaperEntryAuthorizationDecision(
                 PaperEntryAuthorizationResult.REFUSED, reason, symbol, identity,
                 tuple(gates), constructed, attempted, placement,
@@ -608,8 +630,21 @@ class AutonomousPaperExecutionBridge:
                     placement=result.decision.value,
                 )
             self._remember(self._seen_entries, identity)
+            if lifecycle_number > 1:
+                performance_diagnostics.record_entry_counter(
+                    "new_lifecycle_authorizations_after_expiry"
+                )
             self._active_by_symbol[symbol] = identity
             self._entry_orders[identity] = result.broker_order_id
+            performance_diagnostics.record_entry_counter("entry_orders_submitted")
+            performance_diagnostics.record_entry_lifecycle(
+                identity,
+                risk_approved=True,
+                submit_timestamp=datetime.now(UTC),
+                broker_order_id=result.broker_order_id,
+                working_timestamp=datetime.now(UTC),
+                terminal_state="WORKING",
+            )
             return PaperEntryAuthorizationDecision(
                 PaperEntryAuthorizationResult.AUTHORIZED,
                 PaperEntryAuthorizationReason.AUTHORIZED, symbol, identity,
@@ -958,6 +993,30 @@ class AutonomousPaperExecutionBridge:
             if replacement.is_terminal or replacement.request.order_type is not OrderType.LIMIT:
                 return self._replacement_refused(identity, "REPLACEMENT_NOT_WORKING_LIMIT", symbol, predecessor_id, sequence, quantity, filled)
             self._entry_orders[identity] = replacement_id
+            performance_diagnostics.record_entry_counter("replacements_approved")
+            performance_diagnostics.record_entry_counter("replacements_submitted")
+            performance_diagnostics.record_entry_counter("replacements_succeeded")
+            performance_diagnostics.record_pursuit_evaluation(
+                reason="REPLACE_APPROVED",
+                symbol=symbol,
+                lifecycle_id=identity,
+                predecessor_order_id=predecessor_id,
+                replacement_order_id=replacement_id,
+                replacement_count=sequence,
+                requested_quantity=quantity,
+                cumulative_filled_quantity=filled,
+                timestamp=now or datetime.now(UTC),
+            )
+            performance_diagnostics.record_entry_lifecycle(
+                identity,
+                broker_order_id=replacement_id,
+                replacement_order_id=replacement_id,
+                replacement_timestamp=now or datetime.now(UTC),
+                filled_quantity=filled,
+                remaining_quantity=quantity,
+                replacement_count=sequence,
+                terminal_state="WORKING",
+            )
             return PaperEntryReplacementDecision(
                 PaperEntryReplacementState.SUBMITTED, symbol, identity, "SUBMITTED",
                 predecessor_id, replacement_id, sequence, quantity, filled,
@@ -987,6 +1046,7 @@ class AutonomousPaperExecutionBridge:
         calls it on a timer or solely because a quote increased.
         """
         identity = str(lifecycle_id).strip()
+        performance_diagnostics.record_entry_counter("replacement_candidates")
         if current_ask <= 0 or now.tzinfo is None or now.utcoffset() is None:
             return self._replacement_refused(identity, "CURRENT_QUOTE_UNAVAILABLE")
         with self._lock:
@@ -1081,11 +1141,26 @@ class AutonomousPaperExecutionBridge:
         consumed = Decimal("0") if average is None else filled * max(Decimal("0"), average - structural_stop)
         return filled, consumed, average
 
-    @staticmethod
     def _replacement_refused(
+        self,
         identity: str, reason: str, symbol: str = "", predecessor: str | None = None,
         sequence: int = 0, quantity: int = 0, filled: Decimal = Decimal("0"),
     ) -> PaperEntryReplacementDecision:
+        performance_diagnostics.record_pursuit_evaluation(
+            reason=reason,
+            symbol=symbol,
+            lifecycle_id=identity,
+            predecessor_order_id=predecessor,
+            replacement_count=sequence,
+            requested_quantity=quantity,
+            cumulative_filled_quantity=filled,
+            timestamp=datetime.now(UTC),
+        )
+        if str(reason).upper() in {
+            "REPLACEMENT_SUBMISSION_FAILED", "REPLACEMENT_REJECTED",
+            "REPLACEMENT_STATE_UNAVAILABLE", "REPLACEMENT_NOT_WORKING_LIMIT",
+        }:
+            performance_diagnostics.record_entry_counter("replacements_failed")
         return PaperEntryReplacementDecision(
             PaperEntryReplacementState.REFUSED, symbol, identity, reason,
             predecessor, None, sequence, quantity, filled,

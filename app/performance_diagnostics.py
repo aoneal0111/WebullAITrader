@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from collections import deque
+from collections import OrderedDict, deque
 from datetime import UTC, datetime
 from contextlib import contextmanager
 import json
@@ -20,6 +20,38 @@ _QUEUE_THRESHOLDS = (100, 500, 1000, 1500)
 _DURABLE_SCHEMA_VERSION = 1
 _DEFAULT_FLUSH_SECONDS = 15.0
 _MAX_STREAM_FAILURE_SAMPLES = 16
+_MAX_ENTRY_LIFECYCLE_RECORDS = 256
+_MAX_ENTRY_PURSUIT_RECORDS = 512
+_MAX_SETUP_TRANSITION_RECORDS = 512
+_ENTRY_COUNTERS = (
+    "entry_authorizations", "entry_orders_submitted", "pursuit_evaluations",
+    "pursuit_not_invoked_due_to_state", "replacement_candidates",
+    "replacements_approved", "replacements_submitted", "replacements_succeeded",
+    "replacements_failed", "entry_expirations", "partial_fill_events",
+    "post_partial_pursuit_evaluations", "new_lifecycle_authorizations_after_expiry",
+    "same_lifecycle_suppression_after_expiry",
+)
+_PURSUIT_REASONS = frozenset({
+    "REPLACE_APPROVED", "NO_PRICE_IMPROVEMENT", "REPRICE_INTERVAL",
+    "MAX_REPLACEMENTS", "CHASE_CEILING", "SPREAD_TOO_WIDE",
+    "LIQUIDITY_INSUFFICIENT", "QUOTE_STALE", "SIGNAL_STALE", "THESIS_INVALID",
+    "OPPORTUNITY_QUALITY_REJECTED", "RISK_REJECTED", "ORDER_NOT_WORKING",
+    "ORDER_TERMINAL", "POSITION_ALREADY_SATISFIED", "LIFECYCLE_SUPPRESSED",
+    "MISSING_BID_ASK", "MISSING_DEPTH", "NO_REMAINING_QUANTITY",
+    "CURRENT_QUOTE_UNAVAILABLE", "PREDECESSOR_NOT_FOUND",
+    "PREDECESSOR_NOT_WORKING", "PREDECESSOR_NOT_LIMIT",
+    "REPLACEMENT_LIMIT_EXHAUSTED", "INVALID_REPLACEMENT_SEQUENCE",
+    "INVALID_CHASE_DEADLINE", "CHASE_WINDOW_EXPIRED", "REVALIDATION_REQUIRED",
+    "STRUCTURAL_STOP_INVALID", "CANCELLATION_NOT_CONFIRMED",
+    "PREDECESSOR_STATE_UNAVAILABLE", "REVALIDATION_FAILED",
+    "POSITION_STATE_CONTRADICTS_FILLS", "INVALID_REPLACEMENT_INPUT",
+    "INVALID_ACCOUNT_CONTEXT", "REPLACEMENT_SUBMISSION_FAILED",
+    "REPLACEMENT_REJECTED", "REPLACEMENT_STATE_UNAVAILABLE",
+    "REPLACEMENT_NOT_WORKING_LIMIT", "ORIGINAL_ENTRY_UNAVAILABLE",
+    "PRICE_NOT_MOVED_ABOVE_PREDECESSOR", "INVALID_REPRICE_TIMESTAMP",
+    "REPRICE_INTERVAL_NOT_ELAPSED", "CHASE_LIMIT_EXCEEDED",
+    "OTHER_BOUNDED_REASON",
+})
 DiagnosticSink = Callable[[str, dict[str, object]], None]
 
 _STARTUP_STAGES = (
@@ -404,6 +436,12 @@ class PerformanceDiagnostics:
             "hidden_ranked_ahead_by_displayed_candidate": {},
             "top_sample": (),
         }
+        self._entry_conversion_counters = {name: 0 for name in _ENTRY_COUNTERS}
+        self._entry_refusal_counts = {name: 0 for name in sorted(_PURSUIT_REASONS)}
+        self._entry_lifecycle_records: OrderedDict[str, dict[str, object]] = OrderedDict()
+        self._entry_pursuit_records: deque[dict[str, object]] = deque(maxlen=_MAX_ENTRY_PURSUIT_RECORDS)
+        self._entry_setup_records: deque[dict[str, object]] = deque(maxlen=_MAX_SETUP_TRANSITION_RECORDS)
+        self._entry_last_setup_state: OrderedDict[str, str] = OrderedDict()
         self._run_id = uuid4().hex
         self._process_started_at = datetime.now(UTC)
         self._artifact_path: Path | None = None
@@ -563,6 +601,7 @@ class PerformanceDiagnostics:
                 "order_flow": _json_safe(self.order_flow_metrics()),
                 "reference": _json_safe(self.reference_metrics()),
                 "scanner_population": _json_safe(self.scanner_population_metrics()),
+                "entry_conversion": _json_safe(self.entry_conversion_metrics()),
                 "stream": _json_safe(self.stream_metrics()),
                 "durable": {
                     "checkpoint_count": checkpoint_count + 1,
@@ -587,6 +626,89 @@ class PerformanceDiagnostics:
             raise ValueError("performance counter increment cannot be negative")
         with self._lock:
             self._counters[name] += amount
+
+    def record_entry_counter(self, name: str, amount: int = 1) -> None:
+        """Record bounded entry-lifecycle counters without performing I/O."""
+        if name not in _ENTRY_COUNTERS or amount < 0:
+            return
+        try:
+            with self._lock:
+                self._entry_conversion_counters[name] += amount
+        except Exception:
+            return
+
+    def record_entry_lifecycle(self, lifecycle_id: str, **values: object) -> None:
+        """Merge one bounded lifecycle record; diagnostics never become authority."""
+        try:
+            identity = str(lifecycle_id).strip()
+            if not identity:
+                return
+            with self._lock:
+                record = self._entry_lifecycle_records.pop(identity, {})
+                record["lifecycle_id"] = identity
+                for key, value in values.items():
+                    if value is not None:
+                        record[str(key)] = _json_safe(value)
+                self._entry_lifecycle_records[identity] = record
+                while len(self._entry_lifecycle_records) > _MAX_ENTRY_LIFECYCLE_RECORDS:
+                    self._entry_lifecycle_records.popitem(last=False)
+        except Exception:
+            return
+
+    def record_pursuit_evaluation(self, *, reason: str, **values: object) -> None:
+        """Append a bounded, payload-free structured pursuit decision."""
+        try:
+            normalized = str(reason).strip().upper() or "OTHER_BOUNDED_REASON"
+            if normalized not in _PURSUIT_REASONS:
+                normalized = "OTHER_BOUNDED_REASON"
+            record = {"evaluation_result": normalized}
+            record.update({str(key): _json_safe(value) for key, value in values.items() if value is not None})
+            with self._lock:
+                self._entry_conversion_counters["pursuit_evaluations"] += 1
+                if normalized != "REPLACE_APPROVED":
+                    self._entry_refusal_counts[normalized] += 1
+                self._entry_pursuit_records.append(record)
+        except Exception:
+            return
+
+    def record_setup_transition(self, *, symbol: str, state: str, **values: object) -> None:
+        """Record only state changes, bounded per symbol, for setup reconstruction."""
+        try:
+            normalized_symbol = str(symbol).strip().upper()
+            normalized_state = str(state).strip().upper() or "OTHER"
+            if not normalized_symbol:
+                return
+            with self._lock:
+                if self._entry_last_setup_state.get(normalized_symbol) == normalized_state:
+                    return
+                self._entry_last_setup_state.pop(normalized_symbol, None)
+                self._entry_last_setup_state[normalized_symbol] = normalized_state
+                record = {"symbol": normalized_symbol, "state": normalized_state}
+                record.update({str(key): _json_safe(value) for key, value in values.items() if value is not None})
+                self._entry_setup_records.append(record)
+                while len(self._entry_last_setup_state) > _MAX_SETUP_TRANSITION_RECORDS:
+                    self._entry_last_setup_state.popitem(last=False)
+        except Exception:
+            return
+
+    def record_partial_fill(self, *, lifecycle_id: str, **values: object) -> None:
+        self.record_entry_counter("partial_fill_events")
+        self.record_entry_lifecycle(lifecycle_id, **values)
+
+    def entry_conversion_metrics(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "counters": dict(self._entry_conversion_counters),
+                "replacement_refusal_counts_by_reason": dict(self._entry_refusal_counts),
+                "lifecycle_records": tuple(self._entry_lifecycle_records.values()),
+                "pursuit_evaluations": tuple(self._entry_pursuit_records),
+                "setup_transitions": tuple(self._entry_setup_records),
+                "bounds": {
+                    "lifecycle_records": _MAX_ENTRY_LIFECYCLE_RECORDS,
+                    "pursuit_evaluations": _MAX_ENTRY_PURSUIT_RECORDS,
+                    "setup_transitions": _MAX_SETUP_TRANSITION_RECORDS,
+                },
+            }
 
     def increment_reconciliation_counter(self, name: str, amount: int = 1) -> None:
         """Increment a fixed, bounded protection-reconciliation counter."""
