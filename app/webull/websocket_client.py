@@ -247,6 +247,7 @@ class OfficialSdkStreamBackend:
             self._original_on_disconnect(*args, **kwargs)
 
     def connect(self) -> None:
+        performance_diagnostics.record_startup_stage("stream_connect_started")
         if self._has_connected:
             self._replace_client()
         self._has_connected = True
@@ -356,6 +357,12 @@ class OfficialSdkStreamBackend:
 
         self._subscription_acknowledged.clear()
         performance_diagnostics.record_startup_stage("subscription_requested")
+        performance_diagnostics.increment_startup_counter(
+            "subscription_requested_symbols", len(normalized_channels)
+        )
+        performance_diagnostics.increment_startup_counter(
+            "subscription_batch_count"
+        )
         mapped = normalized_channels if self._subscription_mapper is None else self._subscription_mapper(normalized_channels)
         for retry_count in range(self._maximum_registration_retries + 1):
             self._notify("rest_subscription_requested")
@@ -399,6 +406,9 @@ class OfficialSdkStreamBackend:
             self._subscription_acknowledged.set()
             self._active_subscription = normalized_channels
             performance_diagnostics.record_startup_stage("subscription_completed")
+            performance_diagnostics.increment_startup_counter(
+                "subscription_completed_symbols", len(normalized_channels)
+            )
             self._notify("rest_subscription_active")
             self._emit_diagnostic(
                 "REGISTRATION_REQUEST_SUCCEEDED",

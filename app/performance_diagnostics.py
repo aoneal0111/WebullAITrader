@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import deque
 from datetime import UTC, datetime
 from contextlib import contextmanager
@@ -15,13 +15,15 @@ _QUEUE_THRESHOLDS = (100, 500, 1000, 1500)
 DiagnosticSink = Callable[[str, dict[str, object]], None]
 
 _STARTUP_STAGES = (
-    "runtime_started", "transport_connected", "registration_ready", "universe_refresh_started",
+    "process_started", "gui_ready", "runtime_started", "broker_connect_started",
+    "broker_connected", "stream_connect_started", "transport_connected", "registration_ready", "universe_refresh_started",
     "universe_refresh_completed", "reference_warmup_started",
     "reference_warmup_completed", "subscription_requested",
     "subscription_completed", "first_raw_callback", "first_callback_dequeued",
     "first_payload_decode_attempt", "first_payload_decode_success",
     "first_normalized_market_event", "first_scanner_ingestion",
-    "first_scanner_evaluation",
+    "first_scanner_evaluation", "scanner_active", "feed_healthy", "stale_detected",
+    "reconnect_started", "reconnect_completed", "first_fresh_payload_after_reconnect",
 )
 
 _STARTUP_COUNTERS = (
@@ -31,9 +33,15 @@ _STARTUP_COUNTERS = (
     "decode_attempts", "decode_successes", "decode_failures", "decode_ignored",
     "normalized_market_events_emitted", "scanner_market_events_received",
     "scanner_evaluations",
+    "subscription_requested_symbols",
+    "subscription_completed_symbols",
+    "subscription_batch_count",
+    "unique_symbols_observed_before_feed_healthy",
 )
 
 _STARTUP_DURATION_PAIRS = {
+    "runtime_start_to_broker_connect_ms": ("runtime_started", "broker_connect_started"),
+    "broker_connect_ms": ("broker_connect_started", "broker_connected"),
     "transport_to_registration_ms": ("transport_connected", "registration_ready"),
     "registration_to_refresh_start_ms": ("registration_ready", "universe_refresh_started"),
     "universe_refresh_duration_ms": ("universe_refresh_started", "universe_refresh_completed"),
@@ -46,6 +54,8 @@ _STARTUP_DURATION_PAIRS = {
     "normalized_event_to_first_scanner_ingestion_ms": ("first_normalized_market_event", "first_scanner_ingestion"),
     "scanner_ingestion_to_first_evaluation_ms": ("first_scanner_ingestion", "first_scanner_evaluation"),
     "runtime_start_to_scanner_ready_ms": ("runtime_started", "subscription_completed"),
+    "stream_connect_ms": ("stream_connect_started", "transport_connected"),
+    "subscription_to_first_payload_ms": ("subscription_completed", "first_normalized_market_event"),
 }
 
 _KNOWN_EVENT_TYPE_NAMES = frozenset(
@@ -160,6 +170,7 @@ class PerformanceSnapshot:
     discovery_callback_build_p99_ms: float = 0.0
     discovery_callback_build_max_ms: float = 0.0
     discovery_strategy_coverage: tuple[str, ...] = ()
+    component_timings: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
 class PerformanceDiagnostics:
@@ -219,6 +230,14 @@ class PerformanceDiagnostics:
         self._processing_started_at: float | None = None
         self._processing_latest_at: float | None = None
         self._processing_count = 0
+        self._component_samples: dict[str, deque[float]] = {}
+        self._component_calls: dict[str, int] = {}
+        self._component_totals: dict[str, float] = {}
+        self._component_latest: dict[str, float] = {}
+        self._component_max: dict[str, float] = {}
+        self._component_slow: dict[str, int] = {}
+        self._component_failures: dict[str, int] = {}
+        self._component_last_diagnostic: dict[str, float] = {}
         self._queue_thresholds_above: set[int] = set()
         self._diagnostic_sink: DiagnosticSink | None = None
         self._trace_local = local()
@@ -247,6 +266,7 @@ class PerformanceDiagnostics:
             counter: 0 for counter in _STARTUP_COUNTERS
         }
         self._startup_current_reference_symbol: str | None = None
+        self._startup_observed_symbols: set[str] = set()
         self._trade_intelligence = {
             "trade_intelligence_enabled": False,
             "trade_intelligence_experiences_created": 0,
@@ -372,6 +392,21 @@ class PerformanceDiagnostics:
                 None if symbol is None else str(symbol).strip().upper() or None
             )
 
+    def record_startup_symbol(self, symbol: str | None) -> None:
+        """Track unique symbols observed during startup with a hard bound."""
+        normalized = None if symbol is None else str(symbol).strip().upper()
+        if not normalized:
+            return
+        with self._lock:
+            if self._startup_stage_monotonic["feed_healthy"] is not None:
+                return
+            if len(self._startup_observed_symbols) >= 256:
+                return
+            self._startup_observed_symbols.add(normalized)
+            self._startup_counters[
+                "unique_symbols_observed_before_feed_healthy"
+            ] = len(self._startup_observed_symbols)
+
     def startup_metrics(self) -> dict[str, object]:
         """Return bounded startup timestamps, durations, and counters."""
         with self._lock:
@@ -485,6 +520,48 @@ class PerformanceDiagnostics:
         self._record_latest_and_maximum(
             "_observer_duration_ms", "_observer_duration_max_ms", duration_ms
         )
+
+    def record_component_duration(
+        self,
+        component: str,
+        duration_ms: float,
+        *,
+        event_type: str | None = None,
+        symbol: str | None = None,
+        success: bool = True,
+        slow_threshold_ms: float = 1000.0,
+    ) -> None:
+        """Record bounded component timing and rate-limit slow diagnostics."""
+        if not isinstance(component, str) or not component.strip():
+            raise ValueError("component must be non-empty text")
+        if duration_ms < 0 or slow_threshold_ms <= 0:
+            raise ValueError("component timing values are invalid")
+        key = component.strip()
+        now = monotonic()
+        diagnostic: dict[str, object] | None = None
+        with self._lock:
+            samples = self._component_samples.setdefault(key, deque(maxlen=256))
+            samples.append(duration_ms)
+            self._component_calls[key] = self._component_calls.get(key, 0) + 1
+            self._component_totals[key] = self._component_totals.get(key, 0.0) + duration_ms
+            self._component_latest[key] = duration_ms
+            self._component_max[key] = max(self._component_max.get(key, 0.0), duration_ms)
+            if not success:
+                self._component_failures[key] = self._component_failures.get(key, 0) + 1
+            if duration_ms >= slow_threshold_ms:
+                self._component_slow[key] = self._component_slow.get(key, 0) + 1
+                last = self._component_last_diagnostic.get(key, 0.0)
+                if now - last >= 5.0:
+                    self._component_last_diagnostic[key] = now
+                    diagnostic = {
+                        "component": key,
+                        "event_type": event_type,
+                        "symbol": symbol,
+                        "duration_ms": round(duration_ms, 3),
+                        "success": bool(success),
+                    }
+        if diagnostic is not None:
+            self._emit_diagnostic("slow_component", diagnostic)
 
     def record_completed_bar_flush_duration(self, duration_ms: float) -> None:
         self._record_latest_and_maximum(
@@ -774,6 +851,20 @@ class PerformanceDiagnostics:
             count = self._counters["gui_refresh_count"]
             values = dict(self._counters)
             ages = sorted(self._processing_ages_ms)
+            component_timings = {}
+            for name, samples in self._component_samples.items():
+                ordered = sorted(samples)
+                component_timings[name] = {
+                    "calls": self._component_calls.get(name, 0),
+                    "total_ms": round(self._component_totals.get(name, 0.0), 3),
+                    "latest_ms": round(self._component_latest.get(name, 0.0), 3),
+                    "max_ms": round(self._component_max.get(name, 0.0), 3),
+                    "p50_ms": round(_percentile(ordered, 0.50), 3),
+                    "p90_ms": round(_percentile(ordered, 0.90), 3),
+                    "p99_ms": round(_percentile(ordered, 0.99), 3),
+                    "slow_calls": self._component_slow.get(name, 0),
+                    "failures": self._component_failures.get(name, 0),
+                }
             return PerformanceSnapshot(
                 **values,
                 **self._trade_intelligence,
@@ -832,6 +923,7 @@ class PerformanceDiagnostics:
                 research_queue_depth=self._research_queue_depth,
                 research_queue_high_water=self._research_queue_high_water,
                 research_worker_lag_max_ms=self._research_worker_lag_max_ms,
+                component_timings=component_timings,
             )
 
 

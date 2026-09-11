@@ -182,6 +182,8 @@ class DesktopBrokerRuntimeDriver:
         if not callable(cycle_sink):
             raise TypeError("cycle_sink must be callable")
 
+        performance_diagnostics.record_startup_stage("process_started")
+
         observer_start = getattr(self._market_event_observer, "start", None)
         if callable(observer_start):
             observer_start(self.environment)
@@ -194,8 +196,10 @@ class DesktopBrokerRuntimeDriver:
         )
 
         try:
+            performance_diagnostics.record_startup_stage("broker_connect_started")
             self._broker.connect()
             self._connected = True
+            performance_diagnostics.record_startup_stage("broker_connected")
         except Exception as exc:
             observer_stop = getattr(self._market_event_observer, "stop", None)
             if callable(observer_stop):
@@ -364,6 +368,7 @@ class DesktopBrokerRuntimeDriver:
 
         try:
             if self._scanner is not None:
+                performance_diagnostics.record_startup_stage("stream_connect_started")
                 if (
                     self._market_data_probe is not None
                     and self._startup_validation is None
@@ -374,6 +379,8 @@ class DesktopBrokerRuntimeDriver:
                         self._scanner.disconnect()
                         return
                 scanner_active = self._start_scanner()
+                if scanner_active:
+                    performance_diagnostics.record_startup_stage("scanner_active")
                 self._start_dynamic_momentum_discovery()
                 if scanner_active:
                     self._market_data_stop.clear()
@@ -888,7 +895,19 @@ class DesktopBrokerRuntimeDriver:
                     raise TypeError(
                         "market-data transport returned a non-MarketEvent"
                     )
-                self._handle_market_event(event)
+                consumer_started = perf_counter()
+                consumer_success = False
+                try:
+                    self._handle_market_event(event)
+                    consumer_success = True
+                finally:
+                    performance_diagnostics.record_component_duration(
+                        "market.event_consumer",
+                        (perf_counter() - consumer_started) * 1000.0,
+                        event_type=getattr(getattr(event, "event_type", None), "value", None),
+                        symbol=getattr(event, "symbol", None),
+                        success=consumer_success,
+                    )
         except Exception as exc:
             transport = self._market_data_transport()
             halt_ingestion = getattr(transport, "halt_callback_ingestion", None)
@@ -1156,6 +1175,8 @@ class DesktopBrokerRuntimeDriver:
         if not isinstance(event, MarketEvent):
             raise TypeError("market-data transport returned a non-MarketEvent")
         performance_diagnostics.increment("market_events_processed")
+        performance_diagnostics.record_startup_symbol(event.symbol)
+        performance_diagnostics.record_startup_stage("feed_healthy")
         self._last_driver_market_event_monotonic = monotonic()
         translated = self._market_event_translator(
             event,
@@ -1312,6 +1333,7 @@ class DesktopBrokerRuntimeDriver:
             return
         if not getattr(self, "_feed_stale", False):
             self._feed_stale = True
+            performance_diagnostics.record_startup_stage("stale_detected")
             reason = "SUSPEND_OR_RUNTIME_GAP" if discontinuity else "PAYLOAD_STALE"
             self._publish_health(
                 "MARKET_DATA_STALE",
@@ -1337,6 +1359,7 @@ class DesktopBrokerRuntimeDriver:
         self._last_feed_recovery_at = now
         self._feed_recovery_pending = True
         self._feed_recovery_started_monotonic = now
+        performance_diagnostics.record_startup_stage("reconnect_started")
         self._publish_health(
             "MARKET_DATA_RECONNECTING",
             "Market-data inactivity exceeded the reconnect threshold.",
@@ -1359,6 +1382,7 @@ class DesktopBrokerRuntimeDriver:
                 self._market_data.subscribe(self._configuration.market_data_symbols)
             else:
                 raise RuntimeError("market-data transport is unavailable")
+            performance_diagnostics.record_startup_stage("reconnect_completed")
         except Exception as exc:
             self._feed_recovery_pending = False
             self._publish_health(
@@ -1378,6 +1402,7 @@ class DesktopBrokerRuntimeDriver:
         self._feed_recovery_pending = False
         self._feed_recovery_started_monotonic = None
         self._feed_stale = False
+        performance_diagnostics.record_startup_stage("first_fresh_payload_after_reconnect")
         self._publish_health(
             "MARKET_DATA_RECONNECTED",
             "Fresh market-data payload received after recovery.",

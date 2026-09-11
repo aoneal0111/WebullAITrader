@@ -436,6 +436,7 @@ class WarriorDesktopSidecar:
             return
         # Publish shutdown intent before waiting for an in-flight confirmation.
         self._accept_execution = False
+        self._order_flow.stop()
         with self._lock:
             writer, store = self._writer, self._store
             if writer is None or store is None:
@@ -500,23 +501,46 @@ class WarriorDesktopSidecar:
     def __call__(self, event: MarketEvent) -> None:
         if not self.enabled:
             return
-        with self._lock:
+        lock_started = perf_counter()
+        self._lock.acquire()
+        performance_diagnostics.record_component_duration(
+            "warrior.event_lock_wait",
+            (perf_counter() - lock_started) * 1000.0,
+            event_type="GUI_REFRESH",
+        )
+        try:
             if self._health is not WarriorCaptureHealth.RUNNING:
                 return
             try:
                 self._consume(event)
                 if event.symbol is not None and self._service is not None:
+                    protection_started = perf_counter()
                     self._service.reconcile_authoritative_protection(
                         event.symbol, event.timestamp,
+                    )
+                    performance_diagnostics.record_component_duration(
+                        "warrior.protection_reconciliation",
+                        (perf_counter() - protection_started) * 1000.0,
+                        event_type=getattr(getattr(event, "event_type", None), "value", None),
+                        symbol=event.symbol,
                     )
                 self._update_health()
             except Exception as exc:
                 # Capture health is deliberately isolated from stream health.
                 self._last_error_type = type(exc).__name__
                 self._health = WarriorCaptureHealth.DEGRADED
+        finally:
+            self._lock.release()
 
     def snapshot(self) -> WarriorPaperSnapshot:
-        with self._lock:
+        lock_started = perf_counter()
+        self._lock.acquire()
+        performance_diagnostics.record_component_duration(
+            "warrior.gui_snapshot_lock_wait",
+            (perf_counter() - lock_started) * 1000.0,
+            event_type="GUI_REFRESH",
+        )
+        try:
             writer = self._writer
             metrics = self._last_metrics if writer is None else writer.metrics()
             if metrics is not None:
@@ -555,6 +579,8 @@ class WarriorDesktopSidecar:
                 metrics, self._last_error_type,
                 Decimal(str(self._publications / elapsed)),
             )
+        finally:
+            self._lock.release()
 
     def management_context(self, symbol: str) -> dict[str, object] | None:
         """Return the active Warrior management facts for read-only GUI use."""
@@ -629,12 +655,26 @@ class WarriorDesktopSidecar:
         if adapter is None or service is None or event.symbol is None:
             return
         symbol = event.symbol.strip().upper()
+        lookup_started = perf_counter()
         observation = adapter.observation_for(symbol)
+        performance_diagnostics.record_component_duration(
+            "warrior.observation_lookup",
+            (perf_counter() - lookup_started) * 1000.0,
+            event_type=getattr(getattr(event, "event_type", None), "value", None),
+            symbol=symbol,
+        )
         if observation is None:
             return
         completed = False
         if event.event_type is MarketEventType.TRADE and isinstance(event.payload, TradePayload):
+            aggregate_started = perf_counter()
             completed = self._aggregate_trade(event, observation.current_volume)
+            performance_diagnostics.record_component_duration(
+                "warrior.trade_aggregation",
+                (perf_counter() - aggregate_started) * 1000.0,
+                event_type="TRADE",
+                symbol=symbol,
+            )
         if completed:
             service.invalidate_intraminute_shadow(
                 symbol,
@@ -686,6 +726,14 @@ class WarriorDesktopSidecar:
                     False if self._scanner_ranked_source is None
                     else self._scanner_ranked_source(symbol),
                 )
+            flow_started = perf_counter()
+            order_flow = self._order_flow.assessment(symbol, now=evaluated_at)
+            performance_diagnostics.record_component_duration(
+                "warrior.order_flow_cache_assessment",
+                (perf_counter() - flow_started) * 1000.0,
+                event_type=getattr(getattr(event, "event_type", None), "value", None),
+                symbol=symbol,
+            )
             point_in_time = PointInTimeObservation(
                     observation, scanner_session(observation.timestamp).value,
                     history, float_provenance=provenance,
@@ -725,13 +773,25 @@ class WarriorDesktopSidecar:
                         event.payload.asks
                         if isinstance(event.payload, QuotePayload) else ()
                     ),
-                    order_flow=self._order_flow.assessment(symbol, now=evaluated_at),
+                    order_flow=order_flow,
                     quote_provenance="SHARED_SCANNER_ADAPTER",
                 )
-            candidate, signal = service.observe(
-                point_in_time,
-                account=self._account_source(),
-            )
+            service_started = perf_counter()
+            service_success = False
+            try:
+                candidate, signal = service.observe(
+                    point_in_time,
+                    account=self._account_source(),
+                )
+                service_success = True
+            finally:
+                performance_diagnostics.record_component_duration(
+                    "warrior.service_observe",
+                    (perf_counter() - service_started) * 1000.0,
+                    event_type=getattr(getattr(event, "event_type", None), "value", None),
+                    symbol=symbol,
+                    success=service_success,
+                )
             processing_delayed = bool(
                 (
                     processing_age is not None
@@ -768,10 +828,18 @@ class WarriorDesktopSidecar:
                 self._research_observer, "observe_warrior_decision", None,
             )
             if callable(research_decision):
+                research_started = perf_counter()
                 try:
                     research_decision(point_in_time, candidate, signal)
                 except Exception:
                     pass
+                finally:
+                    performance_diagnostics.record_component_duration(
+                        "warrior.capture_research_callback",
+                        (perf_counter() - research_started) * 1000.0,
+                        event_type=getattr(getattr(event, "event_type", None), "value", None),
+                        symbol=symbol,
+                    )
             self._first_observed.add(symbol)
             self._publications += 1
             if signal is not None or completed:
@@ -1040,17 +1108,34 @@ class CompositeMarketEventObserver:
 
     def __call__(self, event: MarketEvent) -> None:
         if self.primary is not None:
-            self.primary(event)
-        self.warrior(event)
+            self._timed("paper.market_event", self.primary, event)
+        self._timed("warrior.desktop_sidecar", self.warrior, event)
         if callable(self.research):
-            self.research(event)
+            self._timed("research.trade_intelligence", self.research, event)
         if callable(self.adaptive_entry):
             try:
-                self.adaptive_entry(event)
+                self._timed("research.adaptive_entry", self.adaptive_entry, event)
             except Exception:
                 # Defense in depth: adaptive research runs last and can never
                 # unwind the authoritative PAPER/Warrior event pipeline.
                 self.adaptive_entry_failures += 1
+
+    @staticmethod
+    def _timed(component: str, observer: Callable[[MarketEvent], object], event: MarketEvent) -> object:
+        started = perf_counter()
+        success = False
+        try:
+            result = observer(event)
+            success = True
+            return result
+        finally:
+            performance_diagnostics.record_component_duration(
+                component,
+                (perf_counter() - started) * 1000.0,
+                event_type=getattr(getattr(event, "event_type", None), "value", None),
+                symbol=getattr(event, "symbol", None),
+                success=success,
+            )
 
     def observe_scanner_decision(self, decision: object) -> None:
         observer = getattr(self.research, "observe_scanner_decision", None)

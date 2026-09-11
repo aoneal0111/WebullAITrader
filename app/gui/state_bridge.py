@@ -50,6 +50,7 @@ class QtStateBridge(QObject):
         self._timer.setInterval(refresh_interval_ms)
         self._timer.timeout.connect(self._flush)
         self._timer.start()
+        performance_diagnostics.record_startup_stage("gui_ready")
 
     def close(self) -> None:
         self._timer.stop()
@@ -66,9 +67,18 @@ class QtStateBridge(QObject):
         self._diagnostics.set_pending_gui_updates(1)
 
     def _flush(self) -> None:
-        with self._lock:
+        lock_started = perf_counter()
+        self._lock.acquire()
+        self._diagnostics.record_component_duration(
+            "gui.state_bridge_lock_wait",
+            (perf_counter() - lock_started) * 1000.0,
+            event_type="GUI_REFRESH",
+        )
+        try:
             state = self._latest_state
             self._latest_state = None
+        finally:
+            self._lock.release()
         self._diagnostics.set_pending_gui_updates(0)
         if state is None or state.revision == self._last_revision:
             return
@@ -138,7 +148,7 @@ class QtStateBridge(QObject):
                 "report_build_ms=%.2f report_build_max_ms=%.2f "
                 "projection_ms=%.2f projection_max_ms=%.2f "
                 "report_refresh_failures=%d latency_diagnostics=%d "
-                "callback_threshold_events=%d",
+                "callback_threshold_events=%d component_timings=%s startup=%s",
                 metrics.gui_refresh_hz,
                 metrics.gui_refresh_duration_ms,
                 metrics.gui_refresh_duration_avg_ms,
@@ -216,5 +226,7 @@ class QtStateBridge(QObject):
                 metrics.report_refresh_failures,
                 metrics.latency_diagnostics_persisted,
                 metrics.callback_threshold_events,
+                metrics.component_timings,
+                self._diagnostics.startup_metrics(),
             )
             self._last_log_at = started

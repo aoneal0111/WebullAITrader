@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from time import perf_counter
 from typing import Protocol
 
 from PySide6.QtWidgets import QLabel, QMessageBox, QPushButton, QWidget
 
 from app.gui.pages.dashboard import DashboardPage
 from app.gui.pages.orders import OrdersPage
-from app.gui.formatters import format_positions
+from app.gui.formatters import format_positions, enrich_position_management
 from app.gui.formatters import format_decisions
 from app.gui.formatters import format_portfolio
 from app.gui.formatters import format_health
@@ -21,7 +22,9 @@ from app.gui.projections.activity_projection import project_timeline_activity
 from app.gui.widgets.activity_panel import ActivityPanel
 from app.gui.widgets.positions_panel import PositionsPanel
 from app.operations_core import ApplicationState, RuntimePhase
+from app.performance_diagnostics import performance_diagnostics
 from app.read_models.positions import project_positions_read_model
+from app.read_models.orders import project_orders_read_model
 
 
 class ApplicationStatePresenter(Protocol):
@@ -39,17 +42,33 @@ class PresentationCoordinator:
 
     def render(self, state: ApplicationState) -> None:
         for presenter in self._presenters:
-            presenter.render(state)
+            started = perf_counter()
+            success = False
+            name = type(presenter).__name__
+            try:
+                presenter.render(state)
+                success = True
+            finally:
+                performance_diagnostics.record_component_duration(
+                    f"gui.presenter.{name}",
+                    (perf_counter() - started) * 1000.0,
+                    event_type="GUI_REFRESH",
+                    success=success,
+                )
 
 
 class DashboardPresenter:
     """Project application state into the dashboard's immutable view model."""
 
-    def __init__(self, dashboard: DashboardPage, *additional_views) -> None:
+    def __init__(self, dashboard: DashboardPage, *additional_views, management_context_source=None) -> None:
         self._views = (dashboard, *additional_views)
+        self._management_context_source = management_context_source
 
     def render(self, state: ApplicationState) -> None:
         snapshot = project_dashboard(state)
+        snapshot = replace(snapshot, positions=enrich_position_management(
+            snapshot.positions, self._management_context_source,
+        ))
         for view in self._views:
             view.render(snapshot)
 
@@ -69,12 +88,16 @@ class OrdersPresenter:
 class PositionsPresenter:
     """Prepare and render the immutable positions view model."""
 
-    def __init__(self, positions_panel: PositionsPanel) -> None:
+    def __init__(self, positions_panel: PositionsPanel, management_context_source=None) -> None:
         self._positions_panel = positions_panel
+        self._management_context_source = management_context_source
 
     def render(self, state: ApplicationState) -> None:
         read_model = project_positions_read_model(state)
-        snapshot = format_positions(read_model)
+        snapshot = format_positions(read_model, project_orders_read_model(state))
+        snapshot = enrich_position_management(
+            snapshot, self._management_context_source,
+        )
         set_runtime_phase = getattr(self._positions_panel, "set_runtime_phase", None)
         if callable(set_runtime_phase):
             set_runtime_phase(

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from threading import RLock
+from time import perf_counter
 
 from app.momentum_scanner import AssetClass
 from app.market_data.models import (
@@ -606,14 +607,25 @@ class PaperOrderGateway:
                 self._persist_event(event, report.order)
                 durable_transitions.append((report, event))
 
+            matching_started = perf_counter()
+            matching_success = False
             try:
                 reports = self._execution_engine.process_quote(
                     quote,
                     before_update=persist_before_update,
                     on_stale_market_event=self._observe_stale_market_event,
                 )
+                matching_success = True
             except PaperDurabilityError:
                 return ()
+            finally:
+                performance_diagnostics.record_component_duration(
+                    "paper.matching",
+                    (perf_counter() - matching_started) * 1000.0,
+                    event_type="QUOTE",
+                    symbol=event.symbol,
+                    success=matching_success,
+                )
 
             for report, event in durable_transitions:
                 fill = report.fills[0]
@@ -628,7 +640,14 @@ class PaperOrderGateway:
                         ("price", format(fill.price, "f")),
                     ),
                 )
+                emission_started = perf_counter()
                 self._emit_event(event)
+                performance_diagnostics.record_component_duration(
+                    "paper.fill_event_emission",
+                    (perf_counter() - emission_started) * 1000.0,
+                    event_type=event.event_type,
+                    symbol=event.symbol,
+                )
             return reports
 
     def _observe_stale_market_event(self, order: PaperOrder, result: object) -> None:
