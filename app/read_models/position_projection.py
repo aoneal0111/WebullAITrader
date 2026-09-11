@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from threading import RLock
+from collections.abc import Iterable
 
 from app.operations.runtime import PaperRuntimeEvent
 from app.operations_core import (
@@ -45,6 +46,8 @@ class PositionProjection:
         self._snapshot = PositionsReadModelSnapshot.initial()
         self._processed_fill_ids: frozenset[str] = frozenset()
         self._last_sequence_by_source: dict[str, int] = {}
+        self._health = "HEALTHY"
+        self._last_reconciliation_source: str | None = None
 
     @property
     def snapshot(self) -> PositionsReadModelSnapshot:
@@ -58,6 +61,127 @@ class PositionProjection:
                 "processed_fill_id_count": len(self._processed_fill_ids),
                 "source_sequence_count": len(self._last_sequence_by_source),
             }
+
+    @property
+    def health(self) -> str:
+        with self._lock:
+            return self._health
+
+    @property
+    def last_reconciliation_source(self) -> str | None:
+        with self._lock:
+            return self._last_reconciliation_source
+
+    def mark_degraded(self) -> None:
+        """Mark this non-authoritative read model unusable for decisions."""
+
+        with self._lock:
+            self._health = "DEGRADED"
+
+    def reconcile_from_paper_orders(
+        self,
+        orders: Iterable[object],
+        *,
+        source: str = "paper-order-authority",
+    ) -> None:
+        """Seed positions from restored authoritative PAPER order state.
+
+        The PAPER order book is the authority for restored exposure.  This
+        path intentionally derives only net quantity and average entry; P&L
+        remains unavailable because order-book fills do not carry the
+        projection's realized-P&L field.
+        """
+
+        if not isinstance(source, str) or not source.strip():
+            raise ValueError("reconciliation source must be non-empty")
+        fills_by_symbol: dict[str, list[tuple[datetime, str, Decimal, Decimal]]] = {}
+        for order in orders:
+            symbol = getattr(order, "symbol", None)
+            request = getattr(order, "request", None)
+            fills = getattr(order, "fills", ())
+            side = getattr(request, "side", None)
+            side_value = getattr(side, "value", side)
+            if not isinstance(symbol, str) or side_value not in {"BUY", "SELL"}:
+                continue
+            for fill in fills:
+                quantity = getattr(fill, "quantity", None)
+                price = getattr(fill, "price", None)
+                timestamp = getattr(fill, "timestamp", None)
+                if (
+                    not isinstance(quantity, Decimal)
+                    or quantity <= ZERO
+                    or not isinstance(price, Decimal)
+                    or price <= ZERO
+                    or not isinstance(timestamp, datetime)
+                    or timestamp.tzinfo is None
+                ):
+                    continue
+                fills_by_symbol.setdefault(symbol, []).append(
+                    (timestamp, side_value, quantity, price)
+                )
+
+        positions: list[PositionReadModel] = []
+        for symbol, fills in fills_by_symbol.items():
+            quantity = ZERO
+            average_cost = ZERO
+            updated_at = max(item[0] for item in fills)
+            for _timestamp, side, fill_quantity, fill_price in sorted(
+                fills, key=lambda item: item[0]
+            ):
+                if side == "BUY":
+                    quantity += fill_quantity
+                    average_cost = (
+                        (quantity - fill_quantity) * average_cost
+                        + fill_quantity * fill_price
+                    ) / quantity
+                elif fill_quantity <= quantity:
+                    quantity -= fill_quantity
+                else:
+                    # An inconsistent restored sell cannot create a short
+                    # projection.  Leave the authority issue visible by
+                    # refusing to seed this symbol.
+                    quantity = ZERO
+                    average_cost = ZERO
+                    break
+            if quantity > ZERO:
+                positions.append(PositionReadModel(
+                    account_id=self._account_id,
+                    symbol=symbol,
+                    asset_type=self._asset_type,
+                    quantity=_decimal_text(quantity),
+                    average_cost=_decimal_text(average_cost),
+                    market_value=None,
+                    unrealized_gain_loss=None,
+                    realized_gain_loss=None,
+                    currency=self._currency,
+                    updated_at=updated_at,
+                    exposure=None,
+                ))
+
+        with self._lock:
+            self._snapshot = PositionsReadModelSnapshot(
+                positions=tuple(sorted(positions, key=lambda item: item.symbol))
+            )
+            self._last_reconciliation_source = source.strip()
+            self._health = "HEALTHY"
+            projected = self._snapshot
+
+        self._bus.publish(
+            PositionsUpdated(
+                occurred_at=(
+                    max(
+                        (position.updated_at for position in projected.positions),
+                        default=datetime.now().astimezone(),
+                    )
+                ),
+                source="paper-authority-position-reconciliation",
+                positions=tuple(
+                    _to_operations_position(position)
+                    for position in projected.positions
+                ),
+                projection_authority=ProjectionAuthority.PAPER_EXECUTION,
+            )
+        )
 
     def position_for_symbol(self, symbol: str) -> PositionReadModel | None:
         """Return current symbol state without scanning historical events."""
@@ -91,7 +215,6 @@ class PositionProjection:
             )
             if event.sequence <= last_sequence:
                 return
-            self._last_sequence_by_source[event.source] = event.sequence
 
             fill = event.fill
             if fill is not None:
@@ -119,6 +242,7 @@ class PositionProjection:
                 occurred_at = event.timestamp
             else:
                 return
+            self._last_sequence_by_source[event.source] = event.sequence
             if projected == self._snapshot:
                 return
             self._snapshot = projected

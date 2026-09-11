@@ -386,8 +386,17 @@ def create_desktop_composition(
                 allow_compatible_generation=True,
             ),
         )
+        # Restore the read model from the authoritative PAPER order book before
+        # any management/protection callbacks can observe a live quote.  The
+        # bridge is deliberately held in reconciliation until this seed is
+        # complete.
+        runtime_projections.position_projection.reconcile_from_paper_orders(
+            paper_trading_commands.order_book.history(),
+        )
+        runtime_projections.paper_account_projection.refresh()
         autonomous_paper_bridge.begin_reconciliation()
         autonomous_paper_bridge.reconcile()
+        autonomous_paper_bridge.reconcile_protection()
 
     def eov_order_correlation(lifecycle_id: str) -> dict[str, object] | None:
         if paper_order_book is None:

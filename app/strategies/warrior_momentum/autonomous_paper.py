@@ -375,6 +375,70 @@ class AutonomousPaperExecutionBridge:
                     self._recovered_symbols.discard(symbol)
         return self._readiness
 
+    def reconcile_protection(self) -> tuple[str, ...]:
+        """Ensure every restored authoritative long has one correlated stop."""
+
+        reconciled: list[str] = []
+        with self._lock:
+            if self.order_book is None or self.readiness is not AutonomousPaperReadiness.READY:
+                return ()
+            for symbol, identity in tuple(self._active_by_symbol.items()):
+                quantity = int(self._authoritative_quantity(symbol))
+                if quantity <= 0 or identity is None:
+                    continue
+                stop = self._structural_stop(symbol, identity)
+                if stop is None:
+                    self._management_incomplete.add(symbol)
+                    continue
+                if not self._reconcile_correlated_exits(symbol, identity):
+                    self._management_incomplete.add(symbol)
+                    continue
+                stops = tuple(
+                    order for order in self.order_book.open_orders_for_symbol(symbol)
+                    if order.request.side is OrderSide.SELL
+                    and order.request.strategy_lifecycle_id == identity
+                    and order.request.order_type is OrderType.STOP
+                )
+                if stops and int(stops[0].remaining_quantity) == quantity:
+                    self._management_incomplete.discard(symbol)
+                    reconciled.append(symbol)
+                    continue
+                if stops and not self._cancel_working_order(stops[0]):
+                    self._management_incomplete.add(symbol)
+                    continue
+                if stops:
+                    self._exit_orders.pop((identity, "STOP"), None)
+                    self._exit_keys.pop((identity, "STOP"), None)
+                    self._reconcile_terminal_exits()
+                result = self._place_exit(symbol, quantity, stop, "STOP", identity)
+                if result.protection_active:
+                    self._management_incomplete.discard(symbol)
+                    reconciled.append(symbol)
+                else:
+                    self._management_incomplete.add(symbol)
+        return tuple(sorted(set(reconciled)))
+
+    def _structural_stop(self, symbol: str, identity: str) -> Decimal | None:
+        if self.order_book is None:
+            return None
+        for order in reversed(self.order_book.history()):
+            if (
+                order.symbol == symbol
+                and order.request.side is OrderSide.BUY
+                and order.request.strategy_lifecycle_id == identity
+            ):
+                if order.request.structural_stop_price is not None:
+                    return order.request.structural_stop_price
+                raw_stop = order.request.metadata.get("structural_stop")
+                if raw_stop is None:
+                    return None
+                try:
+                    stop = Decimal(str(raw_stop))
+                except (TypeError, ValueError):
+                    return None
+                return stop if stop > Decimal("0") else None
+        return None
+
     def _execution_lifecycle(self, symbol: str) -> tuple[str | None, bool]:
         """Derive the lifecycle contributing the current net position.
 

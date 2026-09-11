@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import logging
 
 from app.operations.runtime import PaperRuntimeEvent, RuntimeEventSink
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class CompositeRuntimeEventSink:
@@ -42,7 +46,29 @@ class CompositeRuntimeEventSink:
         """Publish one event to every registered sink in order."""
 
         for sink in self._sinks:
-            sink(event)
+            try:
+                sink(event)
+            except Exception as exc:
+                marker = getattr(sink, "mark_degraded", None)
+                if callable(marker):
+                    try:
+                        marker()
+                    except Exception:
+                        _LOGGER.exception(
+                            "runtime projection degradation marker failed"
+                        )
+                sink_name = getattr(sink, "__qualname__", None) or type(sink).__name__
+                fill_id = None if event.fill is None else event.fill.request_id
+                order_id = None if event.order is None else event.order.order_id
+                _LOGGER.critical(
+                    "runtime projection sink failed; continuing independent sinks "
+                    "sink=%s event_type=%s symbol=%s order_id=%s fill_id=%s "
+                    "projection_health=%s error=%s: %s",
+                    sink_name, event.event_type, event.symbol or "--",
+                    order_id or "--", fill_id or "--",
+                    getattr(sink, "health", "DEGRADED"), type(exc).__name__, exc,
+                    exc_info=True,
+                )
 
 
 __all__ = ["CompositeRuntimeEventSink"]
