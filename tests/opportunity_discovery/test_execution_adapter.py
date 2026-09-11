@@ -1,8 +1,12 @@
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
+import pytest
+
 from app.opportunity_discovery import (
     AdapterRejection, DetectionState, MultiStrategyExecutionAdapter,
+    PULLBACK_CONTINUATION_FAMILY, PULLBACK_CONTINUATION_ORDER, default_registry,
 )
 from tests.opportunity_discovery.conftest import clean_pullback, context
 
@@ -35,12 +39,72 @@ def test_research_only_is_preserved_but_explicit_micro_allowlist_adapts():
     assert setup.trigger == result.candidate.trigger_price
 
 
+def test_pullback_continuation_family_is_explicitly_allowlisted():
+    assert PULLBACK_CONTINUATION_FAMILY == {
+        "MICRO_PULLBACK", "FIRST_PULLBACK", "HIGHER_LOW_CONTINUATION",
+        "SHALLOW_PULLBACK_CONTINUATION", "VOLUME_CONTRACTION_PULLBACK",
+        "MOMENTUM_REACCELERATION",
+    }
+    result = MultiStrategyExecutionAdapter().adapt(_opportunity(), **_kwargs(_opportunity()))
+    assert result.candidate is not None
+    assert result.candidate.selected_execution_strategy == PULLBACK_CONTINUATION_ORDER[0]
+
+
+def test_each_family_detector_has_trigger_stop_and_positive_risk():
+    detections = {item.strategy_id: item for item in default_registry().evaluate(context(clean_pullback()))}
+    for strategy in PULLBACK_CONTINUATION_FAMILY:
+        item = detections[strategy]
+        assert item.state is DetectionState.DETECTED
+        assert item.trigger_level is not None
+        assert item.structural_stop is not None
+        assert item.trigger_level > item.structural_stop
+
+
+@pytest.mark.parametrize("strategy", PULLBACK_CONTINUATION_ORDER)
+def test_each_family_strategy_can_be_adapted_individually(strategy):
+    opportunity = _opportunity()
+    result = MultiStrategyExecutionAdapter(
+        execution_allowlist={strategy}, invalidation_capabilities={strategy}
+    ).adapt(opportunity, **_kwargs(opportunity))
+    assert result.candidate is not None
+    assert result.candidate.selected_execution_strategy == strategy
+    assert result.candidate.strategy_memberships
+
+
+def test_shared_pullback_invalidation_is_explicit_for_every_family_detector():
+    bars = clean_pullback()
+    invalidated = bars[:3] + (replace(bars[3], low=Decimal("9.8")), bars[4])
+    detections = {item.strategy_id: item for item in default_registry().evaluate(context(invalidated))}
+    for strategy in PULLBACK_CONTINUATION_FAMILY:
+        assert detections[strategy].state is DetectionState.INVALIDATED
+
+
+def test_forming_family_detection_fails_closed_until_triggered():
+    opportunity = _opportunity()
+    forming = replace(
+        next(item for item in opportunity.memberships if item.strategy_id == "MICRO_PULLBACK"),
+        state=DetectionState.FORMING,
+    )
+    result = MultiStrategyExecutionAdapter().adapt(
+        replace(opportunity, memberships=(forming,)), **_kwargs(opportunity)
+    )
+    assert result.candidate is None
+    assert result.rejection_reason is AdapterRejection.FORMING_NOT_TRIGGERED
+
+
+def test_insufficient_or_malformed_context_fails_closed():
+    detections = {item.strategy_id: item for item in default_registry().evaluate(context(clean_pullback()[:2]))}
+    assert all(detections[strategy].state is not DetectionState.DETECTED for strategy in PULLBACK_CONTINUATION_FAMILY)
+    with pytest.raises(ValueError):
+        replace(clean_pullback()[0], high=Decimal("9"))
+
+
 def test_non_allowlisted_strategy_fails_closed():
     opportunity = _opportunity()
-    result = MultiStrategyExecutionAdapter(execution_allowlist={"FIRST_PULLBACK"}).adapt(
+    result = MultiStrategyExecutionAdapter(execution_allowlist={"NOT_A_TAXONOMY_STRATEGY"}).adapt(
         opportunity, **_kwargs(opportunity)
     )
-    assert result.rejection_reason is AdapterRejection.MISSING_INVALIDATION
+    assert result.rejection_reason is AdapterRejection.NOT_EXECUTION_ALLOWLISTED
 
 
 def test_allowlisted_strategy_without_invalidation_capability_fails_closed():
@@ -61,6 +125,9 @@ def test_missing_geometry_and_invalid_risk_fail_closed():
         replace(item, trigger_level=None) if item.strategy_id == "MICRO_PULLBACK" else item
         for item in detections
     ))[0]
+    missing_trigger = replace(missing_trigger, memberships=(next(
+        item for item in missing_trigger.memberships if item.strategy_id == "MICRO_PULLBACK"
+    ),))
     result = MultiStrategyExecutionAdapter().adapt(missing_trigger, **_kwargs(missing_trigger))
     assert result.rejection_reason is AdapterRejection.MISSING_TRIGGER
 
@@ -77,7 +144,7 @@ def test_missing_geometry_and_invalid_risk_fail_closed():
         structural_stop=None,
     ),))
     result = MultiStrategyExecutionAdapter().adapt(missing_stop, **_kwargs(missing_stop))
-    assert result.rejection_reason is AdapterRejection.MISSING_STRUCTURAL_STOP
+    assert result.rejection_reason is AdapterRejection.MISSING_STOP
 
 
 def test_stale_context_and_duplicate_opportunity_are_distinct():
@@ -97,7 +164,7 @@ def test_selection_is_deterministic_and_overlaps_are_suppressed():
     first = MultiStrategyExecutionAdapter().adapt(opportunity, **{**_kwargs(opportunity), "strategy_scores": scores})
     second = MultiStrategyExecutionAdapter().adapt(opportunity, **{**_kwargs(opportunity), "strategy_scores": scores})
     assert first.candidate is not None and second.candidate is not None
-    assert first.candidate.selected_execution_strategy == second.candidate.selected_execution_strategy == "MICRO_PULLBACK"
+    assert first.candidate.selected_execution_strategy == second.candidate.selected_execution_strategy == PULLBACK_CONTINUATION_ORDER[0]
     assert first.candidate.suppressed_duplicate_strategies
 
 
@@ -111,7 +178,7 @@ def test_diagnostics_are_bounded_and_failures_do_not_escape():
     adapter = MultiStrategyExecutionAdapter(maximum_identities=2, diagnostics=sink)
     adapter.adapt(opportunity, **_kwargs(opportunity))
     assert len(sink.records) == 1
-    assert sink.records[0]["selected_execution_strategy"] == "MICRO_PULLBACK"
+    assert sink.records[0]["selected_execution_strategy"] == PULLBACK_CONTINUATION_ORDER[0]
     class Broken:
         def record_strategy_selection(self, **_values): raise RuntimeError("diagnostic failure")
     result = MultiStrategyExecutionAdapter().adapt(opportunity, **{**_kwargs(opportunity), "diagnostics": Broken()})

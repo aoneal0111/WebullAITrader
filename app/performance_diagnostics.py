@@ -708,6 +708,7 @@ class PerformanceDiagnostics:
                 "selected_execution_strategy", "suppressed_duplicate_strategies",
                 "opportunity_anchor", "execution_identity", "selection_score",
                 "selection_priority", "adapter_rejection_reason",
+                "strategy_evaluations",
             }
             record = {str(key): _json_safe(value) for key, value in values.items() if key in allowed}
             with self._lock:

@@ -9,7 +9,9 @@ from .engine import DiscoveryMetrics, MultiStrategyDiscoveryEngine, normalize_de
 from .execution_adapter import (
     AdapterRejection, AdapterResult, ExecutionCandidate,
     MultiStrategyExecutionAdapter, PHASE1_EXECUTION_ALLOWLIST,
-    PHASE1_INVALIDATION_CAPABILITIES,
+    PHASE1_INVALIDATION_CAPABILITIES, PHASE2_EXECUTION_ALLOWLIST,
+    PHASE2_INVALIDATION_CAPABILITIES, PULLBACK_CONTINUATION_FAMILY,
+    PULLBACK_CONTINUATION_ORDER,
 )
 from .integration import NormalizedOpportunityObserved, learning_membership_features, recommended_persistence_design
 from .position_continuity import *
