@@ -1,0 +1,19 @@
+{
+  "schema": "ATLAS_TRADING_KNOWLEDGE_V1",
+  "episode_schema_version": 1,
+  "labeling_version": 1,
+  "dedupe_version": 1,
+  "tables": {
+    "episodes": "one physical structural market episode with shared bar window and outcomes",
+    "memberships": "one row per genuinely detected strategy membership",
+    "outcomes": "forward-only labels calculated after the frozen decision cutoff",
+    "quarantine": "rejected source/detection records and bounded reasons",
+    "checkpoint": "source identity and completed build state"
+  },
+  "required_episode_fields": [
+    "episode_id", "symbol", "trading_date", "session", "primary_strategy",
+    "strategy_memberships", "detected_timestamp", "trigger_price",
+    "structural_stop", "risk_per_share", "structural_anchor", "provenance",
+    "outcomes"
+  ]
+}
