@@ -6,6 +6,11 @@ from .benchmark import run_cardinality_benchmark
 from .contracts import *
 from .detectors import DetectorRegistry, ResearchDetector, default_registry
 from .engine import DiscoveryMetrics, MultiStrategyDiscoveryEngine, normalize_detections
+from .execution_adapter import (
+    AdapterRejection, AdapterResult, ExecutionCandidate,
+    MultiStrategyExecutionAdapter, PHASE1_EXECUTION_ALLOWLIST,
+    PHASE1_INVALIDATION_CAPABILITIES,
+)
 from .integration import NormalizedOpportunityObserved, learning_membership_features, recommended_persistence_design
 from .position_continuity import *
 from .reporting import strategy_discovery_report

@@ -1,0 +1,254 @@
+"""Explicit, fail-closed bridge from research opportunities to live setup shape.
+
+The discovery taxonomy remains research-only.  This module does not authorize
+orders; it validates the additional evidence required before a future caller
+may hand one normalized opportunity to the existing Warrior execution path.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from decimal import Decimal
+from enum import StrEnum
+from hashlib import sha256
+from typing import Mapping
+
+from app.strategies.warrior_momentum.models import SetupDetection, SetupState, SetupType, StopModel
+
+from .contracts import DetectionState, NormalizedOpportunity
+
+
+class AdapterRejection(StrEnum):
+    RESEARCH_ONLY = "RESEARCH_ONLY"
+    NOT_EXECUTION_ALLOWLISTED = "NOT_EXECUTION_ALLOWLISTED"
+    MISSING_TRIGGER = "MISSING_TRIGGER"
+    MISSING_STRUCTURAL_STOP = "MISSING_STRUCTURAL_STOP"
+    NON_POSITIVE_RISK = "NON_POSITIVE_RISK"
+    MISSING_INVALIDATION = "MISSING_INVALIDATION"
+    STALE_CONTEXT = "STALE_CONTEXT"
+    MISSING_SETUP_QUALITY = "MISSING_SETUP_QUALITY"
+    MISSING_EXECUTION_CONTEXT = "MISSING_EXECUTION_CONTEXT"
+    DUPLICATE_OPPORTUNITY = "DUPLICATE_OPPORTUNITY"
+    LOWER_PRIORITY_OVERLAP = "LOWER_PRIORITY_OVERLAP"
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionCandidate:
+    """Validated setup geometry ready for an existing execution seam."""
+
+    strategy_type: str
+    symbol: str
+    opportunity_id: str
+    opportunity_anchor: str
+    detected_at: datetime
+    formation_state: DetectionState
+    trigger_price: Decimal
+    structural_stop: Decimal
+    risk_per_share: Decimal
+    setup_quality: Decimal
+    invalidation_state: DetectionState
+    invalidation_reason: tuple[str, ...]
+    freshness_authority: str
+    context_age: timedelta
+    spread_percent: Decimal
+    dollar_volume: Decimal
+    strategy_memberships: tuple[str, ...]
+    selected_execution_strategy: str
+    suppressed_duplicate_strategies: tuple[str, ...]
+    selection_score: Decimal
+    selection_priority: int
+    execution_identity: str
+
+    def __post_init__(self) -> None:
+        if self.formation_state not in {DetectionState.DETECTED, DetectionState.STRENGTHENING}:
+            raise ValueError("execution candidate must be an active detection")
+        if self.trigger_price <= self.structural_stop or self.risk_per_share <= 0:
+            raise ValueError("execution candidate requires positive structural risk")
+        if self.invalidation_state is DetectionState.INVALIDATED:
+            raise ValueError("invalidated candidate cannot be executable")
+        if not self.freshness_authority.strip() or self.context_age < timedelta(0):
+            raise ValueError("execution candidate requires valid freshness authority")
+
+    def as_warrior_setup(self) -> SetupDetection:
+        """Project validated geometry into the existing Warrior setup shape."""
+        setup_types = {
+            "MICRO_PULLBACK": (SetupType.MICRO_PULLBACK, StopModel.MICRO_PULLBACK_LOW),
+            "HIGH_OF_DAY_BREAKOUT": (SetupType.HIGH_OF_DAY_BREAKOUT, StopModel.RECENT_SWING_LOW),
+            "FLAT_TOP_BREAKOUT": (SetupType.FLAT_TOP_BREAKOUT, StopModel.BREAKOUT_LEVEL),
+        }
+        setup_type, stop_model = setup_types.get(self.strategy_type, (None, None))
+        if setup_type is None:
+            raise ValueError("strategy has no Warrior setup projection")
+        state = SetupState.TRIGGERED if self.formation_state is DetectionState.DETECTED else SetupState.FORMING
+        return SetupDetection(setup_type, state, self.setup_quality, self.trigger_price,
+                              self.structural_stop, stop_model)
+
+
+@dataclass(frozen=True, slots=True)
+class AdapterResult:
+    candidate: ExecutionCandidate | None
+    rejection_reason: AdapterRejection | None = None
+    suppressed_duplicate_strategies: tuple[str, ...] = ()
+
+
+PHASE1_EXECUTION_ALLOWLIST = frozenset({"MICRO_PULLBACK"})
+PHASE1_INVALIDATION_CAPABILITIES = frozenset({"MICRO_PULLBACK"})
+
+
+class MultiStrategyExecutionAdapter:
+    """Bounded validator/selector; it never places or authorizes an order."""
+
+    def __init__(self, *, execution_allowlist: frozenset[str] | set[str] | tuple[str, ...] = PHASE1_EXECUTION_ALLOWLIST,
+                 invalidation_capabilities: frozenset[str] | set[str] | tuple[str, ...] = PHASE1_INVALIDATION_CAPABILITIES,
+                 maximum_identities: int = 256, diagnostics: object | None = None) -> None:
+        if maximum_identities <= 0:
+            raise ValueError("maximum execution identities must be positive")
+        self.execution_allowlist = frozenset(str(item).strip().upper() for item in execution_allowlist)
+        self.invalidation_capabilities = frozenset(str(item).strip().upper() for item in invalidation_capabilities)
+        self.maximum_identities = maximum_identities
+        self.diagnostics = diagnostics
+        self._seen_identities: dict[str, None] = {}
+
+    def adapt(self, opportunity: NormalizedOpportunity, *, strategy_scores: Mapping[str, Decimal],
+              observed_at: datetime, freshness_max_age: timedelta, freshness_authority: str,
+              spread_percent: Decimal | None, dollar_volume: Decimal | None,
+              diagnostics: object | None = None) -> AdapterResult:
+        """Validate one normalized opportunity without changing its source state."""
+        memberships = tuple(opportunity.memberships)
+        matched = tuple(item for item in memberships if item.strategy_id in self.execution_allowlist)
+        diagnostics = diagnostics if diagnostics is not None else self.diagnostics
+        if not matched:
+            return self._result(opportunity, AdapterRejection.NOT_EXECUTION_ALLOWLISTED, diagnostics,
+                                strategies_evaluated=tuple(item.strategy_id for item in memberships),
+                                strategies_matched=(), adapter_rejection_reason=AdapterRejection.NOT_EXECUTION_ALLOWLISTED)
+
+        age = observed_at - opportunity.decision_cutoff
+        if age < timedelta(0) or age > freshness_max_age:
+            return self._result(opportunity, AdapterRejection.STALE_CONTEXT, diagnostics,
+                                strategies_evaluated=tuple(item.strategy_id for item in memberships),
+                                strategies_matched=tuple(item.strategy_id for item in matched),
+                                adapter_rejection_reason=AdapterRejection.STALE_CONTEXT)
+        if not freshness_authority.strip() or spread_percent is None or dollar_volume is None:
+            return self._result(opportunity, AdapterRejection.MISSING_EXECUTION_CONTEXT, diagnostics,
+                                strategies_evaluated=tuple(item.strategy_id for item in memberships),
+                                strategies_matched=tuple(item.strategy_id for item in matched),
+                                adapter_rejection_reason=AdapterRejection.MISSING_EXECUTION_CONTEXT)
+
+        eligible = []
+        rejection = AdapterRejection.MISSING_INVALIDATION
+        for item in matched:
+            if item.strategy_id not in self.invalidation_capabilities:
+                rejection = AdapterRejection.MISSING_INVALIDATION
+                continue
+            if item.state is DetectionState.INVALIDATED:
+                rejection = AdapterRejection.MISSING_INVALIDATION
+                continue
+            if item.trigger_level is None:
+                rejection = AdapterRejection.MISSING_TRIGGER
+                continue
+            if item.structural_stop is None:
+                rejection = AdapterRejection.MISSING_STRUCTURAL_STOP
+                continue
+            if item.trigger_level <= item.structural_stop:
+                rejection = AdapterRejection.NON_POSITIVE_RISK
+                continue
+            if item.state not in {DetectionState.DETECTED, DetectionState.STRENGTHENING}:
+                rejection = AdapterRejection.MISSING_INVALIDATION
+                continue
+            score = strategy_scores.get(item.strategy_id)
+            if score is None:
+                rejection = AdapterRejection.MISSING_SETUP_QUALITY
+                continue
+            eligible.append((item, score))
+
+        if not eligible:
+            return self._result(opportunity, rejection, diagnostics,
+                                strategies_evaluated=tuple(item.strategy_id for item in memberships),
+                                strategies_matched=tuple(item.strategy_id for item in matched),
+                                adapter_rejection_reason=rejection)
+
+        primary = opportunity.primary_strategy_id
+        selected, selected_score = max(
+            eligible,
+            key=lambda pair: (
+                2 if pair[0].state is DetectionState.DETECTED else 1,
+                pair[1],
+                1 if pair[0].strategy_id == primary else 0,
+                pair[0].strategy_id,
+            ),
+        )
+        execution_identity = self._identity(opportunity)
+        if execution_identity in self._seen_identities:
+            return self._result(opportunity, AdapterRejection.DUPLICATE_OPPORTUNITY, diagnostics,
+                                strategies_evaluated=tuple(item.strategy_id for item in memberships),
+                                strategies_matched=tuple(item.strategy_id for item in matched),
+                                selected_execution_strategy=selected.strategy_id,
+                                opportunity_anchor=opportunity.structural_anchor,
+                                execution_identity=execution_identity,
+                                adapter_rejection_reason=AdapterRejection.DUPLICATE_OPPORTUNITY)
+        self._seen_identities[execution_identity] = None
+        while len(self._seen_identities) > self.maximum_identities:
+            self._seen_identities.pop(next(iter(self._seen_identities)))
+
+        suppressed = tuple(item.strategy_id for item in memberships if item.strategy_id != selected.strategy_id)
+        candidate = ExecutionCandidate(
+            strategy_type=selected.strategy_id,
+            symbol=opportunity.symbol.upper(),
+            opportunity_id=opportunity.opportunity_id,
+            opportunity_anchor=opportunity.structural_anchor,
+            detected_at=opportunity.decision_cutoff,
+            formation_state=selected.state,
+            trigger_price=selected.trigger_level,
+            structural_stop=selected.structural_stop,
+            risk_per_share=selected.trigger_level - selected.structural_stop,
+            setup_quality=selected_score,
+            invalidation_state=selected.state,
+            invalidation_reason=selected.reason_codes,
+            freshness_authority=freshness_authority,
+            context_age=age,
+            spread_percent=spread_percent,
+            dollar_volume=dollar_volume,
+            strategy_memberships=tuple(item.strategy_id for item in memberships),
+            selected_execution_strategy=selected.strategy_id,
+            suppressed_duplicate_strategies=suppressed,
+            selection_score=selected_score,
+            selection_priority=2 if selected.state is DetectionState.DETECTED else 1,
+            execution_identity=execution_identity,
+        )
+        self._record(diagnostics, strategies_evaluated=tuple(item.strategy_id for item in memberships),
+                     strategies_matched=tuple(item.strategy_id for item in matched),
+                     selected_execution_strategy=selected.strategy_id,
+                     suppressed_duplicate_strategies=suppressed,
+                     opportunity_anchor=opportunity.structural_anchor,
+                     execution_identity=execution_identity,
+                     selection_score=selected_score, selection_priority=candidate.selection_priority)
+        return AdapterResult(candidate)
+
+    def _result(self, opportunity, reason, diagnostics, **values) -> AdapterResult:
+        self._record(diagnostics, **values)
+        return AdapterResult(None, reason)
+
+    @staticmethod
+    def _identity(opportunity: NormalizedOpportunity) -> str:
+        material = "|".join((opportunity.symbol.upper(), str(opportunity.session_date),
+                             opportunity.session, opportunity.structural_anchor))
+        return sha256(("ATLAS_EXECUTION_EPISODE_V1|" + material).encode()).hexdigest()
+
+    @staticmethod
+    def _record(diagnostics: object | None, **values: object) -> None:
+        if diagnostics is None:
+            return
+        try:
+            recorder = getattr(diagnostics, "record_strategy_selection", None)
+            if recorder is not None:
+                recorder(**values)
+        except Exception:
+            return
+
+
+__all__ = [
+    "AdapterRejection", "AdapterResult", "ExecutionCandidate",
+    "MultiStrategyExecutionAdapter", "PHASE1_EXECUTION_ALLOWLIST",
+    "PHASE1_INVALIDATION_CAPABILITIES",
+]

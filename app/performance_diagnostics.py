@@ -24,6 +24,7 @@ _MAX_ENTRY_LIFECYCLE_RECORDS = 256
 _MAX_ENTRY_PURSUIT_RECORDS = 512
 _MAX_SETUP_TRANSITION_RECORDS = 512
 _MAX_PROTECTION_EVENTS = 256
+_MAX_STRATEGY_SELECTION_RECORDS = 256
 _ENTRY_COUNTERS = (
     "entry_authorizations", "entry_orders_submitted", "pursuit_evaluations",
     "pursuit_not_invoked_due_to_state", "replacement_candidates",
@@ -443,6 +444,7 @@ class PerformanceDiagnostics:
         self._entry_pursuit_records: deque[dict[str, object]] = deque(maxlen=_MAX_ENTRY_PURSUIT_RECORDS)
         self._entry_setup_records: deque[dict[str, object]] = deque(maxlen=_MAX_SETUP_TRANSITION_RECORDS)
         self._protection_events: deque[dict[str, object]] = deque(maxlen=_MAX_PROTECTION_EVENTS)
+        self._strategy_selection_records: deque[dict[str, object]] = deque(maxlen=_MAX_STRATEGY_SELECTION_RECORDS)
         self._entry_last_setup_state: OrderedDict[str, str] = OrderedDict()
         self._run_id = uuid4().hex
         self._process_started_at = datetime.now(UTC)
@@ -604,6 +606,7 @@ class PerformanceDiagnostics:
                 "reference": _json_safe(self.reference_metrics()),
                 "scanner_population": _json_safe(self.scanner_population_metrics()),
                 "entry_conversion": _json_safe(self.entry_conversion_metrics()),
+                "strategy_selection": _json_safe(self.strategy_selection_metrics()),
                 "stream": _json_safe(self.stream_metrics()),
                 "durable": {
                     "checkpoint_count": checkpoint_count + 1,
@@ -696,6 +699,28 @@ class PerformanceDiagnostics:
     def record_partial_fill(self, *, lifecycle_id: str, **values: object) -> None:
         self.record_entry_counter("partial_fill_events")
         self.record_entry_lifecycle(lifecycle_id, **values)
+
+    def record_strategy_selection(self, **values: object) -> None:
+        """Record bounded adapter selection metadata; never performs I/O."""
+        try:
+            allowed = {
+                "strategies_evaluated", "strategies_matched", "strategy_memberships",
+                "selected_execution_strategy", "suppressed_duplicate_strategies",
+                "opportunity_anchor", "execution_identity", "selection_score",
+                "selection_priority", "adapter_rejection_reason",
+            }
+            record = {str(key): _json_safe(value) for key, value in values.items() if key in allowed}
+            with self._lock:
+                self._strategy_selection_records.append(record)
+        except Exception:
+            return
+
+    def strategy_selection_metrics(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "records": tuple(self._strategy_selection_records),
+                "bounds": {"records": _MAX_STRATEGY_SELECTION_RECORDS},
+            }
 
     def entry_conversion_metrics(self) -> dict[str, object]:
         with self._lock:
