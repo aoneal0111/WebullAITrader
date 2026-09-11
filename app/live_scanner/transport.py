@@ -82,3 +82,7 @@ class ReceiveTransportAdapter:
     @property
     def last_normalized_event_at(self):
         return getattr(self._client, "last_normalized_event_at", None)
+
+    @property
+    def generation_metrics(self):
+        return getattr(self._client, "generation_metrics", {})

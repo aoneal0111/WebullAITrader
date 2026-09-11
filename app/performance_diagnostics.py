@@ -338,6 +338,17 @@ class PerformanceDiagnostics:
             }
             for endpoint in self._order_flow_samples
         }
+        self._reference_samples: deque[float] = deque(maxlen=128)
+        self._reference_metrics: dict[str, object] = {
+            "requests": 0,
+            "successes": 0,
+            "failures": 0,
+            "retries": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "concurrency_high_water": 1,
+            "latest_failure": None,
+        }
         self._run_id = uuid4().hex
         self._process_started_at = datetime.now(UTC)
         self._artifact_path: Path | None = None
@@ -495,6 +506,7 @@ class PerformanceDiagnostics:
                 "forensic": _json_safe(self.forensic_metrics()),
                 "reconciliation": _json_safe(self.reconciliation_metrics()),
                 "order_flow": _json_safe(self.order_flow_metrics()),
+                "reference": _json_safe(self.reference_metrics()),
                 "durable": {
                     "checkpoint_count": checkpoint_count + 1,
                     "write_failures": self.durable_metrics()["write_failures"],
@@ -572,6 +584,42 @@ class PerformanceDiagnostics:
                 )
                 result[endpoint] = values
             return result
+
+    def record_reference_result(
+        self,
+        duration_ms: float,
+        *,
+        success: bool,
+        failure: str | None = None,
+        cache_hit: bool | None = None,
+    ) -> None:
+        if duration_ms < 0:
+            raise ValueError("reference timing cannot be negative")
+        with self._lock:
+            self._reference_samples.append(duration_ms)
+            metrics = self._reference_metrics
+            metrics["requests"] = int(metrics["requests"]) + 1
+            if success:
+                metrics["successes"] = int(metrics["successes"]) + 1
+            else:
+                metrics["failures"] = int(metrics["failures"]) + 1
+                metrics["latest_failure"] = failure
+            if cache_hit is True:
+                metrics["cache_hits"] = int(metrics["cache_hits"]) + 1
+            elif cache_hit is False:
+                metrics["cache_misses"] = int(metrics["cache_misses"]) + 1
+
+    def reference_metrics(self) -> dict[str, object]:
+        with self._lock:
+            ordered = sorted(self._reference_samples)
+            values = dict(self._reference_metrics)
+            values.update(
+                latency_p50_ms=round(_percentile(ordered, 0.50), 3),
+                latency_p90_ms=round(_percentile(ordered, 0.90), 3),
+                latency_p99_ms=round(_percentile(ordered, 0.99), 3),
+                latency_max_ms=round(max(ordered, default=0.0), 3),
+            )
+            return values
 
     @contextmanager
     def operations_publication(self, event_type: str):

@@ -2,6 +2,8 @@
 
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from threading import RLock
+from time import perf_counter
 from typing import Any, Callable
 
 from app.momentum_scanner import (
@@ -55,6 +57,8 @@ class RealtimeScannerEngine:
         self._admission_observer = admission_observer
 
         self._active_symbols: set[str] = set()
+        self._known_symbols: set[str] = set()
+        self._pending_reference_symbols: set[str] = set()
         self._active_asset_classes: dict[str, AssetClass] = {}
         self._subscription_symbols: dict[str, str] = {}
         self._decisions: dict[str, ScannerDecision] = {}
@@ -65,6 +69,45 @@ class RealtimeScannerEngine:
 
         self._processed_events = 0
         self._ignored_events = 0
+        self._state_lock = RLock()
+        self._prepared_selection = None
+
+    def prepare_universe(
+        self,
+        asset_classes: tuple[AssetClass, ...] = (
+            AssetClass.STOCK,
+            AssetClass.CRYPTO,
+        ),
+    ) -> tuple[str, ...]:
+        """Select symbols and expose subscriptions before reference warmup.
+
+        Reference enrichment remains authoritative for qualification.  The
+        returned symbols are only transport channels; pending symbols cannot
+        become scanner decisions until their reference records are available.
+        """
+        performance_diagnostics.record_startup_stage("universe_refresh_started")
+        performance_diagnostics.record_startup_stage("reference_warmup_started")
+        selection = self._universe_service.select_all(asset_classes)
+        included = tuple(selection.included)
+        symbols = tuple(item.symbol.strip().upper() for item in included)
+        with self._state_lock:
+            self._prepared_selection = selection
+            self._universe_size = len(selection.included) + len(selection.excluded)
+            self._eligible_symbol_count = len(included)
+            self._known_symbols = set(symbols)
+            self._pending_reference_symbols = set(symbols)
+            self._active_symbols = set()
+            self._active_asset_classes = {
+                symbol: item.asset_class for symbol, item in zip(symbols, included)
+            }
+            self._subscription_symbols = {
+                symbol: item.api_symbol or symbol
+                for symbol, item in zip(symbols, included)
+            }
+        performance_diagnostics.increment_startup_counter(
+            "reference_warmup_symbols_total", len(included)
+        )
+        return self.subscription_symbols
 
     def refresh_universe(
         self,
@@ -77,9 +120,10 @@ class RealtimeScannerEngine:
     ) -> tuple[str, ...]:
         performance_diagnostics.record_startup_stage("universe_refresh_started")
         performance_diagnostics.record_startup_stage("reference_warmup_started")
-        selection = self._universe_service.select_all(
-            asset_classes
-        )
+        selection = getattr(self, "_prepared_selection", None)
+        if selection is None:
+            selection = self._universe_service.select_all(asset_classes)
+        self._prepared_selection = None
         self._universe_size = len(selection.included) + len(selection.excluded)
         self._eligible_symbol_count = len(selection.included)
 
@@ -97,6 +141,9 @@ class RealtimeScannerEngine:
         )
 
         for item in selection.included:
+            reference_started = perf_counter()
+            reference_success = False
+            reference_failure: str | None = None
             symbol = item.symbol.strip().upper()
             performance_diagnostics.set_startup_reference_symbol(symbol)
             _observe_admission(
@@ -127,6 +174,7 @@ class RealtimeScannerEngine:
                         force_refresh=force_reference_refresh,
                     )
             except Exception as exc:
+                reference_failure = type(exc).__name__
                 performance_diagnostics.increment_startup_counter(
                     "reference_warmup_symbols_completed"
                 )
@@ -155,9 +203,15 @@ class RealtimeScannerEngine:
                     missing.append(failure)
                 else:
                     temporary.append(failure)
+                performance_diagnostics.record_reference_result(
+                    (perf_counter() - reference_started) * 1000.0,
+                    success=False,
+                    failure=reference_failure,
+                )
                 continue
 
             successful_records.append(record)
+            reference_success = True
             performance_diagnostics.increment_startup_counter(
                 "reference_warmup_symbols_completed"
             )
@@ -194,6 +248,11 @@ class RealtimeScannerEngine:
 
             if self._reference_sink is not None:
                 self._reference_sink(record)
+            performance_diagnostics.record_reference_result(
+                (perf_counter() - reference_started) * 1000.0,
+                success=reference_success,
+                cache_hit=None,
+            )
 
         self._warmup_result = ReferenceWarmupResult(
             active_symbols=tuple(sorted(active_symbols)),
@@ -210,10 +269,13 @@ class RealtimeScannerEngine:
         for symbol in removed_symbols:
             self._decisions.pop(symbol, None)
 
-        self._active_symbols = active_symbols
-        self._active_asset_classes = active_asset_classes
-        self._subscription_symbols = subscription_symbols
-        self._reference_failures = failures
+        with self._state_lock:
+            self._active_symbols = active_symbols
+            self._known_symbols = set(active_symbols)
+            self._pending_reference_symbols = set()
+            self._active_asset_classes = active_asset_classes
+            self._subscription_symbols = subscription_symbols
+            self._reference_failures = failures
 
         performance_diagnostics.set_startup_reference_symbol(None)
         performance_diagnostics.record_startup_stage("reference_warmup_completed")
@@ -237,7 +299,7 @@ class RealtimeScannerEngine:
     def consume(self, event: Any) -> ScannerDecision | None:
         symbol = _event_symbol(event)
 
-        if symbol is None or symbol not in self._active_symbols:
+        if symbol is None or symbol not in self._known_symbols:
             self._ignored_events += 1
             return None
 
@@ -367,6 +429,10 @@ class RealtimeScannerEngine:
     @property
     def active_symbols(self) -> tuple[str, ...]:
         return tuple(sorted(self._active_symbols))
+
+    @property
+    def pending_reference_symbols(self) -> tuple[str, ...]:
+        return tuple(sorted(self._pending_reference_symbols))
 
     @property
     def warmup_result(self) -> ReferenceWarmupResult:

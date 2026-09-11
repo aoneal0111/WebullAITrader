@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
+from threading import Event, Thread
 from time import perf_counter
 from typing import Any
 
@@ -68,6 +69,8 @@ class LiveScannerCoordinator:
         self._cycles_completed = 0
         self._events_read = 0
         self._decisions_created = 0
+        self._reference_stop = Event()
+        self._reference_thread: Thread | None = None
 
     def connect(self) -> None:
         if self._connected:
@@ -134,6 +137,29 @@ class LiveScannerCoordinator:
         force_reference_refresh: bool = False,
     ) -> tuple[str, ...]:
         self.connect()
+        prepare = getattr(self._engine, "prepare_universe", None)
+        if callable(prepare) and channels is None:
+            pending_channels = _normalize_channels(prepare(asset_classes))
+            selected_channels = pending_channels or self._effective_channels(
+                self._default_channels
+            )
+            if not selected_channels:
+                self._scanner_channels = ()
+                self._channels = ()
+                self._running = True
+                return pending_channels
+            self._scanner_channels = pending_channels
+            self._subscribe_effective(pending_channels)
+            self._running = True
+            self._reference_stop.clear()
+            self._reference_thread = Thread(
+                target=self._complete_reference_warmup,
+                args=(asset_classes, force_reference_refresh),
+                name="realtime-reference-warmup",
+                daemon=True,
+            )
+            self._reference_thread.start()
+            return pending_channels
         active_symbols = self.refresh_universe(
             asset_classes,
             force_reference_refresh=(
@@ -165,6 +191,11 @@ class LiveScannerCoordinator:
 
     def stop(self) -> None:
         self._running = False
+        self._reference_stop.set()
+        thread = self._reference_thread
+        if thread is not None:
+            thread.join(2.0)
+            self._reference_thread = None
         close = getattr(self._engine, "close", None)
         if callable(close):
             close()
@@ -317,7 +348,25 @@ class LiveScannerCoordinator:
         )
 
     def close(self) -> None:
+        self.stop()
         self.disconnect()
+
+    def _complete_reference_warmup(
+        self,
+        asset_classes: tuple[AssetClass, ...],
+        force_reference_refresh: bool,
+    ) -> None:
+        if self._reference_stop.is_set():
+            return
+        try:
+            getattr(self._engine, "refresh_universe")(
+                asset_classes,
+                force_reference_refresh=force_reference_refresh,
+            )
+        except Exception:
+            # The runtime consumer remains alive; the existing scanner
+            # qualification failure path owns reporting of warmup errors.
+            return
 
     def set_event_observer(
         self,

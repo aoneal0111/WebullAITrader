@@ -577,6 +577,10 @@ class DesktopBrokerRuntimeDriver:
 
         self._market_data_connected = True
         warmup_snapshot = scanner.snapshot()
+        pending_reference_symbols = tuple(
+            getattr(scanner, "pending_reference_symbols", ())
+        )
+        ready_symbols = tuple(getattr(warmup_snapshot, "active_symbols", ()))
         performance_diagnostics.increment("scanner_snapshots_generated")
         universe_size = getattr(
             warmup_snapshot, "universe_size", len(active_symbols)
@@ -597,9 +601,9 @@ class DesktopBrokerRuntimeDriver:
         self._scanner_log(
             "symbols_eligible",
             f"Scanner eligibility completed: eligible_symbol_count={eligible_count}; "
-            f"reference_ready_count={len(active_symbols)}.",
+            f"reference_ready_count={len(ready_symbols)}.",
         )
-        if not active_symbols:
+        if not ready_symbols and not pending_reference_symbols:
             reason = (
                 getattr(warmup_snapshot, "health_reason", None)
                 or "No symbols survived scanner reference warmup."
@@ -635,6 +639,32 @@ class DesktopBrokerRuntimeDriver:
                 ),
             )
             return False
+        if not ready_symbols and pending_reference_symbols:
+            self._scanner_log(
+                "reference_warmup_pending",
+                f"Scanner reference warmup pending for {len(pending_reference_symbols)} symbols; "
+                "market-data consumption continues.",
+            )
+            self._scanner_log(
+                "channels_subscribed",
+                f"Subscribed quote and trade channels for {len(pending_reference_symbols)} pending symbols.",
+                health=RuntimeHealthUpdate(
+                    market_data_status="SUBSCRIBED",
+                    streaming_status="CONNECTED",
+                    scanner_status="WARMING",
+                    universe_status="LOADED",
+                    symbols_status="REFERENCE_PENDING",
+                    reference_cache_status="WARMING",
+                    ranking_status="WARMING",
+                    supported_symbols=0,
+                    subscription_symbols=tuple(sorted(pending_reference_symbols)),
+                ),
+            )
+            self._scanner_log(
+                "market_data_subscriptions",
+                f"Scanner market-data subscription count={len(pending_reference_symbols)}.",
+            )
+            return True
         if warmup_snapshot.reference_failures:
             details = "; ".join(
                 f"{failure.symbol}: {failure.reason}"
@@ -665,13 +695,13 @@ class DesktopBrokerRuntimeDriver:
                 symbols_status="VALIDATED",
                 reference_cache_status="WARM",
                 ranking_status="ACTIVE",
-                supported_symbols=len(active_symbols),
-                subscription_symbols=tuple(sorted(active_symbols)),
+                supported_symbols=len(ready_symbols),
+                subscription_symbols=tuple(sorted(ready_symbols)),
             ),
         )
         self._scanner_log(
             "market_data_subscriptions",
-            f"Scanner market-data subscription count={len(active_symbols)}.",
+            f"Scanner market-data subscription count={len(ready_symbols)}.",
         )
         return True
 

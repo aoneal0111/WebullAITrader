@@ -41,6 +41,7 @@ class _ReceivedStreamPayload:
     topic: object
     payload: object
     received_timestamp: datetime
+    generation: int
 
 
 class OfficialSdkStreamBackend:
@@ -106,6 +107,10 @@ class OfficialSdkStreamBackend:
         self._accepting_callbacks.set()
         self._last_raw_callback_monotonic: float | None = None
         self._last_raw_callback_at: datetime | None = None
+        self._generation = 0
+        self._generation_started_at: datetime | None = None
+        self._generation_first_raw_at: datetime | None = None
+        self._generation_first_dequeued_at: datetime | None = None
 
         self._consumption_started = False
         self._has_connected = False
@@ -133,6 +138,15 @@ class OfficialSdkStreamBackend:
                 "messages_enqueued": self._messages_enqueued,
                 "messages_dequeued": self._messages_dequeued,
             }
+
+    @property
+    def generation_metrics(self) -> dict[str, object]:
+        return {
+            "generation": self._generation,
+            "started_at": self._generation_started_at,
+            "first_raw_callback_at": self._generation_first_raw_at,
+            "first_callback_dequeued_at": self._generation_first_dequeued_at,
+        }
 
     @staticmethod
     def _hash(value: object) -> str:
@@ -192,8 +206,12 @@ class OfficialSdkStreamBackend:
                 return
             self._last_raw_callback_monotonic = monotonic()
             self._last_raw_callback_at = self._clock()
+            if self._generation_first_raw_at is None:
+                self._generation_first_raw_at = self._last_raw_callback_at
             self._messages.put(
-                _ReceivedStreamPayload(topic, quotes, self._clock())
+                _ReceivedStreamPayload(
+                    topic, quotes, self._clock(), self._generation
+                )
             )
             self._message_queue_depth += 1
             self._messages_enqueued += 1
@@ -247,6 +265,12 @@ class OfficialSdkStreamBackend:
             self._original_on_disconnect(*args, **kwargs)
 
     def connect(self) -> None:
+        self._generation += 1
+        self._generation_started_at = self._clock()
+        self._generation_first_raw_at = None
+        self._generation_first_dequeued_at = None
+        self._last_raw_callback_monotonic = None
+        self._last_raw_callback_at = None
         performance_diagnostics.record_startup_stage("stream_connect_started")
         if self._has_connected:
             self._replace_client()
@@ -437,34 +461,60 @@ class OfficialSdkStreamBackend:
         return self._registration_ready.is_set()
 
     def receive(self) -> object | None:
-        try:
-            message = self._messages.get(timeout=self._receive_timeout_seconds)
+        while True:
+            try:
+                message = self._messages.get(timeout=self._receive_timeout_seconds)
+            except Empty:
+                return None
+            if (
+                isinstance(message, _ReceivedStreamPayload)
+                and message.generation != self._generation
+            ):
+                with self._message_metrics_lock:
+                    self._messages_dequeued += 1
+                    self._message_queue_depth = max(
+                        0, self._message_queue_depth - 1
+                    )
+                continue
             with self._message_metrics_lock:
                 self._messages_dequeued += 1
                 self._message_queue_depth -= 1
+                if self._generation_first_dequeued_at is None:
+                    self._generation_first_dequeued_at = self._clock()
             performance_diagnostics.increment_startup_counter("callbacks_dequeued")
             performance_diagnostics.record_startup_stage("first_callback_dequeued")
             if not self._consumption_started:
                 self._consumption_started = True
                 self._notify("active_event_consumption")
             return message
-        except Empty:
-            return None
 
     def receive_nowait(self) -> object | None:
-        try:
-            message = self._messages.get_nowait()
+        while True:
+            try:
+                message = self._messages.get_nowait()
+            except Empty:
+                return None
+            if (
+                isinstance(message, _ReceivedStreamPayload)
+                and message.generation != self._generation
+            ):
+                with self._message_metrics_lock:
+                    self._messages_dequeued += 1
+                    self._message_queue_depth = max(
+                        0, self._message_queue_depth - 1
+                    )
+                continue
             with self._message_metrics_lock:
                 self._messages_dequeued += 1
                 self._message_queue_depth -= 1
+                if self._generation_first_dequeued_at is None:
+                    self._generation_first_dequeued_at = self._clock()
             performance_diagnostics.increment_startup_counter("callbacks_dequeued")
             performance_diagnostics.record_startup_stage("first_callback_dequeued")
             if not self._consumption_started:
                 self._consumption_started = True
                 self._notify("active_event_consumption")
             return message
-        except Empty:
-            return None
 
     @property
     def actual_transport(self) -> str:
@@ -676,6 +726,10 @@ class WebullWebSocketClient:
     @property
     def last_raw_callback_at(self) -> datetime | None:
         return getattr(self.backend, "last_raw_callback_at", None)
+
+    @property
+    def generation_metrics(self) -> dict[str, object]:
+        return dict(getattr(self.backend, "generation_metrics", {}))
 
     @property
     def last_normalized_event_monotonic(self) -> float | None:
