@@ -8,6 +8,9 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import IntEnum, StrEnum
 from threading import Condition, Event, RLock, Thread
+from time import perf_counter
+
+from app.performance_diagnostics import performance_diagnostics
 from typing import Callable
 
 from .order_flow import (
@@ -248,6 +251,9 @@ class OrderFlowPollingService:
     def _refresh(
         self, symbol: str, priority: OrderFlowPriority, endpoint: str, now: datetime,
     ) -> None:
+        started = perf_counter()
+        success = False
+        failure: str | None = None
         try:
             response = self._fetch(symbol, endpoint)
             if endpoint == "FOOTPRINT":
@@ -274,8 +280,23 @@ class OrderFlowPollingService:
                 None, 0, next_refresh,
             )
             self._store_entry(symbol, endpoint, entry, priority)
+            success = True
         except Exception as exc:
+            failure = type(exc).__name__
             self._record_failure(symbol, endpoint, priority, now, exc)
+        finally:
+            performance_diagnostics.record_order_flow_result(
+                endpoint,
+                (perf_counter() - started) * 1000.0,
+                success=success,
+                failure=failure,
+            )
+            performance_diagnostics.record_component_duration(
+                f"order_flow.{endpoint.lower()}_refresh",
+                (perf_counter() - started) * 1000.0,
+                symbol=symbol,
+                success=success,
+            )
 
     def _fetch(self, symbol: str, endpoint: str) -> object:
         if endpoint == "FOOTPRINT" and self._footprint_fetcher is not None:

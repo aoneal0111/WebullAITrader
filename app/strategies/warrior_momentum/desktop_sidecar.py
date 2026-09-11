@@ -536,6 +536,7 @@ class WarriorDesktopSidecar:
             return
         protection_started = perf_counter()
         protection_success = False
+        performance_diagnostics.increment_reconciliation_counter("executions")
         try:
             protection_success = bool(
                 reconcile_service.reconcile_authoritative_protection(
@@ -548,6 +549,9 @@ class WarriorDesktopSidecar:
                 self._last_error_type = type(exc).__name__
                 self._health = WarriorCaptureHealth.DEGRADED
         finally:
+            performance_diagnostics.increment_reconciliation_counter(
+                "successes" if protection_success else "failures"
+            )
             with self._lock:
                 if protection_success:
                     self._protection_dirty.discard(reconcile_symbol)
@@ -563,6 +567,9 @@ class WarriorDesktopSidecar:
 
     def _protection_reconciliation_due(self, symbol: str) -> bool:
         """Return whether a protection audit is needed without doing I/O."""
+        performance_diagnostics.increment_reconciliation_counter(
+            "eligibility_checks"
+        )
         source = self._paper_position_quantity_source
         if source is None:
             return False
@@ -577,6 +584,9 @@ class WarriorDesktopSidecar:
         now = monotonic()
         changed = previous != quantity
         if changed:
+            performance_diagnostics.increment_reconciliation_counter(
+                "quantity_change_triggers"
+            )
             self._protection_dirty.add(symbol)
         last_attempt = self._last_protection_attempt_at.get(symbol)
         periodic_due = (
@@ -584,10 +594,14 @@ class WarriorDesktopSidecar:
             or now - last_attempt >= _PROTECTION_AUDIT_INTERVAL_SECONDS
         )
         if periodic_due:
+            performance_diagnostics.increment_reconciliation_counter(
+                "periodic_audit_triggers"
+            )
             self._protection_dirty.add(symbol)
         if symbol not in self._protection_dirty:
             return False
         if not changed and not periodic_due:
+            performance_diagnostics.increment_reconciliation_counter("dirty_triggers")
             return False
         self._last_protection_attempt_at[symbol] = now
         return True

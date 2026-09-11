@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from collections import deque
 from datetime import UTC, datetime
 from contextlib import contextmanager
-from threading import local, RLock
+import json
+import os
+from pathlib import Path
+from threading import Event, Thread, local, RLock
 from time import monotonic
 from typing import Any, Callable
+from uuid import uuid4
 
 
 _QUEUE_THRESHOLDS = (100, 500, 1000, 1500)
+_DURABLE_SCHEMA_VERSION = 1
+_DEFAULT_FLUSH_SECONDS = 15.0
 DiagnosticSink = Callable[[str, dict[str, object]], None]
 
 _STARTUP_STAGES = (
@@ -307,6 +313,203 @@ class PerformanceDiagnostics:
             "discovery_callback_build_max_ms": 0.0,
             "discovery_strategy_coverage": (),
         }
+        self._reconciliation_counters: dict[str, int] = {
+            "eligibility_checks": 0,
+            "dirty_triggers": 0,
+            "quantity_change_triggers": 0,
+            "periodic_audit_triggers": 0,
+            "executions": 0,
+            "successes": 0,
+            "failures": 0,
+            "noops": 0,
+            "retries": 0,
+        }
+        self._order_flow_samples: dict[str, deque[float]] = {
+            "FOOTPRINT": deque(maxlen=128),
+            "CAPITAL_FLOW": deque(maxlen=128),
+        }
+        self._order_flow_metrics: dict[str, dict[str, object]] = {
+            endpoint: {
+                "attempts": 0,
+                "successes": 0,
+                "failures": 0,
+                "consecutive_failures": 0,
+                "latest_failure": None,
+            }
+            for endpoint in self._order_flow_samples
+        }
+        self._run_id = uuid4().hex
+        self._process_started_at = datetime.now(UTC)
+        self._artifact_path: Path | None = None
+        self._application_version = os.getenv(
+            "ATLAS_APPLICATION_VERSION", "unknown"
+        )
+        self._branch = os.getenv("ATLAS_BRANCH") or os.getenv(
+            "GIT_BRANCH", "unknown"
+        )
+        self._durable_flush_seconds = _bounded_flush_seconds(
+            os.getenv("ATLAS_PERFORMANCE_FLUSH_SECONDS")
+        )
+        self._durable_stop = None
+        self._durable_wakeup = None
+        self._durable_thread = None
+        self._durable_write_failures = 0
+        self._durable_checkpoint_count = 0
+
+    @property
+    def run_id(self) -> str:
+        """Return the current bounded process/runtime diagnostic identity."""
+        with self._lock:
+            return self._run_id
+
+    @property
+    def artifact_path(self) -> Path | None:
+        with self._lock:
+            return self._artifact_path
+
+    def start_run(
+        self,
+        *,
+        artifact_path: str | Path | None = None,
+        branch: str | None = None,
+        application_version: str | None = None,
+        flush_seconds: float | None = None,
+    ) -> str:
+        """Start one durable run without changing performance semantics.
+
+        This is a lifecycle operation, never called from a market-event hot
+        path.  The writer thread owns all filesystem I/O; callers only update
+        bounded in-memory state and signal it.
+        """
+        self.finish_run()
+        # The singleton is reused by the desktop composition.  Reset all
+        # bounded counters so each artifact describes exactly one run.
+        self.__init__()
+        with self._lock:
+            self._run_id = uuid4().hex
+            self._process_started_at = datetime.now(UTC)
+            self._artifact_path = Path(
+                artifact_path
+                if artifact_path is not None
+                else os.getenv(
+                    "ATLAS_PERFORMANCE_ARTIFACT_PATH",
+                    str(Path(os.getenv("TEMP", ".")) / "atlas-performance" / f"{self._run_id}.json"),
+                )
+            )
+            self._branch = str(branch or os.getenv("ATLAS_BRANCH") or os.getenv("GIT_BRANCH", "unknown"))
+            self._application_version = str(
+                application_version
+                or os.getenv("ATLAS_APPLICATION_VERSION", "unknown")
+            )
+            if flush_seconds is not None:
+                self._durable_flush_seconds = _bounded_flush_seconds(flush_seconds)
+            self._durable_write_failures = 0
+            self._durable_checkpoint_count = 0
+            stop_event = Event()
+            wakeup = Event()
+            self._durable_stop = stop_event
+            self._durable_wakeup = wakeup
+            thread = Thread(
+                target=self._durable_writer_loop,
+                args=(stop_event, wakeup),
+                name="atlas-performance-diagnostics-writer",
+                daemon=True,
+            )
+            self._durable_thread = thread
+        thread.start()
+        self.request_checkpoint()
+        return self.run_id
+
+    def request_checkpoint(self) -> bool:
+        """Request an asynchronous aggregate snapshot; never performs I/O."""
+        with self._lock:
+            wakeup = self._durable_wakeup
+            thread = self._durable_thread
+        if wakeup is None or thread is None or not thread.is_alive():
+            return False
+        wakeup.set()
+        return True
+
+    def finish_run(self) -> None:
+        """Stop the writer and atomically publish one final run snapshot."""
+        with self._lock:
+            stop_event = self._durable_stop
+            wakeup = self._durable_wakeup
+            thread = self._durable_thread
+        if stop_event is None:
+            return
+        stop_event.set()
+        if wakeup is not None:
+            wakeup.set()
+        if thread is not None:
+            thread.join(2.0)
+        self._write_durable_artifact("FINAL")
+        with self._lock:
+            self._durable_stop = None
+            self._durable_wakeup = None
+            self._durable_thread = None
+
+    def durable_metrics(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "run_id": self._run_id,
+                "artifact_path": None if self._artifact_path is None else str(self._artifact_path),
+                "checkpoint_count": self._durable_checkpoint_count,
+                "write_failures": self._durable_write_failures,
+            }
+
+    def _durable_writer_loop(self, stop_event, wakeup) -> None:
+        while not stop_event.is_set():
+            wakeup.wait(self._durable_flush_seconds)
+            wakeup.clear()
+            if stop_event.is_set():
+                return
+            self._write_durable_artifact("CHECKPOINT")
+
+    def _write_durable_artifact(self, status: str) -> None:
+        with self._lock:
+            destination = self._artifact_path
+            run_id = self._run_id
+            process_started_at = self._process_started_at
+            branch = self._branch
+            application_version = self._application_version
+            checkpoint_count = self._durable_checkpoint_count
+        if destination is None:
+            return
+        try:
+            captured_at = datetime.now(UTC)
+            startup = self.startup_metrics()
+            snapshot = self.snapshot()
+            payload = {
+                "schema_version": _DURABLE_SCHEMA_VERSION,
+                "run_id": run_id,
+                "status": status,
+                "process_started_at": process_started_at.isoformat(),
+                "runtime_started_at": startup.get("runtime_started_at"),
+                "shutdown_at": captured_at.isoformat() if status == "FINAL" else None,
+                "captured_at": captured_at.isoformat(),
+                "branch": branch,
+                "application_version": application_version,
+                "metrics": _json_safe(asdict(snapshot)),
+                "startup": _json_safe(startup),
+                "forensic": _json_safe(self.forensic_metrics()),
+                "reconciliation": _json_safe(self.reconciliation_metrics()),
+                "order_flow": _json_safe(self.order_flow_metrics()),
+                "durable": {
+                    "checkpoint_count": checkpoint_count + 1,
+                    "write_failures": self.durable_metrics()["write_failures"],
+                },
+            }
+            raw = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(f".{destination.name}.{run_id}.tmp")
+            temporary.write_text(raw, encoding="utf-8")
+            os.replace(temporary, destination)
+            with self._lock:
+                self._durable_checkpoint_count += 1
+        except Exception:
+            with self._lock:
+                self._durable_write_failures += 1
 
     def increment(self, name: str, amount: int = 1) -> None:
         if name not in self._counters:
@@ -315,6 +518,60 @@ class PerformanceDiagnostics:
             raise ValueError("performance counter increment cannot be negative")
         with self._lock:
             self._counters[name] += amount
+
+    def increment_reconciliation_counter(self, name: str, amount: int = 1) -> None:
+        """Increment a fixed, bounded protection-reconciliation counter."""
+        if name not in self._reconciliation_counters:
+            raise KeyError(name)
+        if amount < 0:
+            raise ValueError("performance counter increment cannot be negative")
+        with self._lock:
+            self._reconciliation_counters[name] += amount
+
+    def reconciliation_metrics(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._reconciliation_counters)
+
+    def record_order_flow_result(
+        self,
+        endpoint: str,
+        duration_ms: float,
+        *,
+        success: bool,
+        failure: str | None = None,
+    ) -> None:
+        key = str(endpoint).upper()
+        if key not in self._order_flow_samples:
+            raise KeyError(key)
+        if duration_ms < 0:
+            raise ValueError("order-flow timing cannot be negative")
+        with self._lock:
+            samples = self._order_flow_samples[key]
+            samples.append(duration_ms)
+            metrics = self._order_flow_metrics[key]
+            metrics["attempts"] = int(metrics["attempts"]) + 1
+            if success:
+                metrics["successes"] = int(metrics["successes"]) + 1
+                metrics["consecutive_failures"] = 0
+            else:
+                metrics["failures"] = int(metrics["failures"]) + 1
+                metrics["consecutive_failures"] = int(metrics["consecutive_failures"]) + 1
+                metrics["latest_failure"] = failure
+
+    def order_flow_metrics(self) -> dict[str, dict[str, object]]:
+        with self._lock:
+            result: dict[str, dict[str, object]] = {}
+            for endpoint, samples in self._order_flow_samples.items():
+                ordered = sorted(samples)
+                values = dict(self._order_flow_metrics[endpoint])
+                values.update(
+                    latency_p50_ms=round(_percentile(ordered, 0.50), 3),
+                    latency_p90_ms=round(_percentile(ordered, 0.90), 3),
+                    latency_p99_ms=round(_percentile(ordered, 0.99), 3),
+                    latency_max_ms=round(max(ordered, default=0.0), 3),
+                )
+                result[endpoint] = values
+            return result
 
     @contextmanager
     def operations_publication(self, event_type: str):
@@ -938,6 +1195,28 @@ def _rate(count: int, started: float | None, latest: float | None) -> float:
     if count < 2 or started is None or latest is None or latest <= started:
         return 0.0
     return (count - 1) / (latest - started)
+
+
+def _bounded_flush_seconds(value: object) -> float:
+    try:
+        candidate = _DEFAULT_FLUSH_SECONDS if value is None else float(value)
+    except (TypeError, ValueError):
+        candidate = _DEFAULT_FLUSH_SECONDS
+    if candidate != candidate or candidate in (float("inf"), float("-inf")):
+        candidate = _DEFAULT_FLUSH_SECONDS
+    return min(300.0, max(0.05, candidate))
+
+
+def _json_safe(value: object) -> object:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
 
 performance_diagnostics = PerformanceDiagnostics()

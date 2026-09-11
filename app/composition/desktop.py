@@ -133,6 +133,11 @@ class DesktopComposition:
         if self.trade_intelligence_observer is not None:
             self.trade_intelligence_observer.stop(timeout_seconds=timeout_seconds)
         self.state_store.close()
+        try:
+            performance_diagnostics.finish_run()
+        except Exception:
+            # Performance evidence is strictly non-authoritative.
+            pass
         return runtime_stopped
 
 
@@ -150,6 +155,7 @@ def create_desktop_composition(
 ) -> DesktopComposition:
     """Construct the desktop application dependency graph."""
 
+    performance_diagnostics.start_run()
     bus = OperationsBus()
     state_store = ApplicationStateStore(bus)
 
