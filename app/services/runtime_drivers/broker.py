@@ -1254,6 +1254,7 @@ class DesktopBrokerRuntimeDriver:
                 )
             self._market_data_thread = None
             performance_diagnostics.record_startup_stage("consumer_stopped")
+            performance_diagnostics.record_stream_boundary("consumer_stopped")
 
         if self._scanner is not None:
             # Scanner-owned research resources must close even when streaming
@@ -1807,6 +1808,9 @@ class DesktopBrokerRuntimeDriver:
             return
 
         try:
+            performance_diagnostics.record_stream_boundary(
+                "broker_disconnect_started"
+            )
             self._broker.disconnect()
         except Exception as exc:
             self._publish(
@@ -1819,6 +1823,9 @@ class DesktopBrokerRuntimeDriver:
             raise
         finally:
             self._connected = False
+            performance_diagnostics.record_stream_boundary(
+                "broker_disconnect_completed"
+            )
 
         self._publish(
             "BROKER_DISCONNECTED",

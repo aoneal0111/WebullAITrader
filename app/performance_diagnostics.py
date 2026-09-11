@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from contextlib import contextmanager
 import json
 import os
+import re
 from pathlib import Path
 from threading import Event, Thread, local, RLock
 from time import monotonic
@@ -18,6 +19,7 @@ from uuid import uuid4
 _QUEUE_THRESHOLDS = (100, 500, 1000, 1500)
 _DURABLE_SCHEMA_VERSION = 1
 _DEFAULT_FLUSH_SECONDS = 15.0
+_MAX_STREAM_FAILURE_SAMPLES = 16
 DiagnosticSink = Callable[[str, dict[str, object]], None]
 
 _STARTUP_STAGES = (
@@ -355,6 +357,35 @@ class PerformanceDiagnostics:
             "concurrency_high_water": 1,
             "latest_failure": None,
         }
+        self._stream_failure_samples: deque[dict[str, object]] = deque(
+            maxlen=_MAX_STREAM_FAILURE_SAMPLES
+        )
+        self._stream_metrics: dict[str, object] = {
+            "receive_failures_total": 0,
+            "reconnect_attempts_total": 0,
+            "reconnect_successes": 0,
+            "reconnect_failures": 0,
+            "reconnect_exhausted": 0,
+            "consecutive_receive_failures": 0,
+            "current_stream_generation": None,
+            "stale_generation_callbacks_rejected": 0,
+            "terminal_stream_failures": 0,
+            "latest_lifecycle_state": "DISCONNECTED",
+            "last_good_raw_callback_at": None,
+            "last_normalized_event_at": None,
+            "first_receive_failure_at": None,
+            "reconnect_started_at": None,
+            "reconnect_completed_at": None,
+            "terminal_failure_at": None,
+            "callback_ingestion_halted_at": None,
+            "consumer_stopped_at": None,
+            "transport_disconnected_at": None,
+            "broker_disconnect_started_at": None,
+            "broker_disconnect_completed_at": None,
+            "reconnect_result": None,
+            "latest_failure": None,
+            "failure_samples": (),
+        }
         self._scanner_population: dict[str, object] = {
             "active_symbols": 0,
             "adapter_state_count": 0,
@@ -532,6 +563,7 @@ class PerformanceDiagnostics:
                 "order_flow": _json_safe(self.order_flow_metrics()),
                 "reference": _json_safe(self.reference_metrics()),
                 "scanner_population": _json_safe(self.scanner_population_metrics()),
+                "stream": _json_safe(self.stream_metrics()),
                 "durable": {
                     "checkpoint_count": checkpoint_count + 1,
                     "write_failures": self.durable_metrics()["write_failures"],
@@ -645,6 +677,173 @@ class PerformanceDiagnostics:
                 latency_max_ms=round(max(ordered, default=0.0), 3),
             )
             return values
+
+    @staticmethod
+    def _sanitize_exception_message(error: Exception | None) -> str | None:
+        if error is None:
+            return None
+        message = str(error).replace("\r", " ").replace("\n", " ")
+        message = re.sub(
+            r"(?i)(token|access_token|refresh_token|password|secret|cookie|authorization)"
+            r"\s*[:=]\s*[^,; ]+",
+            r"\1=[REDACTED]",
+            message,
+        )
+        message = re.sub(r"(?i)bearer\s+\S+", "Bearer [REDACTED]", message)
+        return message[:256]
+
+    def record_stream_lifecycle(
+        self,
+        lifecycle: str,
+        *,
+        error: Exception | None = None,
+        attempt: int = 0,
+        maximum_attempts: int | None = None,
+        generation: int | None = None,
+        session_id_hash: str | None = None,
+        reconnect_result: str | None = None,
+        timestamp: datetime | None = None,
+    ) -> None:
+        """Record bounded stream failure/reconnect lifecycle evidence."""
+        event = str(lifecycle).strip().lower()
+        now = (timestamp or datetime.now(UTC)).isoformat()
+        with self._lock:
+            metrics = self._stream_metrics
+            if generation is not None:
+                metrics["current_stream_generation"] = int(generation)
+            if event in {"reconnecting", "receive_failed"}:
+                metrics["receive_failures_total"] = int(
+                    metrics["receive_failures_total"]
+                ) + 1
+                metrics["reconnect_attempts_total"] = int(
+                    metrics["reconnect_attempts_total"]
+                ) + (1 if event == "reconnecting" else 0)
+                metrics["consecutive_receive_failures"] = int(
+                    metrics["consecutive_receive_failures"]
+                ) + 1
+                metrics["latest_lifecycle_state"] = (
+                    "RECONNECTING" if event == "reconnecting" else "RECEIVE_FAILED"
+                )
+                if metrics["first_receive_failure_at"] is None:
+                    metrics["first_receive_failure_at"] = now
+                if event == "reconnecting":
+                    metrics["reconnect_started_at"] = now
+            elif event == "reconnected":
+                metrics["reconnect_successes"] = int(
+                    metrics["reconnect_successes"]
+                ) + 1
+                metrics["consecutive_receive_failures"] = 0
+                metrics["latest_lifecycle_state"] = "RECONNECTED"
+                metrics["reconnect_completed_at"] = now
+                metrics["reconnect_result"] = reconnect_result or "SUCCESS"
+            elif event in {"reconnect_failed", "reconnect_failure"}:
+                metrics["reconnect_failures"] = int(
+                    metrics["reconnect_failures"]
+                ) + 1
+                metrics["latest_lifecycle_state"] = "RECONNECTING"
+                metrics["reconnect_result"] = reconnect_result or "FAILED"
+            elif event == "terminal_failure":
+                if metrics["first_receive_failure_at"] is None:
+                    metrics["receive_failures_total"] = int(
+                        metrics["receive_failures_total"]
+                    ) + 1
+                    metrics["consecutive_receive_failures"] = int(
+                        metrics["consecutive_receive_failures"]
+                    ) + 1
+                metrics["terminal_stream_failures"] = int(
+                    metrics["terminal_stream_failures"]
+                ) + 1
+                metrics["reconnect_exhausted"] = int(
+                    metrics["reconnect_exhausted"]
+                ) + 1
+                metrics["latest_lifecycle_state"] = "TERMINAL_FAILED"
+                metrics["terminal_failure_at"] = now
+                metrics["reconnect_result"] = reconnect_result or "EXHAUSTED"
+            elif event in {"connected", "transport_connected"}:
+                metrics["latest_lifecycle_state"] = "CONNECTED"
+                metrics["consecutive_receive_failures"] = 0
+            elif event == "disconnected":
+                metrics["latest_lifecycle_state"] = "DISCONNECTED"
+                metrics["transport_disconnected_at"] = now
+
+            sanitized = self._sanitize_exception_message(error)
+            if sanitized is not None:
+                failure = {
+                    "timestamp": now,
+                    "exception_class": type(error).__name__,
+                    "message": sanitized,
+                    "failure_stage": event,
+                    "generation": generation,
+                    "session_id_hash": session_id_hash,
+                    "reconnect_attempt": max(0, int(attempt)),
+                    "maximum_attempts": (
+                        None if maximum_attempts is None else max(0, int(maximum_attempts))
+                    ),
+                    "terminal": event == "terminal_failure",
+                }
+                self._stream_failure_samples.append(failure)
+                metrics["latest_failure"] = failure
+                metrics["failure_samples"] = tuple(
+                    dict(item) for item in self._stream_failure_samples
+                )
+
+    def record_stream_raw_callback(
+        self,
+        *,
+        timestamp: datetime | None = None,
+        generation: int | None = None,
+    ) -> None:
+        with self._lock:
+            if generation is not None:
+                self._stream_metrics["current_stream_generation"] = int(generation)
+            self._stream_metrics["last_good_raw_callback_at"] = (
+                timestamp or datetime.now(UTC)
+            ).isoformat()
+            self._stream_metrics["latest_lifecycle_state"] = "CONNECTED"
+
+    def record_stream_normalized_event(self, timestamp: datetime | None = None) -> None:
+        with self._lock:
+            self._stream_metrics["last_normalized_event_at"] = (
+                timestamp or datetime.now(UTC)
+            ).isoformat()
+
+    def record_stream_stale_generation_rejection(self) -> None:
+        with self._lock:
+            self._stream_metrics["stale_generation_callbacks_rejected"] = int(
+                self._stream_metrics["stale_generation_callbacks_rejected"]
+            ) + 1
+
+    def record_stream_boundary(
+        self,
+        boundary: str,
+        *,
+        timestamp: datetime | None = None,
+    ) -> None:
+        field_by_boundary = {
+            "callback_ingestion_halted": "callback_ingestion_halted_at",
+            "consumer_stopped": "consumer_stopped_at",
+            "transport_disconnected": "transport_disconnected_at",
+            "broker_disconnect_started": "broker_disconnect_started_at",
+            "broker_disconnect_completed": "broker_disconnect_completed_at",
+        }
+        field = field_by_boundary.get(str(boundary))
+        if field is None:
+            raise ValueError(f"unknown stream boundary: {boundary}")
+        with self._lock:
+            self._stream_metrics[field] = (
+                timestamp or datetime.now(UTC)
+            ).isoformat()
+            if boundary == "consumer_stopped":
+                self._stream_metrics["latest_lifecycle_state"] = "DISCONNECTED"
+
+    def stream_metrics(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                **self._stream_metrics,
+                "failure_samples": tuple(
+                    dict(item) for item in self._stream_failure_samples
+                ),
+            }
 
     def record_scanner_population_base(
         self,
@@ -791,7 +990,12 @@ class PerformanceDiagnostics:
                 started = self._startup_stage_monotonic[start]
                 finished = self._startup_stage_monotonic[end]
                 values[name] = (
-                    None if started is None or finished is None
+                    None
+                    if (
+                        started is None
+                        or finished is None
+                        or finished < started
+                    )
                     else round((finished - started) * 1000.0, 3)
                 )
             values.update(self._startup_counters)

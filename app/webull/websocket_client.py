@@ -148,6 +148,10 @@ class OfficialSdkStreamBackend:
             "first_callback_dequeued_at": self._generation_first_dequeued_at,
         }
 
+    @property
+    def session_identity_hash(self) -> str:
+        return self._hash(self._expected_session_id)
+
     @staticmethod
     def _hash(value: object) -> str:
         return sha256(str(value).encode("utf-8")).hexdigest()[:12]
@@ -220,6 +224,12 @@ class OfficialSdkStreamBackend:
                 self._message_queue_high_water,
                 depth,
             )
+            callback_timestamp = self._last_raw_callback_at
+            generation = self._generation
+        performance_diagnostics.record_stream_raw_callback(
+            timestamp=callback_timestamp,
+            generation=generation,
+        )
         performance_diagnostics.increment_startup_counter("raw_callbacks_received")
         performance_diagnostics.increment_startup_counter("callbacks_enqueued")
         performance_diagnostics.record_startup_stage("first_raw_callback")
@@ -245,6 +255,12 @@ class OfficialSdkStreamBackend:
         self._emit_diagnostic(
             "MQTT_CONNECTED",
             mqtt_connected_at=self._clock().isoformat(),
+        )
+        performance_diagnostics.record_stream_lifecycle(
+            "connected",
+            generation=self._generation,
+            session_id_hash=self.session_identity_hash,
+            timestamp=self._clock(),
         )
         if callable(self._original_on_connect_success):
             self._original_on_connect_success(client, api_client, session_id)
@@ -346,6 +362,7 @@ class OfficialSdkStreamBackend:
         if not callable(disconnect):
             raise TypeError("official SDK streaming client has no disconnect method")
         disconnect()
+        performance_diagnostics.record_stream_boundary("transport_disconnected")
 
     def halt_callback_ingestion(self) -> None:
         """Stop accepting callbacks after the sole consumer is gone.
@@ -366,6 +383,7 @@ class OfficialSdkStreamBackend:
         if drained:
             with self._message_metrics_lock:
                 self._message_queue_depth = max(0, self._message_queue_depth - drained)
+        performance_diagnostics.record_stream_boundary("callback_ingestion_halted")
         self._emit_diagnostic("CALLBACK_INGESTION_HALTED", drained=drained)
 
     def subscribe(self, channels: tuple[str, ...]) -> None:
@@ -470,6 +488,7 @@ class OfficialSdkStreamBackend:
                 isinstance(message, _ReceivedStreamPayload)
                 and message.generation != self._generation
             ):
+                performance_diagnostics.record_stream_stale_generation_rejection()
                 with self._message_metrics_lock:
                     self._messages_dequeued += 1
                     self._message_queue_depth = max(
@@ -498,6 +517,7 @@ class OfficialSdkStreamBackend:
                 isinstance(message, _ReceivedStreamPayload)
                 and message.generation != self._generation
             ):
+                performance_diagnostics.record_stream_stale_generation_rejection()
                 with self._message_metrics_lock:
                     self._messages_dequeued += 1
                     self._message_queue_depth = max(
@@ -658,6 +678,17 @@ class WebullWebSocketClient:
     ) -> None:
         if self.lifecycle_sink is not None:
             self.lifecycle_sink(event, attempt, error)
+        backend_metrics = getattr(self.backend, "generation_metrics", {})
+        generation = backend_metrics.get("generation")
+        session_hash = getattr(self.backend, "session_identity_hash", None)
+        performance_diagnostics.record_stream_lifecycle(
+            event,
+            error=error,
+            attempt=attempt,
+            maximum_attempts=getattr(self.policy, "maximum_attempts", None),
+            generation=generation,
+            session_id_hash=session_hash if isinstance(session_hash, str) else None,
+        )
 
     def _remember_ordering_sample(
         self,
@@ -935,6 +966,7 @@ class WebullWebSocketClient:
                 if event.event_type is MarketEventType.HEARTBEAT and isinstance(event.payload, HeartbeatPayload):
                     self.health = update_health(self.health, last_successful_heartbeat=event.timestamp)
                 self._successful_receive_count += 1
+                performance_diagnostics.record_stream_normalized_event()
                 performance_diagnostics.increment_startup_counter(
                     "normalized_market_events_emitted"
                 )
@@ -1014,7 +1046,22 @@ class WebullWebSocketClient:
                     self.health.reconnect_count + 1,
                     exc,
                 )
-                self.sleeper(self.policy.backoff_seconds); self.backend.connect(); self.backend.subscribe(self.channels)
+                try:
+                    self.sleeper(self.policy.backoff_seconds)
+                    self.backend.connect()
+                    self.backend.subscribe(self.channels)
+                except Exception as reconnect_error:
+                    self._notify(
+                        "reconnect_failed",
+                        self.health.reconnect_count + 1,
+                        reconnect_error,
+                    )
+                    self._notify(
+                        "terminal_failure",
+                        self.health.reconnect_count,
+                        reconnect_error,
+                    )
+                    raise
                 network_attempt += 1
                 self.health = update_health(self.health, websocket_connected=True, reconnect_count=self.health.reconnect_count + 1)
                 self._notify(
