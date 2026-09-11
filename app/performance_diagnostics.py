@@ -31,11 +31,14 @@ _STARTUP_STAGES = (
     "first_scanner_evaluation", "scanner_active", "feed_healthy", "stale_detected",
     "reconnect_started", "reconnect_completed", "first_fresh_payload_after_reconnect",
     "consumer_create_requested", "consumer_started", "consumer_stopped",
+    "first_reference_ready", "first_qualification_ready", "all_references_terminal",
 )
 
 _STARTUP_COUNTERS = (
     "reference_warmup_symbols_total", "reference_warmup_symbols_completed",
     "reference_warmup_symbols_accepted", "reference_warmup_symbols_rejected",
+    "reference_warmup_symbols_ready", "reference_warmup_symbols_pending",
+    "reference_warmup_symbols_failed",
     "raw_callbacks_received", "callbacks_enqueued", "callbacks_dequeued",
     "decode_attempts", "decode_successes", "decode_failures", "decode_ignored",
     "normalized_market_events_emitted", "scanner_market_events_received",
@@ -693,6 +696,15 @@ class PerformanceDiagnostics:
             raise ValueError("startup diagnostic increment cannot be negative")
         with self._lock:
             self._startup_counters[name] += amount
+
+    def set_startup_counter(self, name: str, value: int) -> None:
+        """Set a bounded startup gauge such as pending reference work."""
+        if name not in _STARTUP_COUNTERS:
+            raise ValueError(f"unknown startup diagnostic counter: {name}")
+        if value < 0:
+            raise ValueError("startup diagnostic counter cannot be negative")
+        with self._lock:
+            self._startup_counters[name] = value
 
     def set_startup_reference_symbol(self, symbol: str | None) -> None:
         with self._lock:

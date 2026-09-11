@@ -208,6 +208,9 @@ class LiveScannerCoordinator:
         if observer is not None and not callable(observer):
             raise TypeError("readiness observer must be callable or None")
         self._readiness_observer = observer
+        setter = getattr(self._engine, "set_reference_ready_observer", None)
+        if callable(setter):
+            setter(self._notify_readiness)
 
     def recover_stream(self) -> tuple[str, ...]:
         """Reconnect the transport and restore the current subscription."""
@@ -372,13 +375,22 @@ class LiveScannerCoordinator:
                 asset_classes,
                 force_reference_refresh=force_reference_refresh,
             )
-            observer = self._readiness_observer
-            if observer is not None and not self._reference_stop.is_set():
-                observer()
+            if not callable(getattr(self._engine, "set_reference_ready_observer", None)):
+                self._notify_readiness()
         except Exception:
             # The runtime consumer remains alive; the existing scanner
             # qualification failure path owns reporting of warmup errors.
             return
+
+    def _notify_readiness(self) -> None:
+        observer = self._readiness_observer
+        if observer is not None and not self._reference_stop.is_set():
+            try:
+                observer()
+            except Exception:
+                # A non-authoritative readiness publisher must not stop
+                # reference acquisition for the remaining symbols.
+                return
 
     def set_event_observer(
         self,

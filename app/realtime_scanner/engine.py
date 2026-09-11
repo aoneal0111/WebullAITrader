@@ -71,6 +71,7 @@ class RealtimeScannerEngine:
         self._ignored_events = 0
         self._state_lock = RLock()
         self._prepared_selection = None
+        self._reference_ready_observer: Callable[[], object] | None = None
 
     def prepare_universe(
         self,
@@ -88,7 +89,7 @@ class RealtimeScannerEngine:
         performance_diagnostics.record_startup_stage("universe_refresh_started")
         performance_diagnostics.record_startup_stage("reference_warmup_started")
         selection = self._universe_service.select_all(asset_classes)
-        included = tuple(selection.included)
+        included = _unique_symbols(selection.included)
         symbols = tuple(item.symbol.strip().upper() for item in included)
         with self._state_lock:
             self._prepared_selection = selection
@@ -107,6 +108,15 @@ class RealtimeScannerEngine:
         performance_diagnostics.increment_startup_counter(
             "reference_warmup_symbols_total", len(included)
         )
+        performance_diagnostics.set_startup_counter(
+            "reference_warmup_symbols_pending", len(included)
+        )
+        performance_diagnostics.set_startup_counter(
+            "reference_warmup_symbols_ready", 0
+        )
+        performance_diagnostics.set_startup_counter(
+            "reference_warmup_symbols_failed", 0
+        )
         return self.subscription_symbols
 
     def refresh_universe(
@@ -121,14 +131,26 @@ class RealtimeScannerEngine:
         performance_diagnostics.record_startup_stage("universe_refresh_started")
         performance_diagnostics.record_startup_stage("reference_warmup_started")
         selection = getattr(self, "_prepared_selection", None)
+        selected_directly = selection is None
         if selection is None:
             selection = self._universe_service.select_all(asset_classes)
-            performance_diagnostics.increment_startup_counter(
-                "reference_warmup_symbols_total", len(selection.included)
-            )
         self._prepared_selection = None
+        included = _unique_symbols(selection.included)
+        if selected_directly:
+            performance_diagnostics.increment_startup_counter(
+                "reference_warmup_symbols_total", len(included)
+            )
         self._universe_size = len(selection.included) + len(selection.excluded)
-        self._eligible_symbol_count = len(selection.included)
+        self._eligible_symbol_count = len(included)
+        performance_diagnostics.set_startup_counter(
+            "reference_warmup_symbols_pending", len(included)
+        )
+        performance_diagnostics.set_startup_counter(
+            "reference_warmup_symbols_ready", 0
+        )
+        performance_diagnostics.set_startup_counter(
+            "reference_warmup_symbols_failed", 0
+        )
 
         active_symbols: set[str] = set()
         active_asset_classes: dict[str, AssetClass] = {}
@@ -139,7 +161,7 @@ class RealtimeScannerEngine:
         missing: list[ReferenceWarmupFailure] = []
         successful_records = []
 
-        for item in selection.included:
+        for item in included:
             reference_started = perf_counter()
             reference_success = False
             reference_failure: str | None = None
@@ -207,6 +229,22 @@ class RealtimeScannerEngine:
                     success=False,
                     failure=reference_failure,
                 )
+                with self._state_lock:
+                    self._pending_reference_symbols.discard(symbol)
+                    self._reference_failures = list(failures)
+                    self._warmup_result = ReferenceWarmupResult(
+                        active_symbols=tuple(sorted(self._active_symbols)),
+                        temporary_failures=tuple(temporary),
+                        unsupported_rejections=tuple(unsupported),
+                        missing_data_failures=tuple(missing),
+                    )
+                performance_diagnostics.set_startup_counter(
+                    "reference_warmup_symbols_pending",
+                    len(self._pending_reference_symbols),
+                )
+                performance_diagnostics.set_startup_counter(
+                    "reference_warmup_symbols_failed", len(failures)
+                )
                 continue
 
             successful_records.append(record)
@@ -232,6 +270,14 @@ class RealtimeScannerEngine:
             active_symbols.add(symbol)
             active_asset_classes[symbol] = item.asset_class
             subscription_symbols[symbol] = item.api_symbol or symbol
+            with self._state_lock:
+                self._active_symbols.add(symbol)
+                self._active_asset_classes[symbol] = item.asset_class
+                self._pending_reference_symbols.discard(symbol)
+                self._warmup_result = ReferenceWarmupResult(
+                    active_symbols=tuple(sorted(self._active_symbols)),
+                    successful_records=tuple(successful_records),
+                )
             _observe_admission(
                 self._admission_observer,
                 stage=UniverseAdmissionStage.UNIVERSE_ADMITTED,
@@ -252,6 +298,17 @@ class RealtimeScannerEngine:
                 success=reference_success,
                 cache_hit=None,
             )
+            performance_diagnostics.record_startup_stage("first_reference_ready")
+            performance_diagnostics.record_startup_stage("first_qualification_ready")
+            performance_diagnostics.set_startup_counter(
+                "reference_warmup_symbols_pending",
+                len(self._pending_reference_symbols),
+            )
+            performance_diagnostics.set_startup_counter(
+                "reference_warmup_symbols_ready", len(active_symbols)
+            )
+            if self._reference_ready_observer is not None:
+                self._reference_ready_observer()
 
         self._warmup_result = ReferenceWarmupResult(
             active_symbols=tuple(sorted(active_symbols)),
@@ -277,6 +334,16 @@ class RealtimeScannerEngine:
             self._reference_failures = failures
 
         performance_diagnostics.set_startup_reference_symbol(None)
+        performance_diagnostics.set_startup_counter(
+            "reference_warmup_symbols_pending", 0
+        )
+        performance_diagnostics.set_startup_counter(
+            "reference_warmup_symbols_ready", len(active_symbols)
+        )
+        performance_diagnostics.set_startup_counter(
+            "reference_warmup_symbols_failed", len(failures)
+        )
+        performance_diagnostics.record_startup_stage("all_references_terminal")
         performance_diagnostics.record_startup_stage("reference_warmup_completed")
         performance_diagnostics.record_startup_stage("universe_refresh_completed")
 
@@ -357,6 +424,14 @@ class RealtimeScannerEngine:
             except Exception:
                 pass
 
+    def set_reference_ready_observer(
+        self,
+        observer: Callable[[], object] | None,
+    ) -> None:
+        if observer is not None and not callable(observer):
+            raise TypeError("reference-ready observer must be callable or None")
+        self._reference_ready_observer = observer
+
     def ranked_candidates(
         self,
         *,
@@ -434,6 +509,10 @@ class RealtimeScannerEngine:
         return tuple(sorted(self._pending_reference_symbols))
 
     @property
+    def failed_reference_symbols(self) -> tuple[str, ...]:
+        return tuple(sorted(failure.symbol for failure in self._reference_failures))
+
+    @property
     def warmup_result(self) -> ReferenceWarmupResult:
         return self._warmup_result
 
@@ -483,6 +562,18 @@ def _event_symbol(event: Any) -> str | None:
 
     normalized = str(value).strip().upper()
     return normalized or None
+
+
+def _unique_symbols(items: Iterable[Any]) -> tuple[Any, ...]:
+    unique: list[Any] = []
+    seen: set[str] = set()
+    for item in items:
+        symbol = str(item.symbol).strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        unique.append(item)
+    return tuple(unique)
 
 
 def _utc_now() -> datetime:

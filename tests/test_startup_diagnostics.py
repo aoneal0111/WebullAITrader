@@ -20,7 +20,7 @@ def test_startup_stage_is_first_occurrence_and_durations_are_bounded() -> None:
     assert metrics["registration_ready_at"] is None
     assert metrics["transport_to_registration_ms"] is None
     assert metrics["decode_attempts"] == 3
-    assert len(metrics) < 64
+    assert len(metrics) < 80
 
 
 def test_startup_counters_and_reference_symbol_are_scalar_only() -> None:
