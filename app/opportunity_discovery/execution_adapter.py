@@ -107,8 +107,16 @@ class ExecutionCandidate:
         if setup_type is None:
             raise ValueError("strategy has no Warrior setup projection")
         state = SetupState.TRIGGERED if self.formation_state is DetectionState.DETECTED else SetupState.FORMING
-        return SetupDetection(setup_type, state, self.setup_quality, self.trigger_price,
-                              self.structural_stop, stop_model)
+        return SetupDetection(
+            setup_type, state, self.setup_quality, self.trigger_price,
+            self.structural_stop, stop_model,
+            taxonomy_strategy_id=self.strategy_type,
+            taxonomy_strategy_memberships=self.strategy_memberships,
+            taxonomy_opportunity_id=self.opportunity_id,
+            taxonomy_opportunity_anchor=self.opportunity_anchor,
+            taxonomy_execution_identity=self.execution_identity,
+            taxonomy_invalidation_reason=self.invalidation_reason,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,7 +165,8 @@ class MultiStrategyExecutionAdapter:
     def adapt(self, opportunity: NormalizedOpportunity, *, strategy_scores: Mapping[str, Decimal],
               observed_at: datetime, freshness_max_age: timedelta, freshness_authority: str,
               spread_percent: Decimal | None, dollar_volume: Decimal | None,
-              diagnostics: object | None = None) -> AdapterResult:
+              diagnostics: object | None = None,
+              setup_quality: Decimal | None = None) -> AdapterResult:
         """Validate one normalized opportunity without changing its source state."""
         memberships = tuple(opportunity.memberships)
         matched = tuple(item for item in memberships if item.strategy_id in self.execution_allowlist)
@@ -299,7 +308,7 @@ class MultiStrategyExecutionAdapter:
             trigger_price=selected.trigger_level,
             structural_stop=selected.structural_stop,
             risk_per_share=selected.trigger_level - selected.structural_stop,
-            setup_quality=selected_score,
+            setup_quality=selected_score if setup_quality is None else setup_quality,
             invalidation_state=selected.state,
             invalidation_reason=selected.reason_codes,
             freshness_authority=freshness_authority,

@@ -711,6 +711,7 @@ class PerformanceDiagnostics:
                 "strategy_evaluations",
                 "symbol", "composition_outcome", "taxonomy_selected_strategy",
                 "legacy_setup", "arbitration_winner", "suppressed_candidate",
+                "selection_scoring",
             }
             record = {str(key): _json_safe(value) for key, value in values.items() if key in allowed}
             with self._lock:

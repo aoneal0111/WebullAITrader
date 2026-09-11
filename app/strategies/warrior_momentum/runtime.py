@@ -99,6 +99,12 @@ class WarriorMomentumRuntime:
             float_shares=candidate.float_shares, spread_percent=candidate.spread_percent,
             volume=candidate.volume, dollar_volume=candidate.dollar_volume,
             setup_score=setup.score, reasoning_codes=(), execution_authorized=False,
+            taxonomy_strategy_id=setup.taxonomy_strategy_id,
+            taxonomy_strategy_memberships=setup.taxonomy_strategy_memberships,
+            taxonomy_opportunity_id=setup.taxonomy_opportunity_id,
+            taxonomy_opportunity_anchor=setup.taxonomy_opportunity_anchor,
+            taxonomy_execution_identity=setup.taxonomy_execution_identity,
+            taxonomy_invalidation_reason=setup.taxonomy_invalidation_reason,
         )
 
     def assess_entry(self, candidate: MomentumCandidate) -> tuple[MomentumCandidate, MomentumEntrySignal | None]:

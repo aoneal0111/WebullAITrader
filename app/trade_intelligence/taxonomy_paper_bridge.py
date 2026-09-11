@@ -30,7 +30,7 @@ class TaxonomyPaperExecutionBridge:
                 result = self.adapter.adapt(
                     opportunity,
                     strategy_scores={
-                        item.strategy_id: legacy_candidate.score.total
+                        item.strategy_id: Decimal("0")
                         for item in opportunity.memberships
                     },
                     observed_at=(
@@ -40,6 +40,10 @@ class TaxonomyPaperExecutionBridge:
                     freshness_authority=value.quote_provenance,
                     spread_percent=legacy_candidate.spread_percent,
                     dollar_volume=legacy_candidate.dollar_volume,
+                    setup_quality=(
+                        None if legacy_candidate.setup is None
+                        else legacy_candidate.setup.score
+                    ),
                 )
                 if result.candidate is None:
                     continue
@@ -74,6 +78,7 @@ class TaxonomyPaperExecutionBridge:
                     suppressed_candidate=(
                         None if legacy_signal is None else legacy_signal.setup_type.value
                     ),
+                    selection_scoring="NEUTRAL_NO_MEMBERSHIP_QUALITY",
                 )
                 if legacy_signal is not None:
                     return None, None

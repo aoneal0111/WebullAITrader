@@ -160,6 +160,9 @@ class PaperEntryAuthorizationDecision:
 
 def lifecycle_identity(signal: object) -> str:
     """Derive a stable identity from the existing Warrior signal boundary."""
+    taxonomy_identity = getattr(signal, "taxonomy_execution_identity", None)
+    if taxonomy_identity is not None and str(taxonomy_identity).strip():
+        return str(taxonomy_identity).strip()
     explicit = getattr(signal, "lifecycle_id", None)
     if explicit is not None and str(explicit).strip():
         return str(explicit).strip()
@@ -176,6 +179,9 @@ def lifecycle_identity(signal: object) -> str:
 
 def opportunity_identity(signal: object) -> str:
     """Return the stable anchor for one strategy-qualified opportunity."""
+    taxonomy_opportunity = getattr(signal, "taxonomy_opportunity_id", None)
+    if taxonomy_opportunity is not None and str(taxonomy_opportunity).strip():
+        return str(taxonomy_opportunity).strip()
     explicit = getattr(signal, "opportunity_id", None)
     if explicit is not None and str(explicit).strip():
         return str(explicit).strip()
@@ -510,6 +516,15 @@ class AutonomousPaperExecutionBridge:
             authorization_timestamp=datetime.now(UTC),
             requested_quantity=shares,
             initial_limit=trigger,
+            taxonomy_strategy_id=getattr(signal, "taxonomy_strategy_id", None),
+            taxonomy_strategy_memberships=getattr(signal, "taxonomy_strategy_memberships", ()),
+            opportunity_id=opportunity,
+            opportunity_anchor=(
+                getattr(signal, "taxonomy_opportunity_anchor", None)
+                or opportunity
+            ),
+            execution_identity=getattr(signal, "taxonomy_execution_identity", None),
+            invalidation_reason=getattr(signal, "taxonomy_invalidation_reason", ()),
         )
 
         def gate(name: str, passed: bool, observed: object, required: object) -> bool:
@@ -619,6 +634,11 @@ class AutonomousPaperExecutionBridge:
                             "replacement_sequence": "0",
                             "original_planned_entry": str(trigger),
                             "structural_stop": str(getattr(signal, "stop_price", "")),
+                            "taxonomy_strategy_id": getattr(signal, "taxonomy_strategy_id", None),
+                            "taxonomy_strategy_memberships": list(getattr(signal, "taxonomy_strategy_memberships", ())),
+                            "opportunity_anchor": str(getattr(signal, "taxonomy_opportunity_anchor", "")),
+                            "execution_identity": getattr(signal, "taxonomy_execution_identity", None),
+                            "taxonomy_invalidation_reason": list(getattr(signal, "taxonomy_invalidation_reason", ())),
                             "entry_validity_seconds": str(
                                 int(BAR_INTERVAL.total_seconds())
                             ),

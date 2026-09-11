@@ -134,6 +134,12 @@ class SetupDetection:
     stop_model: StopModel | None = None
     resistance: Decimal | None = None
     reason_codes: tuple[ReasonCode, ...] = ()
+    taxonomy_strategy_id: str | None = None
+    taxonomy_strategy_memberships: tuple[str, ...] = ()
+    taxonomy_opportunity_id: str | None = None
+    taxonomy_opportunity_anchor: str | None = None
+    taxonomy_execution_identity: str | None = None
+    taxonomy_invalidation_reason: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +195,12 @@ class MomentumEntrySignal:
     setup_score: Decimal
     reasoning_codes: tuple[ReasonCode, ...]
     execution_authorized: bool = False
+    taxonomy_strategy_id: str | None = None
+    taxonomy_strategy_memberships: tuple[str, ...] = ()
+    taxonomy_opportunity_id: str | None = None
+    taxonomy_opportunity_anchor: str | None = None
+    taxonomy_execution_identity: str | None = None
+    taxonomy_invalidation_reason: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.strategy_id != STRATEGY_ID:

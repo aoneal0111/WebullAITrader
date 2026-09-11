@@ -1,6 +1,7 @@
 from app.opportunity_discovery import MultiStrategyExecutionAdapter
 from app.trade_intelligence.taxonomy_paper_bridge import TaxonomyPaperExecutionBridge
 from app.strategies.warrior_momentum.forward_runtime import WarriorForwardCaptureService
+from app.strategies.warrior_momentum.autonomous_paper import lifecycle_identity, opportunity_identity
 from app.strategies.warrior_momentum.forward_store import ForwardCaptureStore
 from app.strategies.warrior_momentum.forward_queue import ForwardCaptureWriter
 from tests.warrior_momentum.test_forward_capture import point
@@ -33,6 +34,14 @@ def test_paper_taxonomy_candidate_reaches_existing_signal_seam(tmp_path):
         assert signal is not None
         assert signal.execution_authorized is False
         assert signal.risk_per_share > 0
+        assert signal.taxonomy_strategy_id in signal.taxonomy_strategy_memberships
+        assert signal.taxonomy_strategy_memberships
+        assert signal.taxonomy_opportunity_id
+        assert signal.taxonomy_opportunity_anchor
+        assert signal.taxonomy_execution_identity
+        assert lifecycle_identity(signal) == signal.taxonomy_execution_identity
+        assert opportunity_identity(signal) == signal.taxonomy_opportunity_id
+        assert signal.stop_price == projected.setup.stop_price
     finally:
         writer.close()
 
