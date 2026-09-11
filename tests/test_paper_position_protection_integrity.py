@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -13,6 +13,7 @@ from app.strategies.warrior_momentum.autonomous_paper import (
     PaperExitSubmissionDecision,
     PaperExitSubmissionState,
 )
+from app.performance_diagnostics import performance_diagnostics
 from tests.warrior_momentum.test_forward_capture import account, point
 from tests.test_support.session_clock import create_session_paper_composition
 
@@ -175,6 +176,72 @@ def test_real_paper_bridge_creates_and_resizes_correlated_stop(tmp_path: Path):
             for order in composition.order_book.open_orders_for_symbol("XYZ")
             if order.request.side.value == "SELL"
         )
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_partial_fill_protection_survives_parent_entry_expiry_with_stale_context(
+    tmp_path: Path,
+):
+    position = {"XYZ": D("0")}
+    composition = create_session_paper_composition(at=NOW)
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+        position_quantity_source=lambda symbol: position.get(symbol, D("0")),
+        management_context_source=lambda _symbol: "previous-lifecycle",
+    )
+    store = ForwardCaptureStore(tmp_path / "partial-expiry-protection.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+
+    def submit_entry(signal, shares, risk):
+        result = bridge.submit_entry_decision(signal, shares, risk)
+        if result.authorized:
+            position[signal.symbol] = D("40")
+        return result
+
+    service = WarriorForwardCaptureService(
+        store,
+        writer,
+        paper_entry_submitter=submit_entry,
+        paper_exit_submitter=bridge.ensure_exit,
+        paper_position_quantity_source=lambda symbol: position.get(symbol, D("0")),
+    )
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+
+        parent = next(
+            order for order in composition.order_book.open_orders_for_symbol("XYZ")
+            if order.request.side.value == "BUY"
+        )
+        composition.gateway.reconcile_temporal_validity(
+            at=parent.request.entry_valid_until + timedelta(seconds=1),
+        )
+        assert composition.order_book.get(parent.order_id).status.value == "EXPIRED"
+
+        stops = [
+            order for order in composition.order_book.open_orders_for_symbol("XYZ")
+            if order.request.side.value == "SELL"
+            and order.request.order_type.value == "STOP"
+        ]
+        assert len(stops) == 1
+        assert stops[0].remaining_quantity == D("40")
+        bridge.ensure_exit(
+            "XYZ", 40, D("2.00"), "STOP",
+            stops[0].request.strategy_lifecycle_id,
+        )
+        stops = [
+            order for order in composition.order_book.open_orders_for_symbol("XYZ")
+            if order.request.side.value == "SELL"
+            and order.request.order_type.value == "STOP"
+        ]
+        assert len(stops) == 1
+        events = performance_diagnostics.reconciliation_metrics()["protection_events"]
+        assert any(item["state"] == "PROTECTION_SUBMIT_ACCEPTED" for item in events)
+        assert any(item["state"] == "PROTECTION_ALREADY_PRESENT" for item in events)
     finally:
         writer.close()
         composition.close()

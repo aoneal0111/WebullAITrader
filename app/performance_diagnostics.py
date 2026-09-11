@@ -23,6 +23,7 @@ _MAX_STREAM_FAILURE_SAMPLES = 16
 _MAX_ENTRY_LIFECYCLE_RECORDS = 256
 _MAX_ENTRY_PURSUIT_RECORDS = 512
 _MAX_SETUP_TRANSITION_RECORDS = 512
+_MAX_PROTECTION_EVENTS = 256
 _ENTRY_COUNTERS = (
     "entry_authorizations", "entry_orders_submitted", "pursuit_evaluations",
     "pursuit_not_invoked_due_to_state", "replacement_candidates",
@@ -441,6 +442,7 @@ class PerformanceDiagnostics:
         self._entry_lifecycle_records: OrderedDict[str, dict[str, object]] = OrderedDict()
         self._entry_pursuit_records: deque[dict[str, object]] = deque(maxlen=_MAX_ENTRY_PURSUIT_RECORDS)
         self._entry_setup_records: deque[dict[str, object]] = deque(maxlen=_MAX_SETUP_TRANSITION_RECORDS)
+        self._protection_events: deque[dict[str, object]] = deque(maxlen=_MAX_PROTECTION_EVENTS)
         self._entry_last_setup_state: OrderedDict[str, str] = OrderedDict()
         self._run_id = uuid4().hex
         self._process_started_at = datetime.now(UTC)
@@ -719,9 +721,27 @@ class PerformanceDiagnostics:
         with self._lock:
             self._reconciliation_counters[name] += amount
 
-    def reconciliation_metrics(self) -> dict[str, int]:
+    def record_protection_event(self, *, state: str, **values: object) -> None:
+        """Record one bounded protection handoff event in memory.
+
+        The normal asynchronous diagnostics writer persists this with the next
+        artifact flush.  Protection diagnostics must never become an execution
+        dependency, so failures are intentionally isolated here.
+        """
+        try:
+            record = {"state": str(state).strip().upper()}
+            record.update({str(key): _json_safe(value) for key, value in values.items() if value is not None})
+            with self._lock:
+                self._protection_events.append(record)
+        except Exception:
+            return
+
+    def reconciliation_metrics(self) -> dict[str, object]:
         with self._lock:
-            return dict(self._reconciliation_counters)
+            result: dict[str, object] = dict(self._reconciliation_counters)
+            result["protection_events"] = tuple(self._protection_events)
+            result["protection_event_limit"] = _MAX_PROTECTION_EVENTS
+            return result
 
     def record_order_flow_result(
         self,

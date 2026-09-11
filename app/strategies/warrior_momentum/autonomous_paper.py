@@ -402,6 +402,16 @@ class AutonomousPaperExecutionBridge:
                 )
                 if stops and int(stops[0].remaining_quantity) == quantity:
                     self._management_incomplete.discard(symbol)
+                    performance_diagnostics.record_protection_event(
+                        state="PROTECTION_RECONCILED",
+                        symbol=symbol,
+                        lifecycle_id=identity,
+                        authoritative_open_quantity=quantity,
+                        protected_quantity=quantity,
+                        stop_price=stops[0].request.stop_price,
+                        order_id=stops[0].order_id,
+                        reason="RESTORED_PROTECTION_MATCHES_POSITION",
+                    )
                     reconciled.append(symbol)
                     continue
                 if stops and not self._cancel_working_order(stops[0]):
@@ -414,6 +424,16 @@ class AutonomousPaperExecutionBridge:
                 result = self._place_exit(symbol, quantity, stop, "STOP", identity)
                 if result.protection_active:
                     self._management_incomplete.discard(symbol)
+                    performance_diagnostics.record_protection_event(
+                        state="PROTECTION_RECONCILED",
+                        symbol=symbol,
+                        lifecycle_id=identity,
+                        authoritative_open_quantity=quantity,
+                        protected_quantity=quantity,
+                        stop_price=stop,
+                        order_id=result.order_id,
+                        reason="RESTORED_PROTECTION_SUBMITTED",
+                    )
                     reconciled.append(symbol)
                 else:
                     self._management_incomplete.add(symbol)
@@ -1180,6 +1200,16 @@ class AutonomousPaperExecutionBridge:
     ) -> PaperExitSubmissionDecision:
         normalized = symbol.strip().upper()
         reason_key = reason.strip().upper()
+        protective = reason_key in {"STOP", "STOP_LOSS"}
+        if protective and quantity > 0:
+            performance_diagnostics.record_protection_event(
+                state="PROTECTION_REQUIRED",
+                symbol=normalized,
+                lifecycle_id=lifecycle_id,
+                authoritative_open_quantity=quantity,
+                stop_price=price,
+                reason=reason_key,
+            )
         if not self._authorized(normalized) or quantity <= 0 or self.readiness is not AutonomousPaperReadiness.READY:
             return PaperExitSubmissionDecision(
                 PaperExitSubmissionState.UNAVAILABLE, normalized,
@@ -1212,10 +1242,18 @@ class AutonomousPaperExecutionBridge:
                 and active is not None
                 and active == lifecycle_id
                 and not active.startswith("recovered:")
-                and self.management_context_source is not None
-                and self.management_context_source(normalized) is None
             )
             if not management_ready and not initial_protection_race:
+                if protective:
+                    performance_diagnostics.record_protection_event(
+                        state="PROTECTION_SUBMIT_FAILED",
+                        symbol=normalized,
+                        lifecycle_id=lifecycle_id,
+                        authoritative_open_quantity=quantity,
+                        protected_quantity=0,
+                        stop_price=price,
+                        reason="MANAGEMENT_NOT_READY",
+                    )
                 return PaperExitSubmissionDecision(
                     PaperExitSubmissionState.UNAVAILABLE, normalized,
                     lifecycle_id, reason_key,
@@ -1286,6 +1324,17 @@ class AutonomousPaperExecutionBridge:
                         return self._place_exit(
                             normalized, quantity, price, reason_key, identity,
                         )
+                    if protective:
+                        performance_diagnostics.record_protection_event(
+                            state="PROTECTION_ALREADY_PRESENT",
+                            symbol=normalized,
+                            lifecycle_id=identity,
+                            authoritative_open_quantity=quantity,
+                            protected_quantity=int(working_sell.remaining_quantity),
+                            stop_price=working_sell.request.stop_price,
+                            order_id=working_sell.order_id,
+                            reason=reason_key,
+                        )
                     return PaperExitSubmissionDecision(
                         PaperExitSubmissionState.WORKING, normalized,
                         identity, reason_key, working_sell.order_id,
@@ -1306,26 +1355,59 @@ class AutonomousPaperExecutionBridge:
         reason_key: str, identity: str,
     ) -> PaperExitSubmissionDecision:
         protective = reason_key in {"STOP", "STOP_LOSS"}
-        result = self.trading_service.place_order(
-            self.order_command_factory.create_placement_request(
-                OrderEntryCommand(
-                    symbol=normalized, side="SELL", quantity=Decimal(quantity),
-                    order_type="STOP" if protective else "LIMIT",
-                    limit_price=None if protective else Decimal(price),
-                    stop_price=Decimal(price) if protective else None,
-                    # Position management must survive DAY rollover.  Entry
-                    # validity is handled separately before exposure exists.
-                    time_in_force="GTC",
-                    strategy_lifecycle_id=identity,
-                    metadata={
-                        "source": "autonomous-paper",
-                        "reason": reason_key,
-                        "lifecycle_id": identity,
-                    },
+        if protective:
+            performance_diagnostics.record_protection_event(
+                state="PROTECTION_SUBMIT_ATTEMPT",
+                symbol=normalized,
+                lifecycle_id=identity,
+                authoritative_open_quantity=quantity,
+                protected_quantity=quantity,
+                stop_price=price,
+                reason=reason_key,
+            )
+        try:
+            result = self.trading_service.place_order(
+                self.order_command_factory.create_placement_request(
+                    OrderEntryCommand(
+                        symbol=normalized, side="SELL", quantity=Decimal(quantity),
+                        order_type="STOP" if protective else "LIMIT",
+                        limit_price=None if protective else Decimal(price),
+                        stop_price=Decimal(price) if protective else None,
+                        # Position management must survive DAY rollover.  Entry
+                        # validity is handled separately before exposure exists.
+                        time_in_force="GTC",
+                        strategy_lifecycle_id=identity,
+                        metadata={
+                            "source": "autonomous-paper",
+                            "reason": reason_key,
+                            "lifecycle_id": identity,
+                        },
+                    )
                 )
             )
-        )
+        except Exception as exc:
+            if protective:
+                performance_diagnostics.record_protection_event(
+                    state="PROTECTION_SUBMIT_FAILED",
+                    symbol=normalized,
+                    lifecycle_id=identity,
+                    authoritative_open_quantity=quantity,
+                    protected_quantity=0,
+                    stop_price=price,
+                    reason=type(exc).__name__,
+                )
+            raise
         if not result.success:
+            if protective:
+                performance_diagnostics.record_protection_event(
+                    state="PROTECTION_SUBMIT_FAILED",
+                    symbol=normalized,
+                    lifecycle_id=identity,
+                    authoritative_open_quantity=quantity,
+                    protected_quantity=0,
+                    stop_price=price,
+                    reason=getattr(result, "decision", None),
+                )
             return PaperExitSubmissionDecision(
                 PaperExitSubmissionState.UNAVAILABLE, normalized,
                 identity, reason_key,
@@ -1333,6 +1415,17 @@ class AutonomousPaperExecutionBridge:
         key = (identity, reason_key)
         self._remember(self._exit_keys, key)
         self._exit_orders[key] = result.broker_order_id
+        if protective:
+            performance_diagnostics.record_protection_event(
+                state="PROTECTION_SUBMIT_ACCEPTED",
+                symbol=normalized,
+                lifecycle_id=identity,
+                authoritative_open_quantity=quantity,
+                protected_quantity=quantity,
+                stop_price=price,
+                order_id=result.broker_order_id,
+                reason=reason_key,
+            )
         return PaperExitSubmissionDecision(
             PaperExitSubmissionState.SUBMITTED, normalized,
             identity, reason_key, result.broker_order_id,
