@@ -31,6 +31,7 @@ _NEAR_MISS_RULES = frozenset({
     "dollar_volume",
     "spread",
 })
+_MAX_DISPLAYED_DECISIONS = 25
 
 
 def _scanner_classification(
@@ -46,7 +47,7 @@ def _scanner_classification(
         and decision.technical_failed_rules[0] in _NEAR_MISS_RULES
     ):
         return "NEAR MISS"
-    return None
+    return "INELIGIBLE"
 
 
 class ScannerSnapshotPublisher:
@@ -126,16 +127,9 @@ class ScannerSnapshotPublisher:
         ranked = snapshot.ranked_candidates
         ranked_symbols = {candidate.symbol for candidate in ranked}
         decisions = {decision.symbol: decision for decision in snapshot.decisions}
-        display_candidates = tuple(
+        complete_ranked = tuple(
             sorted(
-                (
-                    decision
-                    for decision in decisions.values()
-                    if _scanner_classification(
-                        decision,
-                        ranked_symbols,
-                    ) is not None
-                ),
+                decisions.values(),
                 key=lambda decision: (
                     decision.scanner_rank
                     if decision.scanner_rank is not None
@@ -144,7 +138,8 @@ class ScannerSnapshotPublisher:
                     decision.symbol,
                 ),
             )
-        )
+        )[:_MAX_DISPLAYED_DECISIONS]
+        display_candidates = complete_ranked
         self._record_population_diagnostics(
             snapshot,
             decisions,
@@ -337,6 +332,12 @@ class ScannerSnapshotPublisher:
                 message = (
                     f"Scanner near miss {candidate.symbol}; "
                     f"failed {candidate.technical_failed_rules[0]}."
+                )
+            elif classification == "INELIGIBLE":
+                event_type = "SCANNER_CANDIDATE_INELIGIBLE"
+                message = (
+                    f"Scanner evaluated {candidate.symbol}; "
+                    "ineligible for execution."
                 )
             else:
                 raise RuntimeError(

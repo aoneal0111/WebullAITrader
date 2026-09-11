@@ -31,6 +31,7 @@ def decision(
     current_volume: Decimal | None = None,
     average_volume: Decimal | None = None,
     trade_timestamp: datetime | None = None,
+    technical_failed_rules: tuple[str, ...] = (),
 ) -> ScannerDecision:
     return ScannerDecision(
         symbol=symbol,
@@ -49,6 +50,7 @@ def decision(
         current_volume=current_volume,
         average_30_day_volume=average_volume,
         trade_timestamp=trade_timestamp,
+        technical_failed_rules=technical_failed_rules,
     )
 
 
@@ -89,10 +91,13 @@ def test_rejected_decisions_are_ranked_but_displayed_population_is_separate():
 
     population = diagnostics.scanner_population_metrics()
     assert population["all_decision_rank_count"] == 2
-    assert population["displayed_candidate_count"] == 1
-    assert population["hidden_rejected_count"] == 1
-    assert population["highest_hidden_rejected_score"] == 99
-    assert population["hidden_ranked_ahead_by_displayed_candidate"] == {"WATCH": 1}
+    assert population["displayed_candidate_count"] == 2
+    assert population["hidden_rejected_count"] == 0
+    assert population["highest_hidden_rejected_score"] is None
+    assert population["hidden_ranked_ahead_by_displayed_candidate"] == {
+        "HIDDEN": 0,
+        "WATCH": 0,
+    }
     assert population["watching_count"] == 1
 
 
@@ -134,7 +139,7 @@ def test_population_diagnostics_are_bounded():
 
     population = diagnostics.scanner_population_metrics()
     assert len(population["top_sample"]) == 25
-    assert population["hidden_rejected_count"] == 30
+    assert population["hidden_rejected_count"] == 5
     assert population["failed_rule_distribution"]["3_plus"] == 30
 
 
@@ -271,3 +276,95 @@ def test_completeness_transition_is_one_bounded_record_with_age_and_recovery():
     assert record["complete"] is True
     assert record["incomplete_age_ms"] is None
     assert record["complete_transition_count"] == 1
+
+
+def test_all_view_publishes_complete_ineligible_decisions_without_qualifying_them():
+    diagnostics = PerformanceDiagnostics()
+    events = []
+    publisher = ScannerSnapshotPublisher(
+        events.append,
+        lambda: 1,
+        source="test",
+        stale_after=timedelta(minutes=5),
+        diagnostics=diagnostics,
+    )
+    rejected = decision(
+        "REJECTED",
+        qualified=False,
+        score=90,
+        failed_rules=("relative_volume", "spread"),
+        scanner_rank=1,
+    )
+    near_miss = decision(
+        "NEAR",
+        qualified=False,
+        score=80,
+        failed_rules=("relative_volume",),
+        watching=False,
+        scanner_rank=2,
+        technical_failed_rules=("relative_volume",),
+    )
+    publisher.publish(
+        ScannerSnapshot(
+            timestamp=NOW,
+            active_symbols=("REJECTED", "NEAR", "INCOMPLETE"),
+            decisions=(rejected, near_miss),
+            ranked_candidates=(),
+            processed_events=1,
+            ignored_events=0,
+            reference_failures=(),
+        ),
+        cycle=1,
+        now=NOW,
+    )
+
+    rows = {
+        event.symbol: dict(event.watchlist.metadata)
+        for event in events
+        if event.watchlist is not None and event.watchlist.subscribed is True
+    }
+    assert rows["REJECTED"]["scanner_classification"] == "INELIGIBLE"
+    assert rows["REJECTED"]["scanner_failed_rules"] == "relative_volume, spread"
+    assert "REJECTED" not in publisher._published_symbols
+    assert "INCOMPLETE" not in rows
+
+
+def test_all_view_retains_existing_classifications_and_is_bounded_to_25_rows():
+    diagnostics = PerformanceDiagnostics()
+    events = []
+    publisher = ScannerSnapshotPublisher(
+        events.append,
+        lambda: 1,
+        source="test",
+        stale_after=timedelta(minutes=5),
+        diagnostics=diagnostics,
+    )
+    decisions = tuple(
+        decision(
+            f"S{index:02d}",
+            qualified=False,
+            score=100 - index,
+            failed_rules=("relative_volume", "spread"),
+            scanner_rank=index + 1,
+        )
+        for index in range(30)
+    )
+    publisher.publish(
+        ScannerSnapshot(
+            timestamp=NOW,
+            active_symbols=tuple(item.symbol for item in decisions),
+            decisions=decisions,
+            ranked_candidates=(),
+            processed_events=1,
+            ignored_events=0,
+            reference_failures=(),
+        ),
+        cycle=1,
+        now=NOW,
+    )
+    rows = {
+        event.symbol for event in events
+        if event.watchlist is not None and event.watchlist.subscribed is True
+    }
+    assert len(rows) == 25
+    assert "S00" in rows and "S24" in rows and "S25" not in rows

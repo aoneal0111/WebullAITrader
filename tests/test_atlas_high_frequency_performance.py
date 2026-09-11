@@ -211,7 +211,7 @@ def test_technical_only_candidate_is_visible_without_becoming_ranked() -> None:
     assert metadata["scanner_classification"] == "WATCHING"
     assert metadata["technical_qualifies_without_catalyst"] == "true"
 
-    assert not any(
+    assert any(
         event.symbol == "NOPE"
         and event.watchlist is not None
         and event.watchlist.subscribed is True
@@ -407,12 +407,15 @@ def test_single_soft_technical_failure_is_near_miss_but_safety_failure_is_hidden
     assert metadata["scanner_classification"] == "NEAR MISS"
     assert metadata["scanner_failed_rules"] == "percentage_change"
 
-    assert not any(
+    ineligible_events = [
         event.symbol == "HALT"
         and event.watchlist is not None
         and event.watchlist.subscribed is True
         for event in events
-    )
+    ]
+    assert any(ineligible_events)
+    halt_event = next(event for event in events if event.symbol == "HALT")
+    assert dict(halt_event.watchlist.metadata)["scanner_classification"] == "INELIGIBLE"
 
 
 def test_candidate_exit_logs_failed_rule_and_transition_values(caplog) -> None:
