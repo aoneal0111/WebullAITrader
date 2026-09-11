@@ -124,6 +124,24 @@ class MarketEventScannerAdapter:
             "reference_count": len(self.reference_store),
         }
 
+    def population_metrics(self) -> dict[str, object]:
+        """Return bounded aggregate completeness diagnostics for current states."""
+        missing_counts = {
+            name: 0 for name in (
+                "timestamp", "last_price", "bid", "ask", "current_volume",
+                "previous_close", "average_30_day_volume", "float_shares",
+                "catalyst", "tradable", "other",
+            )
+        }
+        for state in self._states.values():
+            _observation, missing = self._build_observation(state)
+            for field in missing:
+                missing_counts[field if field in missing_counts else "other"] += 1
+        return {
+            "adapter_state_count": len(self._states),
+            "missing_field_counts": missing_counts,
+        }
+
     def reset_symbol(self, symbol: str) -> None:
         self._states.pop(symbol.strip().upper(), None)
 

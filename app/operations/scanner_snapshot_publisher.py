@@ -145,6 +145,12 @@ class ScannerSnapshotPublisher:
                 ),
             )
         )
+        self._record_population_diagnostics(
+            snapshot,
+            decisions,
+            ranked_symbols,
+            display_candidates,
+        )
         current = {candidate.symbol for candidate in display_candidates}
 
         self._log_candidate_transitions(ranked, decisions)
@@ -382,6 +388,81 @@ class ScannerSnapshotPublisher:
         }
         self._last_decisions = decisions
         return stale_symbols
+
+    def _record_population_diagnostics(
+        self,
+        snapshot: ScannerSnapshot,
+        decisions: dict[str, ScannerDecision],
+        ranked_symbols: set[str],
+        display_candidates: tuple[ScannerDecision, ...],
+    ) -> None:
+        rejection_rules = (
+            "price_range", "percentage_change", "relative_volume",
+            "float_verified", "low_float", "news_catalyst", "tradable",
+            "not_halted", "dollar_volume", "spread",
+        )
+        rejection_counts = {rule: 0 for rule in rejection_rules}
+        failed_distribution = {"0": 0, "1": 0, "2": 0, "3_plus": 0}
+        for decision in decisions.values():
+            failed = len(decision.failed_rules)
+            bucket = str(failed) if failed < 3 else "3_plus"
+            failed_distribution[bucket] += 1
+            for rule in decision.failed_rules:
+                if rule in rejection_counts:
+                    rejection_counts[rule] += 1
+        displayed_symbols = {item.symbol for item in display_candidates}
+        hidden_rejected = tuple(
+            item for item in decisions.values()
+            if not item.qualified and item.symbol not in displayed_symbols
+        )
+        hidden_ahead = {
+            item.symbol: sum(
+                other.scanner_rank is not None
+                and item.scanner_rank is not None
+                and other.scanner_rank < item.scanner_rank
+                and other in hidden_rejected
+                for other in hidden_rejected
+            )
+            for item in display_candidates[:25]
+        }
+        sample = tuple(
+            {
+                "symbol": item.symbol,
+                "score": item.score,
+                "scanner_rank": item.scanner_rank,
+                "classification": _scanner_classification(item, ranked_symbols),
+                "failed_rules": item.failed_rules,
+                "missing_fields": (),
+            }
+            for item in sorted(
+                decisions.values(), key=lambda value: (value.scanner_rank or 999999, value.symbol)
+            )[:25]
+        )
+        self._diagnostics.record_scanner_population_display({
+            "active_symbols": len(snapshot.active_symbols),
+            "complete_decision_count": len(decisions),
+            "qualified_count": sum(item.qualified for item in decisions.values()),
+            "watching_count": sum(
+                _scanner_classification(item, ranked_symbols) == "WATCHING"
+                for item in decisions.values()
+            ),
+            "near_miss_count": sum(
+                _scanner_classification(item, ranked_symbols) == "NEAR MISS"
+                for item in decisions.values()
+            ),
+            "hidden_rejected_count": len(hidden_rejected),
+            "rejection_counts": rejection_counts,
+            "failed_rule_distribution": failed_distribution,
+            "all_decision_rank_count": sum(
+                item.scanner_rank is not None for item in decisions.values()
+            ),
+            "displayed_candidate_count": len(display_candidates),
+            "highest_hidden_rejected_score": max(
+                (item.score for item in hidden_rejected), default=None
+            ),
+            "hidden_ranked_ahead_by_displayed_candidate": hidden_ahead,
+            "top_sample": sample,
+        })
 
     def _publish_experiment_candidates(
         self,

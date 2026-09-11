@@ -454,6 +454,15 @@ class RealtimeScannerEngine:
                 "scanner clock must return a timezone-aware datetime"
             )
 
+        population_metrics = getattr(self._pipeline, "population_metrics", None)
+        if callable(population_metrics):
+            values = population_metrics()
+            performance_diagnostics.record_scanner_population_base(
+                active_symbols=len(self._active_symbols),
+                adapter_state_count=int(values.get("adapter_state_count", 0)),
+                missing_field_counts=values.get("missing_field_counts", {}),
+            )
+
         decisions = tuple(
             sorted(
                 self._decisions.values(),

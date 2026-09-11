@@ -355,6 +355,23 @@ class PerformanceDiagnostics:
             "concurrency_high_water": 1,
             "latest_failure": None,
         }
+        self._scanner_population: dict[str, object] = {
+            "active_symbols": 0,
+            "adapter_state_count": 0,
+            "complete_decision_count": 0,
+            "qualified_count": 0,
+            "watching_count": 0,
+            "near_miss_count": 0,
+            "hidden_rejected_count": 0,
+            "missing_field_counts": {},
+            "rejection_counts": {},
+            "failed_rule_distribution": {"0": 0, "1": 0, "2": 0, "3_plus": 0},
+            "all_decision_rank_count": 0,
+            "displayed_candidate_count": 0,
+            "highest_hidden_rejected_score": None,
+            "hidden_ranked_ahead_by_displayed_candidate": {},
+            "top_sample": (),
+        }
         self._run_id = uuid4().hex
         self._process_started_at = datetime.now(UTC)
         self._artifact_path: Path | None = None
@@ -513,6 +530,7 @@ class PerformanceDiagnostics:
                 "reconciliation": _json_safe(self.reconciliation_metrics()),
                 "order_flow": _json_safe(self.order_flow_metrics()),
                 "reference": _json_safe(self.reference_metrics()),
+                "scanner_population": _json_safe(self.scanner_population_metrics()),
                 "durable": {
                     "checkpoint_count": checkpoint_count + 1,
                     "write_failures": self.durable_metrics()["write_failures"],
@@ -626,6 +644,35 @@ class PerformanceDiagnostics:
                 latency_max_ms=round(max(ordered, default=0.0), 3),
             )
             return values
+
+    def record_scanner_population_base(
+        self,
+        *,
+        active_symbols: int,
+        adapter_state_count: int,
+        missing_field_counts: object,
+    ) -> None:
+        """Record current adapter population without retaining symbol history."""
+        with self._lock:
+            self._scanner_population["active_symbols"] = max(0, int(active_symbols))
+            self._scanner_population["adapter_state_count"] = max(0, int(adapter_state_count))
+            self._scanner_population["missing_field_counts"] = {
+                str(key): max(0, int(value))
+                for key, value in dict(missing_field_counts).items()
+            }
+
+    def record_scanner_population_display(self, values: dict[str, object]) -> None:
+        """Replace bounded decision/display aggregates for the latest snapshot."""
+        with self._lock:
+            for key, value in values.items():
+                if key == "top_sample":
+                    self._scanner_population[key] = tuple(value)[:25]
+                else:
+                    self._scanner_population[key] = value
+
+    def scanner_population_metrics(self) -> dict[str, object]:
+        with self._lock:
+            return _json_safe(dict(self._scanner_population))
 
     @contextmanager
     def operations_publication(self, event_type: str):
