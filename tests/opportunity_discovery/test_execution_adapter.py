@@ -5,7 +5,8 @@ from decimal import Decimal
 import pytest
 
 from app.opportunity_discovery import (
-    AdapterRejection, DetectionState, MultiStrategyExecutionAdapter,
+    ACTIVE_STRATEGY_ORDER, AdapterRejection, DetectionState,
+    FULL_EXECUTION_ALLOWLIST, MultiStrategyExecutionAdapter,
     PULLBACK_CONTINUATION_FAMILY, PULLBACK_CONTINUATION_ORDER, default_registry,
 )
 from tests.opportunity_discovery.conftest import clean_pullback, context
@@ -48,6 +49,22 @@ def test_pullback_continuation_family_is_explicitly_allowlisted():
     result = MultiStrategyExecutionAdapter().adapt(_opportunity(), **_kwargs(_opportunity()))
     assert result.candidate is not None
     assert result.candidate.selected_execution_strategy == PULLBACK_CONTINUATION_ORDER[0]
+
+
+def test_full_allowlist_matches_exactly_active_taxonomy():
+    assert len(ACTIVE_STRATEGY_ORDER) == 23
+    assert FULL_EXECUTION_ALLOWLIST == set(ACTIVE_STRATEGY_ORDER)
+
+
+def test_every_active_strategy_can_pass_the_normalized_contract():
+    opportunity = _opportunity()
+    source = opportunity.memberships[0]
+    for strategy in ACTIVE_STRATEGY_ORDER:
+        membership = replace(source, strategy_id=strategy)
+        adapted = replace(opportunity, memberships=(membership,))
+        result = MultiStrategyExecutionAdapter().adapt(adapted, **_kwargs(adapted))
+        assert result.candidate is not None, strategy
+        assert result.candidate.selected_execution_strategy == strategy
 
 
 def test_each_family_detector_has_trigger_stop_and_positive_risk():

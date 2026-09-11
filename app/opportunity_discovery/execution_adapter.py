@@ -16,7 +16,8 @@ from typing import Mapping
 
 from app.strategies.warrior_momentum.models import SetupDetection, SetupState, SetupType, StopModel
 
-from .contracts import DetectionState, NormalizedOpportunity
+from .contracts import DetectionState, DetectorAvailability, NormalizedOpportunity
+from .taxonomy import STRATEGY_TAXONOMY
 
 
 class AdapterRejection(StrEnum):
@@ -107,6 +108,12 @@ PULLBACK_CONTINUATION_ORDER = (
     "SHALLOW_PULLBACK_CONTINUATION", "VOLUME_CONTRACTION_PULLBACK",
     "MOMENTUM_REACCELERATION",
 )
+ACTIVE_STRATEGY_ORDER = tuple(
+    item.strategy_id for item in STRATEGY_TAXONOMY
+    if item.availability is DetectorAvailability.ACTIVE
+)
+FULL_EXECUTION_ALLOWLIST = frozenset(ACTIVE_STRATEGY_ORDER)
+FULL_INVALIDATION_CAPABILITIES = FULL_EXECUTION_ALLOWLIST
 PHASE1_EXECUTION_ALLOWLIST = frozenset({"MICRO_PULLBACK"})
 PHASE1_INVALIDATION_CAPABILITIES = frozenset({"MICRO_PULLBACK"})
 PHASE2_EXECUTION_ALLOWLIST = PULLBACK_CONTINUATION_FAMILY
@@ -116,8 +123,8 @@ PHASE2_INVALIDATION_CAPABILITIES = PULLBACK_CONTINUATION_FAMILY
 class MultiStrategyExecutionAdapter:
     """Bounded validator/selector; it never places or authorizes an order."""
 
-    def __init__(self, *, execution_allowlist: frozenset[str] | set[str] | tuple[str, ...] = PHASE2_EXECUTION_ALLOWLIST,
-                 invalidation_capabilities: frozenset[str] | set[str] | tuple[str, ...] = PHASE2_INVALIDATION_CAPABILITIES,
+    def __init__(self, *, execution_allowlist: frozenset[str] | set[str] | tuple[str, ...] = FULL_EXECUTION_ALLOWLIST,
+                 invalidation_capabilities: frozenset[str] | set[str] | tuple[str, ...] = FULL_INVALIDATION_CAPABILITIES,
                  maximum_identities: int = 256, diagnostics: object | None = None) -> None:
         if maximum_identities <= 0:
             raise ValueError("maximum execution identities must be positive")
@@ -232,14 +239,14 @@ class MultiStrategyExecutionAdapter:
                                 strategy_evaluations=tuple(evaluations))
 
         primary = opportunity.primary_strategy_id
-        strategy_order = {name: -index for index, name in enumerate(PULLBACK_CONTINUATION_ORDER)}
+        strategy_order = {name: -index for index, name in enumerate(ACTIVE_STRATEGY_ORDER)}
         selected, selected_score = max(
             eligible,
             key=lambda pair: (
                 2 if pair[0].state is DetectionState.DETECTED else 1,
                 pair[1],
-                1 if pair[0].strategy_id == primary else 0,
                 strategy_order.get(pair[0].strategy_id, -len(strategy_order)),
+                1 if pair[0].strategy_id == primary else 0,
             ),
         )
         execution_identity = self._identity(opportunity)
@@ -323,5 +330,6 @@ __all__ = [
     "MultiStrategyExecutionAdapter", "PHASE1_EXECUTION_ALLOWLIST",
     "PHASE1_INVALIDATION_CAPABILITIES", "PHASE2_EXECUTION_ALLOWLIST",
     "PHASE2_INVALIDATION_CAPABILITIES", "PULLBACK_CONTINUATION_FAMILY",
-    "PULLBACK_CONTINUATION_ORDER",
+    "PULLBACK_CONTINUATION_ORDER", "ACTIVE_STRATEGY_ORDER",
+    "FULL_EXECUTION_ALLOWLIST", "FULL_INVALIDATION_CAPABILITIES",
 ]
