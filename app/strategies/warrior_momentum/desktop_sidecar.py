@@ -47,6 +47,7 @@ from .shadow_latched import (
 _RUNTIME_LOGGER = logging.getLogger("atlas.runtime")
 
 STRATEGY_VERSION = "WARRIOR_MOMENTUM_V1"
+_PROTECTION_AUDIT_INTERVAL_SECONDS = 15.0
 
 
 class WarriorCaptureHealth(StrEnum):
@@ -211,6 +212,9 @@ class WarriorDesktopSidecar:
         self._daily_report: DailyForwardReport | None = None
         self._last_metrics: CaptureMetrics | None = None
         self._report_error_type: str | None = None
+        self._protection_dirty: set[str] = set()
+        self._last_protection_quantity: dict[str, int] = {}
+        self._last_protection_attempt_at: dict[str, float] = {}
 
     def bind_scanner_adapter(self, adapter: MarketEventScannerAdapter) -> None:
         if not isinstance(adapter, MarketEventScannerAdapter):
@@ -508,22 +512,18 @@ class WarriorDesktopSidecar:
             (perf_counter() - lock_started) * 1000.0,
             event_type="GUI_REFRESH",
         )
+        reconcile_service = None
+        reconcile_symbol: str | None = None
         try:
             if self._health is not WarriorCaptureHealth.RUNNING:
                 return
             try:
                 self._consume(event)
                 if event.symbol is not None and self._service is not None:
-                    protection_started = perf_counter()
-                    self._service.reconcile_authoritative_protection(
-                        event.symbol, event.timestamp,
-                    )
-                    performance_diagnostics.record_component_duration(
-                        "warrior.protection_reconciliation",
-                        (perf_counter() - protection_started) * 1000.0,
-                        event_type=getattr(getattr(event, "event_type", None), "value", None),
-                        symbol=event.symbol,
-                    )
+                    normalized = event.symbol.strip().upper()
+                    if self._protection_reconciliation_due(normalized):
+                        reconcile_service = self._service
+                        reconcile_symbol = normalized
                 self._update_health()
             except Exception as exc:
                 # Capture health is deliberately isolated from stream health.
@@ -531,6 +531,66 @@ class WarriorDesktopSidecar:
                 self._health = WarriorCaptureHealth.DEGRADED
         finally:
             self._lock.release()
+
+        if reconcile_service is None or reconcile_symbol is None:
+            return
+        protection_started = perf_counter()
+        protection_success = False
+        try:
+            protection_success = bool(
+                reconcile_service.reconcile_authoritative_protection(
+                    reconcile_symbol, event.timestamp,
+                )
+            )
+        except Exception as exc:
+            with self._lock:
+                self._protection_dirty.add(reconcile_symbol)
+                self._last_error_type = type(exc).__name__
+                self._health = WarriorCaptureHealth.DEGRADED
+        finally:
+            with self._lock:
+                if protection_success:
+                    self._protection_dirty.discard(reconcile_symbol)
+                else:
+                    self._protection_dirty.add(reconcile_symbol)
+            performance_diagnostics.record_component_duration(
+                "warrior.protection_reconciliation",
+                (perf_counter() - protection_started) * 1000.0,
+                event_type=getattr(getattr(event, "event_type", None), "value", None),
+                symbol=reconcile_symbol,
+                success=protection_success,
+            )
+
+    def _protection_reconciliation_due(self, symbol: str) -> bool:
+        """Return whether a protection audit is needed without doing I/O."""
+        source = self._paper_position_quantity_source
+        if source is None:
+            return False
+        quantity = max(0, int(source(symbol)))
+        previous = self._last_protection_quantity.get(symbol)
+        self._last_protection_quantity[symbol] = quantity
+        if quantity <= 0:
+            self._protection_dirty.discard(symbol)
+            self._last_protection_attempt_at.pop(symbol, None)
+            return False
+
+        now = monotonic()
+        changed = previous != quantity
+        if changed:
+            self._protection_dirty.add(symbol)
+        last_attempt = self._last_protection_attempt_at.get(symbol)
+        periodic_due = (
+            last_attempt is None
+            or now - last_attempt >= _PROTECTION_AUDIT_INTERVAL_SECONDS
+        )
+        if periodic_due:
+            self._protection_dirty.add(symbol)
+        if symbol not in self._protection_dirty:
+            return False
+        if not changed and not periodic_due:
+            return False
+        self._last_protection_attempt_at[symbol] = now
+        return True
 
     def snapshot(self) -> WarriorPaperSnapshot:
         lock_started = perf_counter()
