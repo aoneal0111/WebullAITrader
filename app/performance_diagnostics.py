@@ -712,6 +712,10 @@ class PerformanceDiagnostics:
                 "symbol", "composition_outcome", "taxonomy_selected_strategy",
                 "legacy_setup", "arbitration_winner", "suppressed_candidate",
                 "selection_scoring",
+                "premarket_context_state", "premarket_bar_count",
+                "premarket_earliest", "premarket_latest",
+                "premarket_decision_cutoff",
+                "premarket_high_available", "premarket_consolidation_available",
             }
             record = {str(key): _json_safe(value) for key, value in values.items() if key in allowed}
             with self._lock:
