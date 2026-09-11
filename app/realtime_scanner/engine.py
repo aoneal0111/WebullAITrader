@@ -123,6 +123,9 @@ class RealtimeScannerEngine:
         selection = getattr(self, "_prepared_selection", None)
         if selection is None:
             selection = self._universe_service.select_all(asset_classes)
+            performance_diagnostics.increment_startup_counter(
+                "reference_warmup_symbols_total", len(selection.included)
+            )
         self._prepared_selection = None
         self._universe_size = len(selection.included) + len(selection.excluded)
         self._eligible_symbol_count = len(selection.included)
@@ -135,10 +138,6 @@ class RealtimeScannerEngine:
         temporary: list[ReferenceWarmupFailure] = []
         missing: list[ReferenceWarmupFailure] = []
         successful_records = []
-
-        performance_diagnostics.increment_startup_counter(
-            "reference_warmup_symbols_total", len(selection.included)
-        )
 
         for item in selection.included:
             reference_started = perf_counter()

@@ -369,6 +369,13 @@ class DesktopBrokerRuntimeDriver:
         try:
             if self._scanner is not None:
                 performance_diagnostics.record_startup_stage("stream_connect_started")
+                readiness_setter = getattr(
+                    self._scanner,
+                    "set_readiness_observer",
+                    None,
+                )
+                if callable(readiness_setter):
+                    readiness_setter(self._on_scanner_readiness_changed)
                 if (
                     self._market_data_probe is not None
                     and self._startup_validation is None
@@ -378,18 +385,14 @@ class DesktopBrokerRuntimeDriver:
                     if not result.scanner_ready:
                         self._scanner.disconnect()
                         return
-                scanner_active = self._start_scanner()
-                if scanner_active:
+                observation_ready = self._start_scanner()
+                if observation_ready and getattr(
+                    self._scanner, "qualification_ready", False
+                ):
                     performance_diagnostics.record_startup_stage("scanner_active")
                 self._start_dynamic_momentum_discovery()
-                if scanner_active:
-                    self._market_data_stop.clear()
-                    self._market_data_thread = Thread(
-                        target=self._receive_market_data,
-                        args=(stop_event,),
-                        name="desktop-market-data",
-                    )
-                    self._market_data_thread.start()
+                if observation_ready:
+                    self._start_market_data_consumer(stop_event)
                 return
             self._market_data.connect()
             self._market_data_connected = True
@@ -453,13 +456,23 @@ class DesktopBrokerRuntimeDriver:
             self._market_data_connected = False
             return
 
+        self._start_market_data_consumer(stop_event)
+
+    def _start_market_data_consumer(self, stop_event: Event) -> None:
+        existing = self._market_data_thread
+        if existing is not None and existing.is_alive():
+            return
         self._market_data_stop.clear()
+        performance_diagnostics.record_startup_stage(
+            "consumer_create_requested"
+        )
         self._market_data_thread = Thread(
             target=self._receive_market_data,
             args=(stop_event,),
             name="desktop-market-data",
         )
         self._market_data_thread.start()
+        performance_diagnostics.record_startup_stage("consumer_started")
 
     def _start_dynamic_momentum_discovery(self) -> None:
         runtime = self._dynamic_momentum_discovery
@@ -581,6 +594,22 @@ class DesktopBrokerRuntimeDriver:
             getattr(scanner, "pending_reference_symbols", ())
         )
         ready_symbols = tuple(getattr(warmup_snapshot, "active_symbols", ()))
+        observation_channels = tuple(getattr(scanner, "channels", ()))
+        retained_channels = tuple(
+            getattr(scanner, "retained_channels", ())
+        )
+        performance_diagnostics.increment_startup_counter(
+            "observation_channel_count", len(observation_channels)
+        )
+        performance_diagnostics.increment_startup_counter(
+            "ready_symbol_count", len(ready_symbols)
+        )
+        performance_diagnostics.increment_startup_counter(
+            "pending_reference_symbol_count", len(pending_reference_symbols)
+        )
+        performance_diagnostics.increment_startup_counter(
+            "retained_channel_count", len(retained_channels)
+        )
         performance_diagnostics.increment("scanner_snapshots_generated")
         universe_size = getattr(
             warmup_snapshot, "universe_size", len(active_symbols)
@@ -603,7 +632,11 @@ class DesktopBrokerRuntimeDriver:
             f"Scanner eligibility completed: eligible_symbol_count={eligible_count}; "
             f"reference_ready_count={len(ready_symbols)}.",
         )
-        if not ready_symbols and not pending_reference_symbols:
+        if (
+            not ready_symbols
+            and not pending_reference_symbols
+            and not observation_channels
+        ):
             reason = (
                 getattr(warmup_snapshot, "health_reason", None)
                 or "No symbols survived scanner reference warmup."
@@ -647,7 +680,7 @@ class DesktopBrokerRuntimeDriver:
             )
             self._scanner_log(
                 "channels_subscribed",
-                f"Subscribed quote and trade channels for {len(pending_reference_symbols)} pending symbols.",
+                f"Subscribed quote and trade channels for {len(observation_channels)} observation symbols.",
                 health=RuntimeHealthUpdate(
                     market_data_status="SUBSCRIBED",
                     streaming_status="CONNECTED",
@@ -657,12 +690,29 @@ class DesktopBrokerRuntimeDriver:
                     reference_cache_status="WARMING",
                     ranking_status="WARMING",
                     supported_symbols=0,
-                    subscription_symbols=tuple(sorted(pending_reference_symbols)),
+                    subscription_symbols=observation_channels,
                 ),
             )
             self._scanner_log(
                 "market_data_subscriptions",
-                f"Scanner market-data subscription count={len(pending_reference_symbols)}.",
+                f"Scanner market-data subscription count={len(observation_channels)}.",
+            )
+            return True
+        if not ready_symbols and observation_channels:
+            self._scanner_log(
+                "market_data_observation_only",
+                "Market-data observation channels are active while scanner qualification is unavailable.",
+                health=RuntimeHealthUpdate(
+                    market_data_status="CONNECTED",
+                    streaming_status="CONNECTED",
+                    scanner_status="WARMING",
+                    universe_status="LOADED",
+                    symbols_status="REFERENCE_PENDING",
+                    reference_cache_status="WARMING",
+                    ranking_status="WARMING",
+                    supported_symbols=0,
+                    subscription_symbols=observation_channels,
+                ),
             )
             return True
         if warmup_snapshot.reference_failures:
@@ -686,7 +736,7 @@ class DesktopBrokerRuntimeDriver:
         self._scanner_log(
             "channels_subscribed",
             f"Subscribed quote and trade channels for "
-            f"{len(active_symbols)} symbols.",
+            f"{len(observation_channels)} symbols.",
             health=RuntimeHealthUpdate(
                 market_data_status="SUBSCRIBED",
                 streaming_status="CONNECTED",
@@ -696,14 +746,41 @@ class DesktopBrokerRuntimeDriver:
                 reference_cache_status="WARM",
                 ranking_status="ACTIVE",
                 supported_symbols=len(ready_symbols),
-                subscription_symbols=tuple(sorted(ready_symbols)),
+                subscription_symbols=observation_channels,
             ),
         )
         self._scanner_log(
             "market_data_subscriptions",
-            f"Scanner market-data subscription count={len(ready_symbols)}.",
+            f"Scanner market-data subscription count={len(observation_channels)}.",
         )
         return True
+
+    def _on_scanner_readiness_changed(self) -> None:
+        """Publish qualification promotion without restarting the feed."""
+        scanner = self._scanner
+        if scanner is None:
+            return
+        snapshot = scanner.snapshot()
+        ready_symbols = tuple(getattr(snapshot, "active_symbols", ()))
+        if not ready_symbols:
+            return
+        performance_diagnostics.record_startup_stage("scanner_active")
+        self._scanner_log(
+            "reference_warmup_completed",
+            f"Scanner qualification became ready for {len(ready_symbols)} symbols; "
+            "existing market-data consumer remains active.",
+            health=RuntimeHealthUpdate(
+                market_data_status="CONNECTED",
+                streaming_status="CONNECTED",
+                scanner_status="RUNNING",
+                universe_status="LOADED",
+                symbols_status="VALIDATED",
+                reference_cache_status="WARM",
+                ranking_status="ACTIVE",
+                supported_symbols=len(ready_symbols),
+                subscription_symbols=tuple(getattr(scanner, "channels", ())),
+            ),
+        )
 
     def _publish_probe_result(self, result: object) -> None:
         reason = getattr(result, "reason", None)
@@ -1176,6 +1253,7 @@ class DesktopBrokerRuntimeDriver:
                     "market-data receive worker did not stop cooperatively"
                 )
             self._market_data_thread = None
+            performance_diagnostics.record_startup_stage("consumer_stopped")
 
         if self._scanner is not None:
             # Scanner-owned research resources must close even when streaming

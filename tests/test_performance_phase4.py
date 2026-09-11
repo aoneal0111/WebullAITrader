@@ -9,7 +9,6 @@ from time import monotonic
 from app.live_scanner.coordinator import LiveScannerCoordinator
 from app.momentum_scanner import AssetClass
 from app.realtime_scanner.engine import RealtimeScannerEngine
-from app.realtime_scanner.models import ReferenceWarmupResult
 from app.universe import SecurityType, UniverseSelection, UniverseSymbol
 
 
@@ -82,6 +81,52 @@ def test_reference_warmup_does_not_block_callback_consumption() -> None:
     coordinator.run_once()
     assert engine.events == [_Event("DBGI")]
     engine.release.set()
+    coordinator.stop()
+
+
+def test_coordinator_forwards_pending_references_and_observation_readiness() -> None:
+    transport = _Transport()
+    engine = _AsyncEngine()
+    coordinator = LiveScannerCoordinator(transport, engine)
+
+    coordinator.start(asset_classes=(AssetClass.STOCK,))
+    assert coordinator.pending_reference_symbols == ("DBGI",)
+    assert coordinator.observation_ready is True
+    assert coordinator.qualification_ready is False
+    engine.release.set()
+    coordinator.stop()
+
+
+def test_reference_completion_promotes_readiness_without_resubscription() -> None:
+    transport = _Transport()
+    engine = _AsyncEngine()
+    coordinator = LiveScannerCoordinator(transport, engine)
+    promoted = Event()
+    coordinator.set_readiness_observer(promoted.set)
+
+    coordinator.start(asset_classes=(AssetClass.STOCK,))
+    subscriptions_before = len(transport.subscriptions)
+    engine.release.set()
+    assert promoted.wait(1.0)
+    assert coordinator.qualification_ready is True
+    assert len(transport.subscriptions) == subscriptions_before
+    coordinator.stop()
+
+
+def test_retained_position_channel_keeps_observation_ready_without_candidates() -> None:
+    transport = _Transport()
+    engine = _AsyncEngine()
+    engine.pending_reference_symbols = ()
+    engine.subscription_symbols = ()
+    coordinator = LiveScannerCoordinator(
+        transport,
+        engine,
+        retained_channels_source=lambda: ("DBGI",),
+    )
+
+    assert coordinator.start(asset_classes=(AssetClass.STOCK,)) == ()
+    assert coordinator.observation_ready is True
+    assert coordinator.channels == ("DBGI",)
     coordinator.stop()
 
 

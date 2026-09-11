@@ -71,6 +71,7 @@ class LiveScannerCoordinator:
         self._decisions_created = 0
         self._reference_stop = Event()
         self._reference_thread: Thread | None = None
+        self._readiness_observer: Callable[[], object] | None = None
 
     def connect(self) -> None:
         if self._connected:
@@ -199,6 +200,14 @@ class LiveScannerCoordinator:
         close = getattr(self._engine, "close", None)
         if callable(close):
             close()
+
+    def set_readiness_observer(
+        self,
+        observer: Callable[[], object] | None,
+    ) -> None:
+        if observer is not None and not callable(observer):
+            raise TypeError("readiness observer must be callable or None")
+        self._readiness_observer = observer
 
     def recover_stream(self) -> tuple[str, ...]:
         """Reconnect the transport and restore the current subscription."""
@@ -363,6 +372,9 @@ class LiveScannerCoordinator:
                 asset_classes,
                 force_reference_refresh=force_reference_refresh,
             )
+            observer = self._readiness_observer
+            if observer is not None and not self._reference_stop.is_set():
+                observer()
         except Exception:
             # The runtime consumer remains alive; the existing scanner
             # qualification failure path owns reporting of warmup errors.
@@ -406,6 +418,26 @@ class LiveScannerCoordinator:
     @property
     def channels(self) -> tuple[str, ...]:
         return self._channels
+
+    @property
+    def active_symbols(self) -> tuple[str, ...]:
+        return tuple(getattr(self._engine, "active_symbols", ()))
+
+    @property
+    def pending_reference_symbols(self) -> tuple[str, ...]:
+        return tuple(getattr(self._engine, "pending_reference_symbols", ()))
+
+    @property
+    def qualification_ready(self) -> bool:
+        return bool(self.active_symbols)
+
+    @property
+    def observation_ready(self) -> bool:
+        return bool(self._channels)
+
+    @property
+    def retained_channels(self) -> tuple[str, ...]:
+        return self._retained_channels()
 
     @property
     def heartbeat_ok(self) -> bool:

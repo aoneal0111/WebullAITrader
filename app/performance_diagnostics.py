@@ -30,6 +30,7 @@ _STARTUP_STAGES = (
     "first_normalized_market_event", "first_scanner_ingestion",
     "first_scanner_evaluation", "scanner_active", "feed_healthy", "stale_detected",
     "reconnect_started", "reconnect_completed", "first_fresh_payload_after_reconnect",
+    "consumer_create_requested", "consumer_started", "consumer_stopped",
 )
 
 _STARTUP_COUNTERS = (
@@ -43,6 +44,8 @@ _STARTUP_COUNTERS = (
     "subscription_completed_symbols",
     "subscription_batch_count",
     "unique_symbols_observed_before_feed_healthy",
+    "observation_channel_count", "ready_symbol_count",
+    "pending_reference_symbol_count", "retained_channel_count",
 )
 
 _STARTUP_DURATION_PAIRS = {
