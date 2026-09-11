@@ -433,6 +433,17 @@ class ScannerSnapshotPublisher:
                 "classification": _scanner_classification(item, ranked_symbols),
                 "failed_rules": item.failed_rules,
                 "missing_fields": (),
+                "current_volume": item.current_volume,
+                "average_30_day_volume": item.average_30_day_volume,
+                "computed_relative_volume": (
+                    None
+                    if item.current_volume is None
+                    or item.average_30_day_volume in (None, 0)
+                    else item.current_volume / item.average_30_day_volume
+                ),
+                "reference_timestamp": None,
+                "current_volume_source_timestamp": item.trade_timestamp,
+                "relative_volume_passed": "relative_volume" not in item.failed_rules,
             }
             for item in sorted(
                 decisions.values(), key=lambda value: (value.scanner_rank or 999999, value.symbol)

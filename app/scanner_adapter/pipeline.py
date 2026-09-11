@@ -195,9 +195,18 @@ class MomentumScannerPipeline:
             **adapter_metrics,
         }
 
-    def population_metrics(self) -> dict[str, object]:
+    def population_metrics(
+        self,
+        *,
+        active_symbols: tuple[str, ...] | None = None,
+        now=None,
+    ) -> dict[str, object]:
         metrics = getattr(self.adapter, "population_metrics", None)
-        return {} if not callable(metrics) else metrics()
+        return (
+            {}
+            if not callable(metrics)
+            else metrics(active_symbols=active_symbols, now=now)
+        )
 
     def ranked(
         self,

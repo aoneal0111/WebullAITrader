@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from app.market_data.models import (
@@ -38,6 +38,7 @@ class MarketEventScannerAdapter:
         self._states: dict[str, SymbolScannerState] = {}
         self._active_trading_date: date | None = None
         self._price_observer = price_observer
+        self._completeness_transitions: dict[str, dict[str, object]] = {}
 
     def consume(self, event: MarketEvent) -> AdapterResult | None:
         if event.symbol is None:
@@ -108,6 +109,12 @@ class MarketEventScannerAdapter:
                 )
 
         observation, missing = self._build_observation(state)
+        self._update_completeness_transition(
+            symbol,
+            observation is not None,
+            missing,
+            event.timestamp,
+        )
 
         return AdapterResult(
             state=state,
@@ -124,8 +131,14 @@ class MarketEventScannerAdapter:
             "reference_count": len(self.reference_store),
         }
 
-    def population_metrics(self) -> dict[str, object]:
+    def population_metrics(
+        self,
+        *,
+        active_symbols: tuple[str, ...] | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, object]:
         """Return bounded aggregate completeness diagnostics for current states."""
+        observed_at = now or datetime.now(UTC)
         missing_counts = {
             name: 0 for name in (
                 "timestamp", "last_price", "bid", "ask", "current_volume",
@@ -137,13 +150,81 @@ class MarketEventScannerAdapter:
             _observation, missing = self._build_observation(state)
             for field in missing:
                 missing_counts[field if field in missing_counts else "other"] += 1
+            self._update_completeness_transition(
+                state.symbol,
+                _observation is not None,
+                missing,
+                state.timestamp or observed_at,
+            )
+        selected = set(active_symbols) if active_symbols is not None else None
+        transitions = {
+            symbol: dict(values)
+            for symbol, values in self._completeness_transitions.items()
+            if selected is None or symbol in selected
+        }
+        for values in transitions.values():
+            incomplete_since = values.get("incomplete_since")
+            values["incomplete_age_ms"] = (
+                None
+                if incomplete_since is None
+                else round(
+                    max(0.0, (observed_at - incomplete_since).total_seconds())
+                    * 1000.0,
+                    3,
+                )
+            )
         return {
             "adapter_state_count": len(self._states),
             "missing_field_counts": missing_counts,
+            "completeness_transitions": transitions,
         }
 
+    def _update_completeness_transition(
+        self,
+        symbol: str,
+        complete: bool,
+        missing: tuple[str, ...],
+        observed_at: datetime,
+    ) -> None:
+        current = self._completeness_transitions.get(symbol)
+        prior_complete = None if current is None else bool(current["complete"])
+        if current is None:
+            current = {
+                "first_seen_at": observed_at,
+                "first_complete_at": observed_at if complete else None,
+                "latest_state_at": observed_at,
+                "complete": complete,
+                "missing_fields": missing,
+                "complete_transition_count": 1 if complete else 0,
+                "incomplete_transition_count": 1 if not complete else 0,
+                "incomplete_since": None if complete else observed_at,
+            }
+            self._completeness_transitions[symbol] = current
+            return
+        if prior_complete != complete:
+            key = (
+                "complete_transition_count"
+                if complete
+                else "incomplete_transition_count"
+            )
+            current[key] = int(current[key]) + 1
+        if complete and current["first_complete_at"] is None:
+            current["first_complete_at"] = observed_at
+        current["latest_state_at"] = observed_at
+        current["complete"] = complete
+        current["missing_fields"] = missing
+        current["incomplete_since"] = (
+            None
+            if complete
+            else current["incomplete_since"]
+            if prior_complete is False
+            else observed_at
+        )
+
     def reset_symbol(self, symbol: str) -> None:
-        self._states.pop(symbol.strip().upper(), None)
+        normalized = symbol.strip().upper()
+        self._states.pop(normalized, None)
+        self._completeness_transitions.pop(normalized, None)
 
     def reset_volume(self, symbol: str) -> None:
         normalized = symbol.strip().upper()

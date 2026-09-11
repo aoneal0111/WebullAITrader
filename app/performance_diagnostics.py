@@ -364,6 +364,7 @@ class PerformanceDiagnostics:
             "near_miss_count": 0,
             "hidden_rejected_count": 0,
             "missing_field_counts": {},
+            "completeness_transitions": {},
             "rejection_counts": {},
             "failed_rule_distribution": {"0": 0, "1": 0, "2": 0, "3_plus": 0},
             "all_decision_rank_count": 0,
@@ -651,6 +652,7 @@ class PerformanceDiagnostics:
         active_symbols: int,
         adapter_state_count: int,
         missing_field_counts: object,
+        completeness_transitions: object = None,
     ) -> None:
         """Record current adapter population without retaining symbol history."""
         with self._lock:
@@ -659,6 +661,10 @@ class PerformanceDiagnostics:
             self._scanner_population["missing_field_counts"] = {
                 str(key): max(0, int(value))
                 for key, value in dict(missing_field_counts).items()
+            }
+            self._scanner_population["completeness_transitions"] = {
+                str(key): dict(value)
+                for key, value in dict(completeness_transitions or {}).items()
             }
 
     def record_scanner_population_display(self, values: dict[str, object]) -> None:

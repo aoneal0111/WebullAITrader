@@ -3,6 +3,12 @@ from decimal import Decimal
 import json
 
 from app.momentum_scanner.models import ScannerDecision, ScannerMetrics
+from app.market_data.models import (
+    MarketEvent,
+    MarketEventType,
+    QuotePayload,
+    TradePayload,
+)
 from app.operations.scanner_snapshot_publisher import ScannerSnapshotPublisher
 from app.performance_diagnostics import PerformanceDiagnostics
 from app.realtime_scanner.models import ScannerSnapshot
@@ -22,6 +28,9 @@ def decision(
     failed_rules: tuple[str, ...] = (),
     watching: bool = False,
     scanner_rank: int | None = None,
+    current_volume: Decimal | None = None,
+    average_volume: Decimal | None = None,
+    trade_timestamp: datetime | None = None,
 ) -> ScannerDecision:
     return ScannerDecision(
         symbol=symbol,
@@ -37,6 +46,9 @@ def decision(
         failed_rules=failed_rules,
         technical_qualifies_without_catalyst=watching,
         scanner_rank=scanner_rank,
+        current_volume=current_volume,
+        average_30_day_volume=average_volume,
+        trade_timestamp=trade_timestamp,
     )
 
 
@@ -143,3 +155,119 @@ def test_population_diagnostics_are_durable(tmp_path):
     assert payload["scanner_population"]["active_symbols"] == 4
     assert payload["scanner_population"]["adapter_state_count"] == 6
     assert payload["scanner_population"]["qualified_count"] == 1
+
+
+def test_rvol_operands_use_production_decimal_ratio():
+    diagnostics = PerformanceDiagnostics()
+    publish(
+        (decision(
+            "RVOL",
+            qualified=False,
+            score=10,
+            failed_rules=("relative_volume",),
+            scanner_rank=1,
+            current_volume=Decimal("125"),
+            average_volume=Decimal("50"),
+        ),),
+        diagnostics,
+    )
+
+    sample = diagnostics.scanner_population_metrics()["top_sample"][0]
+    assert sample["current_volume"] == "125"
+    assert sample["average_30_day_volume"] == "50"
+    assert sample["computed_relative_volume"] == "2.5"
+    assert sample["relative_volume_passed"] is False
+
+
+def test_invalid_rvol_denominator_is_not_reported_as_a_valid_ratio():
+    diagnostics = PerformanceDiagnostics()
+    publish(
+        (decision(
+            "ZERO",
+            qualified=False,
+            score=1,
+            failed_rules=("relative_volume",),
+            scanner_rank=1,
+            current_volume=Decimal("10"),
+            average_volume=Decimal("0"),
+        ),),
+        diagnostics,
+    )
+
+    assert diagnostics.scanner_population_metrics()["top_sample"][0][
+        "computed_relative_volume"
+    ] is None
+
+
+def _event(event_type, timestamp, payload):
+    return MarketEvent(
+        sequence=1,
+        timestamp=timestamp,
+        symbol="TEST",
+        source="TEST",
+        event_type=event_type,
+        payload=payload,
+    )
+
+
+def _reference_store():
+    from app.scanner_adapter.models import ScannerReferenceData
+
+    return ScannerReferenceStore((ScannerReferenceData(
+        symbol="TEST",
+        previous_close=Decimal("5"),
+        average_30_day_volume=Decimal("100"),
+        float_shares=Decimal("1000"),
+    ),))
+
+
+def test_adapter_merges_quote_and_trade_in_either_order():
+    for events in (
+        (
+            _event(MarketEventType.QUOTE, NOW, QuotePayload(Decimal("5.9"), Decimal("6.1"), Decimal("10"), Decimal("10"))),
+            _event(MarketEventType.TRADE, NOW, TradePayload(Decimal("6"), Decimal("100"), "trade")),
+        ),
+        (
+            _event(MarketEventType.TRADE, NOW, TradePayload(Decimal("6"), Decimal("100"), "trade")),
+            _event(MarketEventType.QUOTE, NOW, QuotePayload(Decimal("5.9"), Decimal("6.1"), Decimal("10"), Decimal("10"))),
+        ),
+    ):
+        adapter = MarketEventScannerAdapter(_reference_store())
+        result = None
+        for event in events:
+            result = adapter.consume(event)
+        assert result is not None and result.observation is not None
+        assert result.observation.price == Decimal("6")
+        assert result.observation.bid == Decimal("5.9")
+        assert result.observation.ask == Decimal("6.1")
+
+
+def test_completeness_transition_is_one_bounded_record_with_age_and_recovery():
+    store = ScannerReferenceStore()
+    adapter = MarketEventScannerAdapter(store)
+    adapter.consume(_event(
+        MarketEventType.TRADE,
+        NOW,
+        TradePayload(Decimal("6"), Decimal("100"), "trade"),
+    ))
+    incomplete = adapter.population_metrics(
+        active_symbols=("TEST",), now=NOW + timedelta(seconds=5)
+    )
+    record = incomplete["completeness_transitions"]["TEST"]
+    assert record["complete"] is False
+    assert record["incomplete_age_ms"] == 5000.0
+    assert record["incomplete_transition_count"] == 1
+
+    store.put(_reference_store().get("TEST"))
+    adapter.consume(_event(
+        MarketEventType.QUOTE,
+        NOW + timedelta(seconds=6),
+        QuotePayload(Decimal("5.9"), Decimal("6.1"), Decimal("10"), Decimal("10")),
+    ))
+    recovered = adapter.population_metrics(
+        active_symbols=("TEST",), now=NOW + timedelta(seconds=7)
+    )
+    record = recovered["completeness_transitions"]["TEST"]
+    assert record["complete"] is True
+    assert record["incomplete_age_ms"] is None
+    assert record["complete_transition_count"] == 1
