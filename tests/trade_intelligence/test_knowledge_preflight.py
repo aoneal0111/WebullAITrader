@@ -3,6 +3,7 @@ import json
 
 from app.trade_intelligence.knowledge import orchestration
 from app.trade_intelligence.knowledge.orchestration import ResearchOrchestrator, RunPlan, resolve_corpus_root
+from app.trade_intelligence.knowledge.storage import KnowledgeStore
 import pytest
 
 
@@ -110,3 +111,50 @@ def test_invalid_continuation_pointer_fails_closed(tmp_path):
         "canonical_corpus_path": "corpus_repaired", "validation_status": "PASS"}), encoding="utf-8")
     with pytest.raises(RuntimeError, match="MISSING_MINED_PARTITION_INDEX"):
         resolve_corpus_root(root, validate=False)
+
+
+def _pointer_corpus(root, baseline, records):
+    corpus = root / "corpus_repaired"
+    corpus.mkdir(parents=True)
+    (root / "corpus_pointer.json").write_text(json.dumps({
+        "canonical_corpus_path": "corpus_repaired", "validation_status": "PASS",
+        "expected_mined_partitions": baseline}), encoding="utf-8")
+    store = KnowledgeStore(corpus)
+    for index, record in enumerate(records):
+        store.record_mined_partition({
+            "mining_partition_id": f"partition-{index}",
+            "mining_content_key": record,
+            "status": "COMPLETE",
+        })
+    return corpus
+
+
+def test_incremental_pointer_allows_effective_growth_and_legacy_load_is_idempotent(tmp_path):
+    root = tmp_path / "tranche"
+    corpus = _pointer_corpus(root, 2, ("content-a", "content-b", "content-c"))
+    assert resolve_corpus_root(root, validate=False) == corpus
+    assert resolve_corpus_root(root, validate=False) == corpus
+
+
+def test_incremental_pointer_fails_closed_below_validated_baseline(tmp_path):
+    root = tmp_path / "tranche"
+    _pointer_corpus(root, 3, ("content-a", "content-b"))
+    with pytest.raises(RuntimeError, match="CANONICAL_CORPUS_BELOW_VALIDATED_BASELINE"):
+        resolve_corpus_root(root, validate=False)
+
+
+def test_pointer_counts_effective_semantic_partitions_not_duplicate_records(tmp_path):
+    root = tmp_path / "tranche"
+    corpus = root / "corpus_repaired"
+    corpus.mkdir(parents=True)
+    (root / "corpus_pointer.json").write_text(json.dumps({
+        "canonical_corpus_path": "corpus_repaired", "validation_status": "PASS",
+        "expected_mined_partitions": 1}), encoding="utf-8")
+    store = KnowledgeStore(corpus)
+    for identity in ("legacy", "duplicate"):
+        store.record_mined_partition({"mining_partition_id": identity,
+                                      "candidate_plan_id": "plan", "symbol": "XYZ",
+                                      "trading_date": "2026-01-01", "normalized_sha256": "digest",
+                                      "status": "COMPLETE"})
+    assert len(store.effective_mined_partitions()) == 1
+    assert resolve_corpus_root(root, validate=False) == corpus

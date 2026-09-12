@@ -24,6 +24,8 @@ from .reporting import report, validate_corpus
 from .storage import KnowledgeStore
 from app.market.calendar import EASTERN
 
+CORPUS_POINTER_SCHEMA_VERSION = "CORPUS_POINTER_SCHEMA_V2"
+
 
 def _sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
     digest = hashlib.sha256()
@@ -83,12 +85,19 @@ def resolve_corpus_root(output_root: Path, *, validate: bool = True) -> Path:
             raise ValueError("MISSING_MINED_PARTITION_INDEX")
         if validate and validate_corpus(canonical):
             raise ValueError("INVALID_CANONICAL_CORPUS")
-        expected = pointer.get("expected_mined_partitions")
-        if expected is not None:
-            complete = sum(1 for row in KnowledgeStore(canonical).mined_partitions().values()
-                           if row.get("status") == "COMPLETE")
-            if complete != int(expected):
+        # ``expected_mined_partitions`` was the activation-time count in the
+        # legacy pointer.  It is a validated minimum for an incremental
+        # continuation, not a permanent upper bound or exact snapshot size.
+        baseline = pointer.get("validated_min_complete_partitions")
+        if baseline is None:
+            baseline = pointer.get("expected_mined_partitions")
+        if baseline is not None:
+            mode = str(pointer.get("mode", "INCREMENTAL_CONTINUATION"))
+            effective_complete = len(KnowledgeStore(canonical).effective_mined_partitions())
+            if mode == "IMMUTABLE_SNAPSHOT" and effective_complete != int(baseline):
                 raise ValueError("CANONICAL_CORPUS_PARTITION_COUNT_MISMATCH")
+            if mode != "IMMUTABLE_SNAPSHOT" and effective_complete < int(baseline):
+                raise ValueError("CANONICAL_CORPUS_BELOW_VALIDATED_BASELINE")
         return canonical
     except (OSError, ValueError, TypeError, KeyError) as exc:
         raise RuntimeError(str(exc)) from exc
