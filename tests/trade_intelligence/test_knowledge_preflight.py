@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import json
 
 from app.trade_intelligence.knowledge import orchestration
 from app.trade_intelligence.knowledge.orchestration import ResearchOrchestrator, RunPlan
@@ -40,3 +41,50 @@ def test_preflight_batches_daily_work_and_never_requests_minutes(tmp_path, monke
     assert result["minute_requests"] == 0
     assert result["candidate_symbol_days"] == 3
     assert (tmp_path / "candidates" / "candidate_days.jsonl").exists()
+
+
+def test_execution_plan_loads_authoritative_preflight_without_daily_network(tmp_path, monkeypatch):
+    FakeDailyClient.calls = []
+    monkeypatch.setattr(orchestration, "AlpacaHistoricalClient", FakeDailyClient)
+    plan = RunPlan("ALPACA", "IEX", datetime(2026, 6, 1).date(), datetime(2026, 6, 30).date(), 5000)
+    orchestrator = ResearchOrchestrator(plan, root=tmp_path)
+    preflight = orchestrator.preflight_daily(tuple(f"S{i:03d}" for i in range(3)))
+    calls_after_preflight = len(FakeDailyClient.calls)
+    handoff = orchestrator.execution_plan_only(tuple(f"S{i:03d}" for i in range(3)))
+    assert handoff["candidate_count"] == preflight["candidate_symbol_days"] == 3
+    assert handoff["candidate_artifact_sha256"] == json.loads(
+        (tmp_path / "candidates" / "candidate_plan.json").read_text(encoding="utf-8"))["candidate_artifact_sha256"]
+    assert len(FakeDailyClient.calls) == calls_after_preflight
+    assert handoff["daily_network_requests"] == 0
+    assert handoff["minute_requests"] == 0
+
+
+def test_missing_plan_rebuilds_from_daily_cache_without_network(tmp_path, monkeypatch):
+    FakeDailyClient.calls = []
+    monkeypatch.setattr(orchestration, "AlpacaHistoricalClient", FakeDailyClient)
+    symbols = tuple(f"S{i:03d}" for i in range(3))
+    plan = RunPlan("ALPACA", "IEX", datetime(2026, 6, 1).date(), datetime(2026, 6, 30).date(), 5000)
+    orchestrator = ResearchOrchestrator(plan, root=tmp_path)
+    orchestrator.preflight_daily(symbols)
+    (tmp_path / "candidates" / "candidate_plan.json").unlink()
+    FakeDailyClient.calls = []
+    rebuilt = orchestrator.prepare_candidate_plan(symbols, allow_network=False)
+    assert len(rebuilt["candidates"]) == 3
+    assert FakeDailyClient.calls == []
+
+
+def test_missing_daily_batch_refetches_only_that_batch(tmp_path, monkeypatch):
+    FakeDailyClient.calls = []
+    monkeypatch.setattr(orchestration, "AlpacaHistoricalClient", FakeDailyClient)
+    symbols = tuple(f"S{i:03d}" for i in range(3))
+    plan = RunPlan("ALPACA", "IEX", datetime(2026, 6, 1).date(), datetime(2026, 6, 30).date(), 5000)
+    orchestrator = ResearchOrchestrator(plan, root=tmp_path)
+    orchestrator.preflight_daily(symbols)
+    (tmp_path / "candidates" / "candidate_plan.json").unlink()
+    batch = next((tmp_path / "daily" / "batches").glob("*.jsonl"))
+    batch.unlink()
+    next((tmp_path / "daily" / "manifests").glob("*.json")).unlink()
+    FakeDailyClient.calls = []
+    rebuilt = orchestrator.prepare_candidate_plan(symbols, allow_network=True)
+    assert len(rebuilt["candidates"]) == 3
+    assert len(FakeDailyClient.calls) == 1

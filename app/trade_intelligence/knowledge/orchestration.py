@@ -14,7 +14,8 @@ import uuid
 
 from .acquisition import (AcquisitionConfig, AlpacaHistoricalClient, atomic_write_jsonl,
                           download_partition)
-from .candidate_days import attach_previous_closes, discover_candidate_days
+from .candidate_days import (CandidateDay, attach_previous_closes, candidate_from_record,
+                              candidate_records_hash, candidate_to_record, discover_candidate_days)
 from .mining import JsonlBarProvider, build_corpus
 from .models import ACTIVE_STRATEGIES
 from .reporting import report, validate_corpus
@@ -49,9 +50,66 @@ class ResearchOrchestrator:
     def dry_run(self) -> dict[str, object]:
         return plan_summary(self.plan)
 
-    def preflight_daily(self, symbols: tuple[str, ...]) -> dict[str, object]:
-        """Complete universe/daily/candidate planning without minute downloads."""
+    def _plan_identity(self, symbols: tuple[str, ...]) -> tuple[str, str]:
+        ordered = tuple(sorted({symbol.upper() for symbol in symbols if symbol.strip()}))
+        symbol_hash = hashlib.sha256("|".join(ordered).encode()).hexdigest()
+        plan_id = hashlib.sha256("|".join((self.plan.provider, self.plan.feed,
+            self.plan.start_date.isoformat(), self.plan.end_date.isoformat(), symbol_hash,
+            self.plan.candidate_filter)).encode()).hexdigest()[:24]
+        return plan_id, symbol_hash
+
+    def _load_candidate_plan(self, symbols: tuple[str, ...]) -> dict[str, object] | None:
+        path = self.root / "candidates" / "candidate_plan.json"
+        artifact = self.root / "candidates" / "candidate_days.jsonl"
+        if not path.exists() or not artifact.exists():
+            return None
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            plan_id, symbol_hash = self._plan_identity(symbols)
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            if (manifest.get("status") != "COMPLETE" or manifest.get("plan_id") != plan_id or
+                    manifest.get("universe_hash") != symbol_hash or manifest.get("provider") != self.plan.provider or
+                    manifest.get("feed") != self.plan.feed or manifest.get("start_date") != self.plan.start_date.isoformat() or
+                    manifest.get("end_date") != self.plan.end_date.isoformat() or
+                    manifest.get("candidate_artifact_sha256") != digest):
+                return None
+            batch_size = int(manifest.get("daily_symbol_batch_size", 250))
+            daily_manifest_hashes = []
+            ordered = tuple(sorted({symbol.upper() for symbol in symbols}))
+            for offset in range(0, len(ordered), batch_size):
+                batch_symbols = ordered[offset:offset + batch_size]
+                identity = hashlib.sha256("|".join((self.plan.provider, self.plan.feed,
+                    self.plan.start_date.isoformat(), self.plan.end_date.isoformat(), *batch_symbols)).encode()).hexdigest()[:20]
+                daily_manifest = self.root / "daily" / "manifests" / f"{identity}.json"
+                daily_data = self.root / "daily" / "batches" / f"{identity}.jsonl"
+                if not daily_manifest.exists() or not daily_data.exists():
+                    return None
+                daily_meta = json.loads(daily_manifest.read_text(encoding="utf-8"))
+                if (daily_meta.get("status") != "COMPLETE" or
+                        daily_meta.get("content_hash") != hashlib.sha256(daily_data.read_bytes()).hexdigest()):
+                    return None
+                daily_manifest_hashes.append(hashlib.sha256(daily_manifest.read_bytes()).hexdigest())
+            if tuple(daily_manifest_hashes) != tuple(manifest.get("source_daily_manifest_hashes", ())):
+                return None
+            candidates = tuple(candidate_from_record(json.loads(line)) for line in artifact.read_text(encoding="utf-8").splitlines() if line)
+            reasons = Counter(reason for item in candidates for reason in item.reasons)
+            if (len(candidates) != manifest.get("candidate_count") or
+                    candidate_records_hash(candidates) != manifest.get("candidate_records_sha256") or
+                    dict(reasons) != manifest.get("candidate_reasons")):
+                return None
+            return {**manifest, "candidates": candidates, "candidate_artifact_path": str(artifact)}
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+
+    def prepare_candidate_plan(self, symbols: tuple[str, ...], *, allow_network: bool,
+                               force_refresh: bool = False) -> dict[str, object]:
+        """Build or load the sole durable candidate plan used by all phases."""
         ordered = tuple(sorted({symbol.upper() for symbol in symbols}))
+        if not force_refresh:
+            cached = self._load_candidate_plan(ordered)
+            if cached is not None:
+                cached["daily_network_requests"] = 0
+                return cached
         daily_root = self.root / "daily"
         batch_root = daily_root / "batches"
         manifest_root = daily_root / "manifests"
@@ -60,9 +118,9 @@ class ResearchOrchestrator:
         lookback = self.plan.start_date - timedelta(days=10)
         start = datetime.combine(lookback, time.min, tzinfo=UTC)
         end = datetime.combine(self.plan.end_date + timedelta(days=1), time.min, tzinfo=UTC)
-        client = AlpacaHistoricalClient.from_environment(config=AcquisitionConfig(
-            start_date=lookback, end_date=self.plan.end_date))
-        batch_size = client.config.daily_symbol_batch_size
+        acquisition_config = AcquisitionConfig(start_date=lookback, end_date=self.plan.end_date)
+        client = AlpacaHistoricalClient.from_environment(config=acquisition_config) if allow_network else None
+        batch_size = acquisition_config.daily_symbol_batch_size
         # Daily discovery is symbol-batched.  Process each completed batch
         # immediately so the full broad-universe history is never retained in
         # memory merely to select candidate days.
@@ -72,6 +130,7 @@ class ResearchOrchestrator:
         rows_without_prior_close = 0
         reasons = Counter()
         reused = 0
+        source_daily_manifest_hashes = []
         try:
             for offset in range(0, len(ordered), batch_size):
                 batch_symbols = ordered[offset:offset + batch_size]
@@ -88,6 +147,8 @@ class ResearchOrchestrator:
                     except (OSError, ValueError, TypeError):
                         saved = None
                 if saved is None:
+                    if client is None:
+                        raise RuntimeError("DAILY_BATCH_UNAVAILABLE_OFFLINE")
                     rows = client.fetch_daily_bars(batch_symbols, start, end)
                     payload = tuple({"symbol": str(row.get("S") or row.get("symbol") or "").upper(),
                                      "trading_date": datetime.fromisoformat(str(row["t"])).astimezone(EASTERN).date().isoformat(),
@@ -98,6 +159,7 @@ class ResearchOrchestrator:
                              "request_start": start.isoformat(), "request_end": end.isoformat(),
                              "row_count": len(payload), "content_hash": digest}
                     atomic_write_jsonl(manifest_path, (saved,))
+                source_daily_manifest_hashes.append(hashlib.sha256(manifest_path.read_bytes()).hexdigest())
                 batch_rows = tuple(json.loads(line) for line in data_path.read_text(encoding="utf-8").splitlines() if line)
                 target_rows = attach_previous_closes(batch_rows, start_date=self.plan.start_date)
                 batch_candidates = discover_candidate_days(list(target_rows))
@@ -107,34 +169,51 @@ class ResearchOrchestrator:
                 rows_without_prior_close += sum(row.get("previous_close") is None for row in target_rows)
                 reasons.update(reason for item in batch_candidates for reason in item.reasons)
         finally:
-            counters = dict(client.request_counters)
-            client.close()
+            counters = {} if client is None else dict(client.request_counters)
+            if client is not None:
+                client.close()
         candidates = tuple(candidate_items)
-        candidate_records = []
-        for item in candidates:
-            candidate_records.append({
-                "symbol": item.symbol, "trading_date": item.trading_date.isoformat(), "reasons": item.reasons,
-                "open": str(item.open), "high": str(item.high), "low": str(item.low), "close": str(item.close),
-                "volume": str(item.volume), "previous_close": None if item.previous_close is None else str(item.previous_close),
-                "gap_percent": None if item.gap_percent is None else str(item.gap_percent),
-                "change_percent": str(item.change_percent), "range_percent": str(item.range_percent),
-                "dollar_volume": str(item.dollar_volume)})
+        candidate_records = [candidate_to_record(item) for item in candidates]
         atomic_write_jsonl(candidate_path, candidate_records)
-        result = {"run_id": self.run_id, "provider": self.plan.provider, "feed": self.plan.feed,
+        plan_id, symbol_hash = self._plan_identity(ordered)
+        artifact_hash = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+        result = {"run_id": self.run_id, "plan_id": plan_id, "provider": self.plan.provider, "feed": self.plan.feed,
                 "start_date": self.plan.start_date.isoformat(), "end_date": self.plan.end_date.isoformat(),
                 "universe_symbols": len(ordered), "daily_symbol_batch_size": batch_size,
                 "daily_request_batches": (len(ordered) + batch_size - 1) // batch_size,
                 "daily_batches_reused": reused, "daily_rows": daily_rows_count,
                 "rows_with_prior_close": rows_with_prior_close,
                 "rows_without_prior_close": rows_without_prior_close,
-                "candidate_symbol_days": len(candidates), "candidate_reasons": dict(reasons),
+                "candidate_symbol_days": len(candidates), "candidate_count": len(candidates), "candidate_reasons": dict(reasons),
                 "planned_minute_partitions": len(candidates), "minute_requests": 0,
                 "daily_request_counters": counters, "preflight_only": True,
-                "candidate_path": str(candidate_path)}
+                "candidate_path": str(candidate_path), "universe_hash": symbol_hash,
+                "candidate_artifact_sha256": artifact_hash, "candidate_records_sha256": candidate_records_hash(candidates),
+                "candidate_filter_version": self.plan.candidate_filter,
+                "prior_close_derivation_version": "LATEST_PRIOR_DAILY_CLOSE_V1",
+                "source_daily_manifest_hashes": source_daily_manifest_hashes}
+        atomic_write_jsonl(self.root / "candidates" / "candidate_plan.json", ({**result, "status": "COMPLETE",
+            "phases": {"UNIVERSE": "COMPLETE", "DAILY_DISCOVERY": "COMPLETE",
+                       "CANDIDATE_SELECTION": "COMPLETE", "MINUTE_ACQUISITION": "NOT_RUN"}},))
         atomic_write_jsonl(self.root / "run_manifest.json", ({**result, "final_status": "SUCCEEDED",
             "phases": {"UNIVERSE": "COMPLETE", "DAILY_DISCOVERY": "COMPLETE",
                        "CANDIDATE_SELECTION": "COMPLETE", "MINUTE_ACQUISITION": "NOT_RUN"}},))
+        result["candidates"] = candidates
         return result
+
+    def preflight_daily(self, symbols: tuple[str, ...]) -> dict[str, object]:
+        """Complete universe/daily/candidate planning without minute downloads."""
+        result = self.prepare_candidate_plan(symbols, allow_network=True)
+        return {key: value for key, value in result.items() if key != "candidates"}
+
+    def execution_plan_only(self, symbols: tuple[str, ...]) -> dict[str, object]:
+        plan = self.prepare_candidate_plan(symbols, allow_network=False)
+        candidates = plan["candidates"]
+        return {"plan_id": plan["plan_id"], "candidate_artifact_sha256": plan["candidate_artifact_sha256"],
+                "candidate_count": len(candidates), "daily_network_requests": 0, "minute_requests": 0,
+                "planned_minute_partitions": len(candidates), "first_candidate": candidate_to_record(candidates[0]) if candidates else None,
+                "last_candidate": candidate_to_record(candidates[-1]) if candidates else None,
+                "candidate_path": plan.get("candidate_artifact_path", plan.get("candidate_path"))}
 
     def provider_check(self) -> dict[str, object]:
         client = AlpacaHistoricalClient.from_environment(config=AcquisitionConfig(
@@ -171,18 +250,8 @@ class ResearchOrchestrator:
         strategy_memberships = 0
         validation_errors = []
         try:
-            start = datetime.combine(self.plan.start_date, time.min, tzinfo=UTC)
-            end = datetime.combine(self.plan.end_date + timedelta(days=1), time.min, tzinfo=UTC)
-            daily = client.fetch_daily_bars_batched(symbols, start, end)
-            daily_rows = []
-            for row in daily:
-                timestamp = datetime.fromisoformat(str(row["t"])).astimezone(EASTERN)
-                daily_rows.append({"symbol": str(row.get("S") or row.get("symbol") or "").upper(),
-                                   "trading_date": timestamp.date().isoformat(), "open": row["o"],
-                                   "high": row["h"], "low": row["l"], "close": row["c"], "volume": row["v"]})
-            daily_rows = list(attach_previous_closes(daily_rows, start_date=self.plan.start_date))
-            candidates = tuple(item for item in discover_candidate_days(daily_rows)
-                               if self.plan.start_date <= item.trading_date <= self.plan.end_date)
+            candidate_plan = self.prepare_candidate_plan(symbols, allow_network=True)
+            candidates = tuple(candidate_plan["candidates"])
             for candidate in candidates:
                 manifest = download_partition(client, config, candidate.symbol, candidate.trading_date,
                                                previous_close=candidate.previous_close)
@@ -202,7 +271,9 @@ class ResearchOrchestrator:
             raise
         finally:
             client.close()
-        result = {"run_id": self.run_id, "accepted_unique": accepted_unique,
+        result = {"run_id": self.run_id, "plan_id": candidate_plan["plan_id"],
+                  "candidate_artifact_sha256": candidate_plan["candidate_artifact_sha256"],
+                  "accepted_unique": accepted_unique,
                   "strategy_memberships": strategy_memberships,
                   "validation_errors": tuple(validation_errors),
                   "candidate_days": len(manifests), "partitions": manifests}

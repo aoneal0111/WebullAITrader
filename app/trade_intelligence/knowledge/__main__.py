@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--target-per-strategy", type=int, default=5000)
     dry = sub.add_parser("dry-run"); plan_args(dry)
     check = sub.add_parser("provider-check"); check.add_argument("--provider", default="alpaca"); check.add_argument("--feed", default="iex")
-    run = sub.add_parser("run"); plan_args(run); run.add_argument("--input", type=Path); run.add_argument("--symbols", nargs="*", default=()); run.add_argument("--universe", choices=("alpaca-assets",)); run.add_argument("--output-root", type=Path); run.add_argument("--preflight-only", action="store_true"); run.add_argument("--execute", action="store_true"); run.add_argument("--repository-commit", default="WORKTREE")
+    run = sub.add_parser("run"); plan_args(run); run.add_argument("--input", type=Path); run.add_argument("--symbols", nargs="*", default=()); run.add_argument("--universe", choices=("alpaca-assets",)); run.add_argument("--output-root", type=Path); run.add_argument("--preflight-only", action="store_true"); run.add_argument("--execution-plan-only", action="store_true"); run.add_argument("--execute", action="store_true"); run.add_argument("--repository-commit", default="WORKTREE")
     discover = sub.add_parser("discover"); discover.add_argument("--input", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "dry-run":
@@ -58,9 +58,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run":
         plan = RunPlan(args.provider.upper(), args.feed.upper(), args.start, args.end, args.target_per_strategy)
         if args.input is None:
-            if not args.execute:
+            if not args.execute and not args.execution_plan_only:
                 print(json.dumps({"run": "PLANNED", "provider_configured": configured(), **plan_summary(plan)}, indent=2)); return 0
-            if (not args.symbols and not args.universe) or not configured():
+            if (not args.symbols and not args.universe) or (not args.execution_plan_only and not configured()):
                 print(json.dumps({"run": "STOPPED", "reason": "EXECUTION_REQUIRES_SYMBOLS_AND_CREDENTIALS"}, indent=2)); return 2
             symbols = tuple(args.symbols)
             orchestrator = ResearchOrchestrator(plan, root=args.output_root or Path("data/research/market_data"),
@@ -73,7 +73,9 @@ def main(argv: list[str] | None = None) -> int:
                     symbols = tuple(item["symbol"] for item in snapshot["assets"] if item.get("included"))
                 finally:
                     universe.close()
-            if args.preflight_only:
+            if args.execution_plan_only:
+                value = orchestrator.execution_plan_only(symbols)
+            elif args.preflight_only:
                 value = orchestrator.preflight_daily(symbols)
             else:
                 value = orchestrator.run_alpaca(symbols, repository_commit=args.repository_commit)

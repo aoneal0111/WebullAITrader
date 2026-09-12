@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Iterable
+import json
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +24,32 @@ class CandidateDay:
     change_percent: Decimal
     range_percent: Decimal
     dollar_volume: Decimal
+
+
+def candidate_to_record(item: CandidateDay) -> dict[str, object]:
+    return {"symbol": item.symbol, "trading_date": item.trading_date.isoformat(), "reasons": item.reasons,
+            "open": str(item.open), "high": str(item.high), "low": str(item.low), "close": str(item.close),
+            "volume": str(item.volume), "previous_close": None if item.previous_close is None else str(item.previous_close),
+            "gap_percent": None if item.gap_percent is None else str(item.gap_percent),
+            "change_percent": str(item.change_percent), "range_percent": str(item.range_percent),
+            "dollar_volume": str(item.dollar_volume)}
+
+
+def candidate_from_record(row: dict[str, object]) -> CandidateDay:
+    return CandidateDay(str(row["symbol"]).upper(), date.fromisoformat(str(row["trading_date"])),
+                        tuple(str(reason) for reason in row["reasons"]), Decimal(str(row["open"])),
+                        Decimal(str(row["high"])), Decimal(str(row["low"])), Decimal(str(row["close"])),
+                        Decimal(str(row["volume"])), None if row.get("previous_close") is None else Decimal(str(row["previous_close"])),
+                        None if row.get("gap_percent") is None else Decimal(str(row["gap_percent"])),
+                        Decimal(str(row["change_percent"])), Decimal(str(row["range_percent"])),
+                        Decimal(str(row["dollar_volume"])))
+
+
+def candidate_records_hash(items: Iterable[CandidateDay]) -> str:
+    import hashlib
+    payload = "\n".join(json.dumps(candidate_to_record(item), sort_keys=True, separators=(",", ":"), default=str)
+                     for item in items).encode()
+    return hashlib.sha256(payload).hexdigest()
 
 
 def discover_candidate_days(rows: list[dict[str, object]], *, minimum_move_percent: Decimal = Decimal("5"),
