@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
+from collections import Counter
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,10 +14,11 @@ import uuid
 
 from .acquisition import (AcquisitionConfig, AlpacaHistoricalClient, atomic_write_jsonl,
                           download_partition)
-from .candidate_days import discover_candidate_days
+from .candidate_days import attach_previous_closes, discover_candidate_days
 from .mining import JsonlBarProvider, build_corpus
 from .models import ACTIVE_STRATEGIES
 from .reporting import report, validate_corpus
+from app.market.calendar import EASTERN
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +48,93 @@ class ResearchOrchestrator:
 
     def dry_run(self) -> dict[str, object]:
         return plan_summary(self.plan)
+
+    def preflight_daily(self, symbols: tuple[str, ...]) -> dict[str, object]:
+        """Complete universe/daily/candidate planning without minute downloads."""
+        ordered = tuple(sorted({symbol.upper() for symbol in symbols}))
+        daily_root = self.root / "daily"
+        batch_root = daily_root / "batches"
+        manifest_root = daily_root / "manifests"
+        candidate_path = self.root / "candidates" / "candidate_days.jsonl"
+        batch_root.mkdir(parents=True, exist_ok=True); manifest_root.mkdir(parents=True, exist_ok=True)
+        lookback = self.plan.start_date - timedelta(days=10)
+        start = datetime.combine(lookback, time.min, tzinfo=UTC)
+        end = datetime.combine(self.plan.end_date + timedelta(days=1), time.min, tzinfo=UTC)
+        client = AlpacaHistoricalClient.from_environment(config=AcquisitionConfig(
+            start_date=lookback, end_date=self.plan.end_date))
+        batch_size = client.config.daily_symbol_batch_size
+        # Daily discovery is symbol-batched.  Process each completed batch
+        # immediately so the full broad-universe history is never retained in
+        # memory merely to select candidate days.
+        candidate_items = []
+        daily_rows_count = 0
+        rows_with_prior_close = 0
+        rows_without_prior_close = 0
+        reasons = Counter()
+        reused = 0
+        try:
+            for offset in range(0, len(ordered), batch_size):
+                batch_symbols = ordered[offset:offset + batch_size]
+                identity = hashlib.sha256("|".join((self.plan.provider, self.plan.feed, self.plan.start_date.isoformat(),
+                                                     self.plan.end_date.isoformat(), *batch_symbols)).encode()).hexdigest()[:20]
+                data_path = batch_root / f"{identity}.jsonl"
+                manifest_path = manifest_root / f"{identity}.json"
+                saved = None
+                if data_path.exists() and manifest_path.exists():
+                    try:
+                        saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        if saved.get("status") == "COMPLETE" and saved.get("content_hash") == hashlib.sha256(data_path.read_bytes()).hexdigest():
+                            reused += 1
+                    except (OSError, ValueError, TypeError):
+                        saved = None
+                if saved is None:
+                    rows = client.fetch_daily_bars(batch_symbols, start, end)
+                    payload = tuple({"symbol": str(row.get("S") or row.get("symbol") or "").upper(),
+                                     "trading_date": datetime.fromisoformat(str(row["t"])).astimezone(EASTERN).date().isoformat(),
+                                     "open": row["o"], "high": row["h"], "low": row["l"], "close": row["c"], "volume": row["v"]} for row in rows)
+                    digest = atomic_write_jsonl(data_path, payload)
+                    saved = {"batch_id": identity, "status": "COMPLETE", "symbols": batch_symbols,
+                             "symbol_hash": hashlib.sha256("|".join(batch_symbols).encode()).hexdigest(),
+                             "request_start": start.isoformat(), "request_end": end.isoformat(),
+                             "row_count": len(payload), "content_hash": digest}
+                    atomic_write_jsonl(manifest_path, (saved,))
+                batch_rows = tuple(json.loads(line) for line in data_path.read_text(encoding="utf-8").splitlines() if line)
+                target_rows = attach_previous_closes(batch_rows, start_date=self.plan.start_date)
+                batch_candidates = discover_candidate_days(list(target_rows))
+                candidate_items.extend(batch_candidates)
+                daily_rows_count += len(target_rows)
+                rows_with_prior_close += sum(row.get("previous_close") is not None for row in target_rows)
+                rows_without_prior_close += sum(row.get("previous_close") is None for row in target_rows)
+                reasons.update(reason for item in batch_candidates for reason in item.reasons)
+        finally:
+            counters = dict(client.request_counters)
+            client.close()
+        candidates = tuple(candidate_items)
+        candidate_records = []
+        for item in candidates:
+            candidate_records.append({
+                "symbol": item.symbol, "trading_date": item.trading_date.isoformat(), "reasons": item.reasons,
+                "open": str(item.open), "high": str(item.high), "low": str(item.low), "close": str(item.close),
+                "volume": str(item.volume), "previous_close": None if item.previous_close is None else str(item.previous_close),
+                "gap_percent": None if item.gap_percent is None else str(item.gap_percent),
+                "change_percent": str(item.change_percent), "range_percent": str(item.range_percent),
+                "dollar_volume": str(item.dollar_volume)})
+        atomic_write_jsonl(candidate_path, candidate_records)
+        result = {"run_id": self.run_id, "provider": self.plan.provider, "feed": self.plan.feed,
+                "start_date": self.plan.start_date.isoformat(), "end_date": self.plan.end_date.isoformat(),
+                "universe_symbols": len(ordered), "daily_symbol_batch_size": batch_size,
+                "daily_request_batches": (len(ordered) + batch_size - 1) // batch_size,
+                "daily_batches_reused": reused, "daily_rows": daily_rows_count,
+                "rows_with_prior_close": rows_with_prior_close,
+                "rows_without_prior_close": rows_without_prior_close,
+                "candidate_symbol_days": len(candidates), "candidate_reasons": dict(reasons),
+                "planned_minute_partitions": len(candidates), "minute_requests": 0,
+                "daily_request_counters": counters, "preflight_only": True,
+                "candidate_path": str(candidate_path)}
+        atomic_write_jsonl(self.root / "run_manifest.json", ({**result, "final_status": "SUCCEEDED",
+            "phases": {"UNIVERSE": "COMPLETE", "DAILY_DISCOVERY": "COMPLETE",
+                       "CANDIDATE_SELECTION": "COMPLETE", "MINUTE_ACQUISITION": "NOT_RUN"}},))
+        return result
 
     def provider_check(self) -> dict[str, object]:
         client = AlpacaHistoricalClient.from_environment(config=AcquisitionConfig(
@@ -76,18 +166,21 @@ class ResearchOrchestrator:
                                    raw_root=self.root / "raw", normalized_root=self.root / "normalized",
                                    manifest_root=self.root / "manifests")
         client = AlpacaHistoricalClient.from_environment(config=config)
-        normalized_rows: list[dict[str, object]] = []
         manifests = []
+        accepted_unique = 0
+        strategy_memberships = 0
+        validation_errors = []
         try:
             start = datetime.combine(self.plan.start_date, time.min, tzinfo=UTC)
             end = datetime.combine(self.plan.end_date + timedelta(days=1), time.min, tzinfo=UTC)
-            daily = client.fetch_daily_bars(symbols, start, end)
+            daily = client.fetch_daily_bars_batched(symbols, start, end)
             daily_rows = []
             for row in daily:
-                timestamp = datetime.fromisoformat(str(row["t"])).astimezone(UTC)
+                timestamp = datetime.fromisoformat(str(row["t"])).astimezone(EASTERN)
                 daily_rows.append({"symbol": str(row.get("S") or row.get("symbol") or "").upper(),
                                    "trading_date": timestamp.date().isoformat(), "open": row["o"],
                                    "high": row["h"], "low": row["l"], "close": row["c"], "volume": row["v"]})
+            daily_rows = list(attach_previous_closes(daily_rows, start_date=self.plan.start_date))
             candidates = tuple(item for item in discover_candidate_days(daily_rows)
                                if self.plan.start_date <= item.trading_date <= self.plan.end_date)
             for candidate in candidates:
@@ -96,7 +189,10 @@ class ResearchOrchestrator:
                 manifests.append(manifest.to_dict())
                 normalized_path = config.normalized_root / f"{candidate.symbol}_{candidate.trading_date.isoformat()}.jsonl"
                 if normalized_path.exists():
-                    normalized_rows.extend(json.loads(line) for line in normalized_path.read_text(encoding="utf-8").splitlines() if line)
+                    mined = self.run_local_mine(normalized_path, repository_commit=repository_commit)
+                    accepted_unique += int(mined["accepted_unique"])
+                    strategy_memberships += int(mined["strategy_memberships"])
+                    validation_errors.extend(mined["validation_errors"])
         except Exception as exc:
             atomic_write_jsonl(run_manifest, ({"schema_version": 1, "run_id": self.run_id,
                 "provider": self.plan.provider, "feed": self.plan.feed, "start_date": self.plan.start_date.isoformat(),
@@ -106,10 +202,10 @@ class ResearchOrchestrator:
             raise
         finally:
             client.close()
-        aggregate = self.root / "normalized" / f"run_{self.run_id}.jsonl"
-        atomic_write_jsonl(aggregate, normalized_rows)
-        result = self.run_local_mine(aggregate, repository_commit=repository_commit)
-        result.update({"candidate_days": len(manifests), "partitions": manifests})
+        result = {"run_id": self.run_id, "accepted_unique": accepted_unique,
+                  "strategy_memberships": strategy_memberships,
+                  "validation_errors": tuple(validation_errors),
+                  "candidate_days": len(manifests), "partitions": manifests}
         atomic_write_jsonl(run_manifest, ({"schema_version": 1, "run_id": self.run_id,
             "provider": self.plan.provider, "feed": self.plan.feed, "start_date": self.plan.start_date.isoformat(),
             "end_date": self.plan.end_date.isoformat(), "symbols": symbols, "target_per_strategy": self.plan.target_per_strategy,

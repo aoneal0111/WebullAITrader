@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import Iterable
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,3 +41,18 @@ def discover_candidate_days(rows: list[dict[str, object]], *, minimum_move_perce
         result.append(CandidateDay(str(row["symbol"]).upper(), date.fromisoformat(str(row["trading_date"])), reasons,
                                    opened, high, low, close, volume, prior, gap, change, range_percent, close * volume))
     return tuple(sorted(result, key=lambda item: (item.trading_date, item.symbol)))
+
+
+def attach_previous_closes(rows: Iterable[dict[str, object]], *, start_date: date) -> tuple[dict[str, object], ...]:
+    """Attach the latest earlier daily close; rows must be regular-session daily data."""
+    ordered = sorted((dict(row) for row in rows), key=lambda row: (str(row.get("symbol", "")).upper(), str(row.get("trading_date", ""))))
+    last_close: dict[str, Decimal] = {}
+    result: list[dict[str, object]] = []
+    for row in ordered:
+        symbol = str(row.get("symbol", "")).upper()
+        day = date.fromisoformat(str(row["trading_date"]))
+        if day >= start_date:
+            row["previous_close"] = None if symbol not in last_close else str(last_close[symbol])
+            result.append(row)
+        last_close[symbol] = Decimal(str(row["close"]))
+    return tuple(result)

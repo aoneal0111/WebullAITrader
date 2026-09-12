@@ -8,6 +8,7 @@ from app.trade_intelligence.knowledge.acquisition import (
     normalize_bar, validate_source_bars,
 )
 from app.trade_intelligence.knowledge.models import HistoricalBar
+from app.trade_intelligence.knowledge.candidate_days import attach_previous_closes, discover_candidate_days
 
 
 def _client(handler, **kwargs):
@@ -69,3 +70,45 @@ def test_gap_detection_reports_without_fabricating_bars():
     rows = (HistoricalBar(timestamp=datetime(2025, 1, 2, 14, 30, tzinfo=UTC), **common),
             HistoricalBar(timestamp=datetime(2025, 1, 2, 14, 35, tzinfo=UTC), **common))
     assert detect_intraday_gaps(rows)[0]["missing_minutes"] == 4
+
+
+def test_daily_symbol_batches_are_stable_and_bounded():
+    calls = []
+    def handler(request):
+        calls.append(tuple(request.url.params["symbols"].split(",")))
+        return httpx.Response(200, json={"bars": []}, request=request)
+    client = _client(handler, daily_symbol_batch_size=2)
+    try:
+        assert client.fetch_daily_bars_batched(("ZZZ", "AAA", "BBB", "CCC", "DDD"),
+                                               datetime(2025, 1, 1, tzinfo=UTC), datetime(2025, 1, 3, tzinfo=UTC)) == ()
+    finally: client.close()
+    assert calls == [("AAA", "BBB"), ("CCC", "DDD"), ("ZZZ",)]
+
+
+def test_multi_symbol_daily_response_is_flattened_with_symbol_identity():
+    def handler(request):
+        return httpx.Response(200, json={"bars": {
+            "AAA": [{"t": "2025-01-02T00:00:00Z", "o": 1, "h": 2, "l": 1, "c": 2, "v": 3}],
+            "BBB": [{"t": "2025-01-02T00:00:00Z", "o": 3, "h": 4, "l": 3, "c": 4, "v": 5}],
+        }}, request=request)
+    client = _client(handler)
+    try:
+        rows = client.fetch_daily_bars(("BBB", "AAA"), datetime(2025, 1, 1, tzinfo=UTC),
+                                       datetime(2025, 1, 3, tzinfo=UTC))
+    finally:
+        client.close()
+    assert [(row["S"], row["c"]) for row in rows] == [("AAA", 2), ("BBB", 4)]
+
+
+def test_previous_close_uses_latest_prior_observation_not_calendar_day():
+    rows = [
+        {"symbol": "ABC", "trading_date": "2025-01-03", "close": "10"},
+        {"symbol": "ABC", "trading_date": "2025-01-06", "close": "12"},
+        {"symbol": "ABC", "trading_date": "2025-01-07", "close": "13"},
+    ]
+    result = attach_previous_closes(rows, start_date=date(2025, 1, 6))
+    assert result[0]["previous_close"] == "10"
+    assert result[1]["previous_close"] == "12"
+    assert discover_candidate_days([{"symbol": "ABC", "trading_date": "2025-01-06", "open": "13",
+                                     "high": "14", "low": "12", "close": "13", "volume": "100",
+                                     "previous_close": "10"}])[0].gap_percent == Decimal("30")

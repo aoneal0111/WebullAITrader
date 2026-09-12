@@ -1,0 +1,42 @@
+from datetime import UTC, datetime
+
+from app.trade_intelligence.knowledge import orchestration
+from app.trade_intelligence.knowledge.orchestration import ResearchOrchestrator, RunPlan
+
+
+class FakeDailyClient:
+    calls = []
+    request_counters = {"requests": 0, "pages": 0, "429": 0, "5xx": 0, "retries": 0}
+
+    def __init__(self, config=None):
+        self.config = config
+
+    @classmethod
+    def from_environment(cls, **kwargs):
+        return cls(kwargs.get("config"))
+
+    def fetch_daily_bars(self, symbols, start, end):
+        self.calls.append(tuple(symbols))
+        self.request_counters["requests"] += 1
+        rows = []
+        for symbol in symbols:
+            for stamp, opened, close in (("2026-05-29T15:00:00+00:00", 9, 10),
+                                         ("2026-06-01T15:00:00+00:00", 10, 11),):
+                rows.append({"S": symbol, "t": stamp, "o": opened, "h": close + 1, "l": opened - 1,
+                             "c": close, "v": 100000})
+        return tuple(rows)
+
+    def close(self):
+        pass
+
+
+def test_preflight_batches_daily_work_and_never_requests_minutes(tmp_path, monkeypatch):
+    FakeDailyClient.calls = []
+    monkeypatch.setattr(orchestration, "AlpacaHistoricalClient", FakeDailyClient)
+    plan = RunPlan("ALPACA", "IEX", datetime(2026, 6, 1).date(), datetime(2026, 6, 30).date(), 5000)
+    result = ResearchOrchestrator(plan, root=tmp_path).preflight_daily(tuple(f"S{i:03d}" for i in range(3)))
+    assert result["daily_request_batches"] == 1
+    assert result["daily_request_counters"]["requests"] == 1
+    assert result["minute_requests"] == 0
+    assert result["candidate_symbol_days"] == 3
+    assert (tmp_path / "candidates" / "candidate_days.jsonl").exists()

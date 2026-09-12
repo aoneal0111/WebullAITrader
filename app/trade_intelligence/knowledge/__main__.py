@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--target-per-strategy", type=int, default=5000)
     dry = sub.add_parser("dry-run"); plan_args(dry)
     check = sub.add_parser("provider-check"); check.add_argument("--provider", default="alpaca"); check.add_argument("--feed", default="iex")
-    run = sub.add_parser("run"); plan_args(run); run.add_argument("--input", type=Path); run.add_argument("--symbols", nargs="*", default=()); run.add_argument("--universe", choices=("alpaca-assets",)); run.add_argument("--execute", action="store_true"); run.add_argument("--repository-commit", default="WORKTREE")
+    run = sub.add_parser("run"); plan_args(run); run.add_argument("--input", type=Path); run.add_argument("--symbols", nargs="*", default=()); run.add_argument("--universe", choices=("alpaca-assets",)); run.add_argument("--output-root", type=Path); run.add_argument("--preflight-only", action="store_true"); run.add_argument("--execute", action="store_true"); run.add_argument("--repository-commit", default="WORKTREE")
     discover = sub.add_parser("discover"); discover.add_argument("--input", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "dry-run":
@@ -63,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
             if (not args.symbols and not args.universe) or not configured():
                 print(json.dumps({"run": "STOPPED", "reason": "EXECUTION_REQUIRES_SYMBOLS_AND_CREDENTIALS"}, indent=2)); return 2
             symbols = tuple(args.symbols)
+            orchestrator = ResearchOrchestrator(plan, root=args.output_root or Path("data/research/market_data"),
+                                                 corpus_root=(args.output_root or Path("data/research/trading_knowledge/v1")) / "corpus" if args.output_root else Path("data/research/trading_knowledge/v1"))
             if args.universe == "alpaca-assets":
                 universe = AlpacaAssetMasterClient.from_environment()
                 try:
@@ -71,8 +73,11 @@ def main(argv: list[str] | None = None) -> int:
                     symbols = tuple(item["symbol"] for item in snapshot["assets"] if item.get("included"))
                 finally:
                     universe.close()
-            value = ResearchOrchestrator(plan).run_alpaca(symbols, repository_commit=args.repository_commit)
-            print(json.dumps(value, indent=2, default=str)); return 0 if not value["validation_errors"] else 1
+            if args.preflight_only:
+                value = orchestrator.preflight_daily(symbols)
+            else:
+                value = orchestrator.run_alpaca(symbols, repository_commit=args.repository_commit)
+            print(json.dumps(value, indent=2, default=str)); return 0 if not value.get("validation_errors") else 1
         value = ResearchOrchestrator(plan).run_local_mine(args.input, repository_commit=args.repository_commit)
         print(json.dumps(value, indent=2, default=str)); return 0 if not value["validation_errors"] else 1
     if args.command == "build":

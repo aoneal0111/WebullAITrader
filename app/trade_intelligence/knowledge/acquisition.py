@@ -40,11 +40,12 @@ class AcquisitionConfig:
     max_retries: int = 4
     min_free_bytes: int = 1_000_000_000
     max_pages: int = 10_000
+    daily_symbol_batch_size: int = 250
 
     def __post_init__(self) -> None:
         if self.provider.upper() != ALPACA_PROVIDER or self.feed.upper() != ALPACA_FREE_FEED:
             raise ValueError("only ALPACA/IEX free research configuration is permitted")
-        if self.requests_per_minute <= 0 or self.max_retries < 0 or self.max_pages <= 0:
+        if self.requests_per_minute <= 0 or self.max_retries < 0 or self.max_pages <= 0 or self.daily_symbol_batch_size <= 0:
             raise ValueError("acquisition limits must be positive")
 
 
@@ -106,6 +107,7 @@ class AlpacaHistoricalClient:
         self._limiter = RateLimiter(self.config.requests_per_minute, sleeper=sleep)
         self._sleep, self._random = sleep, random_value
         self.last_rate_headers: dict[str, str] = {}
+        self.request_counters = {"requests": 0, "pages": 0, "429": 0, "5xx": 0, "retries": 0}
 
     @classmethod
     def from_environment(cls, *, config: AcquisitionConfig | None = None, **kwargs: Any) -> "AlpacaHistoricalClient":
@@ -131,6 +133,14 @@ class AlpacaHistoricalClient:
                   "start": start.isoformat(), "end": end.isoformat(), "feed": self.config.feed, "limit": "10000"}
         return tuple(self._paginate("/v2/stocks/bars", params))
 
+    def fetch_daily_bars_batched(self, symbols: Iterable[str], start: datetime, end: datetime) -> tuple[dict[str, object], ...]:
+        ordered = tuple(sorted({str(symbol).upper() for symbol in symbols if str(symbol).strip()}))
+        size = self.config.daily_symbol_batch_size
+        rows: list[dict[str, object]] = []
+        for offset in range(0, len(ordered), size):
+            rows.extend(self.fetch_daily_bars(ordered[offset:offset + size], start, end))
+        return tuple(rows)
+
     def _paginate(self, path: str, params: dict[str, object]):
         token = None; seen = set()
         for _ in range(self.config.max_pages):
@@ -140,7 +150,23 @@ class AlpacaHistoricalClient:
                     raise RuntimeError("PAGINATION_LOOP")
                 seen.add(token); query["page_token"] = token
             payload = self._request(path, query)
+            self.request_counters["pages"] += 1
             rows = payload.get("bars", payload.get("data", ()))
+            if isinstance(rows, dict):
+                # Alpaca's multi-symbol endpoint returns bars keyed by
+                # symbol, while single-symbol responses use a flat list.
+                # Normalize both shapes without losing the source symbol.
+                flattened = []
+                for symbol, symbol_rows in rows.items():
+                    if not isinstance(symbol_rows, list):
+                        raise ValueError("MALFORMED_RESPONSE")
+                    for row in symbol_rows:
+                        if not isinstance(row, dict):
+                            raise ValueError("MALFORMED_RESPONSE")
+                        item = dict(row)
+                        item.setdefault("S", symbol)
+                        flattened.append(item)
+                rows = flattened
             if not isinstance(rows, list):
                 raise ValueError("MALFORMED_RESPONSE")
             yield from rows
@@ -153,6 +179,7 @@ class AlpacaHistoricalClient:
         for attempt in range(self.config.max_retries + 1):
             self._limiter.wait()
             try:
+                self.request_counters["requests"] += 1
                 response = self._client.get(path, params=params)
                 self.last_rate_headers = dict(response.headers)
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
@@ -161,7 +188,9 @@ class AlpacaHistoricalClient:
             if response.status_code in (401, 403):
                 raise PermissionError(f"ALPACA_AUTH_OR_PERMISSION_{response.status_code}")
             if response.status_code == 429 or response.status_code >= 500:
+                self.request_counters["429" if response.status_code == 429 else "5xx"] += 1
                 if attempt >= self.config.max_retries: raise RuntimeError(f"HTTP_RETRY_EXHAUSTED_{response.status_code}")
+                self.request_counters["retries"] += 1
                 self._backoff(attempt, response.headers.get("Retry-After")); continue
             if response.status_code >= 400:
                 raise RuntimeError(f"HTTP_PERMANENT_{response.status_code}: {_safe_error(response.text)}")
