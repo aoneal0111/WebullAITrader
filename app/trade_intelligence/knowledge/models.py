@@ -47,6 +47,19 @@ class HistoricalBar:
     close: Decimal
     volume: Decimal
     session: str
+    provider: str = "UNKNOWN"
+    feed: str = "UNKNOWN"
+    source_timezone: str = "UTC"
+    normalization_version: int = 1
+    previous_close: Decimal | None = None
+    bid: Decimal | None = None
+    ask: Decimal | None = None
+    bid_size: Decimal | None = None
+    ask_size: Decimal | None = None
+    float_shares: Decimal | None = None
+    market_cap: Decimal | None = None
+    halt_state: str | None = None
+    catalyst_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.timestamp.tzinfo is None or not self.symbol or not self.session:

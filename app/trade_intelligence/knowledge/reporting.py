@@ -44,7 +44,12 @@ def report(root: Path) -> dict[str, object]:
         for strategy in row.get("strategy_memberships", ()):
             per[strategy] += 1; symbols[strategy].add(row["symbol"]); dates[strategy].append(row["trading_date"])
     rows = tuple(store.iter_episodes())
-    result = {}
+    provenance = next((row.get("provenance", {}) for row in rows if row.get("provenance")), {})
+    quarantine_count = sum(1 for _ in store._read(store.quarantine_path)) if store.quarantine_path.exists() else 0
+    result = {"provider": provenance.get("provider"), "feed": provenance.get("feed"),
+              "source_quality": "SINGLE_EXCHANGE_FREE_RESEARCH" if provenance.get("feed") == "IEX" else None,
+              "quarantined": quarantine_count, "duplicates": {"exact": None, "near": None},
+              "quota_target_per_strategy": 5000, "quota_progress": {strategy: per[strategy] for strategy in ACTIVE_STRATEGIES}}
     for strategy in ACTIVE_STRATEGIES:
         selected = [row for row in rows if strategy in row.get("strategy_memberships", ())]
         mfe = [float(row["outcomes"]["mfe_percent"]) for row in selected if row.get("outcomes", {}).get("mfe_percent") is not None]
@@ -63,7 +68,22 @@ def report(root: Path) -> dict[str, object]:
                                 str(pct): sum(row.get("outcomes", {}).get("percent_targets", {}).get(str(pct), {}).get("first_plan_event") == "STOP_FIRST" for row in selected)
                                 for pct in (2, 3, 5, 8, 10, 15)
                             }}
-    return {"unique_episodes": len(rows), "strategy_memberships": sum(per.values()), "per_strategy": result}
+    manifest = {}
+    if store.manifest_path.exists():
+        try:
+            manifest = json.loads(store.manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            manifest = {}
+    summary = manifest.get("summary", {})
+    result.update({"unique_episodes": len(rows), "strategy_memberships": sum(per.values()),
+                   "per_strategy": {strategy: result[strategy] for strategy in ACTIVE_STRATEGIES},
+                   "duplicates": {"exact": summary.get("exact_duplicates"),
+                                  "near": summary.get("near_duplicates")},
+                   "quarantine": result.get("quarantined", 0), "coverage": {
+                       "source_quality": result.get("source_quality"),
+                       "date_start": min((row["trading_date"] for row in rows), default=None),
+                       "date_end": max((row["trading_date"] for row in rows), default=None)}})
+    return result
 
 
 def expectancy(results: list[float]) -> float | None:

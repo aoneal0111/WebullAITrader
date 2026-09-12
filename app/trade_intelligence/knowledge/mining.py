@@ -36,6 +36,7 @@ class JsonlBarProvider:
 
     source = "JSONL_OHLCV"
     version = "1"
+    feed = "UNKNOWN"
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -48,6 +49,8 @@ class JsonlBarProvider:
                     continue
                 try:
                     row = json.loads(line)
+                    self.source = str(row.get("provider") or self.source)
+                    self.feed = str(row.get("feed") or self.feed)
                     timestamp = datetime.fromisoformat(row["timestamp"])
                     if timestamp.tzinfo is None:
                         raise ValueError("INVALID_TIMESTAMP")
@@ -57,6 +60,9 @@ class JsonlBarProvider:
                         Decimal(str(row["low"])), Decimal(str(row["close"])),
                         Decimal(str(row["volume"])),
                         str(row.get("session") or scanner_session(timestamp).value),
+                        str(row.get("provider") or "UNKNOWN"), str(row.get("feed") or "UNKNOWN"),
+                        str(row.get("source_timezone") or "UTC"), int(row.get("normalization_version") or 1),
+                        None if row.get("previous_close") is None else Decimal(str(row["previous_close"])),
                     )
                 except Exception as exc:
                     # A bad source row is quarantined by the build; one malformed
@@ -212,9 +218,11 @@ def _candidate(context: DiscoveryContext, detections: tuple[object, ...], future
                        session=context.session, structural_anchor=anchor,
                        setup_start=first.completed_at, trigger_price=str(trigger), structural_stop=str(stop))
     bars = tuple(HistoricalBar(item.symbol, item.completed_at, item.open, item.high, item.low,
-                               item.close, item.volume, item.session) for item in context.completed_bars)
+                               item.close, item.volume, item.session, provider.source, provider.version,
+                               "UTC", 1) for item in context.completed_bars)
     invalidation = tuple(sorted({reason for item in ordered for reason in item.reason_codes}))
-    provenance = {"provider": provider.source, "data_version": provider.version,
+    provenance = {"provider": provider.source, "feed": getattr(provider, "feed", None),
+                  "data_version": provider.version,
                   "ingested_at": datetime.now(UTC).isoformat(), "source_timezone": "UTC/aware",
                   "repository_commit": repository_commit, "detector_version": primary.strategy_version,
                   "decision_cutoff": context.decision_cutoff.isoformat(), "normalization_version": 1}
@@ -359,6 +367,8 @@ def build_corpus(provider: HistoricalBarProvider, output: Path, *, repository_co
                           "source_identity": source_identity,
                           "summary": summary.__dict__ if hasattr(summary, "__dict__") else {
                               "accepted_unique": summary.accepted_unique, "strategy_memberships": summary.strategy_memberships,
+                              "exact_duplicates": summary.exact_duplicates, "near_duplicates": summary.near_duplicates,
+                              "quarantined": summary.quarantined,
                           }})
     store.write_checkpoint({"completed": True, "source": provider.source, "source_identity": source_identity,
                             "repository_commit": repository_commit})
