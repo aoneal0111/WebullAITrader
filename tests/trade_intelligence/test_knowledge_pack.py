@@ -11,6 +11,7 @@ from app.trade_intelligence.knowledge.reporting import validate_corpus
 from app.trade_intelligence.knowledge.storage import KnowledgeStore
 from app.trade_intelligence.knowledge.orchestration import ResearchOrchestrator, RunPlan
 from app.trade_intelligence.knowledge.mining import mining_content_key
+import app.trade_intelligence.knowledge.orchestration as orchestration_module
 
 
 def _write(path, bars):
@@ -172,3 +173,30 @@ def test_reconciliation_supersedes_duplicate_identity_without_payload_change(tmp
     assert result["superseded"] == 1
     assert store.mined_partitions()["new"]["status"] == "SUPERSEDED"
     assert store.reconcile_mined_partitions()["superseded"] == 0
+
+
+def test_partition_mining_uses_one_long_lived_store_session(tmp_path, monkeypatch):
+    start = datetime(2026, 1, 2, 15, 0, tzinfo=timezone.utc)
+    source = tmp_path / "bars.jsonl"
+    _write(source, [(start + timedelta(minutes=index), Decimal("1"), Decimal("1.2"),
+                     Decimal("0.9"), Decimal("1.1")) for index in range(6)])
+    calls = {"stores": 0, "reconcile": 0}
+    original_store = orchestration_module.KnowledgeStore
+
+    class CountingStore(original_store):
+        def __init__(self, *args, **kwargs):
+            calls["stores"] += 1
+            super().__init__(*args, **kwargs)
+
+        def reconcile_mined_partitions(self):
+            calls["reconcile"] += 1
+            return super().reconcile_mined_partitions()
+
+    monkeypatch.setattr(orchestration_module, "KnowledgeStore", CountingStore)
+    plan = RunPlan("local", "fixture", start.date(), start.date(), 5000)
+    orchestrator = ResearchOrchestrator(plan, root=tmp_path / "root", corpus_root=tmp_path / "corpus")
+    first = orchestrator.run_local_mine(source, repository_commit="a", partition_id="one")
+    second = orchestrator.run_local_mine(source, repository_commit="a", partition_id="two")
+    assert first["accepted_unique"] > 0
+    assert second["accepted_unique"] == 0
+    assert calls == {"stores": 1, "reconcile": 1}

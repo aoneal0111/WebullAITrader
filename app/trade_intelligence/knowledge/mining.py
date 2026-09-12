@@ -290,10 +290,11 @@ def build_reentry_label(parent: KnowledgeEpisode | None, new_episode_id: str,
 
 def build_corpus(provider: HistoricalBarProvider, output: Path, *, repository_commit: str,
                  maximum_bars: int = 64, partition_id: str | None = None,
-                 partition_metadata: dict[str, object] | None = None) -> BuildSummary:
+                 partition_metadata: dict[str, object] | None = None,
+                 store: KnowledgeStore | None = None) -> BuildSummary:
     if maximum_bars <= 0:
         raise ValueError("maximum_bars must be positive")
-    store = KnowledgeStore(output)
+    store = store or KnowledgeStore(output)
     source_identity = getattr(provider, "identity", f"{provider.source}|{provider.version}")
     prior_checkpoint = None
     if store.checkpoint_path.exists():
@@ -323,10 +324,6 @@ def build_corpus(provider: HistoricalBarProvider, output: Path, *, repository_co
     registry = default_registry()
     references = getattr(provider, "references", lambda: {})()
     latest_by_symbol: dict[str, KnowledgeEpisode] = {}
-    for row in store.iter_episodes():
-        # Existing rows are only needed for parent identity on a resumed build.
-        # Full bar payloads are not retained in this index.
-        latest_by_symbol[row["symbol"]] = None  # type: ignore[assignment]
     for (symbol, day), day_bars in sorted(grouped.items()):
         day_bars.sort(key=lambda item: item.timestamp)
         for index in range(len(day_bars)):
@@ -368,7 +365,7 @@ def build_corpus(provider: HistoricalBarProvider, output: Path, *, repository_co
                         {"provider": provider.source, "repository_commit": repository_commit},
                     ))
                     continue
-                if candidate.episode_id in store.episode_ids:
+                if store.has_episode(candidate.episode_id):
                     exact += 1
                     for strategy in candidate.strategy_memberships: per[strategy]["exact_duplicates"] += 1
                     continue
@@ -386,7 +383,8 @@ def build_corpus(provider: HistoricalBarProvider, output: Path, *, repository_co
     summary = BuildSummary(dict(raw), exact, near, quarantined, accepted_this_run,
                            sum(per[strategy]["accepted_unique"] for strategy in ACTIVE_STRATEGIES),
                            {key: dict(value) for key, value in per.items()})
-    store.write_manifest({"knowledge_pack": "ATLAS_TRADING_KNOWLEDGE_V1", "episode_schema_version": 1,
+    if partition_id is None:
+        store.write_manifest({"knowledge_pack": "ATLAS_TRADING_KNOWLEDGE_V1", "episode_schema_version": 1,
                           "labeling_version": 1, "dedupe_version": 1, "active_strategies": list(ACTIVE_STRATEGIES),
                           "target_per_strategy": 5000, "target_memberships": 115000,
                           "repository_commit": repository_commit, "storage": "append-only JSONL",
@@ -416,13 +414,14 @@ def build_corpus(provider: HistoricalBarProvider, output: Path, *, repository_co
         store.write_checkpoint({"completed": True, "mode": "FULL_BUILD",
                                 "source": provider.source, "source_identity": source_identity,
                                 "repository_commit": repository_commit})
-    aggregate = store.status()
-    mined = store.mined_partitions()
-    manifest = json.loads(store.manifest_path.read_text(encoding="utf-8"))
-    manifest["summary"] = {"accepted_unique": aggregate["unique_episodes"],
-                            "strategy_memberships": aggregate["strategy_memberships"],
-                            "quarantined": sum(int(row.get("quarantined", 0)) for row in mined.values()),
-                            "exact_duplicates": sum(int(row.get("exact_duplicates", 0)) for row in mined.values()),
-                            "near_duplicates": sum(int(row.get("near_duplicates", 0)) for row in mined.values())}
-    store.write_manifest(manifest)
+    if partition_id is None:
+        aggregate = store.status()
+        mined = store.mined_partitions()
+        manifest = json.loads(store.manifest_path.read_text(encoding="utf-8"))
+        manifest["summary"] = {"accepted_unique": aggregate["unique_episodes"],
+                                "strategy_memberships": aggregate["strategy_memberships"],
+                                "quarantined": sum(int(row.get("quarantined", 0)) for row in mined.values()),
+                                "exact_duplicates": sum(int(row.get("exact_duplicates", 0)) for row in mined.values()),
+                                "near_duplicates": sum(int(row.get("near_duplicates", 0)) for row in mined.values())}
+        store.write_manifest(manifest)
     return summary

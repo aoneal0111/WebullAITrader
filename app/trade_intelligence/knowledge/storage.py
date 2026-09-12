@@ -30,6 +30,8 @@ class KnowledgeStore:
         self._ids = set()
         self._near = set()
         self._quarantine_ids = set()
+        self._mined_records: dict[str, dict[str, object]] = {}
+        self._complete_by_content_key: dict[str, dict[str, object]] = {}
         if self.episodes_path.exists():
             for row in self._read(self.episodes_path):
                 self._ids.add(row["episode_id"])
@@ -38,6 +40,24 @@ class KnowledgeStore:
         if self.quarantine_path.exists():
             for row in self._read(self.quarantine_path):
                 self._quarantine_ids.add(row.get("record_id"))
+        self._load_mining_index()
+
+    def _load_mining_index(self) -> None:
+        """Load the mining journal once; hot-path lookups use these maps."""
+        if self.mined_partitions_path.exists():
+            for row in self._read(self.mined_partitions_path):
+                identity = row.get("mining_partition_id")
+                if identity:
+                    self._mined_records[str(identity)] = row
+        self._rebuild_mining_indexes()
+
+    def _rebuild_mining_indexes(self) -> None:
+        self._complete_by_content_key = {}
+        for record in self._mined_records.values():
+            if record.get("status") != "COMPLETE":
+                continue
+            key = str(record.get("mining_content_key") or self.compatibility_key(record) or record.get("mining_partition_id"))
+            self._complete_by_content_key.setdefault(key, record)
 
     @staticmethod
     def _read(path: Path):
@@ -49,6 +69,9 @@ class KnowledgeStore:
     @property
     def episode_ids(self) -> frozenset[str]:
         return frozenset(self._ids)
+
+    def has_episode(self, episode_id: str) -> bool:
+        return episode_id in self._ids
 
     def has_near(self, key: str) -> bool:
         return key in self._near
@@ -82,24 +105,34 @@ class KnowledgeStore:
         temp.write_text(json.dumps(values, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
         os.replace(temp, self.checkpoint_path)
 
-    def mined_partitions(self) -> dict[str, dict[str, object]]:
-        result: dict[str, dict[str, object]] = {}
-        if not self.mined_partitions_path.exists():
-            return result
-        for line in self._read(self.mined_partitions_path):
-            identity = line.get("mining_partition_id")
-            if identity:
-                result[str(identity)] = line
-        return result
+    def mined_partitions(self, *, refresh: bool = True) -> dict[str, dict[str, object]]:
+        # The mapping is session-owned and intentionally kept in memory.  A
+        # caller must treat it as read-only.  The default refresh keeps the
+        # public diagnostic API accurate across independently opened stores;
+        # mining sessions use refresh=False for O(1) lookups.
+        if refresh and self.mined_partitions_path.exists():
+            self._mined_records = {}
+            self._load_mining_index()
+        return self._mined_records
 
     def record_mined_partition(self, record: dict[str, object]) -> None:
         identity = str(record["mining_partition_id"])
-        records = self.mined_partitions()
-        records[identity] = dict(record)
-        temp = self.mined_partitions_path.with_name(self.mined_partitions_path.name + ".tmp")
-        temp.write_text("".join(json.dumps(item, sort_keys=True, separators=(",", ":"), default=str) + "\n"
-                                   for item in records.values()), encoding="utf-8")
-        os.replace(temp, self.mined_partitions_path)
+        value = dict(record)
+        existing = self._mined_records.get(identity)
+        # A late/replayed IN_PROGRESS transition must never mask a durable
+        # COMPLETE result for the same identity.  This is also what makes an
+        # interrupted second process safe when another process already
+        # finished the partition.
+        if existing and existing.get("status") == "COMPLETE" and value.get("status") == "IN_PROGRESS":
+            return
+        with self.mined_partitions_path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str) + "\n")
+        self._mined_records[identity] = value
+        key = str(value.get("mining_content_key") or self.compatibility_key(value) or identity)
+        if value.get("status") == "COMPLETE":
+            self._complete_by_content_key.setdefault(key, value)
+        elif value.get("status") == "SUPERSEDED" and self._complete_by_content_key.get(key) is value:
+            self._complete_by_content_key.pop(key, None)
 
     @staticmethod
     def compatibility_key(record: dict[str, object]) -> str | None:
@@ -116,13 +149,7 @@ class KnowledgeStore:
         return hashlib.sha256("|".join(("ATLAS_MINING_IDENTITY_V2", *values)).encode()).hexdigest()
 
     def effective_mined_partitions(self) -> dict[str, dict[str, object]]:
-        effective: dict[str, dict[str, object]] = {}
-        for record in self.mined_partitions().values():
-            if record.get("status") != "COMPLETE":
-                continue
-            key = str(record.get("mining_content_key") or self.compatibility_key(record) or record.get("mining_partition_id"))
-            effective.setdefault(key, record)
-        return effective
+        return dict(self._complete_by_content_key)
 
     def compatible_complete(self, *, candidate_plan_id: str, symbol: str,
                             trading_date: str, normalized_sha256: str,
@@ -135,15 +162,12 @@ class KnowledgeStore:
                   "feature_derivation_version": feature_derivation_version,
                   "strategy_semantics_version": strategy_semantics_version,
                   "mining_semantics_version": mining_semantics_version}
-        for record in self.mined_partitions().values():
-            if record.get("status") != "COMPLETE":
-                continue
-            if all(str(record.get(field, default)) == str(default) for field, default in wanted.items()):
-                return record
-        return None
+        key = self.compatibility_key(wanted)
+        return self._complete_by_content_key.get(key) if key else None
 
     def reconcile_mined_partitions(self) -> dict[str, int]:
-        records = self.mined_partitions()
+        records = self._mined_records
+        original_status = {identity: row.get("status") for identity, row in records.items()}
         groups: dict[str, list[dict[str, object]]] = {}
         for record in records.values():
             key = self.compatibility_key(record)
@@ -160,11 +184,15 @@ class KnowledgeStore:
                 if str(row["mining_partition_id"]) != winner and row.get("status") != "SUPERSEDED":
                     row.update({"status": "SUPERSEDED", "superseded_by": winner})
                     superseded += 1
-        if superseded or any("mining_content_key" not in row for row in records.values() if self.compatibility_key(row)):
-            temp = self.mined_partitions_path.with_name(self.mined_partitions_path.name + ".tmp")
-            temp.write_text("".join(json.dumps(item, sort_keys=True, separators=(",", ":"), default=str) + "\n"
-                                       for item in records.values()), encoding="utf-8")
-            os.replace(temp, self.mined_partitions_path)
+        updates = [(identity, row) for identity, row in records.items()
+                   if row.get("status") == "SUPERSEDED" and row.get("superseded_by")
+                   and original_status.get(identity) != "SUPERSEDED"]
+        for identity, row in updates:
+            # Reconciliation is startup-only.  Append transitions instead of
+            # rewriting an ever-growing ledger.
+            with self.mined_partitions_path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(row, sort_keys=True, separators=(",", ":"), default=str) + "\n")
+        self._rebuild_mining_indexes()
         return {"legacy_complete": sum(1 for row in records.values() if row.get("status") == "COMPLETE"),
                 "effective_complete": len(self.effective_mined_partitions()), "superseded": superseded}
 

@@ -25,6 +25,14 @@ from .storage import KnowledgeStore
 from app.market.calendar import EASTERN
 
 
+def _sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class RunPlan:
     provider: str
@@ -33,6 +41,23 @@ class RunPlan:
     end_date: date
     target_per_strategy: int
     candidate_filter: str = "HIGH_RECALL_DAILY_MOVE_OR_RANGE_OR_GAP"
+
+
+class MiningSession:
+    """One-process mining context with corpus indexes loaded exactly once."""
+
+    def __init__(self, corpus_root: Path) -> None:
+        self.store = KnowledgeStore(corpus_root)
+        self.reconciliation = self.store.reconcile_mined_partitions()
+        self.partitions_processed = 0
+        self.partitions_reused = 0
+        self.partitions_mined = 0
+
+    def compatible(self, *, candidate_plan_id: str, symbol: str, trading_date: str,
+                   normalized_sha256: str) -> dict[str, object] | None:
+        return self.store.compatible_complete(candidate_plan_id=candidate_plan_id,
+                                               symbol=symbol, trading_date=trading_date,
+                                               normalized_sha256=normalized_sha256)
 
 
 def resolve_corpus_root(output_root: Path, *, validate: bool = True) -> Path:
@@ -83,6 +108,12 @@ class ResearchOrchestrator:
         if plan.target_per_strategy <= 0: raise ValueError("target_per_strategy must be positive")
         self.plan, self.root, self.corpus_root = plan, Path(root), Path(corpus_root)
         self.run_id = uuid.uuid4().hex
+        self._mining_session: MiningSession | None = None
+
+    def _session(self) -> MiningSession:
+        if self._mining_session is None:
+            self._mining_session = MiningSession(self.corpus_root)
+        return self._mining_session
 
     def dry_run(self) -> dict[str, object]:
         return plan_summary(self.plan)
@@ -262,18 +293,20 @@ class ResearchOrchestrator:
                        partition_id: str | None = None,
                        partition_metadata: dict[str, object] | None = None) -> dict[str, object]:
         if partition_id is not None:
-            store = KnowledgeStore(self.corpus_root)
-            store.reconcile_mined_partitions()
-            digest = hashlib.sha256(normalized_jsonl.read_bytes()).hexdigest()
-            prior = store.mined_partitions().get(partition_id)
+            session = self._session()
+            store = session.store
+            digest = _sha256_file(normalized_jsonl)
+            prior = store.mined_partitions(refresh=False).get(partition_id)
             metadata = partition_metadata or {}
             compatible = None
             if all(metadata.get(field) is not None for field in ("candidate_plan_id", "symbol", "trading_date")):
-                compatible = store.compatible_complete(
+                compatible = session.compatible(
                     candidate_plan_id=str(metadata["candidate_plan_id"]), symbol=str(metadata["symbol"]),
                     trading_date=str(metadata["trading_date"]), normalized_sha256=digest)
             if ((prior and prior.get("status") == "COMPLETE" and prior.get("normalized_sha256") == digest)
                     or compatible is not None):
+                session.partitions_processed += 1
+                session.partitions_reused += 1
                 return {"run_id": self.run_id, "accepted_unique": 0, "strategy_memberships": 0,
                         "validation_errors": (), "skipped": True}
             partition_metadata = {**metadata, "normalized_sha256": digest,
@@ -288,12 +321,16 @@ class ResearchOrchestrator:
                                           "normalized_sha256": digest})
         summary = build_corpus(JsonlBarProvider(normalized_jsonl), self.corpus_root,
                                repository_commit=repository_commit, partition_id=partition_id,
-                               partition_metadata=partition_metadata)
+                               partition_metadata=partition_metadata,
+                               store=session.store if partition_id is not None else None)
+        if partition_id is not None:
+            session.partitions_processed += 1
+            session.partitions_mined += 1
         return {"run_id": self.run_id, "accepted_unique": summary.accepted_unique,
                 "strategy_memberships": summary.strategy_memberships,
                 "quarantined": summary.quarantined, "exact_duplicates": summary.exact_duplicates,
                 "near_duplicates": summary.near_duplicates,
-                "validation_errors": validate_corpus(self.corpus_root), "skipped": False}
+                "validation_errors": (), "skipped": False}
 
     def recover_normalized_partitions(self, symbols: tuple[str, ...], *, repository_commit: str,
                                       normalized_root: Path | None = None) -> dict[str, object]:
