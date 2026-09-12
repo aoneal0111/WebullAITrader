@@ -13,7 +13,8 @@ from .candidate_days import discover_candidate_days
 from .accounting import status_for_root
 from .mining import JsonlBarProvider, build_corpus
 from .models import ACTIVE_STRATEGIES
-from .orchestration import ResearchOrchestrator, RunPlan, configured, plan_summary
+from .orchestration import (ResearchOrchestrator, RunPlan, configured, plan_summary,
+                            resolve_corpus_root)
 from .reporting import report, validate_corpus
 from .storage import KnowledgeStore
 from .analysis import cohort_report, chronological_splits, first_tranche_report
@@ -63,8 +64,9 @@ def main(argv: list[str] | None = None) -> int:
             if (not args.symbols and not args.universe) or (not args.execution_plan_only and not configured()):
                 print(json.dumps({"run": "STOPPED", "reason": "EXECUTION_REQUIRES_SYMBOLS_AND_CREDENTIALS"}, indent=2)); return 2
             symbols = tuple(args.symbols)
-            orchestrator = ResearchOrchestrator(plan, root=args.output_root or Path("data/research/market_data"),
-                                                 corpus_root=(args.output_root or Path("data/research/trading_knowledge/v1")) / "corpus" if args.output_root else Path("data/research/trading_knowledge/v1"))
+            output_root = args.output_root or Path("data/research/market_data")
+            orchestrator = ResearchOrchestrator(plan, root=output_root,
+                                                 corpus_root=resolve_corpus_root(output_root))
             if args.universe == "alpaca-assets":
                 universe = AlpacaAssetMasterClient.from_environment()
                 try:
@@ -88,21 +90,22 @@ def main(argv: list[str] | None = None) -> int:
                           "quarantined": value.quarantined, "exact_duplicates": value.exact_duplicates,
                           "near_duplicates": value.near_duplicates, "active_strategies": len(ACTIVE_STRATEGIES)}, indent=2))
     elif args.command == "status":
+        corpus_root = resolve_corpus_root(args.output)
         status = status_for_root(args.output)
-        status["corpus_root"] = str(args.output / "corpus" if (args.output / "corpus").exists() else args.output)
+        status["corpus_root"] = str(corpus_root)
         print(json.dumps(status, indent=2, sort_keys=True))
     elif args.command == "validate":
-        errors = validate_corpus(args.output); print(json.dumps({"valid": not errors, "errors": errors}, indent=2)); return 0 if not errors else 1
+        errors = validate_corpus(resolve_corpus_root(args.output)); print(json.dumps({"valid": not errors, "errors": errors}, indent=2)); return 0 if not errors else 1
     else:
         if args.preset == "first-tranche":
-            value = first_tranche_report(tuple(KnowledgeStore(args.output, create=False).iter_episodes()))
+            value = first_tranche_report(tuple(KnowledgeStore(resolve_corpus_root(args.output), create=False).iter_episodes()))
         elif args.group_by:
-            rows = tuple(KnowledgeStore(args.output, create=False).iter_episodes())
+            rows = tuple(KnowledgeStore(resolve_corpus_root(args.output), create=False).iter_episodes())
             if args.split:
                 rows = tuple(chronological_splits(rows)[args.split.upper()])
             value = cohort_report(rows, tuple(part.strip() for part in args.group_by.split(",") if part.strip()))
         else:
-            value = report(args.output)
+            value = report(resolve_corpus_root(args.output))
         print(json.dumps(value, indent=2, sort_keys=True, default=str))
     return 0
 

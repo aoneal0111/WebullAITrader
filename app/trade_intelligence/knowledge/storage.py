@@ -8,6 +8,7 @@ O(N²) comparison is performed.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -25,6 +26,7 @@ class KnowledgeStore:
         self.quarantine_path = self.root / "quarantine.jsonl"
         self.manifest_path = self.root / "manifest.json"
         self.checkpoint_path = self.root / "checkpoint.json"
+        self.mined_partitions_path = self.root / "mined_partitions.jsonl"
         self._ids = set()
         self._near = set()
         self._quarantine_ids = set()
@@ -76,7 +78,28 @@ class KnowledgeStore:
         self.manifest_path.write_text(json.dumps(values, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
 
     def write_checkpoint(self, values: dict[str, object]) -> None:
-        self.checkpoint_path.write_text(json.dumps(values, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+        temp = self.checkpoint_path.with_name(self.checkpoint_path.name + ".tmp")
+        temp.write_text(json.dumps(values, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+        os.replace(temp, self.checkpoint_path)
+
+    def mined_partitions(self) -> dict[str, dict[str, object]]:
+        result: dict[str, dict[str, object]] = {}
+        if not self.mined_partitions_path.exists():
+            return result
+        for line in self._read(self.mined_partitions_path):
+            identity = line.get("mining_partition_id")
+            if identity:
+                result[str(identity)] = line
+        return result
+
+    def record_mined_partition(self, record: dict[str, object]) -> None:
+        identity = str(record["mining_partition_id"])
+        records = self.mined_partitions()
+        records[identity] = dict(record)
+        temp = self.mined_partitions_path.with_name(self.mined_partitions_path.name + ".tmp")
+        temp.write_text("".join(json.dumps(item, sort_keys=True, separators=(",", ":"), default=str) + "\n"
+                                   for item in records.values()), encoding="utf-8")
+        os.replace(temp, self.mined_partitions_path)
 
     def iter_episodes(self) -> Iterable[dict[str, object]]:
         return self._read(self.episodes_path) if self.episodes_path.exists() else iter(())

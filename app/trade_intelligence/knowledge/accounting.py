@@ -67,6 +67,13 @@ def status_for_root(root: Path, *, persist_reconstruction: bool = True) -> dict[
                           for row in complete if (root / "normalized" / f"{row.get('symbol')}_{row.get('trading_date')}.jsonl").exists())
     corpus_manifest = _read(corpus / "manifest.json", {})
     summary = corpus_manifest.get("summary", {})
+    mined_index = _read_jsonl(corpus / "mined_partitions.jsonl")
+    mined_rows = tuple(mined_index)
+    mining_partitions = {"planned": 0, "in_progress": 0, "complete": 0, "failed": 0, "stale_input": 0}
+    for row in mined_rows:
+        state = str(row.get("status", "")).lower()
+        if state in mining_partitions:
+            mining_partitions[state] += 1
     if run and summary:
         run["corpus"] = {"unique_episodes": summary.get("accepted_unique", 0),
                           "strategy_memberships": summary.get("strategy_memberships", 0),
@@ -106,6 +113,11 @@ def status_for_root(root: Path, *, persist_reconstruction: bool = True) -> dict[
                 "partitions": partitions, "quota": {strategy: {"accepted": quota.get(strategy, 0),
                     "remaining": max(0, 5000 - quota.get(strategy, 0)), "satisfied": quota.get(strategy, 0) >= 5000}
                     for strategy in ACTIVE_STRATEGIES}})
+    run["corpus"] = {"unique_episodes": summary.get("accepted_unique", sum(1 for _ in _read_jsonl(corpus / "episodes.jsonl"))),
+                     "strategy_memberships": summary.get("strategy_memberships", sum(1 for _ in _read_jsonl(corpus / "memberships.jsonl"))),
+                     "quarantined": summary.get("quarantined", sum(1 for _ in _read_jsonl(corpus / "quarantine.jsonl"))),
+                     "exact_duplicates": summary.get("exact_duplicates", 0), "near_duplicates": summary.get("near_duplicates", 0)}
+    run["mining_partitions"] = mining_partitions
     return run
 
 

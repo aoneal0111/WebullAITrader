@@ -2,7 +2,8 @@ from datetime import UTC, datetime
 import json
 
 from app.trade_intelligence.knowledge import orchestration
-from app.trade_intelligence.knowledge.orchestration import ResearchOrchestrator, RunPlan
+from app.trade_intelligence.knowledge.orchestration import ResearchOrchestrator, RunPlan, resolve_corpus_root
+import pytest
 
 
 class FakeDailyClient:
@@ -88,3 +89,24 @@ def test_missing_daily_batch_refetches_only_that_batch(tmp_path, monkeypatch):
     rebuilt = orchestrator.prepare_candidate_plan(symbols, allow_network=True)
     assert len(rebuilt["candidates"]) == 3
     assert len(FakeDailyClient.calls) == 1
+
+
+def test_new_tranche_defaults_to_corpus_and_pointer_selects_repaired(tmp_path):
+    assert resolve_corpus_root(tmp_path / "new") == tmp_path / "new" / "corpus"
+    repaired = tmp_path / "tranche" / "corpus_repaired"
+    repaired.mkdir(parents=True)
+    (repaired / "mined_partitions.jsonl").write_text("", encoding="utf-8")
+    (repaired / "manifest.json").write_text(json.dumps({"summary": {}}), encoding="utf-8")
+    (repaired.parent / "corpus_pointer.json").write_text(json.dumps({
+        "canonical_corpus_path": "corpus_repaired", "validation_status": "PASS"}), encoding="utf-8")
+    assert resolve_corpus_root(repaired.parent, validate=False) == repaired
+
+
+def test_invalid_continuation_pointer_fails_closed(tmp_path):
+    root = tmp_path / "tranche"
+    root.mkdir()
+    (root / "corpus_repaired").mkdir()
+    (root / "corpus_pointer.json").write_text(json.dumps({
+        "canonical_corpus_path": "corpus_repaired", "validation_status": "PASS"}), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="MISSING_MINED_PARTITION_INDEX"):
+        resolve_corpus_root(root, validate=False)

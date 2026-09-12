@@ -14,11 +14,12 @@ import uuid
 
 from .acquisition import (AcquisitionConfig, AlpacaHistoricalClient, atomic_write_jsonl,
                           download_partition)
-from .candidate_days import (CandidateDay, attach_previous_closes, candidate_from_record,
+from .candidate_days import (attach_previous_closes, candidate_from_record,
                               candidate_records_hash, candidate_to_record, discover_candidate_days)
 from .mining import JsonlBarProvider, build_corpus
 from .models import ACTIVE_STRATEGIES
 from .reporting import report, validate_corpus
+from .storage import KnowledgeStore
 from app.market.calendar import EASTERN
 
 
@@ -30,6 +31,40 @@ class RunPlan:
     end_date: date
     target_per_strategy: int
     candidate_filter: str = "HIGH_RECALL_DAILY_MOVE_OR_RANGE_OR_GAP"
+
+
+def resolve_corpus_root(output_root: Path, *, validate: bool = True) -> Path:
+    """Resolve one durable corpus continuation target for a tranche.
+
+    A pointer is required before an alternate/repaired corpus can supersede
+    the normal ``corpus`` directory.  This keeps new tranches on the normal
+    path and prevents silently choosing between competing corpus directories.
+    """
+    root = Path(output_root)
+    pointer_path = root / "corpus_pointer.json"
+    if not pointer_path.exists():
+        if (root / "manifest.json").exists() and not (root / "candidates").exists():
+            return root
+        return root / "corpus"
+    try:
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        relative = Path(str(pointer["canonical_corpus_path"]))
+        canonical = relative if relative.is_absolute() else root / relative
+        if pointer.get("validation_status") != "PASS" or not canonical.is_dir():
+            raise ValueError("INVALID_CORPUS_CONTINUATION_POINTER")
+        if not (canonical / "mined_partitions.jsonl").exists():
+            raise ValueError("MISSING_MINED_PARTITION_INDEX")
+        if validate and validate_corpus(canonical):
+            raise ValueError("INVALID_CANONICAL_CORPUS")
+        expected = pointer.get("expected_mined_partitions")
+        if expected is not None:
+            complete = sum(1 for row in KnowledgeStore(canonical).mined_partitions().values()
+                           if row.get("status") == "COMPLETE")
+            if complete != int(expected):
+                raise ValueError("CANONICAL_CORPUS_PARTITION_COUNT_MISMATCH")
+        return canonical
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def plan_summary(plan: RunPlan, *, symbols: int = 0, candidate_days: int = 0) -> dict[str, object]:
@@ -221,12 +256,62 @@ class ResearchOrchestrator:
         try: return client.health_check()
         finally: client.close()
 
-    def run_local_mine(self, normalized_jsonl: Path, *, repository_commit: str) -> dict[str, object]:
+    def run_local_mine(self, normalized_jsonl: Path, *, repository_commit: str,
+                       partition_id: str | None = None,
+                       partition_metadata: dict[str, object] | None = None) -> dict[str, object]:
+        if partition_id is not None:
+            store = KnowledgeStore(self.corpus_root)
+            prior = store.mined_partitions().get(partition_id)
+            digest = hashlib.sha256(normalized_jsonl.read_bytes()).hexdigest()
+            if prior and prior.get("status") == "COMPLETE" and prior.get("normalized_sha256") == digest:
+                return {"run_id": self.run_id, "accepted_unique": 0, "strategy_memberships": 0,
+                        "validation_errors": (), "skipped": True}
+            partition_metadata = {**(partition_metadata or {}), "normalized_sha256": digest}
+            store.record_mined_partition({**partition_metadata, "mining_partition_id": partition_id,
+                                          "status": "IN_PROGRESS", "started_at": datetime.now(UTC).isoformat(),
+                                          "normalized_sha256": digest})
         summary = build_corpus(JsonlBarProvider(normalized_jsonl), self.corpus_root,
-                               repository_commit=repository_commit)
+                               repository_commit=repository_commit, partition_id=partition_id,
+                               partition_metadata=partition_metadata)
         return {"run_id": self.run_id, "accepted_unique": summary.accepted_unique,
                 "strategy_memberships": summary.strategy_memberships,
-                "validation_errors": validate_corpus(self.corpus_root)}
+                "quarantined": summary.quarantined, "exact_duplicates": summary.exact_duplicates,
+                "near_duplicates": summary.near_duplicates,
+                "validation_errors": validate_corpus(self.corpus_root), "skipped": False}
+
+    def recover_normalized_partitions(self, symbols: tuple[str, ...], *, repository_commit: str,
+                                      normalized_root: Path | None = None) -> dict[str, object]:
+        """Mine only existing candidate normalized partitions; never acquires data."""
+        plan = self.prepare_candidate_plan(symbols, allow_network=False)
+        normalized_root = Path(normalized_root or (self.root / "normalized"))
+        mined = complete = missing = 0
+        accepted = memberships = quarantined = exact = near = 0
+        errors = []
+        for candidate in tuple(plan["candidates"]):
+            path = normalized_root / f"{candidate.symbol}_{candidate.trading_date.isoformat()}.jsonl"
+            if not path.exists():
+                missing += 1
+                continue
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            partition_id = hashlib.sha256("|".join((plan["plan_id"], candidate.symbol,
+                candidate.trading_date.isoformat(), digest, repository_commit, "1", "ATLAS_PIT_FEATURES_V1")).encode()).hexdigest()
+            value = self.run_local_mine(path, repository_commit=repository_commit, partition_id=partition_id,
+                partition_metadata={"symbol": candidate.symbol, "trading_date": candidate.trading_date.isoformat(),
+                                    "normalized_path": str(path), "normalized_sha256": digest,
+                                    "candidate_plan_id": plan["plan_id"], "candidate_plan_hash": plan["candidate_artifact_sha256"]})
+            if value.get("skipped"):
+                complete += 1
+                continue
+            mined += 1; accepted += int(value["accepted_unique"]); memberships += int(value["strategy_memberships"])
+            quarantined += int(value.get("quarantined", 0)); exact += int(value.get("exact_duplicates", 0)); near += int(value.get("near_duplicates", 0))
+            errors.extend(value["validation_errors"])
+        return {"plan_id": plan["plan_id"], "candidate_artifact_sha256": plan["candidate_artifact_sha256"],
+                "normalized_partitions_discovered": mined + complete, "mined_partitions": mined,
+                "already_complete_partitions": complete, "unmined_partitions": missing,
+                "accepted_unique": accepted, "strategy_memberships": memberships,
+                "quarantined": quarantined, "exact_duplicates": exact, "near_duplicates": near,
+                "validation_errors": tuple(errors), "minute_requests": 0, "daily_requests": 0}
+
 
     def run_alpaca(self, symbols: tuple[str, ...], *, repository_commit: str) -> dict[str, object]:
         """Run the bounded daily-discovery -> symbol/day download -> mine flow.
@@ -258,7 +343,15 @@ class ResearchOrchestrator:
                 manifests.append(manifest.to_dict())
                 normalized_path = config.normalized_root / f"{candidate.symbol}_{candidate.trading_date.isoformat()}.jsonl"
                 if normalized_path.exists():
-                    mined = self.run_local_mine(normalized_path, repository_commit=repository_commit)
+                    digest = hashlib.sha256(normalized_path.read_bytes()).hexdigest()
+                    partition_id = hashlib.sha256("|".join((candidate_plan["plan_id"], candidate.symbol,
+                        candidate.trading_date.isoformat(), digest, repository_commit, "1",
+                        "ATLAS_PIT_FEATURES_V1")).encode()).hexdigest()
+                    mined = self.run_local_mine(normalized_path, repository_commit=repository_commit,
+                        partition_id=partition_id, partition_metadata={"symbol": candidate.symbol,
+                            "trading_date": candidate.trading_date.isoformat(), "normalized_path": str(normalized_path),
+                            "normalized_sha256": digest, "candidate_plan_id": candidate_plan["plan_id"],
+                            "candidate_plan_hash": candidate_plan["candidate_artifact_sha256"]})
                     accepted_unique += int(mined["accepted_unique"])
                     strategy_memberships += int(mined["strategy_memberships"])
                     validation_errors.extend(mined["validation_errors"])

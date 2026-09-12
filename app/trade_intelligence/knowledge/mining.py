@@ -273,7 +273,8 @@ def build_reentry_label(parent: KnowledgeEpisode | None, new_episode_id: str,
 
 
 def build_corpus(provider: HistoricalBarProvider, output: Path, *, repository_commit: str,
-                 maximum_bars: int = 64) -> BuildSummary:
+                 maximum_bars: int = 64, partition_id: str | None = None,
+                 partition_metadata: dict[str, object] | None = None) -> BuildSummary:
     if maximum_bars <= 0:
         raise ValueError("maximum_bars must be positive")
     store = KnowledgeStore(output)
@@ -284,7 +285,8 @@ def build_corpus(provider: HistoricalBarProvider, output: Path, *, repository_co
             prior_checkpoint = json.loads(store.checkpoint_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             prior_checkpoint = None
-    if prior_checkpoint and prior_checkpoint.get("completed") and prior_checkpoint.get("source_identity") == source_identity:
+    if (partition_id is None and prior_checkpoint and prior_checkpoint.get("completed") and
+            prior_checkpoint.get("source_identity") == source_identity):
         status = store.status()
         return BuildSummary({}, 0, 0, 0, 0, 0,
                             {strategy: {"accepted_unique": 0}
@@ -379,6 +381,32 @@ def build_corpus(provider: HistoricalBarProvider, output: Path, *, repository_co
                               "exact_duplicates": summary.exact_duplicates, "near_duplicates": summary.near_duplicates,
                               "quarantined": summary.quarantined,
                           }})
-    store.write_checkpoint({"completed": True, "source": provider.source, "source_identity": source_identity,
-                            "repository_commit": repository_commit})
+    if partition_id is not None:
+        metadata = dict(partition_metadata or {})
+        metadata.update({"mining_partition_id": partition_id, "status": "COMPLETE",
+                         "completed_at": datetime.now(UTC).isoformat(),
+                         "accepted_unique": summary.accepted_unique,
+                         "strategy_memberships": summary.strategy_memberships,
+                         "quarantined": summary.quarantined,
+                         "exact_duplicates": summary.exact_duplicates,
+                         "near_duplicates": summary.near_duplicates,
+                         "repository_commit": repository_commit,
+                         "source_identity": source_identity})
+        store.record_mined_partition(metadata)
+        store.write_checkpoint({"completed": False, "mode": "INCREMENTAL_PARTITIONS",
+                                "source": provider.source, "source_identity": source_identity,
+                                "repository_commit": repository_commit})
+    else:
+        store.write_checkpoint({"completed": True, "mode": "FULL_BUILD",
+                                "source": provider.source, "source_identity": source_identity,
+                                "repository_commit": repository_commit})
+    aggregate = store.status()
+    mined = store.mined_partitions()
+    manifest = json.loads(store.manifest_path.read_text(encoding="utf-8"))
+    manifest["summary"] = {"accepted_unique": aggregate["unique_episodes"],
+                            "strategy_memberships": aggregate["strategy_memberships"],
+                            "quarantined": sum(int(row.get("quarantined", 0)) for row in mined.values()),
+                            "exact_duplicates": sum(int(row.get("exact_duplicates", 0)) for row in mined.values()),
+                            "near_duplicates": sum(int(row.get("near_duplicates", 0)) for row in mined.values())}
+    store.write_manifest(manifest)
     return summary

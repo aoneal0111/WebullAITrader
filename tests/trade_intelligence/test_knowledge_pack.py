@@ -1,12 +1,14 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
+import hashlib
 
 from app.trade_intelligence.knowledge.identity import episode_id, membership_id, near_key
 from app.trade_intelligence.knowledge.mining import JsonlBarProvider, _outcomes, build_corpus
 from app.trade_intelligence.knowledge.models import ACTIVE_STRATEGIES
 from app.trade_intelligence.knowledge.reporting import validate_corpus
 from app.trade_intelligence.knowledge.storage import KnowledgeStore
+from app.trade_intelligence.knowledge.orchestration import ResearchOrchestrator, RunPlan
 
 
 def _write(path, bars):
@@ -68,3 +70,53 @@ def test_malformed_source_rows_are_quarantined(tmp_path):
     provider = JsonlBarProvider(source)
     assert tuple(provider.bars()) == ()
     assert provider.errors and provider.errors[0][0] == 1
+
+
+def test_incremental_partition_mining_does_not_complete_global_corpus(tmp_path):
+    start = datetime(2026, 1, 2, 15, 0, tzinfo=timezone.utc)
+    bars = [(start + timedelta(minutes=index), *(Decimal(str(item)) for item in values))
+            for index, values in enumerate(((1, 1.1, .99, 1.05), (1.05, 1.2, 1.02, 1.15),
+                                             (1.15, 1.3, 1.1, 1.25), (1.25, 1.3, 1.2, 1.22),
+                                             (1.22, 1.32, 1.2, 1.3), (1.3, 1.5, 1.29, 1.45)))]
+    source = tmp_path / "bars.jsonl"
+    _write(source, bars)
+    plan = RunPlan("local", "fixture", start.date(), start.date(), 5000)
+    orchestrator = ResearchOrchestrator(plan, root=tmp_path / "root", corpus_root=tmp_path / "corpus")
+
+    first = orchestrator.run_local_mine(source, repository_commit="test", partition_id="p1")
+    second = orchestrator.run_local_mine(source, repository_commit="test", partition_id="p2")
+    repeat = orchestrator.run_local_mine(source, repository_commit="test", partition_id="p1")
+    store = KnowledgeStore(tmp_path / "corpus")
+
+    assert first["accepted_unique"] > 0
+    assert second["accepted_unique"] == 0  # global identity/dedupe remains intact
+    assert repeat["skipped"] is True
+    assert store.mined_partitions()["p1"]["status"] == "COMPLETE"
+    assert store.mined_partitions()["p2"]["status"] == "COMPLETE"
+    assert json.loads(store.checkpoint_path.read_text(encoding="utf-8"))["completed"] is False
+
+
+def test_in_progress_partition_resume_is_idempotent_and_changed_input_is_new_identity(tmp_path):
+    start = datetime(2026, 1, 2, 15, 0, tzinfo=timezone.utc)
+    source = tmp_path / "bars.jsonl"
+    _write(source, [(start + timedelta(minutes=index), Decimal("1"), Decimal("1.2"),
+                     Decimal("0.9"), Decimal("1.1")) for index in range(6)])
+    plan = RunPlan("local", "fixture", start.date(), start.date(), 5000)
+    orchestrator = ResearchOrchestrator(plan, root=tmp_path / "root", corpus_root=tmp_path / "corpus")
+    first = orchestrator.run_local_mine(source, repository_commit="test", partition_id="same")
+    store = KnowledgeStore(tmp_path / "corpus")
+    store.record_mined_partition({"mining_partition_id": "same", "status": "IN_PROGRESS"})
+    resumed = orchestrator.run_local_mine(source, repository_commit="test", partition_id="same")
+    assert first["accepted_unique"] >= 0
+    assert resumed["accepted_unique"] == 0
+    assert store.mined_partitions()["same"]["status"] == "COMPLETE"
+
+    changed = tmp_path / "changed.jsonl"
+    _write(changed, [(start + timedelta(minutes=index), Decimal("1"), Decimal("1.3"),
+                      Decimal("0.9"), Decimal("1.2")) for index in range(6)])
+    old_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    new_digest = hashlib.sha256(changed.read_bytes()).hexdigest()
+    assert old_digest != new_digest
+    old_identity = hashlib.sha256(("same|" + old_digest).encode()).hexdigest()
+    new_identity = hashlib.sha256(("same|" + new_digest).encode()).hexdigest()
+    assert old_identity != new_identity  # changed input cannot use the old completion identity
