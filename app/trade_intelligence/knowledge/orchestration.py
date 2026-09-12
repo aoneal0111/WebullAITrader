@@ -16,7 +16,9 @@ from .acquisition import (AcquisitionConfig, AlpacaHistoricalClient, atomic_writ
                           download_partition)
 from .candidate_days import (attach_previous_closes, candidate_from_record,
                               candidate_records_hash, candidate_to_record, discover_candidate_days)
-from .mining import JsonlBarProvider, build_corpus
+from .mining import (MINING_IDENTITY_VERSION, MINING_SEMANTICS_VERSION,
+                     STRATEGY_SEMANTICS_VERSION, JsonlBarProvider, build_corpus,
+                     mining_content_key)
 from .models import ACTIVE_STRATEGIES
 from .reporting import report, validate_corpus
 from .storage import KnowledgeStore
@@ -261,12 +263,26 @@ class ResearchOrchestrator:
                        partition_metadata: dict[str, object] | None = None) -> dict[str, object]:
         if partition_id is not None:
             store = KnowledgeStore(self.corpus_root)
-            prior = store.mined_partitions().get(partition_id)
+            store.reconcile_mined_partitions()
             digest = hashlib.sha256(normalized_jsonl.read_bytes()).hexdigest()
-            if prior and prior.get("status") == "COMPLETE" and prior.get("normalized_sha256") == digest:
+            prior = store.mined_partitions().get(partition_id)
+            metadata = partition_metadata or {}
+            compatible = None
+            if all(metadata.get(field) is not None for field in ("candidate_plan_id", "symbol", "trading_date")):
+                compatible = store.compatible_complete(
+                    candidate_plan_id=str(metadata["candidate_plan_id"]), symbol=str(metadata["symbol"]),
+                    trading_date=str(metadata["trading_date"]), normalized_sha256=digest)
+            if ((prior and prior.get("status") == "COMPLETE" and prior.get("normalized_sha256") == digest)
+                    or compatible is not None):
                 return {"run_id": self.run_id, "accepted_unique": 0, "strategy_memberships": 0,
                         "validation_errors": (), "skipped": True}
-            partition_metadata = {**(partition_metadata or {}), "normalized_sha256": digest}
+            partition_metadata = {**metadata, "normalized_sha256": digest,
+                                  "knowledge_schema_version": 1,
+                                  "feature_derivation_version": "ATLAS_PIT_FEATURES_V1",
+                                  "strategy_semantics_version": STRATEGY_SEMANTICS_VERSION,
+                                  "mining_semantics_version": MINING_SEMANTICS_VERSION,
+                                  "mining_identity_version": MINING_IDENTITY_VERSION,
+                                  "mining_content_key": partition_id}
             store.record_mined_partition({**partition_metadata, "mining_partition_id": partition_id,
                                           "status": "IN_PROGRESS", "started_at": datetime.now(UTC).isoformat(),
                                           "normalized_sha256": digest})
@@ -293,8 +309,8 @@ class ResearchOrchestrator:
                 missing += 1
                 continue
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            partition_id = hashlib.sha256("|".join((plan["plan_id"], candidate.symbol,
-                candidate.trading_date.isoformat(), digest, repository_commit, "1", "ATLAS_PIT_FEATURES_V1")).encode()).hexdigest()
+            partition_id = mining_content_key(candidate_plan_id=plan["plan_id"], symbol=candidate.symbol,
+                trading_date=candidate.trading_date.isoformat(), normalized_sha256=digest)
             value = self.run_local_mine(path, repository_commit=repository_commit, partition_id=partition_id,
                 partition_metadata={"symbol": candidate.symbol, "trading_date": candidate.trading_date.isoformat(),
                                     "normalized_path": str(path), "normalized_sha256": digest,
@@ -344,9 +360,9 @@ class ResearchOrchestrator:
                 normalized_path = config.normalized_root / f"{candidate.symbol}_{candidate.trading_date.isoformat()}.jsonl"
                 if normalized_path.exists():
                     digest = hashlib.sha256(normalized_path.read_bytes()).hexdigest()
-                    partition_id = hashlib.sha256("|".join((candidate_plan["plan_id"], candidate.symbol,
-                        candidate.trading_date.isoformat(), digest, repository_commit, "1",
-                        "ATLAS_PIT_FEATURES_V1")).encode()).hexdigest()
+                    partition_id = mining_content_key(candidate_plan_id=candidate_plan["plan_id"],
+                        symbol=candidate.symbol, trading_date=candidate.trading_date.isoformat(),
+                        normalized_sha256=digest)
                     mined = self.run_local_mine(normalized_path, repository_commit=repository_commit,
                         partition_id=partition_id, partition_metadata={"symbol": candidate.symbol,
                             "trading_date": candidate.trading_date.isoformat(), "normalized_path": str(normalized_path),

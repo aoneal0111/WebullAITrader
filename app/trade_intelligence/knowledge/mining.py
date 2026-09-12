@@ -25,6 +25,22 @@ from .models import (
 from .storage import KnowledgeStore
 
 
+MINING_IDENTITY_VERSION = "ATLAS_MINING_IDENTITY_V2"
+STRATEGY_SEMANTICS_VERSION = "ATLAS_STRATEGY_SEMANTICS_V1"
+MINING_SEMANTICS_VERSION = "ATLAS_MINING_SEMANTICS_V1"
+
+
+def mining_content_key(*, candidate_plan_id: str, symbol: str, trading_date: str,
+                       normalized_sha256: str, knowledge_schema_version: int = 1,
+                       feature_derivation_version: str = "ATLAS_PIT_FEATURES_V1",
+                       strategy_semantics_version: str = STRATEGY_SEMANTICS_VERSION,
+                       mining_semantics_version: str = MINING_SEMANTICS_VERSION) -> str:
+    values = (MINING_IDENTITY_VERSION, candidate_plan_id, symbol, trading_date, normalized_sha256,
+              str(knowledge_schema_version), feature_derivation_version,
+              strategy_semantics_version, mining_semantics_version)
+    return hashlib.sha256("|".join(values).encode()).hexdigest()
+
+
 class HistoricalBarProvider(Protocol):
     source: str
     version: str

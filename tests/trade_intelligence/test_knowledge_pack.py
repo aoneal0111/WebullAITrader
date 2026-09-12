@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
 import hashlib
+import pytest
 
 from app.trade_intelligence.knowledge.identity import episode_id, membership_id, near_key
 from app.trade_intelligence.knowledge.mining import JsonlBarProvider, _outcomes, build_corpus
@@ -9,6 +10,7 @@ from app.trade_intelligence.knowledge.models import ACTIVE_STRATEGIES
 from app.trade_intelligence.knowledge.reporting import validate_corpus
 from app.trade_intelligence.knowledge.storage import KnowledgeStore
 from app.trade_intelligence.knowledge.orchestration import ResearchOrchestrator, RunPlan
+from app.trade_intelligence.knowledge.mining import mining_content_key
 
 
 def _write(path, bars):
@@ -120,3 +122,53 @@ def test_in_progress_partition_resume_is_idempotent_and_changed_input_is_new_ide
     old_identity = hashlib.sha256(("same|" + old_digest).encode()).hexdigest()
     new_identity = hashlib.sha256(("same|" + new_digest).encode()).hexdigest()
     assert old_identity != new_identity  # changed input cannot use the old completion identity
+
+
+def test_commit_provenance_changes_do_not_invalidate_semantic_completion(tmp_path):
+    store = KnowledgeStore(tmp_path / "pack")
+    key = mining_content_key(candidate_plan_id="plan", symbol="XYZ", trading_date="2026-01-02",
+                             normalized_sha256="digest")
+    store.record_mined_partition({"mining_partition_id": key, "mining_content_key": key,
+                                  "candidate_plan_id": "plan", "symbol": "XYZ", "trading_date": "2026-01-02",
+                                  "normalized_sha256": "digest", "status": "COMPLETE",
+                                  "repository_commit": "commit-a", "knowledge_schema_version": 1,
+                                  "feature_derivation_version": "ATLAS_PIT_FEATURES_V1",
+                                  "strategy_semantics_version": "ATLAS_STRATEGY_SEMANTICS_V1",
+                                  "mining_semantics_version": "ATLAS_MINING_SEMANTICS_V1"})
+    assert store.compatible_complete(candidate_plan_id="plan", symbol="XYZ", trading_date="2026-01-02",
+                                     normalized_sha256="digest") is not None
+    assert store.effective_mined_partitions()
+
+
+@pytest.mark.parametrize("field,value", (("normalized_sha256", "other"),
+                                           ("feature_derivation_version", "ATLAS_PIT_FEATURES_V2"),
+                                           ("strategy_semantics_version", "ATLAS_STRATEGY_SEMANTICS_V2"),
+                                           ("mining_semantics_version", "ATLAS_MINING_SEMANTICS_V2"),
+                                           ("knowledge_schema_version", 2),
+                                           ("candidate_plan_id", "other-plan")))
+def test_semantic_input_change_rejects_completion(tmp_path, field, value):
+    store = KnowledgeStore(tmp_path / "pack")
+    record = {"mining_partition_id": "legacy", "candidate_plan_id": "plan", "symbol": "XYZ",
+              "trading_date": "2026-01-02", "normalized_sha256": "digest", "status": "COMPLETE",
+              "knowledge_schema_version": 1, "feature_derivation_version": "ATLAS_PIT_FEATURES_V1",
+              "strategy_semantics_version": "ATLAS_STRATEGY_SEMANTICS_V1",
+              "mining_semantics_version": "ATLAS_MINING_SEMANTICS_V1"}
+    store.record_mined_partition(record)
+    requested = {key: record[key] for key in ("candidate_plan_id", "symbol", "trading_date", "normalized_sha256",
+                                               "knowledge_schema_version", "feature_derivation_version",
+                                               "strategy_semantics_version", "mining_semantics_version")}
+    requested[field] = value
+    assert store.compatible_complete(**requested) is None
+
+
+def test_reconciliation_supersedes_duplicate_identity_without_payload_change(tmp_path):
+    store = KnowledgeStore(tmp_path / "pack")
+    common = {"candidate_plan_id": "plan", "symbol": "XYZ", "trading_date": "2026-01-02",
+              "normalized_sha256": "digest", "status": "COMPLETE"}
+    store.record_mined_partition({**common, "mining_partition_id": "legacy", "repository_commit": "a"})
+    store.record_mined_partition({**common, "mining_partition_id": "new", "repository_commit": "b"})
+    result = store.reconcile_mined_partitions()
+    assert result["effective_complete"] == 1
+    assert result["superseded"] == 1
+    assert store.mined_partitions()["new"]["status"] == "SUPERSEDED"
+    assert store.reconcile_mined_partitions()["superseded"] == 0

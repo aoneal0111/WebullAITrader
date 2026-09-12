@@ -101,6 +101,73 @@ class KnowledgeStore:
                                    for item in records.values()), encoding="utf-8")
         os.replace(temp, self.mined_partitions_path)
 
+    @staticmethod
+    def compatibility_key(record: dict[str, object]) -> str | None:
+        fields = ("candidate_plan_id", "symbol", "trading_date", "normalized_sha256",
+                  "knowledge_schema_version", "feature_derivation_version",
+                  "strategy_semantics_version", "mining_semantics_version")
+        if not all(record.get(field) is not None for field in fields[:4]):
+            return None
+        values = (str(record.get(field) or {"knowledge_schema_version": 1,
+                    "feature_derivation_version": "ATLAS_PIT_FEATURES_V1",
+                    "strategy_semantics_version": "ATLAS_STRATEGY_SEMANTICS_V1",
+                    "mining_semantics_version": "ATLAS_MINING_SEMANTICS_V1"}[field]) for field in fields)
+        import hashlib
+        return hashlib.sha256("|".join(("ATLAS_MINING_IDENTITY_V2", *values)).encode()).hexdigest()
+
+    def effective_mined_partitions(self) -> dict[str, dict[str, object]]:
+        effective: dict[str, dict[str, object]] = {}
+        for record in self.mined_partitions().values():
+            if record.get("status") != "COMPLETE":
+                continue
+            key = str(record.get("mining_content_key") or self.compatibility_key(record) or record.get("mining_partition_id"))
+            effective.setdefault(key, record)
+        return effective
+
+    def compatible_complete(self, *, candidate_plan_id: str, symbol: str,
+                            trading_date: str, normalized_sha256: str,
+                            knowledge_schema_version: int = 1,
+                            feature_derivation_version: str = "ATLAS_PIT_FEATURES_V1",
+                            strategy_semantics_version: str = "ATLAS_STRATEGY_SEMANTICS_V1",
+                            mining_semantics_version: str = "ATLAS_MINING_SEMANTICS_V1") -> dict[str, object] | None:
+        wanted = {"candidate_plan_id": candidate_plan_id, "symbol": symbol, "trading_date": trading_date,
+                  "normalized_sha256": normalized_sha256, "knowledge_schema_version": knowledge_schema_version,
+                  "feature_derivation_version": feature_derivation_version,
+                  "strategy_semantics_version": strategy_semantics_version,
+                  "mining_semantics_version": mining_semantics_version}
+        for record in self.mined_partitions().values():
+            if record.get("status") != "COMPLETE":
+                continue
+            if all(str(record.get(field, default)) == str(default) for field, default in wanted.items()):
+                return record
+        return None
+
+    def reconcile_mined_partitions(self) -> dict[str, int]:
+        records = self.mined_partitions()
+        groups: dict[str, list[dict[str, object]]] = {}
+        for record in records.values():
+            key = self.compatibility_key(record)
+            if key:
+                record.setdefault("mining_content_key", key)
+                groups.setdefault(key, []).append(record)
+        superseded = 0
+        for group in groups.values():
+            complete = next((row for row in group if row.get("status") == "COMPLETE"), None)
+            if complete is None:
+                continue
+            winner = str(complete["mining_partition_id"])
+            for row in group:
+                if str(row["mining_partition_id"]) != winner and row.get("status") != "SUPERSEDED":
+                    row.update({"status": "SUPERSEDED", "superseded_by": winner})
+                    superseded += 1
+        if superseded or any("mining_content_key" not in row for row in records.values() if self.compatibility_key(row)):
+            temp = self.mined_partitions_path.with_name(self.mined_partitions_path.name + ".tmp")
+            temp.write_text("".join(json.dumps(item, sort_keys=True, separators=(",", ":"), default=str) + "\n"
+                                       for item in records.values()), encoding="utf-8")
+            os.replace(temp, self.mined_partitions_path)
+        return {"legacy_complete": sum(1 for row in records.values() if row.get("status") == "COMPLETE"),
+                "effective_complete": len(self.effective_mined_partitions()), "superseded": superseded}
+
     def iter_episodes(self) -> Iterable[dict[str, object]]:
         return self._read(self.episodes_path) if self.episodes_path.exists() else iter(())
 
