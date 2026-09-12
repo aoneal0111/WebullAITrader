@@ -17,6 +17,7 @@ from app.opportunity_discovery import (
 )
 
 from .identity import episode_id, near_key
+from .features import feature_snapshot
 from .models import (
     ACTIVE_STRATEGIES, BuildSummary, HORIZONS_SECONDS, HistoricalBar, KnowledgeEpisode,
     PERCENT_TARGETS, QuarantineRecord, R_TARGETS,
@@ -63,6 +64,8 @@ class JsonlBarProvider:
                         str(row.get("provider") or "UNKNOWN"), str(row.get("feed") or "UNKNOWN"),
                         str(row.get("source_timezone") or "UTC"), int(row.get("normalization_version") or 1),
                         None if row.get("previous_close") is None else Decimal(str(row["previous_close"])),
+                        trade_count=None if row.get("trade_count") is None else int(row["trade_count"]),
+                        provider_vwap=None if row.get("provider_vwap") is None else Decimal(str(row["provider_vwap"])),
                     )
                 except Exception as exc:
                     # A bad source row is quarantined by the build; one malformed
@@ -237,6 +240,12 @@ def _candidate(context: DiscoveryContext, detections: tuple[object, ...], future
         None if context.prior_close in (None, 0) else (context.completed_bars[0].open - context.prior_close) / context.prior_close * 100,
         None, max((bar.high for bar in context.completed_bars), default=None), None, None, context.vwap,
         bars, provenance, outcomes, reentry,
+        feature_snapshot(bars, context.decision_cutoff, previous_close=context.prior_close,
+                         trigger_price=trigger, structural_stop=stop,
+                         memberships=tuple(item.strategy_id for item in ordered),
+                         provider=provider.source, feed=getattr(provider, "feed", None),
+                         repository_commit=repository_commit, normalization_version=1,
+                         coverage_class="SINGLE_EXCHANGE_FREE_RESEARCH" if getattr(provider, "feed", "").upper() == "IEX" else None),
     )
 
 

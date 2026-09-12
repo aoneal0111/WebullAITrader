@@ -60,6 +60,8 @@ class HistoricalBar:
     market_cap: Decimal | None = None
     halt_state: str | None = None
     catalyst_id: str | None = None
+    trade_count: int | None = None
+    provider_vwap: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.timestamp.tzinfo is None or not self.symbol or not self.session:
@@ -108,6 +110,7 @@ class KnowledgeEpisode:
     provenance: dict[str, Any]
     outcomes: dict[str, Any]
     reentry: dict[str, Any] | None = None
+    features: dict[str, Any] | None = None
     normalization_version: int = 1
     detector_version: str = "ATLAS_DISCOVERY_RULES_V1"
 

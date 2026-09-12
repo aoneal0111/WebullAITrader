@@ -36,5 +36,20 @@ python -m app.trade_intelligence.knowledge validate
 python -m app.trade_intelligence.knowledge report
 ```
 
+For the first research tranche, use the neutral cohort preset (it reports
+sample-size and concentration warnings and never changes trading policy):
+
+```powershell
+python -m app.trade_intelligence.knowledge report --preset first-tranche
+python -m app.trade_intelligence.knowledge report --group-by strategy,time_of_day_bucket
+python -m app.trade_intelligence.knowledge report --group-by strategy_combination --split train
+```
+
+Feature snapshots are persisted at acceptance with schema and derivation
+versions. Older episodes without snapshots remain explicitly feature-
+unavailable; enrichment requires writing a new corpus output. Canonical
+TRAIN/VALIDATION/TEST splits are chronological, and all metrics are
+observational research only.
+
 The source policy is `ALPACA / IEX`, `ALPACA_IEX_FREE`, raw adjustment, and
 `SINGLE_EXCHANGE_FREE_RESEARCH`. No paid SIP fallback is attempted.

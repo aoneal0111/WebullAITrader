@@ -195,7 +195,9 @@ def normalize_bar(row: dict[str, object], *, symbol: str, trading_date: date,
                          Decimal(str(value("h", "high"))), Decimal(str(value("l", "low"))),
                          Decimal(str(value("c", "close"))), Decimal(str(value("v", "volume"))),
                          scanner_session(timestamp).value, ALPACA_PROVIDER, ALPACA_FREE_FEED, "UTC", 1, previous_close,
-                         *(Decimal(str(row[key])) if row.get(key) is not None else None for key in ("bid", "ask", "bid_size", "ask_size")))
+                         *(Decimal(str(row[key])) if row.get(key) is not None else None for key in ("bid", "ask", "bid_size", "ask_size")),
+                         trade_count=None if row.get("n") is None else int(row["n"]),
+                         provider_vwap=None if row.get("vw") is None else Decimal(str(row["vw"])))
 
 
 def validate_source_bars(rows: Iterable[HistoricalBar]) -> tuple[HistoricalBar, ...]:
@@ -279,7 +281,9 @@ def download_partition(client: AlpacaHistoricalClient, config: AcquisitionConfig
                            "low": str(bar.low), "close": str(bar.close), "volume": str(bar.volume),
                            "provider": bar.provider, "feed": bar.feed, "source_timezone": bar.source_timezone,
                            "normalization_version": bar.normalization_version,
-                           "previous_close": None if bar.previous_close is None else str(bar.previous_close)}
+                           "previous_close": None if bar.previous_close is None else str(bar.previous_close),
+                           "trade_count": bar.trade_count,
+                           "provider_vwap": None if bar.provider_vwap is None else str(bar.provider_vwap)}
                           for bar in normalized)
     atomic_write_jsonl(normalized_path, normalized_records)
     status = "EMPTY_CONFIRMED" if not normalized else "COMPLETE"

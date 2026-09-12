@@ -16,6 +16,7 @@ from .models import ACTIVE_STRATEGIES
 from .orchestration import ResearchOrchestrator, RunPlan, configured, plan_summary
 from .reporting import report, validate_corpus
 from .storage import KnowledgeStore
+from .analysis import cohort_report, chronological_splits, first_tranche_report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -24,6 +25,10 @@ def main(argv: list[str] | None = None) -> int:
     build = sub.add_parser("build"); build.add_argument("--input", type=Path, required=True); build.add_argument("--output", type=Path, required=True); build.add_argument("--repository-commit", required=True)
     for name in ("status", "validate", "report"):
         command = sub.add_parser(name); command.add_argument("--output", type=Path, default=Path("data/research/trading_knowledge/v1"))
+        if name == "report":
+            command.add_argument("--group-by", default="")
+            command.add_argument("--split", choices=("train", "validation", "test"))
+            command.add_argument("--preset", choices=("first-tranche",))
     def plan_args(command):
         command.add_argument("--provider", default="alpaca"); command.add_argument("--feed", default="iex")
         command.add_argument("--start", type=date.fromisoformat, required=True); command.add_argument("--end", type=date.fromisoformat, required=True)
@@ -71,7 +76,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(status, indent=2, sort_keys=True))
     elif args.command == "validate":
         errors = validate_corpus(args.output); print(json.dumps({"valid": not errors, "errors": errors}, indent=2)); return 0 if not errors else 1
-    else: print(json.dumps(report(args.output), indent=2, sort_keys=True))
+    else:
+        if args.preset == "first-tranche":
+            value = first_tranche_report(tuple(KnowledgeStore(args.output, create=False).iter_episodes()))
+        elif args.group_by:
+            rows = tuple(KnowledgeStore(args.output, create=False).iter_episodes())
+            if args.split:
+                rows = tuple(chronological_splits(rows)[args.split.upper()])
+            value = cohort_report(rows, tuple(part.strip() for part in args.group_by.split(",") if part.strip()))
+        else:
+            value = report(args.output)
+        print(json.dumps(value, indent=2, sort_keys=True, default=str))
     return 0
 
 
