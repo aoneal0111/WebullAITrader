@@ -36,6 +36,19 @@ python -m app.trade_intelligence.knowledge validate
 python -m app.trade_intelligence.knowledge report
 ```
 
+For a broad research universe, the reviewed asset-master path is read-only
+and cached before daily candidate discovery:
+
+```powershell
+python -m app.trade_intelligence.knowledge run --provider alpaca --feed iex --universe alpaca-assets --start 2026-06-01 --end 2026-08-31 --execute
+```
+
+The asset snapshot is current metadata, not a point-in-time universe. It is
+timestamped and marked `NOT_POINT_IN_TIME_UNIVERSE`; inactive assets are
+retained when requested, while OTC and identifiable ETFs are excluded from
+the common-equity momentum set. Manual `--symbols` remains available for
+small smoke tests.
+
 For the first research tranche, use the neutral cohort preset (it reports
 sample-size and concentration warnings and never changes trading policy):
 

@@ -17,6 +17,7 @@ from .orchestration import ResearchOrchestrator, RunPlan, configured, plan_summa
 from .reporting import report, validate_corpus
 from .storage import KnowledgeStore
 from .analysis import cohort_report, chronological_splits, first_tranche_report
+from .universe import AlpacaAssetMasterClient, universe_report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--target-per-strategy", type=int, default=5000)
     dry = sub.add_parser("dry-run"); plan_args(dry)
     check = sub.add_parser("provider-check"); check.add_argument("--provider", default="alpaca"); check.add_argument("--feed", default="iex")
-    run = sub.add_parser("run"); plan_args(run); run.add_argument("--input", type=Path); run.add_argument("--symbols", nargs="*", default=()); run.add_argument("--execute", action="store_true"); run.add_argument("--repository-commit", default="WORKTREE")
+    run = sub.add_parser("run"); plan_args(run); run.add_argument("--input", type=Path); run.add_argument("--symbols", nargs="*", default=()); run.add_argument("--universe", choices=("alpaca-assets",)); run.add_argument("--execute", action="store_true"); run.add_argument("--repository-commit", default="WORKTREE")
     discover = sub.add_parser("discover"); discover.add_argument("--input", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "dry-run":
@@ -59,9 +60,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.input is None:
             if not args.execute:
                 print(json.dumps({"run": "PLANNED", "provider_configured": configured(), **plan_summary(plan)}, indent=2)); return 0
-            if not args.symbols or not configured():
+            if (not args.symbols and not args.universe) or not configured():
                 print(json.dumps({"run": "STOPPED", "reason": "EXECUTION_REQUIRES_SYMBOLS_AND_CREDENTIALS"}, indent=2)); return 2
-            value = ResearchOrchestrator(plan).run_alpaca(tuple(args.symbols), repository_commit=args.repository_commit)
+            symbols = tuple(args.symbols)
+            if args.universe == "alpaca-assets":
+                universe = AlpacaAssetMasterClient.from_environment()
+                try:
+                    snapshot = universe.snapshot()
+                    print(json.dumps({"universe": universe_report(snapshot)}, indent=2))
+                    symbols = tuple(item["symbol"] for item in snapshot["assets"] if item.get("included"))
+                finally:
+                    universe.close()
+            value = ResearchOrchestrator(plan).run_alpaca(symbols, repository_commit=args.repository_commit)
             print(json.dumps(value, indent=2, default=str)); return 0 if not value["validation_errors"] else 1
         value = ResearchOrchestrator(plan).run_local_mine(args.input, repository_commit=args.repository_commit)
         print(json.dumps(value, indent=2, default=str)); return 0 if not value["validation_errors"] else 1
