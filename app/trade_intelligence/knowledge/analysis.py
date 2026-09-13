@@ -21,6 +21,10 @@ REENTRY_TRANSITION_VERSION = "ATLAS_REENTRY_TRANSITIONS_V1"
 PERCENT_PARTIAL_TARGETS = (2, 3, 5, 8, 10)
 R_TARGETS = (1, 1.5, 2, 3)
 PHASE2_R_TARGETS = (0.5, 1, 1.5, 2, 3, 4, 5)
+EXECUTION_RESEARCH_VERSION = "ATLAS_BAR_EXECUTION_RESEARCH_V1"
+EXECUTION_CAPITALS = (1000, 5000, 10000, 20000, 50000, 100000)
+EXECUTION_RISK_BUDGETS = (25, 50, 100, 200, 500)
+EXECUTION_PARTICIPATION_LIMITS = (.0025, .005, .01, .02, .05)
 
 
 GROUP_DIMENSIONS = (
@@ -563,6 +567,96 @@ def _pit_context(row: dict) -> tuple:
             None, None, None, None)
 
 
+def execution_entry_reachability(*, decision_price=None, trigger_price=None,
+                                 target_reached=False, same_bar_ambiguous=False) -> str:
+    """Classify only evidence available at the research decision boundary."""
+    if decision_price is None or trigger_price is None:
+        return "INSUFFICIENT_DATA"
+    if same_bar_ambiguous:
+        return "INTRABAR_ORDER_UNKNOWN"
+    if decision_price >= trigger_price:
+        return "TRIGGER_ALREADY_PASSED_AT_DECISION"
+    if target_reached:
+        return "TRIGGER_REACHED"
+    return "TRIGGER_NOT_REACHED"
+
+
+def participation_capacity(shares, volume, limit) -> dict:
+    if shares is None or shares < 0:
+        return {"participation_percent": None, "capacity_status": "INVALID_SIZE"}
+    if volume is None or volume <= 0:
+        return {"participation_percent": None, "capacity_status": "INSUFFICIENT_VOLUME_DATA"}
+    participation = shares / volume
+    return {"participation_percent": participation * 100,
+            "capacity_status": "PASS" if participation <= limit else "FAIL"}
+
+
+def target_realism_models(*, hit: bool | None, stop_first: bool | None,
+                          ambiguous: bool | None, next_bar_confirmed: bool | None = None) -> dict:
+    touch = bool(hit) if hit is not None else None
+    conservative = None if ambiguous is None or hit is None else bool(hit) and not ambiguous
+    next_bar = None if next_bar_confirmed is None else bool(next_bar_confirmed)
+    return {"TOUCH_MODEL": touch, "NEXT_BAR_CONFIRMATION_MODEL": next_bar,
+            "CONSERVATIVE_AMBIGUITY_MODEL": conservative,
+            "stop_first": stop_first, "ambiguity": ambiguous}
+
+
+def execution_adjusted_r(*, reference_entry, structural_stop, original_r,
+                         slippage_bps=0) -> dict:
+    if reference_entry is None or structural_stop is None or original_r is None:
+        return {"status": "UNAVAILABLE"}
+    original_risk = reference_entry - structural_stop
+    if original_risk <= 0:
+        return {"status": "INVALID_GEOMETRY"}
+    stressed_entry = reference_entry * (1 + slippage_bps / 10000)
+    adjusted_risk = stressed_entry - structural_stop
+    return {"status": "AVAILABLE", "reference_entry": reference_entry,
+            "stressed_entry": stressed_entry, "structural_stop": structural_stop,
+            "original_risk_per_share": original_risk,
+            "adjusted_risk_per_share": adjusted_risk,
+            "original_R": original_r,
+            "execution_adjusted_R": original_r * original_risk / adjusted_risk}
+
+
+def _execution_context(row: dict) -> tuple:
+    """Derive conservative, decision-time bar-volume execution proxies."""
+    values = _values(row)
+    extension = values.get("extension", {})
+    decision_price = _number(extension.get("price_at_detection")) or _number(row.get("price_at_detection"))
+    trigger = _number(row.get("trigger_price"))
+    stop = _number(row.get("structural_stop"))
+    events = [event for event in row.get("outcomes", {}).get("percent_targets", {}).values()
+              if isinstance(event, dict)]
+    target_reached = any(bool(event.get("hit")) for event in events)
+    ambiguity = any(event.get("first_plan_event") == "INTRABAR_ORDER_UNKNOWN" for event in events)
+    reachability = execution_entry_reachability(decision_price=decision_price, trigger_price=trigger,
+                                                 target_reached=target_reached, same_bar_ambiguous=ambiguity)
+    if decision_price is None or trigger is None:
+        displacement_percent = displacement_r = chase = None
+    else:
+        displacement_percent = (decision_price - trigger) / trigger * 100 if trigger else None
+        risk = trigger - stop if stop is not None else None
+        displacement_r = (decision_price - trigger) / risk if risk and risk > 0 else None
+        # Preserve the helper's conservative result.  The indexed OHLCV
+        # evidence pass may refine NOT_REACHED to TRIGGER_REACHED later.
+        if decision_price >= trigger:
+            reachability = "TRIGGER_ALREADY_PASSED_AT_DECISION"
+        magnitude = abs(displacement_percent)
+        chase = ("AT_TRIGGER" if magnitude <= .25 else "SLIGHTLY_EXTENDED" if magnitude <= 1
+                 else "MODERATELY_EXTENDED" if magnitude <= 3 else "HEAVILY_EXTENDED")
+    volume = values.get("volume", {})
+    current_volume = _number(volume.get("current"))
+    decision = str(row.get("detected_timestamp") or values.get("decision_timestamp") or "")
+    bar_volumes = [_number(bar.get("volume")) for bar in (row.get("bar_window") or ())
+                   if isinstance(bar, dict) and bar.get("volume") is not None
+                   and (not bar.get("timestamp") or str(bar["timestamp"]) <= decision)]
+    recent_5m = sum(bar_volumes[-5:]) if len(bar_volumes) >= 5 else None
+    recent_10m = sum(bar_volumes[-10:]) if len(bar_volumes) >= 10 else None
+    return (reachability, chase, displacement_percent, displacement_r, current_volume,
+            recent_5m, recent_10m,
+            "BAR_VOLUME_CAPACITY_PROXY" if current_volume is not None else "INSUFFICIENT_BAR_DATA")
+
+
 def _research_observations(row: dict):
     """Yield compact strategy observations; no episode dictionary is retained."""
     outcomes = row.get("outcomes", {})
@@ -574,7 +668,7 @@ def _research_observations(row: dict):
     extension = values.get("extension", {})
     compact = (
         row.get("episode_id"), row.get("symbol"), row.get("trading_date"),
-        row.get("detected_timestamp"),
+        row.get("detected_timestamp") or values.get("decision_timestamp"),
         values.get("time_of_day_bucket"), _dimension(row, "extension_bucket"),
         _volume_context_bucket(row), _number(outcomes.get("mfe_percent")),
         _number(outcomes.get("mae_percent")), _number(outcomes.get("maximum_R")),
@@ -592,6 +686,7 @@ def _research_observations(row: dict):
         *_pit_context(row),
         None, None, None, None, None, None, None, None, None, None,
         None, None, None, None, None, None, None, None, None,
+        *_execution_context(row),
     )
     for strategy in row.get("strategy_memberships", ()):
         yield (compact[0], compact[1], compact[2], compact[3], strategy, *compact[4:])
@@ -770,7 +865,7 @@ def _research_episode_record(row: dict):
     values = _values(row)
     return (
         row.get("episode_id"), row.get("symbol"), row.get("trading_date"),
-        row.get("detected_timestamp"), row.get("structural_anchor"), row.get("primary_strategy"),
+        row.get("detected_timestamp") or values.get("decision_timestamp"), row.get("structural_anchor"), row.get("primary_strategy"),
         "+".join(sorted(row.get("strategy_memberships", ()))), _number(row.get("trigger_price")),
         _number(row.get("structural_stop")), _number(outcomes.get("mfe_percent")),
         _number(outcomes.get("mae_percent")), _number(outcomes.get("maximum_R")),
@@ -817,6 +912,269 @@ def _failure_metrics(connection, where: str = "1=1", params: tuple = ()) -> dict
     return result
 
 
+def _execution_metrics(connection, where: str, params: tuple = ()) -> dict:
+    result = _sql_metrics(connection, where, params)
+    result.update({"simulation": "SIMULATED", "execution_model": "BAR_BASED",
+                   "fill_status": "NO_NBBO_NO_SPREAD_NO_QUEUE_POSITION_NO_REAL_FILL_CLAIM",
+                   "unavailable": ["NBBO", "spread", "queue_position", "true_partial_fills", "true_market_impact"]})
+    result["entry_reachability"] = {value: connection.execute(
+        f"SELECT COUNT(*) FROM observations WHERE {where} AND entry_reachability = ?", (*params, value)
+    ).fetchone()[0] for value in ("TRIGGER_REACHED", "TRIGGER_NOT_REACHED",
+                                  "TRIGGER_ALREADY_PASSED_AT_DECISION", "INTRABAR_ORDER_UNKNOWN",
+                                  "INSUFFICIENT_DATA")}
+    result["target_ambiguity_count"] = connection.execute(
+        f"SELECT COALESCE(SUM(a8), 0) FROM observations WHERE {where}", params
+    ).fetchone()[0]
+    return result
+
+
+def _execution_report(connection) -> dict:
+    report = {}
+    for strategy in ACTIVE_STRATEGIES:
+        base = f"strategy = ?"
+        chase_rows = connection.execute(
+            "SELECT chase_bucket, COUNT(*) FROM observations WHERE strategy = ? AND chase_bucket IS NOT NULL GROUP BY chase_bucket ORDER BY COUNT(*) DESC",
+            (strategy,)).fetchall()
+        report[strategy] = {"overall": _execution_metrics(connection, base, (strategy,)),
+                            "chase": [{"group": value, **_execution_metrics(connection, "strategy = ? AND chase_bucket = ?", (strategy, value))}
+                                      for value, _ in chase_rows],
+                            "capacity_status": _context_dimension_where(connection, "execution_context_status", base, (strategy,)),
+                            "capacity": {"capital": {}, "constant_risk": {}},
+                            "target_realism": {str(target): _target_model_metrics(connection, base, (strategy,), target)
+                                                for target in PERCENT_PARTIAL_TARGETS},
+                            "slippage_stress": {str(bps): _stress_metrics(connection, base, (strategy,), bps)
+                                                for bps in (0, 5, 10, 20, 50)}}
+        valid_geometry = "trigger_price IS NOT NULL AND structural_stop IS NOT NULL AND trigger_price > structural_stop"
+        for capital in EXECUTION_CAPITALS:
+            report[strategy]["capacity"]["capital"][str(capital)] = _capacity_scenario(
+                connection, f"strategy = ? AND {valid_geometry}", (strategy,), capital, "entry_bar_volume", "capital")
+        for budget in EXECUTION_RISK_BUDGETS:
+            report[strategy]["capacity"]["constant_risk"][str(budget)] = _capacity_scenario(
+                connection, f"strategy = ? AND {valid_geometry}", (strategy,), budget, "entry_bar_volume", "constant_risk")
+    regime_interactions = {}
+    for dimension in ("market_regime", "volatility_regime", "composite_regime"):
+        rows = []
+        for regime, chase, _count in connection.execute(
+            f"SELECT {dimension}, chase_bucket, COUNT(*) FROM observations WHERE {dimension} IS NOT NULL AND chase_bucket IS NOT NULL GROUP BY {dimension}, chase_bucket ORDER BY COUNT(*) DESC"
+        ):
+            rows.append({"regime": regime, "chase_bucket": chase,
+                         **_execution_metrics(connection, f"{dimension} = ? AND chase_bucket = ?", (regime, chase))})
+        regime_interactions[f"{dimension}_by_chase"] = rows
+        stress_rows = []
+        for regime, _count in connection.execute(
+            f"SELECT {dimension}, COUNT(*) FROM observations WHERE {dimension} IS NOT NULL GROUP BY {dimension} ORDER BY COUNT(*) DESC"
+        ):
+            stress_rows.append({"regime": regime, "stress": {str(bps): _stress_metrics(connection, f"{dimension} = ?", (regime,), bps) for bps in (10, 20)},
+                                "conservative_target_8": _target_model_metrics(connection, f"{dimension} = ?", (regime,), 8)})
+        regime_interactions[f"{dimension}_stress"] = stress_rows
+    return {"version": EXECUTION_RESEARCH_VERSION, "research_only": True,
+            "labels": ["SIMULATED", "BAR_BASED", "NO_NBBO", "NO_SPREAD_CLAIM", "NO_QUEUE_POSITION_CLAIM", "NO_REAL_FILL_CLAIM"],
+            "slippage_stress": {str(bps): {"status": "HYPOTHETICAL_SLIPPAGE_STRESS", "basis_points": bps}
+                                for bps in (0, 5, 10, 20, 50)},
+            "strategy": report, "regime_interactions": regime_interactions,
+            "target_realism": {"status": "NORMALIZED_OHLCV_EVIDENCE" if _table_exists(connection, "execution_target_evidence") else "OUTCOME_FIELDS_ONLY",
+                                "ambiguity_field": "same_bar_ambiguity",
+                                "stop_overshoot": "UNAVAILABLE_FROM_EPISODE_SCHEMA",
+                                "execution_adjusted_outcomes": "HYPOTHETICAL_BAR_BASED"},
+            "coverage": {column: _execution_coverage(connection, column) for column in
+                         ("entry_reachability", "entry_bar_volume", "recent_5m_volume", "recent_10m_volume")},
+            "stop_overshoot": {"status": "UNAVAILABLE_FROM_EPISODE_SCHEMA",
+                                "reconstructable_from_normalized_ohlcv": True,
+                                "not_implemented_in_v1": True}}
+
+
+def _capacity_scenario(connection, where: str, params: tuple, budget: int,
+                       volume_column: str, sizing_mode: str = "constant_risk") -> dict:
+    total = connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where}", params).fetchone()[0]
+    valid_volume = connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where} AND {volume_column} > 0", params).fetchone()[0]
+    shares_expression = "(? / trigger_price)" if sizing_mode == "capital" else "(? / (trigger_price - structural_stop))"
+    result = {"budget": budget, "reference": "THEORETICAL_CAPACITY_ONLY", "sizing_mode": sizing_mode,
+              "bar_volume_reference": volume_column,
+              "valid_geometry": total, "insufficient_volume_data": total - valid_volume,
+              "participation": {}}
+    for limit in EXECUTION_PARTICIPATION_LIMITS:
+        key = f"{limit:g}"
+        result["participation"][key] = {}
+        for volume in ("entry_bar_volume", "recent_5m_volume", "recent_10m_volume"):
+            usable = connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where} AND {volume} > 0", params).fetchone()[0]
+            passed = connection.execute(
+                f"SELECT COUNT(*) FROM observations WHERE {where} AND {volume} > 0 "
+                f"AND {shares_expression} / {volume} <= ?", (*params, budget, limit)
+            ).fetchone()[0]
+            averages = connection.execute(
+                f"SELECT AVG({shares_expression}), AVG({shares_expression} * trigger_price), "
+                f"AVG(({shares_expression} / {volume}) * 100) FROM observations WHERE {where} AND {volume} > 0",
+                (budget, budget, budget, *params)).fetchone()
+            result["participation"][key][volume] = {"capacity_pass": passed,
+                "capacity_fail": max(0, usable - passed),
+                "insufficient_volume_data": total - usable,
+                "participation_limit_percent": limit * 100,
+                "mean_required_shares": averages[0], "mean_notional_position": averages[1],
+                "mean_participation_percent": averages[2],
+                "status": "BAR_VOLUME_CAPACITY_PROXY"}
+    return result
+
+
+def _table_exists(connection, name: str) -> bool:
+    return connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
+
+
+def _execution_coverage(connection, column: str) -> dict:
+    total = connection.execute("SELECT COUNT(DISTINCT episode_id) FROM observations").fetchone()[0]
+    available = connection.execute(f"SELECT COUNT(DISTINCT episode_id) FROM observations WHERE {column} IS NOT NULL").fetchone()[0]
+    return {"available_count": available, "missing_count": total - available,
+            "coverage_percent": available / total * 100 if total else 0}
+
+
+def _target_model_metrics(connection, where: str, params: tuple, target: int) -> dict:
+    hit, stop, _elapsed, ambiguity = _policy_columns("percent", target)
+    count = connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where}", params).fetchone()[0]
+    has_evidence = _table_exists(connection, "execution_target_evidence")
+    join = "observations o JOIN execution_target_evidence x ON x.episode_id = o.episode_id"
+    scoped = f"{where} AND x.target_kind = 'percent' AND x.target_label = ?"
+    evidence_params = (*params, str(target))
+    eligible = (connection.execute(f"SELECT COUNT(*) FROM {join} WHERE {scoped}", evidence_params).fetchone()[0]
+                if has_evidence else count)
+    if has_evidence:
+        touch = connection.execute(f"SELECT AVG(x.touch_reached) FROM {join} WHERE {scoped}", evidence_params).fetchone()[0]
+        confirmed = connection.execute(f"SELECT AVG(x.next_bar_confirmation) FROM {join} WHERE {scoped} AND x.next_bar_confirmation IS NOT NULL", evidence_params).fetchone()[0]
+        conservative = connection.execute(f"SELECT AVG(CASE WHEN x.same_bar_ambiguity = 0 THEN x.touch_reached END) FROM {join} WHERE {scoped}", evidence_params).fetchone()[0]
+        ambiguity_rate = connection.execute(f"SELECT AVG(x.same_bar_ambiguity) FROM {join} WHERE {scoped}", evidence_params).fetchone()[0]
+    else:
+        touch = connection.execute(f"SELECT AVG({hit}) FROM observations WHERE {where}", params).fetchone()[0] if count else None
+        confirmed = "UNAVAILABLE_FROM_NORMALIZED_OHLCV"
+        conservative = connection.execute(f"SELECT AVG(CASE WHEN {ambiguity} = 0 THEN {hit} END) FROM observations WHERE {where}", params).fetchone()[0] if count else None
+        ambiguity_rate = connection.execute(f"SELECT AVG({ambiguity}) FROM observations WHERE {where}", params).fetchone()[0] if count else None
+    return {"sample_count": count, "eligible_count": eligible, "insufficient_count": count - eligible,
+            "coverage_percent": eligible / count * 100 if count else 0,
+            "TOUCH_MODEL": touch, "NEXT_BAR_CONFIRMATION_MODEL": confirmed,
+            "CONSERVATIVE_AMBIGUITY_MODEL": conservative,
+            "stop_first_rate": connection.execute(f"SELECT AVG({stop}) FROM observations WHERE {where}", params).fetchone()[0] if count else None,
+            "ambiguity_rate": ambiguity_rate,
+            "source": "normalized OHLCV post-decision bars; no favorable intrabar ordering" if has_evidence else "persisted outcome event semantics; no favorable intrabar ordering"}
+
+
+def _stress_metrics(connection, where: str, params: tuple, bps: int) -> dict:
+    expression = "maximum_r * (trigger_price - structural_stop) / " \
+                 "(trigger_price * (1 + ? / 10000.0) - structural_stop)"
+    valid = f"{where} AND trigger_price IS NOT NULL AND structural_stop IS NOT NULL AND trigger_price > structural_stop AND maximum_r IS NOT NULL"
+    count = connection.execute(f"SELECT COUNT(*) FROM observations WHERE {valid}", params).fetchone()[0]
+    values = connection.execute(f"SELECT AVG({expression}), AVG(CASE WHEN {expression} > 0 THEN 1.0 ELSE 0.0 END) FROM observations WHERE {valid}",
+                                 (bps, bps, *params)).fetchone() if count else (None, None)
+    return {"basis_points": bps, "sample_count": count, "median_adjusted_R": _sql_median_expr(connection, expression, valid, params, (bps, bps)) if count else None,
+            "mean_adjusted_R": values[0], "positive_adjusted_R_rate": values[1],
+            "simulation": "HYPOTHETICAL_SLIPPAGE_STRESS", "fill_status": "NO_SPREAD_CLAIM_NO_REAL_FILL_CLAIM"}
+
+
+def _build_execution_evidence(connection: sqlite3.Connection, normalized_path: Path | None) -> dict:
+    """Build compact, indexed post-decision evidence from normalized bars once."""
+    if not normalized_path or not Path(normalized_path).exists():
+        return {"status": "UNAVAILABLE_SOURCE", "bar_count": 0, "episode_count": 0}
+    connection.execute("CREATE TABLE execution_bars (symbol TEXT, trading_date TEXT, timestamp TEXT, open REAL, high REAL, low REAL, close REAL, volume REAL, trade_count REAL, PRIMARY KEY(symbol, trading_date, timestamp))")
+    batch = []
+    for path in sorted(Path(normalized_path).glob("*.jsonl")):
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                batch.append((item.get("symbol"), item.get("timestamp", "")[:10], item.get("timestamp"),
+                              _number(item.get("open")), _number(item.get("high")), _number(item.get("low")),
+                              _number(item.get("close")), _number(item.get("volume")), _number(item.get("trade_count"))))
+                if len(batch) >= 5000:
+                    connection.executemany("INSERT OR IGNORE INTO execution_bars VALUES (?,?,?,?,?,?,?,?,?)", batch); batch.clear()
+    if batch:
+        connection.executemany("INSERT OR IGNORE INTO execution_bars VALUES (?,?,?,?,?,?,?,?,?)", batch)
+    connection.execute("CREATE INDEX execution_bars_asof ON execution_bars(symbol, trading_date, timestamp)")
+    connection.execute("CREATE TEMP TABLE execution_target_definitions (target_kind TEXT, target_label TEXT, fraction REAL)")
+    connection.executemany("INSERT INTO execution_target_definitions VALUES (?,?,?)",
+                           [("percent", str(value), value / 100) for value in PERCENT_PARTIAL_TARGETS] +
+                           [("r", str(value), value) for value in PHASE2_R_TARGETS])
+    connection.execute("""CREATE TABLE execution_target_evidence AS
+        WITH base AS (
+          SELECT e.episode_id, e.symbol, e.trading_date, e.detected_timestamp,
+                 e.trigger_price, e.structural_stop, d.target_kind, d.target_label,
+                 CASE WHEN d.target_kind = 'percent' THEN e.trigger_price * (1 + d.fraction)
+                      ELSE e.trigger_price + d.fraction * (e.trigger_price - e.structural_stop) END AS target_price
+          FROM episodes e CROSS JOIN execution_target_definitions d
+          WHERE e.trigger_price IS NOT NULL AND e.structural_stop IS NOT NULL
+            AND e.trigger_price > e.structural_stop
+        ), touched AS (
+          SELECT b.*, (SELECT MIN(x.timestamp) FROM execution_bars x
+             WHERE x.symbol=b.symbol AND x.trading_date=b.trading_date
+               AND x.timestamp > b.detected_timestamp AND x.high >= b.target_price) AS first_touch_timestamp
+          FROM base b
+        )
+        SELECT t.episode_id, t.target_kind, t.target_label, t.target_price,
+               CASE WHEN t.first_touch_timestamp IS NOT NULL THEN 1 ELSE 0 END AS touch_reached,
+               t.first_touch_timestamp,
+               CASE WHEN t.first_touch_timestamp IS NULL THEN NULL
+                    ELSE (SELECT CASE WHEN n.low >= t.target_price AND n.close >= t.target_price THEN 1 ELSE 0 END
+                          FROM execution_bars n WHERE n.symbol=t.symbol AND n.trading_date=t.trading_date
+                            AND n.timestamp = (SELECT MIN(z.timestamp) FROM execution_bars z
+                              WHERE z.symbol=t.symbol AND z.trading_date=t.trading_date AND z.timestamp > t.first_touch_timestamp)) END
+                 AS next_bar_confirmation,
+               CASE WHEN t.first_touch_timestamp IS NULL THEN 0
+                    WHEN EXISTS (SELECT 1 FROM execution_bars s WHERE s.symbol=t.symbol AND s.trading_date=t.trading_date
+                                 AND s.timestamp=t.first_touch_timestamp AND s.low <= t.structural_stop) THEN 1 ELSE 0 END
+                 AS same_bar_ambiguity
+        FROM touched t""")
+    connection.execute("CREATE INDEX execution_target_episode ON execution_target_evidence(episode_id, target_kind, target_label)")
+    # Refine only the unresolved decision-time state. Already-passed and
+    # explicitly ambiguous classifications remain untouched.
+    connection.execute("""UPDATE observations AS o SET entry_reachability = CASE
+        WHEN o.entry_reachability IN ('TRIGGER_ALREADY_PASSED_AT_DECISION', 'TRIGGER_REACHED', 'INTRABAR_ORDER_UNKNOWN') THEN o.entry_reachability
+        WHEN o.trigger_price IS NULL OR o.structural_stop IS NULL OR o.trigger_price <= o.structural_stop THEN 'INSUFFICIENT_DATA'
+        WHEN EXISTS (SELECT 1 FROM execution_bars b WHERE b.symbol=o.symbol AND b.trading_date=o.trading_date
+                     AND b.timestamp > o.detected_timestamp AND b.high >= o.trigger_price AND b.low <= o.structural_stop)
+             THEN 'INTRABAR_ORDER_UNKNOWN'
+        WHEN EXISTS (SELECT 1 FROM execution_bars b WHERE b.symbol=o.symbol AND b.trading_date=o.trading_date
+                     AND b.timestamp > o.detected_timestamp AND b.high >= o.trigger_price)
+             THEN 'TRIGGER_REACHED'
+        ELSE 'TRIGGER_NOT_REACHED' END""")
+    return {"status": "AVAILABLE", "bar_count": connection.execute("SELECT COUNT(*) FROM execution_bars").fetchone()[0],
+            "episode_count": connection.execute("SELECT COUNT(DISTINCT episode_id) FROM execution_target_evidence").fetchone()[0],
+            "target_rows": connection.execute("SELECT COUNT(*) FROM execution_target_evidence").fetchone()[0],
+            "source": "normalized OHLCV", "timestamp_semantics": "post-decision bars only; same trading date"}
+
+
+def _execution_temporal(connection, train_end: str | None, validation_end: str | None) -> dict:
+    if not train_end or not validation_end:
+        return {}
+    boundaries = (("TRAIN", "trading_date <= ?", (train_end,)),
+                  ("VALIDATION", "trading_date > ? AND trading_date <= ?", (train_end, validation_end)),
+                  ("TEST", "trading_date > ?", (validation_end,)))
+    output = {}
+    for strategy in ACTIVE_STRATEGIES:
+        output[strategy] = {}
+        for name, where, params in boundaries:
+            scoped = f"strategy = ? AND {where}"
+            query_params = (strategy, *params)
+            output[strategy][name] = {"overall": _execution_metrics(connection, scoped, query_params),
+                                      "chase": _context_dimension_where(connection, "chase_bucket", scoped, query_params),
+                                      "capacity": _context_dimension_where(connection, "execution_context_status", scoped, query_params),
+                                      "conservative_target": _target_model_metrics(connection, scoped, query_params, 8),
+                                      "slippage_10bps": _stress_metrics(connection, scoped, query_params, 10),
+                                      "slippage_20bps": _stress_metrics(connection, scoped, query_params, 20)}
+    return output
+
+
+def _context_dimension_where(connection, column: str, where: str, params: tuple) -> list[dict]:
+    groups = connection.execute(f"SELECT {column}, COUNT(*) FROM observations WHERE {where} AND {column} IS NOT NULL GROUP BY {column} ORDER BY COUNT(*) DESC", params).fetchall()
+    return [{"group": value, **_sql_metrics(connection, f"{where} AND {column} = ?", (*params, value))} for value, _ in groups]
+
+
+def _sql_median_expr(connection, expression: str, where: str, params: tuple, expression_params: tuple = ()):
+    count = connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where}", params).fetchone()[0]
+    if not count:
+        return None
+    middle = (count - 1) // 2
+    offset = middle if count % 2 else middle - 1
+    values = connection.execute(f"SELECT {expression} FROM observations WHERE {where} ORDER BY {expression} LIMIT 2 OFFSET ?",
+                                 (expression_params[0], *params, *expression_params[1:], offset)).fetchall()
+    return values[0][0] if count % 2 else (values[0][0] + values[1][0]) / 2
+
+
 def _transition_policy_metrics(connection, where: str, params: tuple, partial_percent: int) -> dict:
     """Research-only hold/re-entry arithmetic over compact transition rows."""
     retained = partial_percent / 100
@@ -843,7 +1201,9 @@ def _failure_contexts(connection, class_where: str, class_params: tuple) -> dict
                           ("extension", "extension_bucket"), ("volume", "volume_bucket"),
                           ("market_regime", "market_regime"), ("vwap_agreement", "vwap_agreement"),
                           ("momentum_agreement", "momentum_agreement"), ("volatility_regime", "volatility_regime"),
-                          ("composite_regime", "composite_regime")):
+                          ("composite_regime", "composite_regime"), ("entry_reachability", "entry_reachability"),
+                          ("chase", "chase_bucket"), ("capacity", "execution_context_status"),
+                          ("ambiguity", "a8")):
         rows = connection.execute(
             f"SELECT {column}, COUNT(*) FROM observations WHERE {class_where} AND {column} IS NOT NULL GROUP BY {column} HAVING COUNT(*) >= 30 ORDER BY COUNT(*) DESC",
             class_params).fetchall()
@@ -1136,7 +1496,8 @@ def _integrate_benchmark_context(connection: sqlite3.Connection, benchmark_path:
 def full_research_report_streaming(row_factory, *, total: int | None = None,
                                    progress: ReportProgress | None = None,
                                    daily_context_path: Path | None = None,
-                                   benchmark_context_path: Path | None = None) -> dict:
+                                   benchmark_context_path: Path | None = None,
+                                   normalized_path: Path | None = None) -> dict:
     """Full-research report using one streaming ingest and SQL aggregates."""
     handle = tempfile.NamedTemporaryFile(prefix="atlas_full_research_", suffix=".sqlite3", delete=False)
     db_path = Path(handle.name); handle.close()
@@ -1162,12 +1523,15 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
                     "spy_return_open", "qqq_return_open", "iwm_return_open", "spy_above_vwap", "qqq_above_vwap", "iwm_above_vwap",
                     "market_regime", "benchmark_agreement", "benchmark_coverage",
                     "spy_momentum", "qqq_momentum", "iwm_momentum", "spy_volatility", "qqq_volatility", "iwm_volatility",
-                    "vwap_agreement", "momentum_agreement", "volatility_regime", "composite_regime"]
+                    "vwap_agreement", "momentum_agreement", "volatility_regime", "composite_regime",
+                    "entry_reachability", "chase_bucket", "decision_displacement_percent", "decision_displacement_r",
+                    "entry_bar_volume", "recent_5m_volume", "recent_10m_volume", "execution_context_status"]
         types = {name: "REAL" for name in columns}
         types.update({name: "TEXT" for name in ("episode_id", "symbol", "trading_date", "detected_timestamp", "strategy", "time_of_day", "extension_bucket", "volume_bucket",
                                                  "day_of_week", "premarket_status", "opening_range_position", "generic_pullback_bucket", "volume_acceleration_bucket", "volatility_bucket", "gap_bucket",
                                                  "market_regime", "benchmark_agreement", "vwap_agreement", "momentum_agreement",
-                                                 "volatility_regime", "composite_regime")})
+                                                 "volatility_regime", "composite_regime", "entry_reachability", "chase_bucket",
+                                                 "execution_context_status")})
         connection.execute("CREATE TABLE observations (" + ", ".join(f"{name} {types[name]}" for name in columns) + ")")
         connection.execute("CREATE INDEX observations_strategy ON observations(strategy)")
         connection.execute("CREATE INDEX observations_date ON observations(trading_date)")
@@ -1216,6 +1580,11 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
         if link_batch:
             connection.executemany(link_insert, link_batch)
         connection.commit()
+        if progress:
+            progress.begin_phase("EXECUTION_EVIDENCE")
+        execution_evidence = _build_execution_evidence(connection, normalized_path)
+        if progress:
+            progress.advance(); progress.complete_phase()
         if daily_context_path and Path(daily_context_path).exists():
             connection.execute("""UPDATE observations SET previous_close=(SELECT previous_close FROM daily_context d WHERE d.symbol=observations.symbol AND d.trading_date=observations.trading_date),
                 regular_open=(SELECT regular_open FROM daily_context d WHERE d.symbol=observations.symbol AND d.trading_date=observations.trading_date),
@@ -1265,6 +1634,7 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
             dimension: _strategy_regime_temporal(connection, dimension, train_end, validation_end)
             for dimension in ("market_regime", "vwap_agreement", "momentum_agreement", "volatility_regime", "composite_regime")
         }
+        temporal["execution_analysis"] = _execution_temporal(connection, train_end, validation_end)
         temporal["policy_stability"] = policy_stability
         if progress: progress.begin_phase("STRATEGY_SCORECARDS")
         scorecards = {strategy: _sql_metrics(connection, "strategy = ?", (strategy,)) for strategy in ACTIVE_STRATEGIES}
@@ -1351,6 +1721,9 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
         if progress: progress.advance(); progress.complete_phase(); progress.begin_phase("FAILURE_CONTEXT")
         for label, class_where in failure_definitions.items():
             failure["classes"][label]["contexts"] = _failure_contexts(connection, class_where, ())
+            failure["classes"][label]["execution_stress"] = {
+                str(bps): _stress_metrics(connection, class_where, (), bps) for bps in (10, 20)
+            }
         if progress: progress.advance(); progress.complete_phase()
         if progress: progress.begin_phase("RUNNER_RESEARCH")
         runner = {}
@@ -1362,11 +1735,14 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
                                 "post_8_mfe_median": _sql_median(connection, "post8_mfe", where, params),
                                 "giveback_median": _sql_median(connection, "post8_giveback", where, params),
                                 "terminal_reason_frequencies": {"SESSION_CLOSE": connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where}", params).fetchone()[0]}}
+        if progress: progress.advance(); progress.complete_phase(); progress.begin_phase("EXECUTION_RESEARCH")
+        execution = _execution_report(connection)
         if progress: progress.advance(); progress.complete_phase(); progress.begin_phase("FINALIZE"); progress.complete_phase(); progress.begin_phase("COMPLETE"); progress.complete_phase()
         return {
             "preset": "FULL_RESEARCH", "metadata": {"phase": 4, "research_only": True, "records_ingested": len(dates) and connection.execute("SELECT COUNT(DISTINCT episode_id) FROM observations").fetchone()[0] or 0,
                 "temporal_method": "strict trading-date chronology", "no_random_split": True,
                 "context_derivation_version": PIT_CONTEXT_VERSION, "generic_pullback_version": GENERIC_PULLBACK_VERSION,
+                "execution_research_version": EXECUTION_RESEARCH_VERSION,
                 "context_timestamp_semantics": "bars and fields effective at or before episode decision timestamp"},
             "limitations": ["ALPACA IEX single-exchange research", "not point-in-time universe", "no SIP", "one failed acquisition partition", "gap unavailable from persisted episode field", "pullback null-dominated"],
             "capabilities": {"profit_research": "IMPLEMENTED", "r_multiple_research": "IMPLEMENTED", "partial_exit_research": "IMPLEMENTED", "runner_research": "IMPLEMENTED", "capital_scenarios": "IMPLEMENTED", "constant_risk_scenarios": "IMPLEMENTED", "reentry": "IMPLEMENTED", "failure_analysis": "IMPLEMENTED"},
@@ -1383,7 +1759,7 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
             "profit_research": profit, "r_multiple_research": r_multiple,
             "partial_exit_research": {strategy: profit[strategy]["partial_exit_policies"] for strategy in ACTIVE_STRATEGIES},
             "runner_research": runner, "capital_scenarios": capital, "constant_risk_scenarios": constant_risk,
-            "reentry": reentry, "failure_analysis": failure,
+            "reentry": reentry, "failure_analysis": failure, "execution_research": {**execution, "evidence": execution_evidence},
         }
     finally:
         connection.close()

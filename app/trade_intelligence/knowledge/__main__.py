@@ -125,7 +125,8 @@ def main(argv: list[str] | None = None) -> int:
             value = full_research_report_streaming(lambda: store.iter_episodes(), total=len(store.episode_ids),
                                                    progress=ReportProgress(total=len(store.episode_ids)),
                                                    daily_context_path=args.output / "candidates" / "candidate_days.jsonl",
-                                                   benchmark_context_path=args.output / "benchmark_context" / "benchmark_context.sqlite3")
+                                                   benchmark_context_path=args.output / "benchmark_context" / "benchmark_context.sqlite3",
+                                                   normalized_path=corpus_root.parent / "normalized")
         elif args.group_by:
             rows = tuple(KnowledgeStore(resolve_corpus_root(args.output), create=False).iter_episodes())
             if args.split:

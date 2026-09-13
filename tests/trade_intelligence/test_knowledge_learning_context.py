@@ -9,7 +9,10 @@ from app.trade_intelligence.knowledge.analysis import (capital_scenarios, cohort
                                                         transition_record, walk_forward_folds, streaming_cohort_report,
                                                         first_tranche_report_streaming, full_research_report_streaming,
                                                         ReportProgress, _agreement, _benchmark_state,
-                                                        _composite_regime, _vwap_state, _volatility_state)
+                                                        _composite_regime, _vwap_state, _volatility_state,
+                                                        _execution_context, execution_entry_reachability,
+                                                        participation_capacity, target_realism_models,
+                                                        execution_adjusted_r)
 import io
 from app.trade_intelligence.knowledge.features import feature_snapshot
 from app.trade_intelligence.knowledge.models import HistoricalBar
@@ -377,3 +380,73 @@ def test_benchmark_momentum_volatility_and_composite_are_deterministic():
     assert _composite_regime("RISK_ON", "ALL_ABOVE_VWAP", "ALL_POSITIVE") == "BROAD_STRENGTH"
     assert _composite_regime("RISK_OFF", "ALL_BELOW_VWAP", "ALL_NEGATIVE") == "BROAD_WEAKNESS"
     assert _composite_regime("RISK_ON", "INSUFFICIENT_BENCHMARK_DATA", "ALL_POSITIVE") == "INSUFFICIENT_BENCHMARK_DATA"
+
+
+def test_phase_five_execution_context_is_decision_time_and_geometry_aware():
+    source = row(date(2026, 8, 7))
+    source["trigger_price"] = "10"
+    source["structural_stop"] = "9"
+    source["features"]["values"]["extension"]["price_at_detection"] = "10.10"
+    context = _execution_context(source)
+    assert context[0] == "TRIGGER_ALREADY_PASSED_AT_DECISION"
+    assert context[1] == "SLIGHTLY_EXTENDED"
+    assert round(context[2], 2) == 1.0
+    assert round(context[3], 6) == .1
+    assert context[4] == 111
+    source["features"]["values"]["volume"].pop("rolling_10_mean", None)
+    assert _execution_context(source)[5] is None
+
+
+def test_phase_five_report_labels_bar_proxy_and_unavailable_quote_realism():
+    result = full_research_report_streaming(lambda: iter((row(date(2026, 8, 7)),)))
+    execution = result["execution_research"]
+    assert execution["version"] == "ATLAS_BAR_EXECUTION_RESEARCH_V1"
+    assert execution["strategy"]["FIRST_PULLBACK"]["overall"]["execution_model"] == "BAR_BASED"
+    assert "NO_SPREAD_CLAIM" in execution["labels"]
+    assert execution["target_realism"]["execution_adjusted_outcomes"] == "HYPOTHETICAL_BAR_BASED"
+
+
+def test_phase_five_entry_reachability_states_are_conservative():
+    assert execution_entry_reachability(decision_price=10, trigger_price=11, target_reached=True) == "TRIGGER_REACHED"
+    assert execution_entry_reachability(decision_price=10, trigger_price=11) == "TRIGGER_NOT_REACHED"
+    assert execution_entry_reachability(decision_price=12, trigger_price=11) == "TRIGGER_ALREADY_PASSED_AT_DECISION"
+    assert execution_entry_reachability(decision_price=10, trigger_price=11, same_bar_ambiguous=True) == "INTRABAR_ORDER_UNKNOWN"
+    assert execution_entry_reachability(decision_price=None, trigger_price=11) == "INSUFFICIENT_DATA"
+
+
+def test_phase_five_capacity_and_adjusted_r_are_explicit_research_proxies():
+    assert participation_capacity(10, 1000, .01)["capacity_status"] == "PASS"
+    assert participation_capacity(20, 1000, .01)["capacity_status"] == "FAIL"
+    assert participation_capacity(10, None, .01)["capacity_status"] == "INSUFFICIENT_VOLUME_DATA"
+    assert participation_capacity(None, 1000, .01)["capacity_status"] == "INVALID_SIZE"
+    models = target_realism_models(hit=True, stop_first=False, ambiguous=True)
+    assert models["TOUCH_MODEL"] is True
+    assert models["CONSERVATIVE_AMBIGUITY_MODEL"] is False
+    assert models["NEXT_BAR_CONFIRMATION_MODEL"] is None
+    adjusted = execution_adjusted_r(reference_entry=10, structural_stop=9, original_r=2, slippage_bps=10)
+    assert round(adjusted["stressed_entry"], 4) == 10.01
+    assert adjusted["execution_adjusted_R"] < 2
+
+
+def test_phase_five_normalized_execution_evidence_refines_final_report(tmp_path):
+    source = row(date(2026, 8, 7))
+    source["detected_timestamp"] = "2026-08-07T14:42:00+00:00"
+    source["trigger_price"] = "10.9"
+    source["structural_stop"] = "10"
+    source["features"]["values"]["extension"]["price_at_detection"] = "10.5"
+    normalized = tmp_path / "normalized"
+    normalized.mkdir()
+    bars_after_decision = [
+        {"symbol": "ABC", "timestamp": "2026-08-07T14:43:00+00:00", "open": "11", "high": "11.2", "low": "10.1", "close": "11.1", "volume": "100"},
+        {"symbol": "ABC", "timestamp": "2026-08-07T14:44:00+00:00", "open": "11.1", "high": "11.2", "low": "11", "close": "11.1", "volume": "100"},
+    ]
+    (normalized / "ABC_2026-08-07.jsonl").write_text(
+        "\n".join(json.dumps(item) for item in bars_after_decision) + "\n", encoding="utf-8")
+    result = full_research_report_streaming(lambda: iter((source,)), normalized_path=normalized)
+    overall = result["execution_research"]["strategy"]["FIRST_PULLBACK"]["overall"]
+    assert overall["entry_reachability"]["TRIGGER_REACHED"] == 1
+    target = result["execution_research"]["strategy"]["FIRST_PULLBACK"]["target_realism"]["2"]
+    assert target["coverage_percent"] == 100.0
+    assert target["TOUCH_MODEL"] == 1.0
+    assert target["NEXT_BAR_CONFIRMATION_MODEL"] == 0.0
+    assert result["execution_research"]["evidence"]["bar_count"] == 2
