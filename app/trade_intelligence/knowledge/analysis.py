@@ -7,7 +7,9 @@ from datetime import date, datetime
 import json
 import sqlite3
 from statistics import median
+import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Iterable
 
@@ -24,6 +26,42 @@ GROUP_DIMENSIONS = (
     "distance_from_hod_bucket", "extension_bucket", "setup_duration_bucket",
     "provider", "feed", "source_quality",
 )
+
+
+class ReportProgress:
+    """Bounded, stderr-only progress reporting for streaming analysis."""
+
+    def __init__(self, *, total: int | None = None, interval: int = 10000, stream=None) -> None:
+        self.total = total
+        self.interval = max(1, interval)
+        self.stream = stream or sys.stderr
+        self._phase = None
+        self._processed = 0
+        self._last_reported = 0
+        self._started = time.monotonic()
+
+    def _emit(self, phase: str, processed: int, *, force: bool = False) -> None:
+        if not force and processed - self._last_reported < self.interval:
+            return
+        elapsed = time.monotonic() - self._started
+        fields = [f"phase={phase}", f"records_processed={processed}", f"elapsed_seconds={elapsed:.3f}"]
+        if self.total is not None:
+            fields.extend((f"records_total={self.total}", f"percent_complete={processed / self.total * 100:.2f}" if self.total else "percent_complete=100.00"))
+        print("ATLAS_REPORT_PROGRESS " + " ".join(fields), file=self.stream, flush=True)
+        self._last_reported = processed
+
+    def begin_phase(self, phase: str) -> None:
+        self._phase = phase
+        self._processed = 0
+        self._last_reported = 0
+        self._emit(phase, 0, force=True)
+
+    def advance(self) -> None:
+        self._processed += 1
+        self._emit(self._phase or "UNKNOWN", self._processed)
+
+    def complete_phase(self) -> None:
+        self._emit(self._phase or "UNKNOWN", self._processed, force=True)
 
 
 def _values(row: dict) -> dict:
@@ -148,7 +186,8 @@ def _number(value):
 
 
 def streaming_cohort_report(rows: Iterable[dict], group_by: Iterable[str], *, min_sample: int = 30,
-                            concentration_threshold: float = .5) -> list[dict]:
+                            concentration_threshold: float = .5, progress: ReportProgress | None = None,
+                            phase: str = "COHORT") -> list[dict]:
     """Compute cohort results with disk-backed observations and bounded Python memory.
 
     The source iterator is consumed once. Exact medians are obtained by SQLite
@@ -162,6 +201,8 @@ def streaming_cohort_report(rows: Iterable[dict], group_by: Iterable[str], *, mi
     db_path = Path(handle.name); handle.close()
     connection = sqlite3.connect(db_path)
     try:
+        if progress:
+            progress.begin_phase(phase)
         connection.execute("PRAGMA journal_mode=OFF")
         connection.execute("PRAGMA synchronous=OFF")
         connection.execute("""CREATE TABLE observations (
@@ -173,6 +214,8 @@ def streaming_cohort_report(rows: Iterable[dict], group_by: Iterable[str], *, mi
         insert = "INSERT INTO observations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
         batch = []
         for row in rows:
+            if progress:
+                progress.advance()
             keys = []
             for dimension in dimensions:
                 value = _dimension(row, dimension)
@@ -198,6 +241,8 @@ def streaming_cohort_report(rows: Iterable[dict], group_by: Iterable[str], *, mi
         if batch:
             connection.executemany(insert, batch)
         connection.commit()
+        if progress:
+            progress.complete_phase()
         groups = connection.execute("SELECT group_key, group_json, COUNT(*), COUNT(DISTINCT symbol), COUNT(DISTINCT trading_date) FROM observations GROUP BY group_key, group_json ORDER BY group_key").fetchall()
         result = []
         metric_columns = {"mfe": "mfe", "mae": "mae", "maximum_R": "maximum_r"}
@@ -423,10 +468,22 @@ def first_tranche_report(rows: Iterable[dict]) -> dict:
                              "pullback_depth_bucket", "extension_bucket", "strategy_combination")}}
 
 
-def first_tranche_report_streaming(row_factory) -> dict:
+def first_tranche_report_streaming(row_factory, *, total: int | None = None,
+                                   progress: ReportProgress | None = None) -> dict:
     """Streaming equivalent of :func:`first_tranche_report` for large corpora."""
     dimensions = ("time_of_day_bucket", "gap_bucket", "volume_behavior_bucket",
                   "pullback_depth_bucket", "extension_bucket", "strategy_combination")
-    return {"preset": "FIRST_TRANCHE", "warning": "observational research; no production policy promotion",
-            "by_strategy": streaming_cohort_report(row_factory(), ("strategy",)),
-            "by_dimension": {dimension: streaming_cohort_report(row_factory(), (dimension,)) for dimension in dimensions}}
+    if progress:
+        progress.begin_phase("START")
+        progress.complete_phase()
+    result = {"preset": "FIRST_TRANCHE", "warning": "observational research; no production policy promotion",
+              "by_strategy": streaming_cohort_report(row_factory(), ("strategy",), progress=progress,
+                                                       phase="BY_STRATEGY"),
+              "by_dimension": {dimension: streaming_cohort_report(row_factory(), (dimension,), progress=progress,
+                                                                    phase=dimension.upper()) for dimension in dimensions}}
+    if progress:
+        progress.begin_phase("FINALIZE")
+        progress.complete_phase()
+        progress.begin_phase("COMPLETE")
+        progress.complete_phase()
+    return result

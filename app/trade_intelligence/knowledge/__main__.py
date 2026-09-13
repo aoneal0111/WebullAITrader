@@ -19,7 +19,7 @@ from .orchestration import (ResearchOrchestrator, RunPlan, configured, plan_summ
 from .reporting import report, validate_corpus
 from .storage import KnowledgeStore
 from .analysis import (cohort_report, chronological_splits, first_tranche_report,
-                       first_tranche_report_streaming)
+                       first_tranche_report_streaming, ReportProgress)
 from .universe import AlpacaAssetMasterClient, universe_report
 
 
@@ -102,7 +102,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         if args.preset == "first-tranche":
             store = KnowledgeStore(resolve_corpus_root(args.output), create=False)
-            value = first_tranche_report_streaming(lambda: store.iter_episodes())
+            value = first_tranche_report_streaming(lambda: store.iter_episodes(), total=len(store.episode_ids),
+                                                   progress=ReportProgress(total=len(store.episode_ids)))
         elif args.group_by:
             rows = tuple(KnowledgeStore(resolve_corpus_root(args.output), create=False).iter_episodes())
             if args.split:

@@ -5,7 +5,8 @@ from app.trade_intelligence.knowledge.analysis import (capital_scenarios, cohort
                                                         constant_risk_scenarios, entry_delay_research, hold_vs_reentry,
                                                         runner_path_analysis, simulate_profit_policy, transition_matrix,
                                                         transition_record, walk_forward_folds, streaming_cohort_report,
-                                                        first_tranche_report_streaming)
+                                                        first_tranche_report_streaming, ReportProgress)
+import io
 from app.trade_intelligence.knowledge.features import feature_snapshot
 from app.trade_intelligence.knowledge.models import HistoricalBar
 from app.trade_intelligence.knowledge.storage import KnowledgeStore
@@ -66,6 +67,45 @@ def test_streaming_first_tranche_uses_reiterable_source_and_handles_empty():
     assert empty["by_strategy"] == []
 
 
+def test_streaming_progress_is_bounded_stderr_with_monotonic_phase_counts():
+    source = [row(date(2026, 8, 7), f"e{i}") for i in range(25)]
+    stderr = io.StringIO()
+    progress = ReportProgress(total=len(source), interval=10, stream=stderr)
+    result = first_tranche_report_streaming(lambda: (item for item in source), total=len(source), progress=progress)
+    lines = [line for line in stderr.getvalue().splitlines() if line.startswith("ATLAS_REPORT_PROGRESS")]
+    assert result["by_strategy"][0]["sample_count"] == 25
+    assert lines and len(lines) < 40
+    assert any("phase=BY_STRATEGY" in line for line in lines)
+    assert any("phase=TIME_OF_DAY" in line for line in lines)
+    phase_counts = {}
+    for line in lines:
+        fields = dict(item.split("=", 1) for item in line.split()[1:])
+        phase_counts.setdefault(fields["phase"], []).append(int(fields["records_processed"]))
+    assert all(values == sorted(values) for values in phase_counts.values())
+    assert all("records_total=25" in line and "percent_complete=" in line for line in lines)
+
+
+def test_streaming_progress_does_not_change_metrics_or_stdout(monkeypatch):
+    source = [row(date(2026, 8, 7), "e1"), row(date(2026, 8, 8), "e2")]
+    without = first_tranche_report_streaming(lambda: (item for item in source))
+    stderr = io.StringIO()
+    with_progress = first_tranche_report_streaming(lambda: (item for item in source), total=2,
+                                                   progress=ReportProgress(total=2, interval=100, stream=stderr))
+    assert with_progress == without
+    assert stderr.getvalue()
+
+
+def test_cli_keeps_progress_off_stdout(tmp_path, capsys):
+    output = tmp_path / "output"
+    KnowledgeStore(output / "corpus")
+    report_file = tmp_path / "reports" / "first.json"
+    assert main(["report", "--output", str(output), "--preset", "first-tranche", "--report-file", str(report_file)]) == 0
+    captured = capsys.readouterr()
+    assert "ATLAS_REPORT_PROGRESS" not in captured.out
+    assert "report_file" in captured.out
+    assert "ATLAS_REPORT_PROGRESS" in captured.err
+
+
 def test_report_file_is_atomic_and_empty_corpus_is_supported(tmp_path):
     output = tmp_path / "output"
     KnowledgeStore(output / "corpus")
@@ -81,7 +121,7 @@ def test_interrupted_report_does_not_replace_existing_artifact(tmp_path, monkeyp
     report_file = tmp_path / "reports" / "first.json"
     report_file.parent.mkdir()
     report_file.write_text("valid-artifact\n", encoding="utf-8")
-    def fail(_factory):
+    def fail(_factory, **_kwargs):
         raise RuntimeError("REPORT_INTERRUPTED")
     monkeypatch.setattr("app.trade_intelligence.knowledge.__main__.first_tranche_report_streaming", fail)
     try:
