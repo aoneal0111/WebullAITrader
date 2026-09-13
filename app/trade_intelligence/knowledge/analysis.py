@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import Iterable
 
+from .models import ACTIVE_STRATEGIES
+
 PROFIT_RESEARCH_VERSION = "ATLAS_PROFIT_RESEARCH_V1"
 REENTRY_TRANSITION_VERSION = "ATLAS_REENTRY_TRANSITIONS_V1"
 PERCENT_PARTIAL_TARGETS = (2, 3, 5, 8, 10)
@@ -487,3 +489,185 @@ def first_tranche_report_streaming(row_factory, *, total: int | None = None,
         progress.begin_phase("COMPLETE")
         progress.complete_phase()
     return result
+
+
+def _volume_context_bucket(row: dict) -> str | None:
+    """Derive a conservative volume context from persisted nested features."""
+    volume = _values(row).get("volume", {})
+    current = _number(volume.get("current"))
+    baseline = _number(volume.get("rolling_10_mean"))
+    if current is None or baseline in (None, 0):
+        return None
+    ratio = current / baseline
+    if ratio < 0.8:
+        return "CONTRACTION"
+    if ratio > 1.2:
+        return "EXPANSION"
+    return "NEUTRAL"
+
+
+def _research_observations(row: dict):
+    """Yield compact strategy observations; no episode dictionary is retained."""
+    outcomes = row.get("outcomes", {})
+    targets = outcomes.get("percent_targets", {})
+    events = [targets.get(str(p), {}) for p in PERCENT_PARTIAL_TARGETS]
+    values = _values(row)
+    extension = values.get("extension", {})
+    compact = (
+        row.get("episode_id"), row.get("symbol"), row.get("trading_date"),
+        values.get("time_of_day_bucket"), _dimension(row, "extension_bucket"),
+        _volume_context_bucket(row), _number(outcomes.get("mfe_percent")),
+        _number(outcomes.get("mae_percent")), _number(outcomes.get("maximum_R")),
+        *[int(bool(event.get("hit"))) for event in events],
+        *[int(event.get("first_plan_event") == "STOP_FIRST") for event in events],
+        *[_number(event.get("elapsed_seconds")) for event in events],
+    )
+    for strategy in row.get("strategy_memberships", ()):
+        yield (compact[0], compact[1], compact[2], strategy, *compact[3:])
+
+
+def _sql_median(connection, column: str, where: str, params: tuple = ()):
+    count = connection.execute(
+        f"SELECT COUNT({column}) FROM observations WHERE {where} AND {column} IS NOT NULL", params
+    ).fetchone()[0]
+    if not count:
+        return None
+    values = connection.execute(
+        f"SELECT {column} FROM observations WHERE {where} AND {column} IS NOT NULL ORDER BY {column}", params
+    ).fetchall()
+    middle = (count - 1) // 2
+    if count % 2:
+        return values[middle][0]
+    return (values[middle][0] + values[middle + 1][0]) / 2
+
+
+def _sql_metrics(connection, where: str = "1=1", params: tuple = ()) -> dict:
+    count, symbols, dates = connection.execute(
+        f"SELECT COUNT(*), COUNT(DISTINCT symbol), COUNT(DISTINCT trading_date) "
+        f"FROM observations WHERE {where}", params
+    ).fetchone()
+    result = {
+        "sample_count": count, "unique_symbols": symbols, "unique_dates": dates,
+        "median_mfe": _sql_median(connection, "mfe", where, params),
+        "median_mae": _sql_median(connection, "mae", where, params),
+        "median_maximum_r": _sql_median(connection, "maximum_r", where, params),
+        "target_hit_rates": {}, "stop_first_rates": {},
+        "median_time_to_target_seconds": {},
+        "confidence_state": _confidence(count, 30),
+        "concentration": {},
+    }
+    for percent in PERCENT_PARTIAL_TARGETS:
+        hit, stop = {2: ("h2", "s2"), 3: ("h3", "s3"), 5: ("h5", "s5"),
+                     8: ("h8", "s8"), 10: ("h10", "s10")}[percent]
+        hit_value, stop_value = connection.execute(
+            f"SELECT AVG({hit}), AVG({stop}) FROM observations WHERE {where}", params
+        ).fetchone()
+        result["target_hit_rates"][str(percent)] = hit_value
+        result["stop_first_rates"][str(percent)] = stop_value
+        result["median_time_to_target_seconds"][str(percent)] = _sql_median(
+            connection, f"t{percent}", where, params
+        )
+    for label, column in (("symbol", "symbol"), ("date", "trading_date"), ("month", "substr(trading_date,1,7)")):
+        top = connection.execute(
+            f"SELECT {column}, COUNT(*) FROM observations WHERE {where} GROUP BY {column} "
+            "ORDER BY COUNT(*) DESC LIMIT 1", params
+        ).fetchone()
+        result["concentration"][f"largest_{label}_share"] = (top[1] / count) if top and count else 0
+    return result
+
+
+def _research_groups(connection, column: str) -> list[dict]:
+    groups = connection.execute(
+        f"SELECT {column}, COUNT(*) FROM observations WHERE {column} IS NOT NULL GROUP BY {column} ORDER BY {column}"
+    ).fetchall()
+    return [{"group": value, **_sql_metrics(connection, f"{column} = ?", (value,))} for value, _ in groups]
+
+
+def full_research_report_streaming(row_factory, *, total: int | None = None,
+                                   progress: ReportProgress | None = None) -> dict:
+    """Phase 1 full-research report using one streaming ingest and SQL aggregates."""
+    handle = tempfile.NamedTemporaryFile(prefix="atlas_full_research_", suffix=".sqlite3", delete=False)
+    db_path = Path(handle.name); handle.close()
+    connection = sqlite3.connect(db_path)
+    try:
+        if progress:
+            progress.begin_phase("START"); progress.complete_phase(); progress.begin_phase("INGEST")
+        connection.execute("PRAGMA journal_mode=OFF")
+        connection.execute("PRAGMA synchronous=OFF")
+        connection.execute("""CREATE TABLE observations (
+            episode_id TEXT, symbol TEXT, trading_date TEXT, strategy TEXT,
+            time_of_day TEXT, extension_bucket TEXT, volume_bucket TEXT,
+            mfe REAL, mae REAL, maximum_r REAL,
+            h2 INTEGER, h3 INTEGER, h5 INTEGER, h8 INTEGER, h10 INTEGER,
+            s2 INTEGER, s3 INTEGER, s5 INTEGER, s8 INTEGER, s10 INTEGER,
+            t2 REAL, t3 REAL, t5 REAL, t8 REAL, t10 REAL)""")
+        insert = "INSERT INTO observations VALUES (" + ",".join("?" for _ in range(25)) + ")"
+        batch = []
+        for row in row_factory():
+            batch.extend(_research_observations(row))
+            if progress:
+                progress.advance()
+            if len(batch) >= 2000:
+                connection.executemany(insert, batch); batch.clear()
+        if batch:
+            connection.executemany(insert, batch)
+        connection.commit()
+        if progress: progress.complete_phase(); progress.begin_phase("TEMPORAL_BOUNDARIES")
+        dates = [item[0] for item in connection.execute("SELECT DISTINCT trading_date FROM observations ORDER BY trading_date")]
+        if dates:
+            train_end = dates[max(0, int(len(dates) * .6) - 1)]
+            validation_end = dates[max(0, int(len(dates) * .8) - 1)]
+        else:
+            train_end = validation_end = None
+        temporal = {"method": "strict trading-date chronology", "random_split": False,
+                    "train_end": train_end, "validation_end": validation_end,
+                    "test_start": (validation_end if validation_end is None else dates[dates.index(validation_end) + 1]) if dates and validation_end != dates[-1] else None,
+                    "splits": {}}
+        if progress: progress.complete_phase()
+        boundaries = (("TRAIN", "trading_date <= ?", (train_end,)),
+                      ("VALIDATION", "trading_date > ? AND trading_date <= ?", (train_end, validation_end)),
+                      ("TEST", "trading_date > ?", (validation_end,)))
+        for name, where, params in boundaries:
+            if progress: progress.begin_phase(name)
+            temporal["splits"][name] = {strategy: _sql_metrics(connection, f"strategy = ? AND {where}", (strategy, *params))
+                                        for strategy in ACTIVE_STRATEGIES}
+            if progress: progress.advance(); progress.complete_phase()
+        if progress: progress.begin_phase("STRATEGY_SCORECARDS")
+        scorecards = {strategy: _sql_metrics(connection, "strategy = ?", (strategy,)) for strategy in ACTIVE_STRATEGIES}
+        if progress: progress.advance(); progress.complete_phase()
+        if progress: progress.begin_phase("WALK_FORWARD")
+        folds = []
+        if len(dates) >= 4:
+            train_days, test_days, step = 30, 10, 10
+            for start in range(train_days, len(dates) - test_days + 1, step):
+                train_start, train_end_fold = dates[start - train_days], dates[start - 1]
+                test_start, test_end = dates[start], dates[start + test_days - 1]
+                folds.append({"fold": len(folds) + 1, "train_date_range": [train_start, train_end_fold],
+                              "test_date_range": [test_start, test_end], "strategies": {
+                                  strategy: {"train": _sql_metrics(connection, "strategy = ? AND trading_date BETWEEN ? AND ?", (strategy, train_start, train_end_fold)),
+                                             "test": _sql_metrics(connection, "strategy = ? AND trading_date BETWEEN ? AND ?", (strategy, test_start, test_end))}
+                                  for strategy in ACTIVE_STRATEGIES}})
+        if progress: progress.advance(); progress.complete_phase()
+        if progress: progress.begin_phase("CONTEXT")
+        context = {
+            "time_of_day": _research_groups(connection, "time_of_day"),
+            "extension": _research_groups(connection, "extension_bucket"),
+            "volume": {"status": "AVAILABLE", "source_fields": ["features.values.volume.current", "features.values.volume.rolling_10_mean"],
+                        "bucket_rule": "ratio < 0.8 CONTRACTION; ratio > 1.2 EXPANSION; otherwise NEUTRAL",
+                        "buckets": _research_groups(connection, "volume_bucket")},
+            "gap": {"status": "UNAVAILABLE_FROM_PERSISTED_EPISODE_FIELD"},
+            "pullback": {"status": "UNAVAILABLE_NULL_DOMINATED"},
+        }
+        if progress: progress.advance(); progress.complete_phase(); progress.begin_phase("FINALIZE"); progress.complete_phase(); progress.begin_phase("COMPLETE"); progress.complete_phase()
+        return {
+            "preset": "FULL_RESEARCH", "metadata": {"phase": 1, "research_only": True, "records_ingested": len(dates) and connection.execute("SELECT COUNT(DISTINCT episode_id) FROM observations").fetchone()[0] or 0,
+                "temporal_method": "strict trading-date chronology", "no_random_split": True},
+            "limitations": ["ALPACA IEX single-exchange research", "not point-in-time universe", "no SIP", "one failed acquisition partition", "gap unavailable from persisted episode field", "pullback null-dominated"],
+            "capabilities": {name: "NOT_YET_IMPLEMENTED" for name in ("profit_research", "r_multiple_research", "partial_exit_research", "runner_research", "capital_scenarios", "constant_risk_scenarios", "reentry", "failure_analysis")},
+            "strategy_scorecards": scorecards, "temporal": temporal, "walk_forward": {"folds": folds, "number_of_folds": len(folds)},
+            "context_analysis": context,
+        }
+    finally:
+        connection.close()
+        try: db_path.unlink()
+        except OSError: pass

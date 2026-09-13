@@ -5,7 +5,8 @@ from app.trade_intelligence.knowledge.analysis import (capital_scenarios, cohort
                                                         constant_risk_scenarios, entry_delay_research, hold_vs_reentry,
                                                         runner_path_analysis, simulate_profit_policy, transition_matrix,
                                                         transition_record, walk_forward_folds, streaming_cohort_report,
-                                                        first_tranche_report_streaming, ReportProgress)
+                                                        first_tranche_report_streaming, full_research_report_streaming,
+                                                        ReportProgress)
 import io
 from app.trade_intelligence.knowledge.features import feature_snapshot
 from app.trade_intelligence.knowledge.models import HistoricalBar
@@ -183,3 +184,38 @@ def test_transition_matrix_rejects_same_anchor_and_preserves_child_payload_refer
         assert str(error) == "SAME_STRUCTURAL_ANCHOR_NOT_REENTRY"
     else:
         raise AssertionError("same anchor accepted as re-entry")
+
+
+def test_full_research_is_disk_backed_and_reports_phase_one_capabilities():
+    source = [row(date(2026, 8, 7), "e1"), row(date(2026, 8, 8), "e2")]
+    stderr = io.StringIO()
+    result = full_research_report_streaming(lambda: iter(source), total=2,
+                                             progress=ReportProgress(total=2, interval=1, stream=stderr))
+    assert result["preset"] == "FULL_RESEARCH"
+    assert result["metadata"]["no_random_split"] is True
+    assert result["capabilities"]["profit_research"] == "NOT_YET_IMPLEMENTED"
+    assert result["context_analysis"]["gap"]["status"] == "UNAVAILABLE_FROM_PERSISTED_EPISODE_FIELD"
+    assert result["context_analysis"]["pullback"]["status"] == "UNAVAILABLE_NULL_DOMINATED"
+    assert result["context_analysis"]["volume"]["source_fields"]
+    assert "phase=INGEST" in stderr.getvalue()
+    assert "phase=STRATEGY_SCORECARDS" in stderr.getvalue()
+    assert "ATLAS_REPORT_PROGRESS" not in str(result)
+
+
+def test_full_research_empty_corpus_has_safe_lifecycle():
+    result = full_research_report_streaming(lambda: iter(()))
+    assert result["metadata"]["records_ingested"] == 0
+    assert result["walk_forward"]["number_of_folds"] == 0
+    assert all(item["sample_count"] == 0 for item in result["strategy_scorecards"].values())
+
+
+def test_full_research_temporal_boundaries_are_strict_and_ordered():
+    source = [row(date(2026, 8, 1) + timedelta(days=i), f"e{i}") for i in range(10)]
+    result = full_research_report_streaming(lambda: iter(source))
+    temporal = result["temporal"]
+    assert temporal["method"] == "strict trading-date chronology"
+    assert temporal["random_split"] is False
+    assert temporal["train_end"] < temporal["validation_end"] < temporal["test_start"]
+    assert temporal["splits"]["TRAIN"]["FIRST_PULLBACK"]["sample_count"] == 6
+    assert temporal["splits"]["VALIDATION"]["FIRST_PULLBACK"]["sample_count"] == 2
+    assert temporal["splits"]["TEST"]["FIRST_PULLBACK"]["sample_count"] == 2

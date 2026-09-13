@@ -19,7 +19,8 @@ from .orchestration import (ResearchOrchestrator, RunPlan, configured, plan_summ
 from .reporting import report, validate_corpus
 from .storage import KnowledgeStore
 from .analysis import (cohort_report, chronological_splits, first_tranche_report,
-                       first_tranche_report_streaming, ReportProgress)
+                       first_tranche_report_streaming, full_research_report_streaming,
+                       ReportProgress)
 from .universe import AlpacaAssetMasterClient, universe_report
 
 
@@ -32,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
         if name == "report":
             command.add_argument("--group-by", default="")
             command.add_argument("--split", choices=("train", "validation", "test"))
-            command.add_argument("--preset", choices=("first-tranche",))
+            command.add_argument("--preset", choices=("first-tranche", "full-research"))
             command.add_argument("--report-file", type=Path)
     def plan_args(command):
         command.add_argument("--provider", default="alpaca"); command.add_argument("--feed", default="iex")
@@ -103,6 +104,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.preset == "first-tranche":
             store = KnowledgeStore(resolve_corpus_root(args.output), create=False)
             value = first_tranche_report_streaming(lambda: store.iter_episodes(), total=len(store.episode_ids),
+                                                   progress=ReportProgress(total=len(store.episode_ids)))
+        elif args.preset == "full-research":
+            store = KnowledgeStore(resolve_corpus_root(args.output), create=False)
+            value = full_research_report_streaming(lambda: store.iter_episodes(), total=len(store.episode_ids),
                                                    progress=ReportProgress(total=len(store.episode_ids)))
         elif args.group_by:
             rows = tuple(KnowledgeStore(resolve_corpus_root(args.output), create=False).iter_episodes())
