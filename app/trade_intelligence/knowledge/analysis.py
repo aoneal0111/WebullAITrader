@@ -19,6 +19,7 @@ PROFIT_RESEARCH_VERSION = "ATLAS_PROFIT_RESEARCH_V1"
 REENTRY_TRANSITION_VERSION = "ATLAS_REENTRY_TRANSITIONS_V1"
 PERCENT_PARTIAL_TARGETS = (2, 3, 5, 8, 10)
 R_TARGETS = (1, 1.5, 2, 3)
+PHASE2_R_TARGETS = (0.5, 1, 1.5, 2, 3, 4, 5)
 
 
 GROUP_DIMENSIONS = (
@@ -511,6 +512,8 @@ def _research_observations(row: dict):
     outcomes = row.get("outcomes", {})
     targets = outcomes.get("percent_targets", {})
     events = [targets.get(str(p), {}) for p in PERCENT_PARTIAL_TARGETS]
+    r_targets = outcomes.get("r_targets", {})
+    r_events = [r_targets.get(str(target), {}) for target in PHASE2_R_TARGETS]
     values = _values(row)
     extension = values.get("extension", {})
     compact = (
@@ -521,6 +524,14 @@ def _research_observations(row: dict):
         *[int(bool(event.get("hit"))) for event in events],
         *[int(event.get("first_plan_event") == "STOP_FIRST") for event in events],
         *[_number(event.get("elapsed_seconds")) for event in events],
+        *[int(bool(event.get("hit"))) for event in r_events],
+        *[int(event.get("first_plan_event") == "STOP_FIRST") for event in r_events],
+        *[_number(event.get("elapsed_seconds")) for event in r_events],
+        _number(outcomes.get("horizons", {}).get("3600", {}).get("mfe_percent")),
+        _number(outcomes.get("post_8", {}).get("mfe_after_target", outcomes.get("post_8", {}).get("maximum_giveback_after_8"))),
+        _number(outcomes.get("post_8", {}).get("maximum_giveback_after_8")),
+        _number(row.get("trigger_price")), _number(row.get("structural_stop")),
+        *[int(event.get("first_plan_event") == "INTRABAR_ORDER_UNKNOWN") for event in events],
     )
     for strategy in row.get("strategy_memberships", ()):
         yield (compact[0], compact[1], compact[2], strategy, *compact[3:])
@@ -583,9 +594,120 @@ def _research_groups(connection, column: str) -> list[dict]:
     return [{"group": value, **_sql_metrics(connection, f"{column} = ?", (value,))} for value, _ in groups]
 
 
+def _policy_columns(kind: str, target) -> tuple[str, str, str, str]:
+    if kind == "percent":
+        suffix = str(int(target))
+        return f"h{suffix}", f"s{suffix}", f"t{suffix}", f"a{suffix}"
+    suffix = str(target).replace(".", "")
+    return f"rh{suffix}", f"rs{suffix}", f"rt{suffix}", "0"
+
+
+def _sql_policy_metrics(connection, where: str, params: tuple, *, kind: str, target,
+                        partial_percent: int | None = None) -> dict:
+    hit, stop, elapsed, ambiguity = _policy_columns(kind, target)
+    count = connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where}", params).fetchone()[0]
+    if kind == "percent":
+        hit_expr, stop_expr, time_expr = hit, stop, elapsed
+        ambiguity_expr = ambiguity
+    else:
+        hit_expr, stop_expr, time_expr = hit, stop, elapsed
+        ambiguity_expr = "0"
+    values = {
+        "sample_count": count,
+        "hit_rate": connection.execute(f"SELECT AVG({hit_expr}) FROM observations WHERE {where}", params).fetchone()[0] if count else None,
+        "stop_first_rate": connection.execute(f"SELECT AVG({stop_expr}) FROM observations WHERE {where}", params).fetchone()[0] if count else None,
+        "median_time_to_target_seconds": _sql_median(connection, time_expr, where, params),
+        "median_mfe": _sql_median(connection, "mfe", where, params),
+        "median_mae": _sql_median(connection, "mae", where, params),
+        "median_maximum_r": _sql_median(connection, "maximum_r", where, params),
+        "ambiguity_count": connection.execute(f"SELECT SUM({ambiguity_expr}) FROM observations WHERE {where}", params).fetchone()[0] or 0,
+        "confidence_state": _confidence(count, 30),
+    }
+    return values
+
+
+def _sql_policy_value_metrics(connection, where: str, params: tuple, *, kind: str, target,
+                              partial_percent: int) -> dict:
+    hit, _stop, _elapsed, ambiguity = _policy_columns(kind, target)
+    target_return = float(target) if kind == "percent" else None
+    target_expr = str(target_return) if target_return is not None else str(float(target))
+    ambiguous = ambiguity if kind == "percent" else "0"
+    resolved = f"({ambiguous} = 0 AND ({hit} = 1 OR {partial_percent} = 0))"
+    runner = "horizon_mfe"
+    realized = f"CASE WHEN {resolved} THEN {partial_percent / 100:g} * {target_expr} END"
+    total = (f"CASE WHEN {ambiguous} = 1 THEN NULL "
+             f"WHEN {realized} IS NULL AND {runner} IS NULL THEN NULL "
+             f"ELSE COALESCE({realized}, 0) + {(100 - partial_percent) / 100:g} * COALESCE({runner}, 0) END")
+    count = connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where}", params).fetchone()[0]
+    usable = f"{total} IS NOT NULL"
+    median_return = _sql_median(connection, total, f"{where} AND {usable}", params)
+    mean_return, positive_rate, tail = connection.execute(
+        f"SELECT AVG({total}), AVG(CASE WHEN {total} > 0 THEN 1.0 ELSE 0.0 END), "
+        f"MAX({total}) FROM observations WHERE {where}", params
+    ).fetchone() if count else (None, None, None)
+    return {"sample_count": count, "gross_return_percent_mean": mean_return,
+            "median_return_percent": median_return, "positive_return_rate": positive_rate,
+            "tail_contribution_max_percent": tail, "partial_percent": partial_percent,
+            "target": target, "target_kind": kind, "simulation": "SIMULATED",
+            "fill_status": "NO_SLIPPAGE_CLAIM_NO_REAL_FILL_CLAIM",
+            "ambiguity_count": connection.execute(f"SELECT SUM({ambiguous}) FROM observations WHERE {where}", params).fetchone()[0] or 0,
+            "confidence_state": _confidence(count, 30)}
+
+
+def _sql_policy_set(connection, strategy: str | None = None, where: str = "1=1",
+                    params: tuple = ()) -> dict:
+    prefix = f"strategy = ? AND {where}" if strategy is not None else where
+    query_params = (strategy, *params) if strategy is not None else params
+    percent = {str(target): _sql_policy_metrics(connection, prefix, query_params, kind="percent", target=target)
+               for target in PERCENT_PARTIAL_TARGETS}
+    r_targets = {str(target): _sql_policy_metrics(connection, prefix, query_params, kind="r", target=target)
+                 for target in PHASE2_R_TARGETS}
+    partial = {str(target): {str(part): _sql_policy_value_metrics(connection, prefix, query_params, kind="percent", target=target, partial_percent=part)
+                             for part in (0, 25, 50, 75, 100)} for target in PERCENT_PARTIAL_TARGETS}
+    return {"percent_targets": percent, "r_targets": r_targets, "partial_exit_policies": partial}
+
+
+def _sql_policy_quick(connection, where: str, params: tuple) -> dict:
+    count, h5, h8, rh2 = connection.execute(
+        f"SELECT COUNT(*), AVG(h5), AVG(h8), AVG(rh2) FROM observations WHERE {where}", params
+    ).fetchone()
+    return {"sample_count": count, "5pct_hit_rate": h5, "8pct_hit_rate": h8,
+            "2R_hit_rate": rh2, "confidence_state": _confidence(count, 30)}
+
+
+def _policy_stability(connection, strategy: str, train_end: str | None,
+                      validation_end: str | None) -> dict:
+    split_metrics = {}
+    for name, actual in (("TRAIN", ("trading_date <= ?", (train_end,))),
+                         ("VALIDATION", ("trading_date > ? AND trading_date <= ?", (train_end, validation_end))),
+                         ("TEST", ("trading_date > ?", (validation_end,)))):
+        where, params = actual
+        split_metrics[name] = _sql_policy_set(connection, strategy, *actual)
+    return split_metrics
+
+
+def _policy_stability_summary(connection, strategy: str, train_end: str | None,
+                              validation_end: str | None) -> dict:
+    ranges = (("TRAIN", "trading_date <= ?", (train_end,)),
+              ("VALIDATION", "trading_date > ? AND trading_date <= ?", (train_end, validation_end)),
+              ("TEST", "trading_date > ?", (validation_end,)))
+    output = {}
+    for label, where, params in ranges:
+        output[label] = {"5pct": _sql_policy_metrics(connection, "strategy = ? AND " + where, (strategy, *params), kind="percent", target=5),
+                         "8pct": _sql_policy_metrics(connection, "strategy = ? AND " + where, (strategy, *params), kind="percent", target=8),
+                         "2R": _sql_policy_metrics(connection, "strategy = ? AND " + where, (strategy, *params), kind="r", target=2)}
+    rates = [output[name]["8pct"]["hit_rate"] for name in ("TRAIN", "VALIDATION", "TEST") if output[name]["8pct"]["hit_rate"] is not None]
+    output["descriptive_status"] = ("INSUFFICIENT_SAMPLE" if any(output[name]["8pct"]["confidence_state"] == "INSUFFICIENT_SAMPLE" for name in output if name in ("TRAIN", "VALIDATION", "TEST"))
+                                     else "STABLE" if len(rates) == 3 and max(rates) - min(rates) <= .1
+                                     else "DEGRADING" if len(rates) == 3 and rates[-1] < rates[0]
+                                     else "IMPROVING" if len(rates) == 3 and rates[-1] > rates[0]
+                                     else "INCONSISTENT")
+    return output
+
+
 def full_research_report_streaming(row_factory, *, total: int | None = None,
                                    progress: ReportProgress | None = None) -> dict:
-    """Phase 1 full-research report using one streaming ingest and SQL aggregates."""
+    """Full-research report using one streaming ingest and SQL aggregates."""
     handle = tempfile.NamedTemporaryFile(prefix="atlas_full_research_", suffix=".sqlite3", delete=False)
     db_path = Path(handle.name); handle.close()
     connection = sqlite3.connect(db_path)
@@ -594,14 +716,22 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
             progress.begin_phase("START"); progress.complete_phase(); progress.begin_phase("INGEST")
         connection.execute("PRAGMA journal_mode=OFF")
         connection.execute("PRAGMA synchronous=OFF")
-        connection.execute("""CREATE TABLE observations (
-            episode_id TEXT, symbol TEXT, trading_date TEXT, strategy TEXT,
-            time_of_day TEXT, extension_bucket TEXT, volume_bucket TEXT,
-            mfe REAL, mae REAL, maximum_r REAL,
-            h2 INTEGER, h3 INTEGER, h5 INTEGER, h8 INTEGER, h10 INTEGER,
-            s2 INTEGER, s3 INTEGER, s5 INTEGER, s8 INTEGER, s10 INTEGER,
-            t2 REAL, t3 REAL, t5 REAL, t8 REAL, t10 REAL)""")
-        insert = "INSERT INTO observations VALUES (" + ",".join("?" for _ in range(25)) + ")"
+        columns = ["episode_id", "symbol", "trading_date", "strategy", "time_of_day", "extension_bucket", "volume_bucket",
+                   "mfe", "mae", "maximum_r"]
+        columns += [f"h{p}" for p in (2, 3, 5, 8, 10)]
+        columns += [f"s{p}" for p in (2, 3, 5, 8, 10)]
+        columns += [f"t{p}" for p in (2, 3, 5, 8, 10)]
+        columns += [f"rh{str(p).replace('.', '')}" for p in PHASE2_R_TARGETS]
+        columns += [f"rs{str(p).replace('.', '')}" for p in PHASE2_R_TARGETS]
+        columns += [f"rt{str(p).replace('.', '')}" for p in PHASE2_R_TARGETS]
+        columns += ["horizon_mfe", "post8_mfe", "post8_giveback", "trigger_price", "structural_stop"]
+        columns += [f"a{p}" for p in (2, 3, 5, 8, 10)]
+        types = {name: "REAL" for name in columns}
+        types.update({name: "TEXT" for name in ("episode_id", "symbol", "trading_date", "strategy", "time_of_day", "extension_bucket", "volume_bucket")})
+        connection.execute("CREATE TABLE observations (" + ", ".join(f"{name} {types[name]}" for name in columns) + ")")
+        connection.execute("CREATE INDEX observations_strategy ON observations(strategy)")
+        connection.execute("CREATE INDEX observations_date ON observations(trading_date)")
+        insert = "INSERT INTO observations VALUES (" + ",".join("?" for _ in columns) + ")"
         batch = []
         for row in row_factory():
             batch.extend(_research_observations(row))
@@ -632,16 +762,51 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
             temporal["splits"][name] = {strategy: _sql_metrics(connection, f"strategy = ? AND {where}", (strategy, *params))
                                         for strategy in ACTIVE_STRATEGIES}
             if progress: progress.advance(); progress.complete_phase()
+        policy_stability = {strategy: _policy_stability_summary(connection, strategy, train_end, validation_end)
+                            for strategy in ACTIVE_STRATEGIES}
+        temporal["policy_stability"] = policy_stability
         if progress: progress.begin_phase("STRATEGY_SCORECARDS")
         scorecards = {strategy: _sql_metrics(connection, "strategy = ?", (strategy,)) for strategy in ACTIVE_STRATEGIES}
         if progress: progress.advance(); progress.complete_phase()
+        if progress: progress.begin_phase("PROFIT_RESEARCH")
+        profit = {strategy: _sql_policy_set(connection, strategy) for strategy in ACTIVE_STRATEGIES}
+        if progress: progress.advance(); progress.complete_phase()
+        if progress: progress.begin_phase("R_MULTIPLE_RESEARCH")
+        r_multiple = {strategy: profit[strategy]["r_targets"] for strategy in ACTIVE_STRATEGIES}
+        if progress: progress.advance(); progress.complete_phase()
+        if progress: progress.begin_phase("CAPITAL_SCENARIOS")
+        capital = {}
+        constant_risk = {}
+        for strategy in ACTIVE_STRATEGIES:
+            capital[strategy] = {target: capital_scenarios(profit[strategy]["partial_exit_policies"][target]["100"]["gross_return_percent_mean"])
+                                 for target in map(str, PERCENT_PARTIAL_TARGETS)}
+            valid_geometry, excluded_geometry = connection.execute(
+                "SELECT COUNT(*), SUM(CASE WHEN trigger_price IS NULL OR structural_stop IS NULL OR trigger_price <= structural_stop THEN 1 ELSE 0 END) "
+                "FROM observations WHERE strategy = ?", (strategy,)).fetchone()
+            excluded_geometry = excluded_geometry or 0
+            sizes = {}
+            for budget in (25, 50, 100, 200, 500):
+                average_shares = connection.execute(
+                    "SELECT AVG(? / (trigger_price - structural_stop)) FROM observations "
+                    "WHERE strategy = ? AND trigger_price IS NOT NULL AND structural_stop IS NOT NULL "
+                    "AND trigger_price > structural_stop", (budget, strategy)).fetchone()[0]
+                sizes[str(budget)] = {"risk_budget": budget, "valid_observations": valid_geometry - excluded_geometry,
+                                      "excluded_invalid_geometry": excluded_geometry, "mean_theoretical_shares": average_shares,
+                                      "simulation": "THEORETICAL"}
+            constant_risk[strategy] = sizes
+        if progress: progress.advance(); progress.complete_phase()
         if progress: progress.begin_phase("WALK_FORWARD")
         folds = []
+        walk_policy_summaries = []
         if len(dates) >= 4:
             train_days, test_days, step = 30, 10, 10
             for start in range(train_days, len(dates) - test_days + 1, step):
                 train_start, train_end_fold = dates[start - train_days], dates[start - 1]
                 test_start, test_end = dates[start], dates[start + test_days - 1]
+                walk_policy_summaries.append({"fold": len(folds) + 1, "strategies": {
+                    strategy: {"train": _sql_policy_quick(connection, "strategy = ? AND trading_date BETWEEN ? AND ?", (strategy, train_start, train_end_fold)),
+                               "test": _sql_policy_quick(connection, "strategy = ? AND trading_date BETWEEN ? AND ?", (strategy, test_start, test_end))}
+                    for strategy in ACTIVE_STRATEGIES}})
                 folds.append({"fold": len(folds) + 1, "train_date_range": [train_start, train_end_fold],
                               "test_date_range": [test_start, test_end], "strategies": {
                                   strategy: {"train": _sql_metrics(connection, "strategy = ? AND trading_date BETWEEN ? AND ?", (strategy, train_start, train_end_fold)),
@@ -658,14 +823,26 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
             "gap": {"status": "UNAVAILABLE_FROM_PERSISTED_EPISODE_FIELD"},
             "pullback": {"status": "UNAVAILABLE_NULL_DOMINATED"},
         }
+        if progress: progress.begin_phase("RUNNER_RESEARCH")
+        runner = {}
+        for strategy in ACTIVE_STRATEGIES:
+            where, params = "strategy = ? AND a8 = 0", (strategy,)
+            runner[strategy] = {"sample_count": connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where} AND horizon_mfe IS NOT NULL", params).fetchone()[0],
+                                "median_return_percent": _sql_median(connection, "horizon_mfe", where, params),
+                                "positive_return_rate": connection.execute(f"SELECT AVG(CASE WHEN horizon_mfe > 0 THEN 1.0 ELSE 0.0 END) FROM observations WHERE {where} AND horizon_mfe IS NOT NULL", params).fetchone()[0],
+                                "post_8_mfe_median": _sql_median(connection, "post8_mfe", where, params),
+                                "giveback_median": _sql_median(connection, "post8_giveback", where, params),
+                                "terminal_reason_frequencies": {"SESSION_CLOSE": connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where}", params).fetchone()[0]}}
         if progress: progress.advance(); progress.complete_phase(); progress.begin_phase("FINALIZE"); progress.complete_phase(); progress.begin_phase("COMPLETE"); progress.complete_phase()
         return {
             "preset": "FULL_RESEARCH", "metadata": {"phase": 1, "research_only": True, "records_ingested": len(dates) and connection.execute("SELECT COUNT(DISTINCT episode_id) FROM observations").fetchone()[0] or 0,
                 "temporal_method": "strict trading-date chronology", "no_random_split": True},
             "limitations": ["ALPACA IEX single-exchange research", "not point-in-time universe", "no SIP", "one failed acquisition partition", "gap unavailable from persisted episode field", "pullback null-dominated"],
-            "capabilities": {name: "NOT_YET_IMPLEMENTED" for name in ("profit_research", "r_multiple_research", "partial_exit_research", "runner_research", "capital_scenarios", "constant_risk_scenarios", "reentry", "failure_analysis")},
-            "strategy_scorecards": scorecards, "temporal": temporal, "walk_forward": {"folds": folds, "number_of_folds": len(folds)},
-            "context_analysis": context,
+            "capabilities": {"profit_research": "IMPLEMENTED", "r_multiple_research": "IMPLEMENTED", "partial_exit_research": "IMPLEMENTED", "runner_research": "IMPLEMENTED", "capital_scenarios": "IMPLEMENTED", "constant_risk_scenarios": "IMPLEMENTED", "reentry": "NOT_YET_IMPLEMENTED", "failure_analysis": "NOT_YET_IMPLEMENTED"},
+            "strategy_scorecards": scorecards, "temporal": temporal, "walk_forward": {"folds": folds, "policy_summary": walk_policy_summaries, "number_of_folds": len(folds)},
+            "context_analysis": context, "profit_research": profit, "r_multiple_research": r_multiple,
+            "partial_exit_research": {strategy: profit[strategy]["partial_exit_policies"] for strategy in ACTIVE_STRATEGIES},
+            "runner_research": runner, "capital_scenarios": capital, "constant_risk_scenarios": constant_risk,
         }
     finally:
         connection.close()

@@ -193,7 +193,7 @@ def test_full_research_is_disk_backed_and_reports_phase_one_capabilities():
                                              progress=ReportProgress(total=2, interval=1, stream=stderr))
     assert result["preset"] == "FULL_RESEARCH"
     assert result["metadata"]["no_random_split"] is True
-    assert result["capabilities"]["profit_research"] == "NOT_YET_IMPLEMENTED"
+    assert result["capabilities"]["profit_research"] == "IMPLEMENTED"
     assert result["context_analysis"]["gap"]["status"] == "UNAVAILABLE_FROM_PERSISTED_EPISODE_FIELD"
     assert result["context_analysis"]["pullback"]["status"] == "UNAVAILABLE_NULL_DOMINATED"
     assert result["context_analysis"]["volume"]["source_fields"]
@@ -219,3 +219,22 @@ def test_full_research_temporal_boundaries_are_strict_and_ordered():
     assert temporal["splits"]["TRAIN"]["FIRST_PULLBACK"]["sample_count"] == 6
     assert temporal["splits"]["VALIDATION"]["FIRST_PULLBACK"]["sample_count"] == 2
     assert temporal["splits"]["TEST"]["FIRST_PULLBACK"]["sample_count"] == 2
+
+
+def test_full_research_phase_two_matches_row_policy_semantics():
+    source = row(date(2026, 8, 7))
+    source["trigger_price"] = "11"
+    source["structural_stop"] = "10"
+    source["outcomes"]["horizons"] = {"3600": {"mfe_percent": "12"}}
+    source["outcomes"]["r_targets"] = {
+        str(target): {"hit": target <= 2, "first_plan_event": "TARGET_FIRST", "elapsed_seconds": target * 100}
+        for target in (0.5, 1, 1.5, 2, 3, 4, 5)
+    }
+    result = full_research_report_streaming(lambda: iter((source,)))
+    strategy = result["profit_research"]["FIRST_PULLBACK"]
+    expected = simulate_profit_policy(source, target_percent=8, partial_percent=50)
+    actual = strategy["partial_exit_policies"]["8"]["50"]["gross_return_percent_mean"]
+    assert actual == expected["total_simulated_return"]
+    assert result["r_multiple_research"]["FIRST_PULLBACK"]["2"]["hit_rate"] == 1.0
+    assert result["constant_risk_scenarios"]["FIRST_PULLBACK"]["100"]["valid_observations"] == 1
+    assert result["capabilities"]["reentry"] == "NOT_YET_IMPLEMENTED"
