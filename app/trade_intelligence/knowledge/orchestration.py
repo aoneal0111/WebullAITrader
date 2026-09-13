@@ -12,8 +12,8 @@ import os
 from pathlib import Path
 import uuid
 
-from .acquisition import (AcquisitionConfig, AlpacaHistoricalClient, atomic_write_jsonl,
-                          download_partition)
+from .acquisition import (AcquisitionConfig, AcquisitionError, AlpacaHistoricalClient,
+                          atomic_write_jsonl, download_partition, partition_paths)
 from .candidate_days import (attach_previous_closes, candidate_from_record,
                               candidate_records_hash, candidate_to_record, discover_candidate_days)
 from .mining import (MINING_IDENTITY_VERSION, MINING_SEMANTICS_VERSION,
@@ -33,6 +33,31 @@ def _sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
         for chunk in iter(lambda: handle.read(chunk_size), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _failed_partition_manifest(config: AcquisitionConfig, candidate: object, ordinal: int,
+                               category: str, reason: str, *, retryable: bool, attempts: int,
+                               request_counters: dict[str, int]) -> dict[str, object]:
+    symbol = str(candidate.symbol)
+    trading_date = candidate.trading_date.isoformat()
+    _, _, manifest_path = partition_paths(config, symbol, candidate.trading_date)
+    value = {"provider": config.provider.upper(), "feed": config.feed.upper(),
+             "coverage_class": "SINGLE_EXCHANGE_FREE_RESEARCH", "symbol": symbol,
+             "trading_date": trading_date, "timeframe": config.timeframe,
+             "request_start": datetime.combine(candidate.trading_date, time.min, tzinfo=UTC).isoformat(),
+             "request_end": (datetime.combine(candidate.trading_date, time.min, tzinfo=UTC) + timedelta(days=1)).isoformat(),
+             "downloaded_at": datetime.now(UTC).isoformat(), "row_count": 0,
+             "first_timestamp": None, "last_timestamp": None, "content_hash": "",
+             "normalization_version": 1, "status": "FAILED_TRANSIENT_EXHAUSTED" if retryable else "FAILED_PERMANENT",
+             "failure_reason": category + ": " + _safe_reason(reason),
+             "candidate_ordinal": ordinal, "attempts": attempts, "retryable": retryable,
+             "failure_category": category, "request_counters": dict(request_counters)}
+    atomic_write_jsonl(manifest_path, (value,))
+    return value
+
+
+def _safe_reason(value: object) -> str:
+    return " ".join(str(value).split())[:240]
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,9 +424,43 @@ class ResearchOrchestrator:
         try:
             candidate_plan = self.prepare_candidate_plan(symbols, allow_network=True)
             candidates = tuple(candidate_plan["candidates"])
-            for candidate in candidates:
-                manifest = download_partition(client, config, candidate.symbol, candidate.trading_date,
-                                               previous_close=candidate.previous_close)
+            consecutive_failures = 0
+            for candidate_ordinal, candidate in enumerate(candidates, 1):
+                try:
+                    manifest = download_partition(client, config, candidate.symbol, candidate.trading_date,
+                                                  previous_close=candidate.previous_close)
+                except (PermissionError, ValueError) as exc:
+                    category = getattr(exc, "category", "BAR_VALIDATION_ERROR")
+                    if isinstance(exc, PermissionError) or category in {"AUTH_OR_PERMISSION", "DISK_SAFETY"}:
+                        raise
+                    retryable = category in {"MALFORMED_PROVIDER_RESPONSE", "TRANSIENT_NETWORK",
+                                             "HTTP_RATE_LIMIT", "HTTP_SERVER_ERROR"}
+                    failure = _failed_partition_manifest(
+                        config, candidate, candidate_ordinal, category,
+                        str(exc), retryable=retryable, attempts=config.max_retries + 1,
+                        request_counters=client.request_counters)
+                    manifests.append(failure)
+                    consecutive_failures += 1
+                    if consecutive_failures >= config.max_consecutive_partition_failures:
+                        raise RuntimeError("SYSTEMIC_ACQUISITION_FAILURE") from exc
+                    continue
+                except RuntimeError as exc:
+                    if str(exc) in {"DISK_SPACE_SAFETY_FLOOR", "SYSTEMIC_ACQUISITION_FAILURE"}:
+                        raise
+                    category = "TRANSIENT_NETWORK" if str(exc).startswith("TRANSIENT_NETWORK") else (
+                        "HTTP_RATE_LIMIT" if "429" in str(exc) else
+                        "HTTP_SERVER_ERROR" if "5xx" in str(exc).lower() or "500" in str(exc) else
+                        "HTTP_PERMANENT")
+                    failure = _failed_partition_manifest(
+                        config, candidate, candidate_ordinal, category,
+                        str(exc), retryable=category in {"TRANSIENT_NETWORK", "HTTP_RATE_LIMIT", "HTTP_SERVER_ERROR"},
+                        attempts=config.max_retries + 1, request_counters=client.request_counters)
+                    manifests.append(failure)
+                    consecutive_failures += 1
+                    if consecutive_failures >= config.max_consecutive_partition_failures:
+                        raise RuntimeError("SYSTEMIC_ACQUISITION_FAILURE") from exc
+                    continue
+                consecutive_failures = 0
                 manifests.append(manifest.to_dict())
                 normalized_path = config.normalized_root / f"{candidate.symbol}_{candidate.trading_date.isoformat()}.jsonl"
                 if normalized_path.exists():
@@ -436,9 +495,17 @@ class ResearchOrchestrator:
             "provider": self.plan.provider, "feed": self.plan.feed, "start_date": self.plan.start_date.isoformat(),
             "end_date": self.plan.end_date.isoformat(), "symbols": symbols, "target_per_strategy": self.plan.target_per_strategy,
             "repository_commit": repository_commit, "started_at": started, "finished_at": datetime.now(UTC).isoformat(),
-            "final_status": "SUCCEEDED", "partitions": {"planned": len(manifests), "complete": sum(m["status"] == "COMPLETE" for m in manifests),
-            "empty_confirmed": sum(m["status"] == "EMPTY_CONFIRMED" for m in manifests), "failed": 0},
-            "requests": {"market_data": len(manifests), "pages": len(manifests), "retries": 0, "429": 0, "5xx": 0},
+            "final_status": "SUCCEEDED_WITH_PARTITION_FAILURES" if any(m["status"].startswith("FAILED") for m in manifests) else "SUCCEEDED",
+            "partitions": {"planned": len(manifests), "complete": sum(m["status"] == "COMPLETE" for m in manifests),
+            "empty_confirmed": sum(m["status"] == "EMPTY_CONFIRMED" for m in manifests),
+            "failed": sum(m["status"].startswith("FAILED") for m in manifests)},
+            "requests": {"market_data": client.request_counters["requests"],
+                          "pages": client.request_counters["pages"],
+                          "retries": client.request_counters["retries"],
+                          "429": client.request_counters["429"],
+                          "5xx": client.request_counters["5xx"],
+                          "malformed_responses": client.request_counters["malformed_responses"],
+                          "malformed_retries": client.request_counters["malformed_retries"]},
             "rows": {"raw": sum(m["row_count"] for m in manifests), "normalized": sum(m["row_count"] for m in manifests)},
             "corpus": {"new_unique_episodes": result["accepted_unique"], "new_memberships": result["strategy_memberships"]}},))
         return result

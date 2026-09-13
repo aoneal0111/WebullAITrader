@@ -26,6 +26,31 @@ ALPACA_FREE_FEED = "IEX"
 COVERAGE_CLASS = "SINGLE_EXCHANGE_FREE_RESEARCH"
 
 
+class AcquisitionError(ValueError):
+    """Structured, safe acquisition failure suitable for partition accounting."""
+
+    def __init__(self, category: str, message: str, *, details: dict[str, object] | None = None) -> None:
+        super().__init__(message)
+        self.category = category
+        self.details = details or {}
+
+
+class MalformedProviderResponse(AcquisitionError):
+    def __init__(self, *, path: str, response: httpx.Response | None = None,
+                 attempt: int | None = None) -> None:
+        details: dict[str, object] = {"path": path}
+        if attempt is not None:
+            details["attempt"] = attempt
+        if response is not None:
+            body = response.content
+            details.update({"http_status": response.status_code,
+                            "content_type": response.headers.get("content-type"),
+                            "content_length": response.headers.get("content-length"),
+                            "response_bytes": len(body),
+                            "body_sha256": hashlib.sha256(body).hexdigest()})
+        super().__init__("MALFORMED_PROVIDER_RESPONSE", "MALFORMED_RESPONSE", details=details)
+
+
 @dataclass(frozen=True, slots=True)
 class AcquisitionConfig:
     provider: str = ALPACA_PROVIDER
@@ -41,11 +66,13 @@ class AcquisitionConfig:
     min_free_bytes: int = 1_000_000_000
     max_pages: int = 10_000
     daily_symbol_batch_size: int = 250
+    max_consecutive_partition_failures: int = 10
 
     def __post_init__(self) -> None:
         if self.provider.upper() != ALPACA_PROVIDER or self.feed.upper() != ALPACA_FREE_FEED:
             raise ValueError("only ALPACA/IEX free research configuration is permitted")
-        if self.requests_per_minute <= 0 or self.max_retries < 0 or self.max_pages <= 0 or self.daily_symbol_batch_size <= 0:
+        if (self.requests_per_minute <= 0 or self.max_retries < 0 or self.max_pages <= 0 or
+                self.daily_symbol_batch_size <= 0 or self.max_consecutive_partition_failures <= 0):
             raise ValueError("acquisition limits must be positive")
 
 
@@ -107,7 +134,8 @@ class AlpacaHistoricalClient:
         self._limiter = RateLimiter(self.config.requests_per_minute, sleeper=sleep)
         self._sleep, self._random = sleep, random_value
         self.last_rate_headers: dict[str, str] = {}
-        self.request_counters = {"requests": 0, "pages": 0, "429": 0, "5xx": 0, "retries": 0}
+        self.request_counters = {"requests": 0, "pages": 0, "429": 0, "5xx": 0, "retries": 0,
+                                 "malformed_responses": 0, "malformed_retries": 0}
 
     @classmethod
     def from_environment(cls, *, config: AcquisitionConfig | None = None, **kwargs: Any) -> "AlpacaHistoricalClient":
@@ -149,31 +177,49 @@ class AlpacaHistoricalClient:
                 if token in seen:
                     raise RuntimeError("PAGINATION_LOOP")
                 seen.add(token); query["page_token"] = token
-            payload = self._request(path, query)
+            payload = None
+            malformed: MalformedProviderResponse | None = None
+            for attempt in range(self.config.max_retries + 1):
+                try:
+                    payload = self._request(path, query)
+                    rows = self._response_rows(payload, path=path, response=None)
+                    break
+                except MalformedProviderResponse as exc:
+                    malformed = exc
+                    self.request_counters["malformed_responses"] += 1
+                    if attempt >= self.config.max_retries:
+                        raise
+                    self.request_counters["retries"] += 1
+                    self.request_counters["malformed_retries"] += 1
+                    self._backoff(attempt)
+            if payload is None or malformed is not None and payload is None:
+                raise malformed or AcquisitionError("UNKNOWN_ACQUISITION_ERROR", "REQUEST_FAILED")
             self.request_counters["pages"] += 1
-            rows = payload.get("bars", payload.get("data", ()))
-            if isinstance(rows, dict):
-                # Alpaca's multi-symbol endpoint returns bars keyed by
-                # symbol, while single-symbol responses use a flat list.
-                # Normalize both shapes without losing the source symbol.
-                flattened = []
-                for symbol, symbol_rows in rows.items():
-                    if not isinstance(symbol_rows, list):
-                        raise ValueError("MALFORMED_RESPONSE")
-                    for row in symbol_rows:
-                        if not isinstance(row, dict):
-                            raise ValueError("MALFORMED_RESPONSE")
-                        item = dict(row)
-                        item.setdefault("S", symbol)
-                        flattened.append(item)
-                rows = flattened
-            if not isinstance(rows, list):
-                raise ValueError("MALFORMED_RESPONSE")
             yield from rows
             token = payload.get("next_page_token")
             if not token:
                 return
         raise RuntimeError("PAGINATION_LIMIT")
+
+    @staticmethod
+    def _response_rows(payload: dict[str, object], *, path: str,
+                       response: httpx.Response | None) -> list[dict[str, object]]:
+        rows: object = payload.get("bars", payload.get("data", ()))
+        if isinstance(rows, dict):
+            flattened: list[dict[str, object]] = []
+            for symbol, symbol_rows in rows.items():
+                if not isinstance(symbol_rows, list):
+                    raise MalformedProviderResponse(path=path, response=response)
+                for row in symbol_rows:
+                    if not isinstance(row, dict):
+                        raise MalformedProviderResponse(path=path, response=response)
+                    item = dict(row)
+                    item.setdefault("S", symbol)
+                    flattened.append(item)
+            return flattened
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise MalformedProviderResponse(path=path, response=response)
+        return rows
 
     def _request(self, path: str, params: dict[str, object]) -> dict[str, object]:
         for attempt in range(self.config.max_retries + 1):
@@ -197,8 +243,9 @@ class AlpacaHistoricalClient:
             try:
                 value = response.json()
             except ValueError as exc:
-                raise ValueError("MALFORMED_RESPONSE") from exc
-            if not isinstance(value, dict): raise ValueError("MALFORMED_RESPONSE")
+                raise MalformedProviderResponse(path=path, response=response) from exc
+            if not isinstance(value, dict):
+                raise MalformedProviderResponse(path=path, response=response)
             return value
         raise RuntimeError("REQUEST_FAILED")
 
