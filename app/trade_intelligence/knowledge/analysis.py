@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from bisect import bisect_right
 from datetime import date, datetime
 import json
 import sqlite3
@@ -573,6 +574,7 @@ def _research_observations(row: dict):
     extension = values.get("extension", {})
     compact = (
         row.get("episode_id"), row.get("symbol"), row.get("trading_date"),
+        row.get("detected_timestamp"),
         values.get("time_of_day_bucket"), _dimension(row, "extension_bucket"),
         _volume_context_bucket(row), _number(outcomes.get("mfe_percent")),
         _number(outcomes.get("mae_percent")), _number(outcomes.get("maximum_R")),
@@ -588,9 +590,11 @@ def _research_observations(row: dict):
         _number(row.get("trigger_price")), _number(row.get("structural_stop")),
         *[int(event.get("first_plan_event") == "INTRABAR_ORDER_UNKNOWN") for event in events],
         *_pit_context(row),
+        None, None, None, None, None, None, None, None, None, None,
+        None, None, None, None, None, None, None, None, None,
     )
     for strategy in row.get("strategy_memberships", ()):
-        yield (compact[0], compact[1], compact[2], strategy, *compact[3:])
+        yield (compact[0], compact[1], compact[2], compact[3], strategy, *compact[4:])
 
 
 def _sql_median(connection, column: str, where: str, params: tuple = ()):
@@ -836,13 +840,136 @@ def _transition_policy_median(connection, where: str, params: tuple, partial_per
 def _failure_contexts(connection, class_where: str, class_params: tuple) -> dict:
     contexts = {}
     for label, column in (("strategy", "strategy"), ("time_of_day", "time_of_day"),
-                          ("extension", "extension_bucket"), ("volume", "volume_bucket")):
+                          ("extension", "extension_bucket"), ("volume", "volume_bucket"),
+                          ("market_regime", "market_regime"), ("vwap_agreement", "vwap_agreement"),
+                          ("momentum_agreement", "momentum_agreement"), ("volatility_regime", "volatility_regime"),
+                          ("composite_regime", "composite_regime")):
         rows = connection.execute(
             f"SELECT {column}, COUNT(*) FROM observations WHERE {class_where} AND {column} IS NOT NULL GROUP BY {column} HAVING COUNT(*) >= 30 ORDER BY COUNT(*) DESC",
             class_params).fetchall()
         contexts[label] = [{"group": value, **_failure_metrics(connection, f"{class_where} AND {column} = ?", (*class_params, value))}
                            for value, _ in rows]
     return contexts
+
+
+def _benchmark_state(value, *, positive: str, negative: str, neutral: str = "NEUTRAL") -> str:
+    if value is None:
+        return "MISSING"
+    return positive if value > 0.1 else negative if value < -0.1 else neutral
+
+
+def _vwap_state(price, vwap, above) -> str:
+    if price is None and vwap is None and above is None:
+        return "MISSING"
+    if price is not None and vwap is not None:
+        if price > vwap:
+            return "ABOVE_VWAP"
+        if price < vwap:
+            return "BELOW_VWAP"
+        return "AT_VWAP_OR_NEUTRAL"
+    if above is None:
+        return "MISSING"
+    return "ABOVE_VWAP" if above else "BELOW_VWAP"
+
+
+def _agreement(states: tuple[str, ...], *, positive: str, negative: str,
+               all_positive: str, majority_positive: str, mixed: str,
+               majority_negative: str, all_negative: str) -> str:
+    if len(states) != 3 or any(state == "MISSING" for state in states):
+        return "INSUFFICIENT_BENCHMARK_DATA"
+    positives = states.count(positive)
+    negatives = states.count(negative)
+    if positives == 3:
+        return all_positive
+    if negatives == 3:
+        return all_negative
+    if positives >= 2:
+        return majority_positive
+    if negatives >= 2:
+        return majority_negative
+    return mixed
+
+
+def _volatility_state(value) -> str:
+    if value is None:
+        return "MISSING"
+    # Structural research bands for one-minute benchmark range volatility.
+    return "LOW" if value < 0.25 else "HIGH" if value > 0.75 else "NORMAL"
+
+
+def _composite_regime(market_regime: str, vwap_agreement: str,
+                      momentum_agreement: str) -> str:
+    if any("INSUFFICIENT" in value for value in (vwap_agreement, momentum_agreement)):
+        return "INSUFFICIENT_BENCHMARK_DATA"
+    strength = (market_regime == "RISK_ON" and
+                vwap_agreement in {"ALL_ABOVE_VWAP", "MAJORITY_ABOVE_VWAP"} and
+                momentum_agreement in {"ALL_POSITIVE", "MAJORITY_POSITIVE"})
+    weakness = (market_regime == "RISK_OFF" and
+                vwap_agreement in {"ALL_BELOW_VWAP", "MAJORITY_BELOW_VWAP"} and
+                momentum_agreement in {"ALL_NEGATIVE", "MAJORITY_NEGATIVE"})
+    if strength:
+        return "BROAD_STRENGTH"
+    if weakness:
+        return "BROAD_WEAKNESS"
+    if market_regime == "RISK_ON":
+        return "LEAN_STRENGTH"
+    if market_regime == "RISK_OFF":
+        return "LEAN_WEAKNESS"
+    return "MIXED"
+
+
+def _regime_temporal(connection: sqlite3.Connection, train_end: str | None,
+                     validation_end: str | None) -> dict[str, list[dict]]:
+    if not train_end or not validation_end:
+        return {}
+    dimensions = ("market_regime", "vwap_agreement", "momentum_agreement", "volatility_regime", "composite_regime")
+    boundaries = (("TRAIN", "trading_date <= ?", (train_end,)),
+                  ("VALIDATION", "trading_date > ? AND trading_date <= ?", (train_end, validation_end)),
+                  ("TEST", "trading_date > ?", (validation_end,)))
+    result = {}
+    for dimension in dimensions:
+        result[dimension] = []
+        groups = connection.execute(
+            f"SELECT {dimension}, COUNT(*) FROM observations WHERE {dimension} IS NOT NULL GROUP BY {dimension} ORDER BY COUNT(*) DESC"
+        ).fetchall()
+        for value, _ in groups:
+            splits = {}
+            for name, where, params in boundaries:
+                splits[name] = _sql_metrics(connection, f"{dimension} = ? AND {where}", (value, *params))
+            result[dimension].append({"group": value, "splits": splits})
+    return result
+
+
+def _strategy_regime_groups(connection: sqlite3.Connection, column: str) -> dict[str, list[dict]]:
+    output = {}
+    for strategy in ACTIVE_STRATEGIES:
+        groups = connection.execute(
+            f"SELECT {column}, COUNT(*) FROM observations WHERE strategy = ? AND {column} IS NOT NULL "
+            f"GROUP BY {column} ORDER BY COUNT(*) DESC", (strategy,)
+        ).fetchall()
+        output[strategy] = [{"group": value, **_sql_metrics(connection, f"strategy = ? AND {column} = ?", (strategy, value))}
+                            for value, _ in groups]
+    return output
+
+
+def _strategy_regime_temporal(connection: sqlite3.Connection, column: str,
+                              train_end: str | None, validation_end: str | None) -> dict[str, list[dict]]:
+    if not train_end or not validation_end:
+        return {strategy: [] for strategy in ACTIVE_STRATEGIES}
+    boundaries = (("TRAIN", "trading_date <= ?", (train_end,)),
+                  ("VALIDATION", "trading_date > ? AND trading_date <= ?", (train_end, validation_end)),
+                  ("TEST", "trading_date > ?", (validation_end,)))
+    output = {}
+    for strategy in ACTIVE_STRATEGIES:
+        groups = connection.execute(
+            f"SELECT {column}, COUNT(*) FROM observations WHERE strategy = ? AND {column} IS NOT NULL GROUP BY {column} ORDER BY COUNT(*) DESC",
+            (strategy,)).fetchall()
+        output[strategy] = []
+        for value, _ in groups:
+            splits = {name: _sql_metrics(connection, f"strategy = ? AND {column} = ? AND {where}", (strategy, value, *params))
+                      for name, where, params in boundaries}
+            output[strategy].append({"group": value, "splits": splits})
+    return output
 
 
 def _build_transitions(connection) -> dict:
@@ -931,9 +1058,85 @@ def _policy_stability_summary(connection, strategy: str, train_end: str | None,
     return output
 
 
+def _integrate_benchmark_context(connection: sqlite3.Connection, benchmark_path: Path | None) -> dict[str, object]:
+    """Attach strict as-of benchmark observations without retaining episodes."""
+    if not benchmark_path or not Path(benchmark_path).exists():
+        return {"status": "UNAVAILABLE_SOURCE", "available_count": 0, "missing_count":
+                connection.execute("SELECT COUNT(DISTINCT episode_id) FROM observations").fetchone()[0]}
+    connection.execute("ATTACH DATABASE ? AS benchmark_source", (str(Path(benchmark_path)),))
+    try:
+        connection.execute("CREATE TABLE benchmark_context AS SELECT * FROM benchmark_source.benchmark_context")
+    finally:
+        connection.execute("DETACH DATABASE benchmark_source")
+    connection.execute("CREATE INDEX benchmark_asof ON benchmark_context(trading_date, benchmark_symbol, effective_timestamp)")
+    benchmark_rows = defaultdict(list)
+    for item in connection.execute("SELECT benchmark_symbol, trading_date, effective_timestamp, return_from_open, above_vwap, price, vwap, momentum, volatility FROM benchmark_context ORDER BY benchmark_symbol, trading_date, effective_timestamp"):
+        benchmark_rows[(item[0], item[1])].append((item[2], item[3], item[4], item[5], item[6], item[7], item[8]))
+    connection.execute("CREATE TABLE episode_benchmark (episode_id TEXT PRIMARY KEY, spy_return_open REAL, qqq_return_open REAL, iwm_return_open REAL, spy_above_vwap INTEGER, qqq_above_vwap INTEGER, iwm_above_vwap INTEGER, market_regime TEXT, benchmark_agreement TEXT, benchmark_coverage INTEGER, spy_momentum REAL, qqq_momentum REAL, iwm_momentum REAL, spy_volatility REAL, qqq_volatility REAL, iwm_volatility REAL, vwap_agreement TEXT, momentum_agreement TEXT, volatility_regime TEXT, composite_regime TEXT)")
+    insert_rows = []
+    for episode_id, symbol, trading_date, detected_timestamp in connection.execute("SELECT episode_id, symbol, trading_date, detected_timestamp FROM episodes"):
+        values = []
+        for benchmark in ("SPY", "QQQ", "IWM"):
+            candidates = benchmark_rows.get((benchmark, trading_date), ())
+            timestamps = [item[0] for item in candidates]
+            index = bisect_right(timestamps, detected_timestamp) - 1 if detected_timestamp else -1
+            values.append(candidates[index] if index >= 0 else (None,) * 7)
+        returns = tuple(value[1] for value in values)
+        up = sum(value is not None and value > .1 for value in returns)
+        down = sum(value is not None and value < -.1 for value in returns)
+        regime = "RISK_ON" if up >= 2 else "RISK_OFF" if down >= 2 else "MIXED"
+        agreement = "3_OF_3_UP" if up == 3 else "3_OF_3_DOWN" if down == 3 else "2_OF_3_UP" if up >= 2 else "2_OF_3_DOWN" if down >= 2 else "MIXED"
+        coverage = sum(value[0] is not None for value in values)
+        vwap_states = tuple(_vwap_state(value[3], value[4], value[2]) for value in values)
+        momentum_states = tuple(_benchmark_state(value[5], positive="POSITIVE", negative="NEGATIVE") for value in values)
+        volatility_states = tuple(_volatility_state(value[6]) for value in values)
+        vwap_agreement = _agreement(vwap_states, positive="ABOVE_VWAP", negative="BELOW_VWAP",
+                                    all_positive="ALL_ABOVE_VWAP", majority_positive="MAJORITY_ABOVE_VWAP",
+                                    mixed="MIXED_VWAP", majority_negative="MAJORITY_BELOW_VWAP",
+                                    all_negative="ALL_BELOW_VWAP")
+        momentum_agreement = _agreement(momentum_states, positive="POSITIVE", negative="NEGATIVE",
+                                        all_positive="ALL_POSITIVE", majority_positive="MAJORITY_POSITIVE",
+                                        mixed="MIXED", majority_negative="MAJORITY_NEGATIVE",
+                                        all_negative="ALL_NEGATIVE")
+        volatility_regime = ("INSUFFICIENT_BENCHMARK_DATA" if any(state == "MISSING" for state in volatility_states)
+                             else "BROAD_LOW_VOL" if len(set(volatility_states)) == 1 and volatility_states[0] == "LOW"
+                             else "BROAD_NORMAL_VOL" if len(set(volatility_states)) == 1 and volatility_states[0] == "NORMAL"
+                             else "BROAD_HIGH_VOL" if len(set(volatility_states)) == 1 and volatility_states[0] == "HIGH"
+                             else "MIXED_VOL")
+        composite = _composite_regime(regime, vwap_agreement, momentum_agreement)
+        insert_rows.append((episode_id, values[0][1], values[1][1], values[2][1], values[0][2], values[1][2], values[2][2], regime, agreement, coverage,
+                            values[0][5], values[1][5], values[2][5], values[0][6], values[1][6], values[2][6],
+                            vwap_agreement, momentum_agreement, volatility_regime, composite))
+        if len(insert_rows) >= 2000:
+            connection.executemany("INSERT INTO episode_benchmark VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", insert_rows); insert_rows.clear()
+    if insert_rows:
+        connection.executemany("INSERT INTO episode_benchmark VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", insert_rows)
+    connection.execute("""UPDATE observations SET
+        spy_return_open=e.spy_return_open, qqq_return_open=e.qqq_return_open, iwm_return_open=e.iwm_return_open,
+        spy_above_vwap=e.spy_above_vwap, qqq_above_vwap=e.qqq_above_vwap, iwm_above_vwap=e.iwm_above_vwap,
+        market_regime=e.market_regime, benchmark_agreement=e.benchmark_agreement, benchmark_coverage=e.benchmark_coverage,
+        spy_momentum=e.spy_momentum, qqq_momentum=e.qqq_momentum, iwm_momentum=e.iwm_momentum,
+        spy_volatility=e.spy_volatility, qqq_volatility=e.qqq_volatility, iwm_volatility=e.iwm_volatility,
+        vwap_agreement=e.vwap_agreement, momentum_agreement=e.momentum_agreement,
+        volatility_regime=e.volatility_regime, composite_regime=e.composite_regime
+        FROM episode_benchmark e WHERE e.episode_id=observations.episode_id""")
+    connection.execute("CREATE INDEX observations_market_regime ON observations(market_regime)")
+    count = connection.execute("SELECT COUNT(DISTINCT episode_id) FROM observations WHERE benchmark_coverage = 3").fetchone()[0]
+    total = connection.execute("SELECT COUNT(DISTINCT episode_id) FROM observations").fetchone()[0]
+    return {"status": "AVAILABLE" if count else "INSUFFICIENT_DATA", "available_count": count,
+            "missing_count": total - count, "coverage_percent": count / total * 100 if total else 0,
+            "version": "ATLAS_BENCHMARK_REGIME_V1", "source": "ALPACA IEX", "symbols": ["SPY", "QQQ", "IWM"],
+            "timestamp_semantics": "benchmark bars effective at or before episode decision timestamp",
+            "regime_definitions": {"direction_threshold_percent": 0.1, "momentum_field": "momentum (5-minute return)",
+                                    "momentum_threshold_percent": 0.1, "volatility_field": "rolling mean bar range percent",
+                                    "volatility_bands": {"LOW": "<0.25", "NORMAL": "0.25-0.75", "HIGH": ">0.75"},
+                                    "composite_inputs": ["market_regime", "vwap_agreement", "momentum_agreement"]}}
+
+
 def full_research_report_streaming(row_factory, *, total: int | None = None,
                                    progress: ReportProgress | None = None,
-                                   daily_context_path: Path | None = None) -> dict:
+                                   daily_context_path: Path | None = None,
+                                   benchmark_context_path: Path | None = None) -> dict:
     """Full-research report using one streaming ingest and SQL aggregates."""
     handle = tempfile.NamedTemporaryFile(prefix="atlas_full_research_", suffix=".sqlite3", delete=False)
     db_path = Path(handle.name); handle.close()
@@ -943,7 +1146,7 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
             progress.begin_phase("START"); progress.complete_phase(); progress.begin_phase("INGEST")
         connection.execute("PRAGMA journal_mode=OFF")
         connection.execute("PRAGMA synchronous=OFF")
-        columns = ["episode_id", "symbol", "trading_date", "strategy", "time_of_day", "extension_bucket", "volume_bucket",
+        columns = ["episode_id", "symbol", "trading_date", "detected_timestamp", "strategy", "time_of_day", "extension_bucket", "volume_bucket",
                    "mfe", "mae", "maximum_r"]
         columns += [f"h{p}" for p in (2, 3, 5, 8, 10)]
         columns += [f"s{p}" for p in (2, 3, 5, 8, 10)]
@@ -955,10 +1158,16 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
         columns += [f"a{p}" for p in (2, 3, 5, 8, 10)]
         columns += ["day_of_week", "minutes_until_close", "premarket_status", "opening_range_position",
                     "generic_pullback_bucket", "volume_acceleration", "volume_acceleration_bucket",
-                    "range_vs_median", "volatility_bucket", "gap_percent", "gap_bucket", "regular_open", "previous_close"]
+                    "range_vs_median", "volatility_bucket", "gap_percent", "gap_bucket", "regular_open", "previous_close",
+                    "spy_return_open", "qqq_return_open", "iwm_return_open", "spy_above_vwap", "qqq_above_vwap", "iwm_above_vwap",
+                    "market_regime", "benchmark_agreement", "benchmark_coverage",
+                    "spy_momentum", "qqq_momentum", "iwm_momentum", "spy_volatility", "qqq_volatility", "iwm_volatility",
+                    "vwap_agreement", "momentum_agreement", "volatility_regime", "composite_regime"]
         types = {name: "REAL" for name in columns}
-        types.update({name: "TEXT" for name in ("episode_id", "symbol", "trading_date", "strategy", "time_of_day", "extension_bucket", "volume_bucket",
-                                                 "day_of_week", "premarket_status", "opening_range_position", "generic_pullback_bucket", "volume_acceleration_bucket", "volatility_bucket", "gap_bucket")})
+        types.update({name: "TEXT" for name in ("episode_id", "symbol", "trading_date", "detected_timestamp", "strategy", "time_of_day", "extension_bucket", "volume_bucket",
+                                                 "day_of_week", "premarket_status", "opening_range_position", "generic_pullback_bucket", "volume_acceleration_bucket", "volatility_bucket", "gap_bucket",
+                                                 "market_regime", "benchmark_agreement", "vwap_agreement", "momentum_agreement",
+                                                 "volatility_regime", "composite_regime")})
         connection.execute("CREATE TABLE observations (" + ", ".join(f"{name} {types[name]}" for name in columns) + ")")
         connection.execute("CREATE INDEX observations_strategy ON observations(strategy)")
         connection.execute("CREATE INDEX observations_date ON observations(trading_date)")
@@ -1018,6 +1227,11 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
                     WHEN (SELECT gap_percent FROM daily_context d WHERE d.symbol=observations.symbol AND d.trading_date=observations.trading_date) < 10 THEN 'MODERATE_5_10'
                     WHEN (SELECT gap_percent FROM daily_context d WHERE d.symbol=observations.symbol AND d.trading_date=observations.trading_date) < 20 THEN 'LARGE_10_20' ELSE 'EXTREME_20_PLUS' END""")
             connection.execute("CREATE INDEX observations_gap ON observations(gap_bucket)")
+        if progress:
+            progress.begin_phase("BENCHMARK_CONTEXT")
+        benchmark_summary = _integrate_benchmark_context(connection, benchmark_context_path)
+        if progress:
+            progress.advance(); progress.complete_phase()
         if progress: progress.complete_phase(); progress.begin_phase("REENTRY_LINK")
         reentry = _build_transitions(connection)
         if progress: progress.advance(); progress.complete_phase(); progress.begin_phase("TRANSITION_MATRIX")
@@ -1044,8 +1258,13 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
                                         for strategy in ACTIVE_STRATEGIES}
             if progress: progress.advance(); progress.complete_phase()
         reentry["temporal_stability"] = _transition_temporal(connection, train_end, validation_end)
+        temporal["regime_analysis"] = _regime_temporal(connection, train_end, validation_end)
         policy_stability = {strategy: _policy_stability_summary(connection, strategy, train_end, validation_end)
                             for strategy in ACTIVE_STRATEGIES}
+        temporal["regime_analysis_by_strategy"] = {
+            dimension: _strategy_regime_temporal(connection, dimension, train_end, validation_end)
+            for dimension in ("market_regime", "vwap_agreement", "momentum_agreement", "volatility_regime", "composite_regime")
+        }
         temporal["policy_stability"] = policy_stability
         if progress: progress.begin_phase("STRATEGY_SCORECARDS")
         scorecards = {strategy: _sql_metrics(connection, "strategy = ?", (strategy,)) for strategy in ACTIVE_STRATEGIES}
@@ -1152,7 +1371,16 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
             "limitations": ["ALPACA IEX single-exchange research", "not point-in-time universe", "no SIP", "one failed acquisition partition", "gap unavailable from persisted episode field", "pullback null-dominated"],
             "capabilities": {"profit_research": "IMPLEMENTED", "r_multiple_research": "IMPLEMENTED", "partial_exit_research": "IMPLEMENTED", "runner_research": "IMPLEMENTED", "capital_scenarios": "IMPLEMENTED", "constant_risk_scenarios": "IMPLEMENTED", "reentry": "IMPLEMENTED", "failure_analysis": "IMPLEMENTED"},
             "strategy_scorecards": scorecards, "temporal": temporal, "walk_forward": {"folds": folds, "policy_summary": walk_policy_summaries, "number_of_folds": len(folds)},
-            "context_analysis": context, "profit_research": profit, "r_multiple_research": r_multiple,
+            "context_analysis": {**context, "benchmark_context": benchmark_summary,
+                                  "market_regime": _context_dimension(connection, "market_regime"),
+                                  "benchmark_agreement": _context_dimension(connection, "benchmark_agreement"),
+                                  "vwap_agreement": _context_dimension(connection, "vwap_agreement"),
+                                  "momentum_agreement": _context_dimension(connection, "momentum_agreement"),
+                                  "volatility_regime": _context_dimension(connection, "volatility_regime"),
+                                  "composite_regime": _context_dimension(connection, "composite_regime"),
+                                  "strategy_regimes": {dimension: _strategy_regime_groups(connection, dimension)
+                                                       for dimension in ("market_regime", "vwap_agreement", "momentum_agreement", "volatility_regime", "composite_regime")}},
+            "profit_research": profit, "r_multiple_research": r_multiple,
             "partial_exit_research": {strategy: profit[strategy]["partial_exit_policies"] for strategy in ACTIVE_STRATEGIES},
             "runner_research": runner, "capital_scenarios": capital, "constant_risk_scenarios": constant_risk,
             "reentry": reentry, "failure_analysis": failure,

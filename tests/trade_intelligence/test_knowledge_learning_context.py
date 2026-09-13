@@ -1,18 +1,21 @@
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 import json
+import sqlite3
 
 from app.trade_intelligence.knowledge.analysis import (capital_scenarios, cohort_report, chronological_splits,
                                                         constant_risk_scenarios, entry_delay_research, hold_vs_reentry,
                                                         runner_path_analysis, simulate_profit_policy, transition_matrix,
                                                         transition_record, walk_forward_folds, streaming_cohort_report,
                                                         first_tranche_report_streaming, full_research_report_streaming,
-                                                        ReportProgress)
+                                                        ReportProgress, _agreement, _benchmark_state,
+                                                        _composite_regime, _vwap_state, _volatility_state)
 import io
 from app.trade_intelligence.knowledge.features import feature_snapshot
 from app.trade_intelligence.knowledge.models import HistoricalBar
 from app.trade_intelligence.knowledge.storage import KnowledgeStore
 from app.trade_intelligence.knowledge.__main__ import main
+from app.trade_intelligence.knowledge.benchmark import BENCHMARK_REGIME_VERSION, build_benchmark_context
 
 
 def bars(day=date(2026, 8, 7)):
@@ -291,3 +294,86 @@ def test_phase_four_b_contexts_are_explicit_and_future_bars_are_not_used():
     assert original["context_analysis"]["generic_pullback"]["coverage_percent"] == changed["context_analysis"]["generic_pullback"]["coverage_percent"]
     assert original["context_analysis"]["gap_context"]["status"] == "UNAVAILABLE_FROM_PERSISTED_EPISODE_FIELD"
     assert original["context_analysis"]["premarket"]["missing_count"] == 0
+
+
+def test_benchmark_context_is_point_in_time_and_side_table_is_versioned(tmp_path):
+    root = tmp_path / "benchmark"
+    (root / "normalized").mkdir(parents=True)
+    rows = []
+    start = "2026-08-07T13:30:00+00:00"
+    for index, price in enumerate((100, 101, 102, 103, 104, 105, 106)):
+        rows.append({"symbol": "SPY", "timestamp": (datetime.fromisoformat(start) + timedelta(minutes=index)).isoformat(),
+                     "session": "REGULAR", "open": str(price), "high": str(price + 1), "low": str(price - 1),
+                     "close": str(price), "volume": "100", "provider": "ALPACA", "feed": "IEX"})
+    (root / "normalized" / "SPY_2026-08-07.jsonl").write_text("\n".join(json.dumps(item) for item in rows) + "\n", encoding="utf-8")
+    database = build_benchmark_context(root, start=date(2026, 8, 7), end=date(2026, 8, 7))
+    connection = sqlite3.connect(database)
+    values = connection.execute("SELECT return_from_open, derivation_version FROM benchmark_context WHERE benchmark_symbol='SPY' ORDER BY effective_timestamp").fetchall()
+    connection.close()
+    assert values[0][0] == 0
+    assert abs(values[-1][0] - 6) < 1e-9
+    assert all(value[1] == BENCHMARK_REGIME_VERSION for value in values)
+
+
+def test_full_research_benchmark_asof_join_excludes_future_bars(tmp_path):
+    source = row(date(2026, 8, 7))
+    source["detected_timestamp"] = "2026-08-07T13:34:00+00:00"
+    database = tmp_path / "benchmark.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE benchmark_context (benchmark_symbol TEXT, trading_date TEXT, effective_timestamp TEXT, session TEXT, price REAL, return_from_open REAL, return_1m REAL, return_5m REAL, return_10m REAL, return_30m REAL, vwap REAL, above_vwap INTEGER, hod_distance REAL, lod_distance REAL, range_percent REAL, volatility REAL, momentum REAL, volume_acceleration REAL, opening_range_position TEXT, derivation_version TEXT)")
+    values = [(symbol, "2026-08-07", timestamp, "REGULAR", price, ret, ret, ret, ret, ret, price, 1, 0, 0, 1, 1, ret, 1, "INSIDE", "ATLAS_BENCHMARK_REGIME_V1") for symbol, timestamp, price, ret in (("SPY", "2026-08-07T13:34:00+00:00", 101, 1), ("SPY", "2026-08-07T13:35:00+00:00", 999, 999))]
+    connection.executemany("INSERT INTO benchmark_context VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", values)
+    connection.commit(); connection.close()
+    result = full_research_report_streaming(lambda: iter((source,)), benchmark_context_path=database)
+    assert result["context_analysis"]["benchmark_context"]["available_count"] == 0
+    assert result["context_analysis"]["benchmark_context"]["status"] == "INSUFFICIENT_DATA"
+
+
+def test_benchmark_context_is_reused_once_per_episode_with_multiple_memberships(tmp_path):
+    source = row(date(2026, 8, 7))
+    source["detected_timestamp"] = "2026-08-07T13:34:00+00:00"
+    source["strategy_memberships"] = ("FIRST_PULLBACK", "HOD_BREAKOUT")
+    database = tmp_path / "benchmark.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE benchmark_context (benchmark_symbol TEXT, trading_date TEXT, effective_timestamp TEXT, session TEXT, price REAL, return_from_open REAL, return_1m REAL, return_5m REAL, return_10m REAL, return_30m REAL, vwap REAL, above_vwap INTEGER, hod_distance REAL, lod_distance REAL, range_percent REAL, volatility REAL, momentum REAL, volume_acceleration REAL, opening_range_position TEXT, derivation_version TEXT)")
+    values = [(symbol, "2026-08-07", "2026-08-07T13:34:00+00:00", "REGULAR", 101, 1, 1, 1, 1, 1, 101, 1, 0, 0, 1, 1, 1, 1, "INSIDE", "ATLAS_BENCHMARK_REGIME_V1") for symbol in ("SPY", "QQQ", "IWM")]
+    connection.executemany("INSERT INTO benchmark_context VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", values)
+    connection.commit(); connection.close()
+    result = full_research_report_streaming(lambda: iter((source,)), benchmark_context_path=database)
+    assert result["context_analysis"]["benchmark_context"]["available_count"] == 1
+    assert result["context_analysis"]["benchmark_context"]["coverage_percent"] == 100
+
+
+def test_benchmark_vwap_agreement_states_are_explicit_and_missing_is_not_neutral():
+    agreement = lambda states: _agreement(
+        states, positive="ABOVE_VWAP", negative="BELOW_VWAP",
+        all_positive="ALL_ABOVE_VWAP", majority_positive="MAJORITY_ABOVE_VWAP",
+        mixed="MIXED_VWAP", majority_negative="MAJORITY_BELOW_VWAP",
+        all_negative="ALL_BELOW_VWAP")
+    assert agreement(("ABOVE_VWAP", "ABOVE_VWAP", "ABOVE_VWAP")) == "ALL_ABOVE_VWAP"
+    assert agreement(("ABOVE_VWAP", "ABOVE_VWAP", "BELOW_VWAP")) == "MAJORITY_ABOVE_VWAP"
+    assert agreement(("ABOVE_VWAP", "BELOW_VWAP", "AT_VWAP_OR_NEUTRAL")) == "MIXED_VWAP"
+    assert agreement(("BELOW_VWAP", "BELOW_VWAP", "BELOW_VWAP")) == "ALL_BELOW_VWAP"
+    assert agreement(("ABOVE_VWAP", "MISSING", "BELOW_VWAP")) == "INSUFFICIENT_BENCHMARK_DATA"
+    assert _vwap_state(10, 10, 1) == "AT_VWAP_OR_NEUTRAL"
+
+
+def test_benchmark_momentum_volatility_and_composite_are_deterministic():
+    momentum = lambda states: _agreement(
+        states, positive="POSITIVE", negative="NEGATIVE",
+        all_positive="ALL_POSITIVE", majority_positive="MAJORITY_POSITIVE",
+        mixed="MIXED", majority_negative="MAJORITY_NEGATIVE",
+        all_negative="ALL_NEGATIVE")
+    assert momentum(("POSITIVE", "POSITIVE", "NEGATIVE")) == "MAJORITY_POSITIVE"
+    assert momentum(("NEGATIVE", "NEGATIVE", "NEGATIVE")) == "ALL_NEGATIVE"
+    assert momentum(("POSITIVE", "MISSING", "NEGATIVE")) == "INSUFFICIENT_BENCHMARK_DATA"
+    assert _benchmark_state(1, positive="POSITIVE", negative="NEGATIVE") == "POSITIVE"
+    assert _benchmark_state(-1, positive="POSITIVE", negative="NEGATIVE") == "NEGATIVE"
+    assert _benchmark_state(0, positive="POSITIVE", negative="NEGATIVE") == "NEUTRAL"
+    assert _volatility_state(None) == "MISSING"
+    assert _volatility_state(.1) == "LOW"
+    assert _volatility_state(.5) == "NORMAL"
+    assert _volatility_state(1.0) == "HIGH"
+    assert _composite_regime("RISK_ON", "ALL_ABOVE_VWAP", "ALL_POSITIVE") == "BROAD_STRENGTH"
+    assert _composite_regime("RISK_OFF", "ALL_BELOW_VWAP", "ALL_NEGATIVE") == "BROAD_WEAKNESS"
+    assert _composite_regime("RISK_ON", "INSUFFICIENT_BENCHMARK_DATA", "ALL_POSITIVE") == "INSUFFICIENT_BENCHMARK_DATA"

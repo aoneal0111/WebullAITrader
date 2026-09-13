@@ -22,6 +22,7 @@ from .analysis import (cohort_report, chronological_splits, first_tranche_report
                        first_tranche_report_streaming, full_research_report_streaming,
                        ReportProgress)
 from .universe import AlpacaAssetMasterClient, universe_report
+from .benchmark import acquire_benchmarks, build_benchmark_context
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -41,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--target-per-strategy", type=int, default=5000)
     dry = sub.add_parser("dry-run"); plan_args(dry)
     check = sub.add_parser("provider-check"); check.add_argument("--provider", default="alpaca"); check.add_argument("--feed", default="iex")
+    benchmark = sub.add_parser("benchmark-acquire"); benchmark.add_argument("--output", type=Path, required=True); benchmark.add_argument("--start", type=date.fromisoformat, required=True); benchmark.add_argument("--end", type=date.fromisoformat, required=True)
     run = sub.add_parser("run"); plan_args(run); run.add_argument("--input", type=Path); run.add_argument("--symbols", nargs="*", default=()); run.add_argument("--universe", choices=("alpaca-assets",)); run.add_argument("--output-root", type=Path); run.add_argument("--preflight-only", action="store_true"); run.add_argument("--execution-plan-only", action="store_true"); run.add_argument("--execute", action="store_true"); run.add_argument("--repository-commit", default="WORKTREE")
     discover = sub.add_parser("discover"); discover.add_argument("--input", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -55,6 +57,18 @@ def main(argv: list[str] | None = None) -> int:
         try: print(json.dumps(client.health_check(), indent=2))
         finally: client.close()
         return 0
+    if args.command == "benchmark-acquire":
+        if not configured():
+            print(json.dumps({"authenticated": False, "reason": "MISSING_CREDENTIALS"})); return 2
+        client = AlpacaHistoricalClient.from_environment(config=AcquisitionConfig(feed="iex", start_date=args.start, end_date=args.end))
+        try:
+            health = client.health_check()
+            result = acquire_benchmarks(client, root=args.output, start=args.start, end=args.end)
+        finally:
+            client.close()
+        result["authentication"] = bool(health.get("authenticated")); result["historical_access"] = bool(health.get("historical_access")); result["feed"] = health.get("feed")
+        result["context_database"] = str(build_benchmark_context(args.output, start=args.start, end=args.end))
+        print(json.dumps(result, indent=2, default=str)); return 0
     if args.command == "discover":
         with args.input.open(encoding="utf-8") as handle:
             rows = tuple(json.loads(line) for line in handle if line.strip())
@@ -110,7 +124,8 @@ def main(argv: list[str] | None = None) -> int:
             store = KnowledgeStore(corpus_root, create=False)
             value = full_research_report_streaming(lambda: store.iter_episodes(), total=len(store.episode_ids),
                                                    progress=ReportProgress(total=len(store.episode_ids)),
-                                                   daily_context_path=args.output / "candidates" / "candidate_days.jsonl")
+                                                   daily_context_path=args.output / "candidates" / "candidate_days.jsonl",
+                                                   benchmark_context_path=args.output / "benchmark_context" / "benchmark_context.sqlite3")
         elif args.group_by:
             rows = tuple(KnowledgeStore(resolve_corpus_root(args.output), create=False).iter_episodes())
             if args.split:
