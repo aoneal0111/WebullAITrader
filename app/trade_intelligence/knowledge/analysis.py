@@ -507,6 +507,61 @@ def _volume_context_bucket(row: dict) -> str | None:
     return "NEUTRAL"
 
 
+PIT_CONTEXT_VERSION = "ATLAS_PIT_PROFITABILITY_CONTEXT_V1"
+GENERIC_PULLBACK_VERSION = "GENERIC_PIT_PULLBACK_V1"
+
+
+def _bucket_gap(value) -> str | None:
+    if value is None:
+        return None
+    value = float(value)
+    if value < 0:
+        return "NEGATIVE"
+    if value < 2:
+        return "FLAT_0_2"
+    if value < 5:
+        return "SMALL_2_5"
+    if value < 10:
+        return "MODERATE_5_10"
+    if value < 20:
+        return "LARGE_10_20"
+    return "EXTREME_20_PLUS"
+
+
+def _pit_context(row: dict) -> tuple:
+    values = _values(row)
+    volume = values.get("volume", {})
+    volatility = values.get("volatility", {})
+    premarket = values.get("premarket", {})
+    opening = values.get("opening", {})
+    decision = str(row.get("detected_timestamp") or values.get("decision_timestamp") or "")
+    bars = tuple(bar for bar in (row.get("bar_window") or ())
+                 if not isinstance(bar, dict) or not bar.get("timestamp") or str(bar["timestamp"]) <= decision)
+    current = _number(volume.get("current"))
+    rolling = _number(volume.get("rolling_10_mean"))
+    acceleration = None if current is None or rolling in (None, 0) else current / rolling
+    acceleration_bucket = None if acceleration is None else "CONTRACTION" if acceleration < .8 else "EXPANSION" if acceleration > 1.2 else "NEUTRAL"
+    range_ratio = _number(volatility.get("range_vs_median_10"))
+    volatility_bucket = None if range_ratio is None else "LOW" if range_ratio < .8 else "HIGH" if range_ratio > 1.2 else "NORMAL"
+    generic_pullback = None
+    if bars:
+        highs = [_number(bar.get("high")) for bar in bars if isinstance(bar, dict) and _number(bar.get("high")) is not None]
+        closes = [_number(bar.get("close")) for bar in bars if isinstance(bar, dict) and _number(bar.get("close")) is not None]
+        if highs and closes and highs[-1] > 0:
+            retracement = max(0.0, (max(highs) - closes[-1]) / max(highs) * 100)
+            generic_pullback = "NONE_0" if retracement == 0 else "SHALLOW_0_2" if retracement < 2 else "MODERATE_2_5" if retracement < 5 else "DEEP_5_PLUS"
+    minutes = values.get("minutes_from_regular_open")
+    minutes_until_close = None if minutes is None else max(0, 390 - int(minutes))
+    opening_high = _number(opening.get("range_high_5"))
+    opening_low = _number(opening.get("range_low_5"))
+    price = _number(values.get("extension", {}).get("price_at_detection"))
+    opening_position = None if opening_high is None or opening_low is None or price is None else "ABOVE" if price > opening_high else "BELOW" if price < opening_low else "INSIDE"
+    return (datetime.fromisoformat(str(row.get("trading_date"))).strftime("%A") if row.get("trading_date") else None,
+            minutes_until_close, "PRESENT" if premarket.get("bar_count", 0) else "ABSENT",
+            opening_position, generic_pullback, acceleration, acceleration_bucket, range_ratio, volatility_bucket,
+            None, None, None, None)
+
+
 def _research_observations(row: dict):
     """Yield compact strategy observations; no episode dictionary is retained."""
     outcomes = row.get("outcomes", {})
@@ -532,6 +587,7 @@ def _research_observations(row: dict):
         _number(outcomes.get("post_8", {}).get("maximum_giveback_after_8")),
         _number(row.get("trigger_price")), _number(row.get("structural_stop")),
         *[int(event.get("first_plan_event") == "INTRABAR_ORDER_UNKNOWN") for event in events],
+        *_pit_context(row),
     )
     for strategy in row.get("strategy_memberships", ()):
         yield (compact[0], compact[1], compact[2], strategy, *compact[3:])
@@ -611,6 +667,15 @@ def _research_groups(connection, column: str) -> list[dict]:
         f"SELECT {column}, COUNT(*) FROM observations WHERE {column} IS NOT NULL GROUP BY {column} ORDER BY {column}"
     ).fetchall()
     return [{"group": value, **_sql_metrics(connection, f"{column} = ?", (value,))} for value, _ in groups]
+
+
+def _context_dimension(connection, column: str, *, unavailable: str | None = None) -> dict:
+    total = connection.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+    available = connection.execute(f"SELECT COUNT({column}) FROM observations WHERE {column} IS NOT NULL").fetchone()[0]
+    return {"status": unavailable or ("AVAILABLE" if available else "INSUFFICIENT_DATA"),
+            "available_count": available, "missing_count": total - available,
+            "coverage_percent": available / total * 100 if total else 0,
+            "buckets": _research_groups(connection, column) if available else []}
 
 
 def _policy_columns(kind: str, target) -> tuple[str, str, str, str]:
@@ -867,7 +932,8 @@ def _policy_stability_summary(connection, strategy: str, train_end: str | None,
 
 
 def full_research_report_streaming(row_factory, *, total: int | None = None,
-                                   progress: ReportProgress | None = None) -> dict:
+                                   progress: ReportProgress | None = None,
+                                   daily_context_path: Path | None = None) -> dict:
     """Full-research report using one streaming ingest and SQL aggregates."""
     handle = tempfile.NamedTemporaryFile(prefix="atlas_full_research_", suffix=".sqlite3", delete=False)
     db_path = Path(handle.name); handle.close()
@@ -887,11 +953,22 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
         columns += [f"rt{str(p).replace('.', '')}" for p in PHASE2_R_TARGETS]
         columns += ["horizon_mfe", "post8_mfe", "post8_giveback", "trigger_price", "structural_stop"]
         columns += [f"a{p}" for p in (2, 3, 5, 8, 10)]
+        columns += ["day_of_week", "minutes_until_close", "premarket_status", "opening_range_position",
+                    "generic_pullback_bucket", "volume_acceleration", "volume_acceleration_bucket",
+                    "range_vs_median", "volatility_bucket", "gap_percent", "gap_bucket", "regular_open", "previous_close"]
         types = {name: "REAL" for name in columns}
-        types.update({name: "TEXT" for name in ("episode_id", "symbol", "trading_date", "strategy", "time_of_day", "extension_bucket", "volume_bucket")})
+        types.update({name: "TEXT" for name in ("episode_id", "symbol", "trading_date", "strategy", "time_of_day", "extension_bucket", "volume_bucket",
+                                                 "day_of_week", "premarket_status", "opening_range_position", "generic_pullback_bucket", "volume_acceleration_bucket", "volatility_bucket", "gap_bucket")})
         connection.execute("CREATE TABLE observations (" + ", ".join(f"{name} {types[name]}" for name in columns) + ")")
         connection.execute("CREATE INDEX observations_strategy ON observations(strategy)")
         connection.execute("CREATE INDEX observations_date ON observations(trading_date)")
+        if daily_context_path and Path(daily_context_path).exists():
+            connection.execute("CREATE TABLE daily_context (symbol TEXT, trading_date TEXT, previous_close REAL, regular_open REAL, gap_percent REAL, PRIMARY KEY(symbol, trading_date))")
+            with Path(daily_context_path).open(encoding="utf-8") as handle:
+                connection.executemany("INSERT OR REPLACE INTO daily_context VALUES (?,?,?,?,?)",
+                    ((item.get("symbol"), item.get("trading_date"), _number(item.get("previous_close")),
+                      _number(item.get("open")), _number(item.get("gap_percent")))
+                     for line in handle if (item := json.loads(line))))
         connection.execute("""CREATE TABLE episodes (
             episode_id TEXT PRIMARY KEY, symbol TEXT, trading_date TEXT, detected_timestamp TEXT,
             structural_anchor TEXT, strategy TEXT, strategy_combination TEXT, trigger_price REAL,
@@ -930,6 +1007,17 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
         if link_batch:
             connection.executemany(link_insert, link_batch)
         connection.commit()
+        if daily_context_path and Path(daily_context_path).exists():
+            connection.execute("""UPDATE observations SET previous_close=(SELECT previous_close FROM daily_context d WHERE d.symbol=observations.symbol AND d.trading_date=observations.trading_date),
+                regular_open=(SELECT regular_open FROM daily_context d WHERE d.symbol=observations.symbol AND d.trading_date=observations.trading_date),
+                gap_percent=(SELECT gap_percent FROM daily_context d WHERE d.symbol=observations.symbol AND d.trading_date=observations.trading_date),
+                gap_bucket=CASE WHEN (SELECT gap_percent FROM daily_context d WHERE d.symbol=observations.symbol AND d.trading_date=observations.trading_date) IS NULL THEN NULL
+                    WHEN (SELECT gap_percent FROM daily_context d WHERE d.symbol=observations.symbol AND d.trading_date=observations.trading_date) < 0 THEN 'NEGATIVE'
+                    WHEN (SELECT gap_percent FROM daily_context d WHERE d.symbol=observations.symbol AND d.trading_date=observations.trading_date) < 2 THEN 'FLAT_0_2'
+                    WHEN (SELECT gap_percent FROM daily_context d WHERE d.symbol=observations.symbol AND d.trading_date=observations.trading_date) < 5 THEN 'SMALL_2_5'
+                    WHEN (SELECT gap_percent FROM daily_context d WHERE d.symbol=observations.symbol AND d.trading_date=observations.trading_date) < 10 THEN 'MODERATE_5_10'
+                    WHEN (SELECT gap_percent FROM daily_context d WHERE d.symbol=observations.symbol AND d.trading_date=observations.trading_date) < 20 THEN 'LARGE_10_20' ELSE 'EXTREME_20_PLUS' END""")
+            connection.execute("CREATE INDEX observations_gap ON observations(gap_bucket)")
         if progress: progress.complete_phase(); progress.begin_phase("REENTRY_LINK")
         reentry = _build_transitions(connection)
         if progress: progress.advance(); progress.complete_phase(); progress.begin_phase("TRANSITION_MATRIX")
@@ -1011,11 +1099,22 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
         context = {
             "time_of_day": _research_groups(connection, "time_of_day"),
             "extension": _research_groups(connection, "extension_bucket"),
+            "time_context_coverage": _context_dimension(connection, "time_of_day"),
+            "extension_context_coverage": _context_dimension(connection, "extension_bucket"),
             "volume": {"status": "AVAILABLE", "source_fields": ["features.values.volume.current", "features.values.volume.rolling_10_mean"],
                         "bucket_rule": "ratio < 0.8 CONTRACTION; ratio > 1.2 EXPANSION; otherwise NEUTRAL",
                         "buckets": _research_groups(connection, "volume_bucket")},
             "gap": {"status": "UNAVAILABLE_FROM_PERSISTED_EPISODE_FIELD"},
             "pullback": {"status": "UNAVAILABLE_NULL_DOMINATED"},
+            "gap_context": _context_dimension(connection, "gap_bucket", unavailable="AVAILABLE_FROM_CANDIDATE_DAY_ARTIFACT" if daily_context_path else "UNAVAILABLE_FROM_PERSISTED_EPISODE_FIELD"),
+            "liquidity": _context_dimension(connection, "volume_acceleration_bucket"),
+            "volume_acceleration": _context_dimension(connection, "volume_acceleration_bucket"),
+            "microstructure": _context_dimension(connection, "opening_range_position"),
+            "day_of_week": _context_dimension(connection, "day_of_week"),
+            "premarket": _context_dimension(connection, "premarket_status"),
+            "opening_range": _context_dimension(connection, "opening_range_position"),
+            "generic_pullback": {"version": GENERIC_PULLBACK_VERSION, **_context_dimension(connection, "generic_pullback_bucket")},
+            "volatility": _context_dimension(connection, "volatility_bucket"),
         }
         if progress: progress.begin_phase("FAILURE_ANALYSIS")
         failure_definitions = {
@@ -1046,8 +1145,10 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
                                 "terminal_reason_frequencies": {"SESSION_CLOSE": connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where}", params).fetchone()[0]}}
         if progress: progress.advance(); progress.complete_phase(); progress.begin_phase("FINALIZE"); progress.complete_phase(); progress.begin_phase("COMPLETE"); progress.complete_phase()
         return {
-            "preset": "FULL_RESEARCH", "metadata": {"phase": 1, "research_only": True, "records_ingested": len(dates) and connection.execute("SELECT COUNT(DISTINCT episode_id) FROM observations").fetchone()[0] or 0,
-                "temporal_method": "strict trading-date chronology", "no_random_split": True},
+            "preset": "FULL_RESEARCH", "metadata": {"phase": 4, "research_only": True, "records_ingested": len(dates) and connection.execute("SELECT COUNT(DISTINCT episode_id) FROM observations").fetchone()[0] or 0,
+                "temporal_method": "strict trading-date chronology", "no_random_split": True,
+                "context_derivation_version": PIT_CONTEXT_VERSION, "generic_pullback_version": GENERIC_PULLBACK_VERSION,
+                "context_timestamp_semantics": "bars and fields effective at or before episode decision timestamp"},
             "limitations": ["ALPACA IEX single-exchange research", "not point-in-time universe", "no SIP", "one failed acquisition partition", "gap unavailable from persisted episode field", "pullback null-dominated"],
             "capabilities": {"profit_research": "IMPLEMENTED", "r_multiple_research": "IMPLEMENTED", "partial_exit_research": "IMPLEMENTED", "runner_research": "IMPLEMENTED", "capital_scenarios": "IMPLEMENTED", "constant_risk_scenarios": "IMPLEMENTED", "reentry": "IMPLEMENTED", "failure_analysis": "IMPLEMENTED"},
             "strategy_scorecards": scorecards, "temporal": temporal, "walk_forward": {"folds": folds, "policy_summary": walk_policy_summaries, "number_of_folds": len(folds)},

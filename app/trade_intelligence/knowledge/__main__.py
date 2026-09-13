@@ -106,9 +106,11 @@ def main(argv: list[str] | None = None) -> int:
             value = first_tranche_report_streaming(lambda: store.iter_episodes(), total=len(store.episode_ids),
                                                    progress=ReportProgress(total=len(store.episode_ids)))
         elif args.preset == "full-research":
-            store = KnowledgeStore(resolve_corpus_root(args.output), create=False)
+            corpus_root = resolve_corpus_root(args.output)
+            store = KnowledgeStore(corpus_root, create=False)
             value = full_research_report_streaming(lambda: store.iter_episodes(), total=len(store.episode_ids),
-                                                   progress=ReportProgress(total=len(store.episode_ids)))
+                                                   progress=ReportProgress(total=len(store.episode_ids)),
+                                                   daily_context_path=args.output / "candidates" / "candidate_days.jsonl")
         elif args.group_by:
             rows = tuple(KnowledgeStore(resolve_corpus_root(args.output), create=False).iter_episodes())
             if args.split:

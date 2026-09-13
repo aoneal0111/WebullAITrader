@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+import json
 
 from app.trade_intelligence.knowledge.analysis import (capital_scenarios, cohort_report, chronological_splits,
                                                         constant_risk_scenarios, entry_delay_research, hold_vs_reentry,
@@ -267,3 +268,26 @@ def test_full_research_phase_three_rejects_orphan_and_same_anchor_links():
     assert result["reentry"]["orphaned_transitions"] == 1
     assert result["reentry"]["valid_transitions"] == 0
     assert result["reentry"]["invalid_or_self_transitions"] >= 1
+
+
+def test_phase_four_b_gap_join_is_date_keyed_and_context_is_point_in_time(tmp_path):
+    source = row(date(2026, 8, 7))
+    daily = tmp_path / "candidate_days.jsonl"
+    daily.write_text(json.dumps({"symbol": "ABC", "trading_date": "2026-08-07", "previous_close": "9", "open": "10", "gap_percent": "11.11"}) + "\n" +
+                     json.dumps({"symbol": "ABC", "trading_date": "2026-08-08", "previous_close": "100", "open": "101", "gap_percent": "1"}) + "\n", encoding="utf-8")
+    result = full_research_report_streaming(lambda: iter((source,)), daily_context_path=daily)
+    gap = result["context_analysis"]["gap_context"]
+    assert gap["status"] == "AVAILABLE_FROM_CANDIDATE_DAY_ARTIFACT"
+    assert gap["available_count"] == 1
+    assert {item["group"] for item in gap["buckets"]} == {"LARGE_10_20"}
+
+
+def test_phase_four_b_contexts_are_explicit_and_future_bars_are_not_used():
+    source = row(date(2026, 8, 7))
+    original = full_research_report_streaming(lambda: iter((source,)))
+    source["detected_timestamp"] = "2026-08-07T14:42:00+00:00"
+    source["bar_window"] = [{"timestamp": "2026-08-07T14:43:00+00:00", "high": "999", "low": "999", "close": "999", "open": "999", "volume": "1"}]
+    changed = full_research_report_streaming(lambda: iter((source,)))
+    assert original["context_analysis"]["generic_pullback"]["coverage_percent"] == changed["context_analysis"]["generic_pullback"]["coverage_percent"]
+    assert original["context_analysis"]["gap_context"]["status"] == "UNAVAILABLE_FROM_PERSISTED_EPISODE_FIELD"
+    assert original["context_analysis"]["premarket"]["missing_count"] == 0
