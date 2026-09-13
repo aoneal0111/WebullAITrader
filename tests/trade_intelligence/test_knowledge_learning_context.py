@@ -237,4 +237,33 @@ def test_full_research_phase_two_matches_row_policy_semantics():
     assert actual == expected["total_simulated_return"]
     assert result["r_multiple_research"]["FIRST_PULLBACK"]["2"]["hit_rate"] == 1.0
     assert result["constant_risk_scenarios"]["FIRST_PULLBACK"]["100"]["valid_observations"] == 1
-    assert result["capabilities"]["reentry"] == "NOT_YET_IMPLEMENTED"
+    assert result["capabilities"]["reentry"] == "IMPLEMENTED"
+    assert result["capabilities"]["failure_analysis"] == "IMPLEMENTED"
+
+
+def test_full_research_phase_three_joins_reentry_and_reports_evidence_failures():
+    parent = row(date(2026, 8, 7), "parent", "FIRST_PULLBACK")
+    child = row(date(2026, 8, 7), "child", "HOD_BREAKOUT")
+    parent.update(detected_timestamp="2026-08-07T14:42:00+00:00", structural_anchor="a")
+    child.update(detected_timestamp="2026-08-07T14:50:00+00:00", structural_anchor="b")
+    child["reentry"] = {"parent_episode_id": "parent", "time_since_parent": 480,
+                         "price_change_since_parent": "1.5", "pullback_from_parent_MFE": "2"}
+    result = full_research_report_streaming(lambda: iter((parent, child)))
+    reentry = result["reentry"]
+    assert reentry["version"] == "ATLAS_REENTRY_TRANSITIONS_V1"
+    assert reentry["valid_transitions"] == 1
+    assert reentry["transition_matrix"][0]["sample_count"] == 1
+    assert reentry["partial_hold_plus_reentry"]["50"]["simulation"] == "SIMULATED"
+    assert "TARGET_8_NOT_REACHED" in result["failure_analysis"]["classes"]
+
+
+def test_full_research_phase_three_rejects_orphan_and_same_anchor_links():
+    orphan = row(date(2026, 8, 7), "orphan", "HOD_BREAKOUT")
+    orphan["reentry"] = {"parent_episode_id": "missing"}
+    same = row(date(2026, 8, 7), "same", "HOD_BREAKOUT")
+    same.update(detected_timestamp="2026-08-07T14:50:00+00:00", structural_anchor="same-anchor")
+    same["reentry"] = {"parent_episode_id": "same", "time_since_parent": 1}
+    result = full_research_report_streaming(lambda: iter((orphan, same)))
+    assert result["reentry"]["orphaned_transitions"] == 1
+    assert result["reentry"]["valid_transitions"] == 0
+    assert result["reentry"]["invalid_or_self_transitions"] >= 1

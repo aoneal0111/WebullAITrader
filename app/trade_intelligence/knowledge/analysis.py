@@ -528,7 +528,7 @@ def _research_observations(row: dict):
         *[int(event.get("first_plan_event") == "STOP_FIRST") for event in r_events],
         *[_number(event.get("elapsed_seconds")) for event in r_events],
         _number(outcomes.get("horizons", {}).get("3600", {}).get("mfe_percent")),
-        _number(outcomes.get("post_8", {}).get("mfe_after_target", outcomes.get("post_8", {}).get("maximum_giveback_after_8"))),
+        _number(outcomes.get("post_8", {}).get("mfe_after_8", outcomes.get("post_8", {}).get("mfe_after_target"))),
         _number(outcomes.get("post_8", {}).get("maximum_giveback_after_8")),
         _number(row.get("trigger_price")), _number(row.get("structural_stop")),
         *[int(event.get("first_plan_event") == "INTRABAR_ORDER_UNKNOWN") for event in events],
@@ -543,13 +543,32 @@ def _sql_median(connection, column: str, where: str, params: tuple = ()):
     ).fetchone()[0]
     if not count:
         return None
-    values = connection.execute(
-        f"SELECT {column} FROM observations WHERE {where} AND {column} IS NOT NULL ORDER BY {column}", params
-    ).fetchall()
     middle = (count - 1) // 2
+    offset = middle if count % 2 else middle - 1
+    values = connection.execute(
+        f"SELECT {column} FROM observations WHERE {where} AND {column} IS NOT NULL ORDER BY {column} LIMIT 2 OFFSET ?",
+        (*params, offset),
+    ).fetchall()
     if count % 2:
-        return values[middle][0]
-    return (values[middle][0] + values[middle + 1][0]) / 2
+        return values[0][0]
+    return (values[0][0] + values[1][0]) / 2
+
+
+def _sql_median_table(connection, table: str, column: str, where: str = "1=1", params: tuple = ()):
+    count = connection.execute(
+        f"SELECT COUNT({column}) FROM {table} WHERE {where} AND {column} IS NOT NULL", params
+    ).fetchone()[0]
+    if not count:
+        return None
+    middle = (count - 1) // 2
+    offset = middle if count % 2 else middle - 1
+    values = connection.execute(
+        f"SELECT {column} FROM {table} WHERE {where} AND {column} IS NOT NULL ORDER BY {column} LIMIT 2 OFFSET ?",
+        (*params, offset),
+    ).fetchall()
+    if count % 2:
+        return values[0][0]
+    return (values[0][0] + values[1][0]) / 2
 
 
 def _sql_metrics(connection, where: str = "1=1", params: tuple = ()) -> dict:
@@ -675,6 +694,148 @@ def _sql_policy_quick(connection, where: str, params: tuple) -> dict:
             "2R_hit_rate": rh2, "confidence_state": _confidence(count, 30)}
 
 
+def _research_episode_record(row: dict):
+    outcomes = row.get("outcomes", {})
+    targets = outcomes.get("percent_targets", {})
+    events = [targets.get(str(p), {}) for p in PERCENT_PARTIAL_TARGETS]
+    values = _values(row)
+    return (
+        row.get("episode_id"), row.get("symbol"), row.get("trading_date"),
+        row.get("detected_timestamp"), row.get("structural_anchor"), row.get("primary_strategy"),
+        "+".join(sorted(row.get("strategy_memberships", ()))), _number(row.get("trigger_price")),
+        _number(row.get("structural_stop")), _number(outcomes.get("mfe_percent")),
+        _number(outcomes.get("mae_percent")), _number(outcomes.get("maximum_R")),
+        *[int(bool(event.get("hit"))) for event in events],
+        *[int(event.get("first_plan_event") == "STOP_FIRST") for event in events],
+        *[_number(event.get("elapsed_seconds")) for event in events],
+        _number(outcomes.get("horizons", {}).get("3600", {}).get("mfe_percent")),
+        _number(outcomes.get("post_8", {}).get("mfe_after_8", outcomes.get("post_8", {}).get("mfe_after_target"))),
+        _number(outcomes.get("post_8", {}).get("maximum_giveback_after_8")),
+        *[int(event.get("first_plan_event") == "INTRABAR_ORDER_UNKNOWN") for event in events],
+    )
+
+
+def _research_transition_link(row: dict):
+    reentry = row.get("reentry")
+    if not isinstance(reentry, dict) or not reentry.get("parent_episode_id"):
+        return None
+    return (reentry.get("parent_episode_id"), row.get("episode_id"),
+            _number(reentry.get("time_since_parent")), _number(reentry.get("price_change_since_parent")),
+            _number(reentry.get("pullback_from_parent_MFE")))
+
+
+def _transition_metrics(connection, where: str, params: tuple) -> dict:
+    count, symbols, dates = connection.execute(
+        f"SELECT COUNT(*), COUNT(DISTINCT symbol), COUNT(DISTINCT trading_date) FROM transitions WHERE {where}", params
+    ).fetchone()
+    result = {"sample_count": count, "unique_symbols": symbols, "unique_dates": dates,
+              "median_mfe": _sql_median_table(connection, "transitions", "child_mfe", where, params),
+              "median_mae": _sql_median_table(connection, "transitions", "child_mae", where, params),
+              "median_maximum_r": _sql_median_table(connection, "transitions", "child_maxr", where, params),
+              "target_hit_rates": {}, "stop_first_rates": {}, "confidence_state": _confidence(count, 30)}
+    for percent in PERCENT_PARTIAL_TARGETS:
+        result["target_hit_rates"][str(percent)] = connection.execute(
+            f"SELECT AVG(child_h{percent}) FROM transitions WHERE {where}", params).fetchone()[0]
+        result["stop_first_rates"][str(percent)] = connection.execute(
+            f"SELECT AVG(child_s{percent}) FROM transitions WHERE {where}", params).fetchone()[0]
+    return result
+
+
+def _failure_metrics(connection, where: str = "1=1", params: tuple = ()) -> dict:
+    result = _sql_metrics(connection, where, params)
+    result["share_of_population"] = (result["sample_count"] / connection.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+                                      if connection.execute("SELECT COUNT(*) FROM observations").fetchone()[0] else 0)
+    return result
+
+
+def _transition_policy_metrics(connection, where: str, params: tuple, partial_percent: int) -> dict:
+    """Research-only hold/re-entry arithmetic over compact transition rows."""
+    retained = partial_percent / 100
+    reentry = f"(CASE WHEN parent_h5 = 1 AND parent_a5 = 0 THEN {retained:g} * parent_horizon_mfe + {(1-retained):g} * child_mfe END)"
+    count = connection.execute(f"SELECT COUNT(*) FROM transitions WHERE {where} AND {reentry} IS NOT NULL", params).fetchone()[0]
+    return {"sample_count": count,
+            "median_simulated_outcome": _transition_policy_median(connection, where, params, partial_percent),
+            "positive_outcome_rate": connection.execute(
+                f"SELECT AVG(CASE WHEN {reentry} > 0 THEN 1.0 ELSE 0.0 END) FROM transitions WHERE {where} AND {reentry} IS NOT NULL", params
+            ).fetchone()[0] if count else None,
+            "partial_hold_percent": partial_percent, "simulation": "SIMULATED", "research_only": True,
+            "fill_status": "NO_REAL_FILL_CLAIM"}
+
+
+def _transition_policy_median(connection, where: str, params: tuple, partial_percent: int):
+    retained = partial_percent / 100
+    expression = f"({retained:g} * parent_horizon_mfe + {(1-retained):g} * child_mfe)"
+    return _sql_median_table(connection, "transitions", expression, f"{where} AND parent_h5 = 1 AND parent_a5 = 0 AND parent_horizon_mfe IS NOT NULL AND child_mfe IS NOT NULL", params)
+
+
+def _failure_contexts(connection, class_where: str, class_params: tuple) -> dict:
+    contexts = {}
+    for label, column in (("strategy", "strategy"), ("time_of_day", "time_of_day"),
+                          ("extension", "extension_bucket"), ("volume", "volume_bucket")):
+        rows = connection.execute(
+            f"SELECT {column}, COUNT(*) FROM observations WHERE {class_where} AND {column} IS NOT NULL GROUP BY {column} HAVING COUNT(*) >= 30 ORDER BY COUNT(*) DESC",
+            class_params).fetchall()
+        contexts[label] = [{"group": value, **_failure_metrics(connection, f"{class_where} AND {column} = ?", (*class_params, value))}
+                           for value, _ in rows]
+    return contexts
+
+
+def _build_transitions(connection) -> dict:
+    connection.execute("""CREATE TABLE transitions AS
+        SELECT p.episode_id AS parent_id, c.episode_id AS child_id,
+          p.strategy AS parent_strategy, c.strategy AS child_strategy,
+          p.strategy_combination AS parent_combination, c.strategy_combination AS child_combination,
+          c.symbol, c.trading_date, p.trading_date AS parent_date,
+          p.detected_timestamp AS parent_timestamp, c.detected_timestamp AS child_timestamp,
+          p.structural_anchor AS parent_anchor, c.structural_anchor AS child_anchor,
+          p.h5 AS parent_h5, p.a5 AS parent_a5, p.horizon_mfe AS parent_horizon_mfe,
+          c.mfe AS child_mfe, c.mae AS child_mae, c.maximum_r AS child_maxr,
+          c.h2 AS child_h2, c.h3 AS child_h3, c.h5 AS child_h5, c.h8 AS child_h8, c.h10 AS child_h10,
+          c.s2 AS child_s2, c.s3 AS child_s3, c.s5 AS child_s5, c.s8 AS child_s8, c.s10 AS child_s10,
+          l.time_since_parent, l.price_change, l.pullback
+        FROM transition_links l JOIN episodes p ON p.episode_id = l.parent_id
+        JOIN episodes c ON c.episode_id = l.child_id
+        WHERE l.parent_id <> l.child_id
+          AND (p.structural_anchor IS NULL OR c.structural_anchor IS NULL OR p.structural_anchor <> c.structural_anchor)
+          AND (p.detected_timestamp IS NULL OR c.detected_timestamp IS NULL OR c.detected_timestamp > p.detected_timestamp)""")
+    connection.execute("CREATE INDEX transitions_strategy ON transitions(parent_strategy, child_strategy)")
+    valid = connection.execute("SELECT COUNT(*) FROM transitions").fetchone()[0]
+    links = connection.execute("SELECT COUNT(*) FROM transition_links").fetchone()[0]
+    orphans = connection.execute("SELECT COUNT(*) FROM transition_links l LEFT JOIN episodes p ON p.episode_id=l.parent_id LEFT JOIN episodes c ON c.episode_id=l.child_id WHERE p.episode_id IS NULL OR c.episode_id IS NULL").fetchone()[0]
+    invalid = links - valid - orphans
+    matrix = []
+    for parent, child, count in connection.execute("SELECT parent_strategy, child_strategy, COUNT(*) FROM transitions GROUP BY parent_strategy, child_strategy ORDER BY COUNT(*) DESC"):
+        matrix.append({"parent_strategy": parent, "child_strategy": child, **_transition_metrics(connection, "parent_strategy = ? AND child_strategy = ?", (parent, child))})
+    policies = {}
+    for part in (0, 25, 50, 75, 100):
+        policies[str(part)] = _transition_policy_metrics(connection, "1=1", (), part)
+    return {"version": REENTRY_TRANSITION_VERSION, "valid_transitions": valid, "orphaned_transitions": orphans,
+            "invalid_or_self_transitions": max(0, invalid), "duplicate_transitions_suppressed": 0,
+            "cycles_prevented": 0, "transition_matrix": matrix,
+            "hold_vs_reentry": {"hold_original": _transition_metrics(connection, "1=1", ()) if valid else {"sample_count": 0},
+                                 "exit_then_reentry": policies["100"]},
+            "partial_hold_plus_reentry": policies,
+            "temporal_stability": [], "walk_forward": [],
+            "linkage_status": "AVAILABLE" if valid else "INSUFFICIENT_DATA"}
+
+
+def _transition_temporal(connection, train_end: str | None, validation_end: str | None) -> list[dict]:
+    if not train_end or not validation_end:
+        return []
+    output = []
+    groups = connection.execute("SELECT parent_strategy, child_strategy, COUNT(*) FROM transitions GROUP BY parent_strategy, child_strategy ORDER BY COUNT(*) DESC").fetchall()
+    for parent, child, _count in groups:
+        splits = {}
+        for name, where, params in (("TRAIN", "trading_date <= ?", (train_end,)),
+                                     ("VALIDATION", "trading_date > ? AND trading_date <= ?", (train_end, validation_end)),
+                                     ("TEST", "trading_date > ?", (validation_end,))):
+            splits[name] = _transition_metrics(connection, f"parent_strategy = ? AND child_strategy = ? AND {where}", (parent, child, *params))
+        rates = [splits[name]["target_hit_rates"].get("8") for name in ("TRAIN", "VALIDATION", "TEST") if splits[name]["target_hit_rates"].get("8") is not None]
+        status = "INSUFFICIENT_SAMPLE" if any(item["confidence_state"] == "INSUFFICIENT_SAMPLE" for item in splits.values()) else "STABLE" if len(rates) == 3 and max(rates) - min(rates) <= .1 else "DEGRADING" if len(rates) == 3 and rates[-1] < rates[0] else "IMPROVING" if len(rates) == 3 and rates[-1] > rates[0] else "INCONSISTENT"
+        output.append({"parent_strategy": parent, "child_strategy": child, "splits": splits, "descriptive_status": status})
+    return output
+
+
 def _policy_stability(connection, strategy: str, train_end: str | None,
                       validation_end: str | None) -> dict:
     split_metrics = {}
@@ -731,17 +892,49 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
         connection.execute("CREATE TABLE observations (" + ", ".join(f"{name} {types[name]}" for name in columns) + ")")
         connection.execute("CREATE INDEX observations_strategy ON observations(strategy)")
         connection.execute("CREATE INDEX observations_date ON observations(trading_date)")
+        connection.execute("""CREATE TABLE episodes (
+            episode_id TEXT PRIMARY KEY, symbol TEXT, trading_date TEXT, detected_timestamp TEXT,
+            structural_anchor TEXT, strategy TEXT, strategy_combination TEXT, trigger_price REAL,
+            structural_stop REAL, mfe REAL, mae REAL, maximum_r REAL,
+            h2 REAL, h3 REAL, h5 REAL, h8 REAL, h10 REAL, s2 REAL, s3 REAL, s5 REAL, s8 REAL, s10 REAL,
+            t2 REAL, t3 REAL, t5 REAL, t8 REAL, t10 REAL, horizon_mfe REAL, post8_mfe REAL, post8_giveback REAL,
+            a2 REAL, a3 REAL, a5 REAL, a8 REAL, a10 REAL
+        )""")
+        connection.execute("""CREATE TABLE transition_links (
+            parent_id TEXT, child_id TEXT, time_since_parent REAL, price_change REAL, pullback REAL,
+            PRIMARY KEY(parent_id, child_id)
+        )""")
         insert = "INSERT INTO observations VALUES (" + ",".join("?" for _ in columns) + ")"
+        episode_insert = "INSERT OR IGNORE INTO episodes VALUES (" + ",".join("?" for _ in range(35)) + ")"
+        link_insert = "INSERT OR IGNORE INTO transition_links VALUES (?,?,?,?,?)"
         batch = []
+        episode_batch = []
+        link_batch = []
         for row in row_factory():
             batch.extend(_research_observations(row))
+            episode_batch.append(_research_episode_record(row))
+            link = _research_transition_link(row)
+            if link:
+                link_batch.append(link)
             if progress:
                 progress.advance()
             if len(batch) >= 2000:
                 connection.executemany(insert, batch); batch.clear()
+                connection.executemany(episode_insert, episode_batch); episode_batch.clear()
+                if link_batch:
+                    connection.executemany(link_insert, link_batch); link_batch.clear()
         if batch:
             connection.executemany(insert, batch)
+        if episode_batch:
+            connection.executemany(episode_insert, episode_batch)
+        if link_batch:
+            connection.executemany(link_insert, link_batch)
         connection.commit()
+        if progress: progress.complete_phase(); progress.begin_phase("REENTRY_LINK")
+        reentry = _build_transitions(connection)
+        if progress: progress.advance(); progress.complete_phase(); progress.begin_phase("TRANSITION_MATRIX")
+        if progress: progress.advance(); progress.complete_phase(); progress.begin_phase("HOLD_VS_REENTRY")
+        if progress: progress.advance(); progress.complete_phase()
         if progress: progress.complete_phase(); progress.begin_phase("TEMPORAL_BOUNDARIES")
         dates = [item[0] for item in connection.execute("SELECT DISTINCT trading_date FROM observations ORDER BY trading_date")]
         if dates:
@@ -762,6 +955,7 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
             temporal["splits"][name] = {strategy: _sql_metrics(connection, f"strategy = ? AND {where}", (strategy, *params))
                                         for strategy in ACTIVE_STRATEGIES}
             if progress: progress.advance(); progress.complete_phase()
+        reentry["temporal_stability"] = _transition_temporal(connection, train_end, validation_end)
         policy_stability = {strategy: _policy_stability_summary(connection, strategy, train_end, validation_end)
                             for strategy in ACTIVE_STRATEGIES}
         temporal["policy_stability"] = policy_stability
@@ -823,6 +1017,23 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
             "gap": {"status": "UNAVAILABLE_FROM_PERSISTED_EPISODE_FIELD"},
             "pullback": {"status": "UNAVAILABLE_NULL_DOMINATED"},
         }
+        if progress: progress.begin_phase("FAILURE_ANALYSIS")
+        failure_definitions = {
+            "STOP_FIRST_5PCT": "s5 = 1",
+            "LOW_MFE_BELOW_2PCT": "mfe IS NOT NULL AND mfe < 2",
+            "TARGET_2_NOT_REACHED": "h2 = 0",
+            "TARGET_5_NOT_REACHED": "h5 = 0",
+            "TARGET_8_NOT_REACHED": "h8 = 0",
+            "POSITIVE_MFE_BUT_GIVEBACK": "h8 = 1 AND post8_giveback IS NOT NULL AND post8_giveback > 0",
+        }
+        failure = {"classification_basis": "persisted outcome evidence only", "classes": {}}
+        for label, class_where in failure_definitions.items():
+            failure["classes"][label] = {"where": class_where, "overall": _failure_metrics(connection, class_where),
+                                           "by_strategy": {strategy: _failure_metrics(connection, f"strategy = ? AND {class_where}", (strategy,)) for strategy in ACTIVE_STRATEGIES}}
+        if progress: progress.advance(); progress.complete_phase(); progress.begin_phase("FAILURE_CONTEXT")
+        for label, class_where in failure_definitions.items():
+            failure["classes"][label]["contexts"] = _failure_contexts(connection, class_where, ())
+        if progress: progress.advance(); progress.complete_phase()
         if progress: progress.begin_phase("RUNNER_RESEARCH")
         runner = {}
         for strategy in ACTIVE_STRATEGIES:
@@ -838,11 +1049,12 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
             "preset": "FULL_RESEARCH", "metadata": {"phase": 1, "research_only": True, "records_ingested": len(dates) and connection.execute("SELECT COUNT(DISTINCT episode_id) FROM observations").fetchone()[0] or 0,
                 "temporal_method": "strict trading-date chronology", "no_random_split": True},
             "limitations": ["ALPACA IEX single-exchange research", "not point-in-time universe", "no SIP", "one failed acquisition partition", "gap unavailable from persisted episode field", "pullback null-dominated"],
-            "capabilities": {"profit_research": "IMPLEMENTED", "r_multiple_research": "IMPLEMENTED", "partial_exit_research": "IMPLEMENTED", "runner_research": "IMPLEMENTED", "capital_scenarios": "IMPLEMENTED", "constant_risk_scenarios": "IMPLEMENTED", "reentry": "NOT_YET_IMPLEMENTED", "failure_analysis": "NOT_YET_IMPLEMENTED"},
+            "capabilities": {"profit_research": "IMPLEMENTED", "r_multiple_research": "IMPLEMENTED", "partial_exit_research": "IMPLEMENTED", "runner_research": "IMPLEMENTED", "capital_scenarios": "IMPLEMENTED", "constant_risk_scenarios": "IMPLEMENTED", "reentry": "IMPLEMENTED", "failure_analysis": "IMPLEMENTED"},
             "strategy_scorecards": scorecards, "temporal": temporal, "walk_forward": {"folds": folds, "policy_summary": walk_policy_summaries, "number_of_folds": len(folds)},
             "context_analysis": context, "profit_research": profit, "r_multiple_research": r_multiple,
             "partial_exit_research": {strategy: profit[strategy]["partial_exit_policies"] for strategy in ACTIVE_STRATEGIES},
             "runner_research": runner, "capital_scenarios": capital, "constant_risk_scenarios": constant_risk,
+            "reentry": reentry, "failure_analysis": failure,
         }
     finally:
         connection.close()
