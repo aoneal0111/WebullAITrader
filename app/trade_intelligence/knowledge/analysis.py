@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date, datetime
+import json
+import sqlite3
 from statistics import median
+import tempfile
+from pathlib import Path
 from typing import Iterable
 
 PROFIT_RESEARCH_VERSION = "ATLAS_PROFIT_RESEARCH_V1"
@@ -130,6 +134,111 @@ def cohort_report(rows: Iterable[dict], group_by: Iterable[str], *, min_sample: 
                        "largest_month_share": max(months.values(), default=0) / n,
                        "concentration_flags": flags})
     return output
+
+
+def _confidence(n: int, min_sample: int) -> str:
+    return "INSUFFICIENT_SAMPLE" if n < min_sample else "EARLY" if n < 100 else "MODERATE" if n < 500 else "LARGE_SAMPLE"
+
+
+def _number(value):
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def streaming_cohort_report(rows: Iterable[dict], group_by: Iterable[str], *, min_sample: int = 30,
+                            concentration_threshold: float = .5) -> list[dict]:
+    """Compute cohort results with disk-backed observations and bounded Python memory.
+
+    The source iterator is consumed once. Exact medians are obtained by SQLite
+    ordered-offset queries, so the implementation does not retain episode
+    dictionaries or metric arrays in Python.
+    """
+    dimensions = tuple(group_by)
+    if any(item not in GROUP_DIMENSIONS for item in dimensions):
+        raise ValueError("UNKNOWN_GROUP_DIMENSION")
+    handle = tempfile.NamedTemporaryFile(prefix="atlas_report_", suffix=".sqlite3", delete=False)
+    db_path = Path(handle.name); handle.close()
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute("PRAGMA journal_mode=OFF")
+        connection.execute("PRAGMA synchronous=OFF")
+        connection.execute("""CREATE TABLE observations (
+            group_key TEXT NOT NULL, group_json TEXT NOT NULL, symbol TEXT, trading_date TEXT,
+            month TEXT, mfe REAL, mae REAL, maximum_r REAL, reentry INTEGER,
+            h2 INTEGER, h3 INTEGER, h5 INTEGER, h8 INTEGER, h10 INTEGER,
+            s2 INTEGER, s3 INTEGER, s5 INTEGER, s8 INTEGER, s10 INTEGER,
+            t2 REAL, t3 REAL, t5 REAL, t8 REAL, t10 REAL)""")
+        insert = "INSERT INTO observations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        batch = []
+        for row in rows:
+            keys = []
+            for dimension in dimensions:
+                value = _dimension(row, dimension)
+                keys.append(value)
+            expanded = keys[dimensions.index("strategy")] if "strategy" in dimensions else (None,)
+            for strategy in expanded:
+                values = list(keys)
+                if "strategy" in dimensions:
+                    values[dimensions.index("strategy")] = strategy
+                group = dict(zip(dimensions, values))
+                outcomes = row.get("outcomes", {})
+                targets = outcomes.get("percent_targets", {})
+                events = [targets.get(str(percent), {}) for percent in (2, 3, 5, 8, 10)]
+                batch.append((json.dumps(values, sort_keys=True, default=str), json.dumps(group, sort_keys=True, default=str),
+                              row.get("symbol"), row.get("trading_date"), str(row.get("trading_date", ""))[:7],
+                              _number(outcomes.get("mfe_percent")), _number(outcomes.get("mae_percent")),
+                              _number(outcomes.get("maximum_R")), int(bool(row.get("reentry"))),
+                              *[int(bool(event.get("hit"))) for event in events],
+                              *[int(event.get("first_plan_event") == "STOP_FIRST") for event in events],
+                              *[_number(event.get("elapsed_seconds")) for event in events]))
+                if len(batch) >= 2000:
+                    connection.executemany(insert, batch); batch.clear()
+        if batch:
+            connection.executemany(insert, batch)
+        connection.commit()
+        groups = connection.execute("SELECT group_key, group_json, COUNT(*), COUNT(DISTINCT symbol), COUNT(DISTINCT trading_date) FROM observations GROUP BY group_key, group_json ORDER BY group_key").fetchall()
+        result = []
+        metric_columns = {"mfe": "mfe", "mae": "mae", "maximum_R": "maximum_r"}
+        target_columns = {2: ("h2", "s2", "t2"), 3: ("h3", "s3", "t3"), 5: ("h5", "s5", "t5"), 8: ("h8", "s8", "t8"), 10: ("h10", "s10", "t10")}
+        for group_key, group_json, n, unique_symbols, unique_dates in groups:
+            def median_metric(column):
+                count = connection.execute(f"SELECT COUNT({column}) FROM observations WHERE group_key=?", (group_key,)).fetchone()[0]
+                if not count: return None
+                values = connection.execute(f"SELECT {column} FROM observations WHERE group_key=? AND {column} IS NOT NULL ORDER BY {column}", (group_key,)).fetchall()
+                middle = (count - 1) // 2
+                if count % 2: return values[middle][0]
+                return (values[middle][0] + values[middle + 1][0]) / 2
+            def median_target(column):
+                values = [item[0] for item in connection.execute(f"SELECT {column} FROM observations WHERE group_key=? AND {column} IS NOT NULL ORDER BY {column}", (group_key,))]
+                return None if not values else values[(len(values) - 1) // 2] if len(values) % 2 else (values[len(values)//2-1] + values[len(values)//2]) / 2
+            concentration = {}
+            for field, alias in (("symbol", "symbol"), ("trading_date", "date"), ("month", "month")):
+                concentration[alias] = connection.execute(f"SELECT MAX(n) FROM (SELECT {field}, COUNT(*) n FROM observations WHERE group_key=? GROUP BY {field})", (group_key,)).fetchone()[0] or 0
+            largest = {key: value / n if n else 0 for key, value in concentration.items()}
+            flags = []
+            if largest["symbol"] >= concentration_threshold: flags.append("SYMBOL_CONCENTRATED")
+            if largest["date"] >= concentration_threshold: flags.append("DATE_CONCENTRATED")
+            if largest["month"] >= concentration_threshold: flags.append("TEMPORALLY_CONCENTRATED")
+            target_rates = {}; stop_rates = {}; times = {}
+            for percent, (hit, stop, elapsed) in target_columns.items():
+                target_rates[str(percent)] = connection.execute(f"SELECT AVG({hit}) FROM observations WHERE group_key=?", (group_key,)).fetchone()[0] or 0
+                stop_rates[str(percent)] = connection.execute(f"SELECT AVG({stop}) FROM observations WHERE group_key=?", (group_key,)).fetchone()[0] or 0
+                times[str(percent)] = median_target(elapsed)
+            result.append({"group": json.loads(group_json), "sample_count": n, "confidence_state": _confidence(n, min_sample),
+                           "unique_symbols": unique_symbols, "unique_dates": unique_dates,
+                           "median_mfe": median_metric("mfe"), "median_mae": median_metric("mae"),
+                           "median_maximum_r": median_metric("maximum_r"), "target_hit_rates": target_rates,
+                           "stop_first_rates": stop_rates, "median_time_to_target_seconds": times,
+                           "reentry_frequency": connection.execute("SELECT AVG(reentry) FROM observations WHERE group_key=?", (group_key,)).fetchone()[0] or 0,
+                           "largest_symbol_share": largest["symbol"], "largest_date_share": largest["date"],
+                           "largest_month_share": largest["month"], "concentration_flags": flags})
+        return result
+    finally:
+        connection.close()
+        try: db_path.unlink()
+        except OSError: pass
 
 
 def chronological_splits(rows: Iterable[dict], *, train_end: str | None = None,
@@ -311,4 +420,13 @@ def first_tranche_report(rows: Iterable[dict]) -> dict:
             "by_strategy": cohort_report(rows, ("strategy",)),
             "by_dimension": {dimension: cohort_report(rows, (dimension,))
                              for dimension in ("time_of_day_bucket", "gap_bucket", "volume_behavior_bucket",
-                                               "pullback_depth_bucket", "extension_bucket", "strategy_combination")}}
+                             "pullback_depth_bucket", "extension_bucket", "strategy_combination")}}
+
+
+def first_tranche_report_streaming(row_factory) -> dict:
+    """Streaming equivalent of :func:`first_tranche_report` for large corpora."""
+    dimensions = ("time_of_day_bucket", "gap_bucket", "volume_behavior_bucket",
+                  "pullback_depth_bucket", "extension_bucket", "strategy_combination")
+    return {"preset": "FIRST_TRANCHE", "warning": "observational research; no production policy promotion",
+            "by_strategy": streaming_cohort_report(row_factory(), ("strategy",)),
+            "by_dimension": {dimension: streaming_cohort_report(row_factory(), (dimension,)) for dimension in dimensions}}

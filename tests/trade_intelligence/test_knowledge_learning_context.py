@@ -4,9 +4,12 @@ from decimal import Decimal
 from app.trade_intelligence.knowledge.analysis import (capital_scenarios, cohort_report, chronological_splits,
                                                         constant_risk_scenarios, entry_delay_research, hold_vs_reentry,
                                                         runner_path_analysis, simulate_profit_policy, transition_matrix,
-                                                        transition_record, walk_forward_folds)
+                                                        transition_record, walk_forward_folds, streaming_cohort_report,
+                                                        first_tranche_report_streaming)
 from app.trade_intelligence.knowledge.features import feature_snapshot
 from app.trade_intelligence.knowledge.models import HistoricalBar
+from app.trade_intelligence.knowledge.storage import KnowledgeStore
+from app.trade_intelligence.knowledge.__main__ import main
 
 
 def bars(day=date(2026, 8, 7)):
@@ -45,6 +48,49 @@ def test_cohorts_have_metrics_sample_guard_and_concentration():
     assert result[0]["confidence_state"] == "INSUFFICIENT_SAMPLE"
     assert result[0]["target_hit_rates"]["5"] == 1.0
     assert "SYMBOL_CONCENTRATED" in result[0]["concentration_flags"]
+
+
+def test_streaming_cohort_matches_legacy_fixture_without_materializing_rows():
+    source = [row(date(2026, 8, 7)), row(date(2026, 8, 8), "e2")]
+    legacy = cohort_report(source, ("strategy", "time_of_day_bucket"))
+    streamed = streaming_cohort_report((item for item in source), ("strategy", "time_of_day_bucket"))
+    assert streamed == legacy
+
+
+def test_streaming_first_tranche_uses_reiterable_source_and_handles_empty():
+    source = [row(date(2026, 8, 7)), row(date(2026, 8, 8), "e2")]
+    result = first_tranche_report_streaming(lambda: (item for item in source))
+    assert result["preset"] == "FIRST_TRANCHE"
+    assert result["by_strategy"][0]["sample_count"] == 2
+    empty = first_tranche_report_streaming(lambda: iter(()))
+    assert empty["by_strategy"] == []
+
+
+def test_report_file_is_atomic_and_empty_corpus_is_supported(tmp_path):
+    output = tmp_path / "output"
+    KnowledgeStore(output / "corpus")
+    report_file = tmp_path / "reports" / "first.json"
+    assert main(["report", "--output", str(output), "--preset", "first-tranche", "--report-file", str(report_file)]) == 0
+    assert report_file.stat().st_size > 0
+    assert report_file.read_text(encoding="utf-8").lstrip().startswith("{")
+
+
+def test_interrupted_report_does_not_replace_existing_artifact(tmp_path, monkeypatch):
+    output = tmp_path / "output"
+    KnowledgeStore(output / "corpus")
+    report_file = tmp_path / "reports" / "first.json"
+    report_file.parent.mkdir()
+    report_file.write_text("valid-artifact\n", encoding="utf-8")
+    def fail(_factory):
+        raise RuntimeError("REPORT_INTERRUPTED")
+    monkeypatch.setattr("app.trade_intelligence.knowledge.__main__.first_tranche_report_streaming", fail)
+    try:
+        main(["report", "--output", str(output), "--preset", "first-tranche", "--report-file", str(report_file)])
+    except RuntimeError as error:
+        assert str(error) == "REPORT_INTERRUPTED"
+    else:
+        raise AssertionError("interrupted report unexpectedly succeeded")
+    assert report_file.read_text(encoding="utf-8") == "valid-artifact\n"
 
 
 def test_chronological_and_walk_forward_splits_do_not_shuffle():

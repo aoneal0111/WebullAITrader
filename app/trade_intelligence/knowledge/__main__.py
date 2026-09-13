@@ -7,6 +7,7 @@ from datetime import date
 import json
 import os
 from pathlib import Path
+import tempfile
 
 from .acquisition import AcquisitionConfig, AlpacaHistoricalClient
 from .candidate_days import discover_candidate_days
@@ -17,7 +18,8 @@ from .orchestration import (ResearchOrchestrator, RunPlan, configured, plan_summ
                             resolve_corpus_root)
 from .reporting import report, validate_corpus
 from .storage import KnowledgeStore
-from .analysis import cohort_report, chronological_splits, first_tranche_report
+from .analysis import (cohort_report, chronological_splits, first_tranche_report,
+                       first_tranche_report_streaming)
 from .universe import AlpacaAssetMasterClient, universe_report
 
 
@@ -31,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--group-by", default="")
             command.add_argument("--split", choices=("train", "validation", "test"))
             command.add_argument("--preset", choices=("first-tranche",))
+            command.add_argument("--report-file", type=Path)
     def plan_args(command):
         command.add_argument("--provider", default="alpaca"); command.add_argument("--feed", default="iex")
         command.add_argument("--start", type=date.fromisoformat, required=True); command.add_argument("--end", type=date.fromisoformat, required=True)
@@ -98,7 +101,8 @@ def main(argv: list[str] | None = None) -> int:
         errors = validate_corpus(resolve_corpus_root(args.output)); print(json.dumps({"valid": not errors, "errors": errors}, indent=2)); return 0 if not errors else 1
     else:
         if args.preset == "first-tranche":
-            value = first_tranche_report(tuple(KnowledgeStore(resolve_corpus_root(args.output), create=False).iter_episodes()))
+            store = KnowledgeStore(resolve_corpus_root(args.output), create=False)
+            value = first_tranche_report_streaming(lambda: store.iter_episodes())
         elif args.group_by:
             rows = tuple(KnowledgeStore(resolve_corpus_root(args.output), create=False).iter_episodes())
             if args.split:
@@ -106,7 +110,22 @@ def main(argv: list[str] | None = None) -> int:
             value = cohort_report(rows, tuple(part.strip() for part in args.group_by.split(",") if part.strip()))
         else:
             value = report(resolve_corpus_root(args.output))
-        print(json.dumps(value, indent=2, sort_keys=True, default=str))
+        rendered = json.dumps(value, indent=2, sort_keys=True, default=str)
+        if args.report_file:
+            args.report_file.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary = tempfile.mkstemp(prefix=args.report_file.name + ".", suffix=".tmp",
+                                                      dir=args.report_file.parent)
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    handle.write(rendered); handle.write("\n"); handle.flush(); os.fsync(handle.fileno())
+                os.replace(temporary, args.report_file)
+            except BaseException:
+                try: os.unlink(temporary)
+                except OSError: pass
+                raise
+            print(json.dumps({"report_file": str(args.report_file), "preset": value.get("preset")}, indent=2))
+        else:
+            print(rendered)
     return 0
 
 
