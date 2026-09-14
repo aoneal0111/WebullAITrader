@@ -176,6 +176,8 @@ class HistoricalPaperEntryTimingPolicy:
                 "opportunity_id": opportunity_id, "arm": assignment.arm,
                 "setup_quality": setup.state, "entry_quality": entry.state,
                 "stage": stage, "treatment_eligible": treatment_ok,
+                "blocking_reasons": decision.blocking_reasons,
+                "limitations": decision.limitations,
                 "authorizing_memberships": decision.authorizing_memberships,
                 "readiness_provenance": (
                     result.readiness_memberships if treatment_ok else ()

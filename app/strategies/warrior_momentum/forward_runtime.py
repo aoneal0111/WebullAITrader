@@ -210,6 +210,7 @@ class WarriorForwardCaptureService:
         paper_add_on_submitter: Callable[..., object] | None = None,
         taxonomy_execution_bridge: object | None = None,
         decision_intelligence_observer: Callable[..., None] | None = None,
+        decision_intelligence_entry_observer: Callable[..., tuple[object | None, object | None]] | None = None,
         paper_entry_intelligence: Callable[..., object] | None = None,
     ) -> None:
         self.store = store
@@ -237,6 +238,7 @@ class WarriorForwardCaptureService:
         self._paper_add_on_submitter = paper_add_on_submitter
         self._taxonomy_execution_bridge = taxonomy_execution_bridge
         self._decision_intelligence_observer = decision_intelligence_observer
+        self._decision_intelligence_entry_observer = decision_intelligence_entry_observer
         self._paper_entry_intelligence = paper_entry_intelligence
         # Observation-only continuity state.  It never participates in entry
         # authorization or order submission.
@@ -437,12 +439,24 @@ class WarriorForwardCaptureService:
                 )
                 signal = None
         intelligence_result = None
+        treatment_signal = None
         intelligence_candidate = (
             taxonomy_candidate
             if taxonomy_candidate is not None and signal is None
             else assessed
         )
-        if self._decision_intelligence_observer is not None:
+        if self._decision_intelligence_entry_observer is not None:
+            try:
+                intelligence_result, treatment_signal = self._decision_intelligence_entry_observer(
+                    value=value, candidate=intelligence_candidate, signal=signal,
+                    taxonomy_candidate=taxonomy_candidate,
+                    legacy_candidate=legacy_candidate,
+                    decision_timestamp=value.evaluation_timestamp or observation.timestamp,
+                )
+            except Exception:
+                # Research must never affect the production/PAPER path.
+                pass
+        elif self._decision_intelligence_observer is not None:
             try:
                 intelligence_result = self._decision_intelligence_observer(
                     value=value, candidate=intelligence_candidate, signal=signal,
@@ -452,20 +466,20 @@ class WarriorForwardCaptureService:
             except Exception:
                 # Research must never affect the production/PAPER path.
                 pass
-        if self._paper_entry_intelligence is not None:
-            try:
-                _entry_intelligence_decision, treatment_signal = self._paper_entry_intelligence(
-                    result=intelligence_result, candidate=intelligence_candidate, environment="PAPER",
-                    signal_factory=self.runtime.entry_signal,
-                    decision_timestamp=value.evaluation_timestamp or observation.timestamp,
-                    existing_signal=signal,
-                )
-                if treatment_signal is not None:
-                    signal = treatment_signal
-            except Exception:
-                # Entry intelligence is advisory and fail-closed to the
-                # existing signal path.
-                pass
+            if self._paper_entry_intelligence is not None:
+                try:
+                    _entry_intelligence_decision, treatment_signal = self._paper_entry_intelligence(
+                        result=intelligence_result, candidate=intelligence_candidate, environment="PAPER",
+                        signal_factory=self.runtime.entry_signal,
+                        decision_timestamp=value.evaluation_timestamp or observation.timestamp,
+                        existing_signal=signal,
+                    )
+                except Exception:
+                    # Entry intelligence is advisory and fail-closed to the
+                    # existing signal path.
+                    pass
+        if treatment_signal is not None:
+            signal = treatment_signal
         if self._try_recovered_continuation_from_observation(
             value, assessed, signal or technical_signal, account, completed,
         ):

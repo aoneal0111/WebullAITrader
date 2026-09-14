@@ -420,6 +420,12 @@ class WarriorDesktopSidecar:
                     taxonomy_execution_bridge=self._taxonomy_execution_bridge,
                     decision_intelligence_observer=getattr(
                         self._decision_intelligence_observer, "observe_decision", None,
+                    ) if self._paper_entry_intelligence is None else None,
+                    decision_intelligence_entry_observer=(
+                        self._observe_decision_and_entry
+                        if self._paper_entry_intelligence is not None
+                        and callable(getattr(self._decision_intelligence_observer, "observe_decision", None))
+                        else None
                     ),
                     paper_entry_intelligence=getattr(
                         self._paper_entry_intelligence, "assess", None,
@@ -1210,6 +1216,30 @@ class WarriorDesktopSidecar:
         if value.tzinfo is None:
             raise ValueError("Warrior sidecar clock must be timezone-aware")
         return value
+
+    def _observe_decision_and_entry(self, *, value: object, candidate: object,
+                                    signal: object | None = None,
+                                    taxonomy_candidate: object | None = None,
+                                    legacy_candidate: object | None = None,
+                                    decision_timestamp: object | None = None) -> tuple[object | None, object | None]:
+        """Run production DI-2 and DI-ENTRY as one owned callback boundary."""
+        observer = self._decision_intelligence_observer
+        policy = self._paper_entry_intelligence
+        service = self._service
+        if observer is None or policy is None or service is None:
+            return None, None
+        result = observer.observe_decision(
+            value=value, candidate=candidate, signal=signal,
+            taxonomy_candidate=taxonomy_candidate,
+            legacy_candidate=legacy_candidate,
+        )
+        _decision, treatment_signal = policy.assess(
+            result=result, candidate=candidate, environment="PAPER",
+            signal_factory=service.runtime.entry_signal,
+            decision_timestamp=decision_timestamp,
+            existing_signal=signal,
+        )
+        return result, treatment_signal
 
 
 class CompositeMarketEventObserver:

@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from dataclasses import replace
 from decimal import Decimal
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -53,6 +54,27 @@ def test_disabled_policy_is_observation_only_and_does_not_create_signal(tmp_path
     assert decision.arm == "CONTROL"
     assert signal is None
     assert called == []
+    journal.close()
+
+
+def test_armed_result_without_candidate_setup_still_persists_assignment(tmp_path: Path):
+    journal = PaperExperimentJournal(tmp_path / "experiment.sqlite3")
+    policy = HistoricalPaperEntryTimingPolicy(
+        config=EntryIntelligenceConfig(enabled=True, mode=PAPER_TREATMENT), journal=journal,
+    )
+    candidate = SimpleNamespace(symbol="XYZ", setup=None)
+    insufficient = replace(_result(), setup_evidence=())
+    decision, signal = policy.assess(
+        insufficient, candidate, environment="PAPER", signal_factory=lambda _candidate: None,
+    )
+    assert signal is None
+    assert decision.treatment_decision == "CONTROL_FALLBACK"
+    assert journal._connection.execute("SELECT COUNT(*) FROM experiment_assignments").fetchone()[0] == 1
+    assert journal._connection.execute("SELECT COUNT(*) FROM experiment_decisions").fetchone()[0] == 1
+    payload = journal._connection.execute(
+        "SELECT decision_json FROM experiment_decisions"
+    ).fetchone()[0]
+    assert "NO_DI_EVIDENCE" in json.loads(payload)["blocking_reasons"]
     journal.close()
 
 
