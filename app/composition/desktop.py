@@ -33,6 +33,7 @@ from app.strategies.warrior_momentum.execution_quote import WebullExecutionQuote
 from app.strategies.warrior_momentum.forward_runtime import management_context_available
 from app.trade_intelligence.runtime import TradeIntelligenceRuntimeObserver
 from app.trade_intelligence.taxonomy_paper_bridge import TaxonomyPaperExecutionBridge
+from app.trade_intelligence.decision_intelligence import HistoricalDecisionIntelligence
 from app.entry_opportunity_value import EntryOpportunityValueRuntimeObserver
 from app.adaptive_entry_research import AdaptiveWorkingEntryObserver
 from app.memory_observability import MemoryObservability
@@ -293,6 +294,7 @@ def create_desktop_composition(
         return Decimal(position.quantity), position.updated_at
 
     paper_trading_commands = None
+    decision_intelligence_observer = None
     market_event_observer = None
     if placement_runtime is None:
         def paper_runtime_event_sink(event: PaperRuntimeEvent) -> None:
@@ -308,6 +310,8 @@ def create_desktop_composition(
                 except Exception:
                     lifecycle_id = None
             fill = event.fill
+            if decision_intelligence_observer is not None:
+                decision_intelligence_observer.observe_paper_event(event)
             trade_intelligence_observer.observe_paper_fact(
                 observation_id=f"{event.source}:{event.sequence}:{event.event_type}",
                 observed_at=event.timestamp, event_type=event.event_type,
@@ -440,6 +444,7 @@ def create_desktop_composition(
     taxonomy_execution_bridge = None
     if operational_configuration.environment.value == "PAPER":
         taxonomy_execution_bridge = TaxonomyPaperExecutionBridge()
+    decision_intelligence_observer = HistoricalDecisionIntelligence()
     warrior_forward_sidecar = WarriorDesktopSidecar(
         enabled=operational_configuration.warrior_forward_paper_enabled,
         storage_path=operational_configuration.warrior_forward_capture_path,
@@ -468,6 +473,7 @@ def create_desktop_composition(
             or NO_ACTIVE_PAPER_CAMPAIGN_ID
         ),
         taxonomy_execution_bridge=taxonomy_execution_bridge,
+        decision_intelligence_observer=decision_intelligence_observer,
     )
 
     adaptive_entry_research_observer = AdaptiveWorkingEntryObserver(

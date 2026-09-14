@@ -156,6 +156,7 @@ class WarriorDesktopSidecar:
         entry_value_observer: object | None = None,
         paper_campaign_id: str | None = None,
         taxonomy_execution_bridge: object | None = None,
+        decision_intelligence_observer: object | None = None,
         report_worker_factory: Callable[..., WarriorReportWorker] = WarriorReportWorker,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -179,6 +180,7 @@ class WarriorDesktopSidecar:
         self._entry_value_observer = entry_value_observer
         self._paper_campaign_id = paper_campaign_id
         self._taxonomy_execution_bridge = taxonomy_execution_bridge
+        self._decision_intelligence_observer = decision_intelligence_observer
         self._report_worker_factory = report_worker_factory
         self._accept_execution = False
         self._clock = clock
@@ -383,6 +385,11 @@ class WarriorDesktopSidecar:
                 )
                 if callable(entry_value_start):
                     entry_value_start(self.environment)
+                intelligence_start = getattr(
+                    self._decision_intelligence_observer, "start", None,
+                )
+                if callable(intelligence_start):
+                    intelligence_start(self.environment)
                 self._store = ForwardCaptureStore(self.storage_path)
                 self._writer = ForwardCaptureWriter(
                     self._store, capacity=self.capture_config.queue_capacity,
@@ -409,6 +416,9 @@ class WarriorDesktopSidecar:
                     ),
                     paper_campaign_id=self._paper_campaign_id,
                     taxonomy_execution_bridge=self._taxonomy_execution_bridge,
+                    decision_intelligence_observer=getattr(
+                        self._decision_intelligence_observer, "observe_decision", None,
+                    ),
                 )
                 self._restore_bars()
                 now = self._aware_now()
@@ -440,6 +450,14 @@ class WarriorDesktopSidecar:
                         entry_value_stop()
                     except Exception:
                         pass
+                intelligence_stop = getattr(
+                    self._decision_intelligence_observer, "close", None,
+                )
+                if callable(intelligence_stop):
+                    try:
+                        intelligence_stop()
+                    except Exception:
+                        pass
 
     def stop(self) -> None:
         if not self.enabled:
@@ -457,6 +475,14 @@ class WarriorDesktopSidecar:
                 if callable(entry_value_stop):
                     try:
                         entry_value_stop()
+                    except Exception:
+                        pass
+                intelligence_stop = getattr(
+                    self._decision_intelligence_observer, "close", None,
+                )
+                if callable(intelligence_stop):
+                    try:
+                        intelligence_stop()
                     except Exception:
                         pass
                 return
@@ -501,6 +527,14 @@ class WarriorDesktopSidecar:
                 if callable(entry_value_stop):
                     try:
                         entry_value_stop()
+                    except Exception:
+                        pass
+                intelligence_stop = getattr(
+                    self._decision_intelligence_observer, "close", None,
+                )
+                if callable(intelligence_stop):
+                    try:
+                        intelligence_stop()
                     except Exception:
                         pass
                 performance_diagnostics.set_diagnostic_sink(None)

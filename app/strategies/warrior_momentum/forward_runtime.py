@@ -209,6 +209,7 @@ class WarriorForwardCaptureService:
         paper_campaign_id: str | None = None,
         paper_add_on_submitter: Callable[..., object] | None = None,
         taxonomy_execution_bridge: object | None = None,
+        decision_intelligence_observer: Callable[..., None] | None = None,
     ) -> None:
         self.store = store
         self.writer = writer
@@ -234,6 +235,7 @@ class WarriorForwardCaptureService:
         self.paper_campaign_id = paper_campaign_id
         self._paper_add_on_submitter = paper_add_on_submitter
         self._taxonomy_execution_bridge = taxonomy_execution_bridge
+        self._decision_intelligence_observer = decision_intelligence_observer
         # Observation-only continuity state.  It never participates in entry
         # authorization or order submission.
         from app.trade_intelligence.opportunity_memory import OpportunityMemory
@@ -288,6 +290,7 @@ class WarriorForwardCaptureService:
         candidate = self.runtime.discover(
             observation, completed, session=value.session,
         )
+        legacy_candidate = candidate
         assessed, signal = self.runtime.assess_entry(candidate)
         technical_signal = self.runtime.technical_entry_signal(candidate)
         setup = candidate.setup
@@ -431,6 +434,16 @@ class WarriorForwardCaptureService:
                     ))),
                 )
                 signal = None
+        if self._decision_intelligence_observer is not None:
+            try:
+                self._decision_intelligence_observer(
+                    value=value, candidate=assessed, signal=signal,
+                    taxonomy_candidate=taxonomy_candidate,
+                    legacy_candidate=legacy_candidate,
+                )
+            except Exception:
+                # Research must never affect the production/PAPER path.
+                pass
         if self._try_recovered_continuation_from_observation(
             value, assessed, signal or technical_signal, account, completed,
         ):

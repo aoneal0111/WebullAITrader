@@ -119,6 +119,10 @@ def test_duplicate_strategy_key_is_rejected_by_sqlite(tmp_path):
             db.execute("insert into strategy_evidence select * from strategy_evidence limit 1")
 
 
-def test_package_has_no_runtime_service_import():
+def test_di2_service_is_present_but_does_not_expose_runtime_policy():
     package = Path("app/trade_intelligence/decision_intelligence")
-    assert not (package / "service.py").exists()
+    assert (package / "service.py").exists()
+    source = (package / "service.py").read_text(encoding="utf-8")
+    assert "class HistoricalDecisionIntelligence" in source
+    assert "paper_entry_submitter" not in source
+    assert "place_order" not in source
