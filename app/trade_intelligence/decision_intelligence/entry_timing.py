@@ -70,6 +70,8 @@ class PaperEntryIntelligenceDecision:
     di_version: str = "ATLAS_HISTORICAL_DECISION_INTELLIGENCE_DI2_V1"
     artifact_version: str = "ATLAS_HISTORICAL_DECISION_INTELLIGENCE_V1"
     authorizing_memberships: tuple[str, ...] = ()
+    assignment_persisted: bool = False
+    assignment_persistence_reason: str | None = None
 
 
 def entry_experiment_definition(strategy: str) -> ExperimentDefinition:
@@ -174,6 +176,8 @@ class HistoricalPaperEntryTimingPolicy:
         treatment_ok = self._eligible(result, setup, entry, candidate)
         decision = replace(
             base, arm=assignment.arm,
+            assignment_persisted=assignment.persisted,
+            assignment_persistence_reason=(None if assignment.persisted else assignment.reason),
             treatment_decision=("ELIGIBLE" if treatment_ok else "CONTROL_FALLBACK"),
             recommended_entry_mode=("TRIGGER_READY_ENTRY" if treatment_ok else "CURRENT_TRIGGER"),
             supporting_reasons=("EXPLICIT_TRIGGER_READY", "HISTORICAL_EVIDENCE_SUFFICIENT")

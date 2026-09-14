@@ -21,6 +21,8 @@ from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperRead
 from app.trade_intelligence.decision_intelligence.service import HistoricalDecisionIntelligence
 from app.market_data.models import MarketEvent, MarketEventType, QuotePayload
 from tests.warrior_momentum.test_forward_capture import account, bar, bars, point
+from tests.trade_intelligence.test_entry_timing import _result
+from app.strategies.warrior_momentum.forward_models import CaptureRecordType
 from tests.test_support.session_clock import session_timestamp
 from app.trade_intelligence.taxonomy_paper_bridge import _discovery_context
 
@@ -225,6 +227,103 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
             "SELECT arm FROM experiment_assignments WHERE assignment_identity=?",
             (assignment_identity,),
         ).fetchone()[0] == "TREATMENT"
+    finally:
+        composition.close(timeout_seconds=1.0)
+
+
+def test_legacy_triggered_callback_assigns_before_ineligible_treatment(
+    monkeypatch, tmp_path,
+) -> None:
+    configuration = load_configuration({
+        "WEBULL_TRADING_ENVIRONMENT": "PAPER",
+        "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_ENABLED": "true",
+        "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_MODE": "PAPER_TREATMENT",
+        "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_PATH": str(tmp_path / "experiment.sqlite3"),
+        "WARRIOR_FORWARD_PAPER_ENABLED": "true",
+        "WARRIOR_FORWARD_CAPTURE_PATH": str(tmp_path / "forward.sqlite3"),
+        "ALLOWED_SYMBOLS": "XYZ",
+    })
+    monkeypatch.setattr(desktop_module, "load_configuration", lambda: configuration)
+    composition = create_desktop_composition(
+        paper_persistence_path=tmp_path / "paper.sqlite3",
+        paper_clock=lambda: datetime(2026, 8, 10, 14, 50, tzinfo=UTC),
+    )
+    try:
+        sidecar = composition.warrior_forward_sidecar
+        assert sidecar is not None
+        sidecar.start("PAPER")
+        assert sidecar._service is not None
+        sidecar._decision_intelligence_observer.observe_decision = lambda **kwargs: replace(
+            _result(), recognized_memberships=(), readiness_memberships=(),
+            primary_strategy="FLAT_TOP_BREAKOUT", setup_stage="POST_TRIGGER_EXTENDED",
+            entry_location="MODERATELY_EXTENDED", entry_assessment="LATE_ENTRY_RISK",
+        )
+
+        candidate, signal = sidecar._service.observe(point(), account=account())
+        assert candidate.setup is not None and candidate.setup.state.value == "TRIGGERED"
+        assert signal is not None
+        sidecar._writer.flush()
+        journal = sidecar._paper_entry_intelligence._journal
+        assert journal is not None
+        assert journal._connection.execute(
+            "SELECT COUNT(*) FROM experiment_assignments"
+        ).fetchone()[0] == 1
+        decision = journal._connection.execute(
+            "SELECT decision_json FROM experiment_decisions"
+        ).fetchone()[0]
+        assert '"treatment_eligible":false' in decision
+        assert "MODERATELY_EXTENDED" in decision
+        diagnostics = {record.payload_json for record in sidecar._store.records(
+            record_type=CaptureRecordType.DI_ENTRY_DIAGNOSTIC
+        )}
+        assert any("CALLBACK_ENTERED" in row for row in diagnostics)
+        assert any("POLICY_ASSESS_CALLED" in row for row in diagnostics)
+        assert any("ASSIGNMENT_PERSISTED" in row for row in diagnostics)
+        assert len(composition.paper_order_book.history()) == 1
+    finally:
+        composition.close(timeout_seconds=1.0)
+
+
+def test_di_entry_callback_exception_is_visible_and_fail_closed(
+    monkeypatch, tmp_path,
+) -> None:
+    configuration = load_configuration({
+        "WEBULL_TRADING_ENVIRONMENT": "PAPER",
+        "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_ENABLED": "true",
+        "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_MODE": "PAPER_TREATMENT",
+        "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_PATH": str(tmp_path / "experiment.sqlite3"),
+        "WARRIOR_FORWARD_PAPER_ENABLED": "true",
+        "WARRIOR_FORWARD_CAPTURE_PATH": str(tmp_path / "forward.sqlite3"),
+        "ALLOWED_SYMBOLS": "XYZ",
+    })
+    monkeypatch.setattr(desktop_module, "load_configuration", lambda: configuration)
+    composition = create_desktop_composition(
+        paper_persistence_path=tmp_path / "paper.sqlite3",
+        paper_clock=lambda: datetime(2026, 8, 10, 14, 50, tzinfo=UTC),
+    )
+    try:
+        sidecar = composition.warrior_forward_sidecar
+        assert sidecar is not None
+        sidecar.start("PAPER")
+        assert sidecar._service is not None
+        sidecar._decision_intelligence_observer.observe_decision = lambda **kwargs: _result()
+        def fail_assignment(*args, **kwargs):
+            raise RuntimeError("assignment write failed")
+        monkeypatch.setattr(sidecar._paper_entry_intelligence._router, "assign", fail_assignment)
+        _, signal = sidecar._service.observe(point(), account=account())
+        assert signal is not None
+        sidecar._writer.flush()
+        rows = [record.payload_json for record in sidecar._store.records(
+            record_type=CaptureRecordType.DI_ENTRY_DIAGNOSTIC
+        )]
+        assert any("POLICY_ASSESS_EXCEPTION" in row for row in rows)
+        assert any("RuntimeError" in row for row in rows)
+        journal = sidecar._paper_entry_intelligence._journal
+        assert journal is not None
+        assert journal._connection.execute(
+            "SELECT COUNT(*) FROM experiment_assignments"
+        ).fetchone()[0] == 0
+        assert len(composition.paper_order_book.history()) == 1
     finally:
         composition.close(timeout_seconds=1.0)
 

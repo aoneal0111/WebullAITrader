@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -9,6 +10,7 @@ from enum import StrEnum
 from hashlib import sha256
 import logging
 from pathlib import Path
+import re
 from threading import RLock
 from time import monotonic, perf_counter
 from typing import Callable, Iterable
@@ -194,6 +196,8 @@ class WarriorDesktopSidecar:
         self._writer: ForwardCaptureWriter | None = None
         self._service: WarriorForwardCaptureService | None = None
         self._report_worker: WarriorReportWorker | None = None
+        self._di_entry_diagnostic_keys: deque[tuple[str, str]] = deque(maxlen=1024)
+        self._di_entry_diagnostic_key_set: set[tuple[str, str]] = set()
         self._last_report_metrics: ReportWorkerMetrics | None = None
         self._health = WarriorCaptureHealth.DISABLED if not enabled else WarriorCaptureHealth.STOPPED
         self._last_error_type: str | None = None
@@ -1226,20 +1230,132 @@ class WarriorDesktopSidecar:
         observer = self._decision_intelligence_observer
         policy = self._paper_entry_intelligence
         service = self._service
+        symbol = str(getattr(candidate, "symbol", "UNKNOWN"))
+        timestamp = decision_timestamp or getattr(candidate, "timestamp", None) or self._aware_now()
+        opportunity_hint = getattr(candidate, "taxonomy_opportunity_id", None)
+        self._record_di_entry_diagnostic(
+            "CALLBACK_ENTERED", symbol=symbol, timestamp=timestamp,
+            opportunity_id=opportunity_hint,
+        )
         if observer is None or policy is None or service is None:
+            self._record_di_entry_diagnostic(
+                "POLICY_OBJECT_MISSING", symbol=symbol, timestamp=timestamp,
+                opportunity_id=opportunity_hint,
+                reason="NO_POLICY" if policy is None else "OTHER_GUARD",
+            )
             return None, None
-        result = observer.observe_decision(
-            value=value, candidate=candidate, signal=signal,
-            taxonomy_candidate=taxonomy_candidate,
-            legacy_candidate=legacy_candidate,
-        )
-        _decision, treatment_signal = policy.assess(
-            result=result, candidate=candidate, environment="PAPER",
-            signal_factory=service.runtime.entry_signal,
-            decision_timestamp=decision_timestamp,
-            existing_signal=signal,
-        )
-        return result, treatment_signal
+        if str(self.environment).upper() != "PAPER":
+            self._record_di_entry_diagnostic(
+                "POLICY_OBJECT_MISSING", symbol=symbol, timestamp=timestamp,
+                opportunity_id=opportunity_hint, reason="UNSUPPORTED_ENVIRONMENT",
+            )
+            return None, None
+        if not getattr(policy.config, "enabled", False) or getattr(policy.config, "mode", "") != "PAPER_TREATMENT":
+            self._record_di_entry_diagnostic(
+                "POLICY_OBJECT_MISSING", symbol=symbol, timestamp=timestamp,
+                opportunity_id=opportunity_hint, reason="DISABLED_POLICY",
+            )
+            return None, None
+        try:
+            result = observer.observe_decision(
+                value=value, candidate=candidate, signal=signal,
+                taxonomy_candidate=taxonomy_candidate,
+                legacy_candidate=legacy_candidate,
+            )
+        except Exception as exc:
+            self._record_di_entry_diagnostic(
+                "DI_RESULT_MISSING", symbol=symbol, timestamp=timestamp,
+                opportunity_id=opportunity_hint, reason="OTHER_GUARD",
+                error_type=type(exc).__name__, error_message=_safe_diagnostic_message(exc),
+            )
+            return None, None
+        opportunity_id = opportunity_hint
+        try:
+            if result is None:
+                self._record_di_entry_diagnostic(
+                    "DI_RESULT_MISSING", symbol=symbol, timestamp=timestamp,
+                    opportunity_id=opportunity_id, reason="NO_DI_RESULT",
+                )
+                return None, None
+            opportunity_id = result.opportunity_id
+            if opportunity_id is None:
+                self._record_di_entry_diagnostic(
+                    "OPPORTUNITY_ID_MISSING", symbol=symbol, timestamp=timestamp,
+                    reason="NO_OPPORTUNITY_ID",
+                )
+                return result, None
+            self._record_di_entry_diagnostic(
+                "POLICY_ASSESS_CALLED", symbol=symbol, timestamp=timestamp,
+                opportunity_id=opportunity_id,
+            )
+            _decision, treatment_signal = policy.assess(
+                result=result, candidate=candidate, environment="PAPER",
+                signal_factory=service.runtime.entry_signal,
+                decision_timestamp=decision_timestamp,
+                existing_signal=signal,
+            )
+            self._record_di_entry_diagnostic(
+                "POLICY_ASSESS_RETURNED", symbol=symbol, timestamp=timestamp,
+                opportunity_id=opportunity_id,
+                treatment_decision=getattr(_decision, "treatment_decision", None),
+            )
+            if getattr(_decision, "assignment_persisted", False):
+                self._record_di_entry_diagnostic(
+                    "ASSIGNMENT_PERSISTED", symbol=symbol, timestamp=timestamp,
+                    opportunity_id=opportunity_id,
+                )
+            elif getattr(_decision, "assignment_persistence_reason", None):
+                self._record_di_entry_diagnostic(
+                    "ASSIGNMENT_PERSISTENCE_FAILED", symbol=symbol, timestamp=timestamp,
+                    opportunity_id=opportunity_id,
+                    reason=str(_decision.assignment_persistence_reason),
+                )
+            return result, treatment_signal
+        except Exception as exc:
+            self._record_di_entry_diagnostic(
+                "POLICY_ASSESS_EXCEPTION", symbol=symbol, timestamp=timestamp,
+                opportunity_id=opportunity_id,
+                error_type=type(exc).__name__, error_message=_safe_diagnostic_message(exc),
+            )
+            return result, None
+
+    def _record_di_entry_diagnostic(self, event: str, *, symbol: str,
+                                    timestamp: datetime, opportunity_id: object = None,
+                                    reason: str | None = None, **details: object) -> None:
+        """Persist sparse DI-ENTRY seam evidence without affecting execution."""
+        writer = self._writer
+        if writer is None or timestamp.tzinfo is None:
+            return
+        identity = str(opportunity_id or symbol).strip() or "UNKNOWN"
+        key = (event, identity)
+        with self._lock:
+            if key in self._di_entry_diagnostic_key_set:
+                return
+            if len(self._di_entry_diagnostic_keys) == self._di_entry_diagnostic_keys.maxlen:
+                self._di_entry_diagnostic_key_set.discard(self._di_entry_diagnostic_keys[0])
+            self._di_entry_diagnostic_keys.append(key)
+            self._di_entry_diagnostic_key_set.add(key)
+        payload = {"event": event, "opportunity_id": str(opportunity_id) if opportunity_id else None}
+        if reason is not None:
+            payload["reason"] = reason
+        payload.update({key: value for key, value in details.items() if value is not None})
+        try:
+            writer.submit_diagnostic(CaptureRecord.create(
+                CaptureRecordType.DI_ENTRY_DIAGNOSTIC, symbol, timestamp, payload,
+                identity_parts=(event, identity),
+            ))
+        except Exception:
+            return
+
+
+def _safe_diagnostic_message(error: Exception) -> str:
+    message = str(error).replace("\r", " ").replace("\n", " ")
+    message = re.sub(
+        r"(?i)(token|secret|password|credential|account[_ -]?id|api[_ -]?key|access[_ -]?key)\s*[:=]\s*\S+",
+        r"\1=<redacted>", message,
+    )
+    message = re.sub(r"(?i)bearer\s+\S+", "Bearer <redacted>", message)
+    return message[:256] if message else "<empty>"
 
 
 class CompositeMarketEventObserver:
