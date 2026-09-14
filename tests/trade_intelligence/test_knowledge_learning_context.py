@@ -14,6 +14,7 @@ from app.trade_intelligence.knowledge.analysis import (capital_scenarios, cohort
                                                         participation_capacity, target_realism_models,
                                                         execution_adjusted_r)
 import io
+import hashlib
 from app.trade_intelligence.knowledge.features import feature_snapshot
 from app.trade_intelligence.knowledge.models import HistoricalBar
 from app.trade_intelligence.knowledge.storage import KnowledgeStore
@@ -327,9 +328,13 @@ def test_full_research_benchmark_asof_join_excludes_future_bars(tmp_path):
     values = [(symbol, "2026-08-07", timestamp, "REGULAR", price, ret, ret, ret, ret, ret, price, 1, 0, 0, 1, 1, ret, 1, "INSIDE", "ATLAS_BENCHMARK_REGIME_V1") for symbol, timestamp, price, ret in (("SPY", "2026-08-07T13:34:00+00:00", 101, 1), ("SPY", "2026-08-07T13:35:00+00:00", 999, 999))]
     connection.executemany("INSERT INTO benchmark_context VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", values)
     connection.commit(); connection.close()
+    digest_before = hashlib.sha256(database.read_bytes()).hexdigest()
     result = full_research_report_streaming(lambda: iter((source,)), benchmark_context_path=database)
+    repeated = full_research_report_streaming(lambda: iter((source,)), benchmark_context_path=database)
     assert result["context_analysis"]["benchmark_context"]["available_count"] == 0
     assert result["context_analysis"]["benchmark_context"]["status"] == "INSUFFICIENT_DATA"
+    assert repeated["context_analysis"]["benchmark_context"] == result["context_analysis"]["benchmark_context"]
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == digest_before
 
 
 def test_benchmark_context_is_reused_once_per_episode_with_multiple_memberships(tmp_path):

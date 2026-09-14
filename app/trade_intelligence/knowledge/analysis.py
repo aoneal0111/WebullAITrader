@@ -1419,15 +1419,40 @@ def _policy_stability_summary(connection, strategy: str, train_end: str | None,
 
 
 def _integrate_benchmark_context(connection: sqlite3.Connection, benchmark_path: Path | None) -> dict[str, object]:
-    """Attach strict as-of benchmark observations without retaining episodes."""
+    """Copy benchmark observations through a short-lived read-only connection.
+
+    Keeping the source connection separate from the report database avoids
+    SQLite's cross-database transaction lifetime rules.  The local copy is
+    the only benchmark table used after this function returns.
+    """
     if not benchmark_path or not Path(benchmark_path).exists():
         return {"status": "UNAVAILABLE_SOURCE", "available_count": 0, "missing_count":
                 connection.execute("SELECT COUNT(DISTINCT episode_id) FROM observations").fetchone()[0]}
-    connection.execute("ATTACH DATABASE ? AS benchmark_source", (str(Path(benchmark_path)),))
+    source_connection = None
+    source_cursor = None
     try:
-        connection.execute("CREATE TABLE benchmark_context AS SELECT * FROM benchmark_source.benchmark_context")
+        source_uri = f"file:{Path(benchmark_path).resolve().as_posix()}?mode=ro"
+        source_connection = sqlite3.connect(source_uri, uri=True)
+        source_cursor = source_connection.execute("PRAGMA table_info(benchmark_context)")
+        schema = source_cursor.fetchall()
+        if not schema:
+            return {"status": "UNAVAILABLE_SOURCE", "available_count": 0, "missing_count":
+                    connection.execute("SELECT COUNT(DISTINCT episode_id) FROM observations").fetchone()[0]}
+        names = [item[1] for item in schema]
+        declarations = ", ".join(f"{name} {item[2] or 'TEXT'}" for name, item in zip(names, schema))
+        connection.execute(f"CREATE TABLE benchmark_context ({declarations})")
+        placeholders = ",".join("?" for _ in names)
+        source_cursor = source_connection.execute("SELECT " + ",".join(names) + " FROM benchmark_context")
+        while True:
+            rows = source_cursor.fetchmany(2000)
+            if not rows:
+                break
+            connection.executemany("INSERT INTO benchmark_context VALUES (" + placeholders + ")", rows)
     finally:
-        connection.execute("DETACH DATABASE benchmark_source")
+        if source_cursor is not None:
+            source_cursor.close()
+        if source_connection is not None:
+            source_connection.close()
     connection.execute("CREATE INDEX benchmark_asof ON benchmark_context(trading_date, benchmark_symbol, effective_timestamp)")
     benchmark_rows = defaultdict(list)
     for item in connection.execute("SELECT benchmark_symbol, trading_date, effective_timestamp, return_from_open, above_vwap, price, vwap, momentum, volatility FROM benchmark_context ORDER BY benchmark_symbol, trading_date, effective_timestamp"):
