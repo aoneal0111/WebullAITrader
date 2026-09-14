@@ -344,7 +344,10 @@ def build_corpus(provider: HistoricalBarProvider, output: Path, *, repository_co
             )
             detections = tuple(item for item in registry.evaluate(context)
                                if item.strategy_id in ACTIVE_STRATEGIES)
-            fired = tuple(item for item in detections if item.state in {DetectionState.DETECTED, DetectionState.STRENGTHENING})
+            fired = tuple(item for item in detections if item.state in {
+                DetectionState.DETECTED, DetectionState.TRIGGER_ARMED,
+                DetectionState.STRENGTHENING,
+            })
             if not fired:
                 continue
             groups: dict[str, list[object]] = defaultdict(list)

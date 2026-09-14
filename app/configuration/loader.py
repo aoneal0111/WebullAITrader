@@ -407,6 +407,18 @@ def load_configuration(env=None):
         _int(e, "CRYPTO_CATALYST_FEDERAL_REGISTER_CADENCE_SECONDS", 7200),
         _int(e, "CRYPTO_CATALYST_STATUSPAGE_CADENCE_SECONDS", 300),
         _int(e, "CRYPTO_CATALYST_BYBIT_CADENCE_SECONDS", 900),
+        historical_entry_experiment_enabled=(
+            _bool(e.get("ATLAS_HISTORICAL_ENTRY_EXPERIMENT_ENABLED", "false"))
+        ),
+        historical_entry_experiment_mode=_historical_entry_mode(
+            e.get("ATLAS_HISTORICAL_ENTRY_EXPERIMENT_MODE", "OBSERVE_ONLY")
+        ),
+        historical_entry_experiment_path=Path(
+            e.get(
+                "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_PATH",
+                "data/paper_trade_experiment.sqlite3",
+            )
+        ).resolve(),
     )
 
 
@@ -414,6 +426,13 @@ def _bool(v):
     if str(v).lower() not in ("true", "false"):
         raise ValueError("boolean setting is malformed")
     return str(v).lower() == "true"
+
+
+def _historical_entry_mode(value: str) -> str:
+    mode = str(value).strip().upper()
+    if mode not in {"DISABLED", "OBSERVE_ONLY", "PAPER_TREATMENT"}:
+        raise ValueError("ATLAS_HISTORICAL_ENTRY_EXPERIMENT_MODE is malformed")
+    return mode
 
 
 def _int(e, k, d):

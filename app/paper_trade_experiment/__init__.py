@@ -13,6 +13,12 @@ from .worker import (
     PaperTradeExperimentWorker,
     ResearchWorkerMetrics,
 )
+from .harness import (
+    CONTROL_ARM, FRAMEWORK_VERSION, TREATMENT_ARM, ExperimentDefinition,
+    ExperimentOpportunity, ExperimentRouter, ExperimentStatusService,
+    PaperExperimentJournal, RouteResult, wave_one_definitions,
+    one_dimension_delta,
+)
 
 __all__ = [
     "COHORTS", "CandidateRecord", "ExecutionState", "HORIZONS_SECONDS",
@@ -22,4 +28,8 @@ __all__ = [
     "logical_decision_state_signature",
     "PaperTradeExperimentWorker", "ResearchWorkerMetrics",
     "DEFAULT_RESEARCH_QUEUE_CAPACITY",
+    "CONTROL_ARM", "FRAMEWORK_VERSION", "TREATMENT_ARM", "ExperimentDefinition",
+    "ExperimentOpportunity", "ExperimentRouter", "ExperimentStatusService",
+    "PaperExperimentJournal", "RouteResult", "wave_one_definitions",
+    "one_dimension_delta",
 ]

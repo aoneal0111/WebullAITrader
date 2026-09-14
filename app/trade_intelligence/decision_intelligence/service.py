@@ -88,6 +88,7 @@ class HistoricalDecisionIntelligence:
                 self._reason = None
                 if self.journal_path is not None:
                     self._journal = self._open_journal(self.journal_path)
+                    self._restore_discovery_lifecycle()
             except Exception as exc:
                 if 'connection' in locals():
                     connection.close()
@@ -110,7 +111,7 @@ class HistoricalDecisionIntelligence:
     def observe_decision(self, *, value: object, candidate: object,
                          signal: object | None = None,
                          taxonomy_candidate: object | None = None,
-                         legacy_candidate: object | None = None) -> None:
+                         legacy_candidate: object | None = None) -> HistoricalIntelligenceResult | None:
         """Build and journal evidence. All errors are contained by design."""
         try:
             result = self.evaluate(value=value, candidate=candidate, signal=signal,
@@ -121,13 +122,14 @@ class HistoricalDecisionIntelligence:
                     taxonomy_candidate=taxonomy_candidate, signal=signal,
                 )
                 self._journal_result(result)
+            return result
         except Exception as exc:
             self._reason = f"{type(exc).__name__}: {exc}"
+            return None
 
     def evaluate(self, *, value: object, candidate: object,
                  signal: object | None = None,
                  taxonomy_candidate: object | None = None) -> HistoricalIntelligenceResult:
-        del taxonomy_candidate
         if not self._valid or self._connection is None:
             return HistoricalIntelligenceResult(
                 artifact_version=ARTIFACT_VERSION,
@@ -141,7 +143,9 @@ class HistoricalDecisionIntelligence:
         trigger = getattr(setup, "trigger", None)
         stop = getattr(setup, "stop_price", None)
         price = observation.price
-        memberships, discovered_anchor, discovered_state = self._discover_memberships(value)
+        discovered = self._discover_memberships(value)
+        memberships, discovered_anchor, discovered_state = discovered[:3]
+        armed_memberships = discovered[3] if len(discovered) > 3 else ()
         if setup is not None and getattr(setup, "taxonomy_strategy_memberships", ()):
             memberships = tuple(dict.fromkeys((*memberships, *setup.taxonomy_strategy_memberships)))
         primary = memberships[0] if memberships else (
@@ -158,9 +162,12 @@ class HistoricalDecisionIntelligence:
         )
         setup_state = (
             "NO_SETUP" if setup is None and not discovered_state
-            else discovered_state if setup is None
+            else discovered_state if setup is None or discovered_state == "TRIGGER_ARMED"
             else str(setup.state.value)
         )
+        # Recover the detector lifecycle boundary after a process restart.
+        if setup_state == "TRIGGER_ARMED" and prior_state is not None and prior_state.get("triggered_at"):
+            setup_state = "POST_TRIGGER_EXTENDED"
         stage = _stage(setup_state, trigger, price)
         location, assessment = _location(trigger, price, stop)
         evidence = tuple(self._strategy_row(item) for item in memberships)
@@ -187,6 +194,7 @@ class HistoricalDecisionIntelligence:
             recognized_memberships=memberships, primary_strategy=primary,
             membership_signature="|".join(memberships), opportunity_id=opportunity_id,
             trading_date=observation.timestamp.date().isoformat(),
+            structural_anchor=discovered_anchor,
             session=getattr(value, "session", None), first_recognized_at=first_seen,
             opportunity_age_seconds=Decimal(str((timestamp - first_seen).total_seconds())),
             recognition_timing=recognition_timing,
@@ -213,6 +221,7 @@ class HistoricalDecisionIntelligence:
             price_beyond_trigger_percent=(None if trigger is None or price in (None, 0)
                                           else (price - trigger) / price * 100),
             setup_evidence=evidence, context_evidence=context,
+            readiness_memberships=tuple(armed_memberships),
             failure_evidence=failures, confidence=confidence,
             coverage="MATCHED" if evidence else "MISSING_CONTEXT",
             limitations=_LIMITATIONS, evaluated_at=timestamp,
@@ -279,7 +288,10 @@ class HistoricalDecisionIntelligence:
                 source="BOTH" if len(sources) > 1 else (sources[0] if sources else "UNKNOWN"),
                 strategy=result.primary_strategy, observed_at=result.evaluated_at,
                 symbol=symbol, price=result.current_price,
-                trigger_price=result.trigger_price, payload={"entry_location": result.entry_location},
+                trigger_price=result.trigger_price, payload={
+                    "entry_location": result.entry_location,
+                    "structural_anchor": result.structural_anchor,
+                },
             )
         if signal is not None:
             lifecycle = _signal_lifecycle(signal)
@@ -301,6 +313,7 @@ class HistoricalDecisionIntelligence:
             fill = getattr(event, "fill", None)
             request = getattr(order, "request", None)
             lifecycle = None if request is None else getattr(request, "strategy_lifecycle_id", None)
+            lifecycle = lifecycle or getattr(order, "lifecycle_id", None)
             metadata = {} if request is None else getattr(request, "metadata", {})
             opportunity = metadata.get("opportunity_id") if isinstance(metadata, dict) else None
             opportunity = opportunity or self._lifecycle_opportunities.get(str(lifecycle))
@@ -321,9 +334,10 @@ class HistoricalDecisionIntelligence:
                 opportunity_id=str(opportunity), event_type=event_type,
                 observed_at=getattr(event, "timestamp"),
                 symbol=str(getattr(event, "symbol", "")), source="PAPER",
-                strategy=(None if request is None else str(getattr(request, "strategy_id", "") or "")),
+                strategy=(str(getattr(request, "strategy_id", "") or "") if request is not None else None),
                 price=(getattr(fill, "fill_price", None) if fill is not None
-                       else getattr(request, "limit_price", None)),
+                       else getattr(request, "limit_price", None) if request is not None else
+                       getattr(order, "limit_price", None)),
                 order_id=(None if order is None else getattr(order, "order_id", None)),
                 fill_id=(None if fill is None else getattr(fill, "request_id", None)),
                 quantity=(getattr(fill, "quantity", None) if fill is not None else None),
@@ -355,6 +369,15 @@ class HistoricalDecisionIntelligence:
         )
         self._journal.commit()
         self._upsert_state(opportunity_id, symbol, event_type, source, observed_at, price)
+        if event_type == "TRIGGERED":
+            anchor = payload.get("structural_anchor")
+            if anchor:
+                self._journal.execute(
+                    "INSERT OR REPLACE INTO triggered_structural_episodes "
+                    "(anchor, opportunity_id, symbol, triggered_at) VALUES (?,?,?,?)",
+                    (str(anchor), opportunity_id, symbol, observed_at.isoformat()),
+                )
+                self._journal.commit()
 
     def _upsert_state(self, opportunity_id: str, symbol: str, event_type: str,
                       source: str, observed_at: datetime, price: Decimal | None) -> None:
@@ -417,6 +440,16 @@ class HistoricalDecisionIntelligence:
                  "entry_decision_at", "entry_decision_price", "recognition_source",
                  "last_stage", "updated_at")
         return dict(zip(names, row))
+
+    def _restore_discovery_lifecycle(self) -> None:
+        if self._journal is None:
+            return
+        rows = self._journal.execute(
+            "SELECT anchor FROM triggered_structural_episodes "
+            "ORDER BY triggered_at DESC LIMIT ?",
+            (self._discovery.maximum_opportunities,),
+        ).fetchall()
+        self._discovery.restore_triggered_anchors(tuple(str(row[0]) for row in rows))
 
     def diagnose_opportunity(self, opportunity_id: str) -> dict[str, object] | None:
         """Return durable, descriptive timing diagnostics for one opportunity."""
@@ -484,20 +517,32 @@ class HistoricalDecisionIntelligence:
             **movement,
         }
 
-    def _discover_memberships(self, value: object) -> tuple[tuple[str, ...], str | None, str | None]:
+    def _discover_memberships(self, value: object) -> tuple[tuple[str, ...], str | None, str | None, tuple[dict[str, object], ...]]:
         try:
             context, _ = _discovery_context(value)
             batch = self._discovery.observe(context)
-            rows = tuple(item for item in batch.detections
+            detections = getattr(batch, "lifecycle_detections", ()) or batch.detections
+            rows = tuple(item for item in detections
                          if item.state.value not in {"NOT_DETECTED", "UNAVAILABLE"})
             state = None if not rows else (
-                "FORMING" if any(item.state.value == "FORMING" for item in rows)
+                "TRIGGER_ARMED" if any(item.state.value == "TRIGGER_ARMED" for item in rows)
+                else "FORMING" if any(item.state.value == "FORMING" for item in rows)
                 else str(rows[0].state.value)
             )
+            readiness = tuple({
+                "strategy": item.strategy_id,
+                "state": item.state.value,
+                "trigger": item.trigger_level,
+                "structural_stop": item.structural_stop,
+                "opportunity_anchor": item.opportunity_anchor,
+                "detector_episode_id": item.detector_episode_id,
+                "observed_at": item.decision_cutoff,
+            } for item in rows if item.state.value == "TRIGGER_ARMED")
+            rows = tuple(sorted(rows, key=lambda item: item.strategy_id))
             return (tuple(dict.fromkeys(item.strategy_id for item in rows)),
-                    rows[0].opportunity_anchor if rows else None, state)
+                    rows[0].opportunity_anchor if rows else None, state, readiness)
         except Exception:
-            return (), None, None
+            return (), None, None, ()
 
     def _strategy_row(self, strategy: str) -> dict[str, object]:
         cached = self._strategy_cache.get(strategy)
@@ -539,7 +584,12 @@ class HistoricalDecisionIntelligence:
     @staticmethod
     def _stable_opportunity(symbol: str, timestamp: datetime, memberships: tuple[str, ...],
                             trigger: Decimal | None, anchor: str | None) -> str:
-        return hashlib.sha256(f"di2|{symbol}|{timestamp.date()}|{anchor}|{memberships}|{trigger}".encode()).hexdigest()
+        # Membership growth and small detector recalculations are observations
+        # on the same structural episode, not new opportunities.  The durable
+        # detector anchor is authoritative whenever it exists; the fallback is
+        # only for contexts that cannot expose one.
+        identity = anchor or f"fallback|{memberships}|{trigger}"
+        return hashlib.sha256(f"di2|{symbol}|{timestamp.date()}|{identity}".encode()).hexdigest()
 
     @staticmethod
     def _open_journal(path: Path) -> sqlite3.Connection:
@@ -567,6 +617,11 @@ class HistoricalDecisionIntelligence:
                            "triggered_at TEXT, triggered_price TEXT, "
                            "entry_decision_at TEXT, entry_decision_price TEXT, "
                            "recognition_source TEXT, last_stage TEXT, updated_at TEXT NOT NULL)")
+        connection.execute("CREATE TABLE IF NOT EXISTS triggered_structural_episodes "
+                           "(anchor TEXT PRIMARY KEY, opportunity_id TEXT NOT NULL, "
+                           "symbol TEXT NOT NULL, triggered_at TEXT NOT NULL)")
+        connection.execute("CREATE INDEX IF NOT EXISTS triggered_episode_time "
+                           "ON triggered_structural_episodes(triggered_at)")
         connection.commit()
         return connection
 
@@ -625,6 +680,10 @@ def _signal_lifecycle(signal: object) -> str:
 
 
 def _stage(state: str, trigger: Decimal | None, price: Decimal | None) -> str:
+    if state == "TRIGGER_ARMED":
+        # This explicit detector fact means the reference level and structural
+        # stop exist while the final crossing condition remains false.
+        return "TRIGGER_READY"
     if state == "TRIGGERED":
         return "POST_TRIGGER_EXTENDED" if trigger is not None and price is not None and price > trigger else "TRIGGERED"
     if state == "FORMING":

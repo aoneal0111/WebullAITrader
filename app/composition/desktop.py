@@ -34,6 +34,9 @@ from app.strategies.warrior_momentum.forward_runtime import management_context_a
 from app.trade_intelligence.runtime import TradeIntelligenceRuntimeObserver
 from app.trade_intelligence.taxonomy_paper_bridge import TaxonomyPaperExecutionBridge
 from app.trade_intelligence.decision_intelligence import HistoricalDecisionIntelligence
+from app.trade_intelligence.decision_intelligence.entry_timing import (
+    EntryIntelligenceConfig, HistoricalPaperEntryTimingPolicy, PAPER_ONLY,
+)
 from app.entry_opportunity_value import EntryOpportunityValueRuntimeObserver
 from app.adaptive_entry_research import AdaptiveWorkingEntryObserver
 from app.memory_observability import MemoryObservability
@@ -80,6 +83,7 @@ class DesktopComposition:
     chart_default_symbol: str | None = None
     warrior_forward_sidecar: WarriorDesktopSidecar | None = None
     autonomous_paper_bridge: AutonomousPaperExecutionBridge | None = None
+    paper_entry_intelligence: HistoricalPaperEntryTimingPolicy | None = None
     trade_intelligence_observer: TradeIntelligenceRuntimeObserver | None = None
     entry_opportunity_value_observer: EntryOpportunityValueRuntimeObserver | None = None
     adaptive_entry_research_observer: AdaptiveWorkingEntryObserver | None = None
@@ -295,6 +299,21 @@ def create_desktop_composition(
 
     paper_trading_commands = None
     decision_intelligence_observer = None
+    paper_environment = operational_configuration.environment.value == "PAPER"
+    paper_entry_intelligence = HistoricalPaperEntryTimingPolicy(
+        config=EntryIntelligenceConfig(
+            enabled=(
+                paper_environment
+                and operational_configuration.historical_entry_experiment_enabled
+            ),
+            mode=operational_configuration.historical_entry_experiment_mode,
+            environment=PAPER_ONLY,
+            journal_path=(
+                str(operational_configuration.historical_entry_experiment_path)
+                if paper_environment else None
+            ),
+        )
+    )
     market_event_observer = None
     if placement_runtime is None:
         def paper_runtime_event_sink(event: PaperRuntimeEvent) -> None:
@@ -312,6 +331,7 @@ def create_desktop_composition(
             fill = event.fill
             if decision_intelligence_observer is not None:
                 decision_intelligence_observer.observe_paper_event(event)
+            paper_entry_intelligence.observe_paper_event(event)
             trade_intelligence_observer.observe_paper_fact(
                 observation_id=f"{event.source}:{event.sequence}:{event.event_type}",
                 observed_at=event.timestamp, event_type=event.event_type,
@@ -444,7 +464,7 @@ def create_desktop_composition(
     taxonomy_execution_bridge = None
     if operational_configuration.environment.value == "PAPER":
         taxonomy_execution_bridge = TaxonomyPaperExecutionBridge()
-    decision_intelligence_observer = HistoricalDecisionIntelligence()
+        decision_intelligence_observer = HistoricalDecisionIntelligence()
     warrior_forward_sidecar = WarriorDesktopSidecar(
         enabled=operational_configuration.warrior_forward_paper_enabled,
         storage_path=operational_configuration.warrior_forward_capture_path,
@@ -474,6 +494,7 @@ def create_desktop_composition(
         ),
         taxonomy_execution_bridge=taxonomy_execution_bridge,
         decision_intelligence_observer=decision_intelligence_observer,
+        paper_entry_intelligence=paper_entry_intelligence,
     )
 
     adaptive_entry_research_observer = AdaptiveWorkingEntryObserver(
@@ -701,6 +722,7 @@ def create_desktop_composition(
         chart_default_symbol=chart_default_symbol,
         warrior_forward_sidecar=warrior_forward_sidecar,
         autonomous_paper_bridge=autonomous_paper_bridge,
+        paper_entry_intelligence=paper_entry_intelligence,
         trade_intelligence_observer=trade_intelligence_observer,
         entry_opportunity_value_observer=entry_opportunity_value_observer,
         adaptive_entry_research_observer=adaptive_entry_research_observer,

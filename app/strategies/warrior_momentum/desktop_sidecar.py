@@ -157,6 +157,7 @@ class WarriorDesktopSidecar:
         paper_campaign_id: str | None = None,
         taxonomy_execution_bridge: object | None = None,
         decision_intelligence_observer: object | None = None,
+        paper_entry_intelligence: object | None = None,
         report_worker_factory: Callable[..., WarriorReportWorker] = WarriorReportWorker,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -181,6 +182,7 @@ class WarriorDesktopSidecar:
         self._paper_campaign_id = paper_campaign_id
         self._taxonomy_execution_bridge = taxonomy_execution_bridge
         self._decision_intelligence_observer = decision_intelligence_observer
+        self._paper_entry_intelligence = paper_entry_intelligence
         self._report_worker_factory = report_worker_factory
         self._accept_execution = False
         self._clock = clock
@@ -419,6 +421,9 @@ class WarriorDesktopSidecar:
                     decision_intelligence_observer=getattr(
                         self._decision_intelligence_observer, "observe_decision", None,
                     ),
+                    paper_entry_intelligence=getattr(
+                        self._paper_entry_intelligence, "assess", None,
+                    ) if self.environment.upper() == "PAPER" else None,
                 )
                 self._restore_bars()
                 now = self._aware_now()

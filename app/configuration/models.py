@@ -184,3 +184,8 @@ class OperationalConfiguration:
     crypto_catalyst_federal_register_cadence_seconds: int = 7200
     crypto_catalyst_statuspage_cadence_seconds: int = 300
     crypto_catalyst_bybit_cadence_seconds: int = 900
+    historical_entry_experiment_enabled: bool = False
+    historical_entry_experiment_mode: str = "OBSERVE_ONLY"
+    historical_entry_experiment_path: Path = Path(
+        "data/paper_trade_experiment.sqlite3"
+    )

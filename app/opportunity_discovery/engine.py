@@ -29,7 +29,8 @@ class DiscoveryMetrics:
 
 def normalize_detections(detections: tuple[StrategyDetection, ...]) -> tuple[NormalizedOpportunity, ...]:
     detected = [item for item in detections if item.state in {
-        DetectionState.DETECTED, DetectionState.STRENGTHENING,
+        DetectionState.DETECTED, DetectionState.TRIGGER_ARMED,
+        DetectionState.STRENGTHENING,
     }]
     grouped = {}
     for item in detected:
@@ -69,6 +70,10 @@ class MultiStrategyDiscoveryEngine:
         self._episodes = OrderedDict()
         self._opportunities: OrderedDict[str, NormalizedOpportunity] = OrderedDict()
         self._symbols = OrderedDict()
+        # A structural anchor is a lifecycle identity. Once it crosses its
+        # trigger, a retrace cannot re-arm that same opportunity. A new
+        # structural anchor remains independently eligible.
+        self._triggered_anchors: OrderedDict[str, None] = OrderedDict()
         self._observations = self._evaluations = self._firings = 0
 
     def observe(self, context: DiscoveryContext) -> DiscoveryBatch:
@@ -81,7 +86,24 @@ class MultiStrategyDiscoveryEngine:
         )
         detections = self.registry.evaluate(context)
         self._evaluations += len(detections)
-        firings = tuple(item for item in detections if item.state in {DetectionState.DETECTED, DetectionState.STRENGTHENING})
+        previously_triggered = set(self._triggered_anchors)
+        triggered_now = {
+            item.opportunity_anchor for item in detections
+            if item.state is DetectionState.DETECTED
+        }
+        for anchor in sorted(triggered_now):
+            remember_bounded(
+                self._triggered_anchors, anchor, None,
+                limit=self.maximum_opportunities,
+            )
+        effective_detections = tuple(item for item in detections if not (
+            item.state is DetectionState.TRIGGER_ARMED
+            and item.opportunity_anchor in previously_triggered
+        ))
+        firings = tuple(item for item in effective_detections if item.state in {
+            DetectionState.DETECTED, DetectionState.TRIGGER_ARMED,
+            DetectionState.STRENGTHENING,
+        })
         self._firings += len(firings)
         new_episodes = []
         for item in firings:
@@ -117,7 +139,22 @@ class MultiStrategyDiscoveryEngine:
                 limit=self.maximum_opportunities,
             )
             merged.append(value)
-        return DiscoveryBatch(detections, tuple(new_episodes), tuple(merged), tuple(new_opportunities))
+        return DiscoveryBatch(
+            detections=detections,
+            new_detector_episodes=tuple(new_episodes),
+            opportunities=tuple(merged),
+            new_opportunity_ids=tuple(new_opportunities),
+            lifecycle_detections=effective_detections,
+        )
+
+    def restore_triggered_anchors(self, anchors: tuple[str, ...]) -> None:
+        """Restore recent durable structural lifecycle state after restart."""
+        for anchor in anchors:
+            if str(anchor).strip():
+                remember_bounded(
+                    self._triggered_anchors, str(anchor), None,
+                    limit=self.maximum_opportunities,
+                )
 
     def metrics(self) -> DiscoveryMetrics:
         memberships = [len(item.memberships) for item in self._opportunities.values()]
@@ -131,4 +168,5 @@ class MultiStrategyDiscoveryEngine:
         return {"symbol_count": len(self._symbols),
                 "episode_count": len(self._episodes),
                 "opportunity_count": len(self._opportunities),
-                "membership_count": sum(len(item.memberships) for item in self._opportunities.values())}
+                "membership_count": sum(len(item.memberships) for item in self._opportunities.values()),
+                "triggered_anchor_count": len(self._triggered_anchors)}

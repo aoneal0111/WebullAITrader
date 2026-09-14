@@ -16,7 +16,8 @@ def strategy_discovery_report(registry, batches, metrics):
     raw = Counter()
     for batch in batches:
         for item in batch.detections:
-            if item.state in {DetectionState.DETECTED, DetectionState.STRENGTHENING}:
+            if item.state in {DetectionState.DETECTED, DetectionState.TRIGGER_ARMED,
+                              DetectionState.STRENGTHENING}:
                 raw[item.strategy_id] += 1
                 episodes[(item.strategy_id, item.detector_episode_id)] += 1
         for item in batch.opportunities:

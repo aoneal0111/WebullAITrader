@@ -46,6 +46,9 @@ class DetectionState(StrEnum):
     NOT_DETECTED = "NOT_DETECTED"
     FORMING = "FORMING"
     DETECTED = "DETECTED"
+    # The detector has established the structure, trigger and invalidation
+    # geometry, but the final trigger-crossing condition is not yet true.
+    TRIGGER_ARMED = "TRIGGER_ARMED"
     STRENGTHENING = "STRENGTHENING"
     WEAKENING = "WEAKENING"
     INVALIDATED = "INVALIDATED"
@@ -339,3 +342,6 @@ class DiscoveryBatch:
     new_detector_episodes: tuple[str, ...]
     opportunities: tuple[NormalizedOpportunity, ...]
     new_opportunity_ids: tuple[str, ...]
+    # Raw detector output remains available for research diagnostics. This is
+    # the lifecycle-filtered view consumed by runtime observers.
+    lifecycle_detections: tuple[StrategyDetection, ...] = ()

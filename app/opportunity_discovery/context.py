@@ -10,16 +10,18 @@ HUNDRED = Decimal("100")
 
 
 def structural_anchor(context: DiscoveryContext, impulse: Impulse | None) -> str:
-    """Strategy-independent 15-minute structural identity.
+    """Strategy-independent structural episode identity.
 
     Quotes, ranks, scanner scores, and ordinary price changes are excluded.
-    The bucket changes only as the market advances to a new structural window.
+    The detector's impulse boundary, rather than an observation-time bucket,
+    identifies the structural episode.
     """
 
+    # Use the detector's structural impulse boundary when available. The
+    # observation cutoff is only a fallback; clock buckets must not define an
+    # economic episode by themselves.
     timestamp = context.decision_cutoff if impulse is None else impulse.start_time
-    minute = timestamp.minute - timestamp.minute % 15
-    window = timestamp.replace(minute=minute, second=0, microsecond=0)
-    return f"{context.symbol.upper()}|{context.session_date.isoformat()}|{context.session.upper()}|{window.isoformat()}"
+    return f"{context.symbol.upper()}|{context.session_date.isoformat()}|{context.session.upper()}|{timestamp.isoformat()}"
 
 
 def build_impulse(context: DiscoveryContext) -> Impulse | None:

@@ -67,7 +67,8 @@ class ExecutionCandidate:
     execution_identity: str
 
     def __post_init__(self) -> None:
-        if self.formation_state not in {DetectionState.DETECTED, DetectionState.STRENGTHENING}:
+        if self.formation_state not in {DetectionState.DETECTED, DetectionState.TRIGGER_ARMED,
+                                        DetectionState.STRENGTHENING}:
             raise ValueError("execution candidate must be an active detection")
         if self.trigger_price <= self.structural_stop or self.risk_per_share <= 0:
             raise ValueError("execution candidate requires positive structural risk")
@@ -246,7 +247,8 @@ class MultiStrategyExecutionAdapter:
                 evaluation["rejection_reason"] = rejection
                 evaluations.append(evaluation)
                 continue
-            if item.state not in {DetectionState.DETECTED, DetectionState.STRENGTHENING}:
+            if item.state not in {DetectionState.DETECTED, DetectionState.TRIGGER_ARMED,
+                                  DetectionState.STRENGTHENING}:
                 rejection = AdapterRejection.FORMING_NOT_TRIGGERED
                 evaluation["rejection_reason"] = rejection
                 evaluations.append(evaluation)
@@ -319,7 +321,7 @@ class MultiStrategyExecutionAdapter:
             selected_execution_strategy=selected.strategy_id,
             suppressed_duplicate_strategies=suppressed,
             selection_score=selected_score,
-            selection_priority=2 if selected.state is DetectionState.DETECTED else 1,
+        selection_priority=2 if selected.state is DetectionState.DETECTED else 1,
             execution_identity=execution_identity,
         )
         self._record(diagnostics, strategies_evaluated=tuple(item.strategy_id for item in memberships),

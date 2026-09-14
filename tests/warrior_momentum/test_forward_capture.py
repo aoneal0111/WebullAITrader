@@ -29,6 +29,12 @@ from app.strategies.warrior_momentum.autonomous_paper import (
     PaperExitSubmissionDecision, PaperExitSubmissionState,
     AutonomousPaperExecutionBridge,
 )
+from app.paper_trade_experiment.harness import PaperExperimentJournal
+from app.trade_intelligence.decision_intelligence.entry_timing import (
+    EntryIntelligenceConfig, HistoricalPaperEntryTimingPolicy, PAPER_TREATMENT,
+)
+from app.trade_intelligence.decision_intelligence.service import HistoricalDecisionIntelligence
+from app.trade_intelligence.taxonomy_paper_bridge import TaxonomyPaperExecutionBridge
 
 T0 = datetime(2026, 8, 10, 14, 30, tzinfo=UTC)
 
@@ -302,6 +308,129 @@ def test_after_hours_signal_reaches_normal_paper_gateway_once(tmp_path: Path) ->
         assert len(composition.order_book.history()) == 1
         assert composition.order_book.history()[0].symbol == signal.symbol
     finally:
+        writer.close()
+        composition.close()
+
+
+def test_enabled_entry_treatment_uses_real_armed_taxonomy_path_once(tmp_path: Path) -> None:
+    """The enabled seam uses detector output and the normal PAPER gateway."""
+    store = ForwardCaptureStore(tmp_path / "entry-intelligence.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    journal = PaperExperimentJournal(tmp_path / "experiment.sqlite3")
+    experiment = HistoricalPaperEntryTimingPolicy(
+        config=EntryIntelligenceConfig(
+            enabled=True, mode=PAPER_TREATMENT, allocation_percent=0,
+            journal_path=None,
+        ),
+        journal=journal,
+    )
+    intelligence = HistoricalDecisionIntelligence(
+        journal_path=tmp_path / "intelligence.sqlite3",
+    )
+    intelligence.start("PAPER")
+    composition = create_paper_trading_command_composition(at=T0 + timedelta(minutes=20))
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    pretrigger = bars()
+    pretrigger = (*pretrigger[:-1], bar(4, "9.96", "10", "9.94", "9.95", "300"))
+    try:
+        forward = WarriorForwardCaptureService(
+            store, writer,
+            paper_entry_submitter=bridge.submit_entry,
+            taxonomy_execution_bridge=TaxonomyPaperExecutionBridge(),
+            decision_intelligence_observer=intelligence.observe_decision,
+            paper_entry_intelligence=experiment.assess,
+        )
+        candidate, signal = forward.observe(
+            point(bars=pretrigger), account=account(),
+        )
+        assert candidate.setup is not None
+        assert len(composition.order_book.history()) == 1
+        order = composition.order_book.history()[0]
+        assert order.request.strategy_lifecycle_id
+        reports = composition.gateway.process_market_event(MarketEvent(
+            1, session_timestamp(1, at=T0 + timedelta(minutes=20)), "XYZ", "armed-test",
+            MarketEventType.QUOTE,
+            QuotePayload(D("9.99"), D("10"), D("1000"), D("1000")),
+        ))
+        assert reports and reports[0].fills
+        # The later ordinary trigger is evaluated through the same forward
+        # runtime; it is shadowed because the treatment already owns the
+        # opportunity's single real lifecycle.
+        forward.observe(point(), account=account())
+        assignment = journal._connection.execute(
+            "SELECT assignment_id, arm FROM experiment_assignments"
+        ).fetchone()
+        assert assignment[1] == "TREATMENT"
+        assert journal.assignment_for_lifecycle(order.request.strategy_lifecycle_id)[0] == assignment[0]
+        shadow_types = {
+            row[0] for row in journal._connection.execute(
+                "SELECT shadow_type FROM experiment_shadows WHERE assignment_id=?",
+                (assignment[0],),
+            )
+        }
+        assert "CONTROL_DECISION" in shadow_types
+        assert len(composition.order_book.history()) == 1
+    finally:
+        intelligence.close()
+        journal.close()
+        writer.close()
+        composition.close()
+
+
+def test_enabled_entry_experiment_control_uses_normal_paper_path(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "control-entry-intelligence.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    journal = PaperExperimentJournal(tmp_path / "control-experiment.sqlite3")
+    experiment = HistoricalPaperEntryTimingPolicy(
+        config=EntryIntelligenceConfig(
+            enabled=True, mode=PAPER_TREATMENT, allocation_percent=100,
+        ),
+        journal=journal,
+    )
+    intelligence = HistoricalDecisionIntelligence(
+        journal_path=tmp_path / "control-intelligence.sqlite3",
+    )
+    intelligence.start("PAPER")
+    composition = create_paper_trading_command_composition(at=T0 + timedelta(minutes=20))
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    forward = WarriorForwardCaptureService(
+        store, writer, paper_entry_submitter=bridge.submit_entry,
+        taxonomy_execution_bridge=TaxonomyPaperExecutionBridge(),
+        decision_intelligence_observer=intelligence.observe_decision,
+        paper_entry_intelligence=experiment.assess,
+    )
+    try:
+        _candidate, signal = forward.observe(point(), account=account())
+        assert signal is not None
+        assert len(composition.order_book.history()) == 1
+        assignment = journal._connection.execute(
+            "SELECT assignment_id, arm FROM experiment_assignments"
+        ).fetchone()
+        assert assignment[1] == "CONTROL"
+        order = composition.order_book.history()[0]
+        assert journal.assignment_for_lifecycle(order.request.strategy_lifecycle_id)[0] == assignment[0]
+        reports = composition.gateway.process_market_event(MarketEvent(
+            1, session_timestamp(1, at=T0 + timedelta(minutes=20)), "XYZ", "control-test",
+            MarketEventType.QUOTE,
+            QuotePayload(signal.entry_trigger - D("0.01"), signal.entry_trigger,
+                         D("1000"), D("1000")),
+        ))
+        assert reports and reports[0].fills
+        assert not any(
+            row[0] == "TREATMENT"
+            for row in journal._connection.execute(
+                "SELECT arm FROM experiment_assignments"
+            )
+        )
+    finally:
+        intelligence.close()
+        journal.close()
         writer.close()
         composition.close()
 

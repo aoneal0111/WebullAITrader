@@ -221,7 +221,12 @@ def _break(a, level, reason):
     if level is None or len(bars) < 2: return _none("REFERENCE_LEVEL_UNAVAILABLE")
     detected = bars[-1].close > level and bars[-2].close <= level
     stop = min(b.low for b in bars[-3:])
-    return _structured(detected, level, stop, reason)
+    if detected:
+        return DetectionState.DETECTED, level, stop, (reason,), ()
+    # A known reference level plus a valid structural stop is an explicit
+    # detector fact that the breakout setup is armed.  It is not a trigger and
+    # does not change the existing DETECTED condition.
+    return DetectionState.TRIGGER_ARMED, level, stop, ("TRIGGER_ARMED",), ()
 
 
 def _structured(detected, trigger, stop, reason, quality=()):

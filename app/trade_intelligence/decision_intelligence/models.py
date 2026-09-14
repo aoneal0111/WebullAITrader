@@ -52,6 +52,7 @@ class HistoricalIntelligenceResult:
     primary_strategy: str | None = None
     membership_signature: str = ""
     opportunity_id: str | None = None
+    structural_anchor: str | None = None
     trading_date: str | None = None
     session: str | None = None
     first_recognized_at: datetime | None = None
@@ -84,6 +85,9 @@ class HistoricalIntelligenceResult:
     price_beyond_trigger: Decimal | None = None
     price_beyond_trigger_percent: Decimal | None = None
     setup_evidence: tuple[dict[str, object], ...] = ()
+    # Readiness is attributable to detector memberships, never to the
+    # opportunity aggregate. These are point-in-time detector facts.
+    readiness_memberships: tuple[dict[str, object], ...] = ()
     context_evidence: tuple[dict[str, object], ...] = ()
     failure_evidence: tuple[dict[str, object], ...] = ()
     confidence: str = "MISSING_CONTEXT"

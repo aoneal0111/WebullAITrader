@@ -19,7 +19,8 @@ from .discovery_runtime import (
     StrategyCoverage,
 )
 
-_FIRING_STATES = {DetectionState.DETECTED, DetectionState.STRENGTHENING}
+_FIRING_STATES = {DetectionState.DETECTED, DetectionState.TRIGGER_ARMED,
+                  DetectionState.STRENGTHENING}
 _ADD_ON_FAMILIES = {"CONTINUATION", "PULLBACK", "RECLAIM", "COMPRESSION_EXPANSION"}
 
 
