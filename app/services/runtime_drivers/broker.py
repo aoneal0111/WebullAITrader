@@ -1047,7 +1047,16 @@ class DesktopBrokerRuntimeDriver:
         )
         if observed_at - self._last_scanner_detail_at >= 10.0:
             self._last_scanner_detail_at = observed_at
-            self._log_scanner_qualification_details()
+            try:
+                self._log_scanner_qualification_details()
+            except Exception:
+                # Qualification diagnostics are observability only. A partial
+                # scanner snapshot or logging defect must not terminate the
+                # market-data receive loop.
+                _SCANNER_LOGGER.exception(
+                    "event_type=scanner_qualification_diagnostics_failed "
+                    "status=diagnostic_error"
+                )
 
     def _log_scanner_qualification_details(self) -> None:
         diagnostics = getattr(self._scanner, "diagnostic_results", None)
@@ -1099,7 +1108,18 @@ class DesktopBrokerRuntimeDriver:
                     _iso_or_dash(state.snapshot_timestamp),
                 )
                 continue
-            assert decision is not None
+            if decision is None:
+                _SCANNER_LOGGER.info(
+                    "event_type=scanner_qualification symbol=%s "
+                    "status=incomplete missing=qualification_decision "
+                    "quote_timestamp=%s trade_timestamp=%s "
+                    "snapshot_timestamp=%s",
+                    state.symbol,
+                    _iso_or_dash(state.quote_timestamp),
+                    _iso_or_dash(state.trade_timestamp),
+                    _iso_or_dash(state.snapshot_timestamp),
+                )
+                continue
             _SCANNER_LOGGER.info(
                 "event_type=scanner_qualification symbol=%s status=%s "
                 "price=%s previous_close=%s current_volume=%s "

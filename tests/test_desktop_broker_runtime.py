@@ -1000,3 +1000,128 @@ def test_candidate_freshness_does_not_trigger_transport_recovery() -> None:
 
     assert scanner.recover_calls == 0
     assert driver._scanner_events_since_observation == 1
+
+
+def test_scanner_qualification_diagnostics_handles_missing_decision(caplog) -> None:
+    """Warmup observations without a cached decision remain incomplete."""
+    driver = object.__new__(DesktopBrokerRuntimeDriver)
+    incomplete_state = SimpleNamespace(
+        symbol="AEHL",
+        quote_timestamp=None,
+        trade_timestamp=None,
+        snapshot_timestamp=None,
+    )
+    incomplete = SimpleNamespace(
+        state=incomplete_state,
+        observation=SimpleNamespace(),
+        missing_fields=(),
+    )
+    complete_state = SimpleNamespace(
+        symbol="COMPLETE",
+        quote_timestamp=None,
+        trade_timestamp=None,
+        snapshot_timestamp=None,
+    )
+    complete_observation = SimpleNamespace(
+        symbol="COMPLETE",
+        price=Decimal("10"),
+        previous_close=Decimal("9"),
+        current_volume=Decimal("1000"),
+        average_30_day_volume=Decimal("100"),
+        float_shares=Decimal("1000000"),
+        bid=Decimal("9.99"),
+        ask=Decimal("10.01"),
+        catalyst=SimpleNamespace(value="NONE"),
+        catalyst_status=SimpleNamespace(value="FALSE"),
+        tradable=True,
+        halted=False,
+    )
+    complete_decision = SimpleNamespace(
+        qualified=True,
+        metrics=SimpleNamespace(
+            percentage_change=Decimal("11"),
+            relative_volume=Decimal("10"),
+            dollar_volume=Decimal("10000"),
+            spread_percent=Decimal("0.2"),
+        ),
+        failed_rules=(),
+    )
+    complete = SimpleNamespace(
+        state=complete_state,
+        observation=complete_observation,
+        missing_fields=(),
+    )
+    driver._scanner = SimpleNamespace(
+        diagnostic_results=lambda *, limit: (
+            (incomplete, None), (complete, complete_decision),
+        ),
+        qualification_diagnostics=lambda *, example_limit: None,
+    )
+
+    # The production diagnostic path must not assert or manufacture a
+    # qualification decision for this partial state.
+    with caplog.at_level("INFO", logger="atlas.scanner"):
+        driver._log_scanner_qualification_details()
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "symbol=AEHL" in message
+        and "status=incomplete" in message
+        and "missing=qualification_decision" in message
+        for message in messages
+    )
+    assert any(
+        "symbol=COMPLETE" in message and "status=qualified" in message
+        for message in messages
+    )
+
+
+def test_market_data_receive_survives_incomplete_scanner_diagnostic() -> None:
+    """A diagnostic gap cannot terminate subsequent market-event processing."""
+
+    class Cycle:
+        events_read = 0
+
+    class Scanner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run_available(self):
+            self.calls += 1
+            if self.calls >= 2:
+                stop_event.set()
+            return Cycle()
+
+        def diagnostic_results(self, *, limit):
+            state = SimpleNamespace(
+                symbol="AEHL",
+                quote_timestamp=None,
+                trade_timestamp=None,
+                snapshot_timestamp=None,
+            )
+            result = SimpleNamespace(
+                state=state,
+                observation=SimpleNamespace(),
+                missing_fields=(),
+            )
+            return ((result, None),)
+
+        def qualification_diagnostics(self, *, example_limit):
+            return None
+
+    stop_event = Event()
+    scanner = Scanner()
+    driver = object.__new__(DesktopBrokerRuntimeDriver)
+    driver._scanner = scanner
+    driver._scanner_events_since_observation = 0
+    driver._last_scanner_observation_at = 0.0
+    driver._last_scanner_detail_at = 0.0
+    driver._cycles_completed = 0
+    driver._market_data_stop = Event()
+    driver._scanner_log = lambda *args, **kwargs: None
+    driver._run_feed_watchdog = lambda: None
+    driver._reconcile_temporal_orders = lambda: None
+
+    driver._receive_market_data(stop_event)
+
+    assert scanner.calls == 2
