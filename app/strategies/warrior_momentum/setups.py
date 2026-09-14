@@ -2,13 +2,101 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
+from dataclasses import replace
 from decimal import Decimal
+from hashlib import sha256
 
 from .configuration import SetupConfig
 from .features import build_features, contiguous_tail
 from .models import MinuteBar, ReasonCode, SetupDetection, SetupState, SetupType, StopModel
 
 HUNDRED = Decimal("100")
+
+
+def _structural_episode_id(kind: SetupType, bars: tuple[MinuteBar, ...], anchor_count: int) -> str:
+    """Identify the detector's current completed-bar structure.
+
+    The bar timestamps are sequence identity/provenance, not a cooldown or a
+    wall-clock reset.  Prices and quotes are deliberately excluded so a
+    repeated evaluation of one episode remains the same opportunity.
+    """
+    # Locate the latest completed breakout transition.  Its origin is the
+    # bar that established the prior structural high, so later continuation
+    # bars do not slide the identity.  A later breakout transition creates a
+    # new same-family episode.  Prices select provenance only; timestamps own
+    # the identity.
+    evidence = bars
+    pivot = None
+    for index in range(1, len(evidence)):
+        prior = evidence[:index]
+        resistance = max(item.high for item in prior)
+        if evidence[index].close > resistance and evidence[index].high >= resistance:
+            pivot = max(prior, key=lambda item: item.high)
+    if pivot is None:
+        pivot = max(evidence, key=lambda item: item.high)
+    material = "|".join((kind.value, pivot.timestamp.isoformat()))
+    return "LEGACY_EPISODE|" + sha256(material.encode()).hexdigest()
+
+
+def _with_episode(detection: SetupDetection, bars: tuple[MinuteBar, ...], anchor_count: int) -> SetupDetection:
+    return replace(
+        detection,
+        structural_episode_id=_structural_episode_id(detection.setup_type, bars, anchor_count),
+        structural_anchor=_structural_anchor(detection.setup_type, bars, anchor_count),
+    )
+
+
+def _structural_anchor(kind: SetupType, bars: tuple[MinuteBar, ...], anchor_count: int) -> str:
+    """Return detector provenance for the current setup origin."""
+    evidence = bars
+    origin = None
+    for index in range(1, len(evidence)):
+        prior = evidence[:index]
+        resistance = max(item.high for item in prior)
+        if evidence[index].close > resistance and evidence[index].high >= resistance:
+            origin = max(prior, key=lambda item: item.high)
+    if origin is None:
+        origin = max(evidence[:-1] or evidence, key=lambda item: item.high)
+    return "|".join((kind.value, origin.timestamp.isoformat()))
+
+
+class LegacySetupEpisodeTracker:
+    """Bounded detector-owned current episode state for legacy Warrior."""
+
+    def __init__(self, *, maximum_symbols: int = 500) -> None:
+        if maximum_symbols <= 0:
+            raise ValueError("maximum legacy episode capacity must be positive")
+        self.maximum_symbols = maximum_symbols
+        self._current: OrderedDict[str, tuple[SetupType, str, str, str]] = OrderedDict()
+
+    def observe(self, symbol: str, setup: SetupDetection, *, session: str) -> SetupDetection:
+        normalized = symbol.strip().upper()
+        normalized_session = session.strip().upper()
+        anchor = setup.structural_anchor or setup.structural_episode_id or setup.setup_type.value
+        prior = self._current.get(normalized)
+        if (
+            prior is not None
+            and prior[0] is setup.setup_type
+            and prior[1] == anchor
+            and prior[3] == normalized_session
+        ):
+            episode_id = prior[2]
+        else:
+            episode_id = _episode_token(normalized, normalized_session, setup.setup_type, anchor)
+        self._current[normalized] = (setup.setup_type, anchor, episode_id, normalized_session)
+        self._current.move_to_end(normalized)
+        while len(self._current) > self.maximum_symbols:
+            self._current.popitem(last=False)
+        return replace(setup, structural_episode_id=episode_id, structural_anchor=anchor)
+
+    def invalidate(self, symbol: str) -> None:
+        self._current.pop(symbol.strip().upper(), None)
+
+
+def _episode_token(symbol: str, session: str, kind: SetupType, anchor: str) -> str:
+    material = "|".join(("LEGACY_EPISODE_V2", symbol, session.strip().upper(), kind.value, anchor))
+    return "LEGACY_EPISODE|" + sha256(material.encode()).hexdigest()
 
 
 def _unknown(kind: SetupType) -> SetupDetection:
@@ -34,10 +122,10 @@ def detect_hod_breakout(bars: tuple[MinuteBar, ...], config: SetupConfig = Setup
     trigger = resistance * (Decimal("1") + config.breakout_buffer_percent / HUNDRED)
     stop = min(bar.low for bar in prior[-config.recent_swing_lookback:])
     if latest.close >= trigger and near and consolidation and volume_ok:
-        return SetupDetection(kind, SetupState.TRIGGERED, Decimal("90"), trigger, stop, StopModel.RECENT_SWING_LOW, resistance)
+        return _with_episode(SetupDetection(kind, SetupState.TRIGGERED, Decimal("90"), trigger, stop, StopModel.RECENT_SWING_LOW, resistance), ordered, config.minimum_consolidation_bars + 1)
     if near and consolidation:
-        return SetupDetection(kind, SetupState.FORMING, Decimal("65"), trigger, stop, StopModel.RECENT_SWING_LOW, resistance,
-                              (() if volume_ok else (ReasonCode.BREAKOUT_NOT_CONFIRMED,)))
+        return _with_episode(SetupDetection(kind, SetupState.FORMING, Decimal("65"), trigger, stop, StopModel.RECENT_SWING_LOW, resistance,
+                              (() if volume_ok else (ReasonCode.BREAKOUT_NOT_CONFIRMED,))), ordered, config.minimum_consolidation_bars + 1)
     return SetupDetection(kind, SetupState.NOT_FORMED, Decimal("10"), resistance=resistance, reason_codes=(ReasonCode.NO_SETUP,))
 
 
@@ -65,10 +153,10 @@ def detect_micro_pullback(bars: tuple[MinuteBar, ...], config: SetupConfig = Set
     trigger = resistance * (Decimal("1") + config.breakout_buffer_percent / HUNDRED)
     base_ok = impulse_change >= config.minimum_impulse_percent and depth <= config.maximum_micro_pullback_percent and controlled and reduced_selling
     if base_ok and latest.close >= trigger:
-        return SetupDetection(kind, SetupState.TRIGGERED, Decimal("88"), trigger, stop, StopModel.MICRO_PULLBACK_LOW, resistance)
+        return _with_episode(SetupDetection(kind, SetupState.TRIGGERED, Decimal("88"), trigger, stop, StopModel.MICRO_PULLBACK_LOW, resistance), ordered, required_bars)
     if base_ok:
-        return SetupDetection(kind, SetupState.FORMING, Decimal("70"), trigger, stop, StopModel.MICRO_PULLBACK_LOW, resistance,
-                              (ReasonCode.BREAKOUT_NOT_CONFIRMED,))
+        return _with_episode(SetupDetection(kind, SetupState.FORMING, Decimal("70"), trigger, stop, StopModel.MICRO_PULLBACK_LOW, resistance,
+                              (ReasonCode.BREAKOUT_NOT_CONFIRMED,)), ordered, required_bars)
     return SetupDetection(kind, SetupState.NOT_FORMED, Decimal("10"), reason_codes=(ReasonCode.NO_SETUP,))
 
 
@@ -99,10 +187,10 @@ def detect_bull_flag(bars: tuple[MinuteBar, ...], config: SetupConfig = SetupCon
     valid = (impulse >= config.minimum_impulse_percent and
              config.bull_flag_minimum_retracement <= retracement <= config.bull_flag_maximum_retracement and controlled)
     if valid and latest.close >= trigger:
-        return SetupDetection(kind, SetupState.TRIGGERED, Decimal("92"), trigger, flag_low, StopModel.FLAG_LOW, resistance)
+        return _with_episode(SetupDetection(kind, SetupState.TRIGGERED, Decimal("92"), trigger, flag_low, StopModel.FLAG_LOW, resistance), ordered, required_bars)
     if valid:
-        return SetupDetection(kind, SetupState.FORMING, Decimal("72"), trigger, flag_low, StopModel.FLAG_LOW, resistance,
-                              (ReasonCode.BREAKOUT_NOT_CONFIRMED,))
+        return _with_episode(SetupDetection(kind, SetupState.FORMING, Decimal("72"), trigger, flag_low, StopModel.FLAG_LOW, resistance,
+                              (ReasonCode.BREAKOUT_NOT_CONFIRMED,)), ordered, required_bars)
     return SetupDetection(kind, SetupState.NOT_FORMED, Decimal("10"), reason_codes=(ReasonCode.NO_SETUP,))
 
 
@@ -122,10 +210,10 @@ def detect_flat_top(bars: tuple[MinuteBar, ...], config: SetupConfig = SetupConf
     trigger = resistance * (Decimal("1") + config.breakout_buffer_percent / HUNDRED)
     valid = len(tests) >= config.flat_top_tests and higher_lows
     if valid and latest.close >= trigger:
-        return SetupDetection(kind, SetupState.TRIGGERED, Decimal("86"), trigger, stop, StopModel.BREAKOUT_LEVEL, resistance)
+        return _with_episode(SetupDetection(kind, SetupState.TRIGGERED, Decimal("86"), trigger, stop, StopModel.BREAKOUT_LEVEL, resistance), ordered, config.flat_top_tests + 2)
     if valid:
-        return SetupDetection(kind, SetupState.FORMING, Decimal("68"), trigger, stop, StopModel.BREAKOUT_LEVEL, resistance,
-                              (ReasonCode.BREAKOUT_NOT_CONFIRMED,))
+        return _with_episode(SetupDetection(kind, SetupState.FORMING, Decimal("68"), trigger, stop, StopModel.BREAKOUT_LEVEL, resistance,
+                              (ReasonCode.BREAKOUT_NOT_CONFIRMED,)), ordered, config.flat_top_tests + 2)
     return SetupDetection(kind, SetupState.NOT_FORMED, Decimal("10"), resistance=resistance, reason_codes=(ReasonCode.NO_SETUP,))
 
 
@@ -166,4 +254,4 @@ def hod_proximity(bars: tuple[MinuteBar, ...]) -> Decimal | None:
     return None if features is None else features.distance_from_hod_percent
 
 
-__all__ = ["detect_hod_breakout", "detect_micro_pullback", "detect_bull_flag", "detect_flat_top", "detect_best_setup", "hod_proximity"]
+__all__ = ["LegacySetupEpisodeTracker", "detect_hod_breakout", "detect_micro_pullback", "detect_bull_flag", "detect_flat_top", "detect_best_setup", "hod_proximity"]

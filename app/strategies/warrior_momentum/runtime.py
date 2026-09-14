@@ -19,12 +19,13 @@ from .models import (
     ReasonCode, SetupState,
 )
 from .scoring import momentum_score
-from .setups import detect_best_setup
+from .setups import LegacySetupEpisodeTracker, detect_best_setup
 
 
 class WarriorMomentumRuntime:
     def __init__(self, config: WarriorMomentumConfig = WarriorMomentumConfig()) -> None:
         self.config = config
+        self._legacy_episode_tracker = LegacySetupEpisodeTracker()
 
     def discover(self, observation: ScannerObservation, bars: tuple[MinuteBar, ...], *, session: str,
                  top_gapper: bool = False) -> MomentumCandidate:
@@ -32,6 +33,12 @@ class WarriorMomentumRuntime:
         metrics = calculate_metrics(observation)
         features = build_features(bars)
         setup = detect_best_setup(bars, self.config.setups)
+        if setup is None:
+            self._legacy_episode_tracker.invalidate(observation.symbol)
+        else:
+            setup = self._legacy_episode_tracker.observe(
+                observation.symbol, setup, session=session,
+            )
         supported_catalyst = (
             observation.catalyst in {CatalystType.EARNINGS, CatalystType.SEC_FILING}
             or (observation.catalyst is CatalystType.NONE and observation.catalyst_status is not CatalystStatus.TRUE)
@@ -105,6 +112,8 @@ class WarriorMomentumRuntime:
             taxonomy_opportunity_anchor=setup.taxonomy_opportunity_anchor,
             taxonomy_execution_identity=setup.taxonomy_execution_identity,
             taxonomy_invalidation_reason=setup.taxonomy_invalidation_reason,
+            structural_episode_id=setup.structural_episode_id,
+            structural_anchor=setup.structural_anchor,
         )
 
     def assess_entry(self, candidate: MomentumCandidate) -> tuple[MomentumCandidate, MomentumEntrySignal | None]:

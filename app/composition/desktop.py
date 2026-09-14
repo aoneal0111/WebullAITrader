@@ -410,6 +410,7 @@ def create_desktop_composition(
             mode=configuration.runtime_mode.value,
             enabled=operational_configuration.warrior_forward_paper_enabled,
             order_book=paper_trading_commands.order_book,
+            durable_store=paper_trading_commands.durable_store,
             position_quantity_source=position_quantity,
             management_context_source=lambda symbol: management_context_available(
                 operational_configuration.warrior_forward_capture_path, symbol,

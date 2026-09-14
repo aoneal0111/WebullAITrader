@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_FLOOR
@@ -244,7 +245,11 @@ class WarriorForwardCaptureService:
         # authorization or order submission.
         from app.trade_intelligence.opportunity_memory import OpportunityMemory
         self.opportunity_memory = OpportunityMemory()
-        self._memory_opportunity_ids: dict[str, str] = {}
+        # These are latest-only continuity hints.  Durable opportunity
+        # history lives in OpportunityMemory/forward capture; the hints are
+        # bounded to that existing opportunity-memory capacity.
+        self._memory_opportunity_ids: OrderedDict[str, str] = OrderedDict()
+        self._memory_geometry_keys: OrderedDict[str, str] = OrderedDict()
         self.runtime = WarriorMomentumRuntime(config)
         self._last_transition: dict[str, ForwardTransition] = {}
         # Compact, latest-only execution-pursuit diagnostics.  This is not a
@@ -438,6 +443,13 @@ class WarriorForwardCaptureService:
                     ))),
                 )
                 signal = None
+        # The symbol cache is only a continuity hint.  Once a terminal,
+        # unfilled lifecycle has been removed, a changed structural geometry
+        # is a new opportunity and must not inherit the old executable
+        # authority or DI identity.  Active positions and working entries are
+        # deliberately stronger authorities and keep the existing identity.
+        if signal is not None:
+            self._reconcile_structural_opportunity(symbol, signal)
         intelligence_result = None
         treatment_signal = None
         intelligence_candidate = (
@@ -510,7 +522,7 @@ class WarriorForwardCaptureService:
             or (None if memory_signal is None else opportunity_identity(memory_signal))
         )
         if memory_opportunity_id is not None:
-            self._memory_opportunity_ids[symbol] = memory_opportunity_id
+            self._remember_memory_identity(symbol, memory_opportunity_id)
             self.opportunity_memory.observe(
                 opportunity_id=memory_opportunity_id,
                 symbol=symbol,
@@ -746,6 +758,72 @@ class WarriorForwardCaptureService:
                 pass
         self._submit_records(tuple(records))
         return assessed, signal
+
+    def _remember_memory_identity(self, symbol: str, opportunity_id: str) -> None:
+        """Retain one latest identity per symbol with deterministic eviction."""
+        normalized = symbol.strip().upper()
+        self._memory_opportunity_ids[normalized] = opportunity_id
+        self._memory_opportunity_ids.move_to_end(normalized)
+        geometry = self._memory_geometry_keys.get(normalized)
+        if geometry is not None:
+            self._memory_geometry_keys.move_to_end(normalized)
+        limit = self.opportunity_memory.max_active
+        while len(self._memory_opportunity_ids) > limit:
+            evicted, _ = self._memory_opportunity_ids.popitem(last=False)
+            self._memory_geometry_keys.pop(evicted, None)
+
+    def _reconcile_structural_opportunity(
+        self, symbol: str, signal: MomentumEntrySignal,
+    ) -> str:
+        """Select the current structural opportunity without using a timer.
+
+        ``opportunity_identity`` is supplied by normalized discovery or the
+        detector-owned legacy episode.  Executable prices are evidence on that
+        identity, not a second identity system.
+        """
+        current = opportunity_identity(signal)
+        previous = self._memory_opportunity_ids.get(symbol)
+        prior_geometry = self._memory_geometry_keys.get(symbol)
+        if previous is None:
+            self._remember_memory_identity(symbol, current)
+            self._memory_geometry_keys[symbol] = current
+            return current
+        if prior_geometry is None:
+            # A restored/taxonomy-owned ID has no local geometry authority.
+            # Preserve it until the owning detector publishes a replacement
+            # identity rather than guessing from a synthetic test signal.
+            self._memory_geometry_keys[symbol] = current
+            self._memory_geometry_keys.move_to_end(symbol)
+            return previous
+        if prior_geometry == current:
+            self._memory_opportunity_ids.move_to_end(symbol)
+            self._memory_geometry_keys.move_to_end(symbol)
+            return previous
+
+        state = self._paper.get(symbol)
+        working = bool(
+            state is not None
+            and state.remaining > 0
+            and self._working_entry_is_active(state)
+        )
+        positioned = bool(
+            self._paper_position_quantity_source is not None
+            and self._paper_position_quantity_source(symbol) > ZERO
+        )
+        if working or positioned:
+            # Working-entry and position authorities remain stronger than a
+            # newly observed membership.  A terminal in-memory state alone is
+            # not an authority and must not impose a reentry cooldown.
+            return previous
+
+        at = signal.timestamp
+        self.opportunity_memory.invalidate(
+            at.date(), symbol, previous, at, "STRUCTURE_SUPERSEDED",
+        )
+        self._remember_memory_identity(symbol, current)
+        self._memory_geometry_keys[symbol] = current
+        self._memory_geometry_keys.move_to_end(symbol)
+        return current
 
     def _try_recovered_continuation_from_observation(
         self,

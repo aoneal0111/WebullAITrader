@@ -11,6 +11,7 @@ from typing import Callable
 from enum import StrEnum
 
 from app.paper_trading.order_book import PaperOrderBook
+from app.paper_gateway.durable_store import DurablePaperExecutionStore
 from app.paper_trading.order_models import OrderSide, OrderType
 from app.order_placement import OrderPlacementDecision
 from app.services.order_command_factory import OrderCommandFactory, OrderEntryCommand
@@ -166,6 +167,14 @@ def lifecycle_identity(signal: object) -> str:
     explicit = getattr(signal, "lifecycle_id", None)
     if explicit is not None and str(explicit).strip():
         return str(explicit).strip()
+    structural_episode = getattr(signal, "structural_episode_id", None) or getattr(signal, "detector_episode_id", None)
+    if structural_episode is not None and str(structural_episode).strip():
+        values = (
+            getattr(signal, "strategy_id", "warrior_momentum"),
+            str(getattr(signal, "symbol", "")).strip().upper(),
+            str(structural_episode).strip(),
+        )
+        return "|".join(str(value) for value in values)
     values = (
         getattr(signal, "strategy_id", "warrior_momentum"),
         str(getattr(signal, "symbol", "")).strip().upper(),
@@ -178,19 +187,45 @@ def lifecycle_identity(signal: object) -> str:
 
 
 def opportunity_identity(signal: object) -> str:
-    """Return the stable anchor for one strategy-qualified opportunity."""
+    """Return the authoritative identity for one structural opportunity.
+
+    Structural IDs supplied by discovery own identity.  The legacy fallback is
+    deliberately geometry-free: trigger/stop values are evidence on an
+    opportunity, not an identity and therefore cannot split on formatting or
+    quote-derived jitter.
+    """
     taxonomy_opportunity = getattr(signal, "taxonomy_opportunity_id", None)
     if taxonomy_opportunity is not None and str(taxonomy_opportunity).strip():
         return str(taxonomy_opportunity).strip()
     explicit = getattr(signal, "opportunity_id", None)
     if explicit is not None and str(explicit).strip():
         return str(explicit).strip()
+    for name in ("structural_episode_id", "detector_episode_id"):
+        structural_id = getattr(signal, name, None)
+        if structural_id is not None and str(structural_id).strip():
+            return str(structural_id).strip()
+    legacy_lifecycle = getattr(signal, "lifecycle_id", None)
+    if legacy_lifecycle is not None and str(legacy_lifecycle).strip():
+        # Compatibility-only callers that predate opportunity IDs expose an
+        # explicit lifecycle token.  Prefer that supplied token over
+        # reconstructing identity from executable prices.
+        return "|".join((
+            "LEGACY_LIFECYCLE_OPPORTUNITY", str(getattr(signal, "strategy_id", "warrior_momentum")),
+            str(getattr(signal, "symbol", "")).strip().upper(), str(legacy_lifecycle).strip(),
+        ))
+    anchor = getattr(signal, "taxonomy_opportunity_anchor", None)
+    if anchor is not None and str(anchor).strip():
+        return "|".join((
+            "STRUCTURAL_ANCHOR", str(getattr(signal, "strategy_id", "warrior_momentum")),
+            str(getattr(signal, "symbol", "")).strip().upper(),
+            str(getattr(signal, "session", "")).strip().upper(), str(anchor).strip(),
+        ))
     values = (
+        "LEGACY_STRUCTURAL_EPISODE",
         getattr(signal, "strategy_id", "warrior_momentum"),
         str(getattr(signal, "symbol", "")).strip().upper(),
+        str(getattr(signal, "session", "")).strip().upper(),
         getattr(getattr(signal, "setup_type", None), "value", getattr(signal, "setup_type", "")),
-        getattr(signal, "entry_trigger", ""),
-        getattr(signal, "stop_price", ""),
     )
     return "|".join(str(value) for value in values)
 
@@ -210,6 +245,7 @@ class AutonomousPaperExecutionBridge:
     mode: str = "PAPER"
     enabled: bool = True
     order_book: PaperOrderBook | None = None
+    durable_store: DurablePaperExecutionStore | None = None
     position_quantity_source: Callable[[str], Decimal] | None = None
     management_context_source: Callable[[str], str | None] | None = None
     _seen_entries: OrderedDict[str, None] = field(default_factory=OrderedDict, init=False)
@@ -504,6 +540,13 @@ class AutonomousPaperExecutionBridge:
         symbol = str(getattr(signal, "symbol", "")).strip().upper()
         trigger = Decimal(getattr(signal, "entry_trigger"))
         identity = lifecycle_identity(signal)
+        if (
+            lifecycle_number > 1
+            and getattr(signal, "structural_episode_id", None)
+            and not getattr(signal, "taxonomy_execution_identity", None)
+            and not getattr(signal, "lifecycle_id", None)
+        ):
+            identity = f"{identity}|ATTEMPT|{lifecycle_number}"
         opportunity = opportunity_id or opportunity_identity(signal)
         gates: list[PaperEntryGateDecision] = []
         performance_diagnostics.record_entry_counter("entry_authorizations")
@@ -579,10 +622,14 @@ class AutonomousPaperExecutionBridge:
             if not gate("position_clear", not (positioned or active), positioned or active, False):
                 return refused(PaperEntryAuthorizationReason.POSITION_EXISTS)
             duplicate = self._identity_seen(identity)
+            if not duplicate and self.durable_store is None and self._durable_lifecycle_seen(identity):
+                duplicate = True
             if not gate("lifecycle_clear", not duplicate, duplicate, False):
                 return refused(PaperEntryAuthorizationReason.DUPLICATE_LIFECYCLE)
+            if self.durable_store is not None and self.durable_store.consumed_opportunity(opportunity) is not None:
+                return refused(PaperEntryAuthorizationReason.DUPLICATE_LIFECYCLE)
             historical_lifecycles = set()
-            if self.order_book is not None:
+            if self.order_book is not None and self.durable_store is None:
                 historical_lifecycles = {
                     str(item.request.strategy_lifecycle_id)
                     for item in self.order_book.history()
@@ -638,6 +685,8 @@ class AutonomousPaperExecutionBridge:
                             "taxonomy_strategy_memberships": list(getattr(signal, "taxonomy_strategy_memberships", ())),
                             "opportunity_anchor": str(getattr(signal, "taxonomy_opportunity_anchor", "")),
                             "execution_identity": getattr(signal, "taxonomy_execution_identity", None),
+                            "structural_episode_id": getattr(signal, "structural_episode_id", None)
+                            or getattr(signal, "detector_episode_id", None),
                             "taxonomy_invalidation_reason": list(getattr(signal, "taxonomy_invalidation_reason", ())),
                             "entry_validity_seconds": str(
                                 int(BAR_INTERVAL.total_seconds())
@@ -1670,6 +1719,21 @@ class AutonomousPaperExecutionBridge:
 
     def _identity_seen(self, identity: str) -> bool:
         return identity in self._seen_entries
+
+    def _durable_lifecycle_seen(self, identity: str) -> bool:
+        """Consult the authoritative in-memory projection at authorization.
+
+        ``PaperOrderBook`` is restored from the durable PAPER store at startup.
+        This boundary check protects an exact replay after bounded hot-cache
+        eviction without adding a database read to market-event processing.
+        """
+        if self.order_book is None:
+            return False
+        return any(
+            item.request.side is OrderSide.BUY
+            and item.request.strategy_lifecycle_id == identity
+            for item in self.order_book.history()
+        )
 
     def _authoritative_quantity(self, symbol: str) -> Decimal:
         quantity = Decimal("0")

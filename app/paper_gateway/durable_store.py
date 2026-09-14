@@ -87,6 +87,19 @@ class DurablePaperExecutionStore:
                         starting_cash TEXT NOT NULL,
                         buying_power_multiplier TEXT NOT NULL
                     );
+                    CREATE TABLE IF NOT EXISTS consumed_opportunities(
+                        opportunity_id TEXT NOT NULL,
+                        lifecycle_id TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        session TEXT,
+                        episode_id TEXT,
+                        status TEXT NOT NULL,
+                        consumed_at TEXT NOT NULL,
+                        paper_campaign_id TEXT NOT NULL,
+                        PRIMARY KEY(paper_campaign_id, opportunity_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_consumed_opportunities_campaign
+                        ON consumed_opportunities(paper_campaign_id, opportunity_id);
                     """
                 )
                 self._ensure_metadata(connection, "schema_version", str(SCHEMA_VERSION))
@@ -98,6 +111,7 @@ class DurablePaperExecutionStore:
                 ):
                     raise ValueError("PAPER execution store identity mismatch")
                 self._ensure_initial_campaign(connection)
+                self._backfill_consumed_opportunities(connection)
             finally:
                 connection.close()
 
@@ -131,6 +145,26 @@ class DurablePaperExecutionStore:
                         "INSERT INTO orders(order_id,payload) VALUES(?,?) ON CONFLICT(order_id) DO UPDATE SET payload=excluded.payload",
                         (order.order_id, json.dumps(_order_payload(order, campaign_id), sort_keys=True)),
                     )
+                    opportunity_id = order.request.metadata.get("opportunity_id")
+                    lifecycle_id = order.request.strategy_lifecycle_id
+                    if (
+                        order.request.side is OrderSide.BUY
+                        and opportunity_id
+                        and lifecycle_id
+                    ):
+                        connection.execute(
+                            "INSERT INTO consumed_opportunities "
+                            "(opportunity_id,lifecycle_id,symbol,session,episode_id,status,consumed_at,paper_campaign_id) "
+                            "VALUES(?,?,?,?,?,?,?,?) "
+                            "ON CONFLICT(paper_campaign_id,opportunity_id) DO UPDATE SET "
+                            "lifecycle_id=excluded.lifecycle_id,status=excluded.status,consumed_at=excluded.consumed_at",
+                            (
+                                str(opportunity_id), str(lifecycle_id), order.symbol,
+                                str(order.request.metadata.get("session", "")),
+                                str(order.request.metadata.get("structural_episode_id", "")),
+                                order.status.value, order.updated_at.isoformat(), campaign_id,
+                            ),
+                        )
                 for event in event_values:
                     connection.execute(
                         "INSERT OR IGNORE INTO events(sequence,event_type,payload) VALUES(?,?,?)",
@@ -198,6 +232,31 @@ class DurablePaperExecutionStore:
 
     def historical_orders(self) -> tuple[PaperOrder, ...]:
         return self._all_orders()
+
+    def consumed_opportunity(self, opportunity_id: str) -> dict[str, str] | None:
+        """Return the durable PAPER consumption marker for one opportunity."""
+        normalized = str(opportunity_id).strip()
+        if not normalized:
+            return None
+        with self._lock:
+            self._require_open()
+            connection = self._open_connection()
+            try:
+                row = connection.execute(
+                    "SELECT opportunity_id,lifecycle_id,symbol,session,episode_id,status,consumed_at "
+                    "FROM consumed_opportunities WHERE paper_campaign_id=? AND opportunity_id=?",
+                    (self._active_campaign_id(connection), normalized),
+                ).fetchone()
+                if row is None:
+                    return None
+                return {
+                    "opportunity_id": row[0], "lifecycle_id": row[1],
+                    "symbol": row[2], "session": row[3] or "",
+                    "episode_id": row[4] or "", "status": row[5],
+                    "consumed_at": row[6],
+                }
+            finally:
+                connection.close()
 
     def historical_events(self) -> tuple[PaperRuntimeEvent, ...]:
         with self._lock:
@@ -348,6 +407,29 @@ class DurablePaperExecutionStore:
             (campaign_id, str(DEFAULT_ATLAS_PAPER_STARTING_CASH), str(DEFAULT_ATLAS_PAPER_STARTING_CASH), "1"),
         )
         self._set_metadata(connection, "active_campaign_id", campaign_id)
+
+    @staticmethod
+    def _backfill_consumed_opportunities(connection: sqlite3.Connection) -> None:
+        campaign_id = DurablePaperExecutionStore._active_campaign_id(connection)
+        if campaign_id is None:
+            return
+        for (payload,) in connection.execute("SELECT payload FROM orders"):
+            order = _order_from_payload(json.loads(payload))
+            if order.request.side is not OrderSide.BUY:
+                continue
+            opportunity_id = order.request.metadata.get("opportunity_id")
+            lifecycle_id = order.request.strategy_lifecycle_id
+            if not opportunity_id or not lifecycle_id:
+                continue
+            connection.execute(
+                "INSERT OR IGNORE INTO consumed_opportunities "
+                "(opportunity_id,lifecycle_id,symbol,session,episode_id,status,consumed_at,paper_campaign_id) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (str(opportunity_id), str(lifecycle_id), order.symbol,
+                 str(order.request.metadata.get("session", "")),
+                 str(order.request.metadata.get("structural_episode_id", "")),
+                 order.status.value, order.updated_at.isoformat(), campaign_id),
+            )
 
     @staticmethod
     def _has_legacy_rows(connection: sqlite3.Connection) -> bool:

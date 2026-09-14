@@ -295,7 +295,12 @@ def test_after_hours_valid_entry_has_premarket_strategy_parity() -> None:
 
     assert premarket_signal is not None and after_hours_signal is not None
     assert premarket.status is after_hours.status is CandidateStatus.ENTRY_READY
-    assert replace(after_hours_signal, session="PREMARKET") == premarket_signal
+    assert replace(
+        after_hours_signal,
+        session="PREMARKET",
+        structural_episode_id=premarket_signal.structural_episode_id,
+    ) == premarket_signal
+    assert after_hours_signal.structural_episode_id != premarket_signal.structural_episode_id
     assert after_hours_signal.execution_authorized is False
     assert runtime.authorize_live(after_hours_signal) is False
 

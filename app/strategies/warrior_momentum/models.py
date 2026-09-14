@@ -140,6 +140,11 @@ class SetupDetection:
     taxonomy_opportunity_anchor: str | None = None
     taxonomy_execution_identity: str | None = None
     taxonomy_invalidation_reason: tuple[str, ...] = ()
+    # Legacy Warrior detectors do not pass through normalized discovery.  This
+    # is their stable structural provenance; executable prices are evidence,
+    # never identity.
+    structural_episode_id: str | None = None
+    structural_anchor: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +206,8 @@ class MomentumEntrySignal:
     taxonomy_opportunity_anchor: str | None = None
     taxonomy_execution_identity: str | None = None
     taxonomy_invalidation_reason: tuple[str, ...] = ()
+    structural_episode_id: str | None = None
+    structural_anchor: str | None = None
 
     def __post_init__(self) -> None:
         if self.strategy_id != STRATEGY_ID:
