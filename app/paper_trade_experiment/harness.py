@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from uuid import uuid4
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -229,9 +230,51 @@ class PaperExperimentJournal:
                 event_json TEXT NOT NULL,
                 UNIQUE(assignment_id, event_type, order_id, fill_id)
             );
+            CREATE TABLE IF NOT EXISTS experiment_runtime_markers (
+                marker_id TEXT PRIMARY KEY,
+                marker_type TEXT NOT NULL,
+                startup_timestamp TEXT NOT NULL,
+                trading_environment TEXT NOT NULL,
+                live_trading_enabled INTEGER NOT NULL CHECK(live_trading_enabled IN (0,1)),
+                warrior_forward_paper_enabled INTEGER NOT NULL CHECK(warrior_forward_paper_enabled IN (0,1)),
+                historical_entry_experiment_enabled INTEGER NOT NULL CHECK(historical_entry_experiment_enabled IN (0,1)),
+                historical_entry_experiment_mode TEXT NOT NULL,
+                historical_entry_experiment_path TEXT NOT NULL,
+                paper_symbol_authorization_mode TEXT NOT NULL,
+                experiment_id TEXT NOT NULL,
+                experiment_version TEXT NOT NULL
+            );
             """
         )
         self._connection.commit()
+
+    def record_runtime_marker(
+        self, *, trading_environment: str, live_trading_enabled: bool,
+        warrior_forward_paper_enabled: bool,
+        historical_entry_experiment_enabled: bool,
+        historical_entry_experiment_mode: str,
+        historical_entry_experiment_path: str,
+        paper_symbol_authorization_mode: str,
+        experiment_id: str,
+        experiment_version: str,
+    ) -> str:
+        """Durably record the effective, non-secret startup configuration."""
+        marker_id = "startup-" + uuid4().hex
+        self._connection.execute(
+            """INSERT INTO experiment_runtime_markers VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                marker_id, "POLICY_INITIALIZED", _now(),
+                str(trading_environment), int(live_trading_enabled),
+                int(warrior_forward_paper_enabled),
+                int(historical_entry_experiment_enabled),
+                str(historical_entry_experiment_mode),
+                str(historical_entry_experiment_path),
+                str(paper_symbol_authorization_mode), str(experiment_id),
+                str(experiment_version),
+            ),
+        )
+        self._connection.commit()
+        return marker_id
 
     def record_decision(self, assignment_id: str, *, control_decision: str,
                         treatment_decision: str, selected_mode: str,

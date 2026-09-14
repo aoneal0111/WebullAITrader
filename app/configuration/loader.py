@@ -54,6 +54,39 @@ def load_configuration(env=None):
         TradingEnvironment.TEST,
     )
 
+    historical_enabled = _bool(
+        e.get("ATLAS_HISTORICAL_ENTRY_EXPERIMENT_ENABLED", "false")
+    )
+    historical_mode_value = e.get("ATLAS_HISTORICAL_ENTRY_EXPERIMENT_MODE")
+    if historical_enabled and not str(historical_mode_value or "").strip():
+        raise ValueError(
+            "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_MODE must be explicitly set "
+            "when historical entry experiment is enabled"
+        )
+    historical_mode = _historical_entry_mode(
+        historical_mode_value or "OBSERVE_ONLY"
+    )
+    trading_environment = _scoped_environment(
+        e, "WEBULL_TRADING_ENVIRONMENT", "TRADING_ENVIRONMENT", mode
+    )
+    if historical_enabled and historical_mode == "PAPER_TREATMENT":
+        if trading_environment is not TradingEnvironment.PAPER:
+            raise ValueError(
+                "PAPER_TREATMENT requires WEBULL_TRADING_ENVIRONMENT=PAPER"
+            )
+        historical_path_value = e.get("ATLAS_HISTORICAL_ENTRY_EXPERIMENT_PATH")
+        if not str(historical_path_value or "").strip():
+            raise ValueError(
+                "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_PATH must be explicitly "
+                "set for PAPER_TREATMENT"
+            )
+    historical_path = Path(
+        e.get(
+            "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_PATH",
+            "data/paper_trade_experiment.sqlite3",
+        )
+    ).resolve()
+
     provider = normalize_provider(
         e.get("BROKER_PROVIDER", "webull")
     )
@@ -408,17 +441,10 @@ def load_configuration(env=None):
         _int(e, "CRYPTO_CATALYST_STATUSPAGE_CADENCE_SECONDS", 300),
         _int(e, "CRYPTO_CATALYST_BYBIT_CADENCE_SECONDS", 900),
         historical_entry_experiment_enabled=(
-            _bool(e.get("ATLAS_HISTORICAL_ENTRY_EXPERIMENT_ENABLED", "false"))
+            historical_enabled
         ),
-        historical_entry_experiment_mode=_historical_entry_mode(
-            e.get("ATLAS_HISTORICAL_ENTRY_EXPERIMENT_MODE", "OBSERVE_ONLY")
-        ),
-        historical_entry_experiment_path=Path(
-            e.get(
-                "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_PATH",
-                "data/paper_trade_experiment.sqlite3",
-            )
-        ).resolve(),
+        historical_entry_experiment_mode=historical_mode,
+        historical_entry_experiment_path=historical_path,
     )
 
 

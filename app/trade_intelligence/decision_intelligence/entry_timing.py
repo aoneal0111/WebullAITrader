@@ -29,6 +29,10 @@ class EntryIntelligenceConfig:
     allocation_percent: int = 50
     version: str = EXPERIMENT_VERSION
     journal_path: str | None = None
+    trading_environment: str = "PAPER"
+    live_trading_enabled: bool = False
+    warrior_forward_paper_enabled: bool = False
+    paper_symbol_authorization_mode: str = "STATIC_ALLOWLIST"
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +106,18 @@ class HistoricalPaperEntryTimingPolicy:
         self._router = None if self._journal is None else ExperimentRouter(
             self._journal, enabled=self.config.enabled,
         )
+        if self._journal is not None:
+            self._journal.record_runtime_marker(
+                trading_environment=self.config.trading_environment,
+                live_trading_enabled=self.config.live_trading_enabled,
+                warrior_forward_paper_enabled=self.config.warrior_forward_paper_enabled,
+                historical_entry_experiment_enabled=self.config.enabled,
+                historical_entry_experiment_mode=self.config.mode,
+                historical_entry_experiment_path=str(self._journal.path.resolve()),
+                paper_symbol_authorization_mode=self.config.paper_symbol_authorization_mode,
+                experiment_id="historical_entry_timing",
+                experiment_version=self.config.version,
+            )
 
     def close(self) -> None:
         if self._owned_journal and self._journal is not None:

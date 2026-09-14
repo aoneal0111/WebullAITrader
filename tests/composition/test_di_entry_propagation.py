@@ -66,5 +66,11 @@ def test_composed_market_event_ingress_reaches_experiment_journal(monkeypatch, t
         journal = composition.paper_entry_intelligence._journal
         assert journal is not None
         assert journal._connection.execute("SELECT COUNT(*) FROM experiment_assignments").fetchone()[0] > 0
+        assert journal._connection.execute("SELECT COUNT(*) FROM experiment_decisions").fetchone()[0] > 0
+        marker = journal._connection.execute(
+            "SELECT historical_entry_experiment_mode, historical_entry_experiment_path "
+            "FROM experiment_runtime_markers ORDER BY startup_timestamp DESC LIMIT 1"
+        ).fetchone()
+        assert tuple(marker) == ("PAPER_TREATMENT", str(configuration.historical_entry_experiment_path))
     finally:
         composition.close(timeout_seconds=1.0)

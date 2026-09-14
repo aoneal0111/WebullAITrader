@@ -308,6 +308,10 @@ def create_desktop_composition(
             ),
             mode=operational_configuration.historical_entry_experiment_mode,
             environment=PAPER_ONLY,
+            trading_environment=operational_configuration.environment.value,
+            live_trading_enabled=operational_configuration.live_trading_enabled,
+            warrior_forward_paper_enabled=operational_configuration.warrior_forward_paper_enabled,
+            paper_symbol_authorization_mode=operational_configuration.paper_symbol_authorization_mode.value,
             journal_path=(
                 str(operational_configuration.historical_entry_experiment_path)
                 if paper_environment else None
