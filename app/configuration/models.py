@@ -1,5 +1,7 @@
 ﻿from dataclasses import dataclass
 from decimal import Decimal
+import dataclasses
+import math
 from enum import StrEnum
 from pathlib import Path
 
@@ -40,9 +42,109 @@ class MarketDataConfiguration:
 
 @dataclass(frozen=True, slots=True)
 class SECEdgarConfiguration:
-    user_agent: str
+    user_agent: str = dataclasses.field(repr=False)
     freshness_days: int = 3
     timeout_seconds: float = 10.0
+
+
+MAX_SYMBOL_INTELLIGENCE_SEC_TICKER_ENTRIES = 50_000
+MAX_SYMBOL_INTELLIGENCE_SEC_SUBMISSIONS_CACHE_ENTRIES = 8_192
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolIntelligenceSECEdgarConfiguration:
+    """Non-composed SEC acquisition settings with no economic authority."""
+
+    enabled: bool = False
+    user_agent: str | None = dataclasses.field(default=None, repr=False)
+    requests_per_second: float = 2.0
+    connect_timeout_seconds: float = 3.0
+    read_timeout_seconds: float = 10.0
+    max_retries: int = 2
+    backoff_initial_seconds: float = 0.5
+    backoff_max_seconds: float = 8.0
+    failure_cooldown_seconds: float = 60.0
+    freshness_days: int = 3
+    ticker_refresh_seconds: float = 86_400.0
+    submissions_refresh_seconds: float = 900.0
+    max_ticker_entries: int = 25_000
+    max_submissions_cache_entries: int = 2_048
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("SEC EDGAR enabled must be boolean")
+        user_agent = str(self.user_agent or "").strip()
+        if "\n" in user_agent or "\r" in user_agent or len(user_agent) > 512:
+            raise ValueError("SEC EDGAR User-Agent is malformed")
+        if self.enabled and not user_agent:
+            raise ValueError("SEC EDGAR User-Agent is required when enabled")
+        object.__setattr__(self, "user_agent", user_agent or None)
+        _bounded_float(self.requests_per_second, "requests_per_second", minimum=0.0, maximum=5.0, strict_minimum=True)
+        _bounded_float(self.connect_timeout_seconds, "connect_timeout_seconds", minimum=0.0, strict_minimum=True)
+        _bounded_float(self.read_timeout_seconds, "read_timeout_seconds", minimum=0.0, strict_minimum=True)
+        _bounded_int(self.max_retries, "max_retries", minimum=0, maximum=4)
+        _bounded_float(self.backoff_initial_seconds, "backoff_initial_seconds", minimum=0.0)
+        _bounded_float(self.backoff_max_seconds, "backoff_max_seconds", minimum=0.0, maximum=30.0)
+        if self.backoff_max_seconds < self.backoff_initial_seconds:
+            raise ValueError("SEC EDGAR backoff_max_seconds must not be below initial backoff")
+        _bounded_float(self.failure_cooldown_seconds, "failure_cooldown_seconds", minimum=0.0, strict_minimum=True)
+        _bounded_int(self.freshness_days, "freshness_days", minimum=1)
+        _bounded_float(self.ticker_refresh_seconds, "ticker_refresh_seconds", minimum=0.0, strict_minimum=True)
+        _bounded_float(self.submissions_refresh_seconds, "submissions_refresh_seconds", minimum=0.0, strict_minimum=True)
+        _bounded_int(
+            self.max_ticker_entries,
+            "max_ticker_entries",
+            minimum=1,
+            maximum=MAX_SYMBOL_INTELLIGENCE_SEC_TICKER_ENTRIES,
+        )
+        _bounded_int(
+            self.max_submissions_cache_entries,
+            "max_submissions_cache_entries",
+            minimum=1,
+            maximum=MAX_SYMBOL_INTELLIGENCE_SEC_SUBMISSIONS_CACHE_ENTRIES,
+        )
+
+    def diagnostic_summary(self) -> dict[str, bool]:
+        """Return the only safe configuration diagnostics for this source."""
+
+        return {
+            "enabled": self.enabled,
+            "user_agent_configured": self.user_agent is not None,
+        }
+
+
+def _bounded_float(
+    value: float,
+    name: str,
+    *,
+    minimum: float,
+    maximum: float | None = None,
+    strict_minimum: bool = False,
+) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"SEC EDGAR {name} must be numeric")
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        raise ValueError(f"SEC EDGAR {name} must be finite")
+    if numeric < minimum or (strict_minimum and numeric == minimum):
+        raise ValueError(f"SEC EDGAR {name} is below its bound")
+    if maximum is not None and numeric > maximum:
+        raise ValueError(f"SEC EDGAR {name} exceeds its bound")
+
+
+def _bounded_int(
+    value: int,
+    name: str,
+    *,
+    minimum: int,
+    maximum: int | None = None,
+) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"SEC EDGAR {name} must be an integer")
+    if value < minimum:
+        raise ValueError(f"SEC EDGAR {name} is below its bound")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"SEC EDGAR {name} exceeds its bound")
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,4 +290,7 @@ class OperationalConfiguration:
     historical_entry_experiment_mode: str = "OBSERVE_ONLY"
     historical_entry_experiment_path: Path = Path(
         "data/paper_trade_experiment.sqlite3"
+    )
+    symbol_intelligence_sec_edgar: SymbolIntelligenceSECEdgarConfiguration = (
+        dataclasses.field(default_factory=SymbolIntelligenceSECEdgarConfiguration)
     )

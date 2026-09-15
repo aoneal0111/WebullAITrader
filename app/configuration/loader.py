@@ -6,7 +6,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from app.broker_plugins import normalize_provider
-from app.configuration.environment import resolve_runtime_environment
+from app.configuration.environment import (
+    ResolvedSymbolIntelligenceSECEnvironment,
+    resolve_runtime_environment,
+    resolve_symbol_intelligence_sec_environment,
+)
 from app.configuration.models import *
 from app.webull.stream_endpoint import parse_webull_stream_url
 
@@ -45,7 +49,21 @@ def _reject_partial_scope(
 
 
 def load_configuration(env=None):
-    e = resolve_runtime_environment() if env is None else dict(env)
+    if env is None:
+        e = resolve_runtime_environment()
+        symbol_intelligence_sec_environment = (
+            resolve_symbol_intelligence_sec_environment()
+        )
+    else:
+        e = dict(env)
+        symbol_intelligence_sec_environment = (
+            resolve_symbol_intelligence_sec_environment(e, dotenv_path=None)
+        )
+    symbol_intelligence_sec_configuration = (
+        load_symbol_intelligence_sec_configuration(
+            symbol_intelligence_sec_environment
+        )
+    )
 
     mode = _scoped_environment(
         e,
@@ -445,6 +463,65 @@ def load_configuration(env=None):
         ),
         historical_entry_experiment_mode=historical_mode,
         historical_entry_experiment_path=historical_path,
+        symbol_intelligence_sec_edgar=symbol_intelligence_sec_configuration,
+    )
+
+
+def load_symbol_intelligence_sec_configuration(
+    resolved: ResolvedSymbolIntelligenceSECEnvironment,
+) -> SymbolIntelligenceSECEdgarConfiguration:
+    """Build non-composed SEC settings without exposing the User-Agent."""
+
+    if not isinstance(resolved, ResolvedSymbolIntelligenceSECEnvironment):
+        raise TypeError("resolved SEC environment is required")
+    values = dict(resolved.values)
+    enabled_value = resolved.get("ATLAS_SEC_EDGAR_ENABLED")
+    user_agent = str(
+        resolved.get("ATLAS_SEC_EDGAR_USER_AGENT", "") or ""
+    ).strip()
+    if enabled_value is None:
+        enabled = bool(user_agent) and resolved.origin(
+            "ATLAS_SEC_EDGAR_USER_AGENT"
+        ) in {"legacy_process", "legacy_dotenv"}
+    else:
+        enabled = _bool(enabled_value)
+    return SymbolIntelligenceSECEdgarConfiguration(
+        enabled=enabled,
+        user_agent=user_agent or None,
+        requests_per_second=_float_setting(
+            values, "ATLAS_SEC_EDGAR_REQUESTS_PER_SECOND", 2.0
+        ),
+        connect_timeout_seconds=_float_setting(
+            values, "ATLAS_SEC_EDGAR_CONNECT_TIMEOUT_SECONDS", 3.0
+        ),
+        read_timeout_seconds=_float_setting(
+            values, "ATLAS_SEC_EDGAR_READ_TIMEOUT_SECONDS", 10.0
+        ),
+        max_retries=_int(values, "ATLAS_SEC_EDGAR_MAX_RETRIES", 2),
+        backoff_initial_seconds=_float_setting(
+            values, "ATLAS_SEC_EDGAR_BACKOFF_INITIAL_SECONDS", 0.5
+        ),
+        backoff_max_seconds=_float_setting(
+            values, "ATLAS_SEC_EDGAR_BACKOFF_MAX_SECONDS", 8.0
+        ),
+        failure_cooldown_seconds=_float_setting(
+            values, "ATLAS_SEC_EDGAR_FAILURE_COOLDOWN_SECONDS", 60.0
+        ),
+        freshness_days=_int(values, "ATLAS_SEC_EDGAR_FRESHNESS_DAYS", 3),
+        ticker_refresh_seconds=_float_setting(
+            values, "ATLAS_SEC_EDGAR_TICKER_REFRESH_SECONDS", 86_400.0
+        ),
+        submissions_refresh_seconds=_float_setting(
+            values, "ATLAS_SEC_EDGAR_SUBMISSIONS_REFRESH_SECONDS", 900.0
+        ),
+        max_ticker_entries=_int(
+            values, "ATLAS_SEC_EDGAR_MAX_TICKER_ENTRIES", 25_000
+        ),
+        max_submissions_cache_entries=_int(
+            values,
+            "ATLAS_SEC_EDGAR_MAX_SUBMISSIONS_CACHE_ENTRIES",
+            2_048,
+        ),
     )
 
 
@@ -452,6 +529,13 @@ def _bool(v):
     if str(v).lower() not in ("true", "false"):
         raise ValueError("boolean setting is malformed")
     return str(v).lower() == "true"
+
+
+def _float_setting(e, k, d):
+    try:
+        return float(e.get(k, d))
+    except (TypeError, ValueError) as x:
+        raise ValueError(k + " is malformed") from x
 
 
 def _historical_entry_mode(value: str) -> str:
