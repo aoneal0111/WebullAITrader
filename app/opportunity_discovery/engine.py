@@ -13,6 +13,7 @@ from .contracts import (
     StrategyDetection, StrategyMembership,
 )
 from .detectors import DetectorRegistry, default_registry
+from .episodes import TaxonomyEpisodeTracker
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,10 +71,11 @@ class MultiStrategyDiscoveryEngine:
         self._episodes = OrderedDict()
         self._opportunities: OrderedDict[str, NormalizedOpportunity] = OrderedDict()
         self._symbols = OrderedDict()
-        # A structural anchor is a lifecycle identity. Once it crosses its
-        # trigger, a retrace cannot re-arm that same opportunity. A new
-        # structural anchor remains independently eligible.
+        # The taxonomy tracker owns the stable lifecycle identity. This legacy
+        # anchor latch remains the durable suppression guard for already
+        # triggered normalized opportunities.
         self._triggered_anchors: OrderedDict[str, None] = OrderedDict()
+        self._taxonomy_episodes = TaxonomyEpisodeTracker(maximum_contexts=maximum_opportunities)
         self._observations = self._evaluations = self._firings = 0
 
     def observe(self, context: DiscoveryContext) -> DiscoveryBatch:
@@ -84,7 +86,7 @@ class MultiStrategyDiscoveryEngine:
             context.decision_cutoff,
             limit=self.maximum_symbols,
         )
-        detections = self.registry.evaluate(context)
+        detections = self._taxonomy_episodes.stabilize(self.registry.evaluate(context))
         self._evaluations += len(detections)
         previously_triggered = set(self._triggered_anchors)
         triggered_now = {
@@ -169,4 +171,5 @@ class MultiStrategyDiscoveryEngine:
                 "episode_count": len(self._episodes),
                 "opportunity_count": len(self._opportunities),
                 "membership_count": sum(len(item.memberships) for item in self._opportunities.values()),
-                "triggered_anchor_count": len(self._triggered_anchors)}
+                "triggered_anchor_count": len(self._triggered_anchors),
+                **self._taxonomy_episodes.memory_metrics()}

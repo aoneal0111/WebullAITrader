@@ -11,6 +11,7 @@ from app.market.calendar import EASTERN
 from app.opportunity_discovery import (
     CompletedBar, DiscoveryContext, FeatureCapabilities,
     MultiStrategyDiscoveryEngine, MultiStrategyExecutionAdapter,
+    TaxonomyEpisodeRecovery,
 )
 from app.performance_diagnostics import performance_diagnostics
 
@@ -18,9 +19,11 @@ from app.performance_diagnostics import performance_diagnostics
 class TaxonomyPaperExecutionBridge:
     """Adapt bounded research output without owning authorization or orders."""
 
-    def __init__(self, adapter: MultiStrategyExecutionAdapter | None = None) -> None:
+    def __init__(self, adapter: MultiStrategyExecutionAdapter | None = None,
+                 *, recovery: tuple[TaxonomyEpisodeRecovery, ...] = ()) -> None:
         self.adapter = adapter or MultiStrategyExecutionAdapter()
         self.discovery = MultiStrategyDiscoveryEngine()
+        self.discovery._taxonomy_episodes.restore(recovery)
 
     def evaluate(self, value, legacy_candidate, legacy_signal, stale, runtime, stale_after):
         if stale:

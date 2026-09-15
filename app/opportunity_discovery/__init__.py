@@ -6,6 +6,10 @@ from .benchmark import run_cardinality_benchmark
 from .contracts import *
 from .detectors import DetectorRegistry, ResearchDetector, default_registry
 from .engine import DiscoveryMetrics, MultiStrategyDiscoveryEngine, normalize_detections
+from .episodes import (
+    TaxonomyEpisodeRecovery, TaxonomyEpisodeState, TaxonomyEpisodeTracker,
+    load_taxonomy_episode_recovery,
+)
 from .execution_adapter import (
     AdapterRejection, AdapterResult, ExecutionCandidate,
     MultiStrategyExecutionAdapter, PHASE1_EXECUTION_ALLOWLIST,

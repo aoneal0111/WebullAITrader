@@ -12,7 +12,7 @@ import sqlite3
 from threading import RLock
 from typing import Any
 
-from app.opportunity_discovery import MultiStrategyDiscoveryEngine
+from app.opportunity_discovery import MultiStrategyDiscoveryEngine, load_taxonomy_episode_recovery
 from app.trade_intelligence.taxonomy_paper_bridge import _discovery_context
 
 from .cache import LRUCache
@@ -58,6 +58,11 @@ class HistoricalDecisionIntelligence:
     def available(self) -> bool:
         return self._valid
 
+    @property
+    def taxonomy_recovery(self):
+        """Bounded startup snapshot for the PAPER taxonomy bridge."""
+        return load_taxonomy_episode_recovery(self.journal_path)
+
     def start(self, environment: str | None = None) -> None:
         if str(environment or "PAPER").strip().upper() not in {"PAPER", "TEST", "SANDBOX"}:
             return
@@ -88,6 +93,7 @@ class HistoricalDecisionIntelligence:
                 self._reason = None
                 if self.journal_path is not None:
                     self._journal = self._open_journal(self.journal_path)
+                    self._discovery._taxonomy_episodes.restore(self.taxonomy_recovery)
                     self._restore_discovery_lifecycle()
             except Exception as exc:
                 if 'connection' in locals():
@@ -291,6 +297,8 @@ class HistoricalDecisionIntelligence:
                 trigger_price=result.trigger_price, payload={
                     "entry_location": result.entry_location,
                     "structural_anchor": result.structural_anchor,
+                    "session": result.session,
+                    "session_date": result.trading_date,
                 },
             )
         if signal is not None:
@@ -526,6 +534,7 @@ class HistoricalDecisionIntelligence:
                          if item.state.value not in {"NOT_DETECTED", "UNAVAILABLE"})
             state = None if not rows else (
                 "TRIGGER_ARMED" if any(item.state.value == "TRIGGER_ARMED" for item in rows)
+                else "TRIGGERED" if any(item.state.value == "DETECTED" for item in rows)
                 else "FORMING" if any(item.state.value == "FORMING" for item in rows)
                 else str(rows[0].state.value)
             )
@@ -684,7 +693,7 @@ def _stage(state: str, trigger: Decimal | None, price: Decimal | None) -> str:
         # This explicit detector fact means the reference level and structural
         # stop exist while the final crossing condition remains false.
         return "TRIGGER_READY"
-    if state == "TRIGGERED":
+    if state in {"TRIGGERED", "DETECTED"}:
         return "POST_TRIGGER_EXTENDED" if trigger is not None and price is not None and price > trigger else "TRIGGERED"
     if state == "FORMING":
         return "NEAR_TRIGGER" if trigger is not None and price is not None and trigger >= price and (trigger - price) / price <= Decimal("0.01") else "FORMING"

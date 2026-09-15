@@ -28,13 +28,14 @@ def test_quote_rank_and_scanner_changes_do_not_create_new_identity():
     }
 
 
-def test_new_structural_window_creates_new_opportunity():
+def test_recomputed_structural_window_keeps_same_opportunity():
     engine = MultiStrategyDiscoveryEngine()
     first = engine.observe(context(clean_pullback()))
     shifted = tuple(replace(item, completed_at=item.completed_at + timedelta(minutes=20)) for item in clean_pullback())
     second = engine.observe(context(shifted, cutoff=shifted[-1].completed_at))
-    assert first.new_opportunity_ids and second.new_opportunity_ids
-    assert first.new_opportunity_ids != second.new_opportunity_ids
+    assert first.new_opportunity_ids
+    assert second.new_opportunity_ids == ()
+    assert first.opportunities[0].opportunity_id == second.opportunities[0].opportunity_id
 
 
 def test_same_structure_on_two_symbols_creates_two_opportunities():

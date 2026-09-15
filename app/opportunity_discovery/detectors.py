@@ -16,7 +16,10 @@ from app.strategies.warrior_momentum.post_gap_reclaim_research import (
     PostGapCandidateContext, PostGapReclaimState, detect_post_gap_reclaim,
 )
 
-from .context import build_impulse, build_pullback, build_reference_levels, structural_anchor
+from .context import (
+    build_impulse, build_pullback, build_reference_levels, structural_anchor,
+    taxonomy_structural_provenance,
+)
 from .contracts import (
     DetectionState, DetectorAvailability, DiscoveryContext, StrategyDefinition,
     StrategyDetection,
@@ -267,4 +270,4 @@ def _result(definition, context, state, anchor, trigger, stop, reasons, quality,
     return StrategyDetection(definition.strategy_id, definition.strategy_version, definition.family,
         context.symbol.upper(), context.session.upper(), context.session_date, context.decision_cutoff,
         state, setup_anchor, anchor, reference, trigger, stop, tuple(quality), observed, optional,
-        tuple(missing), tuple(reasons), True)
+        tuple(missing), tuple(reasons), True, taxonomy_structural_provenance(context))

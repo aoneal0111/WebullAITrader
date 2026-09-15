@@ -228,6 +228,7 @@ class StrategyDetection:
     missing_features: tuple[str, ...]
     reason_codes: tuple[str, ...]
     research_only: bool = True
+    structural_provenance: str = ""
 
     def __post_init__(self) -> None:
         if not self.research_only:

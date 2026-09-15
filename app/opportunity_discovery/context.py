@@ -7,6 +7,7 @@ from decimal import Decimal
 from .contracts import DiscoveryContext, Impulse, Pullback, ReferenceLevels
 
 HUNDRED = Decimal("100")
+TAXONOMY_PROVENANCE_VERSION = "taxonomy-structural-provenance-v1"
 
 
 def structural_anchor(context: DiscoveryContext, impulse: Impulse | None) -> str:
@@ -22,6 +23,33 @@ def structural_anchor(context: DiscoveryContext, impulse: Impulse | None) -> str
     # economic episode by themselves.
     timestamp = context.decision_cutoff if impulse is None else impulse.start_time
     return f"{context.symbol.upper()}|{context.session_date.isoformat()}|{context.session.upper()}|{timestamp.isoformat()}"
+
+
+def taxonomy_structural_provenance(context: DiscoveryContext) -> str:
+    """Return a drift-tolerant structural root, excluding live geometry."""
+    bars = context.completed_bars
+    root_kind = "IMPULSE_ROOT"
+    root_time = bars[0].completed_at if bars else context.decision_cutoff
+    for index in range(1, len(bars)):
+        if (bars[index].completed_at - bars[index - 1].completed_at).total_seconds() > 60:
+            root_kind, root_time = "GAP_ROOT", bars[index].completed_at
+    if root_kind == "IMPULSE_ROOT":
+        impulse = build_impulse(context)
+        pullback = build_pullback(context, impulse)
+        if pullback is not None:
+            root_kind, root_time = "PULLBACK_ROOT", pullback.start_time
+        elif impulse is not None:
+            prior = bars[:-1]
+            if prior:
+                high = max(bar.high for bar in prior)
+                root_kind, root_time = "BREAKOUT_ROOT", next(
+                    bar.completed_at for bar in prior if bar.high == high
+                )
+            else:
+                root_time = impulse.end_time
+    return "|".join((TAXONOMY_PROVENANCE_VERSION, context.symbol.upper(),
+                     context.session_date.isoformat(), context.session.upper(),
+                     root_kind, root_time.isoformat()))
 
 
 def build_impulse(context: DiscoveryContext) -> Impulse | None:

@@ -319,7 +319,7 @@ def test_triggered_anchor_retention_is_bounded():
     assert metrics["triggered_anchor_count"] == 3
 
 
-def test_new_structural_anchor_can_arm_after_prior_anchor_triggered():
+def test_trigger_latch_survives_recomputed_anchor_after_prior_trigger():
     engine = MultiStrategyDiscoveryEngine(default_registry())
     value = _value("9.95")
     context, _ = _discovery_context(value)
@@ -344,4 +344,4 @@ def test_new_structural_anchor_can_arm_after_prior_anchor_triggered():
         completed_bars=(*shifted_bars, shifted_retrace),
     )
     batch = engine.observe(new_context)
-    assert any(row.state.value == "TRIGGER_ARMED" for row in batch.detections)
+    assert any(row.state.value == "DETECTED" for row in batch.detections)

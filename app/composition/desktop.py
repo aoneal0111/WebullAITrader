@@ -468,8 +468,10 @@ def create_desktop_composition(
 
     taxonomy_execution_bridge = None
     if operational_configuration.environment.value == "PAPER":
-        taxonomy_execution_bridge = TaxonomyPaperExecutionBridge()
         decision_intelligence_observer = HistoricalDecisionIntelligence()
+        taxonomy_execution_bridge = TaxonomyPaperExecutionBridge(
+            recovery=decision_intelligence_observer.taxonomy_recovery
+        )
     warrior_forward_sidecar = WarriorDesktopSidecar(
         enabled=operational_configuration.warrior_forward_paper_enabled,
         storage_path=operational_configuration.warrior_forward_capture_path,
