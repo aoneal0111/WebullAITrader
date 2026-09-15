@@ -29,6 +29,19 @@ from .repository import (
     SymbolIntelligenceRepository,
 )
 from .security import UnsafePayloadError
+from .providers.sec_identity import (
+    AmbiguousTickerMapError,
+    SecIssuerIdentity,
+    SecIssuerIdentityResolver,
+    SecIssuerResolution,
+    SecResolutionStatus,
+    SecTickerMap,
+    SecTickerMapError,
+    normalize_sec_symbol,
+    parse_sec_ticker_map,
+    sec_cik_path,
+    sec_issuer_id,
+)
 
 __all__ = [
     "DEFAULT_HOT_SNAPSHOT_MAX", "DEFAULT_SNAPSHOT_RECOVERY_MAX",
@@ -40,4 +53,8 @@ __all__ = [
     "RepositorySchemaError", "SourceAvailability", "SourceStateSnapshot",
     "SymbolAlias", "SymbolIdentity", "SymbolIntelligenceRepository",
     "SymbolIntelligenceSnapshot", "UnsafePayloadError",
+    "AmbiguousTickerMapError", "SecIssuerIdentity", "SecIssuerResolution",
+    "SecIssuerIdentityResolver",
+    "SecResolutionStatus", "SecTickerMap", "SecTickerMapError",
+    "normalize_sec_symbol", "parse_sec_ticker_map", "sec_cik_path", "sec_issuer_id",
 ]

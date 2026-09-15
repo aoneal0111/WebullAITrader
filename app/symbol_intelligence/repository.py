@@ -6,7 +6,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from threading import Lock
@@ -35,7 +35,7 @@ from .models import (
 from .security import UnsafePayloadError, safe_json_value, validate_safe_key, validate_safe_text
 
 
-REPOSITORY_SCHEMA_VERSION = 1
+REPOSITORY_SCHEMA_VERSION = 2
 DEFAULT_STARTUP_RECOVERY_MAX = 5_000
 DEFAULT_SNAPSHOT_RECOVERY_MAX = 4_096
 MAX_QUERY_LIMIT = 5_000
@@ -149,6 +149,22 @@ class SymbolIntelligenceRepository:
                 version = int(row[0])
             except (TypeError, ValueError) as exc:
                 raise RepositorySchemaError("repository schema version is malformed") from exc
+            if version > REPOSITORY_SCHEMA_VERSION:
+                raise RepositorySchemaError(
+                    f"repository schema {version} is newer than supported {REPOSITORY_SCHEMA_VERSION}"
+                )
+            base_tables = {
+                str(row[0]) for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            required_base = {
+                "repository_metadata", "source_states", "symbol_identities", "symbol_aliases",
+                "raw_events", "event_derivations", "active_event_states",
+                "symbol_episode_summaries", "symbol_snapshots",
+            }
+            if not required_base.issubset(base_tables):
+                raise RepositorySchemaError("repository schema is incomplete")
             self._migrate_forward(connection, version)
             tables = {
                 str(row[0]) for row in connection.execute(
@@ -171,7 +187,7 @@ class SymbolIntelligenceRepository:
             raise RepositorySchemaError(
                 f"repository schema {version} is newer than supported {REPOSITORY_SCHEMA_VERSION}"
             )
-        migrations: dict[int, Any] = {}
+        migrations: dict[int, Any] = {1: _migrate_v1_to_v2}
         while version < REPOSITORY_SCHEMA_VERSION:
             migration = migrations.get(version)
             if migration is None:
@@ -182,6 +198,145 @@ class SymbolIntelligenceRepository:
                 "UPDATE repository_metadata SET value=? WHERE key='schema_version'",
                 (str(version),),
             )
+
+    def apply_sec_ticker_map(self, ticker_map: Any) -> bool:
+        """Atomically apply a pre-validated offline SEC ticker map."""
+        from .providers.sec_identity import SecTickerMap
+        if not isinstance(ticker_map, SecTickerMap):
+            raise TypeError("ticker_map must be SecTickerMap")
+        identities = ticker_map.identities
+        if len(identities) > self.bounds.symbol_identities or len(identities) > 50_000:
+            return False
+        if len({item.issuer_id for item in identities}) > self.bounds.symbol_identities:
+            return False
+        with self._operation_connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            prior = connection.execute(
+                "SELECT value FROM repository_metadata WHERE key='sec_ticker_map_revision' LIMIT 1"
+            ).fetchone()
+            prior_observed = connection.execute(
+                "SELECT value FROM repository_metadata WHERE key='sec_ticker_map_last_observed' LIMIT 1"
+            ).fetchone()
+            if prior_observed is not None:
+                incoming_observed = ticker_map.observed_at
+                stored_observed = datetime.fromisoformat(prior_observed[0])
+                if incoming_observed < stored_observed:
+                    return False
+                if incoming_observed == stored_observed and (prior is None or prior[0] != ticker_map.source_revision):
+                    return False
+            if prior is not None and prior[0] == ticker_map.source_revision:
+                connection.execute(
+                    "INSERT INTO repository_metadata(key,value) VALUES('sec_ticker_map_last_checked',?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (ticker_map.observed_at.isoformat(),),
+                )
+                return True
+            current_rows = connection.execute(
+                "SELECT symbol,issuer_id,valid_from FROM symbol_aliases WHERE valid_to IS NULL"
+            ).fetchall()
+            current = {row["symbol"]: row for row in current_rows}
+            incoming_symbols = {item.normalized_symbol for item in identities}
+            projected_aliases = len(current_rows) + len(incoming_symbols - set(current))
+            if projected_aliases > self.bounds.symbol_aliases:
+                return False
+            existing_issuers = {
+                row[0] for row in connection.execute("SELECT issuer_id FROM symbol_identities")
+            }
+            new_issuers = {item.issuer_id for item in identities} - existing_issuers
+            if len(existing_issuers) + len(new_issuers) > self.bounds.symbol_identities:
+                return False
+            for item in identities:
+                connection.execute(
+                    """INSERT INTO symbol_identities(issuer_id,canonical_symbol,issuer_name,updated_at,
+                    cik,exchange,share_class,source_revision,verified) VALUES(?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(issuer_id) DO UPDATE SET canonical_symbol=excluded.canonical_symbol,
+                    issuer_name=excluded.issuer_name,updated_at=excluded.updated_at,cik=excluded.cik,
+                    exchange=excluded.exchange,share_class=excluded.share_class,
+                    source_revision=excluded.source_revision,verified=excluded.verified""",
+                    (item.issuer_id, item.canonical_ticker, item.issuer_name, item.observed_at.isoformat(),
+                     item.cik, item.exchange, item.share_class, item.source_revision, int(item.verified)),
+                )
+                self._after_identity_mutation(item)
+            observed = ticker_map.observed_at.isoformat()
+            for symbol, row in current.items():
+                incoming = next((item for item in identities if item.normalized_symbol == symbol), None)
+                if incoming is None or incoming.issuer_id != row["issuer_id"]:
+                    valid_from = row["valid_from"]
+                    if valid_from < observed:
+                        connection.execute(
+                            "UPDATE symbol_aliases SET valid_to=? WHERE symbol=? AND valid_from=?",
+                            (observed, symbol, valid_from),
+                        )
+                    else:
+                        connection.execute(
+                            "DELETE FROM symbol_aliases WHERE symbol=? AND valid_from=?",
+                            (symbol, valid_from),
+                        )
+            for item in identities:
+                old = current.get(item.normalized_symbol)
+                if old is not None and old["issuer_id"] == item.issuer_id:
+                    continue
+                connection.execute(
+                    "INSERT INTO symbol_aliases(symbol,issuer_id,valid_from,valid_to,source_revision) VALUES(?,?,?,?,?)",
+                    (item.normalized_symbol, item.issuer_id, observed, None, item.source_revision),
+                )
+            for key, value in (
+                ("sec_ticker_map_revision", ticker_map.source_revision),
+                ("sec_ticker_map_last_observed", observed),
+            ):
+                connection.execute(
+                    "INSERT INTO repository_metadata(key,value) VALUES(?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value),
+                )
+            return True
+
+    def _after_identity_mutation(self, identity: Any) -> None:
+        """Test seam; called inside the map transaction after a mutation."""
+        return None
+
+    def resolve_symbol_identity(self, symbol: str, as_of: datetime) -> Any:
+        from .providers.sec_identity import SecIssuerResolution, SecResolutionStatus, normalize_sec_symbol
+        normalized = normalize_sec_symbol(symbol)
+        cutoff = _aware_iso(as_of)
+        with self._operation_connection() as connection:
+            rows = connection.execute(
+                """SELECT a.*,i.* FROM symbol_aliases a JOIN symbol_identities i ON i.issuer_id=a.issuer_id
+                WHERE a.symbol=? AND i.cik IS NOT NULL AND a.valid_from<=? AND (a.valid_to IS NULL OR ?<a.valid_to)
+                ORDER BY a.valid_from DESC LIMIT 2""", (normalized, cutoff, cutoff),
+            ).fetchall()
+        if not rows:
+            return SecIssuerResolution(symbol, normalized, SecResolutionStatus.UNRESOLVED, as_of=as_of, reason="NO_ALIAS")
+        if len(rows) > 1:
+            return SecIssuerResolution(symbol, normalized, SecResolutionStatus.AMBIGUOUS, as_of=as_of, reason="OVERLAPPING_ALIASES")
+        row = rows[0]
+        from .providers.sec_identity import SecIssuerIdentity
+        identity = SecIssuerIdentity(
+            normalized_symbol=normalized, cik=int(row["cik"]), issuer_id=row["issuer_id"],
+            canonical_ticker=row["canonical_symbol"], issuer_name=row["issuer_name"], exchange=row["exchange"],
+            share_class=row["share_class"], source_revision=row["source_revision"],
+            observed_at=datetime.fromisoformat(row["updated_at"]), verified=bool(row["verified"]),
+        )
+        return SecIssuerResolution(symbol, normalized, SecResolutionStatus.RESOLVED, identity=identity, as_of=as_of)
+
+    def current_symbol_identity(self, symbol: str) -> Any:
+        from .providers.sec_identity import SecResolutionStatus
+        return self.resolve_symbol_identity(symbol, datetime.now(UTC))
+
+    def recover_current_identities(self, *, limit: int = 32_768) -> tuple[Any, ...]:
+        if limit <= 0 or limit > min(self.bounds.symbol_identities, self.bounds.symbol_aliases):
+            raise ValueError("identity recovery limit exceeds repository bound")
+        from .providers.sec_identity import SecIssuerIdentity
+        with self._operation_connection() as connection:
+            rows = connection.execute(
+                """SELECT a.symbol,i.* FROM symbol_aliases a JOIN symbol_identities i ON i.issuer_id=a.issuer_id
+                WHERE a.valid_to IS NULL AND i.cik IS NOT NULL ORDER BY a.symbol LIMIT ?""", (limit,)
+            ).fetchall()
+        return tuple(SecIssuerIdentity(
+            normalized_symbol=row["symbol"], cik=int(row["cik"]), issuer_id=row["issuer_id"],
+            canonical_ticker=row["canonical_symbol"], issuer_name=row["issuer_name"], exchange=row["exchange"],
+            share_class=row["share_class"], source_revision=row["source_revision"],
+            observed_at=datetime.fromisoformat(row["updated_at"]), verified=bool(row["verified"]),
+        ) for row in rows)
 
     def set_repository_metadata(self, key: str, value: str) -> None:
         safe_key = validate_safe_key(key)
@@ -682,15 +837,45 @@ def _file_size(path: Path) -> int:
         return 0
 
 
+def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
+    """Add SEC identity provenance without discarding Phase-1 rows."""
+    for statement in (
+        "ALTER TABLE symbol_identities ADD COLUMN cik INTEGER",
+        "ALTER TABLE symbol_identities ADD COLUMN exchange TEXT",
+        "ALTER TABLE symbol_identities ADD COLUMN share_class TEXT",
+        "ALTER TABLE symbol_identities ADD COLUMN source_revision TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE symbol_identities ADD COLUMN verified INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE symbol_aliases ADD COLUMN source_revision TEXT NOT NULL DEFAULT ''",
+    ):
+        try:
+            connection.execute(statement)
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).casefold():
+                raise RepositorySchemaError("identity schema migration failed") from exc
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS ix_symbol_alias_current ON symbol_aliases(symbol,valid_from DESC)"
+    )
+    try:
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_symbol_alias_current "
+            "ON symbol_aliases(symbol) WHERE valid_to IS NULL"
+        )
+    except sqlite3.IntegrityError as exc:
+        raise RepositorySchemaError("existing identity aliases overlap") from exc
+
+
 _SCHEMA = """
 CREATE TABLE repository_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE source_states(
     source TEXT PRIMARY KEY,availability TEXT NOT NULL,observed_at TEXT NOT NULL,stale_after TEXT);
 CREATE TABLE symbol_identities(
-    issuer_id TEXT PRIMARY KEY,canonical_symbol TEXT NOT NULL,issuer_name TEXT,updated_at TEXT NOT NULL);
+    issuer_id TEXT PRIMARY KEY,canonical_symbol TEXT NOT NULL,issuer_name TEXT,updated_at TEXT NOT NULL,
+    cik INTEGER,exchange TEXT,share_class TEXT,source_revision TEXT NOT NULL DEFAULT '',verified INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE symbol_aliases(
-    symbol TEXT NOT NULL,issuer_id TEXT NOT NULL,valid_from TEXT NOT NULL,valid_to TEXT,
+    symbol TEXT NOT NULL,issuer_id TEXT NOT NULL,valid_from TEXT NOT NULL,valid_to TEXT,source_revision TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(symbol,valid_from),FOREIGN KEY(issuer_id) REFERENCES symbol_identities(issuer_id));
+CREATE INDEX ix_symbol_alias_current ON symbol_aliases(symbol,valid_from DESC);
+CREATE UNIQUE INDEX ux_symbol_alias_current ON symbol_aliases(symbol) WHERE valid_to IS NULL;
 CREATE TABLE raw_events(
     event_id TEXT PRIMARY KEY,symbol TEXT NOT NULL,issuer_id TEXT,event_type TEXT NOT NULL,
     event_subtype TEXT NOT NULL,source TEXT NOT NULL,source_id TEXT,published_at TEXT NOT NULL,
