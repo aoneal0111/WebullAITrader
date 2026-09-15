@@ -13,6 +13,11 @@ from .sec_identity import (
     sec_cik_path,
     sec_issuer_id,
 )
+from .sec_transport import (
+    SecAcquisitionFailure, SecAcquisitionFailureKind, SecAcquisitionResult,
+    SecEdgarEndpointClass, SecEdgarRateLimiter, SecEdgarRequest, SecEdgarResponse,
+    SecEdgarTransport, SecTransportMetrics,
+)
 
 __all__ = [
     "AmbiguousTickerMapError",
@@ -26,4 +31,7 @@ __all__ = [
     "parse_sec_ticker_map",
     "sec_cik_path",
     "sec_issuer_id",
+    "SecAcquisitionFailure", "SecAcquisitionFailureKind", "SecAcquisitionResult",
+    "SecEdgarEndpointClass", "SecEdgarRateLimiter", "SecEdgarRequest", "SecEdgarResponse",
+    "SecEdgarTransport", "SecTransportMetrics",
 ]
