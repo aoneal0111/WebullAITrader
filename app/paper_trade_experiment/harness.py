@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 from uuid import uuid4
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -147,15 +148,18 @@ def one_dimension_delta(definition: ExperimentDefinition) -> tuple[str, ...]:
 
 
 class PaperExperimentJournal:
-    """Append-only experiment definitions, assignments, and outcomes."""
+    """Append-only experiment definitions, assignments, and outcomes.
+
+    SQLite connections are deliberately short-lived and never cross a thread
+    boundary.  This journal is called from both the desktop and market-data
+    callback threads, so each operation owns its connection and transaction.
+    """
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(self.path, timeout=30)
-        self._connection.row_factory = sqlite3.Row
-        self._connection.execute("PRAGMA journal_mode=WAL")
-        self._connection.execute("PRAGMA synchronous=FULL")
+        self._closed = False
+        self._connection = self._new_connection()
         self._connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS experiment_definitions (
@@ -248,6 +252,27 @@ class PaperExperimentJournal:
         )
         self._connection.commit()
 
+    def _new_connection(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA synchronous=FULL")
+        return connection
+
+    def _connect(self) -> sqlite3.Connection:
+        """Open one connection owned by the calling thread."""
+        if self._closed:
+            raise RuntimeError("experiment journal is closed")
+        return self._new_connection()
+
+    @contextmanager
+    def _connection_scope(self):
+        connection = self._connect()
+        try:
+            yield connection
+        finally:
+            connection.close()
+
     def record_runtime_marker(
         self, *, trading_environment: str, live_trading_enabled: bool,
         warrior_forward_paper_enabled: bool,
@@ -260,7 +285,8 @@ class PaperExperimentJournal:
     ) -> str:
         """Durably record the effective, non-secret startup configuration."""
         marker_id = "startup-" + uuid4().hex
-        self._connection.execute(
+        with self._connection_scope() as connection:
+            connection.execute(
             """INSERT INTO experiment_runtime_markers VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 marker_id, "POLICY_INITIALIZED", _now(),
@@ -273,7 +299,7 @@ class PaperExperimentJournal:
                 str(experiment_version),
             ),
         )
-        self._connection.commit()
+            connection.commit()
         return marker_id
 
     def record_decision(self, assignment_id: str, *, control_decision: str,
@@ -281,17 +307,19 @@ class PaperExperimentJournal:
                         decision: Mapping[str, Any]) -> bool:
         """Persist one decision/shadow observation idempotently."""
         try:
-            self._connection.execute(
+            with self._connection_scope() as connection:
+                connection.execute(
                 """INSERT INTO experiment_decisions VALUES(?,?,?,?,?,?)
                    ON CONFLICT(assignment_id) DO NOTHING""",
                 (assignment_id, control_decision, treatment_decision,
                  selected_mode, _json(decision), _now()),
             )
-            changed = self._connection.execute("SELECT changes()").fetchone()[0]
-            self._connection.commit()
-            return bool(changed)
+                changed = connection.execute("SELECT changes()").fetchone()[0]
+                connection.commit()
+                return bool(changed)
         except Exception:
-            self._connection.rollback()
+            if 'connection' in locals():
+                connection.rollback()
             return False
 
     def record_shadow(self, assignment_id: str, *, shadow_type: str,
@@ -302,38 +330,43 @@ class PaperExperimentJournal:
             f"{assignment_id}|{shadow_type}".encode("utf-8")
         ).hexdigest()
         try:
-            self._connection.execute(
+            with self._connection_scope() as connection:
+                connection.execute(
                 """INSERT INTO experiment_shadows VALUES(?,?,?,?,?,?,?)
                    ON CONFLICT(assignment_id, shadow_type) DO NOTHING""",
                 (shadow_id, assignment_id, shadow_type, observed_at,
                  None if price is None else str(price), stage,
                  _json(shadow or {})),
             )
-            changed = self._connection.execute("SELECT changes()").fetchone()[0]
-            self._connection.commit()
-            return bool(changed)
+                changed = connection.execute("SELECT changes()").fetchone()[0]
+                connection.commit()
+                return bool(changed)
         except Exception:
-            self._connection.rollback()
+            if 'connection' in locals():
+                connection.rollback()
             return False
 
     def link_lifecycle(self, assignment_id: str, lifecycle_id: str) -> bool:
         try:
-            self._connection.execute(
+            with self._connection_scope() as connection:
+                connection.execute(
                 "INSERT INTO experiment_assignment_links VALUES(?,?,?) "
                 "ON CONFLICT(assignment_id) DO UPDATE SET lifecycle_id=excluded.lifecycle_id",
                 (assignment_id, lifecycle_id, _now()),
             )
-            self._connection.commit()
-            return True
+                connection.commit()
+                return True
         except Exception:
-            self._connection.rollback()
+            if 'connection' in locals():
+                connection.rollback()
             return False
 
     def assignment_for_lifecycle(self, lifecycle_id: str):
-        return self._connection.execute(
-            "SELECT assignment_id FROM experiment_assignment_links WHERE lifecycle_id=?",
-            (lifecycle_id,),
-        ).fetchone()
+        with self._connection_scope() as connection:
+            return connection.execute(
+                "SELECT assignment_id FROM experiment_assignment_links WHERE lifecycle_id=?",
+                (lifecycle_id,),
+            ).fetchone()
 
     def record_execution_event(self, assignment_id: str, *, event_id: str,
                                event_type: str, observed_at: str,
@@ -341,25 +374,31 @@ class PaperExperimentJournal:
                                price: Any = None, quantity: Any = None,
                                event: Mapping[str, Any] | None = None) -> bool:
         try:
-            self._connection.execute(
+            with self._connection_scope() as connection:
+                connection.execute(
                 """INSERT INTO experiment_execution_events VALUES(?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(event_id) DO NOTHING""",
                 (event_id, assignment_id, event_type, observed_at, order_id, fill_id,
                  None if price is None else str(price),
                  None if quantity is None else str(quantity), _json(event or {})),
             )
-            changed = self._connection.execute("SELECT changes()").fetchone()[0]
-            self._connection.commit()
-            return bool(changed)
+                changed = connection.execute("SELECT changes()").fetchone()[0]
+                connection.commit()
+                return bool(changed)
         except Exception:
-            self._connection.rollback()
+            if 'connection' in locals():
+                connection.rollback()
             return False
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self._connection.close()
 
     def register(self, definition: ExperimentDefinition) -> None:
-        self._connection.execute(
+        with self._connection_scope() as connection:
+            connection.execute(
             """INSERT INTO experiment_definitions VALUES(?,?,?,?,?)
                ON CONFLICT(experiment_id) DO UPDATE SET version=excluded.version,
                definition_json=excluded.definition_json, enabled=excluded.enabled,
@@ -367,7 +406,7 @@ class PaperExperimentJournal:
             (definition.experiment_id, definition.version, _json(definition.to_dict()),
              int(definition.enabled), _now()),
         )
-        self._connection.commit()
+            connection.commit()
 
     def assignment(
         self, definition: ExperimentDefinition, opportunity: ExperimentOpportunity,
@@ -375,15 +414,18 @@ class PaperExperimentJournal:
     ) -> AssignmentResult:
         assignment_id = _assignment_id(definition, opportunity)
         try:
-            existing = self._connection.execute(
+            with self._connection_scope() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                existing = connection.execute(
                 """SELECT assignment_id, arm FROM experiment_assignments
                    WHERE experiment_id=? AND assignment_identity=?""",
                 (definition.experiment_id, opportunity.assignment_identity),
             ).fetchone()
-            if existing is not None:
-                return AssignmentResult(existing["assignment_id"], definition.experiment_id,
-                                        existing["arm"], True, False, "ALREADY_ASSIGNED")
-            self._connection.execute(
+                if existing is not None:
+                    connection.commit()
+                    return AssignmentResult(existing["assignment_id"], definition.experiment_id,
+                                            existing["arm"], True, False, "ALREADY_ASSIGNED")
+                connection.execute(
                 """INSERT INTO experiment_assignments VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(assignment_id) DO NOTHING""",
                 (assignment_id, definition.experiment_id, definition.version, arm,
@@ -393,10 +435,11 @@ class PaperExperimentJournal:
                  opportunity.risk_policy_identity, _json(opportunity.context),
                  exclusion_reason, _now()),
             )
-            self._connection.commit()
-            return AssignmentResult(assignment_id, definition.experiment_id, arm, True, False, "ASSIGNED")
+                connection.commit()
+                return AssignmentResult(assignment_id, definition.experiment_id, arm, True, False, "ASSIGNED")
         except Exception as exc:  # sidecar failure must not escape the runtime
-            self._connection.rollback()
+            if 'connection' in locals():
+                connection.rollback()
             return AssignmentResult(assignment_id, None, CONTROL_ARM, False, True, type(exc).__name__)
 
     def record_outcome(
@@ -404,84 +447,97 @@ class PaperExperimentJournal:
         trade_id: str | None = None, order_id: str | None = None,
     ) -> bool:
         try:
-            self._connection.execute(
+            with self._connection_scope() as connection:
+                connection.execute(
                 "INSERT INTO experiment_outcomes VALUES(?,?,?,?,?,?) ON CONFLICT(outcome_id) DO NOTHING",
                 (outcome_id, assignment_id, trade_id, order_id, _json(outcome), _now()),
             )
-            changed = self._connection.execute("SELECT changes()").fetchone()[0]
-            self._connection.commit()
-            return bool(changed)
+                changed = connection.execute("SELECT changes()").fetchone()[0]
+                connection.commit()
+                return bool(changed)
         except Exception:
-            self._connection.rollback()
+            if 'connection' in locals():
+                connection.rollback()
             return False
 
     def status(self) -> dict[str, Any]:
-        definitions = []
-        for row in self._connection.execute("SELECT * FROM experiment_definitions ORDER BY experiment_id"):
-            definition = json.loads(row["definition_json"])
-            counts = self._connection.execute(
-                """SELECT arm, COUNT(*) AS assigned,
-                   SUM(EXISTS(SELECT 1 FROM experiment_outcomes o WHERE o.assignment_id=a.assignment_id)) AS completed
-                   FROM experiment_assignments a WHERE experiment_id=? GROUP BY arm""",
-                (row["experiment_id"],),
-            ).fetchall()
-            by_arm = {x["arm"]: {"assigned": x["assigned"], "completed": x["completed"] or 0} for x in counts}
-            for arm in (CONTROL_ARM, TREATMENT_ARM):
-                by_arm.setdefault(arm, {"assigned": 0, "completed": 0})
-            metrics_by_arm: dict[str, dict[str, Any]] = {}
-            for arm in (CONTROL_ARM, TREATMENT_ARM):
-                outcome_rows = self._connection.execute(
-                    """SELECT o.outcome_json FROM experiment_outcomes o
-                       JOIN experiment_assignments a ON a.assignment_id=o.assignment_id
-                       WHERE a.experiment_id=? AND a.arm=?""",
-                    (row["experiment_id"], arm),
-                ).fetchall()
-                numeric: dict[str, list[float]] = {}
-                for outcome_row in outcome_rows:
-                    try:
-                        outcome = json.loads(outcome_row["outcome_json"])
-                    except (TypeError, ValueError):
-                        continue
-                    for key in ("PnL", "pnl", "R", "r", "MFE", "mfe", "MAE", "mae"):
-                        value = outcome.get(key)
-                        if isinstance(value, (int, float)) and not isinstance(value, bool):
-                            numeric.setdefault(key.lower(), []).append(float(value))
-                metrics: dict[str, Any] = {"outcomes": len(outcome_rows)}
-                for key, values in numeric.items():
-                    metrics[key + "_count"] = len(values)
-                    metrics[key + "_mean"] = sum(values) / len(values)
-                metrics_by_arm[arm] = metrics
-            context_breakdown: dict[str, dict[str, int]] = {}
-            for assignment_row in self._connection.execute(
-                "SELECT arm, context_json FROM experiment_assignments WHERE experiment_id=?",
-                (row["experiment_id"],),
+        with self._connection_scope() as connection:
+            definitions = []
+            for row in connection.execute(
+                "SELECT * FROM experiment_definitions ORDER BY experiment_id"
             ):
-                try:
-                    context = json.loads(assignment_row["context_json"])
-                except (TypeError, ValueError):
-                    context = {}
-                for dimension in ("market_regime", "session"):
-                    value = context.get(dimension)
-                    if value is not None:
-                        dimension_counts = context_breakdown.setdefault(dimension, {})
-                        dimension_counts[str(value)] = dimension_counts.get(str(value), 0) + 1
-            exclusions = self._connection.execute(
-                """SELECT COUNT(*) FROM experiment_assignments
-                   WHERE experiment_id=? AND exclusion_reason IS NOT NULL""",
-                (row["experiment_id"],),
-            ).fetchone()[0]
-            target = int(definition.get("minimum_sample_target", 0))
-            assigned = sum(value["assigned"] for value in by_arm.values())
-            definitions.append({**definition, "progress": by_arm,
-                                "metrics": metrics_by_arm,
-                                "context_breakdown": context_breakdown,
-                                "exclusions": exclusions,
-                                "assigned_observations": assigned,
-                                "percent_toward_target": (
-                                    0 if target == 0 else min(100, assigned * 100 / target)
-                                ),
-                                "journal_health": "AVAILABLE"})
-        return {"framework_version": FRAMEWORK_VERSION, "experiments": definitions}
+                definition = json.loads(row["definition_json"])
+                counts = connection.execute(
+                    """SELECT arm, COUNT(*) AS assigned,
+                       SUM(EXISTS(SELECT 1 FROM experiment_outcomes o
+                                  WHERE o.assignment_id=a.assignment_id)) AS completed
+                       FROM experiment_assignments a
+                       WHERE experiment_id=? GROUP BY arm""",
+                    (row["experiment_id"],),
+                ).fetchall()
+                by_arm = {
+                    x["arm"]: {"assigned": x["assigned"], "completed": x["completed"] or 0}
+                    for x in counts
+                }
+                for arm in (CONTROL_ARM, TREATMENT_ARM):
+                    by_arm.setdefault(arm, {"assigned": 0, "completed": 0})
+                metrics_by_arm: dict[str, dict[str, Any]] = {}
+                for arm in (CONTROL_ARM, TREATMENT_ARM):
+                    outcome_rows = connection.execute(
+                        """SELECT o.outcome_json FROM experiment_outcomes o
+                           JOIN experiment_assignments a ON a.assignment_id=o.assignment_id
+                           WHERE a.experiment_id=? AND a.arm=?""",
+                        (row["experiment_id"], arm),
+                    ).fetchall()
+                    numeric: dict[str, list[float]] = {}
+                    for outcome_row in outcome_rows:
+                        try:
+                            outcome = json.loads(outcome_row["outcome_json"])
+                        except (TypeError, ValueError):
+                            continue
+                        for key in ("PnL", "pnl", "R", "r", "MFE", "mfe", "MAE", "mae"):
+                            value = outcome.get(key)
+                            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                                numeric.setdefault(key.lower(), []).append(float(value))
+                    metrics: dict[str, Any] = {"outcomes": len(outcome_rows)}
+                    for key, values in numeric.items():
+                        metrics[key + "_count"] = len(values)
+                        metrics[key + "_mean"] = sum(values) / len(values)
+                    metrics_by_arm[arm] = metrics
+                context_breakdown: dict[str, dict[str, int]] = {}
+                for assignment_row in connection.execute(
+                    "SELECT arm, context_json FROM experiment_assignments WHERE experiment_id=?",
+                    (row["experiment_id"],),
+                ):
+                    try:
+                        context = json.loads(assignment_row["context_json"])
+                    except (TypeError, ValueError):
+                        context = {}
+                    for dimension in ("market_regime", "session"):
+                        value = context.get(dimension)
+                        if value is not None:
+                            dimension_counts = context_breakdown.setdefault(dimension, {})
+                            dimension_counts[str(value)] = dimension_counts.get(str(value), 0) + 1
+                exclusions = connection.execute(
+                    """SELECT COUNT(*) FROM experiment_assignments
+                       WHERE experiment_id=? AND exclusion_reason IS NOT NULL""",
+                    (row["experiment_id"],),
+                ).fetchone()[0]
+                target = int(definition.get("minimum_sample_target", 0))
+                assigned = sum(value["assigned"] for value in by_arm.values())
+                definitions.append({
+                    **definition,
+                    "progress": by_arm,
+                    "metrics": metrics_by_arm,
+                    "context_breakdown": context_breakdown,
+                    "exclusions": exclusions,
+                    "assigned_observations": assigned,
+                    "percent_toward_target": (
+                        0 if target == 0 else min(100, assigned * 100 / target)
+                    ),
+                    "journal_health": "AVAILABLE",
+                })
+            return {"framework_version": FRAMEWORK_VERSION, "experiments": definitions}
 
 
 class ExperimentRouter:
