@@ -18,7 +18,7 @@ from app.live_scanner.session import scanner_session
 
 from .forward_models import (
     CaptureRecord, CaptureRecordType, PointInTimeObservation,
-    records_with_configuration_fingerprint,
+    is_phase_a_shadow_payload, records_with_configuration_fingerprint,
 )
 from .forward_store import ForwardCaptureStore
 from .models import MinuteBar, MomentumCandidate, SetupState
@@ -322,11 +322,22 @@ class ShadowOpportunityAnalyzer:
             if record.record_type is not CaptureRecordType.SHADOW_OUTCOME:
                 continue
             payload = record.payload
+            if is_phase_a_shadow_payload(payload):
+                continue
             evaluation_id = str(payload.get("evaluation_record_id", ""))
             if evaluation_id:
-                completed.setdefault(evaluation_id, set()).add(int(payload["horizon_minutes"]))
+                try:
+                    completed.setdefault(evaluation_id, set()).add(
+                        int(payload["horizon_minutes"])
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
         for record in records:
             if record.record_type is not CaptureRecordType.SHADOW_EVALUATION:
+                continue
+            if is_phase_a_shadow_payload(record.payload):
+                continue
+            if not _legacy_evaluation_payload_is_compatible(record.payload):
                 continue
             done = completed.get(record.record_id, set())
             if len(done) == len(self.config.horizons_minutes):
@@ -495,10 +506,13 @@ def build_rejection_attribution(store: ForwardCaptureStore) -> dict[str, dict[st
     evaluations = {
         record.record_id: record.payload
         for record in store.records(record_type=CaptureRecordType.SHADOW_EVALUATION)
+        if not is_phase_a_shadow_payload(record.payload)
     }
     outcomes_by_evaluation: dict[str, list[dict[str, object]]] = {}
     for record in store.records(record_type=CaptureRecordType.SHADOW_OUTCOME):
         payload = record.payload
+        if is_phase_a_shadow_payload(payload):
+            continue
         outcomes_by_evaluation.setdefault(
             str(payload.get("evaluation_record_id", "")), [],
         ).append(payload)
@@ -536,6 +550,22 @@ def build_rejection_attribution(store: ForwardCaptureStore) -> dict[str, dict[st
             horizon: median(values) for horizon, values in sorted(by_horizon.items())
         }
     return groups
+
+
+def _legacy_evaluation_payload_is_compatible(payload: Mapping[str, object]) -> bool:
+    """Reject malformed legacy evaluations without aborting startup."""
+    required = (
+        "evaluation_timestamp", "decision_record_id", "reason_codes",
+        "horizons_minutes", "session",
+    )
+    if any(key not in payload for key in required):
+        return False
+    try:
+        datetime.fromisoformat(str(payload["evaluation_timestamp"]))
+        horizons = tuple(int(value) for value in payload["horizons_minutes"])
+    except (TypeError, ValueError):
+        return False
+    return bool(str(payload["decision_record_id"])) and bool(horizons)
 
 
 __all__ = [

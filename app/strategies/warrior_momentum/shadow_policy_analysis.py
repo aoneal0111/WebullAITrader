@@ -250,6 +250,8 @@ def load_shadow_dataset_read_only(path: Path = DEFAULT_CAPTURE_PATH) -> ShadowCa
                 "FROM capture_records WHERE record_type = 'SHADOW_EVALUATION' "
                 "ORDER BY timestamp, sequence"
             )
+            for payload in (_object_payload(payload_json),)
+            if not payload.get("shadow_version")
         )
         outcomes = tuple(
             ShadowOutcome(
@@ -262,6 +264,7 @@ def load_shadow_dataset_read_only(path: Path = DEFAULT_CAPTURE_PATH) -> ShadowCa
                 "ORDER BY timestamp, sequence"
             )
             for payload in (_object_payload(payload_json),)
+            if not payload.get("shadow_version")
         )
         policy_count = int(connection.execute(
             "SELECT COUNT(*) FROM capture_records "

@@ -217,6 +217,40 @@ def test_restart_idempotency_and_duplicate_evaluation_protection(tmp_path: Path)
     assert restarted.finalize_due(T0 + timedelta(minutes=20)) == ()
 
 
+def test_legacy_shadow_recovery_skips_phase_a_and_malformed_payloads(tmp_path: Path) -> None:
+    """Shared capture types must not make legacy startup parse Phase-A data."""
+    store = ForwardCaptureStore(tmp_path / "mixed-shadow-schemas.sqlite3")
+    records = (
+        CaptureRecord.create(
+            CaptureRecordType.SHADOW_EVALUATION, "XYZ", T0,
+            {"evaluation_timestamp": T0, "decision_record_id": "legacy-decision",
+             "reason_codes": ("SPREAD_WIDE",), "horizons_minutes": (1,),
+             "session": "REGULAR"},
+            identity_parts=("legacy",),
+        ),
+        CaptureRecord.create(
+            CaptureRecordType.SHADOW_EVALUATION, "XYZ", T0 + timedelta(seconds=1),
+            {"shadow_version": "ADAPTIVE_PRETRIGGER_ENTRY_V1_SHADOW",
+             "opportunity_id": "phase-a-opportunity", "candidate": {}},
+            identity_parts=("phase-a",),
+        ),
+        CaptureRecord.create(
+            CaptureRecordType.SHADOW_EVALUATION, "XYZ", T0 + timedelta(seconds=2),
+            {"record_shape": "malformed-legacy"}, identity_parts=("malformed",),
+        ),
+        CaptureRecord.create(
+            CaptureRecordType.DECISION, "XYZ", T0 + timedelta(seconds=3),
+            {"status": "UNRELATED"}, identity_parts=("unrelated",),
+        ),
+    )
+    store.append_batch(records)
+
+    restarted = ShadowOpportunityAnalyzer(store)
+
+    assert len(restarted._active) == 1
+    assert next(iter(restarted._active.values())).payload["decision_record_id"] == "legacy-decision"
+
+
 def _integration_point() -> PointInTimeObservation:
     observation = ScannerObservation(
         "XYZ", T0, D("10"), D("8"), D("1000000"), D("100000"),

@@ -241,6 +241,23 @@ class WarriorForwardCaptureService:
         self._decision_intelligence_observer = decision_intelligence_observer
         self._decision_intelligence_entry_observer = decision_intelligence_entry_observer
         self._paper_entry_intelligence = paper_entry_intelligence
+        self._pretrigger_shadow = None
+        if (
+            capture_config.shadow_analysis_enabled
+            and (
+                decision_intelligence_observer is not None
+                or decision_intelligence_entry_observer is not None
+            )
+        ):
+            from app.trade_intelligence.pretrigger_shadow import (
+                AdaptivePretriggerShadowIntelligence,
+            )
+            self._pretrigger_shadow = AdaptivePretriggerShadowIntelligence(
+                writer,
+                stale_after_seconds=capture_config.quote_stale_after_seconds,
+                configuration_fingerprint=configuration_fingerprint,
+                store=store,
+            )
         # Observation-only continuity state.  It never participates in entry
         # authorization or order submission.
         from app.trade_intelligence.opportunity_memory import OpportunityMemory
@@ -450,6 +467,7 @@ class WarriorForwardCaptureService:
         # deliberately stronger authorities and keep the existing identity.
         if signal is not None:
             self._reconcile_structural_opportunity(symbol, signal)
+        conventional_signal = signal
         intelligence_result = None
         treatment_signal = None
         intelligence_candidate = (
@@ -492,6 +510,40 @@ class WarriorForwardCaptureService:
                     pass
         if treatment_signal is not None:
             signal = treatment_signal
+        if intelligence_result is not None and self._pretrigger_shadow is not None:
+            try:
+                opportunity_id = getattr(intelligence_result, "opportunity_id", None)
+                conflicts: list[str] = []
+                paper_state = self._paper.get(symbol)
+                if paper_state is not None:
+                    conflicts.append("PARTIAL_FILL_OR_LIFECYCLE")
+                    if paper_state.remaining > 0:
+                        conflicts.append("ACTIVE_POSITION")
+                if (
+                    self._paper_execution_ownership_source is not None
+                    and self._paper_execution_ownership_source(symbol)
+                ):
+                    conflicts.extend(("WORKING_ORDER", "PARTIAL_FILL_OR_LIFECYCLE"))
+                if (
+                    self._paper_position_quantity_source is not None
+                    and self._paper_position_quantity_source(symbol) > ZERO
+                ):
+                    conflicts.append("ACTIVE_POSITION")
+                if opportunity_id is not None:
+                    memory = self.opportunity_memory.get(
+                        observation.timestamp.date(), symbol, str(opportunity_id),
+                    )
+                    if memory is not None and memory.order_submitted_at is not None:
+                        conflicts.append("DURABLY_CONSUMED")
+                self._pretrigger_shadow.observe(
+                    value=value, result=intelligence_result,
+                    candidate=intelligence_candidate,
+                    lifecycle_conflicts=tuple(dict.fromkeys(conflicts)),
+                    conventional_signal=conventional_signal,
+                )
+            except Exception:
+                # Phase-A shadow intelligence has no authority over control.
+                pass
         if self._try_recovered_continuation_from_observation(
             value, assessed, signal or technical_signal, account, completed,
         ):

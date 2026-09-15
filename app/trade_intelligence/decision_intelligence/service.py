@@ -543,8 +543,12 @@ class HistoricalDecisionIntelligence:
                 "state": item.state.value,
                 "trigger": item.trigger_level,
                 "structural_stop": item.structural_stop,
+                "trigger_source": "TAXONOMY_COMPLETED_BAR",
+                "stop_source": "TAXONOMY_STRUCTURAL_STOP",
                 "opportunity_anchor": item.opportunity_anchor,
                 "detector_episode_id": item.detector_episode_id,
+                "structural_provenance": item.structural_provenance,
+                "quality_components": item.quality_components,
                 "observed_at": item.decision_cutoff,
             } for item in rows if item.state.value == "TRIGGER_ARMED")
             rows = tuple(sorted(rows, key=lambda item: item.strategy_id))

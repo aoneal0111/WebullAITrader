@@ -17,6 +17,7 @@ from .forward_models import (
     ForwardCaptureConfiguration,
     PaperAccountContext,
     PointInTimeObservation,
+    is_phase_a_shadow_payload,
 )
 from .models import (
     MomentumCandidate,
@@ -681,6 +682,7 @@ def analyze_shadow_latched(records: tuple[CaptureRecord, ...]) -> ShadowLatchedR
         record.payload["plan_id"]: record
         for record in records
         if record.record_type is CaptureRecordType.SHADOW_LATCHED_PLAN
+        and not is_phase_a_shadow_payload(record.payload)
     }
     transitions = [
         record for record in records
@@ -698,6 +700,7 @@ def analyze_shadow_latched(records: tuple[CaptureRecord, ...]) -> ShadowLatchedR
     for record in records:
         if (
             record.record_type is CaptureRecordType.SHADOW_OUTCOME
+            and not is_phase_a_shadow_payload(record.payload)
             and str(record.payload.get("decision_record_id")) in plan_decision_ids
             and record.payload.get("horizon_minutes") is not None
         ):

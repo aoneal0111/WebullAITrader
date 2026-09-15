@@ -50,6 +50,11 @@ class CaptureRecordType(StrEnum):
     DI_ENTRY_DIAGNOSTIC = "DI_ENTRY_DIAGNOSTIC"
 
 
+def is_phase_a_shadow_payload(payload: Mapping[str, object]) -> bool:
+    """Identify versioned Phase-A records for legacy shadow readers."""
+    return bool(payload.get("shadow_version"))
+
+
 class ForwardTransition(StrEnum):
     DISCOVERED = "DISCOVERED"
     WATCH = "WATCH"

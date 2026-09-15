@@ -1237,23 +1237,16 @@ class WarriorDesktopSidecar:
             "CALLBACK_ENTERED", symbol=symbol, timestamp=timestamp,
             opportunity_id=opportunity_hint,
         )
-        if observer is None or policy is None or service is None:
+        if observer is None or service is None:
             self._record_di_entry_diagnostic(
                 "POLICY_OBJECT_MISSING", symbol=symbol, timestamp=timestamp,
-                opportunity_id=opportunity_hint,
-                reason="NO_POLICY" if policy is None else "OTHER_GUARD",
+                opportunity_id=opportunity_hint, reason="OTHER_GUARD",
             )
             return None, None
         if str(self.environment).upper() != "PAPER":
             self._record_di_entry_diagnostic(
                 "POLICY_OBJECT_MISSING", symbol=symbol, timestamp=timestamp,
                 opportunity_id=opportunity_hint, reason="UNSUPPORTED_ENVIRONMENT",
-            )
-            return None, None
-        if not getattr(policy.config, "enabled", False) or getattr(policy.config, "mode", "") != "PAPER_TREATMENT":
-            self._record_di_entry_diagnostic(
-                "POLICY_OBJECT_MISSING", symbol=symbol, timestamp=timestamp,
-                opportunity_id=opportunity_hint, reason="DISABLED_POLICY",
             )
             return None, None
         try:
@@ -1282,6 +1275,16 @@ class WarriorDesktopSidecar:
                 self._record_di_entry_diagnostic(
                     "OPPORTUNITY_ID_MISSING", symbol=symbol, timestamp=timestamp,
                     reason="NO_OPPORTUNITY_ID",
+                )
+                return result, None
+            if (
+                policy is None
+                or not getattr(policy.config, "enabled", False)
+                or getattr(policy.config, "mode", "") != "PAPER_TREATMENT"
+            ):
+                self._record_di_entry_diagnostic(
+                    "POLICY_OBJECT_MISSING", symbol=symbol, timestamp=timestamp,
+                    opportunity_id=opportunity_id, reason="DISABLED_POLICY",
                 )
                 return result, None
             self._record_di_entry_diagnostic(

@@ -106,6 +106,21 @@ class ForwardCaptureStore:
             ).fetchall()
         return self._materialize(rows)
 
+    def latest_records(
+        self, *, record_type: CaptureRecordType, limit: int,
+    ) -> tuple[CaptureRecord, ...]:
+        """Return a bounded newest-first recovery slice for one record type."""
+        if limit <= 0:
+            raise ValueError("record recovery limit must be positive")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT schema_version,record_id,record_type,symbol,timestamp,payload_json "
+                "FROM capture_records WHERE record_type=? "
+                "ORDER BY sequence DESC LIMIT ?",
+                (record_type.value, int(limit)),
+            ).fetchall()
+        return self._materialize(rows)
+
     def records_for_daily_report(
         self,
         *,
