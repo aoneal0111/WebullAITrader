@@ -49,6 +49,7 @@ def test_disabled_with_no_user_agent_uses_bounded_defaults() -> None:
     assert config.max_retries == 2
     assert config.max_ticker_entries == 25_000
     assert config.max_submissions_cache_entries == 2_048
+    assert config.shadow_parity_enabled is False
 
 
 def test_all_canonical_names_populate_the_dedicated_contract() -> None:
@@ -92,8 +93,55 @@ def test_explicitly_disabled_with_user_agent_is_valid() -> None:
     assert config.enabled is False
     assert config.diagnostic_summary() == {
         "enabled": False,
+        "shadow_parity_enabled": False,
         "user_agent_configured": True,
     }
+
+
+@pytest.mark.parametrize("value, expected", [("true", True), ("false", False)])
+def test_shadow_parity_flag_is_canonical_and_disabled_by_default(value, expected) -> None:
+    config = _configuration({"ATLAS_SYMBOL_INTELLIGENCE_SEC_SHADOW_PARITY_ENABLED": value})
+    assert config.shadow_parity_enabled is expected
+
+
+def test_shadow_parity_flag_process_precedes_dotenv(tmp_path) -> None:
+    resolved = _resolve(
+        {"ATLAS_SYMBOL_INTELLIGENCE_SEC_SHADOW_PARITY_ENABLED": "false"},
+        dotenv_path=_write_dotenv(
+            tmp_path,
+            {"ATLAS_SYMBOL_INTELLIGENCE_SEC_SHADOW_PARITY_ENABLED": "true"},
+        ),
+    )
+    config = load_symbol_intelligence_sec_configuration(resolved)
+    assert config.shadow_parity_enabled is False
+
+
+def test_shadow_parity_flag_dotenv_only_true(tmp_path) -> None:
+    config = _configuration(
+        {},
+        dotenv_path=_write_dotenv(
+            tmp_path,
+            {"ATLAS_SYMBOL_INTELLIGENCE_SEC_SHADOW_PARITY_ENABLED": "true"},
+        ),
+    )
+    assert config.shadow_parity_enabled is True
+
+
+def test_shadow_parity_flag_dotenv_only_false(tmp_path) -> None:
+    config = _configuration(
+        {},
+        dotenv_path=_write_dotenv(
+            tmp_path,
+            {"ATLAS_SYMBOL_INTELLIGENCE_SEC_SHADOW_PARITY_ENABLED": "false"},
+        ),
+    )
+    assert config.shadow_parity_enabled is False
+
+
+def test_shadow_parity_flag_invalid_and_empty_values_fail() -> None:
+    for value in ("enabled", ""):
+        with pytest.raises(ValueError, match="boolean setting is malformed"):
+            _configuration({"ATLAS_SYMBOL_INTELLIGENCE_SEC_SHADOW_PARITY_ENABLED": value})
 
 
 def test_enabled_accepts_canonical_or_legacy_user_agent() -> None:

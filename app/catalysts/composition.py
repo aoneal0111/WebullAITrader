@@ -11,6 +11,8 @@ from app.catalysts.sec_edgar import (
     SECEdgarPolicy,
     log_sec_edgar_provider_state,
 )
+from app.catalysts.sec_shadow_parity import SecCatalystShadowEvaluator
+from app.catalysts.sec_shadow_provider import SecShadowingCatalystProvider
 from app.catalysts.marketwatch import (
     MarketWatchCatalystProvider,
     MarketWatchNewsPolicy,
@@ -28,6 +30,8 @@ from app.configuration import OperationalConfiguration
 def build_catalyst_providers(
     webull_client: object,
     configuration: OperationalConfiguration,
+    *,
+    sec_shadow_evaluator: SecCatalystShadowEvaluator | None = None,
 ) -> tuple[CatalystProvider, ...]:
     """Build the shared desktop/forward-live evidence provider set."""
 
@@ -35,15 +39,22 @@ def build_catalyst_providers(
     if configuration.sec_edgar is None:
         log_sec_edgar_provider_state(enabled=False)
     else:
-        providers.append(
-            SECEdgarCatalystProvider(
-                SECEdgarPolicy(
-                    user_agent=configuration.sec_edgar.user_agent,
-                    freshness_days=configuration.sec_edgar.freshness_days,
-                    timeout_seconds=configuration.sec_edgar.timeout_seconds,
-                )
+        sec_provider: CatalystProvider = SECEdgarCatalystProvider(
+            SECEdgarPolicy(
+                user_agent=configuration.sec_edgar.user_agent,
+                freshness_days=configuration.sec_edgar.freshness_days,
+                timeout_seconds=configuration.sec_edgar.timeout_seconds,
             )
         )
+        if sec_shadow_evaluator is not None:
+            try:
+                sec_provider = SecShadowingCatalystProvider(
+                    sec_provider, sec_shadow_evaluator,
+                )
+            except Exception:
+                # Optional shadow diagnostics fail closed; legacy SEC remains.
+                pass
+        providers.append(sec_provider)
     if configuration.yahoo_finance_news is None:
         log_yahoo_finance_provider_state(enabled=False)
     else:

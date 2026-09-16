@@ -522,6 +522,9 @@ def load_symbol_intelligence_sec_configuration(
             "ATLAS_SEC_EDGAR_MAX_SUBMISSIONS_CACHE_ENTRIES",
             2_048,
         ),
+        shadow_parity_enabled=_bool(
+            resolved.get("ATLAS_SYMBOL_INTELLIGENCE_SEC_SHADOW_PARITY_ENABLED", "false")
+        ),
     )
 
 
