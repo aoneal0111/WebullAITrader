@@ -32,6 +32,7 @@ def event(
     identity: str = "event-1",
     *,
     symbol: str = "AUTO",
+    issuer_id: str | None = None,
     source_id: str | None = "source-1",
     published_at: datetime = NOW,
     observed_at: datetime | None = None,
@@ -44,6 +45,7 @@ def event(
         event_subtype="8-K",
         source="SEC_EDGAR",
         source_id=source_id,
+        issuer_id=issuer_id,
         published_at=published_at,
         observed_at=observed_at or published_at,
         verified=True,
@@ -80,6 +82,62 @@ def repository(tmp_path, *, bounds: RepositoryBounds | None = None):
         tmp_path / "symbol-intelligence.sqlite3",
         bounds=bounds or RepositoryBounds(),
     )
+
+
+def test_recent_sec_events_by_issuer_is_bounded_point_in_time_and_deterministic(tmp_path):
+    repo = repository(tmp_path)
+    issuer_a = "SEC_CIK:0000000123"
+    cutoff = datetime(2026, 9, 15, 12, 0, tzinfo=UTC)
+    published = cutoff - timedelta(minutes=5)
+    events = (
+        event("old-symbol", symbol="OLD", issuer_id=issuer_a, source_id="acc-old", published_at=published),
+        event("same-z", symbol="NEW", issuer_id=issuer_a, source_id="acc-z", published_at=cutoff),
+        event("same-a", symbol="NEW", issuer_id=issuer_a, source_id="acc-a", published_at=cutoff),
+        event("future-observed", issuer_id=issuer_a, source_id="acc-future-observed",
+              published_at=cutoff - timedelta(minutes=1), observed_at=cutoff + timedelta(seconds=1)),
+        event("future-published", issuer_id=issuer_a, source_id="acc-future-published",
+              published_at=cutoff + timedelta(seconds=1)),
+        event("other-issuer", issuer_id="SEC_CIK:0000000999", source_id="acc-other",
+              published_at=cutoff),
+    )
+    # A non-SEC event for the same issuer must be excluded by the canonical filters.
+    non_sec = IntelligenceEvent(
+        event_id="news-1", symbol="NEW", issuer_id=issuer_a,
+        event_type=EventType.MATERIAL_AGREEMENT, event_subtype="NEWS",
+        source="NEWS", source_id="news-1", published_at=cutoff,
+        observed_at=cutoff, verified=True, decay_class=DecayClass.MULTI_DAY,
+        source_parser_version="test", headline="news",
+    )
+    assert repo.append_evidence(events + (non_sec,)).inserted == 7
+
+    before = repo.path.stat().st_mtime_ns
+    result = repo.recent_sec_events_by_issuer(issuer_a, limit=32, fact_cutoff=cutoff)
+    assert repo.path.stat().st_mtime_ns == before
+    assert [item.event_id for item in result] == ["same-z", "same-a", "old-symbol"]
+    assert all(item.source == "SEC_EDGAR" and item.event_type is EventType.SEC_FILING for item in result)
+    assert result[0].symbol == "NEW" and result[-1].symbol == "OLD"
+    assert repo.recent_sec_events_by_issuer(issuer_a, limit=2, fact_cutoff=cutoff)
+    assert [item.event_id for item in repo.recent_sec_events_by_issuer(issuer_a, limit=2, fact_cutoff=cutoff)] == ["same-z", "same-a"]
+
+    reopened = SymbolIntelligenceRepository(repo.path)
+    assert [item.event_id for item in reopened.recent_sec_events_by_issuer(issuer_a, limit=32, fact_cutoff=cutoff)] == ["same-z", "same-a", "old-symbol"]
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 5_001])
+def test_recent_sec_events_by_issuer_rejects_invalid_limits(tmp_path, limit):
+    with pytest.raises(ValueError):
+        repository(tmp_path).recent_sec_events_by_issuer(
+            "SEC_CIK:0000000123", limit=limit,
+            fact_cutoff=NOW,
+        )
+
+
+def test_recent_sec_events_by_issuer_requires_aware_cutoff_and_valid_issuer(tmp_path):
+    repo = repository(tmp_path)
+    with pytest.raises(ValueError):
+        repo.recent_sec_events_by_issuer("", limit=1, fact_cutoff=NOW)
+    with pytest.raises(ValueError):
+        repo.recent_sec_events_by_issuer("SEC_CIK:1", limit=1, fact_cutoff=datetime(2026, 9, 15, 12))
 
 
 def test_contracts_are_versioned_immutable_and_separate() -> None:
@@ -140,7 +198,7 @@ def test_schema_bootstrap_and_newer_schema_rejection(tmp_path) -> None:
     with sqlite3.connect(repo.path) as connection:
         assert connection.execute(
             "SELECT value FROM repository_metadata WHERE key='schema_version'"
-        ).fetchone()[0] == "2"
+        ).fetchone()[0] == "3"
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 0
         indexes = {row[1] for row in connection.execute("PRAGMA index_list('symbol_snapshots')")}
         assert "ix_snapshot_recovery" in indexes
@@ -158,6 +216,20 @@ def test_schema_bootstrap_and_newer_schema_rejection(tmp_path) -> None:
         connection.execute("INSERT INTO repository_metadata VALUES('schema_version','1')")
     with pytest.raises(RepositorySchemaError, match="incomplete"):
         SymbolIntelligenceRepository(incomplete)
+
+
+def test_schema_v2_migrates_issuer_query_index_without_data_loss(tmp_path) -> None:
+    repo = repository(tmp_path)
+    with sqlite3.connect(repo.path) as connection:
+        connection.execute("DROP INDEX ix_raw_event_issuer_source_published")
+        connection.execute("UPDATE repository_metadata SET value='2' WHERE key='schema_version'")
+    migrated = SymbolIntelligenceRepository(repo.path)
+    with sqlite3.connect(migrated.path) as connection:
+        assert connection.execute(
+            "SELECT value FROM repository_metadata WHERE key='schema_version'"
+        ).fetchone()[0] == "3"
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list('raw_events')")}
+        assert "ix_raw_event_issuer_source_published" in indexes
 
 
 def test_connection_configuration_is_applied_per_operation(tmp_path) -> None:

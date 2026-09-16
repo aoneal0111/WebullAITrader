@@ -35,7 +35,7 @@ from .models import (
 from .security import UnsafePayloadError, safe_json_value, validate_safe_key, validate_safe_text
 
 
-REPOSITORY_SCHEMA_VERSION = 2
+REPOSITORY_SCHEMA_VERSION = 3
 DEFAULT_STARTUP_RECOVERY_MAX = 5_000
 DEFAULT_SNAPSHOT_RECOVERY_MAX = 4_096
 MAX_QUERY_LIMIT = 5_000
@@ -187,7 +187,7 @@ class SymbolIntelligenceRepository:
             raise RepositorySchemaError(
                 f"repository schema {version} is newer than supported {REPOSITORY_SCHEMA_VERSION}"
             )
-        migrations: dict[int, Any] = {1: _migrate_v1_to_v2}
+        migrations: dict[int, Any] = {1: _migrate_v1_to_v2, 2: _migrate_v2_to_v3}
         while version < REPOSITORY_SCHEMA_VERSION:
             migration = migrations.get(version)
             if migration is None:
@@ -621,6 +621,38 @@ class SymbolIntelligenceRepository:
             ).fetchall()
         return tuple(_event_from_row(row) for row in rows)
 
+    def recent_sec_events_by_issuer(
+        self,
+        issuer_id: str,
+        *,
+        limit: int,
+        fact_cutoff: datetime,
+    ) -> tuple[IntelligenceEvent, ...]:
+        """Return bounded, point-in-time SEC facts for one issuer.
+
+        Both publication and observation timestamps are constrained so a
+        caller cannot observe facts that were not available at ``fact_cutoff``.
+        The query is issuer-centric and deliberately does not apply catalyst
+        freshness or semantic derivation rules.
+        """
+        _query_limit(limit)
+        normalized_issuer = validate_safe_text(issuer_id, field="issuer_id", maximum=128)
+        if fact_cutoff.tzinfo is None or fact_cutoff.utcoffset() is None:
+            cutoff = _aware_iso(fact_cutoff)
+        else:
+            cutoff = fact_cutoff.astimezone(UTC).isoformat()
+        with self._operation_connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM raw_events
+                WHERE issuer_id=? AND source=? AND event_type=?
+                  AND published_at<=? AND observed_at<=?
+                ORDER BY published_at DESC,observed_at DESC,source_id DESC,event_id DESC
+                LIMIT ?""",
+                (normalized_issuer, "SEC_EDGAR", EventType.SEC_FILING.value,
+                 cutoff, cutoff, limit),
+            ).fetchall()
+        return tuple(_event_from_row(row) for row in rows)
+
     def recover_hot_state(
         self, *, limit: int = DEFAULT_SNAPSHOT_RECOVERY_MAX,
     ) -> tuple[SymbolIntelligenceSnapshot, ...]:
@@ -864,6 +896,14 @@ def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
         raise RepositorySchemaError("existing identity aliases overlap") from exc
 
 
+def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
+    """Support bounded issuer/source/time lookups for SEC facts."""
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS ix_raw_event_issuer_source_published "
+        "ON raw_events(issuer_id,source,event_type,published_at DESC,observed_at DESC,event_id DESC)"
+    )
+
+
 _SCHEMA = """
 CREATE TABLE repository_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE source_states(
@@ -886,6 +926,7 @@ CREATE TABLE raw_events(
 CREATE UNIQUE INDEX ux_raw_event_source_identity ON raw_events(source,source_id) WHERE source_id IS NOT NULL;
 CREATE INDEX ix_raw_event_symbol_observed ON raw_events(symbol,observed_at DESC,event_id DESC);
 CREATE INDEX ix_raw_event_type_observed ON raw_events(event_type,observed_at DESC,event_id DESC);
+CREATE INDEX ix_raw_event_issuer_source_published ON raw_events(issuer_id,source,event_type,published_at DESC,observed_at DESC,event_id DESC);
 CREATE TABLE event_derivations(
     derivation_id TEXT PRIMARY KEY,symbol TEXT NOT NULL,derivation_type TEXT NOT NULL,direction TEXT NOT NULL,
     significance INTEGER NOT NULL,confidence TEXT NOT NULL,algorithm_id TEXT NOT NULL,
