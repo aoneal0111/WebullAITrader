@@ -32,6 +32,7 @@ class SymbolIntelligenceComposition:
     transport: SecEdgarTransport
     service: SecSymbolIntelligenceAcquisitionService
     ownership: SecNetworkOwnershipRuntime
+    activation_state: str = "ACTIVE"
 
     def start(self) -> bool:
         if not self.ownership.admission_open:
@@ -40,6 +41,11 @@ class SymbolIntelligenceComposition:
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         return self.ownership.close(timeout_seconds=timeout_seconds)
+
+    @property
+    def diagnostics(self) -> object:
+        """Expose only the bounded ownership diagnostics to desktop callers."""
+        return self.ownership.diagnostics
 
 
 @dataclass(slots=True)
@@ -86,17 +92,29 @@ def create_symbol_intelligence_composition(
     ownership_runtime_factory: Callable[..., SecNetworkOwnershipRuntime] = SecNetworkOwnershipRuntime,
     lease_path: str | Path | None = None,
     heartbeat_interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    repository: SymbolIntelligenceRepository | None = None,
+    activation_diagnostics_callback: Callable[[str], None] | None = None,
 ) -> SymbolIntelligenceComposition | None:
     """Build one optional lifecycle owner; never activates production SEC by default."""
 
     sec_config = getattr(configuration, "symbol_intelligence_sec_edgar", configuration)
     if not activate:
+        if activation_diagnostics_callback:
+            activation_diagnostics_callback("DISABLED")
         return None
     eligibility = evaluate_sec_acquisition_eligibility(configuration)
     if not eligibility.eligible:
+        if activation_diagnostics_callback:
+            activation_diagnostics_callback("INELIGIBLE")
         return None
     environment_name = environment or getattr(getattr(configuration, "environment", None), "value", None) or "TEST"
     path = SymbolIntelligenceRepository.production_path(str(environment_name))
+    # Opening the repository is local-only and deliberately precedes lease and
+    # network-capable construction.  A caller may provide the exact repository
+    # already used by the shadow runtime.
+    shared_repository = repository
+    if shared_repository is None:
+        shared_repository = repository_factory(path)
     holder: dict[str, object] = {}
 
     def on_lease_lost() -> None:
@@ -115,13 +133,12 @@ def create_symbol_intelligence_composition(
     def construct() -> SymbolIntelligenceComposition:
         transport = None
         try:
-            repository = repository_factory(path)
-            resolver = resolver_factory(repository)
+            resolver = resolver_factory(shared_repository)
             resolver.recover()
             normalizer = normalizer_factory()
             limiter = limiter_factory(float(sec_config.requests_per_second))
             transport = transport_factory(sec_config, limiter=limiter)
-            service = service_factory(sec_config, repository, transport, resolver, normalizer=normalizer)
+            service = service_factory(sec_config, shared_repository, transport, resolver, normalizer=normalizer)
             holder["service"] = service
             ownership.configure_shutdown(
                 close_admission=service.close_admission,
@@ -129,7 +146,7 @@ def create_symbol_intelligence_composition(
                 close_resource=transport.close,
             )
             return SymbolIntelligenceComposition(
-                repository, resolver, normalizer, limiter, transport, service, ownership,
+                shared_repository, resolver, normalizer, limiter, transport, service, ownership,
             )
         except Exception:
             if transport is not None:
@@ -138,16 +155,27 @@ def create_symbol_intelligence_composition(
                     closer()
             raise
 
-    composition = ownership.authorize_construction(construct)
+    try:
+        composition = ownership.authorize_construction(construct)
+    except Exception:
+        if activation_diagnostics_callback:
+            activation_diagnostics_callback("CONSTRUCTION_ERROR")
+        raise
     if composition is None:
+        if activation_diagnostics_callback:
+            activation_diagnostics_callback(ownership.diagnostics.state.value)
         return None
     if start:
         try:
             started = composition.start()
         except Exception:
+            if activation_diagnostics_callback:
+                activation_diagnostics_callback("START_ERROR")
             composition.close()
             raise
         if not started:
+            if activation_diagnostics_callback:
+                activation_diagnostics_callback("START_ERROR")
             composition.close()
             raise RuntimeError("Symbol Intelligence acquisition worker failed to start")
     return composition

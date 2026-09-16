@@ -216,7 +216,7 @@ def test_desktop_composition_exposes_active_holder(monkeypatch):
         composition.close()
 
 
-def test_d1_flags_do_not_activate_production_desktop_acquisition(monkeypatch):
+def test_d2b_flags_consume_paper_acquisition_activation(monkeypatch):
     from app.composition import desktop as desktop_module
 
     configuration = load_configuration(env={
@@ -247,7 +247,10 @@ def test_d1_flags_do_not_activate_production_desktop_acquisition(monkeypatch):
         shadow_runtime_factory=lambda config: shadow_holder,
     )
     try:
-        assert calls == [{"activate": False, "start": False}]
+        assert len(calls) == 1
+        assert calls[0]["activate"] is True
+        assert calls[0]["start"] is False
+        assert callable(calls[0]["activation_diagnostics_callback"])
         assert composition.symbol_intelligence is None
     finally:
         composition.close()

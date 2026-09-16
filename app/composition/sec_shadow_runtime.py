@@ -42,6 +42,7 @@ def create_sec_shadow_runtime(
     adapter_factory: Callable[..., object] = SecSymbolIntelligenceCatalystAdapter,
     store_factory: Callable[..., SecCatalystParityStore] = SecCatalystParityStore,
     evaluator_factory: Callable[..., SecCatalystShadowEvaluator] = SecCatalystShadowEvaluator,
+    repository_composition: SymbolIntelligenceRepositoryComposition | None = None,
 ) -> SecShadowRuntimeComposition:
     """Build shadow dependencies only after all eligibility gates pass."""
 
@@ -52,14 +53,15 @@ def create_sec_shadow_runtime(
         return SecShadowRuntimeComposition(SecShadowRuntimeState.INELIGIBLE_ENVIRONMENT)
     if configuration.sec_edgar is None:
         return SecShadowRuntimeComposition(SecShadowRuntimeState.NO_LEGACY_PROVIDER)
-    try:
-        repository_composition = repository_composition_factory(
-            configuration, environment=configuration.environment.value,
-        )
-    except Exception:
-        return SecShadowRuntimeComposition(SecShadowRuntimeState.NO_SYMBOL_INTELLIGENCE)
     if repository_composition is None:
-        return SecShadowRuntimeComposition(SecShadowRuntimeState.NO_SYMBOL_INTELLIGENCE)
+        try:
+            repository_composition = repository_composition_factory(
+                configuration, environment=configuration.environment.value,
+            )
+        except Exception:
+            return SecShadowRuntimeComposition(SecShadowRuntimeState.NO_SYMBOL_INTELLIGENCE)
+        if repository_composition is None:
+            return SecShadowRuntimeComposition(SecShadowRuntimeState.NO_SYMBOL_INTELLIGENCE)
 
     effective_clock = clock or (lambda: datetime.now(UTC))
     try:
