@@ -53,6 +53,15 @@ from .composition import (
     SymbolIntelligenceComposition,
     create_symbol_intelligence_composition,
 )
+from .network_lease import (
+    LeaseDiagnostics,
+    LeaseMetrics,
+    LeaseOutcome,
+    LeaseResult,
+    LeaseSchemaError,
+    SecNetworkOwnershipLease,
+    default_lease_path,
+)
 
 __all__ = [
     "DEFAULT_HOT_SNAPSHOT_MAX", "DEFAULT_SNAPSHOT_RECOVERY_MAX",
@@ -71,4 +80,6 @@ __all__ = [
     "AcquisitionFailureKind", "AcquisitionPriority", "SecAcquisitionDiagnostics",
     "SecAcquisitionMetrics", "SecSymbolIntelligenceAcquisitionService",
     "SymbolIntelligenceComposition", "create_symbol_intelligence_composition",
+    "LeaseDiagnostics", "LeaseMetrics", "LeaseOutcome", "LeaseResult",
+    "LeaseSchemaError", "SecNetworkOwnershipLease", "default_lease_path",
 ]
