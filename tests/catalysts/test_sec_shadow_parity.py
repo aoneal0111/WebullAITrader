@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+import app.catalysts.sec_shadow_parity as parity_module
 
 from app.catalysts.models import CatalystEvidence
 from app.catalysts.sec_shadow_parity import (
@@ -13,10 +14,19 @@ from app.catalysts.sec_shadow_parity import (
     SecShadowMetrics,
     compare_sec_catalyst_evidence,
 )
+from app.catalysts.sec_symbol_intelligence_adapter import (
+    AdapterReadiness,
+    AdapterReadinessReason,
+    SecCatalystAdapterEvaluation,
+)
 from app.momentum_scanner.models import CatalystStatus, CatalystType
 
 
 NOW = datetime(2026, 9, 16, 12, tzinfo=UTC)
+
+
+def typed(evidence_value, readiness=AdapterReadiness.READY, reason=None):
+    return SecCatalystAdapterEvaluation(evidence_value, readiness, reason)
 
 
 def evidence(status=CatalystStatus.TRUE, *, accession="0000000001-01-000001", published=NOW,
@@ -71,8 +81,8 @@ def test_not_ready_is_not_semantic_mismatch():
 
 def test_evaluator_returns_exact_legacy_object_and_counts():
     class Adapter:
-        def get_evidence(self, symbol, *, as_of):
-            return evidence()
+        def evaluate(self, symbol, *, as_of):
+            return typed(evidence())
     metrics = SecShadowMetrics()
     evaluator = SecCatalystShadowEvaluator(Adapter(), metrics=metrics)
     legacy = evidence()
@@ -83,12 +93,127 @@ def test_evaluator_returns_exact_legacy_object_and_counts():
 
 def test_evaluator_adapter_failure_isolated():
     class Broken:
-        def get_evidence(self, symbol, *, as_of):
+        def evaluate(self, symbol, *, as_of):
             raise RuntimeError("do not persist")
     metrics = SecShadowMetrics()
     legacy = evidence()
     assert SecCatalystShadowEvaluator(Broken(), metrics=metrics).evaluate("ABC", as_of=NOW, legacy_evidence=legacy) is legacy
     assert metrics.snapshot().shadow_errors == 1
+
+
+@pytest.mark.parametrize(
+    ("readiness", "reason", "status", "metric"),
+    [
+        (AdapterReadiness.NOT_READY, AdapterReadinessReason.SOURCE_STATE_MISSING,
+         CatalystStatus.UNKNOWN, "shadow_not_ready"),
+        (AdapterReadiness.NOT_READY, AdapterReadinessReason.SOURCE_STATE_UNAVAILABLE,
+         CatalystStatus.UNAVAILABLE, "shadow_not_ready"),
+        (AdapterReadiness.NOT_READY, AdapterReadinessReason.HISTORICAL_SOURCE_HEALTH_UNKNOWN,
+         CatalystStatus.UNKNOWN, "shadow_not_ready"),
+        (AdapterReadiness.NOT_READY, AdapterReadinessReason.IDENTITY_UNRESOLVED,
+         CatalystStatus.UNKNOWN, "shadow_not_ready"),
+        (AdapterReadiness.NOT_READY, AdapterReadinessReason.IDENTITY_AMBIGUOUS,
+         CatalystStatus.UNKNOWN, "shadow_not_ready"),
+        (AdapterReadiness.NOT_READY, AdapterReadinessReason.UNVERIFIED_FACT,
+         CatalystStatus.UNKNOWN, "shadow_not_ready"),
+        (AdapterReadiness.NOT_READY, AdapterReadinessReason.MALFORMED_FACT,
+         CatalystStatus.UNKNOWN, "shadow_not_ready"),
+        (AdapterReadiness.ERROR, AdapterReadinessReason.REPOSITORY_ERROR,
+         CatalystStatus.UNKNOWN, "shadow_errors"),
+        (AdapterReadiness.ERROR, AdapterReadinessReason.INTERNAL_ERROR,
+         CatalystStatus.UNKNOWN, "shadow_errors"),
+    ],
+)
+def test_typed_readiness_maps_exclusively(readiness, reason, status, metric):
+    calls = []
+
+    class Adapter:
+        def evaluate(self, symbol, *, as_of):
+            calls.append((symbol, as_of))
+            return typed(evidence(status), readiness, reason)
+
+    metrics = SecShadowMetrics()
+    legacy = evidence(CatalystStatus.FALSE)
+    result = SecCatalystShadowEvaluator(Adapter(), metrics=metrics).evaluate(
+        "ABC", as_of=NOW, legacy_evidence=legacy,
+    )
+    snapshot = metrics.snapshot()
+    assert result is legacy
+    assert len(calls) == 1
+    assert getattr(snapshot, metric) == 1
+    assert snapshot.matches == 0
+    assert snapshot.mismatches == 0
+    if readiness is AdapterReadiness.NOT_READY:
+        assert snapshot.shadow_errors == 0
+    else:
+        assert snapshot.shadow_not_ready == 0
+
+
+def test_ready_path_calls_typed_evaluate_once_and_not_get_evidence():
+    calls = []
+
+    class Adapter:
+        def evaluate(self, symbol, *, as_of):
+            calls.append((symbol, as_of))
+            return typed(evidence(CatalystStatus.FALSE))
+
+        def get_evidence(self, symbol, *, as_of):
+            raise AssertionError("legacy evidence API must not be called")
+
+    metrics = SecShadowMetrics()
+    legacy = evidence(CatalystStatus.FALSE)
+    result = SecCatalystShadowEvaluator(Adapter(), metrics=metrics).evaluate(
+        "ABC", as_of=NOW, legacy_evidence=legacy,
+    )
+    assert result is legacy
+    assert calls == [("ABC", NOW)]
+    assert metrics.snapshot().matches == 1
+
+
+def test_typed_ready_contradiction_remains_critical():
+    class Adapter:
+        def evaluate(self, symbol, *, as_of):
+            return typed(evidence(CatalystStatus.FALSE))
+
+    metrics = SecShadowMetrics()
+    legacy = evidence()
+    evaluator = SecCatalystShadowEvaluator(Adapter(), metrics=metrics)
+    assert evaluator.evaluate("ABC", as_of=NOW, legacy_evidence=legacy) is legacy
+    snapshot = metrics.snapshot()
+    assert snapshot.mismatches == 1
+    assert snapshot.critical_status_contradictions == 1
+
+
+def test_not_ready_and_error_bypass_semantic_comparator(monkeypatch):
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        calls.append(True)
+        raise AssertionError("semantic comparator must be bypassed")
+
+    monkeypatch.setattr(parity_module, "compare_sec_catalyst_evidence", forbidden)
+
+    class Adapter:
+        def __init__(self, evaluation):
+            self.evaluation = evaluation
+
+        def evaluate(self, symbol, *, as_of):
+            return self.evaluation
+
+    legacy = evidence(CatalystStatus.FALSE)
+    not_ready = typed(
+        evidence(CatalystStatus.UNKNOWN), AdapterReadiness.NOT_READY,
+        AdapterReadinessReason.SOURCE_STATE_MISSING,
+    )
+    error = typed(
+        evidence(CatalystStatus.UNKNOWN), AdapterReadiness.ERROR,
+        AdapterReadinessReason.REPOSITORY_ERROR,
+    )
+    for evaluation in (not_ready, error):
+        assert SecCatalystShadowEvaluator(Adapter(evaluation)).evaluate(
+            "ABC", as_of=NOW, legacy_evidence=legacy,
+        ) is legacy
+    assert calls == []
 
 
 def test_store_bounds_restart_and_summary(tmp_path):
@@ -118,8 +243,8 @@ def test_store_durable_dedupe_and_retention(tmp_path):
 
 def test_evaluator_memory_dedupe_bound_and_storage_failure(tmp_path):
     class Adapter:
-        def get_evidence(self, symbol, *, as_of):
-            return evidence()
+        def evaluate(self, symbol, *, as_of):
+            return typed(evidence())
     class BrokenStore:
         def record(self, observation):
             raise OSError("private")
@@ -134,8 +259,8 @@ def test_evaluator_memory_dedupe_bound_and_storage_failure(tmp_path):
 
 def test_evaluator_dedupe_suppresses_repeat_store_write(tmp_path):
     class Adapter:
-        def get_evidence(self, symbol, *, as_of):
-            return evidence()
+        def evaluate(self, symbol, *, as_of):
+            return typed(evidence())
     store = SecCatalystParityStore(str(tmp_path / "parity.sqlite3"))
     metrics = SecShadowMetrics()
     evaluator = SecCatalystShadowEvaluator(Adapter(), store=store, metrics=metrics)

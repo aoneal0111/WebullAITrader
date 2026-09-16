@@ -14,6 +14,11 @@ import sqlite3
 from app.momentum_scanner.models import CatalystStatus
 
 from .models import CatalystEvidence
+from .sec_symbol_intelligence_adapter import (
+    AdapterReadiness,
+    AdapterReadinessReason,
+    SecCatalystAdapterEvaluation,
+)
 
 
 class ParityState(StrEnum):
@@ -41,6 +46,10 @@ class ReadinessReason(StrEnum):
     IDENTITY_AMBIGUOUS = "IDENTITY_AMBIGUOUS"
     DATA_ABSENT = "DATA_ABSENT"
     HISTORICAL_SOURCE_HEALTH_UNKNOWN = "HISTORICAL_SOURCE_HEALTH_UNKNOWN"
+    UNVERIFIED_FACT = "UNVERIFIED_FACT"
+    MALFORMED_FACT = "MALFORMED_FACT"
+    REPOSITORY_ERROR = "REPOSITORY_ERROR"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,12 +315,34 @@ class SecCatalystShadowEvaluator:
                  shadow_ready: bool = True, readiness_reason: ReadinessReason | None = None) -> CatalystEvidence:
         self.metrics.increment(evaluations=1)
         try:
-            shadow = self.adapter.get_evidence(symbol, as_of=as_of)
-            observation = compare_sec_catalyst_evidence(
-                symbol=symbol, observed_at=self.clock(), environment=self.environment,
-                legacy=legacy_evidence, shadow=shadow, shadow_ready=shadow_ready,
-                readiness_reason=readiness_reason,
-            )
+            evaluation = self.adapter.evaluate(symbol, as_of=as_of)
+            if not isinstance(evaluation, SecCatalystAdapterEvaluation):
+                raise TypeError("adapter returned invalid typed evaluation")
+            reason = _map_readiness_reason(evaluation.reason)
+            if evaluation.readiness is AdapterReadiness.NOT_READY:
+                observation = _not_ready_observation(
+                    symbol=symbol,
+                    observed_at=self.clock(),
+                    environment=self.environment,
+                    legacy=legacy_evidence,
+                    shadow=evaluation.evidence,
+                    readiness_reason=reason,
+                )
+            elif evaluation.readiness is AdapterReadiness.ERROR:
+                self.metrics.increment(shadow_errors=1)
+                try:
+                    self._record_error(symbol, legacy_evidence, reason)
+                except Exception:
+                    self.metrics.increment(storage_failures=1)
+                return legacy_evidence
+            elif evaluation.readiness is AdapterReadiness.READY:
+                observation = compare_sec_catalyst_evidence(
+                    symbol=symbol, observed_at=self.clock(), environment=self.environment,
+                    legacy=legacy_evidence, shadow=evaluation.evidence,
+                    shadow_ready=True, readiness_reason=readiness_reason,
+                )
+            else:
+                raise TypeError("adapter returned unknown readiness")
         except Exception:
             self.metrics.increment(shadow_errors=1)
             try:
@@ -366,6 +397,36 @@ class SecCatalystShadowEvaluator:
         if not self.store.record(observation):
             self.metrics.increment(deduplicated_observations=1)
 
+
+def _map_readiness_reason(reason: AdapterReadinessReason | None) -> ReadinessReason | None:
+    if reason is None:
+        return None
+    mapping = {
+        AdapterReadinessReason.SOURCE_STATE_MISSING: ReadinessReason.SOURCE_STATE_MISSING,
+        AdapterReadinessReason.SOURCE_STATE_UNAVAILABLE: ReadinessReason.SOURCE_UNAVAILABLE_PREACTIVATION,
+        AdapterReadinessReason.HISTORICAL_SOURCE_HEALTH_UNKNOWN: ReadinessReason.HISTORICAL_SOURCE_HEALTH_UNKNOWN,
+        AdapterReadinessReason.IDENTITY_UNRESOLVED: ReadinessReason.IDENTITY_UNRESOLVED,
+        AdapterReadinessReason.IDENTITY_AMBIGUOUS: ReadinessReason.IDENTITY_AMBIGUOUS,
+        AdapterReadinessReason.UNVERIFIED_FACT: ReadinessReason.UNVERIFIED_FACT,
+        AdapterReadinessReason.MALFORMED_FACT: ReadinessReason.MALFORMED_FACT,
+        AdapterReadinessReason.REPOSITORY_ERROR: ReadinessReason.REPOSITORY_ERROR,
+        AdapterReadinessReason.INTERNAL_ERROR: ReadinessReason.INTERNAL_ERROR,
+    }
+    return mapping.get(reason)
+
+
+def _not_ready_observation(*, symbol: str, observed_at: datetime, environment: str,
+                           legacy: CatalystEvidence, shadow: CatalystEvidence,
+                           readiness_reason: ReadinessReason | None) -> SecCatalystParityObservation:
+    return SecCatalystParityObservation(
+        1, environment, symbol, _utc(observed_at), ParityState.SHADOW_NOT_READY,
+        legacy_status=legacy.status, shadow_status=shadow.status,
+        legacy_canonical_event_id=legacy.canonical_event_id,
+        shadow_canonical_event_id=shadow.canonical_event_id,
+        legacy_provider_event_id=legacy.provider_event_id,
+        shadow_provider_event_id=shadow.provider_event_id,
+        readiness_reason=readiness_reason,
+    )
 
 def _utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
