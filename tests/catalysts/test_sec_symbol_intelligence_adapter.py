@@ -5,6 +5,7 @@ import pytest
 from app.catalysts.models import CatalystEvidence
 from app.catalysts.sec_edgar import SECEdgarCatalystProvider, SECEdgarPolicy
 from app.catalysts.sec_symbol_intelligence_adapter import SecSymbolIntelligenceCatalystAdapter
+from app.catalysts.sec_symbol_intelligence_adapter import AdapterReadiness, AdapterReadinessReason
 from app.momentum_scanner.models import CatalystStatus, CatalystType
 from app.symbol_intelligence import (
     DecayClass,
@@ -268,3 +269,61 @@ def test_direct_legacy_and_adapter_parity_for_unsupported_6k(tmp_path, form):
     assert (adapter_result.symbol, adapter_result.catalyst_type, adapter_result.status, adapter_result.source) == (
         legacy_result.symbol, legacy_result.catalyst_type, legacy_result.status, legacy_result.source,
     )
+
+
+def test_diagnostic_true_and_public_evidence_match():
+    adapter = SecSymbolIntelligenceCatalystAdapter(Repo((filing(),)))
+    diagnostic = adapter.evaluate("NEW", as_of=NOW)
+    assert diagnostic.readiness is AdapterReadiness.READY
+    assert diagnostic.reason is None
+    assert diagnostic.evidence == adapter.get_evidence("NEW", as_of=NOW)
+
+
+def test_diagnostic_healthy_false_is_ready():
+    diagnostic = SecSymbolIntelligenceCatalystAdapter(Repo(())).evaluate("NEW", as_of=NOW)
+    assert diagnostic.evidence.status is CatalystStatus.FALSE
+    assert diagnostic.readiness is AdapterReadiness.READY
+
+
+def test_diagnostic_source_missing_and_unavailable_are_not_ready():
+    missing = SecSymbolIntelligenceCatalystAdapter(Repo((), None)).evaluate("NEW", as_of=NOW)
+    unavailable = SecSymbolIntelligenceCatalystAdapter(Repo((), SourceAvailability.UNAVAILABLE)).evaluate("NEW", as_of=NOW)
+    assert (missing.readiness, missing.reason) == (AdapterReadiness.NOT_READY, AdapterReadinessReason.SOURCE_STATE_MISSING)
+    assert (unavailable.readiness, unavailable.reason) == (AdapterReadiness.NOT_READY, AdapterReadinessReason.SOURCE_STATE_UNAVAILABLE)
+
+
+def test_diagnostic_historical_health_is_not_ready():
+    repo = Repo((filing(),))
+    repo.state = SourceStateSnapshot("SEC_EDGAR", SourceAvailability.AVAILABLE, NOW + timedelta(minutes=1))
+    diagnostic = SecSymbolIntelligenceCatalystAdapter(repo).evaluate("NEW", as_of=NOW)
+    assert (diagnostic.readiness, diagnostic.reason) == (AdapterReadiness.NOT_READY, AdapterReadinessReason.HISTORICAL_SOURCE_HEALTH_UNKNOWN)
+
+
+@pytest.mark.parametrize("resolution, reason", [
+    (SecResolutionStatus.UNRESOLVED, AdapterReadinessReason.IDENTITY_UNRESOLVED),
+    (SecResolutionStatus.AMBIGUOUS, AdapterReadinessReason.IDENTITY_AMBIGUOUS),
+])
+def test_diagnostic_identity_readiness(resolution, reason):
+    diagnostic = SecSymbolIntelligenceCatalystAdapter(Repo((), SourceAvailability.AVAILABLE, resolution)).evaluate("NEW", as_of=NOW)
+    assert (diagnostic.readiness, diagnostic.reason) == (AdapterReadiness.NOT_READY, reason)
+
+
+def test_diagnostic_unverified_and_malformed_facts_are_not_ready():
+    unverified = SecSymbolIntelligenceCatalystAdapter(Repo((filing(verified=False),))).evaluate("NEW", as_of=NOW)
+    malformed = SecSymbolIntelligenceCatalystAdapter(Repo((filing(document="../bad"),))).evaluate("NEW", as_of=NOW)
+    assert (unverified.readiness, unverified.reason) == (AdapterReadiness.NOT_READY, AdapterReadinessReason.UNVERIFIED_FACT)
+    assert (malformed.readiness, malformed.reason) == (AdapterReadiness.NOT_READY, AdapterReadinessReason.MALFORMED_FACT)
+
+
+def test_diagnostic_repository_error_is_typed():
+    class Broken(Repo):
+        def get_source_state(self, source):
+            raise RuntimeError("private")
+    diagnostic = SecSymbolIntelligenceCatalystAdapter(Broken()).evaluate("NEW", as_of=NOW)
+    assert (diagnostic.readiness, diagnostic.reason) == (AdapterReadiness.ERROR, AdapterReadinessReason.REPOSITORY_ERROR)
+
+
+def test_diagnostic_result_is_immutable():
+    diagnostic = SecSymbolIntelligenceCatalystAdapter(Repo(())).evaluate("NEW", as_of=NOW)
+    with pytest.raises(AttributeError):
+        diagnostic.readiness = AdapterReadiness.ERROR

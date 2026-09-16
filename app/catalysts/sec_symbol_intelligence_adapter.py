@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 import re
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Callable
 
 from app.momentum_scanner.models import CatalystStatus, CatalystType
@@ -27,6 +29,39 @@ _SUPPORTED_FORMS = frozenset({
     "S-1", "S-1/A", "S-3", "S-3/A", "SC 13D", "SC 13D/A",
     "SC 13G", "SC 13G/A",
 })
+
+
+class AdapterReadiness(StrEnum):
+    READY = "READY"
+    NOT_READY = "NOT_READY"
+    ERROR = "ERROR"
+
+
+class AdapterReadinessReason(StrEnum):
+    SOURCE_STATE_MISSING = "SOURCE_STATE_MISSING"
+    SOURCE_STATE_UNAVAILABLE = "SOURCE_STATE_UNAVAILABLE"
+    HISTORICAL_SOURCE_HEALTH_UNKNOWN = "HISTORICAL_SOURCE_HEALTH_UNKNOWN"
+    IDENTITY_UNRESOLVED = "IDENTITY_UNRESOLVED"
+    IDENTITY_AMBIGUOUS = "IDENTITY_AMBIGUOUS"
+    MALFORMED_FACT = "MALFORMED_FACT"
+    UNVERIFIED_FACT = "UNVERIFIED_FACT"
+    REPOSITORY_ERROR = "REPOSITORY_ERROR"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+
+
+@dataclass(frozen=True, slots=True)
+class SecCatalystAdapterEvaluation:
+    evidence: CatalystEvidence
+    readiness: AdapterReadiness
+    reason: AdapterReadinessReason | None = None
+
+
+class _UnverifiedFactError(ValueError):
+    pass
+
+
+class _MalformedFactError(ValueError):
+    pass
 
 
 class SecSymbolIntelligenceCatalystAdapter:
@@ -53,34 +88,84 @@ class SecSymbolIntelligenceCatalystAdapter:
         *,
         as_of: datetime | None = None,
     ) -> CatalystEvidence:
+        return self.evaluate(symbol, as_of=as_of).evidence
+
+    def evaluate(
+        self,
+        symbol: str,
+        *,
+        as_of: datetime | None = None,
+    ) -> SecCatalystAdapterEvaluation:
+        """Return compatibility evidence plus typed readiness provenance."""
         try:
             normalized = normalize_sec_symbol(symbol)
         except (TypeError, ValueError):
-            return self._negative(symbol, CatalystStatus.FALSE)
+            return SecCatalystAdapterEvaluation(
+                self._negative(symbol, CatalystStatus.FALSE), AdapterReadiness.READY
+            )
         try:
             cutoff = self._utc(as_of if as_of is not None else self._clock())
+        except Exception:
+            return SecCatalystAdapterEvaluation(
+                self._negative(normalized, CatalystStatus.UNKNOWN),
+                AdapterReadiness.ERROR, AdapterReadinessReason.INTERNAL_ERROR,
+            )
+        try:
             state = self._repository.get_source_state(_SEC_SOURCE)
-            if state is None:
-                return self._negative(normalized, CatalystStatus.UNKNOWN)
+        except Exception:
+            return SecCatalystAdapterEvaluation(
+                self._negative(normalized, CatalystStatus.UNKNOWN),
+                AdapterReadiness.ERROR, AdapterReadinessReason.REPOSITORY_ERROR,
+            )
+        if state is None:
+            return SecCatalystAdapterEvaluation(
+                self._negative(normalized, CatalystStatus.UNKNOWN),
+                AdapterReadiness.NOT_READY, AdapterReadinessReason.SOURCE_STATE_MISSING,
+            )
+        try:
             if state.availability is SourceAvailability.UNAVAILABLE:
-                return self._negative(normalized, CatalystStatus.UNAVAILABLE)
+                return SecCatalystAdapterEvaluation(
+                    self._negative(normalized, CatalystStatus.UNAVAILABLE),
+                    AdapterReadiness.NOT_READY, AdapterReadinessReason.SOURCE_STATE_UNAVAILABLE,
+                )
             if state.availability is not SourceAvailability.AVAILABLE:
-                return self._negative(normalized, CatalystStatus.UNKNOWN)
+                return SecCatalystAdapterEvaluation(
+                    self._negative(normalized, CatalystStatus.UNKNOWN),
+                    AdapterReadiness.NOT_READY, AdapterReadinessReason.SOURCE_STATE_MISSING,
+                )
             # Source state is current-only.  Do not apply a state observed after
             # a historical cutoff as if it were known at that time.
             if as_of is not None and state.observed_at > cutoff:
-                return self._negative(normalized, CatalystStatus.UNKNOWN)
+                return SecCatalystAdapterEvaluation(
+                    self._negative(normalized, CatalystStatus.UNKNOWN),
+                    AdapterReadiness.NOT_READY, AdapterReadinessReason.HISTORICAL_SOURCE_HEALTH_UNKNOWN,
+                )
             resolution = self._repository.resolve_symbol_identity(normalized, cutoff)
+            if resolution.status is SecResolutionStatus.UNRESOLVED:
+                return SecCatalystAdapterEvaluation(
+                    self._negative(normalized, CatalystStatus.UNKNOWN),
+                    AdapterReadiness.NOT_READY, AdapterReadinessReason.IDENTITY_UNRESOLVED,
+                )
+            if resolution.status is SecResolutionStatus.AMBIGUOUS:
+                return SecCatalystAdapterEvaluation(
+                    self._negative(normalized, CatalystStatus.UNKNOWN),
+                    AdapterReadiness.NOT_READY, AdapterReadinessReason.IDENTITY_AMBIGUOUS,
+                )
             if resolution.status is not SecResolutionStatus.RESOLVED or resolution.identity is None:
-                return self._negative(normalized, CatalystStatus.UNKNOWN)
+                return SecCatalystAdapterEvaluation(
+                    self._negative(normalized, CatalystStatus.UNKNOWN),
+                    AdapterReadiness.NOT_READY, AdapterReadinessReason.IDENTITY_UNRESOLVED,
+                )
             events = self._repository.recent_sec_events_by_issuer(
                 resolution.identity.issuer_id, limit=_MAX_FACTS, fact_cutoff=cutoff,
             )
             filing = self._select(events, cutoff)
             if filing is None:
-                return self._negative(normalized, CatalystStatus.FALSE)
+                return SecCatalystAdapterEvaluation(
+                    self._negative(normalized, CatalystStatus.FALSE), AdapterReadiness.READY
+                )
             event, form, accession, document, cik = filing
-            return CatalystEvidence(
+            evidence = CatalystEvidence(
                 symbol=normalized,
                 catalyst_type=CatalystType.SEC_FILING,
                 status=CatalystStatus.TRUE,
@@ -93,8 +178,27 @@ class SecSymbolIntelligenceCatalystAdapter:
                 provider_event_id=accession,
                 canonical_event_id=f"sec-filing:{accession.casefold()}",
             )
+            return SecCatalystAdapterEvaluation(evidence, AdapterReadiness.READY)
+        except _UnverifiedFactError:
+            return SecCatalystAdapterEvaluation(
+                self._negative(normalized, CatalystStatus.UNKNOWN),
+                AdapterReadiness.NOT_READY, AdapterReadinessReason.UNVERIFIED_FACT,
+            )
+        except _MalformedFactError:
+            return SecCatalystAdapterEvaluation(
+                self._negative(normalized, CatalystStatus.UNKNOWN),
+                AdapterReadiness.NOT_READY, AdapterReadinessReason.MALFORMED_FACT,
+            )
+        except (KeyError, TypeError, ValueError):
+            return SecCatalystAdapterEvaluation(
+                self._negative(normalized, CatalystStatus.UNKNOWN),
+                AdapterReadiness.NOT_READY, AdapterReadinessReason.MALFORMED_FACT,
+            )
         except Exception:
-            return self._negative(normalized, CatalystStatus.UNKNOWN)
+            return SecCatalystAdapterEvaluation(
+                self._negative(normalized, CatalystStatus.UNKNOWN),
+                AdapterReadiness.ERROR, AdapterReadinessReason.REPOSITORY_ERROR,
+            )
 
     def _select(self, events: tuple[Any, ...], cutoff: datetime) -> tuple[Any, str, str, str, int] | None:
         candidates: list[tuple[Any, str, str, str, int]] = []
@@ -103,7 +207,7 @@ class SecSymbolIntelligenceCatalystAdapter:
                 if event.source != _SEC_SOURCE or event.event_type.value != "SEC_FILING":
                     continue
                 if event.verified is not True:
-                    raise ValueError("unverified SEC fact")
+                    raise _UnverifiedFactError("unverified SEC fact")
                 form = " ".join(event.event_subtype.strip().upper().split())
                 if form not in _SUPPORTED_FORMS and not re.fullmatch(r"424B[A-Z0-9-]*(?:/A)?", form):
                     continue
@@ -112,7 +216,7 @@ class SecSymbolIntelligenceCatalystAdapter:
                 filing_date = date.fromisoformat(str(metadata["filing_date"]).strip())
                 document = str(metadata["primary_document"]).strip()
                 if not accession or not _DOCUMENT.fullmatch(document) or ".." in document:
-                    return None
+                    raise _MalformedFactError("SEC fact metadata is malformed")
                 if filing_date < (cutoff - timedelta(days=self._freshness_days)).date() or filing_date > cutoff.date():
                     continue
                 if event.published_at > cutoff or event.observed_at > cutoff:
@@ -120,7 +224,7 @@ class SecSymbolIntelligenceCatalystAdapter:
                 issuer_text = str(event.issuer_id or "")
                 match = re.fullmatch(r"SEC_CIK:(\d{1,})", issuer_text)
                 if match is None or sec_issuer_id(int(match.group(1))) != issuer_text:
-                    return None
+                    raise _MalformedFactError("SEC issuer metadata is malformed")
                 candidates.append((event, form, accession, document, int(match.group(1))))
             except Exception:
                 raise
@@ -140,4 +244,9 @@ class SecSymbolIntelligenceCatalystAdapter:
         )
 
 
-__all__ = ["SecSymbolIntelligenceCatalystAdapter"]
+__all__ = [
+    "AdapterReadiness",
+    "AdapterReadinessReason",
+    "SecCatalystAdapterEvaluation",
+    "SecSymbolIntelligenceCatalystAdapter",
+]
