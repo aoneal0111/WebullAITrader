@@ -525,6 +525,15 @@ def load_symbol_intelligence_sec_configuration(
         shadow_parity_enabled=_bool(
             resolved.get("ATLAS_SYMBOL_INTELLIGENCE_SEC_SHADOW_PARITY_ENABLED", "false")
         ),
+        acquisition_enabled=_bool(
+            resolved.get("ATLAS_SYMBOL_INTELLIGENCE_SEC_ACQUISITION_ENABLED", "false")
+        ),
+        dual_network_migration_enabled=_bool(
+            resolved.get(
+                "ATLAS_SYMBOL_INTELLIGENCE_SEC_DUAL_NETWORK_MIGRATION_ENABLED",
+                "false",
+            )
+        ),
     )
 
 

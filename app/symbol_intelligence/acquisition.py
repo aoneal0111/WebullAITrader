@@ -199,6 +199,20 @@ class SecSymbolIntelligenceAcquisitionService:
                 self._inc_locked("shutdown_timeouts")
             return done
 
+    def close_admission(self) -> None:
+        """Reject future work without claiming an in-flight worker is stopped."""
+
+        with self._lock:
+            self._shutdown_requested = True
+
+    def request_stop(self) -> None:
+        """Close admission and signal the worker without waiting for it."""
+
+        with self._lock:
+            self._shutdown_requested = True
+            self._stop.set()
+            self._wake.set()
+
     def close(self, timeout_seconds: float = 5.0) -> bool:
         with self._lock:
             if self._closed:

@@ -50,6 +50,8 @@ def test_disabled_with_no_user_agent_uses_bounded_defaults() -> None:
     assert config.max_ticker_entries == 25_000
     assert config.max_submissions_cache_entries == 2_048
     assert config.shadow_parity_enabled is False
+    assert config.acquisition_enabled is False
+    assert config.dual_network_migration_enabled is False
 
 
 def test_all_canonical_names_populate_the_dedicated_contract() -> None:
@@ -94,6 +96,8 @@ def test_explicitly_disabled_with_user_agent_is_valid() -> None:
     assert config.diagnostic_summary() == {
         "enabled": False,
         "shadow_parity_enabled": False,
+        "acquisition_enabled": False,
+        "dual_network_migration_enabled": False,
         "user_agent_configured": True,
     }
 
@@ -142,6 +146,103 @@ def test_shadow_parity_flag_invalid_and_empty_values_fail() -> None:
     for value in ("enabled", ""):
         with pytest.raises(ValueError, match="boolean setting is malformed"):
             _configuration({"ATLAS_SYMBOL_INTELLIGENCE_SEC_SHADOW_PARITY_ENABLED": value})
+
+
+@pytest.mark.parametrize(
+    ("name", "field"),
+    (
+        ("ATLAS_SYMBOL_INTELLIGENCE_SEC_ACQUISITION_ENABLED", "acquisition_enabled"),
+        (
+            "ATLAS_SYMBOL_INTELLIGENCE_SEC_DUAL_NETWORK_MIGRATION_ENABLED",
+            "dual_network_migration_enabled",
+        ),
+    ),
+)
+@pytest.mark.parametrize("value, expected", (("true", True), ("false", False)))
+def test_acquisition_controls_load_from_canonical_process(name, field, value, expected) -> None:
+    config = _configuration({name: value})
+    assert getattr(config, field) is expected
+
+
+@pytest.mark.parametrize(
+    ("name", "field"),
+    (
+        ("ATLAS_SYMBOL_INTELLIGENCE_SEC_ACQUISITION_ENABLED", "acquisition_enabled"),
+        (
+            "ATLAS_SYMBOL_INTELLIGENCE_SEC_DUAL_NETWORK_MIGRATION_ENABLED",
+            "dual_network_migration_enabled",
+        ),
+    ),
+)
+def test_acquisition_controls_process_precede_dotenv(name, field, tmp_path) -> None:
+    resolved = _resolve(
+        {name: "false"},
+        dotenv_path=_write_dotenv(tmp_path, {name: "true"}),
+    )
+    config = load_symbol_intelligence_sec_configuration(resolved)
+    assert getattr(config, field) is False
+    assert resolved.origin(name) == "canonical_process"
+
+
+@pytest.mark.parametrize(
+    ("name", "field", "value", "expected"),
+    (
+        ("ATLAS_SYMBOL_INTELLIGENCE_SEC_ACQUISITION_ENABLED", "acquisition_enabled", "true", True),
+        ("ATLAS_SYMBOL_INTELLIGENCE_SEC_ACQUISITION_ENABLED", "acquisition_enabled", "false", False),
+        (
+            "ATLAS_SYMBOL_INTELLIGENCE_SEC_DUAL_NETWORK_MIGRATION_ENABLED",
+            "dual_network_migration_enabled",
+            "true",
+            True,
+        ),
+        (
+            "ATLAS_SYMBOL_INTELLIGENCE_SEC_DUAL_NETWORK_MIGRATION_ENABLED",
+            "dual_network_migration_enabled",
+            "false",
+            False,
+        ),
+    ),
+)
+def test_acquisition_controls_load_from_dotenv(name, field, value, expected, tmp_path) -> None:
+    config = _configuration({}, dotenv_path=_write_dotenv(tmp_path, {name: value}))
+    assert getattr(config, field) is expected
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "ATLAS_SYMBOL_INTELLIGENCE_SEC_ACQUISITION_ENABLED",
+        "ATLAS_SYMBOL_INTELLIGENCE_SEC_DUAL_NETWORK_MIGRATION_ENABLED",
+    ),
+)
+@pytest.mark.parametrize("value", ("", "enabled", "1", "yes"))
+def test_acquisition_controls_reject_empty_and_invalid_values(name, value) -> None:
+    with pytest.raises(ValueError, match="boolean setting is malformed"):
+        _configuration({name: value})
+
+
+def test_shadow_acquisition_and_migration_flags_are_independent() -> None:
+    shadow = _configuration({"ATLAS_SYMBOL_INTELLIGENCE_SEC_SHADOW_PARITY_ENABLED": "true"})
+    acquisition = _configuration({"ATLAS_SYMBOL_INTELLIGENCE_SEC_ACQUISITION_ENABLED": "true"})
+    migration = _configuration({"ATLAS_SYMBOL_INTELLIGENCE_SEC_DUAL_NETWORK_MIGRATION_ENABLED": "true"})
+    assert shadow.shadow_parity_enabled is True
+    assert shadow.acquisition_enabled is False
+    assert shadow.dual_network_migration_enabled is False
+    assert acquisition.shadow_parity_enabled is False
+    assert acquisition.acquisition_enabled is True
+    assert acquisition.dual_network_migration_enabled is False
+    assert migration.shadow_parity_enabled is False
+    assert migration.acquisition_enabled is False
+    assert migration.dual_network_migration_enabled is True
+
+
+def test_new_acquisition_controls_have_no_legacy_aliases() -> None:
+    config = _configuration({
+        "SYMBOL_INTELLIGENCE_SEC_ACQUISITION_ENABLED": "true",
+        "SYMBOL_INTELLIGENCE_SEC_DUAL_NETWORK_MIGRATION_ENABLED": "true",
+    })
+    assert config.acquisition_enabled is False
+    assert config.dual_network_migration_enabled is False
 
 
 def test_enabled_accepts_canonical_or_legacy_user_agent() -> None:

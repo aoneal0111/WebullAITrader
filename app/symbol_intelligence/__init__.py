@@ -64,6 +64,16 @@ from .network_lease import (
     SecNetworkOwnershipLease,
     default_lease_path,
 )
+from .network_ownership_runtime import (
+    DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    HEARTBEAT_THREAD_NAME,
+    SecAcquisitionEligibility,
+    SecAcquisitionEligibilityReason,
+    SecNetworkOwnershipDiagnostics,
+    SecNetworkOwnershipRuntime,
+    SecNetworkOwnershipState,
+    evaluate_sec_acquisition_eligibility,
+)
 
 __all__ = [
     "DEFAULT_HOT_SNAPSHOT_MAX", "DEFAULT_SNAPSHOT_RECOVERY_MAX",
@@ -85,4 +95,8 @@ __all__ = [
     "create_symbol_intelligence_composition", "create_symbol_intelligence_repository_composition",
     "LeaseDiagnostics", "LeaseMetrics", "LeaseOutcome", "LeaseResult",
     "LeaseSchemaError", "SecNetworkOwnershipLease", "default_lease_path",
+    "DEFAULT_HEARTBEAT_INTERVAL_SECONDS", "HEARTBEAT_THREAD_NAME",
+    "SecAcquisitionEligibility", "SecAcquisitionEligibilityReason",
+    "SecNetworkOwnershipDiagnostics", "SecNetworkOwnershipRuntime",
+    "SecNetworkOwnershipState", "evaluate_sec_acquisition_eligibility",
 ]

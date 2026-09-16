@@ -216,6 +216,43 @@ def test_desktop_composition_exposes_active_holder(monkeypatch):
         composition.close()
 
 
+def test_d1_flags_do_not_activate_production_desktop_acquisition(monkeypatch):
+    from app.composition import desktop as desktop_module
+
+    configuration = load_configuration(env={
+        "WEBULL_TRADING_ENVIRONMENT": "PAPER",
+        "SEC_EDGAR_USER_AGENT": "test contact@example.invalid",
+        "ATLAS_SEC_EDGAR_ENABLED": "true",
+        "ATLAS_SEC_EDGAR_USER_AGENT": "test contact@example.invalid",
+        "ATLAS_SYMBOL_INTELLIGENCE_SEC_SHADOW_PARITY_ENABLED": "true",
+        "ATLAS_SYMBOL_INTELLIGENCE_SEC_ACQUISITION_ENABLED": "true",
+        "ATLAS_SYMBOL_INTELLIGENCE_SEC_DUAL_NETWORK_MIGRATION_ENABLED": "true",
+        "ATLAS_MEMORY_OBSERVABILITY_ENABLED": "false",
+    })
+    monkeypatch.setattr(desktop_module, "load_configuration", lambda: configuration)
+    calls = []
+
+    def acquisition_factory(config, **kwargs):
+        calls.append(kwargs)
+        return None
+
+    monkeypatch.setattr(
+        desktop_module,
+        "create_symbol_intelligence_composition",
+        acquisition_factory,
+    )
+    shadow_holder = SimpleNamespace(state="ACTIVE", evaluator=None, store=None)
+    composition = create_desktop_composition(
+        driver_factory=lambda: SimpleNamespace(start=lambda: True, stop=lambda: None),
+        shadow_runtime_factory=lambda config: shadow_holder,
+    )
+    try:
+        assert calls == [{"activate": False, "start": False}]
+        assert composition.symbol_intelligence is None
+    finally:
+        composition.close()
+
+
 def test_process_false_disables_without_sidecar_factories(monkeypatch):
     monkeypatch.setenv("ATLAS_SYMBOL_INTELLIGENCE_SEC_SHADOW_PARITY_ENABLED", "false")
     configuration = load_configuration(env={

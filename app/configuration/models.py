@@ -70,12 +70,18 @@ class SymbolIntelligenceSECEdgarConfiguration:
     max_ticker_entries: int = 25_000
     max_submissions_cache_entries: int = 2_048
     shadow_parity_enabled: bool = False
+    acquisition_enabled: bool = False
+    dual_network_migration_enabled: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
             raise TypeError("SEC EDGAR enabled must be boolean")
         if not isinstance(self.shadow_parity_enabled, bool):
             raise TypeError("SEC shadow parity enabled must be boolean")
+        if not isinstance(self.acquisition_enabled, bool):
+            raise TypeError("SEC acquisition enabled must be boolean")
+        if not isinstance(self.dual_network_migration_enabled, bool):
+            raise TypeError("SEC dual-network migration enabled must be boolean")
         user_agent = str(self.user_agent or "").strip()
         if "\n" in user_agent or "\r" in user_agent or len(user_agent) > 512:
             raise ValueError("SEC EDGAR User-Agent is malformed")
@@ -113,6 +119,8 @@ class SymbolIntelligenceSECEdgarConfiguration:
         return {
             "enabled": self.enabled,
             "shadow_parity_enabled": self.shadow_parity_enabled,
+            "acquisition_enabled": self.acquisition_enabled,
+            "dual_network_migration_enabled": self.dual_network_migration_enabled,
             "user_agent_configured": self.user_agent is not None,
         }
 
