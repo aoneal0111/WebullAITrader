@@ -66,6 +66,7 @@ from app.paper_trading.command_composition import (
 )
 from app.paper_gateway.durable_store import NO_ACTIVE_PAPER_CAMPAIGN_ID
 from app.portfolio_intelligence import PortfolioAccount, PortfolioIntelligenceService, PortfolioRiskLimits, load_portfolio_intelligence_configuration
+from app.symbol_intelligence.composition import SymbolIntelligenceComposition, create_symbol_intelligence_composition
 
 
 @dataclass(slots=True)
@@ -91,9 +92,12 @@ class DesktopComposition:
     crypto_intelligence_runtime: CryptoIntelligenceResearchRuntime | None = None
     crypto_catalyst_acquisition_runtime: CryptoCatalystAcquisitionRuntime | None = None
     memory_observability: MemoryObservability | None = None
+    symbol_intelligence: SymbolIntelligenceComposition | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         """Close composed resources in lifecycle order."""
+
+        symbol_intelligence_stopped = True
 
         crypto = self.crypto_research_runtime
         if crypto is not None:
@@ -129,6 +133,13 @@ class DesktopComposition:
             except Exception:
                 # Diagnostics have no authority over production shutdown.
                 pass
+        if self.symbol_intelligence is not None:
+            try:
+                symbol_intelligence_stopped = self.symbol_intelligence.close(
+                    timeout_seconds=min(timeout_seconds, 5.0)
+                )
+            except Exception:
+                symbol_intelligence_stopped = False
         runtime_stopped = self.runtime_service.close(
             timeout_seconds=timeout_seconds
         )
@@ -144,7 +155,7 @@ class DesktopComposition:
         except Exception:
             # Performance evidence is strictly non-authoritative.
             pass
-        return runtime_stopped
+        return runtime_stopped and symbol_intelligence_stopped
 
 
 def create_desktop_composition(
@@ -703,6 +714,14 @@ def create_desktop_composition(
     )
     runtime_service_holder["service"] = runtime_service
 
+    # Phase 3B keeps SEC Symbol Intelligence uncomposed in production.  The
+    # explicit activation seam is exercised only by offline composition tests.
+    symbol_intelligence = create_symbol_intelligence_composition(
+        operational_configuration,
+        activate=False,
+        start=False,
+    )
+
     trading_service = TradingService(
         placement_runtime,
         cancellation_runtime,
@@ -737,6 +756,7 @@ def create_desktop_composition(
         crypto_intelligence_runtime=crypto_intelligence_runtime,
         crypto_catalyst_acquisition_runtime=crypto_catalyst_acquisition_runtime,
         memory_observability=memory_observability,
+        symbol_intelligence=symbol_intelligence,
     )
 __all__ = [
     "DesktopComposition",

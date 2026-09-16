@@ -49,6 +49,10 @@ from .acquisition import (
     SecAcquisitionMetrics,
     SecSymbolIntelligenceAcquisitionService,
 )
+from .composition import (
+    SymbolIntelligenceComposition,
+    create_symbol_intelligence_composition,
+)
 
 __all__ = [
     "DEFAULT_HOT_SNAPSHOT_MAX", "DEFAULT_SNAPSHOT_RECOVERY_MAX",
@@ -66,4 +70,5 @@ __all__ = [
     "normalize_sec_symbol", "parse_sec_ticker_map", "sec_cik_path", "sec_issuer_id",
     "AcquisitionFailureKind", "AcquisitionPriority", "SecAcquisitionDiagnostics",
     "SecAcquisitionMetrics", "SecSymbolIntelligenceAcquisitionService",
+    "SymbolIntelligenceComposition", "create_symbol_intelligence_composition",
 ]
