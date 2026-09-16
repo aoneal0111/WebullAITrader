@@ -122,6 +122,21 @@ def test_cik_coalescing_and_fact_persistence(tmp_path):
     assert len(submissions_calls) == 1
     assert service_obj.metrics.issuer_refresh_coalesced == 1
     assert repo.recent_events("ABC", limit=10)
+    state = repo.get_sec_issuer_acquisition_state(ident.issuer_id)
+    assert state is not None and state.status.value == "COMPLETE"
+
+
+def test_zero_fact_submissions_still_complete_issuer(tmp_path):
+    empty = json.dumps({"cik": "123456", "filings": {"recent": {
+        "accessionNumber": [], "filingDate": [], "acceptanceDateTime": [], "form": [], "primaryDocument": [],
+    }}}).encode()
+    service_obj, _, repo, _ = service(tmp_path, transport=FakeTransport(ticker_payload(), empty), ticker_refresh_seconds=999999)
+    ident = identity()
+    service_obj.enqueue_issuer(ident)
+    service_obj.run_once()
+    state = repo.get_sec_issuer_acquisition_state(ident.issuer_id)
+    assert state is not None and state.status.value == "COMPLETE"
+    assert state.last_complete_observation_at is not None
 
 
 def test_cycle_budget_limits_submissions(tmp_path):
@@ -269,13 +284,21 @@ def test_normalized_events_are_written_in_bounded_batches(tmp_path):
     base = SecFilingFactNormalizer().normalize(identity(), submissions_payload(), NOW).events[0]
     events = tuple(replace(base, event_id=f"SEC_EDGAR:{i:018d}", source_id=f"0001234567-26-{i:06d}") for i in range(2001))
     batches = []
+    lifecycle = []
 
     class BatchRepo:
         def append_evidence(self, batch):
             batches.append(tuple(batch))
+            lifecycle.append(f"batch-{len(batches)}")
             return IngestResult(inserted=len(batch))
         def store_source_state(self, state):
             return True
+        def record_sec_issuer_acquisition_attempt(self, issuer_id, attempted_at):
+            lifecycle.append("attempt")
+        def complete_sec_issuer_acquisition(self, issuer_id, completed_at, *, next_due_at=None):
+            lifecycle.append("complete")
+        def fail_sec_issuer_acquisition(self, issuer_id, attempted_at, *, failure_category):
+            lifecycle.append("failure")
 
     service_obj.repository = BatchRepo()
     service_obj.normalizer = types.SimpleNamespace(normalize=lambda *args: types.SimpleNamespace(events=events, failure=None))
@@ -285,6 +308,7 @@ def test_normalized_events_are_written_in_bounded_batches(tmp_path):
     assert service_obj.metrics.facts_emitted == 2001
     assert service_obj.metrics.facts_inserted == 2001
     assert len(transport.calls) == 1
+    assert lifecycle == ["attempt", "batch-1", "batch-2", "batch-3", "complete"]
 
 
 def test_multi_batch_failure_retries_without_duplicates(tmp_path):
@@ -292,12 +316,13 @@ def test_multi_batch_failure_retries_without_duplicates(tmp_path):
     service_obj._next_ticker_due = 10**9
     base = SecFilingFactNormalizer().normalize(identity(), submissions_payload(), NOW).events[0]
     events = tuple(replace(base, event_id=f"SEC_EDGAR:{i:018d}", source_id=f"0001234567-26-{i:06d}") for i in range(1001))
-    seen, calls = set(), []
+    seen, calls, lifecycle = set(), [], []
 
     class FlakyRepo:
         failed = False
         def append_evidence(self, batch):
             calls.append(len(batch))
+            lifecycle.append(f"batch-{len(calls)}")
             if len(calls) == 2 and not self.failed:
                 self.failed = True
                 raise RuntimeError("injected batch failure")
@@ -306,17 +331,25 @@ def test_multi_batch_failure_retries_without_duplicates(tmp_path):
             return IngestResult(inserted=inserted, deduplicated=len(batch) - inserted)
         def store_source_state(self, state):
             return True
+        def record_sec_issuer_acquisition_attempt(self, issuer_id, attempted_at):
+            lifecycle.append("attempt")
+        def complete_sec_issuer_acquisition(self, issuer_id, completed_at, *, next_due_at=None):
+            lifecycle.append("complete")
+        def fail_sec_issuer_acquisition(self, issuer_id, attempted_at, *, failure_category):
+            lifecycle.append("failure")
 
     service_obj.repository = FlakyRepo()
     service_obj.normalizer = types.SimpleNamespace(normalize=lambda *args: types.SimpleNamespace(events=events, failure=None))
     service_obj.enqueue_issuer(identity())
     service_obj.run_once()
     assert calls == [1000, 1]
+    assert "complete" not in lifecycle
     for target in service_obj._targets.values():
         target.next_due = 0
     service_obj.run_once()
     assert calls == [1000, 1, 1000, 1]
     assert len(seen) == 1001
+    assert lifecycle[-4:] == ["attempt", "batch-3", "batch-4", "complete"]
 
 
 def test_unresolved_identity_rejected_without_transport(tmp_path):

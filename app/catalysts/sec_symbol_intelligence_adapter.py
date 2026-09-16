@@ -9,7 +9,7 @@ from enum import StrEnum
 from typing import Any, Callable
 
 from app.momentum_scanner.models import CatalystStatus, CatalystType
-from app.symbol_intelligence import SourceAvailability
+from app.symbol_intelligence import SecIssuerAcquisitionStatus, SourceAvailability
 from app.symbol_intelligence.providers.sec_identity import (
     SecResolutionStatus,
     normalize_sec_symbol,
@@ -43,6 +43,9 @@ class AdapterReadinessReason(StrEnum):
     HISTORICAL_SOURCE_HEALTH_UNKNOWN = "HISTORICAL_SOURCE_HEALTH_UNKNOWN"
     IDENTITY_UNRESOLVED = "IDENTITY_UNRESOLVED"
     IDENTITY_AMBIGUOUS = "IDENTITY_AMBIGUOUS"
+    ISSUER_NOT_ACQUIRED = "ISSUER_NOT_ACQUIRED"
+    ISSUER_ACQUISITION_INCOMPLETE = "ISSUER_ACQUISITION_INCOMPLETE"
+    ISSUER_ACQUISITION_STALE = "ISSUER_ACQUISITION_STALE"
     MALFORMED_FACT = "MALFORMED_FACT"
     UNVERIFIED_FACT = "UNVERIFIED_FACT"
     REPOSITORY_ERROR = "REPOSITORY_ERROR"
@@ -155,6 +158,29 @@ class SecSymbolIntelligenceCatalystAdapter:
                 return SecCatalystAdapterEvaluation(
                     self._negative(normalized, CatalystStatus.UNKNOWN),
                     AdapterReadiness.NOT_READY, AdapterReadinessReason.IDENTITY_UNRESOLVED,
+                )
+            issuer_state = self._repository.get_sec_issuer_acquisition_state(
+                resolution.identity.issuer_id, as_of=cutoff,
+            )
+            if issuer_state is None:
+                return SecCatalystAdapterEvaluation(
+                    self._negative(normalized, CatalystStatus.UNKNOWN),
+                    AdapterReadiness.NOT_READY, AdapterReadinessReason.ISSUER_NOT_ACQUIRED,
+                )
+            if issuer_state.last_complete_observation_at is None:
+                return SecCatalystAdapterEvaluation(
+                    self._negative(normalized, CatalystStatus.UNKNOWN), AdapterReadiness.NOT_READY,
+                    AdapterReadinessReason.ISSUER_ACQUISITION_INCOMPLETE,
+                )
+            if issuer_state.last_complete_observation_at > cutoff:
+                return SecCatalystAdapterEvaluation(
+                    self._negative(normalized, CatalystStatus.UNKNOWN),
+                    AdapterReadiness.NOT_READY, AdapterReadinessReason.ISSUER_ACQUISITION_INCOMPLETE,
+                )
+            if issuer_state.next_due_at is not None and issuer_state.next_due_at <= cutoff:
+                return SecCatalystAdapterEvaluation(
+                    self._negative(normalized, CatalystStatus.UNKNOWN),
+                    AdapterReadiness.NOT_READY, AdapterReadinessReason.ISSUER_ACQUISITION_STALE,
                 )
             events = self._repository.recent_sec_events_by_issuer(
                 resolution.identity.issuer_id, limit=_MAX_FACTS, fact_cutoff=cutoff,

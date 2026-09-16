@@ -225,7 +225,7 @@ def test_schema_bootstrap_and_newer_schema_rejection(tmp_path) -> None:
     with sqlite3.connect(repo.path) as connection:
         assert connection.execute(
             "SELECT value FROM repository_metadata WHERE key='schema_version'"
-        ).fetchone()[0] == "3"
+        ).fetchone()[0] == "4"
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 0
         indexes = {row[1] for row in connection.execute("PRAGMA index_list('symbol_snapshots')")}
         assert "ix_snapshot_recovery" in indexes
@@ -254,7 +254,7 @@ def test_schema_v2_migrates_issuer_query_index_without_data_loss(tmp_path) -> No
     with sqlite3.connect(migrated.path) as connection:
         assert connection.execute(
             "SELECT value FROM repository_metadata WHERE key='schema_version'"
-        ).fetchone()[0] == "3"
+        ).fetchone()[0] == "4"
         indexes = {row[1] for row in connection.execute("PRAGMA index_list('raw_events')")}
         assert "ix_raw_event_issuer_source_published" in indexes
 

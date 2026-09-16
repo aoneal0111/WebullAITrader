@@ -27,6 +27,8 @@ from .models import (
     IntelligenceDerivation,
     IntelligenceEvent,
     SourceAvailability,
+    SecIssuerAcquisitionState,
+    SecIssuerAcquisitionStatus,
     SourceStateSnapshot,
     SymbolAlias,
     SymbolIdentity,
@@ -35,7 +37,7 @@ from .models import (
 from .security import UnsafePayloadError, safe_json_value, validate_safe_key, validate_safe_text
 
 
-REPOSITORY_SCHEMA_VERSION = 3
+REPOSITORY_SCHEMA_VERSION = 4
 DEFAULT_STARTUP_RECOVERY_MAX = 5_000
 DEFAULT_SNAPSHOT_RECOVERY_MAX = 4_096
 MAX_QUERY_LIMIT = 5_000
@@ -56,6 +58,7 @@ class RepositoryBounds:
     source_states: int = 64
     symbol_identities: int = 32_768
     symbol_aliases: int = 65_536
+    sec_issuer_acquisition_state: int = 32_768
     repository_metadata: int = 128
 
     def __post_init__(self) -> None:
@@ -63,6 +66,7 @@ class RepositoryBounds:
             self.raw_events, self.active_event_states, self.episode_summaries,
             self.snapshots, self.derivations,
             self.source_states, self.symbol_identities, self.symbol_aliases,
+            self.sec_issuer_acquisition_state,
             self.repository_metadata,
         ) <= 0:
             raise ValueError("repository bounds must be positive")
@@ -84,7 +88,7 @@ class RepositoryMetrics:
 _COUNTED_TABLES = (
     "repository_metadata", "source_states", "symbol_identities", "symbol_aliases", "raw_events",
     "event_derivations", "active_event_states", "symbol_episode_summaries",
-    "symbol_snapshots",
+    "symbol_snapshots", "sec_issuer_acquisition_state",
 )
 
 
@@ -165,7 +169,9 @@ class SymbolIntelligenceRepository:
             }
             if not required_base.issubset(base_tables):
                 raise RepositorySchemaError("repository schema is incomplete")
-            self._migrate_forward(connection, version)
+            if version < REPOSITORY_SCHEMA_VERSION:
+                connection.execute("BEGIN IMMEDIATE")
+                self._migrate_forward(connection, version)
             tables = {
                 str(row[0]) for row in connection.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'"
@@ -187,7 +193,7 @@ class SymbolIntelligenceRepository:
             raise RepositorySchemaError(
                 f"repository schema {version} is newer than supported {REPOSITORY_SCHEMA_VERSION}"
             )
-        migrations: dict[int, Any] = {1: _migrate_v1_to_v2, 2: _migrate_v2_to_v3}
+        migrations: dict[int, Any] = {1: _migrate_v1_to_v2, 2: _migrate_v2_to_v3, 3: _migrate_v3_to_v4}
         while version < REPOSITORY_SCHEMA_VERSION:
             migration = migrations.get(version)
             if migration is None:
@@ -482,6 +488,97 @@ class SymbolIntelligenceRepository:
                 (alias.symbol, alias.issuer_id, alias.valid_from.isoformat(), _time(alias.valid_to)),
             )
             return True
+
+    def get_sec_issuer_acquisition_state(
+        self, issuer_id: str, *, as_of: datetime | None = None,
+    ) -> SecIssuerAcquisitionState | None:
+        normalized = validate_safe_text(issuer_id, field="issuer_id", maximum=128)
+        if as_of is not None:
+            _aware_iso(as_of)
+        with self._operation_connection() as connection:
+            row = connection.execute(
+                "SELECT issuer_id,status,last_attempt_at,last_success_at,last_complete_observation_at,"
+                "next_due_at,failure_category,updated_at FROM sec_issuer_acquisition_state WHERE issuer_id=? LIMIT 1",
+                (normalized,),
+            ).fetchone()
+        if row is None:
+            return None
+        state = _sec_issuer_state_from_row(row)
+        return state
+
+    def record_sec_issuer_acquisition_attempt(self, issuer_id: str, attempted_at: datetime) -> SecIssuerAcquisitionState:
+        normalized = validate_safe_text(issuer_id, field="issuer_id", maximum=128)
+        attempted = _aware_iso(attempted_at)
+        with self._operation_connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT last_success_at,last_complete_observation_at,next_due_at FROM sec_issuer_acquisition_state WHERE issuer_id=?",
+                (normalized,),
+            ).fetchone()
+            connection.execute(
+                "INSERT INTO sec_issuer_acquisition_state(issuer_id,status,last_attempt_at,last_success_at,last_complete_observation_at,next_due_at,failure_category,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(issuer_id) DO UPDATE SET status=excluded.status,last_attempt_at=excluded.last_attempt_at,failure_category=NULL,updated_at=excluded.updated_at",
+                (normalized, SecIssuerAcquisitionStatus.IN_PROGRESS.value, attempted,
+                 None if existing is None else existing[0], None if existing is None else existing[1],
+                 None if existing is None else existing[2], None, attempted),
+            )
+            row = connection.execute(
+                "SELECT issuer_id,status,last_attempt_at,last_success_at,last_complete_observation_at,next_due_at,failure_category,updated_at FROM sec_issuer_acquisition_state WHERE issuer_id=?",
+                (normalized,),
+            ).fetchone()
+        return _sec_issuer_state_from_row(row)
+
+    def complete_sec_issuer_acquisition(
+        self, issuer_id: str, completed_at: datetime, *, next_due_at: datetime | None = None,
+    ) -> SecIssuerAcquisitionState:
+        normalized = validate_safe_text(issuer_id, field="issuer_id", maximum=128)
+        completed = _aware_iso(completed_at)
+        due = None if next_due_at is None else _aware_iso(next_due_at)
+        with self._operation_connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT last_success_at,last_complete_observation_at FROM sec_issuer_acquisition_state WHERE issuer_id=?",
+                (normalized,),
+            ).fetchone()
+            prior_success = existing[0] if existing is not None else None
+            prior_complete = existing[1] if existing is not None else None
+            watermark = max((prior_complete, completed)) if prior_complete is not None else completed
+            success = max((prior_success, completed)) if prior_success is not None else completed
+            connection.execute(
+                "INSERT INTO sec_issuer_acquisition_state(issuer_id,status,last_attempt_at,last_success_at,last_complete_observation_at,next_due_at,failure_category,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(issuer_id) DO UPDATE SET status=excluded.status,last_success_at=excluded.last_success_at,last_complete_observation_at=excluded.last_complete_observation_at,next_due_at=excluded.next_due_at,failure_category=NULL,updated_at=excluded.updated_at",
+                (normalized, SecIssuerAcquisitionStatus.COMPLETE.value, completed, success, watermark, due, None, completed),
+            )
+            row = connection.execute(
+                "SELECT issuer_id,status,last_attempt_at,last_success_at,last_complete_observation_at,next_due_at,failure_category,updated_at FROM sec_issuer_acquisition_state WHERE issuer_id=?",
+                (normalized,),
+            ).fetchone()
+        return _sec_issuer_state_from_row(row)
+
+    def fail_sec_issuer_acquisition(
+        self, issuer_id: str, attempted_at: datetime, *, failure_category: str,
+    ) -> SecIssuerAcquisitionState:
+        normalized = validate_safe_text(issuer_id, field="issuer_id", maximum=128)
+        attempted = _aware_iso(attempted_at)
+        category = validate_safe_text(failure_category, field="failure_category", maximum=64)
+        with self._operation_connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT last_success_at,last_complete_observation_at,next_due_at FROM sec_issuer_acquisition_state WHERE issuer_id=?",
+                (normalized,),
+            ).fetchone()
+            connection.execute(
+                "INSERT INTO sec_issuer_acquisition_state(issuer_id,status,last_attempt_at,last_success_at,last_complete_observation_at,next_due_at,failure_category,updated_at) VALUES(?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(issuer_id) DO UPDATE SET status=excluded.status,last_attempt_at=excluded.last_attempt_at,failure_category=excluded.failure_category,updated_at=excluded.updated_at",
+                (normalized, SecIssuerAcquisitionStatus.FAILED.value, attempted,
+                 None if existing is None else existing[0], None if existing is None else existing[1],
+                 None if existing is None else existing[2], category, attempted),
+            )
+            row = connection.execute(
+                "SELECT issuer_id,status,last_attempt_at,last_success_at,last_complete_observation_at,next_due_at,failure_category,updated_at FROM sec_issuer_acquisition_state WHERE issuer_id=?",
+                (normalized,),
+            ).fetchone()
+        return _sec_issuer_state_from_row(row)
 
     def store_source_state(self, state: SourceStateSnapshot) -> bool:
         if not isinstance(state, SourceStateSnapshot):
@@ -807,6 +904,18 @@ def _event_from_row(row: sqlite3.Row) -> IntelligenceEvent:
     )
 
 
+def _sec_issuer_state_from_row(row: sqlite3.Row) -> SecIssuerAcquisitionState:
+    def parsed(name: str) -> datetime | None:
+        value = row[name]
+        return None if value is None else datetime.fromisoformat(value)
+    return SecIssuerAcquisitionState(
+        issuer_id=row["issuer_id"], status=SecIssuerAcquisitionStatus(row["status"]),
+        last_attempt_at=parsed("last_attempt_at"), last_success_at=parsed("last_success_at"),
+        last_complete_observation_at=parsed("last_complete_observation_at"), next_due_at=parsed("next_due_at"),
+        failure_category=row["failure_category"], updated_at=parsed("updated_at"),
+    )
+
+
 def _derivation_row(item: IntelligenceDerivation) -> tuple[Any, ...]:
     return (
         item.derivation_id, item.symbol, item.derivation_type, item.direction.value,
@@ -929,6 +1038,26 @@ def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
+    """Add durable per-issuer SEC acquisition completeness."""
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS sec_issuer_acquisition_state(
+            issuer_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL CHECK(status IN ('NEVER_ACQUIRED','IN_PROGRESS','COMPLETE','FAILED')),
+            last_attempt_at TEXT,
+            last_success_at TEXT,
+            last_complete_observation_at TEXT,
+            next_due_at TEXT,
+            failure_category TEXT,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS ix_sec_issuer_acquisition_due "
+        "ON sec_issuer_acquisition_state(status,next_due_at,issuer_id)"
+    )
+
+
 _SCHEMA = """
 CREATE TABLE repository_metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE source_states(
@@ -976,6 +1105,17 @@ CREATE TABLE symbol_snapshots(
 CREATE UNIQUE INDEX ux_snapshot_current_symbol ON symbol_snapshots(symbol) WHERE is_current=1;
 CREATE INDEX ix_snapshot_point_in_time ON symbol_snapshots(symbol,as_of DESC,generated_at DESC,fact_cutoff);
 CREATE INDEX ix_snapshot_recovery ON symbol_snapshots(is_current,attention_rank DESC,priority_score DESC,as_of DESC,symbol);
+CREATE TABLE sec_issuer_acquisition_state(
+    issuer_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL CHECK(status IN ('NEVER_ACQUIRED','IN_PROGRESS','COMPLETE','FAILED')),
+    last_attempt_at TEXT,
+    last_success_at TEXT,
+    last_complete_observation_at TEXT,
+    next_due_at TEXT,
+    failure_category TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX ix_sec_issuer_acquisition_due ON sec_issuer_acquisition_state(status,next_due_at,issuer_id);
 """
 
 

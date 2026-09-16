@@ -342,17 +342,28 @@ class SecSymbolIntelligenceAcquisitionService:
 
     def _refresh_issuer(self, target: _Target) -> None:
         self._inc("issuer_acquisition_attempts")
+        attempted_at = self._clock().astimezone(UTC)
+        try:
+            record_attempt = getattr(self.repository, "record_sec_issuer_acquisition_attempt", None)
+            if callable(record_attempt):
+                record_attempt(target.identity.issuer_id, attempted_at)
+        except Exception:
+            self._inc("repository_write_failures")
+            self._record_failure(AcquisitionFailureKind.REPOSITORY_WRITE)
+            return
         try:
             result = self.transport.acquire(SecEdgarRequest.submissions(target.identity.cik))
             response = getattr(result, "response", None)
             if response is None:
                 self._inc("issuer_acquisition_failures")
                 self._record_failure(AcquisitionFailureKind.TRANSPORT)
+                self._record_issuer_failure(target, attempted_at, AcquisitionFailureKind.TRANSPORT)
                 return
             normalized = self.normalizer.normalize(target.identity, response.content, response.observed_at)
             if normalized.failure is not None:
                 self._inc("normalization_failures")
                 self._record_failure(AcquisitionFailureKind.NORMALIZATION)
+                self._record_issuer_failure(target, attempted_at, AcquisitionFailureKind.NORMALIZATION)
                 return
             self._inc_by("facts_emitted", len(normalized.events))
             for offset in range(0, len(normalized.events), 1000):
@@ -360,22 +371,40 @@ class SecSymbolIntelligenceAcquisitionService:
                 if not batch:
                     continue
                 ingest = self.repository.append_evidence(batch)
+                if getattr(ingest, "rejected", 0):
+                    raise ValueError("SEC evidence batch was rejected")
                 self._inc_by("facts_inserted", ingest.inserted)
                 self._inc_by("facts_deduplicated", ingest.deduplicated)
-            self._inc("issuer_acquisition_successes")
             now = self._clock().astimezone(UTC)
+            complete = getattr(self.repository, "complete_sec_issuer_acquisition", None)
+            if callable(complete):
+                complete(
+                    target.identity.issuer_id, now,
+                    next_due_at=now + timedelta(seconds=float(self.configuration.submissions_refresh_seconds)),
+                )
+            self._inc("issuer_acquisition_successes")
             self._source_success(now)
             target.last_success = now
         except Exception:
             self._inc("issuer_acquisition_failures")
             self._inc("repository_write_failures")
             self._record_failure(AcquisitionFailureKind.REPOSITORY_WRITE)
+            self._record_issuer_failure(target, attempted_at, AcquisitionFailureKind.REPOSITORY_WRITE)
         finally:
             # Keep retry intent bounded and cadence-controlled after every result.
             target.next_due = self._monotonic() + float(self.configuration.submissions_refresh_seconds)
             with self._lock:
                 if not self._closed and len(self._targets) < self._queue_capacity:
                     self._targets[target.identity.cik] = target
+
+    def _record_issuer_failure(self, target: _Target, attempted_at: datetime, kind: AcquisitionFailureKind) -> None:
+        record_failure = getattr(self.repository, "fail_sec_issuer_acquisition", None)
+        if not callable(record_failure):
+            return
+        try:
+            record_failure(target.identity.issuer_id, attempted_at, failure_category=kind.value)
+        except Exception:
+            self._inc("repository_write_failures")
 
     def _source_success(self, observed: datetime) -> None:
         with self._lock:

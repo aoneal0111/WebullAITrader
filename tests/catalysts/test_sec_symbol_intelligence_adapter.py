@@ -8,6 +8,8 @@ from app.catalysts.sec_symbol_intelligence_adapter import SecSymbolIntelligenceC
 from app.catalysts.sec_symbol_intelligence_adapter import AdapterReadiness, AdapterReadinessReason
 from app.momentum_scanner.models import CatalystStatus, CatalystType
 from app.symbol_intelligence import (
+    SecIssuerAcquisitionState,
+    SecIssuerAcquisitionStatus,
     DecayClass,
     EventType,
     IntelligenceEvent,
@@ -48,6 +50,17 @@ class Repo:
 
     def get_source_state(self, source):
         return self.state
+
+    def get_sec_issuer_acquisition_state(self, issuer_id, *, as_of=None):
+        if self.state is None or self.state.availability is not SourceAvailability.AVAILABLE:
+            return None
+        if self.resolution is not SecResolutionStatus.RESOLVED:
+            return None
+        return SecIssuerAcquisitionState(
+            issuer_id="SEC_CIK:0000000123", status=SecIssuerAcquisitionStatus.COMPLETE,
+            last_attempt_at=NOW, last_success_at=NOW,
+            last_complete_observation_at=NOW, next_due_at=NOW + timedelta(seconds=900), updated_at=NOW,
+        )
 
     def resolve_symbol_identity(self, symbol, as_of):
         if self.resolution is not SecResolutionStatus.RESOLVED:
@@ -196,6 +209,7 @@ def _direct_results(tmp_path, submissions):
     assert normalized.failure is None
     repo.append_evidence(normalized.events)
     repo.store_source_state(SourceStateSnapshot("SEC_EDGAR", SourceAvailability.AVAILABLE, NOW))
+    repo.complete_sec_issuer_acquisition(identity.issuer_id, NOW, next_due_at=NOW + timedelta(seconds=900))
     adapter_result = SecSymbolIntelligenceCatalystAdapter(repo).get_evidence("NEW", as_of=NOW)
     return legacy_result, adapter_result
 
@@ -241,6 +255,7 @@ def test_direct_legacy_and_adapter_parity_for_fresh_8k(tmp_path):
     assert normalized.failure is None and len(normalized.events) == 1
     assert repo.append_evidence(normalized.events).inserted == 1
     assert repo.store_source_state(SourceStateSnapshot("SEC_EDGAR", SourceAvailability.AVAILABLE, NOW))
+    assert repo.complete_sec_issuer_acquisition(identity.issuer_id, NOW, next_due_at=NOW + timedelta(seconds=900))
     adapter_result = SecSymbolIntelligenceCatalystAdapter(repo).get_evidence("NEW", as_of=NOW)
 
     assert adapter_result == legacy_result
@@ -263,6 +278,7 @@ def test_direct_legacy_and_adapter_parity_for_unsupported_6k(tmp_path, form):
     normalized = SecFilingFactNormalizer().normalize(identity, submissions, NOW)
     assert repo.append_evidence(normalized.events).inserted == 1
     repo.store_source_state(SourceStateSnapshot("SEC_EDGAR", SourceAvailability.AVAILABLE, NOW))
+    repo.complete_sec_issuer_acquisition(identity.issuer_id, NOW, next_due_at=NOW + timedelta(seconds=900))
     adapter_result = SecSymbolIntelligenceCatalystAdapter(repo).get_evidence("NEW", as_of=NOW)
     assert legacy_result.status is CatalystStatus.FALSE
     assert adapter_result.status is CatalystStatus.FALSE

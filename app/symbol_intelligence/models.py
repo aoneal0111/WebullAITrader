@@ -81,6 +81,15 @@ class SourceAvailability(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class SecIssuerAcquisitionStatus(StrEnum):
+    """Durable completeness state for one SEC issuer observation."""
+
+    NEVER_ACQUIRED = "NEVER_ACQUIRED"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETE = "COMPLETE"
+    FAILED = "FAILED"
+
+
 def _utc(value: datetime, field_name: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field_name} must be timezone-aware")
@@ -227,6 +236,34 @@ class SourceStateSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class SecIssuerAcquisitionState:
+    """Bounded, durable SEC submissions completeness for one issuer."""
+
+    issuer_id: str
+    status: SecIssuerAcquisitionStatus = SecIssuerAcquisitionStatus.NEVER_ACQUIRED
+    last_attempt_at: datetime | None = None
+    last_success_at: datetime | None = None
+    last_complete_observation_at: datetime | None = None
+    next_due_at: datetime | None = None
+    failure_category: str | None = None
+    updated_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "issuer_id", _identifier(self.issuer_id, "issuer_id", 128))
+        if not isinstance(self.status, SecIssuerAcquisitionStatus):
+            object.__setattr__(self, "status", SecIssuerAcquisitionStatus(str(self.status)))
+        for name in ("last_attempt_at", "last_success_at", "last_complete_observation_at", "next_due_at", "updated_at"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _utc(value, name))
+        object.__setattr__(self, "failure_category", _optional_text(self.failure_category, "failure_category", 64))
+        if self.status is SecIssuerAcquisitionStatus.COMPLETE and self.last_complete_observation_at is None:
+            raise ValueError("complete issuer state requires a completion timestamp")
+        if self.last_success_at is not None and self.last_complete_observation_at is not None and self.last_success_at < self.last_complete_observation_at:
+            raise ValueError("last_success_at cannot precede completion")
+
+
+@dataclass(frozen=True, slots=True)
 class SymbolIntelligenceSnapshot:
     """Immutable attention snapshot with deliberately no execution authority."""
 
@@ -350,6 +387,6 @@ __all__ = [
     "SNAPSHOT_SCHEMA_VERSION", "AttentionState", "CatalystSummary",
     "DecayClass", "Direction", "EventType", "IngestResult",
     "IntelligenceDerivation", "IntelligenceEvent", "SourceAvailability",
-    "SourceStateSnapshot", "SymbolAlias", "SymbolIdentity",
+    "SecIssuerAcquisitionState", "SecIssuerAcquisitionStatus", "SourceStateSnapshot", "SymbolAlias", "SymbolIdentity",
     "SymbolIntelligenceSnapshot",
 ]
