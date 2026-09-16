@@ -36,6 +36,34 @@ class SymbolIntelligenceComposition:
         return self.service.close(timeout_seconds=timeout_seconds)
 
 
+@dataclass(slots=True)
+class SymbolIntelligenceRepositoryComposition:
+    """Read-only repository owner used by local shadow diagnostics."""
+
+    repository: SymbolIntelligenceRepository
+
+    def close(self, *, timeout_seconds: float = 5.0) -> bool:
+        # Repository operations use short-lived connections; there is no
+        # background service or persistent connection to tear down.
+        return True
+
+
+def create_symbol_intelligence_repository_composition(
+    configuration: object,
+    *,
+    environment: str | None = None,
+    repository_factory: Callable[[str | Path], SymbolIntelligenceRepository] = SymbolIntelligenceRepository,
+) -> SymbolIntelligenceRepositoryComposition | None:
+    """Create the existing SI repository without transport or acquisition."""
+
+    sec_config = getattr(configuration, "symbol_intelligence_sec_edgar", configuration)
+    if not bool(getattr(sec_config, "enabled", False)):
+        return None
+    environment_name = environment or getattr(getattr(configuration, "environment", None), "value", None) or "TEST"
+    path = SymbolIntelligenceRepository.production_path(str(environment_name))
+    return SymbolIntelligenceRepositoryComposition(repository_factory(path))
+
+
 def create_symbol_intelligence_composition(
     configuration: object,
     *,
@@ -83,4 +111,9 @@ def create_symbol_intelligence_composition(
         raise
 
 
-__all__ = ["SymbolIntelligenceComposition", "create_symbol_intelligence_composition"]
+__all__ = [
+    "SymbolIntelligenceComposition",
+    "SymbolIntelligenceRepositoryComposition",
+    "create_symbol_intelligence_composition",
+    "create_symbol_intelligence_repository_composition",
+]

@@ -10,6 +10,7 @@ from app.catalysts import (
     CatalystAggregator,
     build_catalyst_providers,
 )
+from app.catalysts.sec_shadow_parity import SecCatalystShadowEvaluator
 from app.composition.desktop_infrastructure import (
     create_desktop_scanner_infrastructure,
 )
@@ -128,6 +129,7 @@ def create_configured_desktop_broker_driver(
     market_event_observer: Callable[[object], object] | None = None,
     clock: Clock = utc_now,
     source: str = "desktop-broker-runtime",
+    sec_shadow_evaluator: SecCatalystShadowEvaluator | None = None,
 ) -> DesktopBrokerRuntimeDriver:
     """Load configuration and resolve its broker through the plugin registry."""
 
@@ -272,7 +274,10 @@ def create_configured_desktop_broker_driver(
             clock=clock,
             admission_observer=universe_admission_observer,
         )
-        catalyst_providers = build_catalyst_providers(data_client, configuration)
+        catalyst_providers = build_catalyst_providers(
+            data_client, configuration,
+            sec_shadow_evaluator=sec_shadow_evaluator,
+        )
         reference_provider = WebullScannerReferenceProvider(
             data_client,
             universe_provider,

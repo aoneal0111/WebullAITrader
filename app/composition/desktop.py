@@ -67,6 +67,7 @@ from app.paper_trading.command_composition import (
 from app.paper_gateway.durable_store import NO_ACTIVE_PAPER_CAMPAIGN_ID
 from app.portfolio_intelligence import PortfolioAccount, PortfolioIntelligenceService, PortfolioRiskLimits, load_portfolio_intelligence_configuration
 from app.symbol_intelligence.composition import SymbolIntelligenceComposition, create_symbol_intelligence_composition
+from app.composition.sec_shadow_runtime import SecShadowRuntimeComposition, create_sec_shadow_runtime
 
 
 @dataclass(slots=True)
@@ -93,6 +94,7 @@ class DesktopComposition:
     crypto_catalyst_acquisition_runtime: CryptoCatalystAcquisitionRuntime | None = None
     memory_observability: MemoryObservability | None = None
     symbol_intelligence: SymbolIntelligenceComposition | None = None
+    sec_shadow_runtime: SecShadowRuntimeComposition | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         """Close composed resources in lifecycle order."""
@@ -169,6 +171,7 @@ def create_desktop_composition(
     paper_persistence_path: str | Path | None = None,
     paper_clock: Callable[[], datetime] | None = None,
     catalyst_providers: Sequence[object] = (),
+    shadow_runtime_factory: Callable[..., SecShadowRuntimeComposition] = create_sec_shadow_runtime,
 ) -> DesktopComposition:
     """Construct the desktop application dependency graph."""
 
@@ -705,12 +708,15 @@ def create_desktop_composition(
     if crypto_intelligence_runtime is not None and crypto_intelligence_runtime.enabled:
         crypto_intelligence_runtime.start()
 
+    sec_shadow_runtime = shadow_runtime_factory(operational_configuration)
+
     runtime_service = create_desktop_runtime_service(
         bus,
         driver_factory=driver_factory,
         runtime_mode=configuration.runtime_mode,
         event_sink=runtime_projections.sink,
         market_event_observer=market_event_observer,
+        sec_shadow_evaluator=sec_shadow_runtime.evaluator,
     )
     runtime_service_holder["service"] = runtime_service
 
@@ -757,6 +763,7 @@ def create_desktop_composition(
         crypto_catalyst_acquisition_runtime=crypto_catalyst_acquisition_runtime,
         memory_observability=memory_observability,
         symbol_intelligence=symbol_intelligence,
+        sec_shadow_runtime=sec_shadow_runtime,
     )
 __all__ = [
     "DesktopComposition",

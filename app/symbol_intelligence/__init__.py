@@ -51,7 +51,9 @@ from .acquisition import (
 )
 from .composition import (
     SymbolIntelligenceComposition,
+    SymbolIntelligenceRepositoryComposition,
     create_symbol_intelligence_composition,
+    create_symbol_intelligence_repository_composition,
 )
 from .network_lease import (
     LeaseDiagnostics,
@@ -79,7 +81,8 @@ __all__ = [
     "normalize_sec_symbol", "parse_sec_ticker_map", "sec_cik_path", "sec_issuer_id",
     "AcquisitionFailureKind", "AcquisitionPriority", "SecAcquisitionDiagnostics",
     "SecAcquisitionMetrics", "SecSymbolIntelligenceAcquisitionService",
-    "SymbolIntelligenceComposition", "create_symbol_intelligence_composition",
+    "SymbolIntelligenceComposition", "SymbolIntelligenceRepositoryComposition",
+    "create_symbol_intelligence_composition", "create_symbol_intelligence_repository_composition",
     "LeaseDiagnostics", "LeaseMetrics", "LeaseOutcome", "LeaseResult",
     "LeaseSchemaError", "SecNetworkOwnershipLease", "default_lease_path",
 ]

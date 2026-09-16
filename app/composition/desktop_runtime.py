@@ -15,6 +15,7 @@ from .broker_account_projection import create_broker_account_publisher
 from .desktop_broker_runtime import create_configured_desktop_broker_driver
 from .runtime_projection_pipeline import create_runtime_projection_pipeline
 from .runtime_mode import RuntimeMode
+from app.catalysts.sec_shadow_parity import SecCatalystShadowEvaluator
 
 
 def _broker_driver_factory(
@@ -22,6 +23,7 @@ def _broker_driver_factory(
     *,
     event_sink: RuntimeEventSink | None = None,
     market_event_observer: Callable[[object], object] | None = None,
+    sec_shadow_evaluator: SecCatalystShadowEvaluator | None = None,
 ) -> Callable[[], object]:
     account_publisher = create_broker_account_publisher(bus)
     session_numbers = count(1)
@@ -39,12 +41,17 @@ def _broker_driver_factory(
                     )
                 ),
             ).sink
-        return create_configured_desktop_broker_driver(
+        broker_kwargs = dict(
             event_sink=resolved_event_sink,
             account_snapshot_sink=account_publisher,
             configuration_loader=lambda: configuration,
             market_event_observer=market_event_observer,
             source=f"desktop-broker-runtime:{next(session_numbers)}",
+        )
+        if sec_shadow_evaluator is not None:
+            broker_kwargs["sec_shadow_evaluator"] = sec_shadow_evaluator
+        return create_configured_desktop_broker_driver(
+            **broker_kwargs,
         )
 
     return create_driver
@@ -65,6 +72,7 @@ def _resolve_driver_factory(
     driver_factory: Callable[[], object] | None,
     event_sink: RuntimeEventSink | None,
     market_event_observer: Callable[[object], object] | None,
+    sec_shadow_evaluator: SecCatalystShadowEvaluator | None,
 ) -> Callable[[], object]:
     if driver_factory is not None:
         return driver_factory
@@ -76,6 +84,7 @@ def _resolve_driver_factory(
         bus,
         event_sink=event_sink,
         market_event_observer=market_event_observer,
+        sec_shadow_evaluator=sec_shadow_evaluator,
     )
 
 
@@ -86,6 +95,7 @@ def create_desktop_runtime_service(
     runtime_mode: RuntimeMode = RuntimeMode.PAPER,
     event_sink: RuntimeEventSink | None = None,
     market_event_observer: Callable[[object], object] | None = None,
+    sec_shadow_evaluator: SecCatalystShadowEvaluator | None = None,
 ) -> RuntimeService:
     """Create the runtime service used by the desktop composition root."""
 
@@ -97,6 +107,7 @@ def create_desktop_runtime_service(
             driver_factory=driver_factory,
             event_sink=event_sink,
             market_event_observer=market_event_observer,
+            sec_shadow_evaluator=sec_shadow_evaluator,
         ),
     )
 
