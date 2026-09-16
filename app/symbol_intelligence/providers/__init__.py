@@ -18,6 +18,12 @@ from .sec_transport import (
     SecEdgarEndpointClass, SecEdgarRateLimiter, SecEdgarRequest, SecEdgarResponse,
     SecEdgarTransport, SecTransportMetrics,
 )
+from .sec_filings import (
+    DEFAULT_RECENT_ROW_LIMIT, MAX_RECENT_ROW_LIMIT, MAX_SUBMISSIONS_BYTES,
+    SEC_SOURCE, SEC_SUBMISSIONS_PARSER_VERSION, SecFilingFactNormalizer,
+    SecFilingNormalizationDiagnostics, SecFilingNormalizationFailureKind,
+    SecFilingNormalizationResult, normalize_accession,
+)
 
 __all__ = [
     "AmbiguousTickerMapError",
@@ -34,4 +40,8 @@ __all__ = [
     "SecAcquisitionFailure", "SecAcquisitionFailureKind", "SecAcquisitionResult",
     "SecEdgarEndpointClass", "SecEdgarRateLimiter", "SecEdgarRequest", "SecEdgarResponse",
     "SecEdgarTransport", "SecTransportMetrics",
+    "DEFAULT_RECENT_ROW_LIMIT", "MAX_RECENT_ROW_LIMIT", "MAX_SUBMISSIONS_BYTES",
+    "SEC_SOURCE", "SEC_SUBMISSIONS_PARSER_VERSION", "SecFilingFactNormalizer",
+    "SecFilingNormalizationDiagnostics", "SecFilingNormalizationFailureKind",
+    "SecFilingNormalizationResult", "normalize_accession",
 ]

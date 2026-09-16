@@ -1,0 +1,19 @@
+{
+  "cik": "0000123456",
+  "name": "Issuer",
+  "tickers": ["ABC", "ABC.A"],
+  "exchanges": ["XNAS"],
+  "filings": {
+    "recent": {
+      "accessionNumber": ["0001234567-26-000001", "0001234567-26-000002"],
+      "filingDate": ["2026-09-15", "2026-09-15"],
+      "acceptanceDateTime": ["2026-09-15T18:00:00Z", "2026-09-15T19:00:00Z"],
+      "form": ["8-K", "10-Q"],
+      "primaryDocument": ["eight-k.htm", "10q.htm"],
+      "reportDate": ["2026-09-14", "2026-08-31"],
+      "items": [["1.01", "8.01"], []],
+      "isXBRL": [true, true],
+      "isInlineXBRL": [true, false]
+    }
+  }
+}
