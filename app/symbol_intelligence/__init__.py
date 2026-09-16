@@ -42,6 +42,13 @@ from .providers.sec_identity import (
     sec_cik_path,
     sec_issuer_id,
 )
+from .acquisition import (
+    AcquisitionFailureKind,
+    AcquisitionPriority,
+    SecAcquisitionDiagnostics,
+    SecAcquisitionMetrics,
+    SecSymbolIntelligenceAcquisitionService,
+)
 
 __all__ = [
     "DEFAULT_HOT_SNAPSHOT_MAX", "DEFAULT_SNAPSHOT_RECOVERY_MAX",
@@ -57,4 +64,6 @@ __all__ = [
     "SecIssuerIdentityResolver",
     "SecResolutionStatus", "SecTickerMap", "SecTickerMapError",
     "normalize_sec_symbol", "parse_sec_ticker_map", "sec_cik_path", "sec_issuer_id",
+    "AcquisitionFailureKind", "AcquisitionPriority", "SecAcquisitionDiagnostics",
+    "SecAcquisitionMetrics", "SecSymbolIntelligenceAcquisitionService",
 ]
