@@ -501,6 +501,31 @@ class SymbolIntelligenceRepository:
             )
             return True
 
+    def get_source_state(self, source: str) -> SourceStateSnapshot | None:
+        """Read the latest bounded source state without mutating the repository.
+
+        Source states are current-state records, not a history.  Consequently
+        this API intentionally has no historical cutoff argument.
+        """
+        normalized = validate_safe_text(source.upper(), field="source", maximum=64)
+        with self._operation_connection() as connection:
+            row = connection.execute(
+                "SELECT source,availability,observed_at,stale_after FROM source_states "
+                "WHERE source=? LIMIT 1",
+                (normalized,),
+            ).fetchone()
+        if row is None:
+            return None
+        return SourceStateSnapshot(
+            source=row["source"],
+            availability=SourceAvailability(row["availability"]),
+            observed_at=datetime.fromisoformat(row["observed_at"]),
+            stale_after=(
+                None if row["stale_after"] is None
+                else datetime.fromisoformat(row["stale_after"])
+            ),
+        )
+
     def store_active_event_state(
         self, *, event_id: str, symbol: str, state: str,
         updated_at: datetime, expires_at: datetime | None = None,

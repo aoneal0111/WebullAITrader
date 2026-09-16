@@ -19,6 +19,8 @@ from app.symbol_intelligence import (
     IntelligenceEvent,
     RepositoryBounds,
     RepositorySchemaError,
+    SourceAvailability,
+    SourceStateSnapshot,
     SymbolIntelligenceRepository,
     SymbolIntelligenceSnapshot,
     UnsafePayloadError,
@@ -138,6 +140,31 @@ def test_recent_sec_events_by_issuer_requires_aware_cutoff_and_valid_issuer(tmp_
         repo.recent_sec_events_by_issuer("", limit=1, fact_cutoff=NOW)
     with pytest.raises(ValueError):
         repo.recent_sec_events_by_issuer("SEC_CIK:1", limit=1, fact_cutoff=datetime(2026, 9, 15, 12))
+
+
+def test_source_state_read_is_current_bounded_and_read_only(tmp_path):
+    repo = repository(tmp_path)
+    assert repo.get_source_state("SEC_EDGAR") is None
+    available = SourceStateSnapshot("SEC_EDGAR", SourceAvailability.AVAILABLE, NOW)
+    unavailable = SourceStateSnapshot("SEC_EDGAR", SourceAvailability.UNAVAILABLE, NOW + timedelta(minutes=1))
+    assert repo.store_source_state(available)
+    before = repo.path.stat().st_mtime_ns
+    assert repo.get_source_state("sec_edgar") == available
+    assert repo.path.stat().st_mtime_ns == before
+    assert repo.store_source_state(unavailable)
+    assert repo.get_source_state("SEC_EDGAR") == unavailable
+    assert repo.store_source_state(available)
+    assert repo.get_source_state("SEC_EDGAR") == available
+    assert repo.store_source_state(SourceStateSnapshot("NEWS", SourceAvailability.AVAILABLE, NOW))
+    assert repo.get_source_state("SEC_EDGAR").source == "SEC_EDGAR"
+    reopened = SymbolIntelligenceRepository(repo.path)
+    assert reopened.get_source_state("SEC_EDGAR") == available
+
+
+@pytest.mark.parametrize("source", ["", "   ", "x" * 65])
+def test_source_state_read_rejects_invalid_source(tmp_path, source):
+    with pytest.raises(ValueError):
+        repository(tmp_path).get_source_state(source)
 
 
 def test_contracts_are_versioned_immutable_and_separate() -> None:
