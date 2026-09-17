@@ -1,12 +1,14 @@
 from datetime import UTC, datetime, timedelta
 import json
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
 from app.symbol_intelligence import SymbolAlias, SymbolIdentity, SymbolIntelligenceRepository
 from app.symbol_intelligence.providers.sec_identity import (
     AmbiguousTickerMapError,
+    SecIssuerIdentity,
     SecResolutionStatus,
     SecIssuerIdentityResolver,
     SecTickerMapError,
@@ -199,3 +201,47 @@ def test_bounded_current_resolver_recovery(tmp_path):
     assert resolver.recover() == 2
     assert resolver.resolve_current("AAA").identity.cik == 1
     assert resolver.size == 2
+
+
+def test_resolver_snapshot_replacement_is_atomic_under_concurrent_reads():
+    class Repo:
+        def __init__(self):
+            self.identities = ()
+            self.barrier = Barrier(2)
+            self.calls = 0
+        def recover_current_identities(self, *, limit):
+            values = self.identities
+            self.calls += 1
+            if self.calls > 1:
+                self.barrier.wait()
+            return values
+
+    repo = Repo()
+    first = SecIssuerIdentity("AAA", 101, sec_issuer_id(101), "AAA", "Issuer", None, None, "r1", NOW, True)
+    second = SecIssuerIdentity("BBB", 202, sec_issuer_id(202), "BBB", "Issuer", None, None, "r2", NOW, True)
+    repo.identities = (first,)
+    resolver = SecIssuerIdentityResolver(repo)
+    resolver.recover()
+    repo.identities = (second,)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future = pool.submit(resolver.recover)
+        repo.barrier.wait()
+        observed = resolver.resolve_current("AAA")
+        future.result()
+    assert observed.identity in (first, None)
+    assert resolver.resolve_current("BBB").identity == second
+
+
+def test_resolver_recovery_failure_preserves_last_snapshot():
+    class Repo:
+        def __init__(self, value): self.value = value
+        def recover_current_identities(self, *, limit):
+            if isinstance(self.value, Exception): raise self.value
+            return self.value
+    first = SecIssuerIdentity("AAA", 101, sec_issuer_id(101), "AAA", "Issuer", None, None, "r1", NOW, True)
+    repo = Repo((first,))
+    resolver = SecIssuerIdentityResolver(repo)
+    resolver.recover()
+    repo.value = RuntimeError("injected")
+    with pytest.raises(RuntimeError): resolver.recover()
+    assert resolver.resolve_current("AAA").identity == first

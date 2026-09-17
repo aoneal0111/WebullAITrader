@@ -357,3 +357,40 @@ def test_unresolved_identity_rejected_without_transport(tmp_path):
     assert not service_obj.enqueue_issuer(object())
     assert service_obj.metrics.unresolved_identity_requests == 1
     assert not transport.calls
+
+
+def test_ticker_map_readiness_is_session_scoped_and_published_after_source_state(tmp_path):
+    service_obj, _, _, _ = service(tmp_path)
+    before = service_obj.diagnostics
+    assert before.ticker_map_ready is False
+    assert before.ticker_map_last_success_at is None
+    service_obj.run_once()
+    after = service_obj.diagnostics
+    assert after.ticker_map_ready is True
+    assert after.ticker_map_last_success_at is not None
+    assert after.ticker_map_last_success_at.tzinfo is not None
+
+
+def test_ticker_map_readiness_stays_false_when_source_state_fails(tmp_path):
+    service_obj, _, repo, _ = service(tmp_path)
+    original = repo.store_source_state
+    repo.store_source_state = lambda state: False
+    service_obj.run_once()
+    assert service_obj.diagnostics.ticker_map_ready is False
+    assert service_obj.diagnostics.ticker_map_last_success_at is None
+    repo.store_source_state = original
+    service_obj._next_ticker_due = 0
+    service_obj.run_once()
+    assert service_obj.diagnostics.ticker_map_ready is True
+
+
+def test_ticker_map_readiness_survives_later_refresh_failure(tmp_path):
+    service_obj, transport, _, _ = service(tmp_path)
+    service_obj.run_once()
+    assert service_obj.diagnostics.ticker_map_ready is True
+    success_at = service_obj.diagnostics.ticker_map_last_success_at
+    transport.acquire = lambda request: type("Result", (), {"response": None})()
+    service_obj._next_ticker_due = 0
+    service_obj.run_once()
+    assert service_obj.diagnostics.ticker_map_ready is True
+    assert service_obj.diagnostics.ticker_map_last_success_at == success_at

@@ -84,6 +84,8 @@ class SecAcquisitionDiagnostics:
     recent_failure_counts: tuple[tuple[str, int], ...]
     shutdown_incomplete: bool = False
     worker_alive: bool = False
+    ticker_map_ready: bool = False
+    ticker_map_last_success_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -133,6 +135,10 @@ class SecSymbolIntelligenceAcquisitionService:
         self._metrics = SecAcquisitionMetrics()
         self._failure_counts: dict[str, int] = {}
         self._last_ticker_success: datetime | None = None
+        # Session-scoped readiness; deliberately not persisted or inferred
+        # from recovered identities/source state.
+        self._ticker_map_ready = False
+        self._ticker_map_last_success_at: datetime | None = None
         self._next_ticker_due = 0.0
         self._closed = False
         self._shutdown_requested = False
@@ -158,6 +164,8 @@ class SecSymbolIntelligenceAcquisitionService:
                 tuple(sorted(self._failure_counts.items())),
                 self._shutdown_requested and self._running,
                 bool(self._worker and self._worker.is_alive()),
+                self._ticker_map_ready,
+                self._ticker_map_last_success_at,
             )
 
     def recover(self) -> int:
@@ -316,12 +324,19 @@ class SecSymbolIntelligenceAcquisitionService:
                         self._inc("resolver_recover_failures")
                         self._record_failure(AcquisitionFailureKind.RESOLVER_RECOVER)
                         return
+                    # Source availability is the final persistence step in
+                    # the ticker-map transaction.  Only after it succeeds do
+                    # we publish current-session readiness.
+                    observed = self._clock().astimezone(UTC)
+                    if not self._source_success(observed):
+                        raise ValueError("SEC source state was not persisted")
                     now = self._clock().astimezone(UTC)
                     with self._lock:
                         self._last_ticker_success = now
+                        self._ticker_map_ready = True
+                        self._ticker_map_last_success_at = now
                         self._next_ticker_due = self._monotonic() + self.configuration.ticker_refresh_seconds
                     self._inc("ticker_refresh_successes")
-                    self._source_success(now)
                     return
             except Exception:
                 self._record_failure(AcquisitionFailureKind.TICKER_PARSE if result is not None else AcquisitionFailureKind.TRANSPORT)
@@ -406,20 +421,24 @@ class SecSymbolIntelligenceAcquisitionService:
         except Exception:
             self._inc("repository_write_failures")
 
-    def _source_success(self, observed: datetime) -> None:
+    def _source_success(self, observed: datetime) -> bool:
+        if not self._store_state(SourceAvailability.AVAILABLE, observed):
+            return False
         with self._lock:
             self._set_metrics_locked(last_source_success=observed)
-        self._store_state(SourceAvailability.AVAILABLE, observed)
+        return True
 
     def _source_failure(self) -> None:
         self._store_state(SourceAvailability.UNAVAILABLE, self._clock().astimezone(UTC))
 
-    def _store_state(self, availability: SourceAvailability, observed: datetime) -> None:
+    def _store_state(self, availability: SourceAvailability, observed: datetime) -> bool:
         try:
             stale_after = observed + timedelta(days=max(1, int(getattr(self.configuration, "freshness_days", 1))))
-            self.repository.store_source_state(SourceStateSnapshot("SEC_EDGAR", availability, observed, stale_after))
+            result = self.repository.store_source_state(SourceStateSnapshot("SEC_EDGAR", availability, observed, stale_after))
+            return result is not False
         except Exception:
             self._inc("repository_write_failures")
+            return False
 
     def _record_failure(self, kind: AcquisitionFailureKind) -> None:
         with self._lock:

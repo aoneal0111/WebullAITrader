@@ -9,6 +9,8 @@ import hashlib
 import json
 import re
 from enum import StrEnum
+from types import MappingProxyType
+from threading import RLock
 from typing import Any
 
 
@@ -134,23 +136,31 @@ class SecIssuerIdentityResolver:
             raise ValueError("max_entries must be in 1..32768")
         self._repository = repository
         self._max_entries = max_entries
-        self._current: dict[str, SecIssuerIdentity] = {}
+        self._lock = RLock()
+        self._current: Mapping[str, SecIssuerIdentity] = MappingProxyType({})
 
     @property
     def size(self) -> int:
-        return len(self._current)
+        with self._lock:
+            return len(self._current)
 
     def recover(self, *, limit: int | None = None) -> int:
         bound = self._max_entries if limit is None else min(limit, self._max_entries)
         identities = self._repository.recover_current_identities(limit=bound)
         if len(identities) > self._max_entries:
             raise ValueError("recovered identity map exceeds cache bound")
-        self._current = {item.normalized_symbol: item for item in identities}
-        return len(self._current)
+        # Construct the complete snapshot before taking the lock.  A failed
+        # repository read therefore leaves the last known-good snapshot
+        # untouched, and readers observe either complete snapshot.
+        snapshot = MappingProxyType({item.normalized_symbol: item for item in identities})
+        with self._lock:
+            self._current = snapshot
+            return len(snapshot)
 
     def resolve_current(self, symbol: str) -> SecIssuerResolution:
         normalized = normalize_sec_symbol(symbol)
-        identity = self._current.get(normalized)
+        with self._lock:
+            identity = self._current.get(normalized)
         if identity is None:
             return SecIssuerResolution(symbol, normalized, SecResolutionStatus.UNRESOLVED, reason="CACHE_MISS")
         return SecIssuerResolution(symbol, normalized, SecResolutionStatus.RESOLVED, identity=identity)
