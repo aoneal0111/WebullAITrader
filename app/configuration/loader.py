@@ -2,6 +2,7 @@
 
 from decimal import Decimal, InvalidOperation
 import math
+import os
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -9,6 +10,7 @@ from app.broker_plugins import normalize_provider
 from app.configuration.environment import (
     ResolvedSymbolIntelligenceSECEnvironment,
     resolve_runtime_environment,
+    parse_symbol_intelligence_sec_manual_targets,
     resolve_symbol_intelligence_sec_environment,
 )
 from app.configuration.models import *
@@ -50,18 +52,21 @@ def _reject_partial_scope(
 
 def load_configuration(env=None):
     if env is None:
+        process_environment = dict(os.environ)
         e = resolve_runtime_environment()
         symbol_intelligence_sec_environment = (
             resolve_symbol_intelligence_sec_environment()
         )
     else:
+        process_environment = dict(env)
         e = dict(env)
         symbol_intelligence_sec_environment = (
             resolve_symbol_intelligence_sec_environment(e, dotenv_path=None)
         )
     symbol_intelligence_sec_configuration = (
         load_symbol_intelligence_sec_configuration(
-            symbol_intelligence_sec_environment
+            symbol_intelligence_sec_environment,
+            manual_targets=parse_symbol_intelligence_sec_manual_targets(process_environment),
         )
     )
 
@@ -469,6 +474,8 @@ def load_configuration(env=None):
 
 def load_symbol_intelligence_sec_configuration(
     resolved: ResolvedSymbolIntelligenceSECEnvironment,
+    *,
+    manual_targets: tuple[str, ...] = (),
 ) -> SymbolIntelligenceSECEdgarConfiguration:
     """Build non-composed SEC settings without exposing the User-Agent."""
 
@@ -534,6 +541,7 @@ def load_symbol_intelligence_sec_configuration(
                 "false",
             )
         ),
+        manual_targets=manual_targets,
     )
 
 

@@ -7,6 +7,7 @@ import pytest
 from app.configuration import SECEdgarConfiguration, load_configuration
 from app.configuration.environment import (
     SYMBOL_INTELLIGENCE_SEC_CANONICAL_KEYS,
+    parse_symbol_intelligence_sec_manual_targets,
     resolve_symbol_intelligence_sec_environment,
 )
 from app.configuration.loader import load_symbol_intelligence_sec_configuration
@@ -52,6 +53,69 @@ def test_disabled_with_no_user_agent_uses_bounded_defaults() -> None:
     assert config.shadow_parity_enabled is False
     assert config.acquisition_enabled is False
     assert config.dual_network_migration_enabled is False
+
+
+def test_manual_targets_are_absent_by_default() -> None:
+    assert parse_symbol_intelligence_sec_manual_targets({}) == ()
+    assert _configuration().manual_targets == ()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("AAPL", ("AAPL",)),
+        ("AAPL,MSFT", ("AAPL", "MSFT")),
+        (" AAPL , MSFT , NVDA ", ("AAPL", "MSFT", "NVDA")),
+        ("AAPL,AAPL", ("AAPL", "AAPL")),
+        ("?BAD", ("?BAD",)),
+    ],
+)
+def test_manual_targets_parse_structure_without_symbol_validation(raw, expected) -> None:
+    assert parse_symbol_intelligence_sec_manual_targets(
+        {"ATLAS_SYMBOL_INTELLIGENCE_SEC_MANUAL_TARGETS": raw}
+    ) == expected
+
+
+@pytest.mark.parametrize("raw", ["", " ", ",", "AAPL,", ",AAPL", "AAPL,,MSFT", "AAPL, ,MSFT"])
+def test_manual_targets_reject_empty_values_and_tokens(raw) -> None:
+    with pytest.raises(ValueError):
+        parse_symbol_intelligence_sec_manual_targets(
+            {"ATLAS_SYMBOL_INTELLIGENCE_SEC_MANUAL_TARGETS": raw}
+        )
+
+
+def test_manual_targets_reject_over_limit_without_truncation() -> None:
+    with pytest.raises(ValueError):
+        parse_symbol_intelligence_sec_manual_targets(
+            {"ATLAS_SYMBOL_INTELLIGENCE_SEC_MANUAL_TARGETS": "A,B,C,D"}
+        )
+
+
+def test_manual_targets_ignore_dotenv_and_consume_process_value(tmp_path) -> None:
+    dotenv = _write_dotenv(
+        tmp_path,
+        {"ATLAS_SYMBOL_INTELLIGENCE_SEC_MANUAL_TARGETS": "AAPL"},
+    )
+    assert parse_symbol_intelligence_sec_manual_targets({}) == ()
+    assert parse_symbol_intelligence_sec_manual_targets(
+        {"ATLAS_SYMBOL_INTELLIGENCE_SEC_MANUAL_TARGETS": " MSFT "}
+    ) == ("MSFT",)
+    resolved = resolve_symbol_intelligence_sec_environment({}, dotenv_path=dotenv)
+    assert resolved.get("ATLAS_SYMBOL_INTELLIGENCE_SEC_MANUAL_TARGETS") is None
+
+
+def test_manual_targets_flow_into_immutable_sec_configuration_without_flags() -> None:
+    config = load_configuration(
+        {
+            "ATLAS_SYMBOL_INTELLIGENCE_SEC_MANUAL_TARGETS": " AAPL, MSFT ",
+        }
+    ).symbol_intelligence_sec_edgar
+    assert config.manual_targets == ("AAPL", "MSFT")
+    assert config.acquisition_enabled is False
+    assert config.shadow_parity_enabled is False
+    assert config.dual_network_migration_enabled is False
+    with pytest.raises(AttributeError):
+        config.manual_targets += ("NVDA",)
 
 
 def test_all_canonical_names_populate_the_dedicated_contract() -> None:

@@ -72,6 +72,7 @@ class SymbolIntelligenceSECEdgarConfiguration:
     shadow_parity_enabled: bool = False
     acquisition_enabled: bool = False
     dual_network_migration_enabled: bool = False
+    manual_targets: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -82,6 +83,17 @@ class SymbolIntelligenceSECEdgarConfiguration:
             raise TypeError("SEC acquisition enabled must be boolean")
         if not isinstance(self.dual_network_migration_enabled, bool):
             raise TypeError("SEC dual-network migration enabled must be boolean")
+        if isinstance(self.manual_targets, str):
+            raise TypeError("SEC manual targets must be a tuple of strings")
+        try:
+            manual_targets = tuple(self.manual_targets)
+        except TypeError as error:
+            raise TypeError("SEC manual targets must be an iterable of strings") from error
+        if len(manual_targets) > 3:
+            raise ValueError("SEC manual targets supports at most 3 targets")
+        if any(not isinstance(token, str) or not token.strip() for token in manual_targets):
+            raise ValueError("SEC manual targets must contain non-empty strings")
+        object.__setattr__(self, "manual_targets", tuple(token.strip() for token in manual_targets))
         user_agent = str(self.user_agent or "").strip()
         if "\n" in user_agent or "\r" in user_agent or len(user_agent) > 512:
             raise ValueError("SEC EDGAR User-Agent is malformed")

@@ -46,6 +46,10 @@ SYMBOL_INTELLIGENCE_SEC_CANONICAL_KEYS = (
     "ATLAS_SYMBOL_INTELLIGENCE_SEC_DUAL_NETWORK_MIGRATION_ENABLED",
 )
 
+SYMBOL_INTELLIGENCE_SEC_MANUAL_TARGETS_KEY = (
+    "ATLAS_SYMBOL_INTELLIGENCE_SEC_MANUAL_TARGETS"
+)
+
 _SYMBOL_INTELLIGENCE_SEC_LEGACY_ALIASES = {
     "ATLAS_SEC_EDGAR_ENABLED": "SEC_EDGAR_ENABLED",
     "ATLAS_SEC_EDGAR_USER_AGENT": "SEC_EDGAR_USER_AGENT",
@@ -183,6 +187,37 @@ def resolve_symbol_intelligence_sec_environment(
     return ResolvedSymbolIntelligenceSECEnvironment(resolved, origins)
 
 
+def parse_symbol_intelligence_sec_manual_targets(
+    process_environment: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    """Parse bounded operator targets from the process environment only.
+
+    This setting is deliberately outside the dotenv-backed SEC environment
+    registry.  Configuration loading validates only structure; symbol syntax
+    and issuer identity remain the manual-admission API's responsibility.
+    """
+
+    process = os.environ if process_environment is None else process_environment
+    if SYMBOL_INTELLIGENCE_SEC_MANUAL_TARGETS_KEY not in process:
+        return ()
+    raw = process.get(SYMBOL_INTELLIGENCE_SEC_MANUAL_TARGETS_KEY)
+    value = "" if raw is None else str(raw)
+    if not value.strip():
+        raise ValueError(
+            f"{SYMBOL_INTELLIGENCE_SEC_MANUAL_TARGETS_KEY} cannot be empty"
+        )
+    tokens = tuple(token.strip() for token in value.split(","))
+    if any(not token for token in tokens):
+        raise ValueError(
+            f"{SYMBOL_INTELLIGENCE_SEC_MANUAL_TARGETS_KEY} contains an empty token"
+        )
+    if len(tokens) > 3:
+        raise ValueError(
+            f"{SYMBOL_INTELLIGENCE_SEC_MANUAL_TARGETS_KEY} supports at most 3 targets"
+        )
+    return tokens
+
+
 def duplicate_dotenv_keys(path: str | Path) -> dict[str, int]:
     counts: dict[str, int] = {}
     for line in Path(path).read_text(encoding="utf-8-sig").splitlines():
@@ -199,9 +234,11 @@ __all__ = [
     "MARKETWATCH_NEWS_DOTENV_KEYS",
     "SEC_EDGAR_DOTENV_KEYS",
     "SYMBOL_INTELLIGENCE_SEC_CANONICAL_KEYS",
+    "SYMBOL_INTELLIGENCE_SEC_MANUAL_TARGETS_KEY",
     "YAHOO_FINANCE_NEWS_DOTENV_KEYS",
     "ResolvedSymbolIntelligenceSECEnvironment",
     "duplicate_dotenv_keys",
     "resolve_runtime_environment",
     "resolve_symbol_intelligence_sec_environment",
+    "parse_symbol_intelligence_sec_manual_targets",
 ]
