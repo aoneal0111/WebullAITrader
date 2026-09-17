@@ -18,6 +18,8 @@ _SYMBOL = re.compile(r"^[A-Z0-9](?:[A-Z0-9.-]{0,19}[A-Z0-9])?$")
 MAX_MAP_BYTES = 16 * 1024 * 1024
 MAX_MAP_ROWS = 50_000
 MAX_CIK = 9_999_999_999
+MAX_ROW_FIELDS = 64
+_NO_USABLE_TICKERS = frozenset({"NONE"})
 
 
 class SecTickerMapError(ValueError):
@@ -92,6 +94,13 @@ def _row_type(value: object) -> SecParserRowType:
     if isinstance(value, (int, float)):
         return SecParserRowType.NUMBER
     return SecParserRowType.OTHER
+
+
+def _no_usable_ticker(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    token = value.strip().upper().rstrip(".").strip()
+    return token in _NO_USABLE_TICKERS
 
 
 class SecResolutionStatus(StrEnum):
@@ -276,6 +285,58 @@ def _rows(payload: object, *, max_entries: int, diagnostic: Any = None) -> list[
     except (TypeError, ValueError) as exc:
         _parser_observe(diagnostic, SecParserFailureCategory.PAYLOAD_NONSERIALIZABLE)
         raise SecTickerMapError("SEC ticker payload is not serializable") from exc
+    if "fields" in payload:
+        fields = payload.get("fields")
+        data = payload.get("data")
+        if (
+            not isinstance(fields, Sequence)
+            or isinstance(fields, (str, bytes, bytearray))
+            or not isinstance(data, Sequence)
+            or isinstance(data, (str, bytes, bytearray))
+        ):
+            _parser_observe(diagnostic, SecParserFailureCategory.DATA_CONTAINER_INVALID,
+                            row_type=_row_type(data))
+            raise SecTickerMapError("SEC ticker rows are malformed")
+        normalized_fields: list[str] = []
+        seen: set[str] = set()
+        for field in fields:
+            if not isinstance(field, str) or not field.strip():
+                _parser_observe(diagnostic, SecParserFailureCategory.DATA_CONTAINER_INVALID,
+                                row_type=_row_type(field))
+                raise SecTickerMapError("SEC ticker fields are malformed")
+            normalized = field.strip().lower()
+            if normalized in seen:
+                _parser_observe(diagnostic, SecParserFailureCategory.DATA_CONTAINER_INVALID)
+                raise SecTickerMapError("SEC ticker fields are malformed")
+            seen.add(normalized)
+            normalized_fields.append(normalized)
+        required = {"cik", "name", "ticker", "exchange"}
+        if not required.issubset(seen):
+            _parser_observe(diagnostic, SecParserFailureCategory.DATA_CONTAINER_INVALID)
+            raise SecTickerMapError("SEC ticker fields are malformed")
+        positions = {name: normalized_fields.index(name) for name in required}
+        values = list(data)
+        if len(values) > min(max_entries, MAX_MAP_ROWS):
+            _parser_observe(diagnostic, SecParserFailureCategory.ROW_COUNT_EXCEEDED,
+                            row_index=min(len(values), MAX_MAP_ROWS))
+            raise SecTickerMapError("SEC ticker payload exceeds row bound")
+        if not values:
+            _parser_observe(diagnostic, SecParserFailureCategory.EMPTY_MAP)
+            raise SecTickerMapError("SEC ticker payload is empty")
+        adapted: list[Mapping[str, object]] = []
+        required_width = max(positions.values()) + 1
+        for index, row in enumerate(values):
+            if not isinstance(row, Sequence) or isinstance(row, (str, bytes, bytearray)):
+                _parser_observe(diagnostic, SecParserFailureCategory.ROW_NOT_MAPPING,
+                                row_type=_row_type(row), row_index=min(index, MAX_MAP_ROWS - 1))
+                raise SecTickerMapError("SEC ticker row is malformed")
+            if len(row) > MAX_ROW_FIELDS or len(row) < required_width:
+                _parser_observe(diagnostic, SecParserFailureCategory.ROW_NOT_MAPPING,
+                                row_type=SecParserRowType.SEQUENCE, row_index=min(index, MAX_MAP_ROWS - 1))
+                raise SecTickerMapError("SEC ticker row is malformed")
+            adapted.append({field: row[position] for field, position in positions.items()})
+        return adapted
+
     data: object = payload.get("data", payload)
     if isinstance(data, Mapping):
         values = list(data.values())
@@ -328,17 +389,21 @@ def parse_sec_ticker_map(
             _parser_observe(diagnostic, SecParserFailureCategory.TICKER_BLANK,
                             row_index=min(index, MAX_MAP_ROWS - 1))
             raise SecTickerMapError("SEC ticker is missing")
-        try:
-            normalized = normalize_sec_symbol(raw_ticker)
-        except SecTickerMapError:
-            category = (
-                SecParserFailureCategory.TICKER_TOO_LONG
-                if len(raw_ticker.strip()) > 20
-                else SecParserFailureCategory.TICKER_INVALID_FORMAT
-            )
-            _parser_observe(diagnostic, category, row_index=min(index, MAX_MAP_ROWS - 1))
-            raise
+        no_usable_ticker = _no_usable_ticker(raw_ticker)
+        if not no_usable_ticker:
+            try:
+                normalized = normalize_sec_symbol(raw_ticker)
+            except SecTickerMapError:
+                category = (
+                    SecParserFailureCategory.TICKER_TOO_LONG
+                    if len(raw_ticker.strip()) > 20
+                    else SecParserFailureCategory.TICKER_INVALID_FORMAT
+                )
+                _parser_observe(diagnostic, category, row_index=min(index, MAX_MAP_ROWS - 1))
+                raise
         cik_value = row.get("cik_str", row.get("cik"))
+        if no_usable_ticker and cik_value is None:
+            continue
         if cik_value is None:
             _parser_observe(diagnostic, SecParserFailureCategory.CIK_MISSING,
                             row_index=min(index, MAX_MAP_ROWS - 1))
@@ -369,6 +434,8 @@ def parse_sec_ticker_map(
                 value = row.get("security_class")
             if value is not None and len(str(value).strip()) > maximum:
                 _parser_observe(diagnostic, category, row_index=min(index, MAX_MAP_ROWS - 1))
+        if no_usable_ticker:
+            continue
         record = {
             "normalized_symbol": normalized,
             "cik": cik,

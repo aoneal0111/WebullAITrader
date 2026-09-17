@@ -122,6 +122,76 @@ def test_parser_failure_diagnostic_serialization_has_no_input_values(tmp_path):
     assert "SEC ticker" not in text
 
 
+def test_exchange_positional_rows_use_declared_field_order():
+    payload = {"fields": ["cik", "name", "ticker", "exchange"],
+               "data": [[123, "Issuer", "ABC", "NASDAQ"]]}
+    result = parse_sec_ticker_map(payload, source="SEC_EDGAR", observed_at=NOW)
+    assert result.identities[0].normalized_symbol == "ABC"
+    assert result.identities[0].cik == 123
+    assert result.identities[0].issuer_name == "Issuer"
+    assert result.identities[0].exchange == "NASDAQ"
+
+
+def test_exchange_positional_rows_follow_changed_field_order():
+    payload = {"fields": ["exchange", "ticker", "name", "cik"],
+               "data": [["NASDAQ", "ABC", "Issuer", "123"]]}
+    result = parse_sec_ticker_map(payload, source="SEC_EDGAR", observed_at=NOW)
+    assert result.identities[0].normalized_symbol == "ABC"
+    assert result.identities[0].cik == 123
+
+
+def test_exchange_positional_rows_reuse_ticker_cik_and_collision_validation():
+    fields = ["cik", "name", "ticker", "exchange"]
+    with pytest.raises(SecTickerMapError):
+        parse_sec_ticker_map({"fields": fields, "data": [[1, "Issuer", "BAD!", "NASDAQ"]]}, source="SEC_EDGAR", observed_at=NOW)
+    with pytest.raises(SecTickerMapError):
+        parse_sec_ticker_map({"fields": fields, "data": [["bad", "Issuer", "ABC", "NASDAQ"]]}, source="SEC_EDGAR", observed_at=NOW)
+    with pytest.raises(AmbiguousTickerMapError):
+        parse_sec_ticker_map({"fields": fields, "data": [[1, "One", "BRK.B", "NASDAQ"], [2, "Two", "BRK-B", "NYSE"]]}, source="SEC_EDGAR", observed_at=NOW)
+
+
+@pytest.mark.parametrize("payload", [
+    {"fields": ["cik", "ticker", "exchange"], "data": [[1, "ABC", "NASDAQ"]]},
+    {"fields": ["cik", "ticker", "ticker", "name", "exchange"], "data": [[1, "ABC", "ABC", "Issuer", "NASDAQ"]]},
+    {"fields": ["cik", "name", "ticker", "exchange"], "data": [[1, "Issuer"]]},
+    {"fields": ["cik", "name", "ticker", "exchange"], "data": [{"cik": 1}]},
+])
+def test_exchange_positional_schema_remains_fail_closed(payload):
+    with pytest.raises(SecTickerMapError):
+        parse_sec_ticker_map(payload, source="SEC_EDGAR", observed_at=NOW)
+
+
+def test_no_usable_ticker_record_is_omitted_without_normalizing_sentinel():
+    for sentinel in ("NONE", "NONE."):
+        payload = {"0": {"ticker": sentinel, "cik_str": 1, "title": "Sentinel"},
+                   "1": {"ticker": "ABC", "cik_str": 2, "title": "Issuer"}}
+        result = parse_sec_ticker_map(payload, source="SEC_EDGAR", observed_at=NOW)
+        assert [item.normalized_symbol for item in result.identities] == ["ABC"]
+
+
+@pytest.mark.parametrize("ticker_value", ["N/A"])
+def test_unproven_invalid_sentinel_values_are_not_omitted(ticker_value):
+    with pytest.raises(SecTickerMapError):
+        parse_sec_ticker_map({"0": {"ticker": ticker_value, "cik_str": 1}}, source="SEC_EDGAR", observed_at=NOW)
+
+
+@pytest.mark.parametrize("ticker_value", ["NA", "NULL", "UNKNOWN", "UNAVAILABLE"])
+def test_unproven_valid_ticker_values_remain_ordinary(ticker_value):
+    result = parse_sec_ticker_map({"0": {"ticker": ticker_value, "cik_str": 1}}, source="SEC_EDGAR", observed_at=NOW)
+    assert result.identities[0].normalized_symbol == ticker_value
+
+
+def test_no_usable_ticker_with_invalid_cik_remains_fail_closed():
+    with pytest.raises(SecTickerMapError):
+        parse_sec_ticker_map({"0": {"ticker": "NONE.", "cik_str": "bad"}}, source="SEC_EDGAR", observed_at=NOW)
+
+
+@pytest.mark.parametrize("ticker_value", ["ABC.", "A/B", "-ABC", "ABC--DEF"])
+def test_arbitrary_invalid_tickers_are_not_omitted(ticker_value):
+    with pytest.raises(SecTickerMapError):
+        parse_sec_ticker_map({"0": {"ticker": ticker_value, "cik_str": 1}}, source="SEC_EDGAR", observed_at=NOW)
+
+
 class _Transport:
     def __init__(self, results):
         self.results = list(results)
