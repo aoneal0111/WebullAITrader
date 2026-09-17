@@ -7,6 +7,7 @@ Production SEC activation is deliberately disabled in this phase.  The
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Sequence
 from threading import Lock
@@ -21,6 +22,7 @@ from app.symbol_intelligence.models import (
     SecManualTargetEnqueueResult,
     SecManualTargetEntry,
     SecManualTargetStatus,
+    SecStartupTargetDiagnostics,
 )
 from app.symbol_intelligence.providers.sec_filings import SecFilingFactNormalizer
 from app.symbol_intelligence.providers.sec_identity import (
@@ -57,15 +59,95 @@ class SymbolIntelligenceComposition:
         "ambiguous": 0, "not_ready": 0, "rejected_limit": 0,
         "service_unavailable": 0, "queue_rejected": 0,
     }, init=False, repr=False)
+    _startup_target_lock: Lock = field(default_factory=Lock, init=False, repr=False)
+    _startup_targets: tuple[str, ...] = field(default=(), init=False, repr=False)
+    _startup_attempted: bool = field(default=False, init=False, repr=False)
+    _startup_consumed: bool = field(default=False, init=False, repr=False)
+    _startup_inert: bool = field(default=False, init=False, repr=False)
+    _startup_consumed_at: datetime | None = field(default=None, init=False, repr=False)
+    _startup_result: SecManualTargetEnqueueResult | None = field(default=None, init=False, repr=False)
+    _startup_callback_failure: bool = field(default=False, init=False, repr=False)
+    _startup_callback_failure_category: str | None = field(default=None, init=False, repr=False)
 
     TARGET_LIMIT = 3
 
+    def __post_init__(self) -> None:
+        configured = getattr(getattr(self.service, "configuration", None), "manual_targets", ())
+        self._startup_targets = tuple(configured or ())
+
+    def register_startup_target_callback(self) -> None:
+        """Register the one-shot bridge only when targets were configured."""
+
+        if not self._startup_targets:
+            return
+        register = getattr(self.service, "set_ticker_map_ready_callback", None)
+        if callable(register):
+            register(self._consume_startup_targets)
+
+    def _consume_startup_targets(self) -> None:
+        with self._startup_target_lock:
+            if self._startup_inert or self._startup_attempted or not self._startup_targets:
+                return
+            self._startup_attempted = True
+            targets = self._startup_targets
+        try:
+            result = self.enqueue_symbols(targets)
+        except Exception as error:
+            with self._startup_target_lock:
+                self._startup_consumed = True
+                self._startup_callback_failure = True
+                self._startup_callback_failure_category = type(error).__name__[:64]
+                self._startup_consumed_at = self._service_time()
+            return
+        with self._startup_target_lock:
+            self._startup_result = result
+            self._startup_consumed = True
+            self._startup_consumed_at = self._service_time()
+
+    def _service_time(self) -> datetime:
+        current_time = getattr(self.service, "current_time", None)
+        if callable(current_time):
+            return current_time().astimezone(UTC)
+        return datetime.now(UTC)
+
+    @property
+    def startup_target_diagnostics(self) -> SecStartupTargetDiagnostics:
+        with self._startup_target_lock:
+            return SecStartupTargetDiagnostics(
+                configured_targets=self._startup_targets,
+                pending=bool(self._startup_targets)
+                and not self._startup_attempted
+                and not self._startup_inert,
+                attempted=self._startup_attempted,
+                consumed=self._startup_consumed,
+                consumed_at=self._startup_consumed_at,
+                callback_failure=self._startup_callback_failure,
+                callback_failure_category=self._startup_callback_failure_category,
+                result=self._startup_result,
+            )
+
     def start(self) -> bool:
         if not self.ownership.admission_open:
+            self._deactivate_startup_bridge()
             return False
-        return self.service.start()
+        try:
+            started = self.service.start()
+        except Exception:
+            self._deactivate_startup_bridge()
+            raise
+        if not started:
+            self._deactivate_startup_bridge()
+        return started
+
+    def _deactivate_startup_bridge(self) -> None:
+        clear = getattr(self.service, "clear_ticker_map_ready_callback", None)
+        if callable(clear):
+            clear()
+        with self._startup_target_lock:
+            self._startup_inert = True
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
+        self._deactivate_startup_bridge()
         return self.ownership.close(timeout_seconds=timeout_seconds)
 
     def enqueue_symbols(self, symbols: Sequence[str]) -> SecManualTargetEnqueueResult:
@@ -303,9 +385,11 @@ def create_symbol_intelligence_composition(
                 stop_worker=service.stop,
                 close_resource=transport.close,
             )
-            return SymbolIntelligenceComposition(
+            composition = SymbolIntelligenceComposition(
                 shared_repository, resolver, normalizer, limiter, transport, service, ownership,
             )
+            composition.register_startup_target_callback()
+            return composition
         except Exception:
             if transport is not None:
                 closer = getattr(transport, "close", None)

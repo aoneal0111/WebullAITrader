@@ -371,6 +371,45 @@ def test_ticker_map_readiness_is_session_scoped_and_published_after_source_state
     assert after.ticker_map_last_success_at.tzinfo is not None
 
 
+def test_ticker_ready_callback_runs_after_publication_and_outside_service_lock(tmp_path):
+    service_obj, _, _, _ = service(tmp_path)
+    observations = []
+
+    def callback():
+        observations.append(service_obj.diagnostics.ticker_map_ready)
+        acquired = service_obj._lock.acquire(blocking=False)
+        if acquired:
+            service_obj._lock.release()
+        observations.append(acquired)
+
+    service_obj.set_ticker_map_ready_callback(callback)
+    service_obj.run_once()
+    assert observations == [True, True]
+
+
+def test_ticker_ready_callback_only_fires_after_complete_success(tmp_path):
+    service_obj, transport, repo, _ = service(tmp_path)
+    calls = []
+    service_obj.set_ticker_map_ready_callback(lambda: calls.append("ready"))
+    transport.acquire = lambda request: type("Result", (), {"response": None})()
+    service_obj.run_once()
+    assert calls == []
+    transport = service_obj.transport
+    transport.acquire = FakeTransport(ticker_payload(), submissions_payload()).acquire
+    repo.store_source_state = lambda state: False
+    service_obj._next_ticker_due = 0
+    service_obj.run_once()
+    assert calls == []
+
+
+def test_ticker_ready_callback_failure_isolated(tmp_path):
+    service_obj, _, _, _ = service(tmp_path)
+    service_obj.set_ticker_map_ready_callback(lambda: (_ for _ in ()).throw(RuntimeError("probe")))
+    service_obj.run_once()
+    assert service_obj.diagnostics.ticker_map_ready is True
+    assert service_obj.diagnostics.ticker_ready_callback_failures == 1
+
+
 def test_ticker_map_readiness_stays_false_when_source_state_fails(tmp_path):
     service_obj, _, repo, _ = service(tmp_path)
     original = repo.store_source_state

@@ -168,6 +168,31 @@ class SecManualTargetDiagnostics:
     queue_rejected: int
 
 
+@dataclass(frozen=True, slots=True)
+class SecStartupTargetDiagnostics:
+    """Bounded immutable diagnostics for one startup-target attempt."""
+
+    configured_targets: tuple[str, ...] = ()
+    pending: bool = False
+    attempted: bool = False
+    consumed: bool = False
+    consumed_at: datetime | None = None
+    callback_failure: bool = False
+    callback_failure_category: str | None = None
+    result: SecManualTargetEnqueueResult | None = None
+
+    def __post_init__(self) -> None:
+        targets = tuple(self.configured_targets)
+        if len(targets) > 3:
+            raise ValueError("startup target diagnostics exceed bound")
+        if any(not isinstance(target, str) or not target or len(target) > 32 for target in targets):
+            raise ValueError("startup target diagnostics contain malformed symbols")
+        object.__setattr__(self, "configured_targets", targets)
+        if self.callback_failure_category is not None:
+            category = str(self.callback_failure_category).strip()[:64]
+            object.__setattr__(self, "callback_failure_category", category or None)
+
+
 def _utc(value: datetime, field_name: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field_name} must be timezone-aware")

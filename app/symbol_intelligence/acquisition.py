@@ -86,6 +86,7 @@ class SecAcquisitionDiagnostics:
     worker_alive: bool = False
     ticker_map_ready: bool = False
     ticker_map_last_success_at: datetime | None = None
+    ticker_ready_callback_failures: int = 0
 
 
 @dataclass(slots=True)
@@ -147,6 +148,8 @@ class SecSymbolIntelligenceAcquisitionService:
         self._stop = Event()
         self._wake = Event()
         self._worker: Thread | None = None
+        self._ticker_ready_callback: Callable[[], None] | None = None
+        self._ticker_ready_callback_failures = 0
 
     @property
     def metrics(self) -> SecAcquisitionMetrics:
@@ -166,7 +169,24 @@ class SecSymbolIntelligenceAcquisitionService:
                 bool(self._worker and self._worker.is_alive()),
                 self._ticker_map_ready,
                 self._ticker_map_last_success_at,
+                self._ticker_ready_callback_failures,
             )
+
+    def set_ticker_map_ready_callback(self, callback: Callable[[], None] | None) -> None:
+        """Register a generic observer for completed ticker-map readiness."""
+
+        if callback is not None and not callable(callback):
+            raise TypeError("ticker map ready callback must be callable")
+        with self._lock:
+            self._ticker_ready_callback = callback
+
+    def clear_ticker_map_ready_callback(self) -> None:
+        self.set_ticker_map_ready_callback(None)
+
+    def current_time(self) -> datetime:
+        """Return the injected UTC clock value for lifecycle observers."""
+
+        return self._clock().astimezone(UTC)
 
     def recover(self) -> int:
         """Recover only the bounded current resolver cache."""
@@ -337,6 +357,7 @@ class SecSymbolIntelligenceAcquisitionService:
                         self._ticker_map_last_success_at = now
                         self._next_ticker_due = self._monotonic() + self.configuration.ticker_refresh_seconds
                     self._inc("ticker_refresh_successes")
+                    self._notify_ticker_map_ready()
                     return
             except Exception:
                 self._record_failure(AcquisitionFailureKind.TICKER_PARSE if result is not None else AcquisitionFailureKind.TRANSPORT)
@@ -344,6 +365,18 @@ class SecSymbolIntelligenceAcquisitionService:
         with self._lock:
             self._next_ticker_due = self._monotonic() + self.configuration.ticker_refresh_seconds
         self._source_failure()
+
+    def _notify_ticker_map_ready(self) -> None:
+        with self._lock:
+            callback = self._ticker_ready_callback
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            with self._lock:
+                self._ticker_ready_callback_failures += 1
+            self._record_failure(AcquisitionFailureKind.INTERNAL_ERROR)
 
     def _take_due_target(self) -> _Target | None:
         now = self._monotonic()
