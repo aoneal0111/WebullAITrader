@@ -90,6 +90,84 @@ class SecIssuerAcquisitionStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class SecManualTargetStatus(StrEnum):
+    """Bounded outcomes for explicit operator target admission."""
+
+    ACCEPTED = "ACCEPTED"
+    DEDUPLICATED = "DEDUPLICATED"
+    INVALID = "INVALID"
+    UNRESOLVED = "UNRESOLVED"
+    AMBIGUOUS = "AMBIGUOUS"
+    NOT_READY = "NOT_READY"
+    REJECTED_LIMIT = "REJECTED_LIMIT"
+    SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
+    QUEUE_REJECTED = "QUEUE_REJECTED"
+
+
+@dataclass(frozen=True, slots=True)
+class SecManualTargetEntry:
+    """One bounded target outcome; at most three are returned per call."""
+
+    symbol: str
+    status: SecManualTargetStatus
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.symbol, str) or not self.symbol or len(self.symbol) > 32:
+            raise ValueError("manual target symbol is malformed or exceeds bound")
+        if not isinstance(self.status, SecManualTargetStatus):
+            raise TypeError("manual target status must be bounded")
+
+
+@dataclass(frozen=True, slots=True)
+class SecManualTargetEnqueueResult:
+    """Immutable aggregate result for one manual target admission call."""
+
+    requested: int = 0
+    accepted: int = 0
+    deduplicated: int = 0
+    invalid: int = 0
+    unresolved: int = 0
+    ambiguous: int = 0
+    not_ready: int = 0
+    rejected_limit: int = 0
+    service_unavailable: int = 0
+    queue_rejected: int = 0
+    entries: tuple[SecManualTargetEntry, ...] = ()
+
+    def __post_init__(self) -> None:
+        values = (
+            self.requested, self.accepted, self.deduplicated, self.invalid,
+            self.unresolved, self.ambiguous, self.not_ready,
+            self.rejected_limit, self.service_unavailable, self.queue_rejected,
+        )
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values):
+            raise ValueError("manual target counters must be bounded non-negative integers")
+        if len(self.entries) > 3:
+            raise ValueError("manual target entry details exceed bound")
+        object.__setattr__(self, "entries", tuple(self.entries))
+
+
+@dataclass(frozen=True, slots=True)
+class SecManualTargetDiagnostics:
+    """Bounded per-composition target admission diagnostics."""
+
+    ticker_map_ready: bool
+    ticker_map_last_success_at: datetime | None
+    target_limit: int
+    target_unique_issuers_admitted: int
+    requests: int
+    requested_symbols: int
+    accepted: int
+    deduplicated: int
+    invalid: int
+    unresolved: int
+    ambiguous: int
+    not_ready: int
+    rejected_limit: int
+    service_unavailable: int
+    queue_rejected: int
+
+
 def _utc(value: datetime, field_name: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field_name} must be timezone-aware")

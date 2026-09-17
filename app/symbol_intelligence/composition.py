@@ -6,13 +6,29 @@ Production SEC activation is deliberately disabled in this phase.  The
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Sequence
+from threading import Lock
 from typing import Callable
 
-from app.symbol_intelligence.acquisition import SecSymbolIntelligenceAcquisitionService
+from app.symbol_intelligence.acquisition import (
+    AcquisitionPriority,
+    SecSymbolIntelligenceAcquisitionService,
+)
+from app.symbol_intelligence.models import (
+    SecManualTargetDiagnostics,
+    SecManualTargetEnqueueResult,
+    SecManualTargetEntry,
+    SecManualTargetStatus,
+)
 from app.symbol_intelligence.providers.sec_filings import SecFilingFactNormalizer
-from app.symbol_intelligence.providers.sec_identity import SecIssuerIdentityResolver
+from app.symbol_intelligence.providers.sec_identity import (
+    SecIssuerIdentity,
+    SecIssuerIdentityResolver,
+    SecResolutionStatus,
+    normalize_sec_symbol,
+)
 from app.symbol_intelligence.providers.sec_transport import SecEdgarRateLimiter, SecEdgarTransport
 from app.symbol_intelligence.repository import SymbolIntelligenceRepository
 from app.symbol_intelligence.network_lease import SecNetworkOwnershipLease, default_lease_path
@@ -33,6 +49,16 @@ class SymbolIntelligenceComposition:
     service: SecSymbolIntelligenceAcquisitionService
     ownership: SecNetworkOwnershipRuntime
     activation_state: str = "ACTIVE"
+    _target_lock: Lock = field(default_factory=Lock, init=False, repr=False)
+    _admitted_target_issuers: set[str] = field(default_factory=set, init=False, repr=False)
+    _target_counters: dict[str, int] = field(default_factory=lambda: {
+        "requests": 0, "requested_symbols": 0, "accepted": 0,
+        "deduplicated": 0, "invalid": 0, "unresolved": 0,
+        "ambiguous": 0, "not_ready": 0, "rejected_limit": 0,
+        "service_unavailable": 0, "queue_rejected": 0,
+    }, init=False, repr=False)
+
+    TARGET_LIMIT = 3
 
     def start(self) -> bool:
         if not self.ownership.admission_open:
@@ -41,6 +67,138 @@ class SymbolIntelligenceComposition:
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         return self.ownership.close(timeout_seconds=timeout_seconds)
+
+    def enqueue_symbols(self, symbols: Sequence[str]) -> SecManualTargetEnqueueResult:
+        """Admit up to three explicit current-session issuer targets.
+
+        Resolution is local and occurs before the composition session lock;
+        only the bounded cap reservation and existing queue admission are
+        serialized together.  This method never performs network I/O.
+        """
+        if isinstance(symbols, str):
+            requested_symbols = (symbols,)
+        else:
+            try:
+                requested_symbols = tuple(symbols)
+            except TypeError:
+                requested_symbols = (symbols,)  # type: ignore[assignment]
+        requested = len(requested_symbols)
+        with self._target_lock:
+            self._target_counters["requests"] += 1
+            self._target_counters["requested_symbols"] += requested
+
+        if requested > self.TARGET_LIMIT:
+            with self._target_lock:
+                self._target_counters["rejected_limit"] += requested
+            return SecManualTargetEnqueueResult(
+                requested=requested, rejected_limit=requested,
+            )
+
+        service = self.service
+        service_diagnostics = getattr(service, "diagnostics", None)
+        if (
+            self.activation_state != "ACTIVE"
+            or not bool(getattr(self.ownership, "admission_open", False))
+            or service is None
+        ):
+            with self._target_lock:
+                self._target_counters["service_unavailable"] += requested
+            return self._uniform_target_result(requested_symbols, SecManualTargetStatus.SERVICE_UNAVAILABLE)
+        if not bool(getattr(service_diagnostics, "ticker_map_ready", False)):
+            with self._target_lock:
+                self._target_counters["not_ready"] += requested
+            return self._uniform_target_result(requested_symbols, SecManualTargetStatus.NOT_READY)
+
+        entries: list[SecManualTargetEntry] = []
+        resolved: list[tuple[int, SecIssuerIdentity]] = []
+        local_ciks: set[int] = set()
+        counts = {key: 0 for key in self._target_counters if key not in {"requests", "requested_symbols"}}
+        for index, raw_symbol in enumerate(requested_symbols):
+            display = str(raw_symbol)[:32]
+            try:
+                normalized = normalize_sec_symbol(raw_symbol)
+            except Exception:
+                entries.append(SecManualTargetEntry(display, SecManualTargetStatus.INVALID))
+                counts["invalid"] += 1
+                continue
+            try:
+                resolution = self.resolver.resolve_current(normalized)
+            except Exception:
+                resolution = None
+            status = getattr(resolution, "status", None)
+            identity = getattr(resolution, "identity", None)
+            if status is SecResolutionStatus.AMBIGUOUS or str(status) == SecResolutionStatus.AMBIGUOUS.value:
+                entries.append(SecManualTargetEntry(normalized, SecManualTargetStatus.AMBIGUOUS))
+                counts["ambiguous"] += 1
+            elif status is SecResolutionStatus.RESOLVED and isinstance(identity, SecIssuerIdentity):
+                if identity.cik in local_ciks:
+                    entries.append(SecManualTargetEntry(normalized, SecManualTargetStatus.DEDUPLICATED))
+                    counts["deduplicated"] += 1
+                else:
+                    local_ciks.add(identity.cik)
+                    entries.append(SecManualTargetEntry(normalized, SecManualTargetStatus.ACCEPTED))
+                    resolved.append((len(entries) - 1, identity))
+            else:
+                entries.append(SecManualTargetEntry(normalized, SecManualTargetStatus.UNRESOLVED))
+                counts["unresolved"] += 1
+
+        # Reserve the session slot only while performing the bounded queue
+        # admission.  enqueue_issuer is local and never performs HTTP.
+        for entry_index, identity in resolved:
+            with self._target_lock:
+                if identity.issuer_id in self._admitted_target_issuers:
+                    entries[entry_index] = SecManualTargetEntry(entries[entry_index].symbol, SecManualTargetStatus.DEDUPLICATED)
+                    counts["deduplicated"] += 1
+                    continue
+                if len(self._admitted_target_issuers) >= self.TARGET_LIMIT:
+                    entries[entry_index] = SecManualTargetEntry(entries[entry_index].symbol, SecManualTargetStatus.REJECTED_LIMIT)
+                    counts["rejected_limit"] += 1
+                    continue
+                if service.enqueue_issuer(identity, AcquisitionPriority.HIGH_PRIORITY):
+                    self._admitted_target_issuers.add(identity.issuer_id)
+                    counts["accepted"] += 1
+                else:
+                    entries[entry_index] = SecManualTargetEntry(entries[entry_index].symbol, SecManualTargetStatus.QUEUE_REJECTED)
+                    counts["queue_rejected"] += 1
+        with self._target_lock:
+            for key, value in counts.items():
+                self._target_counters[key] += value
+        accepted = counts["accepted"]
+        return SecManualTargetEnqueueResult(
+            requested=requested, accepted=accepted,
+            deduplicated=counts["deduplicated"], invalid=counts["invalid"],
+            unresolved=counts["unresolved"], ambiguous=counts["ambiguous"],
+            rejected_limit=counts["rejected_limit"], queue_rejected=counts["queue_rejected"],
+            entries=tuple(entries),
+        )
+
+    def _uniform_target_result(self, symbols: Sequence[str], status: SecManualTargetStatus) -> SecManualTargetEnqueueResult:
+        requested = len(symbols)
+        entries = tuple(
+            SecManualTargetEntry(str(symbol)[:32] or "_", status)
+            for symbol in symbols[:self.TARGET_LIMIT]
+        )
+        values = {status.value.lower(): requested}
+        return SecManualTargetEnqueueResult(
+            requested=requested,
+            not_ready=values.get("not_ready", 0),
+            service_unavailable=values.get("service_unavailable", 0),
+            entries=entries,
+        )
+
+    @property
+    def target_diagnostics(self) -> SecManualTargetDiagnostics:
+        service_diagnostics = getattr(self.service, "diagnostics", None)
+        with self._target_lock:
+            values = dict(self._target_counters)
+            admitted = len(self._admitted_target_issuers)
+        return SecManualTargetDiagnostics(
+            ticker_map_ready=bool(getattr(service_diagnostics, "ticker_map_ready", False)),
+            ticker_map_last_success_at=getattr(service_diagnostics, "ticker_map_last_success_at", None),
+            target_limit=self.TARGET_LIMIT,
+            target_unique_issuers_admitted=admitted,
+            **values,
+        )
 
     @property
     def diagnostics(self) -> object:
