@@ -221,6 +221,7 @@ def create_desktop_composition(
         path=operational_configuration.trade_intelligence_path,
         capacity=operational_configuration.trade_intelligence_queue_capacity,
         observability=warrior_observability,
+        warrior_observation_enabled=warrior_strategy_config.adaptive_context_enabled,
     )
     chart_market_configuration = market_data_configuration(
         operational_configuration

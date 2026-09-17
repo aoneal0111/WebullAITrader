@@ -10,7 +10,9 @@ from app.strategies.warrior_momentum import (
     AdaptiveDecision, AdaptiveReason, MomentumCandidate, MomentumScore,
     SetupDetection, SetupState, SetupType, StopModel, WarriorAdaptiveContext,
     WarriorMomentumConfig, WarriorMomentumRuntime, ReasonCode,
+    warrior_observation_eligible,
 )
+from app.momentum_scanner import evaluate_candidate
 
 
 def candidate(*, symbol="XYZ", rvol="2", move="80", dollar="12000000", spread="1.8",
@@ -175,3 +177,23 @@ def test_daily_state_resets_on_new_trading_date_and_sessions_are_separate():
 
 def replace_candidate_timestamp(value, *, seconds: int):
     return replace(value, timestamp=value.timestamp.replace(second=value.timestamp.second + seconds))
+
+
+def test_adaptive_observation_route_retains_exceptional_quality_miss():
+    decision = evaluate_candidate(_scanner_observation(rvol="0.01", dollar="13000", move="368"))
+    assert decision.qualified is False
+    assert {"relative_volume", "dollar_volume"}.issubset(set(decision.technical_failed_rules))
+    assert warrior_observation_eligible(decision) is True
+
+
+def test_adaptive_observation_route_accepts_strong_non_extreme_mover():
+    decision = evaluate_candidate(_scanner_observation(rvol="0.2", dollar="120000", move="40"))
+    assert decision.qualified is False
+    assert warrior_observation_eligible(decision) is True
+
+
+def test_adaptive_observation_route_rejects_weak_or_unsafe_candidates():
+    weak = evaluate_candidate(_scanner_observation(rvol="0.01", dollar="13000", move="8"))
+    halted = replace(weak, halted=True)
+    assert warrior_observation_eligible(weak) is False
+    assert warrior_observation_eligible(halted) is False

@@ -184,6 +184,27 @@ def create_selected_experiment(selection: StrategySelection | None = None,
     return None
 
 
+def warrior_observation_eligible(decision: object, config: WarriorMomentumConfig = WarriorMomentumConfig()) -> bool:
+    """Identify scanner results worth retaining for adaptive Warrior observation.
+
+    This is deliberately weaker than scanner qualification and entry
+    authorization: only legacy quality failures may be contextualized.  Any
+    integrity, tradability, price, halt, or broad momentum failure still stops
+    the observation route.
+    """
+    failed = set(getattr(decision, "technical_failed_rules", ()) or ())
+    quality_only = {"relative_volume", "dollar_volume", "spread"}
+    if not failed or not failed.issubset(quality_only):
+        return False
+    if not bool(getattr(decision, "tradable", False)) or bool(getattr(decision, "halted", True)):
+        return False
+    price = getattr(decision, "price", None)
+    move = getattr(getattr(decision, "metrics", None), "percentage_change", None)
+    if price is None or price <= 0 or move is None or move < config.discovery.minimum_percentage_change * Decimal("4"):
+        return False
+    return Decimal(str(getattr(decision, "score", 0))) >= config.discovery.watch_score
+
+
 def entry_rejections(candidate: MomentumCandidate, config: WarriorMomentumConfig,
                      *, adaptive_context: WarriorAdaptiveContext | None = None) -> tuple[ReasonCode, ...]:
     reasons: list[ReasonCode] = []
@@ -246,4 +267,4 @@ def _explanations(candidate: MomentumCandidate) -> tuple[str, ...]:
     return tuple(result)
 
 
-__all__ = ["WarriorMomentumRuntime", "create_selected_experiment", "entry_rejections"]
+__all__ = ["WarriorMomentumRuntime", "create_selected_experiment", "entry_rejections", "warrior_observation_eligible"]

@@ -26,6 +26,7 @@ from app.opportunity_discovery import (
 )
 from app.strategies.warrior_momentum.forward_models import PointInTimeObservation
 from app.strategies.warrior_momentum.models import MinuteBar, MomentumCandidate, SetupState
+from app.strategies.warrior_momentum.runtime import warrior_observation_eligible
 
 from .features import extract_completed_bar_features
 from .discovery_runtime import (
@@ -90,6 +91,7 @@ class TradeIntelligenceRuntimeObserver:
         service_factory: Callable[..., TradeIntelligenceService] = TradeIntelligenceService,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         observability: object | None = None,
+        warrior_observation_enabled: bool = False,
     ) -> None:
         self.enabled = bool(enabled) and environment.strip().upper() in {"TEST", "PAPER"}
         self.environment = environment.strip().upper()
@@ -98,6 +100,7 @@ class TradeIntelligenceRuntimeObserver:
         self._factory = service_factory
         self._clock = clock
         self._observability = observability
+        self._warrior_observation_enabled = bool(warrior_observation_enabled)
         self._service: TradeIntelligenceService | None = None
         self._last_metrics: WorkerMetrics | None = None
         self._episodes: dict[str, _Episode] = {}
@@ -187,13 +190,15 @@ class TradeIntelligenceRuntimeObserver:
             session=scanner_session((decision.timestamp or decision.observed_at)).value
             if (decision.timestamp or decision.observed_at) is not None else "UNKNOWN",
         )
-        if not (
-            decision.qualified or decision.technical_qualifies_without_catalyst
-        ):
+        observation_eligible = (
+            self._warrior_observation_enabled
+            and warrior_observation_eligible(decision)
+        )
+        if not (decision.qualified or decision.technical_qualifies_without_catalyst or observation_eligible):
             return
         fast_signature = (
             "SCANNER",
-            AtlasDecision.WATCHING.value if decision.qualified else AtlasDecision.REJECTED.value,
+            AtlasDecision.WATCHING.value if (decision.qualified or observation_eligible) else AtlasDecision.REJECTED.value,
             tuple(decision.failed_rules),
         )
         with self._lock:
@@ -201,7 +206,7 @@ class TradeIntelligenceRuntimeObserver:
             if current is not None and current.last_signature == fast_signature:
                 return
         try:
-            self._observe_scanner(decision)
+            self._observe_scanner(decision, observation_eligible=observation_eligible)
         except Exception:
             # Research construction cannot degrade scanner publication.
             return
@@ -397,7 +402,7 @@ class TradeIntelligenceRuntimeObserver:
                 })
         return result
 
-    def _observe_scanner(self, decision: ScannerDecision) -> None:
+    def _observe_scanner(self, decision: ScannerDecision, *, observation_eligible: bool = False) -> None:
         service = self._service
         cutoff = decision.observed_at or decision.timestamp
         if service is None or cutoff is None:
@@ -409,7 +414,7 @@ class TradeIntelligenceRuntimeObserver:
             previous = self._episodes.get(decision.symbol.upper())
         new_episode = previous is None or previous.session != session or previous.session_date != cutoff.astimezone(EASTERN).date()
         key = self._episode(decision.symbol, session, cutoff, decision.source_event_identity or "scanner")
-        atlas_decision = AtlasDecision.WATCHING if decision.qualified else AtlasDecision.REJECTED
+        atlas_decision = AtlasDecision.WATCHING if (decision.qualified or observation_eligible) else AtlasDecision.REJECTED
         signature = ("SCANNER", atlas_decision.value, tuple(decision.failed_rules))
         with self._lock:
             if not new_episode and key.last_signature == signature:
