@@ -39,6 +39,11 @@ from app.symbol_intelligence.network_ownership_runtime import (
     SecNetworkOwnershipRuntime,
     evaluate_sec_acquisition_eligibility,
 )
+from app.symbol_intelligence.sec_observability import (
+    NOOP_SEC_OBSERVABILITY,
+    create_sec_acquisition_observability_sink,
+    safe_close,
+)
 
 
 @dataclass(slots=True)
@@ -51,6 +56,7 @@ class SymbolIntelligenceComposition:
     service: SecSymbolIntelligenceAcquisitionService
     ownership: SecNetworkOwnershipRuntime
     activation_state: str = "ACTIVE"
+    observability: object = field(default=NOOP_SEC_OBSERVABILITY, repr=False)
     _target_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _admitted_target_issuers: set[str] = field(default_factory=set, init=False, repr=False)
     _target_counters: dict[str, int] = field(default_factory=lambda: {
@@ -148,7 +154,10 @@ class SymbolIntelligenceComposition:
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         self._deactivate_startup_bridge()
-        return self.ownership.close(timeout_seconds=timeout_seconds)
+        try:
+            return self.ownership.close(timeout_seconds=timeout_seconds)
+        finally:
+            safe_close(self.observability)
 
     def enqueue_symbols(self, symbols: Sequence[str]) -> SecManualTargetEnqueueResult:
         """Admit up to three explicit current-session issuer targets.
@@ -372,6 +381,7 @@ def create_symbol_intelligence_composition(
 
     def construct() -> SymbolIntelligenceComposition:
         transport = None
+        observability = NOOP_SEC_OBSERVABILITY
         try:
             resolver = resolver_factory(shared_repository)
             resolver.recover()
@@ -379,6 +389,10 @@ def create_symbol_intelligence_composition(
             limiter = limiter_factory(float(sec_config.requests_per_second))
             transport = transport_factory(sec_config, limiter=limiter)
             service = service_factory(sec_config, shared_repository, transport, resolver, normalizer=normalizer)
+            observability = create_sec_acquisition_observability_sink(sec_config)
+            set_observability = getattr(service, "set_observability_sink", None)
+            if callable(set_observability):
+                set_observability(observability)
             holder["service"] = service
             ownership.configure_shutdown(
                 close_admission=service.close_admission,
@@ -387,10 +401,12 @@ def create_symbol_intelligence_composition(
             )
             composition = SymbolIntelligenceComposition(
                 shared_repository, resolver, normalizer, limiter, transport, service, ownership,
+                observability=observability,
             )
             composition.register_startup_target_callback()
             return composition
         except Exception:
+            safe_close(observability)
             if transport is not None:
                 closer = getattr(transport, "close", None)
                 if callable(closer):

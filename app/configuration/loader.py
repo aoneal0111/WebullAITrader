@@ -492,6 +492,12 @@ def load_symbol_intelligence_sec_configuration(
         ) in {"legacy_process", "legacy_dotenv"}
     else:
         enabled = _bool(enabled_value)
+    diagnostics_root = str(
+        resolved.get("ATLAS_SYMBOL_INTELLIGENCE_SEC_D3_DIAGNOSTICS_ROOT", "") or ""
+    ).strip()
+    diagnostics_session_id = str(
+        resolved.get("ATLAS_SYMBOL_INTELLIGENCE_SEC_D3_DIAGNOSTICS_SESSION_ID", "") or ""
+    ).strip()
     return SymbolIntelligenceSECEdgarConfiguration(
         enabled=enabled,
         user_agent=user_agent or None,
@@ -542,6 +548,18 @@ def load_symbol_intelligence_sec_configuration(
             )
         ),
         manual_targets=manual_targets,
+        d3_diagnostics_enabled=_bool(
+            resolved.get(
+                "ATLAS_SYMBOL_INTELLIGENCE_SEC_D3_DIAGNOSTICS_ENABLED",
+                "false",
+            )
+        ),
+        d3_diagnostics_root=(
+            Path(diagnostics_root) if diagnostics_root else None
+        ),
+        d3_diagnostics_session_id=(
+            diagnostics_session_id or None
+        ),
     )
 
 

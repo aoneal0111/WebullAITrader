@@ -2,6 +2,7 @@
 from decimal import Decimal
 import dataclasses
 import math
+import re
 from enum import StrEnum
 from pathlib import Path
 
@@ -73,6 +74,9 @@ class SymbolIntelligenceSECEdgarConfiguration:
     acquisition_enabled: bool = False
     dual_network_migration_enabled: bool = False
     manual_targets: tuple[str, ...] = ()
+    d3_diagnostics_enabled: bool = False
+    d3_diagnostics_root: Path | None = dataclasses.field(default=None, repr=False)
+    d3_diagnostics_session_id: str | None = dataclasses.field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -83,6 +87,8 @@ class SymbolIntelligenceSECEdgarConfiguration:
             raise TypeError("SEC acquisition enabled must be boolean")
         if not isinstance(self.dual_network_migration_enabled, bool):
             raise TypeError("SEC dual-network migration enabled must be boolean")
+        if not isinstance(self.d3_diagnostics_enabled, bool):
+            raise TypeError("SEC D3 diagnostics enabled must be boolean")
         if isinstance(self.manual_targets, str):
             raise TypeError("SEC manual targets must be a tuple of strings")
         try:
@@ -94,6 +100,20 @@ class SymbolIntelligenceSECEdgarConfiguration:
         if any(not isinstance(token, str) or not token.strip() for token in manual_targets):
             raise ValueError("SEC manual targets must contain non-empty strings")
         object.__setattr__(self, "manual_targets", tuple(token.strip() for token in manual_targets))
+        diagnostics_root = self.d3_diagnostics_root
+        diagnostics_session_id = str(self.d3_diagnostics_session_id or "").strip()
+        if self.d3_diagnostics_enabled:
+            diagnostics_root_text = str(diagnostics_root or "").strip()
+            if not diagnostics_root_text:
+                raise ValueError("SEC D3 diagnostics root is required when enabled")
+            diagnostics_root = Path(diagnostics_root_text)
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", diagnostics_session_id):
+                raise ValueError("SEC D3 diagnostics session ID is malformed")
+        else:
+            diagnostics_root = None
+            diagnostics_session_id = ""
+        object.__setattr__(self, "d3_diagnostics_root", diagnostics_root)
+        object.__setattr__(self, "d3_diagnostics_session_id", diagnostics_session_id or None)
         user_agent = str(self.user_agent or "").strip()
         if "\n" in user_agent or "\r" in user_agent or len(user_agent) > 512:
             raise ValueError("SEC EDGAR User-Agent is malformed")

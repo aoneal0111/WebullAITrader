@@ -23,6 +23,16 @@ from .providers.sec_transport import (
     SecEdgarEndpointClass,
     SecEdgarRequest,
 )
+from .sec_observability import (
+    NOOP_SEC_OBSERVABILITY,
+    SecDiagnosticEndpoint,
+    SecDiagnosticEvent,
+    SecDiagnosticRecord,
+    SecDiagnosticResult,
+    classify_ticker_json,
+    exception_class_name,
+    safe_emit,
+)
 
 
 class AcquisitionPriority(IntEnum):
@@ -150,6 +160,12 @@ class SecSymbolIntelligenceAcquisitionService:
         self._worker: Thread | None = None
         self._ticker_ready_callback: Callable[[], None] | None = None
         self._ticker_ready_callback_failures = 0
+        self._observability = NOOP_SEC_OBSERVABILITY
+
+    def set_observability_sink(self, sink: object | None) -> None:
+        """Inject optional diagnostics without granting it control-flow authority."""
+
+        self._observability = sink if sink is not None else NOOP_SEC_OBSERVABILITY
 
     @property
     def metrics(self) -> SecAcquisitionMetrics:
@@ -331,35 +347,154 @@ class SecSymbolIntelligenceAcquisitionService:
         self._inc("ticker_refresh_attempts")
         result = None
         for exchange in (True, False):
+            endpoint = (
+                SecDiagnosticEndpoint.EXCHANGE_TICKER_MAP
+                if exchange
+                else SecDiagnosticEndpoint.LEGACY_TICKER_MAP_FALLBACK
+            )
+            self._observe(SecDiagnosticRecord(
+                SecDiagnosticEvent.TICKER_ENDPOINT_BEGIN,
+                endpoint=endpoint,
+                result=SecDiagnosticResult.BEGIN,
+            ))
+            request_returned = False
             try:
                 result = self.transport.acquire(SecEdgarRequest.ticker_map(exchange))
+                request_returned = True
                 if getattr(result, "response", None) is not None:
                     response = result.response
-                    ticker_map = parse_sec_ticker_map(response.content, source="SEC_EDGAR", observed_at=response.observed_at, max_entries=self.configuration.max_ticker_entries)
-                    if not self.repository.apply_sec_ticker_map(ticker_map):
+                    self._observe(SecDiagnosticRecord(
+                        SecDiagnosticEvent.TICKER_ENDPOINT_COMPLETE,
+                        endpoint=endpoint,
+                        attempt_count=getattr(response, "attempts", None),
+                        http_status=getattr(response, "status_code", None),
+                        response_bytes=self._observation_count(
+                            response.content, measure_length=True, maximum=16 * 1024 * 1024,
+                        ),
+                        result=SecDiagnosticResult.SUCCESS,
+                    ))
+                    if self._observation_active():
+                        json_type, container_type, row_count = classify_ticker_json(response.content)
+                        self._observe(SecDiagnosticRecord(
+                            SecDiagnosticEvent.TICKER_JSON_CLASSIFIED,
+                            endpoint=endpoint,
+                            json_type=json_type,
+                            row_container_type=container_type,
+                            row_count=row_count,
+                            result=SecDiagnosticResult.SUCCESS,
+                        ))
+                    try:
+                        ticker_map = parse_sec_ticker_map(
+                            response.content, source="SEC_EDGAR",
+                            observed_at=response.observed_at,
+                            max_entries=self.configuration.max_ticker_entries,
+                        )
+                    except Exception as error:
+                        self._observe(SecDiagnosticRecord(
+                            SecDiagnosticEvent.TICKER_PARSE_RESULT,
+                            endpoint=endpoint,
+                            result=SecDiagnosticResult.FAILURE,
+                            exception_class=exception_class_name(error),
+                        ))
+                        raise
+                    self._observe(SecDiagnosticRecord(
+                        SecDiagnosticEvent.TICKER_PARSE_RESULT,
+                        endpoint=endpoint,
+                        row_count=self._observation_count(
+                            ticker_map.identities, measure_length=True, maximum=50_000,
+                        ),
+                        result=SecDiagnosticResult.SUCCESS,
+                    ))
+                    try:
+                        applied = self.repository.apply_sec_ticker_map(ticker_map)
+                    except Exception as error:
+                        self._observe(SecDiagnosticRecord(
+                            SecDiagnosticEvent.TICKER_MAP_APPLY_RESULT,
+                            endpoint=endpoint,
+                            result=SecDiagnosticResult.FAILURE,
+                            exception_class=exception_class_name(error),
+                        ))
+                        raise
+                    self._observe(SecDiagnosticRecord(
+                        SecDiagnosticEvent.TICKER_MAP_APPLY_RESULT,
+                        endpoint=endpoint,
+                        result=(SecDiagnosticResult.SUCCESS if applied else SecDiagnosticResult.REJECTED),
+                    ))
+                    if not applied:
                         raise ValueError("ticker identity map was rejected")
                     try:
                         self.resolver.recover()
-                    except Exception:
+                    except Exception as error:
+                        self._observe(SecDiagnosticRecord(
+                            SecDiagnosticEvent.RESOLVER_RECOVERY_RESULT,
+                            endpoint=endpoint,
+                            result=SecDiagnosticResult.FAILURE,
+                            exception_class=exception_class_name(error),
+                        ))
                         self._inc("resolver_recover_failures")
                         self._record_failure(AcquisitionFailureKind.RESOLVER_RECOVER)
                         return
+                    self._observe(SecDiagnosticRecord(
+                        SecDiagnosticEvent.RESOLVER_RECOVERY_RESULT,
+                        endpoint=endpoint,
+                        row_count=self._observation_count(
+                            getattr(self.resolver, "size", 0), maximum=50_000,
+                        ),
+                        result=SecDiagnosticResult.SUCCESS,
+                    ))
                     # Source availability is the final persistence step in
                     # the ticker-map transaction.  Only after it succeeds do
                     # we publish current-session readiness.
                     observed = self._clock().astimezone(UTC)
-                    if not self._source_success(observed):
+                    source_available = self._source_success(observed)
+                    self._observe(SecDiagnosticRecord(
+                        SecDiagnosticEvent.SOURCE_AVAILABLE_RESULT,
+                        endpoint=endpoint,
+                        result=(SecDiagnosticResult.SUCCESS if source_available else SecDiagnosticResult.FAILURE),
+                    ))
+                    if not source_available:
                         raise ValueError("SEC source state was not persisted")
-                    now = self._clock().astimezone(UTC)
-                    with self._lock:
-                        self._last_ticker_success = now
-                        self._ticker_map_ready = True
-                        self._ticker_map_last_success_at = now
-                        self._next_ticker_due = self._monotonic() + self.configuration.ticker_refresh_seconds
+                    try:
+                        now = self._clock().astimezone(UTC)
+                        with self._lock:
+                            self._last_ticker_success = now
+                            self._ticker_map_ready = True
+                            self._ticker_map_last_success_at = now
+                            self._next_ticker_due = self._monotonic() + self.configuration.ticker_refresh_seconds
+                    except Exception as error:
+                        self._observe(SecDiagnosticRecord(
+                            SecDiagnosticEvent.TICKER_READY_RESULT,
+                            endpoint=endpoint,
+                            result=SecDiagnosticResult.FAILURE,
+                            exception_class=exception_class_name(error),
+                        ))
+                        raise
                     self._inc("ticker_refresh_successes")
+                    self._observe(SecDiagnosticRecord(
+                        SecDiagnosticEvent.TICKER_READY_RESULT,
+                        endpoint=endpoint,
+                        result=SecDiagnosticResult.SUCCESS,
+                    ))
                     self._notify_ticker_map_ready()
                     return
-            except Exception:
+                failure = getattr(result, "failure", None)
+                self._observe(SecDiagnosticRecord(
+                    SecDiagnosticEvent.TICKER_TRANSPORT_FAILURE,
+                    endpoint=endpoint,
+                    attempt_count=getattr(failure, "attempts", None),
+                    transport_category=getattr(getattr(failure, "kind", None), "value", "UNKNOWN"),
+                    http_status=getattr(failure, "status_code", None),
+                    result=SecDiagnosticResult.FAILURE,
+                ))
+            except Exception as error:
+                if not request_returned:
+                    self._observe(SecDiagnosticRecord(
+                        SecDiagnosticEvent.TICKER_TRANSPORT_FAILURE,
+                        endpoint=endpoint,
+                        transport_category="UNKNOWN",
+                        result=SecDiagnosticResult.FAILURE,
+                        exception_class=exception_class_name(error),
+                    ))
                 self._record_failure(AcquisitionFailureKind.TICKER_PARSE if result is not None else AcquisitionFailureKind.TRANSPORT)
         self._inc("ticker_refresh_failures")
         with self._lock:
@@ -370,13 +505,47 @@ class SecSymbolIntelligenceAcquisitionService:
         with self._lock:
             callback = self._ticker_ready_callback
         if callback is None:
+            self._observe(SecDiagnosticRecord(
+                SecDiagnosticEvent.STARTUP_TARGET_CALLBACK_RESULT,
+                result=SecDiagnosticResult.SKIPPED,
+            ))
             return
         try:
             callback()
-        except Exception:
+            self._observe(SecDiagnosticRecord(
+                SecDiagnosticEvent.STARTUP_TARGET_CALLBACK_RESULT,
+                result=SecDiagnosticResult.SUCCESS,
+            ))
+        except Exception as error:
+            self._observe(SecDiagnosticRecord(
+                SecDiagnosticEvent.STARTUP_TARGET_CALLBACK_RESULT,
+                result=SecDiagnosticResult.FAILURE,
+                exception_class=exception_class_name(error),
+            ))
             with self._lock:
                 self._ticker_ready_callback_failures += 1
             self._record_failure(AcquisitionFailureKind.INTERNAL_ERROR)
+
+    def _observe(self, record: SecDiagnosticRecord) -> None:
+        safe_emit(self._observability, record)
+
+    def _observation_active(self) -> bool:
+        if self._observability is NOOP_SEC_OBSERVABILITY:
+            return False
+        try:
+            return bool(getattr(self._observability, "active", True))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _observation_count(
+        value: object, *, measure_length: bool = False, maximum: int,
+    ) -> int | None:
+        try:
+            count = len(value) if measure_length else int(value)  # type: ignore[arg-type]
+            return min(maximum, max(0, count))
+        except Exception:
+            return None
 
     def _take_due_target(self) -> _Target | None:
         now = self._monotonic()
