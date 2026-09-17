@@ -12,14 +12,14 @@ from app.gui.widgets.workstation_panels import WorkstationFooter
 class DashboardPage(QWidget):
     """Single-screen, non-scrolling Atlas supervision workstation."""
 
-    def __init__(self) -> None:
+    def __init__(self, warrior_observability=None) -> None:
         super().__init__()
         self.setObjectName("appRoot")
         self._external_viewport_width: int | None = None
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 8, 6)
         root.setSpacing(6)
-        self.market_workspace = MarketWorkspace()
+        self.market_workspace = MarketWorkspace(warrior_observability=warrior_observability)
         self.runtime_header = RuntimeControlHeader(
             self.market_workspace.runtime_controls
         )

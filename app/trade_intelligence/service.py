@@ -51,6 +51,7 @@ class TradeIntelligenceService:
         self, path: str | Path = DEFAULT_STORE_PATH, *, capacity: int = 4096,
         clock: Callable[[], datetime] | None = None,
         store_factory=ExperienceStore,
+        observability: object | None = None,
     ) -> None:
         if capacity <= 0:
             raise ValueError("capacity must be positive")
@@ -58,6 +59,7 @@ class TradeIntelligenceService:
         self._capacity = capacity
         self._clock = clock or (lambda: datetime.now(UTC))
         self._store_factory = store_factory
+        self._observability = observability
         self._queue: Queue[_Work] = Queue(maxsize=capacity)
         self._stop = Event()
         self._lock = RLock()
@@ -83,7 +85,12 @@ class TradeIntelligenceService:
         if not isinstance(value, TradeOpportunityExperience):
             return self._reject()
         payload = experience_payload(value)
-        return self._submit(_Work(value.experience_id, "EXPERIENCE", payload, self._now()))
+        accepted = self._submit(_Work(value.experience_id, "EXPERIENCE", payload, self._now()))
+        self._safe_observe("WARRIOR_ADMISSION_RESULT", value.key.symbol,
+                           admission_result="ADMITTED" if accepted else "REJECTED",
+                           admission_rejection=None if accepted else "PARENT_ADMISSION_FAILED",
+                           queue_depth=self._queue.qsize())
+        return accepted
 
     def observe_completed_bar(self, value: PriceBar) -> bool:
         if not isinstance(value, PriceBar):
@@ -95,9 +102,12 @@ class TradeIntelligenceService:
     def submit_decision(self, value: DecisionObservation) -> bool:
         if not isinstance(value, DecisionObservation):
             return self._reject()
-        return self._submit(_Work(
+        accepted = self._submit(_Work(
             value.decision_id, "DECISION", canonical_json(asdict(value)), self._now()
         ))
+        self._safe_observe("DECISION_PERSISTENCE_RESULT", value.symbol,
+                           decision_persisted=bool(accepted), queue_depth=self._queue.qsize())
+        return accepted
 
     def observe_paper_execution(self, value: PaperExecutionObservation) -> bool:
         if not isinstance(value, PaperExecutionObservation):
@@ -140,6 +150,14 @@ class TradeIntelligenceService:
                 self._pressure_recoveries += 1
             self._hwm = max(self._hwm, self._queue.qsize())
             return True
+
+    def _safe_observe(self, event: str, symbol: object, **fields: object) -> None:
+        try:
+            callback = getattr(self._observability, "emit_warrior", None)
+            if callable(callback):
+                callback(event=event, symbol=str(symbol).strip().upper(), **fields)
+        except Exception:
+            return None
 
     def close(self, *, timeout_seconds: float = 30) -> bool:
         if timeout_seconds < 0:

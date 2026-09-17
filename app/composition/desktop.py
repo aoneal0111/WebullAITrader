@@ -5,7 +5,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 import inspect
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.configuration import load_configuration
 from app.services.chart_market_data import ChartMarketDataService
@@ -32,6 +34,7 @@ from app.strategies.warrior_momentum.forward_models import PaperAccountContext
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
 from app.strategies.warrior_momentum.execution_quote import WebullExecutionQuoteSource
 from app.strategies.warrior_momentum.forward_runtime import management_context_available
+from app.strategies.warrior_momentum.observability import create_warrior_observability_sink
 from app.trade_intelligence.runtime import TradeIntelligenceRuntimeObserver
 from app.trade_intelligence.taxonomy_paper_bridge import TaxonomyPaperExecutionBridge
 from app.trade_intelligence.decision_intelligence import HistoricalDecisionIntelligence
@@ -196,6 +199,11 @@ def create_desktop_composition(
         )
 
     operational_configuration = load_configuration()
+    warrior_observability = create_warrior_observability_sink(SimpleNamespace(
+        observability_enabled=os.getenv("ATLAS_WARRIOR_D3_DIAGNOSTICS_ENABLED", "false").strip().lower() == "true",
+        observability_root=os.getenv("ATLAS_WARRIOR_D3_DIAGNOSTICS_ROOT") or None,
+        observability_session_id=os.getenv("ATLAS_WARRIOR_D3_DIAGNOSTICS_SESSION_ID") or None,
+    ))
     trade_intelligence_observer = TradeIntelligenceRuntimeObserver(
         enabled=(
             operational_configuration.trade_intelligence_enabled
@@ -204,6 +212,7 @@ def create_desktop_composition(
         environment=operational_configuration.environment.value,
         path=operational_configuration.trade_intelligence_path,
         capacity=operational_configuration.trade_intelligence_queue_capacity,
+        observability=warrior_observability,
     )
     chart_market_configuration = market_data_configuration(
         operational_configuration
@@ -527,6 +536,7 @@ def create_desktop_composition(
         taxonomy_execution_bridge=taxonomy_execution_bridge,
         decision_intelligence_observer=decision_intelligence_observer,
         paper_entry_intelligence=paper_entry_intelligence,
+        observability=warrior_observability,
     )
 
     adaptive_entry_research_observer = AdaptiveWorkingEntryObserver(

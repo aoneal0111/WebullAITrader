@@ -41,6 +41,16 @@ from .service import DEFAULT_STORE_PATH, TradeIntelligenceService
 from .warrior_adapter import from_warrior_candidate
 
 
+def _safe_warrior_observe(sink: object | None, event: str, symbol: object, **fields: object) -> None:
+    """Best-effort diagnostic callback; never participates in research flow."""
+    try:
+        callback = getattr(sink, "emit_warrior", None)
+        if callable(callback):
+            callback(event=event, symbol=str(symbol).strip().upper(), **fields)
+    except Exception:
+        return None
+
+
 @dataclass(slots=True)
 class _Episode:
     episode_id: str
@@ -79,6 +89,7 @@ class TradeIntelligenceRuntimeObserver:
         path: str | Path = DEFAULT_STORE_PATH, capacity: int = 4096,
         service_factory: Callable[..., TradeIntelligenceService] = TradeIntelligenceService,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        observability: object | None = None,
     ) -> None:
         self.enabled = bool(enabled) and environment.strip().upper() in {"TEST", "PAPER"}
         self.environment = environment.strip().upper()
@@ -86,6 +97,7 @@ class TradeIntelligenceRuntimeObserver:
         self.capacity = capacity
         self._factory = service_factory
         self._clock = clock
+        self._observability = observability
         self._service: TradeIntelligenceService | None = None
         self._last_metrics: WorkerMetrics | None = None
         self._episodes: dict[str, _Episode] = {}
@@ -111,7 +123,10 @@ class TradeIntelligenceRuntimeObserver:
             return
         with self._lock:
             if self._service is None:
-                self._service = self._factory(self.path, capacity=self.capacity)
+                kwargs = {"capacity": self.capacity}
+                if self._observability is not None:
+                    kwargs["observability"] = self._observability
+                self._service = self._factory(self.path, **kwargs)
 
     def stop(self, *, timeout_seconds: float = 10.0) -> bool:
         with self._lock:
@@ -161,6 +176,17 @@ class TradeIntelligenceRuntimeObserver:
             return
         with self._lock:
             self._scanner_decisions[decision.symbol.strip().upper()] = decision
+        _safe_warrior_observe(self._observability, "SCANNER_SEEN", decision.symbol,
+                              session=scanner_session((decision.timestamp or decision.observed_at)).value
+                              if (decision.timestamp or decision.observed_at) is not None else "UNKNOWN")
+        _safe_warrior_observe(
+            self._observability, "SCANNER_QUALIFICATION_RESULT", decision.symbol,
+            qualification=("QUALIFIED" if decision.qualified else
+                           "TECHNICAL_ONLY" if decision.technical_qualifies_without_catalyst
+                           else "NOT_QUALIFIED"),
+            session=scanner_session((decision.timestamp or decision.observed_at)).value
+            if (decision.timestamp or decision.observed_at) is not None else "UNKNOWN",
+        )
         if not (
             decision.qualified or decision.technical_qualifies_without_catalyst
         ):
@@ -187,6 +213,12 @@ class TradeIntelligenceRuntimeObserver:
         if not self.enabled:
             return
         try:
+            _safe_warrior_observe(
+                self._observability, "SETUP_RESULT", candidate.symbol,
+                setup_present=candidate.setup is not None,
+                setup_category=(None if candidate.setup is None else candidate.setup.setup_type.value),
+                session=candidate.session,
+            )
             if candidate.setup is not None:
                 with self._lock:
                     self._warrior_states[candidate.symbol.strip().upper()] = candidate.setup.state
@@ -196,6 +228,11 @@ class TradeIntelligenceRuntimeObserver:
                 and candidate.setup.state in {SetupState.FORMING, SetupState.TRIGGERED}
             ):
                 self._observe_warrior(value, candidate, signal)
+            _safe_warrior_observe(
+                self._observability, "WARRIOR_DECISION_RESULT", candidate.symbol,
+                decision_result=("ENTRY_READY" if signal is not None else candidate.status.value),
+                session=candidate.session,
+            )
         except Exception:
             return
 
@@ -491,11 +528,18 @@ class TradeIntelligenceRuntimeObserver:
             return False
         with self._lock:
             if episode.parent_admitted:
+                _safe_warrior_observe(self._observability, "WARRIOR_ADMISSION_RESULT", episode.symbol,
+                                      admission_result="ADMITTED")
                 return True
             admitted = service.submit_experience(experience)
             if admitted:
                 episode.parent_admitted = True
-            return admitted
+        _safe_warrior_observe(
+            self._observability, "WARRIOR_ADMISSION_RESULT", episode.symbol,
+            admission_result="ADMITTED" if admitted else "REJECTED",
+            admission_rejection=None if admitted else "PARENT_ADMISSION_FAILED",
+        )
+        return admitted
 
     def _append_decision(
         self, episode: _Episode, snapshot: DecisionTimeSnapshot,
@@ -509,7 +553,7 @@ class TradeIntelligenceRuntimeObserver:
                 return
             episode.last_signature = signature
         if service is not None:
-            service.submit_decision(DecisionObservation(
+            persisted = service.submit_decision(DecisionObservation(
                 experience_id=episode.experience_id,
                 observed_at=snapshot.decision_timestamp,
                 source_event_identity=f"{stage}:{snapshot.decision_timestamp.isoformat()}",
@@ -518,8 +562,11 @@ class TradeIntelligenceRuntimeObserver:
                 actually_traded=actually_traded, symbol=episode.symbol,
                 lifecycle_stage=stage,
             ))
+            _safe_warrior_observe(
+                self._observability, "DECISION_PERSISTENCE_RESULT", episode.symbol,
+                decision_persisted=bool(persisted),
+            )
             self._publish_metrics()
-
     def _observe_trade_bar(self, event: MarketEvent) -> None:
         assert event.symbol is not None and isinstance(event.payload, TradePayload)
         symbol = event.symbol.strip().upper()

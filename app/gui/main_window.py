@@ -180,7 +180,12 @@ class MainWindow(QMainWindow):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
         self.pages = QStackedWidget()
-        self.dashboard = DashboardPage()
+        self.dashboard = DashboardPage(
+            warrior_observability=(
+                None if self._warrior_forward_sidecar is None
+                else getattr(self._warrior_forward_sidecar, "_observability", None)
+            )
+        )
         self.dashboard.workstation_footer.set_value(
             "Version", _application_version()
         )

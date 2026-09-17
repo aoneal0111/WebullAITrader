@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 import os
+from pathlib import Path
+import re
 
 from app.live_scanner.session import ScannerSession
 
@@ -183,10 +185,22 @@ class WarriorMomentumConfig:
     telemetry_symbol_limit: int = 10
     live_execution_enabled: bool = False
     policy_version: str = BALANCED_POLICY_VERSION
+    observability_enabled: bool = False
+    observability_root: Path | None = field(default=None, repr=False)
+    observability_session_id: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.live_execution_enabled:
             raise ValueError("WARRIOR_MOMENTUM_V1 is paper/replay only")
+        if self.observability_enabled:
+            if self.observability_root is None:
+                raise ValueError("observability root is required when enabled")
+            session_id = str(self.observability_session_id or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", session_id):
+                raise ValueError("observability session ID is invalid")
+            object.__setattr__(self, "observability_session_id", session_id)
+        if self.observability_root is not None:
+            object.__setattr__(self, "observability_root", Path(self.observability_root))
 
     @classmethod
     def conservative_v1(cls) -> "WarriorMomentumConfig":

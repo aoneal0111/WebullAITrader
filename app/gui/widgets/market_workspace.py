@@ -50,6 +50,15 @@ from app.gui.widgets.workstation_panels import MarketOverviewPanel, RuntimeContr
 from app.gui.pages.crypto_research import CryptoResearchPanel
 
 
+def _focus_rank(row) -> int | None:
+    """Return only the bounded numeric projection rank, if present."""
+    try:
+        value = int(str(getattr(row, "rank", "")).strip())
+        return value if 1 <= value <= 25 else None
+    except Exception:
+        return None
+
+
 class ChartView(Protocol):
     def render(self, snapshot: ChartViewSnapshot) -> None: ...
 
@@ -932,6 +941,7 @@ class MarketWorkspace(QWidget):
         chart_view: ChartView | None = None,
         *,
         crypto_research_source=None,
+        warrior_observability=None,
     ) -> None:
         super().__init__()
         self._runtime_phase: RuntimeState | None = None
@@ -959,6 +969,9 @@ class MarketWorkspace(QWidget):
         self._focus_mode = "CURRENT ATLAS"
         self._atlas_snapshot = WatchlistSnapshot()
         self._warrior_view = None
+        # Optional validation-only sink.  The GUI must remain fully usable
+        # when no sink is supplied (the normal production path).
+        self._warrior_observability = warrior_observability
 
         self.atlas_activity = AtlasActivityPanel()
         self.portfolio_summary = PortfolioSummaryStrip()
@@ -1259,6 +1272,11 @@ class MarketWorkspace(QWidget):
     def _with_warrior_state(self, scanner_row):
         view = self._warrior_view
         if view is None:
+            self._safe_warrior_observe(
+                "GUI_FOCUS_LOOKUP_RESULT", scanner_row.symbol,
+                focus_inserted=False, focus_action="NO_VIEW", focus_size=0,
+                session="UNKNOWN",
+            )
             return replace(
                 scanner_row,
                 warrior_evaluated=False,
@@ -1292,6 +1310,11 @@ class MarketWorkspace(QWidget):
                 and getattr(view, "health", "RUNNING") not in {"DISABLED", "STOPPED"}
                 else "UNAVAILABLE"
             )
+            self._safe_warrior_observe(
+                "GUI_FOCUS_LOOKUP_RESULT", scanner_row.symbol,
+                focus_inserted=False, focus_action="LOOKUP_MISS",
+                focus_size=len(view.focus.rows), session="UNKNOWN",
+            )
             return replace(
                 scanner_row,
                 warrior_evaluated=False,
@@ -1311,6 +1334,12 @@ class MarketWorkspace(QWidget):
                 decision_ask="--",
                 decision_spread="--",
             )
+        self._safe_warrior_observe(
+            "GUI_FOCUS_LOOKUP_RESULT", scanner_row.symbol,
+            focus_inserted=True, focus_action="MATCHED",
+            focus_rank=_focus_rank(match), focus_size=len(view.focus.rows),
+            session=(match.warrior_session if match.warrior_session in {"PREMARKET", "REGULAR", "AFTER_HOURS", "OVERNIGHT", "PREPARATION"} else "UNKNOWN"),
+        )
         return replace(
             scanner_row,
             warrior_evaluated=True,
@@ -1330,6 +1359,19 @@ class MarketWorkspace(QWidget):
             decision_ask=match.decision_ask,
             decision_spread=match.decision_spread,
         )
+
+    def set_warrior_observability_sink(self, sink) -> None:
+        """Install the explicit validation sink without affecting GUI state."""
+        self._warrior_observability = sink
+
+    def _safe_warrior_observe(self, event: str, symbol: object, **fields: object) -> None:
+        try:
+            callback = getattr(self._warrior_observability, "emit_warrior", None)
+            if callable(callback):
+                callback(event=event, symbol=str(symbol).strip().upper(), **fields)
+        except Exception:
+            return None
+
 
     def _change_focus_mode(self, mode: str) -> None:
         self._focus_mode = mode

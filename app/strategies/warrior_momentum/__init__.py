@@ -22,6 +22,7 @@ from .shadow_analysis import *
 from .shadow_latched import *
 from .setups import *
 from .telemetry import *
+from .observability import *
 from .trade_management import *
 from .validation import *
 from .validation_dataset import *

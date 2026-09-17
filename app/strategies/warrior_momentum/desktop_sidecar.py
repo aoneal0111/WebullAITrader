@@ -39,6 +39,7 @@ from .order_flow_runtime import (
     OrderFlowPollingService, OrderFlowPriority,
 )
 from .models import CandidateStatus, MinuteBar, MomentumCandidate, SetupState
+from .observability import NoOpWarriorObservabilitySink
 from .runtime import WarriorMomentumRuntime
 from .shadow_latched import (
     ShadowLatchedTransition,
@@ -50,6 +51,16 @@ _RUNTIME_LOGGER = logging.getLogger("atlas.runtime")
 
 STRATEGY_VERSION = "WARRIOR_MOMENTUM_V1"
 _PROTECTION_AUDIT_INTERVAL_SECONDS = 15.0
+
+
+def _safe_warrior_observe(sink: object | None, event: str, symbol: object, **fields: object) -> None:
+    """Best-effort diagnostic callback which cannot affect Warrior processing."""
+    try:
+        callback = getattr(sink, "emit_warrior", None)
+        if callable(callback):
+            callback(event=event, symbol=str(symbol).strip().upper(), **fields)
+    except Exception:
+        return None
 
 
 class WarriorCaptureHealth(StrEnum):
@@ -160,6 +171,7 @@ class WarriorDesktopSidecar:
         taxonomy_execution_bridge: object | None = None,
         decision_intelligence_observer: object | None = None,
         paper_entry_intelligence: object | None = None,
+        observability: object | None = None,
         report_worker_factory: Callable[..., WarriorReportWorker] = WarriorReportWorker,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -185,6 +197,7 @@ class WarriorDesktopSidecar:
         self._taxonomy_execution_bridge = taxonomy_execution_bridge
         self._decision_intelligence_observer = decision_intelligence_observer
         self._paper_entry_intelligence = paper_entry_intelligence
+        self._observability = observability
         self._report_worker_factory = report_worker_factory
         self._accept_execution = False
         self._clock = clock
@@ -205,6 +218,13 @@ class WarriorDesktopSidecar:
         self._accumulators: dict[str, _BarAccumulator] = {}
         self._last_volume: dict[str, Decimal] = {}
         self._latest: dict[str, MomentumCandidate] = {}
+        # Diagnostic-only memory of the immediately preceding focus projection.
+        # It is deliberately absent on the default no-op path.
+        self._diagnostic_focus_symbols: set[str] | None = (
+            set()
+            if observability is not None and not isinstance(observability, NoOpWarriorObservabilitySink)
+            else None
+        )
         self._provenance: dict[str, FloatProvenance] = {}
         self._blocking: dict[str, tuple[str, ...]] = {}
         self._market_data_age: dict[str, Decimal | None] = {}
@@ -681,6 +701,27 @@ class WarriorDesktopSidecar:
                     else WarriorMomentumRuntime(self.strategy_config)
                 ).rank(tuple(self._latest.values()))
             )
+            ranked_symbols = {item.symbol.strip().upper() for item in ranked}
+            prior_focus_symbols = self._diagnostic_focus_symbols
+            for item in ranked:
+                _safe_warrior_observe(
+                    self._observability, "FOCUS_PROJECTION_INSERT", item.symbol,
+                    focus_inserted=True, focus_rank=item.rank, focus_size=len(ranked),
+                )
+            for symbol in self._latest:
+                if symbol not in ranked_symbols:
+                    focus_action = (
+                        "DROPPED_FROM_PRIOR_SNAPSHOT"
+                        if prior_focus_symbols is not None and symbol in prior_focus_symbols
+                        else "TOP_N_OMITTED"
+                    )
+                    _safe_warrior_observe(
+                        self._observability, "FOCUS_PROJECTION_OMIT", symbol,
+                        focus_inserted=False, focus_action=focus_action,
+                        focus_size=len(ranked),
+                    )
+            if prior_focus_symbols is not None:
+                self._diagnostic_focus_symbols = set(ranked_symbols)
             report = self._daily_report
             summary = WarriorPaperSummary(
                 discovered=len(self._stage_symbols["discovered"]),
@@ -913,6 +954,19 @@ class WarriorDesktopSidecar:
                     account=self._account_source(),
                 )
                 service_success = True
+                _safe_warrior_observe(
+                    self._observability, "WARRIOR_EVALUATOR_INVOKED", symbol,
+                    evaluator_invoked=True,
+                    decision_result=("ENTRY_READY" if signal is not None else candidate.status.value),
+                    session=point_in_time.session,
+                )
+            except Exception as error:
+                _safe_warrior_observe(
+                    self._observability, "WARRIOR_EVALUATOR_INVOKED", symbol,
+                    evaluator_invoked=True, decision_result="ERROR",
+                    exception_class=type(error).__name__, session=point_in_time.session,
+                )
+                raise
             finally:
                 performance_diagnostics.record_component_duration(
                     "warrior.service_observe",
@@ -934,7 +988,13 @@ class WarriorDesktopSidecar:
                 execution_quote_requested=False,
                 paper_order_created=signal is not None,
             )
+            was_latest = symbol in self._latest
             self._latest[symbol] = candidate
+            _safe_warrior_observe(
+            self._observability, "FOCUS_PROJECTION_REPLACE", symbol,
+            focus_action="REPLACE_EXISTING" if was_latest else "FIRST_INSERT",
+            session=candidate.session,
+            )
             self._provenance[symbol] = provenance
             self._blocking[symbol] = _blocking_reasons(candidate, signal is not None)
             ages = tuple(
