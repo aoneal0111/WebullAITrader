@@ -188,6 +188,7 @@ class WarriorMomentumConfig:
     observability_enabled: bool = False
     observability_root: Path | None = field(default=None, repr=False)
     observability_session_id: str | None = field(default=None, repr=False)
+    adaptive_context_enabled: bool = False
 
     def __post_init__(self) -> None:
         if self.live_execution_enabled:
@@ -201,6 +202,14 @@ class WarriorMomentumConfig:
             object.__setattr__(self, "observability_session_id", session_id)
         if self.observability_root is not None:
             object.__setattr__(self, "observability_root", Path(self.observability_root))
+
+    @classmethod
+    def from_env(cls) -> "WarriorMomentumConfig":
+        """Build the normal config, enabling adaptive context only explicitly."""
+        raw = os.getenv("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED", "false").strip().lower()
+        if raw not in {"true", "false"}:
+            raise ValueError("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED must be true or false")
+        return cls(adaptive_context_enabled=raw == "true")
 
     @classmethod
     def conservative_v1(cls) -> "WarriorMomentumConfig":

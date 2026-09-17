@@ -30,6 +30,7 @@ from app.strategies.warrior_momentum.desktop_sidecar import (
     CompositeMarketEventObserver, WarriorDesktopSidecar,
     strategy_configuration_fingerprint,
 )
+from app.strategies.warrior_momentum.configuration import WarriorMomentumConfig
 from app.strategies.warrior_momentum.forward_models import PaperAccountContext
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
 from app.strategies.warrior_momentum.execution_quote import WebullExecutionQuoteSource
@@ -204,6 +205,13 @@ def create_desktop_composition(
         observability_root=os.getenv("ATLAS_WARRIOR_D3_DIAGNOSTICS_ROOT") or None,
         observability_session_id=os.getenv("ATLAS_WARRIOR_D3_DIAGNOSTICS_SESSION_ID") or None,
     ))
+    configured_warrior_strategy = WarriorMomentumConfig.from_env()
+    warrior_strategy_config = WarriorMomentumConfig(
+        adaptive_context_enabled=(
+            configured_warrior_strategy.adaptive_context_enabled
+            and operational_configuration.environment.value == "PAPER"
+        )
+    )
     trade_intelligence_observer = TradeIntelligenceRuntimeObserver(
         enabled=(
             operational_configuration.trade_intelligence_enabled
@@ -510,6 +518,7 @@ def create_desktop_composition(
         enabled=operational_configuration.warrior_forward_paper_enabled,
         storage_path=operational_configuration.warrior_forward_capture_path,
         environment=operational_configuration.environment.value,
+        strategy_config=warrior_strategy_config,
         account_context_source=warrior_account_context,
         paper_entry_submitter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.submit_entry_decision),
         paper_entry_replacer=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.consider_entry_replacement),

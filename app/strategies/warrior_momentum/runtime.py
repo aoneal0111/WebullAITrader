@@ -20,12 +20,14 @@ from .models import (
 )
 from .scoring import momentum_score
 from .setups import LegacySetupEpisodeTracker, detect_best_setup
+from .adaptive_context import AdaptiveDecision, WarriorAdaptiveContext
 
 
 class WarriorMomentumRuntime:
     def __init__(self, config: WarriorMomentumConfig = WarriorMomentumConfig()) -> None:
         self.config = config
         self._legacy_episode_tracker = LegacySetupEpisodeTracker()
+        self._adaptive_context = WarriorAdaptiveContext() if config.adaptive_context_enabled else None
 
     def discover(self, observation: ScannerObservation, bars: tuple[MinuteBar, ...], *, session: str,
                  top_gapper: bool = False) -> MomentumCandidate:
@@ -79,6 +81,30 @@ class WarriorMomentumRuntime:
             policy_version=self.config.policy_version,
             bid=observation.bid, ask=observation.ask,
         )
+        candidate = replace(candidate, explanations=_explanations(candidate))
+        if self._adaptive_context is not None:
+            adaptive = self._adaptive_context.evaluate(candidate)
+            # RVOL and ordinary spread are contextual quality evidence when
+            # explicitly enabled.  Absolute liquidity, catastrophic spread,
+            # validity, halt, and tradability remain hard discovery rails.
+            if adaptive.decision is not AdaptiveDecision.REJECT:
+                contextual_reasons = tuple(
+                    code for code in candidate.reason_codes
+                    if code not in {ReasonCode.RVOL_LOW, ReasonCode.SPREAD_WIDE}
+                )
+                contextual_status = candidate_status(
+                    candidate.score.total, contextual_reasons, self.config.discovery,
+                )
+                if setup is not None and setup.state is SetupState.FORMING and contextual_status in {
+                    CandidateStatus.QUALIFIED, CandidateStatus.NEAR_QUALIFIED,
+                }:
+                    contextual_status = CandidateStatus.SETUP_FORMING
+                candidate = replace(
+                    candidate,
+                    status=contextual_status,
+                    reason_codes=contextual_reasons,
+                    discovery_qualified=discovery_qualified(contextual_reasons),
+                )
         return replace(candidate, explanations=_explanations(candidate))
 
     def rank(self, candidates: tuple[MomentumCandidate, ...], *, limit: int = 25) -> tuple[MomentumCandidate, ...]:
@@ -88,7 +114,7 @@ class WarriorMomentumRuntime:
                      for index, item in enumerate(ordered, 1))
 
     def entry_signal(self, candidate: MomentumCandidate) -> MomentumEntrySignal | None:
-        reasons = entry_rejections(candidate, self.config)
+        reasons = entry_rejections(candidate, self.config, adaptive_context=self._adaptive_context)
         setup = candidate.setup
         if reasons or setup is None or setup.trigger is None or setup.stop_price is None or setup.stop_model is None:
             return None
@@ -118,7 +144,7 @@ class WarriorMomentumRuntime:
 
     def assess_entry(self, candidate: MomentumCandidate) -> tuple[MomentumCandidate, MomentumEntrySignal | None]:
         """Apply strict entry gates without hiding the discovery candidate."""
-        rejections = entry_rejections(candidate, self.config)
+        rejections = entry_rejections(candidate, self.config, adaptive_context=self._adaptive_context)
         signal = self.entry_signal(candidate)
         if signal is not None:
             return replace(candidate, status=CandidateStatus.ENTRY_READY), signal
@@ -158,7 +184,8 @@ def create_selected_experiment(selection: StrategySelection | None = None,
     return None
 
 
-def entry_rejections(candidate: MomentumCandidate, config: WarriorMomentumConfig) -> tuple[ReasonCode, ...]:
+def entry_rejections(candidate: MomentumCandidate, config: WarriorMomentumConfig,
+                     *, adaptive_context: WarriorAdaptiveContext | None = None) -> tuple[ReasonCode, ...]:
     reasons: list[ReasonCode] = []
     setup = candidate.setup
     discovery_gate_codes = {
@@ -167,12 +194,16 @@ def entry_rejections(candidate: MomentumCandidate, config: WarriorMomentumConfig
         ReasonCode.LIQUIDITY_LOW, ReasonCode.SPREAD_WIDE,
         ReasonCode.HALTED, ReasonCode.NOT_TRADABLE,
     }
-    reasons.extend(code for code in candidate.reason_codes if code in discovery_gate_codes)
+    contextual_ok = False
+    if adaptive_context is not None:
+        contextual_ok = adaptive_context.permits_contextual_rvol_spread(candidate)
+    reasons.extend(code for code in candidate.reason_codes if code in discovery_gate_codes
+                   and not (contextual_ok and code in {ReasonCode.RVOL_LOW, ReasonCode.SPREAD_WIDE}))
     if candidate.score.total < config.entry.minimum_momentum_score:
         reasons.append(ReasonCode.RISK_REJECTED)
     if setup is None or setup.state is not SetupState.TRIGGERED or setup.score < config.entry.minimum_setup_score:
         reasons.append(ReasonCode.NO_SETUP)
-    if candidate.spread_percent is None or candidate.spread_percent > config.entry.maximum_spread_percent:
+    if (candidate.spread_percent is None or candidate.spread_percent > config.entry.maximum_spread_percent) and not contextual_ok:
         reasons.append(ReasonCode.SPREAD_WIDE)
     if candidate.dollar_volume < config.entry.minimum_dollar_volume:
         reasons.append(ReasonCode.LIQUIDITY_LOW)
