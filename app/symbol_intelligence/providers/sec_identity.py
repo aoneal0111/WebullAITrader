@@ -28,6 +28,72 @@ class AmbiguousTickerMapError(SecTickerMapError):
     """Two different issuers claim one normalized lookup symbol."""
 
 
+class SecParserFailureCategory(StrEnum):
+    PAYLOAD_INVALID_JSON = "PAYLOAD_INVALID_JSON"
+    DATA_CONTAINER_INVALID = "DATA_CONTAINER_INVALID"
+    ROW_NOT_MAPPING = "ROW_NOT_MAPPING"
+    TICKER_MISSING = "TICKER_MISSING"
+    TICKER_NON_TEXT = "TICKER_NON_TEXT"
+    TICKER_BLANK = "TICKER_BLANK"
+    TICKER_TOO_LONG = "TICKER_TOO_LONG"
+    TICKER_INVALID_FORMAT = "TICKER_INVALID_FORMAT"
+    CIK_MISSING = "CIK_MISSING"
+    CIK_BOOLEAN = "CIK_BOOLEAN"
+    CIK_NON_INTEGER = "CIK_NON_INTEGER"
+    CIK_OUT_OF_RANGE = "CIK_OUT_OF_RANGE"
+    TITLE_TOO_LONG = "TITLE_TOO_LONG"
+    EXCHANGE_TOO_LONG = "EXCHANGE_TOO_LONG"
+    SHARE_CLASS_TOO_LONG = "SHARE_CLASS_TOO_LONG"
+    NORMALIZED_TICKER_CIK_COLLISION = "NORMALIZED_TICKER_CIK_COLLISION"
+    EMPTY_MAP = "EMPTY_MAP"
+    ROW_COUNT_EXCEEDED = "ROW_COUNT_EXCEEDED"
+    PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
+    PAYLOAD_NONSERIALIZABLE = "PAYLOAD_NONSERIALIZABLE"
+
+
+class SecParserRowType(StrEnum):
+    MAPPING = "MAPPING"
+    SEQUENCE = "SEQUENCE"
+    STRING = "STRING"
+    NUMBER = "NUMBER"
+    BOOLEAN = "BOOLEAN"
+    NULL = "NULL"
+    OTHER = "OTHER"
+
+
+@dataclass(frozen=True, slots=True)
+class SecParserDiagnostic:
+    category: SecParserFailureCategory
+    row_type: SecParserRowType | None = None
+    row_index: int | None = None
+
+
+def _parser_observe(sink: Any, category: SecParserFailureCategory,
+                    *, row_type: SecParserRowType | None = None,
+                    row_index: int | None = None) -> None:
+    try:
+        if callable(sink):
+            sink(SecParserDiagnostic(category, row_type, row_index))
+    except Exception:
+        return None
+
+
+def _row_type(value: object) -> SecParserRowType:
+    if isinstance(value, Mapping):
+        return SecParserRowType.MAPPING
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return SecParserRowType.SEQUENCE
+    if isinstance(value, str):
+        return SecParserRowType.STRING
+    if isinstance(value, bool):
+        return SecParserRowType.BOOLEAN
+    if value is None:
+        return SecParserRowType.NULL
+    if isinstance(value, (int, float)):
+        return SecParserRowType.NUMBER
+    return SecParserRowType.OTHER
+
+
 class SecResolutionStatus(StrEnum):
     RESOLVED = "RESOLVED"
     UNRESOLVED = "UNRESOLVED"
@@ -180,27 +246,35 @@ def _optional(value: object, maximum: int) -> str | None:
     return text
 
 
-def _rows(payload: object, *, max_entries: int) -> list[Mapping[str, object]]:
+def _rows(payload: object, *, max_entries: int, diagnostic: Any = None) -> list[Mapping[str, object]]:
     if isinstance(payload, (bytes, bytearray)):
         if len(payload) > MAX_MAP_BYTES:
+            _parser_observe(diagnostic, SecParserFailureCategory.PAYLOAD_TOO_LARGE)
             raise SecTickerMapError("SEC ticker payload exceeds byte bound")
         try:
             payload = json.loads(payload)
         except (TypeError, ValueError) as exc:
+            _parser_observe(diagnostic, SecParserFailureCategory.PAYLOAD_INVALID_JSON)
             raise SecTickerMapError("SEC ticker payload is not valid JSON") from exc
     if isinstance(payload, str):
         if len(payload.encode("utf-8")) > MAX_MAP_BYTES:
+            _parser_observe(diagnostic, SecParserFailureCategory.PAYLOAD_TOO_LARGE)
             raise SecTickerMapError("SEC ticker payload exceeds byte bound")
         try:
             payload = json.loads(payload)
         except ValueError as exc:
+            _parser_observe(diagnostic, SecParserFailureCategory.PAYLOAD_INVALID_JSON)
             raise SecTickerMapError("SEC ticker payload is not valid JSON") from exc
     if not isinstance(payload, Mapping):
+        _parser_observe(diagnostic, SecParserFailureCategory.DATA_CONTAINER_INVALID,
+                        row_type=_row_type(payload))
         raise SecTickerMapError("SEC ticker payload must be an object")
     try:
         if len(json.dumps(payload, separators=(",", ":")).encode("utf-8")) > MAX_MAP_BYTES:
+            _parser_observe(diagnostic, SecParserFailureCategory.PAYLOAD_TOO_LARGE)
             raise SecTickerMapError("SEC ticker payload exceeds byte bound")
     except (TypeError, ValueError) as exc:
+        _parser_observe(diagnostic, SecParserFailureCategory.PAYLOAD_NONSERIALIZABLE)
         raise SecTickerMapError("SEC ticker payload is not serializable") from exc
     data: object = payload.get("data", payload)
     if isinstance(data, Mapping):
@@ -208,13 +282,21 @@ def _rows(payload: object, *, max_entries: int) -> list[Mapping[str, object]]:
     elif isinstance(data, Sequence) and not isinstance(data, (str, bytes, bytearray)):
         values = list(data)
     else:
+        _parser_observe(diagnostic, SecParserFailureCategory.DATA_CONTAINER_INVALID,
+                        row_type=_row_type(data))
         raise SecTickerMapError("SEC ticker rows are malformed")
     if len(values) > min(max_entries, MAX_MAP_ROWS):
+        _parser_observe(diagnostic, SecParserFailureCategory.ROW_COUNT_EXCEEDED,
+                        row_index=min(len(values), MAX_MAP_ROWS))
         raise SecTickerMapError("SEC ticker payload exceeds row bound")
     if not values:
+        _parser_observe(diagnostic, SecParserFailureCategory.EMPTY_MAP)
         raise SecTickerMapError("SEC ticker payload is empty")
-    if not all(isinstance(row, Mapping) for row in values):
-        raise SecTickerMapError("SEC ticker row is malformed")
+    for index, row in enumerate(values):
+        if not isinstance(row, Mapping):
+            _parser_observe(diagnostic, SecParserFailureCategory.ROW_NOT_MAPPING,
+                            row_type=_row_type(row), row_index=min(index, MAX_MAP_ROWS - 1))
+            raise SecTickerMapError("SEC ticker row is malformed")
     return values  # type: ignore[return-value]
 
 
@@ -224,19 +306,69 @@ def parse_sec_ticker_map(
     source: str,
     observed_at: datetime,
     max_entries: int = MAX_MAP_ROWS,
+    diagnostic: Any = None,
 ) -> SecTickerMap:
     if not source.strip():
         raise ValueError("source is required")
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("observed_at must be timezone-aware")
-    rows = _rows(payload, max_entries=max_entries)
+    rows = _rows(payload, max_entries=max_entries, diagnostic=diagnostic)
     candidates: dict[str, dict[str, object]] = {}
-    for row in rows:
+    for index, row in enumerate(rows):
         raw_ticker = row.get("ticker")
-        if not isinstance(raw_ticker, str) or not raw_ticker.strip():
+        if raw_ticker is None:
+            _parser_observe(diagnostic, SecParserFailureCategory.TICKER_MISSING,
+                            row_type=SecParserRowType.NULL, row_index=min(index, MAX_MAP_ROWS - 1))
             raise SecTickerMapError("SEC ticker is missing")
-        normalized = normalize_sec_symbol(raw_ticker)
-        cik = _cik(row.get("cik_str", row.get("cik")))
+        if not isinstance(raw_ticker, str):
+            _parser_observe(diagnostic, SecParserFailureCategory.TICKER_NON_TEXT,
+                            row_type=_row_type(raw_ticker), row_index=min(index, MAX_MAP_ROWS - 1))
+            raise SecTickerMapError("SEC ticker is missing")
+        if not raw_ticker.strip():
+            _parser_observe(diagnostic, SecParserFailureCategory.TICKER_BLANK,
+                            row_index=min(index, MAX_MAP_ROWS - 1))
+            raise SecTickerMapError("SEC ticker is missing")
+        try:
+            normalized = normalize_sec_symbol(raw_ticker)
+        except SecTickerMapError:
+            category = (
+                SecParserFailureCategory.TICKER_TOO_LONG
+                if len(raw_ticker.strip()) > 20
+                else SecParserFailureCategory.TICKER_INVALID_FORMAT
+            )
+            _parser_observe(diagnostic, category, row_index=min(index, MAX_MAP_ROWS - 1))
+            raise
+        cik_value = row.get("cik_str", row.get("cik"))
+        if cik_value is None:
+            _parser_observe(diagnostic, SecParserFailureCategory.CIK_MISSING,
+                            row_index=min(index, MAX_MAP_ROWS - 1))
+        elif isinstance(cik_value, bool):
+            _parser_observe(diagnostic, SecParserFailureCategory.CIK_BOOLEAN,
+                            row_index=min(index, MAX_MAP_ROWS - 1))
+        elif not isinstance(cik_value, int) and not (isinstance(cik_value, str) and cik_value.strip().isdigit()):
+            _parser_observe(diagnostic, SecParserFailureCategory.CIK_NON_INTEGER,
+                            row_index=min(index, MAX_MAP_ROWS - 1))
+        else:
+            try:
+                parsed_cik = int(cik_value)
+            except (TypeError, ValueError):
+                parsed_cik = None
+            if parsed_cik is not None and (parsed_cik <= 0 or parsed_cik > MAX_CIK):
+                _parser_observe(diagnostic, SecParserFailureCategory.CIK_OUT_OF_RANGE,
+                                row_index=min(index, MAX_MAP_ROWS - 1))
+        cik = _cik(cik_value)
+        for field, maximum, category in (
+            ("title", 256, SecParserFailureCategory.TITLE_TOO_LONG),
+            ("exchange", 32, SecParserFailureCategory.EXCHANGE_TOO_LONG),
+            ("share_class", 128, SecParserFailureCategory.SHARE_CLASS_TOO_LONG),
+        ):
+            value = row.get(field)
+            if field == "title" and value is None:
+                value = row.get("name")
+            if field == "share_class" and value is None:
+                value = row.get("security_class")
+            if value is not None and len(str(value).strip()) > maximum:
+                _parser_observe(diagnostic, category, row_index=min(index, MAX_MAP_ROWS - 1))
         record = {
             "normalized_symbol": normalized,
             "cik": cik,
@@ -248,6 +380,10 @@ def parse_sec_ticker_map(
         previous = candidates.get(normalized)
         if previous is not None:
             if previous["cik"] != cik:
+                _parser_observe(
+                    diagnostic, SecParserFailureCategory.NORMALIZED_TICKER_CIK_COLLISION,
+                    row_index=min(index, MAX_MAP_ROWS - 1),
+                )
                 raise AmbiguousTickerMapError(f"SEC ticker collision for {normalized}")
             # Same-CIK aliases are deterministic: retain lexicographically smallest source ticker.
             if tuple(str(record[key]) for key in record) < tuple(str(previous[key]) for key in previous):
@@ -275,5 +411,6 @@ def parse_sec_ticker_map(
 __all__ = [
     "AmbiguousTickerMapError", "MAX_CIK", "MAX_MAP_BYTES", "MAX_MAP_ROWS",
     "SecIssuerIdentity", "SecIssuerIdentityResolver", "SecIssuerResolution", "SecResolutionStatus", "SecTickerMap",
+    "SecParserDiagnostic", "SecParserFailureCategory", "SecParserRowType",
     "SecTickerMapError", "normalize_sec_symbol", "parse_sec_ticker_map", "sec_cik_path", "sec_issuer_id",
 ]

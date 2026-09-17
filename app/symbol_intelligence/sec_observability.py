@@ -78,6 +78,9 @@ class SecDiagnosticRecord:
     row_count: int | None = None
     result: SecDiagnosticResult | None = None
     exception_class: str | None = None
+    parser_failure_category: str | None = None
+    parser_row_type: str | None = None
+    parser_row_index: int | None = None
 
 
 class SecAcquisitionObservabilitySink(Protocol):
@@ -217,6 +220,9 @@ class BoundedJsonlSecAcquisitionObservabilitySink:
             "row_count": _bounded_integer(record.row_count, 0, 50_000),
             "result": _enum_value(record.result, SecDiagnosticResult),
             "exception_class": _exception_name(record.exception_class),
+            "parser_failure_category": _parser_category(record.parser_failure_category),
+            "parser_row_type": _parser_row_type(record.parser_row_type),
+            "parser_row_index": _bounded_integer(record.parser_row_index, 0, 49_999),
         }
         payload.update({key: value for key, value in optional.items() if value is not None})
         return payload
@@ -298,6 +304,23 @@ def _transport_category(value: object) -> str | None:
 
 def _exception_name(value: object) -> str | None:
     return value if isinstance(value, str) and _EXCEPTION_CLASS.fullmatch(value) else None
+
+
+def _parser_category(value: object) -> str | None:
+    allowed = {
+        "PAYLOAD_INVALID_JSON", "DATA_CONTAINER_INVALID", "ROW_NOT_MAPPING",
+        "TICKER_MISSING", "TICKER_NON_TEXT", "TICKER_BLANK", "TICKER_TOO_LONG",
+        "TICKER_INVALID_FORMAT", "CIK_MISSING", "CIK_BOOLEAN", "CIK_NON_INTEGER",
+        "CIK_OUT_OF_RANGE", "TITLE_TOO_LONG", "EXCHANGE_TOO_LONG",
+        "SHARE_CLASS_TOO_LONG", "NORMALIZED_TICKER_CIK_COLLISION", "EMPTY_MAP",
+        "ROW_COUNT_EXCEEDED", "PAYLOAD_TOO_LARGE", "PAYLOAD_NONSERIALIZABLE",
+    }
+    return value if isinstance(value, str) and value in allowed else None
+
+
+def _parser_row_type(value: object) -> str | None:
+    allowed = {"MAPPING", "SEQUENCE", "STRING", "NUMBER", "BOOLEAN", "NULL", "OTHER"}
+    return value if isinstance(value, str) and value in allowed else None
 
 
 __all__ = [

@@ -13,6 +13,10 @@ from app.configuration.models import SymbolIntelligenceSECEdgarConfiguration
 from app.symbol_intelligence.acquisition import SecSymbolIntelligenceAcquisitionService
 from app.symbol_intelligence.composition import create_symbol_intelligence_composition
 from app.symbol_intelligence.providers.sec_identity import SecIssuerIdentityResolver
+from app.symbol_intelligence.providers.sec_identity import (
+    AmbiguousTickerMapError, SecParserFailureCategory, SecParserRowType,
+    SecTickerMapError, parse_sec_ticker_map,
+)
 from app.symbol_intelligence.providers.sec_transport import (
     SecAcquisitionFailure,
     SecAcquisitionFailureKind,
@@ -56,6 +60,66 @@ def _response(payload=TICKER_PAYLOAD):
     return SecEdgarResponse(
         SimpleNamespace(value="TICKER_MAP_EXCHANGE"), 200, payload, NOW, 1,
     )
+
+
+def _parser_diagnostic(payload, endpoint="EXCHANGE_TICKER_MAP"):
+    records = []
+    def observe(item):
+        records.append((endpoint, item))
+    try:
+        parse_sec_ticker_map(payload, source="SEC_EDGAR", observed_at=NOW, diagnostic=observe)
+    except Exception as exc:
+        return type(exc), records
+    return None, records
+
+
+def test_parser_failure_diagnostics_are_structural_and_closed():
+    error, records = _parser_diagnostic({"data": [["123", "BAD", "SECRET_ISSUER"]]})
+    assert error is SecTickerMapError
+    assert records[0][1].category is SecParserFailureCategory.ROW_NOT_MAPPING
+    assert records[0][1].row_type is SecParserRowType.SEQUENCE
+    assert records[0][1].row_index == 0
+
+    error, records = _parser_diagnostic({"0": {"ticker": "", "cik_str": 1, "title": "SECRET"}}, "LEGACY_TICKER_MAP_FALLBACK")
+    assert error is SecTickerMapError
+    assert records[0][0] == "LEGACY_TICKER_MAP_FALLBACK"
+    assert records[0][1].category is SecParserFailureCategory.TICKER_BLANK
+
+    error, records = _parser_diagnostic({"0": {"ticker": "ABC", "cik_str": "not-a-cik", "title": "SECRET"}}, "LEGACY_TICKER_MAP_FALLBACK")
+    assert error is SecTickerMapError
+    assert records[0][1].category is SecParserFailureCategory.CIK_NON_INTEGER
+
+    error, records = _parser_diagnostic({"0": {"ticker": "ABC", "cik_str": 1, "title": "X" * 257}})
+    assert error is SecTickerMapError
+    assert records[0][1].category is SecParserFailureCategory.TITLE_TOO_LONG
+
+    error, records = _parser_diagnostic({"0": {"ticker": "BRK.B", "cik_str": 1}, "1": {"ticker": "BRK-B", "cik_str": 2}})
+    assert error is AmbiguousTickerMapError
+    assert records[0][1].category is SecParserFailureCategory.NORMALIZED_TICKER_CIK_COLLISION
+
+    error, records = _parser_diagnostic({"0": {"ticker": "ABC", "cik_str": 1}})
+    assert error is None and records == []
+
+
+def test_parser_failure_diagnostic_serialization_has_no_input_values(tmp_path):
+    sink = BoundedJsonlSecAcquisitionObservabilitySink(tmp_path, "parser-safe")
+    error, records = _parser_diagnostic({"data": [["123", "TICKER_SECRET", "ISSUER_SECRET"]]})
+    assert error is SecTickerMapError
+    endpoint, detail = records[0]
+    sink.emit(SecDiagnosticRecord(
+        SecDiagnosticEvent.TICKER_PARSE_RESULT,
+        endpoint=SecDiagnosticEndpoint.EXCHANGE_TICKER_MAP,
+        parser_failure_category=detail.category.value,
+        parser_row_type=detail.row_type.value,
+        parser_row_index=detail.row_index,
+        exception_class=error.__name__,
+        result=SecDiagnosticResult.FAILURE,
+    ))
+    text = (tmp_path / "d3-sec-acquisition-parser-safe.jsonl").read_text()
+    assert "TICKER_SECRET" not in text
+    assert "ISSUER_SECRET" not in text
+    assert "123" not in text
+    assert "SEC ticker" not in text
 
 
 class _Transport:

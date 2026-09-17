@@ -388,6 +388,16 @@ class SecSymbolIntelligenceAcquisitionService:
                             response.content, source="SEC_EDGAR",
                             observed_at=response.observed_at,
                             max_entries=self.configuration.max_ticker_entries,
+                            diagnostic=(
+                                lambda detail: self._observe(SecDiagnosticRecord(
+                                    SecDiagnosticEvent.TICKER_PARSE_RESULT,
+                                    endpoint=endpoint,
+                                    parser_failure_category=detail.category.value,
+                                    parser_row_type=(None if detail.row_type is None else detail.row_type.value),
+                                    parser_row_index=detail.row_index,
+                                    result=SecDiagnosticResult.FAILURE,
+                                ))
+                            ) if self._observation_active() else None,
                         )
                     except Exception as error:
                         self._observe(SecDiagnosticRecord(
