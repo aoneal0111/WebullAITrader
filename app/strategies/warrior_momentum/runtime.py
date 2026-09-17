@@ -90,7 +90,7 @@ class WarriorMomentumRuntime:
             if adaptive.decision is not AdaptiveDecision.REJECT:
                 contextual_reasons = tuple(
                     code for code in candidate.reason_codes
-                    if code not in {ReasonCode.RVOL_LOW, ReasonCode.SPREAD_WIDE}
+                    if code not in {ReasonCode.RVOL_LOW, ReasonCode.SPREAD_WIDE, ReasonCode.LIQUIDITY_LOW}
                 )
                 contextual_status = candidate_status(
                     candidate.score.total, contextual_reasons, self.config.discovery,
@@ -195,8 +195,10 @@ def entry_rejections(candidate: MomentumCandidate, config: WarriorMomentumConfig
         ReasonCode.HALTED, ReasonCode.NOT_TRADABLE,
     }
     contextual_ok = False
+    contextual_liquidity_ok = False
     if adaptive_context is not None:
         contextual_ok = adaptive_context.permits_contextual_rvol_spread(candidate)
+        contextual_liquidity_ok = contextual_ok
     reasons.extend(code for code in candidate.reason_codes if code in discovery_gate_codes
                    and not (contextual_ok and code in {ReasonCode.RVOL_LOW, ReasonCode.SPREAD_WIDE}))
     if candidate.score.total < config.entry.minimum_momentum_score:
@@ -205,7 +207,7 @@ def entry_rejections(candidate: MomentumCandidate, config: WarriorMomentumConfig
         reasons.append(ReasonCode.NO_SETUP)
     if (candidate.spread_percent is None or candidate.spread_percent > config.entry.maximum_spread_percent) and not contextual_ok:
         reasons.append(ReasonCode.SPREAD_WIDE)
-    if candidate.dollar_volume < config.entry.minimum_dollar_volume:
+    if candidate.dollar_volume < config.entry.minimum_dollar_volume and not contextual_liquidity_ok:
         reasons.append(ReasonCode.LIQUIDITY_LOW)
     if config.entry.require_catalyst_for_entry and candidate.catalyst_status is not CatalystStatus.TRUE:
         reasons.append(ReasonCode.NO_CATALYST if candidate.catalyst_status is CatalystStatus.FALSE else ReasonCode.CATALYST_UNKNOWN)

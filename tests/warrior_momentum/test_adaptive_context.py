@@ -119,3 +119,59 @@ def test_adaptive_flag_is_explicit_and_off_by_default(monkeypatch):
     assert WarriorMomentumConfig.from_env().adaptive_context_enabled is False
     monkeypatch.setenv("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED", "true")
     assert WarriorMomentumConfig.from_env().adaptive_context_enabled is True
+
+
+def test_daily_participation_uses_intraday_velocity_not_30_day_rvol():
+    context = WarriorAdaptiveContext()
+    first = context.evaluate(candidate(symbol="DAILY", rvol="0.01", dollar="80000", move="180"))
+    second = context.evaluate(candidate(
+        symbol="DAILY", rvol="0.01", dollar="180000", move="180",
+    ))
+    assert first.daily_dollar_volume == Decimal("80000")
+    assert second.participation_velocity > Decimal("0")
+    assert second.observation_count == 2
+    assert second.decision is not AdaptiveDecision.READY
+
+
+def test_fast_intraday_growth_can_overcome_bootstrap_floor_without_rvol_authority():
+    context = WarriorAdaptiveContext()
+    first = context.evaluate(candidate(
+        symbol="FAST", rvol="0.01", dollar="80000", move="180",
+    ))
+    rapid = replace_candidate_timestamp(candidate(
+        symbol="FAST", rvol="0.01", dollar="180000", move="180",
+    ), seconds=6)
+    second = context.evaluate(rapid)
+    assert first.decision is AdaptiveDecision.REJECT
+    assert second.participation_velocity > Decimal("100000")
+    assert second.decision is not AdaptiveDecision.REJECT
+    assert AdaptiveReason.PARTICIPATION_IMPROVING in second.reasons
+
+
+def test_premarket_bootstrap_is_phase_aware_and_not_permanent():
+    context = WarriorAdaptiveContext()
+    first = context.evaluate(candidate(symbol="PRE", dollar="100000", move="120"))
+    assert first.bootstrap_required is False  # regular session fixture
+    context = WarriorAdaptiveContext()
+    pre = replace(candidate(symbol="PRE", dollar="100000", move="120"), session="PREMARKET")
+    assert context.evaluate(pre).bootstrap_required is True
+    later = replace_candidate_timestamp(replace(pre, dollar_volume=Decimal("180000")), seconds=6)
+    assert context.evaluate(later).bootstrap_required is True
+
+
+def test_daily_state_resets_on_new_trading_date_and_sessions_are_separate():
+    context = WarriorAdaptiveContext()
+    regular = context.evaluate(candidate(symbol="RESET", dollar="500000", move="40"))
+    after_hours = replace(candidate(symbol="OTHER", dollar="500000"), session="AFTER_HOURS")
+    context.evaluate(after_hours)
+    assert set(context._session_metrics) >= {"REGULAR", "AFTER_HOURS"}
+    next_day = replace(candidate(symbol="RESET", dollar="500000"),
+                       timestamp=datetime(2026, 9, 18, 14, 0, tzinfo=UTC))
+    reset = context.evaluate(next_day)
+    assert reset.observation_count == 1
+    assert reset.participation_velocity == Decimal("0")
+    assert set(context._session_metrics) == {"REGULAR"}
+
+
+def replace_candidate_timestamp(value, *, seconds: int):
+    return replace(value, timestamp=value.timestamp.replace(second=value.timestamp.second + seconds))
