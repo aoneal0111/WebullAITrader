@@ -29,7 +29,7 @@ from app.strategies.warrior_momentum.forward_runtime import management_context_a
 from app.strategies.warrior_momentum.configuration import WarriorMomentumConfig
 from app.strategies.warrior_momentum.autonomous_paper import (
     PaperExitSubmissionDecision, PaperExitSubmissionState,
-    AutonomousPaperExecutionBridge,
+    AutonomousManagementReadiness, AutonomousPaperExecutionBridge,
 )
 from app.paper_trade_experiment.harness import PaperExperimentJournal
 from app.trade_intelligence.decision_intelligence.entry_timing import (
@@ -728,6 +728,106 @@ def test_activation_bar_cannot_retroactively_stop_and_targets_remain_eligible(tm
         state = service._paper["XYZ"]
         assert state.second_taken is True
         assert state.remaining == shares - first_quantity - second_quantity
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_recovered_position_can_heal_protection_then_resume_target_management(
+    tmp_path: Path,
+) -> None:
+    """A valid recovered lifecycle can repair protection without staying deadlocked."""
+    store = ForwardCaptureStore(tmp_path / "recovered-protection-heal.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": Decimal("0")}
+    context = {"identity": None}
+    composition = create_paper_trading_command_composition(
+        at=T0 + timedelta(minutes=20),
+        position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+        position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+        management_context_source=lambda symbol: (
+            context["identity"] if symbol == "XYZ" else None
+        ),
+    )
+    service = WarriorForwardCaptureService(
+        store,
+        writer,
+        paper_entry_submitter=bridge.submit_entry,
+        paper_exit_submitter=bridge.ensure_exit,
+        paper_position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+    )
+
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        entry = composition.order_book.open_orders()[0]
+        identity = entry.request.strategy_lifecycle_id
+        assert identity is not None
+        context["identity"] = identity
+
+        composition.gateway.process_market_event(MarketEvent(
+            1,
+            session_timestamp(1, at=T0 + timedelta(minutes=20)),
+            "XYZ",
+            "recovered-protection-heal",
+            MarketEventType.QUOTE,
+            QuotePayload(
+                signal.entry_trigger - D("0.01"), signal.entry_trigger,
+                D("10000"), D("10000"),
+            ),
+        ))
+        shares = int(entry.quantity)
+        position["XYZ"] = Decimal(shares)
+
+        # Reproduce the live TJGC seam: execution ownership and durable
+        # management context agree, but a prior protection failure left the
+        # recovered symbol marked management-incomplete and with no sell order.
+        bridge._recovered_symbols.add("XYZ")
+        bridge._management_incomplete.add("XYZ")
+        assert (
+            bridge.management_readiness("XYZ")
+            is AutonomousManagementReadiness.RECONCILIATION_REQUIRED
+        )
+        assert composition.order_book.open_orders_for_symbol("XYZ") == ()
+
+        repaired = bridge.ensure_exit(
+            "XYZ", shares, signal.stop_price, "STOP", identity,
+        )
+        assert repaired.protection_active is True
+        assert "XYZ" not in bridge._management_incomplete
+        assert (
+            bridge.management_readiness("XYZ")
+            is AutonomousManagementReadiness.READY
+        )
+
+        stops = tuple(
+            order for order in composition.order_book.open_orders_for_symbol("XYZ")
+            if order.request.side.value == "SELL"
+            and order.request.order_type.value == "STOP"
+        )
+        assert len(stops) == 1
+        assert int(stops[0].remaining_quantity) == shares
+        assert stops[0].request.strategy_lifecycle_id == identity
+
+        # Once the recovered stop is authoritative, the existing target path
+        # must be available immediately rather than remaining fail-closed.
+        target_quantity = max(1, shares // 3)
+        target = bridge.ensure_exit(
+            "XYZ", target_quantity, signal.target_levels[0],
+            "FIRST_TARGET", identity,
+        )
+        assert target.protection_active is True
+        sells = tuple(
+            order for order in composition.order_book.open_orders_for_symbol("XYZ")
+            if order.request.side.value == "SELL"
+        )
+        assert {order.request.order_type.value for order in sells} == {"LIMIT", "STOP"}
+        assert sum(int(order.remaining_quantity) for order in sells) == shares
     finally:
         writer.close()
         composition.close()
