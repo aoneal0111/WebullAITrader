@@ -351,6 +351,50 @@ def test_adaptive_premarket_structural_entry_ignores_old_turnover_proxy(tmp_path
         writer.close()
 
 
+def test_execution_entry_signal_uses_fresh_ask_inside_existing_displacement(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "execution-entry-price.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(
+        store, writer,
+        config=WarriorMomentumConfig(adaptive_context_enabled=True),
+    )
+    try:
+        candidate, signal = service.observe(point(), account=None)
+        assert signal is not None
+        structural = signal.entry_trigger
+        executable_ask = structural + D("0.01")
+        value = point(observation=scanner(
+            bid=executable_ask - D("0.01"), ask=executable_ask,
+        ))
+        executable = service._execution_entry_signal(value, candidate, signal)
+        assert executable is not None
+        assert executable.structural_entry_trigger == structural
+        assert executable.entry_trigger == executable_ask
+        assert executable.risk_per_share == executable_ask - signal.stop_price
+        assert executable.target_levels[0] == executable_ask + executable.risk_per_share
+    finally:
+        writer.close()
+
+
+def test_execution_entry_signal_refuses_dead_limit_outside_displacement(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "execution-entry-missed.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(
+        store, writer,
+        config=WarriorMomentumConfig(adaptive_context_enabled=True),
+    )
+    try:
+        candidate, signal = service.observe(point(), account=None)
+        assert signal is not None
+        escaped = signal.entry_trigger + D("0.06")
+        value = point(observation=scanner(
+            bid=escaped - D("0.01"), ask=escaped,
+        ))
+        assert service._execution_entry_signal(value, candidate, signal) is None
+    finally:
+        writer.close()
+
+
 def test_adaptive_rearm_requires_current_quote_safety_after_strategy_signal(tmp_path: Path) -> None:
     store = ForwardCaptureStore(tmp_path / "adaptive-rearm-liquidity.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
