@@ -329,7 +329,11 @@ def test_adaptive_premarket_structural_entry_ignores_old_turnover_proxy(tmp_path
     )
     try:
         candidate, signal = service.observe(
-            point(session="PREMARKET"), account=account(),
+            point(
+                session="PREMARKET",
+                observation=scanner(bid=D("10.00"), ask=D("10.01")),
+            ),
+            account=account(),
         )
         assert signal is not None
         reassessed_signal = replace(
@@ -356,7 +360,11 @@ def test_execution_entry_signal_uses_fresh_ask_inside_existing_displacement(tmp_
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
     service = WarriorForwardCaptureService(store, writer)
     try:
-        candidate, signal = service.observe(point(), account=None)
+        value = point()
+        candidate = service.runtime.discover(
+            value.observation, value.bars, session=value.session,
+        )
+        candidate, signal = service.runtime.assess_entry(candidate)
         assert signal is not None
         structural = signal.entry_trigger
         executable_ask = structural + D("0.01")
@@ -378,7 +386,11 @@ def test_execution_entry_signal_refuses_dead_limit_outside_displacement(tmp_path
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
     service = WarriorForwardCaptureService(store, writer)
     try:
-        candidate, signal = service.observe(point(), account=None)
+        value = point()
+        candidate = service.runtime.discover(
+            value.observation, value.bars, session=value.session,
+        )
+        candidate, signal = service.runtime.assess_entry(candidate)
         assert signal is not None
         escaped = signal.entry_trigger + D("0.06")
         value = point(observation=scanner(
@@ -400,7 +412,10 @@ def test_adaptive_rearm_requires_current_quote_safety_after_strategy_signal(tmp_
         paper_entry_rearmer=lambda *args, **kwargs: rearmed.append((args, kwargs)),
     )
     try:
-        candidate, signal = service.observe(point(), account=account())
+        candidate, signal = service.observe(
+            point(observation=scanner(bid=D("10.00"), ask=D("10.01"))),
+            account=account(),
+        )
         assert signal is not None
         low_turnover = replace(candidate, dollar_volume=D("1200000"))
         service._consider_fast_momentum_rearm(point(), low_turnover, signal, account())
