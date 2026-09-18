@@ -78,11 +78,15 @@ class OrdersPresenter:
 
     def __init__(self, orders_page: OrdersPage) -> None:
         self._orders_page = orders_page
+        self._last_projection = None
 
     def render(self, state: ApplicationState) -> None:
         self._orders_page.render(state)
-        # Empty is a canonical fact and must clear obsolete rendered rows.
-        self._orders_page.render_projection(state.order_projection)
+        # Scanner, account, and quote updates must not rebuild an unchanged
+        # QTableWidget. Empty remains canonical and still clears stale rows.
+        if state.order_projection != self._last_projection:
+            self._orders_page.render_projection(state.order_projection)
+            self._last_projection = state.order_projection
 
 
 class PositionsPresenter:
