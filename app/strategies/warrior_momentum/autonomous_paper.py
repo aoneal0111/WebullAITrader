@@ -1399,10 +1399,14 @@ class AutonomousPaperExecutionBridge:
                         order for order in correlated_sells
                         if order.request.order_type is OrderType.STOP
                     ), None)
+                    authoritative_quantity = (
+                        int(self.position_quantity_source(normalized))
+                        if self.position_quantity_source is not None
+                        else int(self._authoritative_quantity(normalized))
+                    )
                     desired_stop = max(
                         0,
-                        int(self._authoritative_quantity(normalized))
-                        - target_reservation,
+                        authoritative_quantity - target_reservation,
                     )
                     if (
                         target_reservation
