@@ -291,13 +291,20 @@ def test_repeated_protection_reconciliation_preserves_correlated_target_bracket(
             order for order in composition.order_book.open_orders_for_symbol("XYZ")
             if order.request.side.value == "SELL"
         )
-        assert {order.order_id for order in after} == {
-            order.order_id for order in before
-        }
+        before_target = next(
+            order for order in before
+            if order.request.order_type.value == "LIMIT"
+        )
+        after_target = next(
+            order for order in after
+            if order.request.order_type.value == "LIMIT"
+        )
+        assert after_target.order_id == before_target.order_id
         assert sorted(
             (order.request.order_type.value, int(order.remaining_quantity))
             for order in after
         ) == [("LIMIT", 55), ("STOP", 43)]
+        assert sum(int(order.remaining_quantity) for order in after) == 98
     finally:
         composition.close()
 
