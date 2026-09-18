@@ -13,6 +13,7 @@ from app.gui.main_window import MainWindow
 from app.gui.design.tokens import Dimensions
 from app.gui.models import (
     HealthDashboardSnapshot,
+    PortfolioDashboardSnapshot,
     RuntimeState,
     WatchlistRow,
     WatchlistSnapshot,
@@ -21,6 +22,7 @@ from app.gui.shell.sidebar import Sidebar
 from app.gui.widgets.infrastructure_strip import InfrastructureStrip
 from app.gui.widgets.market_workspace import MarketWorkspace
 from app.gui.widgets.operator_workspace import OperatorWorkspace
+from app.gui.widgets.portfolio_summary_strip import PortfolioSummaryStrip
 from app.operations_core import ApplicationState, RuntimePhase
 from app.operations_core import RuntimeState as OperationsRuntimeState
 from app.read_models.health import HealthState
@@ -198,6 +200,28 @@ def test_portfolio_summary_exposes_visual_metric_hierarchy(window) -> None:
     assert cards["Exposure"].property("emphasis") == "standard"
     assert cards["Buying Power"].property("emphasis") == "medium"
     assert cards["Open Positions"]._value.objectName() == "metricValue"
+
+
+def test_portfolio_summary_prefers_authoritative_paper_account_metrics(
+    application,
+) -> None:
+    del application
+    strip = PortfolioSummaryStrip()
+    strip.render(PortfolioDashboardSnapshot(
+        metrics=(
+            ("Equity", "$10,629.82"),
+            ("Cash", "$8,909.92"),
+            ("Realized P/L", "--"),
+            ("ATLAS PAPER Equity", "$10,629.82"),
+            ("ATLAS PAPER Cash", "$8,909.92"),
+            ("ATLAS PAPER Realized P/L", "+$443.62"),
+        ),
+    ))
+
+    assert strip._cards["Equity"]._value.text() == "$10,629.82"
+    assert strip._cards["Cash"]._value.text() == "$8,909.92"
+    assert strip._cards["Realized P/L"]._value.text() == "+$443.62"
+    assert strip._cards["Realized P/L"]._value.property("tone") == "good"
 
 
 def test_operator_workspace_exposes_projection_backed_tabs(
