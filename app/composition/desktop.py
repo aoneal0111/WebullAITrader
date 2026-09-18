@@ -36,8 +36,6 @@ from app.trade_intelligence.decision_intelligence import HistoricalDecisionIntel
 from app.trade_intelligence.decision_intelligence.entry_timing import (
     EntryIntelligenceConfig, HistoricalPaperEntryTimingPolicy, PAPER_ONLY,
 )
-from app.entry_opportunity_value import EntryOpportunityValueRuntimeObserver
-from app.adaptive_entry_research import AdaptiveWorkingEntryObserver
 from app.memory_observability import MemoryObservability
 from app.crypto_research import (
     CryptoCatalystAcquisitionRuntime,
@@ -48,6 +46,10 @@ from .desktop_optional_research import create_optional_research_runtimes
 from .desktop_observability import create_desktop_memory_observability, optional_metrics
 from .desktop_market_services import create_desktop_market_services
 from .desktop_trading_state import DesktopTradingStateSources
+from .desktop_research_observers import (
+    create_adaptive_entry_research_observer,
+    create_entry_opportunity_value_observer,
+)
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -377,37 +379,12 @@ def create_desktop_composition(
         autonomous_paper_bridge.reconcile()
         autonomous_paper_bridge.reconcile_protection()
 
-    def eov_order_correlation(lifecycle_id: str) -> dict[str, object] | None:
-        if paper_order_book is None:
-            return None
-        try:
-            order = next((
-                item for item in reversed(paper_order_book.history())
-                if item.request.strategy_lifecycle_id == lifecycle_id
-            ), None)
-        except Exception:
-            return None
-        if order is None:
-            return None
-        return {
-            "order_id": order.order_id,
-            "client_order_id": order.request.client_order_id,
-        }
-
-    entry_opportunity_value_observer = EntryOpportunityValueRuntimeObserver(
-        enabled=(
-            operational_configuration.entry_opportunity_value_enabled
-            and operational_configuration.warrior_forward_paper_enabled
-        ),
-        environment=operational_configuration.environment.value,
-        path=operational_configuration.entry_opportunity_value_path,
-        capacity=operational_configuration.entry_opportunity_value_queue_capacity,
-        clock=utc_now,
-        research_context_source=(
-            trade_intelligence_observer.entry_opportunity_context
-        ),
-        order_correlation_source=eov_order_correlation,
+    entry_opportunity_value_observer = create_entry_opportunity_value_observer(
+        operational_configuration=operational_configuration,
+        trade_intelligence_observer=trade_intelligence_observer,
+        paper_order_book=paper_order_book,
     )
+
 
     taxonomy_execution_bridge = None
     if operational_configuration.environment.value == "PAPER":
@@ -449,20 +426,11 @@ def create_desktop_composition(
         observability=warrior_observability,
     )
 
-    adaptive_entry_research_observer = AdaptiveWorkingEntryObserver(
-        enabled=(
-            operational_configuration.adaptive_entry_research_enabled
-            and operational_configuration.warrior_forward_paper_enabled
-        ),
-        environment=operational_configuration.environment.value,
-        path=operational_configuration.adaptive_entry_research_path,
-        capacity=operational_configuration.adaptive_entry_research_queue_capacity,
-        order_source=(
-            (lambda _symbol: ()) if paper_order_book is None
-            else paper_order_book.open_orders_for_symbol
-        ),
+    adaptive_entry_research_observer = create_adaptive_entry_research_observer(
+        operational_configuration=operational_configuration,
+        paper_order_book=paper_order_book,
         position_source=trading_state_sources.adaptive_position,
-        warrior_source=warrior_forward_sidecar.adaptive_entry_context,
+        warrior_forward_sidecar=warrior_forward_sidecar,
     )
 
     optional_research = create_optional_research_runtimes(
