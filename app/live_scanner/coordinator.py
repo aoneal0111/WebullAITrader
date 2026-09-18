@@ -538,9 +538,25 @@ class LiveScannerCoordinator:
         self,
         scanner_channels: Iterable[str],
     ) -> tuple[str, ...]:
-        return _normalize_channels_case_insensitive(
-            (*scanner_channels, *self._retained_channels())
+        # Webull permits at most 100 concurrently subscribed tickers.  Position
+        # management channels are risk-critical, so reserve their capacity
+        # first and fill the remaining bounded set from the scanner universe.
+        retained = _normalize_channels_case_insensitive(
+            self._retained_channels()
         )
+        if len(retained) > self._maximum_subscription_channels:
+            raise RuntimeError(
+                "retained position channels exceed the market-data "
+                "subscription limit"
+            )
+        retained_keys = {channel.casefold() for channel in retained}
+        scanner = tuple(
+            channel
+            for channel in _normalize_channels_case_insensitive(scanner_channels)
+            if channel.casefold() not in retained_keys
+        )
+        available = self._maximum_subscription_channels - len(retained)
+        return tuple(sorted((*retained, *scanner[:available])))
 
     def _subscribe_effective(
         self,
