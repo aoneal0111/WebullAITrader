@@ -16,6 +16,12 @@ from app.read_models.orders.models import (
 from app.read_models.runtime_event_identity import projection_event_id
 
 
+_TERMINAL_STATUSES = frozenset({
+    "FILLED", "CANCELLED", "CANCELED", "REJECTED", "EXPIRED",
+})
+_MAX_RECENT_TERMINAL_ORDERS = 50
+
+
 class OrderProjection:
     """Fold explicit runtime order facts into an immutable read model."""
 
@@ -55,7 +61,6 @@ class OrderProjection:
     def _reconcile_restored_orders(
         self, orders, *, terminal_only: bool, source: str,
     ) -> None:
-        terminal = {"FILLED", "CANCELLED", "CANCELED", "REJECTED", "EXPIRED"}
         with self._lock:
             current = self._snapshot
             projected = current
@@ -63,7 +68,7 @@ class OrderProjection:
                 status = getattr(getattr(order, "status", None), "value", None)
                 if status is None:
                     status = str(getattr(order, "status", ""))
-                if terminal_only and status.strip().upper() not in terminal:
+                if terminal_only and status.strip().upper() not in _TERMINAL_STATUSES:
                     continue
                 request = order.request
                 projected = _reduce_order(
@@ -169,15 +174,21 @@ def _reduce_order(
     }
     by_id[projected.order_id] = projected
 
-    return OrdersReadModelSnapshot(
-        orders=tuple(
-            sorted(
-                by_id.values(),
-                key=lambda item: (item.updated_at, item.order_id),
-                reverse=True,
-            )
-        )
+    ordered = sorted(
+        by_id.values(),
+        key=lambda item: (item.updated_at, item.order_id),
+        reverse=True,
     )
+    terminal_seen = 0
+    retained: list[OrderReadModel] = []
+    for item in ordered:
+        if item.status.strip().upper() in _TERMINAL_STATUSES:
+            terminal_seen += 1
+            if terminal_seen > _MAX_RECENT_TERMINAL_ORDERS:
+                continue
+        retained.append(item)
+
+    return OrdersReadModelSnapshot(orders=tuple(retained))
 
 
 def _to_operations_order(order: OrderReadModel) -> OperationsOrder:
