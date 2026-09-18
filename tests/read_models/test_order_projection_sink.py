@@ -191,10 +191,10 @@ def test_historical_reconciliation_publishes_terminal_orders_only() -> None:
     ))
 
     assert tuple(order.order_id for order in projection.snapshot.orders) == (
-        "cancelled-old", "filled-old",
+        "filled-old", "cancelled-old",
     )
     assert tuple(order.order_id for order in store.snapshot().order_projection.orders) == (
-        "cancelled-old", "filled-old",
+        "filled-old", "cancelled-old",
     )
     assert all(
         order.execution_source == "paper-execution-history"
