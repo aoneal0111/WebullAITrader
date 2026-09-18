@@ -1045,6 +1045,11 @@ class WarriorForwardCaptureService:
         if ask is None or ask <= ZERO:
             return None
         structural = signal.structural_entry_trigger or signal.entry_trigger
+        # If the live ask is already at/below the canonical trigger, preserve
+        # the detector-owned limit.  The bounded displacement policy applies
+        # only when execution would require paying above that trigger.
+        if Decimal(ask) <= structural:
+            return signal
         maximum = min(
             structural * (
                 Decimal("1")
