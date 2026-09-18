@@ -1437,6 +1437,57 @@ def test_restart_recovery_duplicate_prevention_and_replay_equivalence(tmp_path: 
     assert store.integrity_check() == "ok"
 
 
+def test_authoritative_open_position_recovers_across_paper_campaigns(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "cross-campaign-recovery.sqlite3")
+    fingerprint = strategy_configuration_fingerprint()
+    writer = ForwardCaptureWriter(
+        store, flush_interval_seconds=0.01,
+        configuration_fingerprint=fingerprint,
+    )
+    original = WarriorForwardCaptureService(
+        store, writer,
+        configuration_fingerprint=fingerprint,
+        paper_campaign_id="campaign-a",
+    )
+    _candidate, signal = original.observe(point(), account=account())
+    assert signal is not None
+    shares = original._paper["XYZ"].remaining
+    safe_bar = MinuteBar(
+        "XYZ", signal.timestamp + timedelta(minutes=1),
+        signal.entry_trigger, signal.entry_trigger,
+        signal.entry_trigger, signal.entry_trigger, D("100"),
+    )
+    original.observe_market_bar(
+        "XYZ", safe_bar, safe_bar.timestamp + timedelta(minutes=1),
+    )
+    writer.flush()
+    writer.close()
+
+    restarted_writer = ForwardCaptureWriter(
+        store, flush_interval_seconds=0.01,
+        configuration_fingerprint=fingerprint,
+    )
+    restarted = WarriorForwardCaptureService(
+        store, restarted_writer,
+        configuration_fingerprint=fingerprint,
+        paper_campaign_id="campaign-b",
+        paper_entry_submitter=lambda *_args: True,
+        paper_position_quantity_source=lambda symbol: (
+            Decimal(shares) if symbol == "XYZ" else Decimal("0")
+        ),
+    )
+    try:
+        assert restarted.open_paper_symbols == ("XYZ",)
+        state = restarted._paper["XYZ"]
+        assert state.remaining == shares
+        assert state.authoritative_position_seen is True
+        assert lifecycle_identity(state.signal) == lifecycle_identity(signal)
+    finally:
+        restarted_writer.close()
+
+
 def test_recovered_entry_preserves_persisted_lifecycle_identity(
     tmp_path: Path,
 ) -> None:
