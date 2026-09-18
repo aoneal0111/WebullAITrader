@@ -212,3 +212,26 @@ def test_live_order_upserts_over_historical_terminal_snapshot() -> None:
 
     assert projection.snapshot.orders[0].status == "FILLED"
     assert projection.snapshot.orders[0].execution_source is None
+
+
+def test_authoritative_reconciliation_restores_working_protection() -> None:
+    bus = OperationsBus()
+    store = ApplicationStateStore(bus)
+    projection = OrderProjection(bus)
+    stop = _historical_order("restored-stop", "WORKING")
+    stop.request.side = SimpleNamespace(value="SELL")
+    stop.request.order_type = SimpleNamespace(value="STOP")
+    stop.request.limit_price = None
+    stop.request.stop_price = Decimal("9.50")
+    stop.request.execution_reason = "STOP"
+
+    projection.reconcile_authoritative_orders((stop,))
+
+    projected = projection.snapshot.orders[0]
+    assert projected.order_id == "restored-stop"
+    assert projected.status == "WORKING"
+    assert projected.side == "SELL"
+    assert projected.order_type == "STOP"
+    assert projected.stop_price == "9.50"
+    assert projected.execution_source == "paper-execution-authority-restore"
+    assert store.snapshot().order_projection.orders == (projected,)
