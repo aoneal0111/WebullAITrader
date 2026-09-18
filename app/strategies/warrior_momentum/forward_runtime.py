@@ -695,7 +695,24 @@ class WarriorForwardCaptureService:
                 records.append(blocked)
                 signal = None
             else:
-                position = size_position(
+                executable_signal = self._execution_entry_signal(
+                    value, assessed, signal,
+                )
+                if executable_signal is None:
+                    shadow_reasons.append(ReasonCode.ENTRY_PRICE_DISPLACED.value)
+                    records.append(_transition_record(
+                        assessed, ForwardTransition.ENTRY_BLOCKED,
+                        (ReasonCode.ENTRY_PRICE_DISPLACED.value,),
+                        (*_gate_diagnostics(assessed, self.config, account=account),
+                         {"gate": "execution_entry_price", "passed": False,
+                          "observed": str(value.observation.ask),
+                          "limit": "WITHIN_ADAPTIVE_DISPLACEMENT"}),
+                    ))
+                    signal = None
+                    position = None
+                else:
+                    signal = executable_signal
+                    position = size_position(
                     signal, account_equity=account.equity,
                     buying_power=account.buying_power,
                     allowed_symbols=account.allowed_symbols,
@@ -705,8 +722,8 @@ class WarriorForwardCaptureService:
                     broker_restriction=account.broker_restriction,
                     config=self.config.risk,
                     symbol_authorized=symbol_authorization.authorized,
-                )
-                if position.approved:
+                    )
+                if position is not None and position.approved:
                     entry_value_quantity = position.shares
                     entry_records, execution_record, authorization_decision = self._open_paper(
                         signal, position.shares, position.risk_dollars,
@@ -746,7 +763,7 @@ class WarriorForwardCaptureService:
                     if self._paper_entry_submitter is not None and not entry_records:
                         shadow_reasons.append(ReasonCode.EXECUTION_NOT_ALLOWED.value)
                         signal = None
-                else:
+                elif position is not None:
                     shadow_reasons.extend(code.value for code in position.reason_codes)
                     records.append(_transition_record(
                         assessed, ForwardTransition.ENTRY_BLOCKED,
@@ -1010,6 +1027,51 @@ class WarriorForwardCaptureService:
             ))
         except Exception:
             return False
+
+    def _execution_entry_signal(
+        self,
+        value: PointInTimeObservation,
+        candidate: MomentumCandidate,
+        signal: MomentumEntrySignal,
+    ) -> MomentumEntrySignal | None:
+        """Bind a structural trigger to a currently executable PAPER limit.
+
+        The detector-owned trigger remains immutable evidence.  A fresh ask
+        inside the existing adaptive displacement envelope may become the
+        executable limit; an ask outside that envelope is a missed entry, not
+        permission to submit a stale passive order.
+        """
+        ask = value.observation.ask
+        if ask is None or ask <= ZERO:
+            return None
+        structural = signal.structural_entry_trigger or signal.entry_trigger
+        maximum = min(
+            structural * (
+                Decimal("1")
+                + self.config.adaptive_entry.max_displacement_percent / HUNDRED
+            ),
+            structural + self.config.adaptive_entry.max_displacement_absolute,
+        )
+        executable = max(structural, Decimal(ask))
+        if executable > maximum or executable <= signal.stop_price:
+            return None
+        if executable == signal.entry_trigger:
+            return signal
+        risk = executable - signal.stop_price
+        if risk <= ZERO or risk > self.config.entry.maximum_risk_per_share:
+            return None
+        return replace(
+            signal,
+            entry_trigger=executable,
+            reference_price=executable,
+            risk_per_share=risk,
+            target_levels=(
+                executable + risk,
+                executable + risk * Decimal("2"),
+                executable + risk * Decimal("3"),
+            ),
+            structural_entry_trigger=structural,
+        )
 
     def _consider_adaptive_entry_replacement(
         self,
