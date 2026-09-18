@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Any
 
@@ -41,6 +41,7 @@ class LiveScannerCoordinator:
         maximum_events_per_cycle: int = 1000,
         event_observer: Callable[[Any], object] | None = None,
         retained_channels_source: Callable[[], Iterable[str]] | None = None,
+        universe_refresh_interval_seconds: float = 60.0,
     ) -> None:
         if maximum_events_per_cycle <= 0:
             raise ValueError(
@@ -61,6 +62,9 @@ class LiveScannerCoordinator:
         if retained_channels_source is not None and not callable(retained_channels_source):
             raise TypeError("retained channels source must be callable or None")
         self._retained_channels_source = retained_channels_source
+        if universe_refresh_interval_seconds < 0:
+            raise ValueError("universe refresh interval cannot be negative")
+        self._universe_refresh_interval_seconds = float(universe_refresh_interval_seconds)
 
         self._channels: tuple[str, ...] = ()
         self._scanner_channels: tuple[str, ...] = self._default_channels
@@ -71,6 +75,10 @@ class LiveScannerCoordinator:
         self._decisions_created = 0
         self._reference_stop = Event()
         self._reference_thread: Thread | None = None
+        self._universe_refresh_stop = Event()
+        self._universe_refresh_thread: Thread | None = None
+        self._universe_refresh_asset_classes: tuple[AssetClass, ...] = ()
+        self._universe_refresh_call_lock = Lock()
         self._readiness_observer: Callable[[], object] | None = None
 
     def connect(self) -> None:
@@ -88,6 +96,7 @@ class LiveScannerCoordinator:
         try:
             self._transport.disconnect()
         finally:
+            self._stop_universe_refresh()
             self._connected = False
             self._running = False
 
@@ -114,18 +123,21 @@ class LiveScannerCoordinator:
         *,
         force_reference_refresh: bool = False,
     ) -> tuple[str, ...]:
-        active_symbols = self._engine.refresh_universe(
-            asset_classes,
-            force_reference_refresh=(
-                force_reference_refresh
-            ),
-        )
-        self._scanner_channels = _normalize_channels(
-            getattr(self._engine, "subscription_symbols", active_symbols)
-        )
-        if self._running:
-            self._sync_subscription()
-        return active_symbols
+        # Manual maintenance calls and the periodic worker share one bounded
+        # critical section; a slow provider cannot spawn overlapping warmups.
+        with self._universe_refresh_call_lock:
+            active_symbols = self._engine.refresh_universe(
+                asset_classes,
+                force_reference_refresh=(
+                    force_reference_refresh
+                ),
+            )
+            self._scanner_channels = _normalize_channels(
+                getattr(self._engine, "subscription_symbols", active_symbols)
+            )
+            if self._running:
+                self._sync_subscription()
+            return active_symbols
 
     def start(
         self,
@@ -160,6 +172,7 @@ class LiveScannerCoordinator:
                 daemon=True,
             )
             self._reference_thread.start()
+            self._start_universe_refresh(asset_classes)
             return pending_channels
         active_symbols = self.refresh_universe(
             asset_classes,
@@ -188,11 +201,14 @@ class LiveScannerCoordinator:
         self.subscribe(selected_channels)
 
         self._running = True
+        if channels is None:
+            self._start_universe_refresh(asset_classes)
         return active_symbols
 
     def stop(self) -> None:
         self._running = False
         self._reference_stop.set()
+        self._stop_universe_refresh()
         thread = self._reference_thread
         if thread is not None:
             thread.join(2.0)
@@ -381,6 +397,50 @@ class LiveScannerCoordinator:
             # The runtime consumer remains alive; the existing scanner
             # qualification failure path owns reporting of warmup errors.
             return
+
+    def _start_universe_refresh(
+        self, asset_classes: tuple[AssetClass, ...],
+    ) -> None:
+        """Refresh discovery off the market-event callback path.
+
+        The provider is intentionally polled from a bounded daemon worker so
+        newly active symbols can enter a running scanner without requiring a
+        restart.  A non-positive interval is a supported opt-out for tests and
+        integrations that own refresh scheduling themselves.
+        """
+        if self._universe_refresh_interval_seconds <= 0:
+            return
+        thread = self._universe_refresh_thread
+        if thread is not None and thread.is_alive():
+            return
+        self._universe_refresh_asset_classes = tuple(asset_classes)
+        self._universe_refresh_stop.clear()
+        self._universe_refresh_thread = Thread(
+            target=self._refresh_universe_loop,
+            name="realtime-universe-refresh",
+            daemon=True,
+        )
+        self._universe_refresh_thread.start()
+
+    def _stop_universe_refresh(self) -> None:
+        self._universe_refresh_stop.set()
+        thread = self._universe_refresh_thread
+        if thread is not None:
+            thread.join(2.0)
+            self._universe_refresh_thread = None
+
+    def _refresh_universe_loop(self) -> None:
+        while not self._universe_refresh_stop.wait(
+            self._universe_refresh_interval_seconds
+        ):
+            if not self._running:
+                continue
+            try:
+                self.refresh_universe(self._universe_refresh_asset_classes)
+            except Exception:
+                # Discovery refresh is best effort; the active stream and its
+                # last known universe remain authoritative until the next tick.
+                continue
 
     def _notify_readiness(self) -> None:
         observer = self._readiness_observer

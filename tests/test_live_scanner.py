@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from time import monotonic, sleep
 
 import pytest
 
@@ -169,6 +170,22 @@ def test_start_connects_subscribes_and_refreshes() -> None:
         )
     ]
     assert coordinator.running is True
+
+
+def test_running_scanner_refreshes_discovery_off_event_loop() -> None:
+    transport = FakeTransport()
+    engine = FakeEngine()
+    coordinator = LiveScannerCoordinator(
+        transport, engine, universe_refresh_interval_seconds=0.01,
+    )
+    coordinator.start()
+    deadline = monotonic() + 1.0
+    while len(engine.refresh_calls) < 2 and monotonic() < deadline:
+        sleep(0.01)
+    coordinator.stop()
+
+    assert len(engine.refresh_calls) >= 2
+    assert coordinator.running is False
 
 
 def test_start_unions_retained_open_position_with_scanner_symbols() -> None:

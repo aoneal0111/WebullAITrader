@@ -1,7 +1,8 @@
 ﻿from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from threading import RLock
 from time import perf_counter
 from typing import Any, Callable
@@ -48,6 +49,7 @@ class RealtimeScannerEngine:
         reference_sink: ReferenceSink | None = None,
         clock: Callable[[], datetime] | None = None,
         admission_observer: object | None = None,
+        maximum_active_symbols: int = 500,
     ) -> None:
         self._universe_service = universe_service
         self._reference_data_service = reference_data_service
@@ -55,6 +57,9 @@ class RealtimeScannerEngine:
         self._reference_sink = reference_sink
         self._clock = clock or _utc_now
         self._admission_observer = admission_observer
+        if maximum_active_symbols <= 0:
+            raise ValueError("maximum_active_symbols must be positive")
+        self._maximum_active_symbols = maximum_active_symbols
 
         self._active_symbols: set[str] = set()
         self._known_symbols: set[str] = set()
@@ -72,6 +77,13 @@ class RealtimeScannerEngine:
         self._state_lock = RLock()
         self._prepared_selection = None
         self._reference_ready_observer: Callable[[], object] | None = None
+        # A bounded, same-session grace window prevents a currently active
+        # mover from disappearing on the next provider refresh merely because
+        # one scanner-quality rule briefly failed. Formal scanner qualification
+        # remains unchanged.
+        self._recent_interest: OrderedDict[str, datetime] = OrderedDict()
+        self._recent_interest_limit = 512
+        self._recent_interest_ttl = timedelta(minutes=15)
 
     def prepare_universe(
         self,
@@ -89,7 +101,7 @@ class RealtimeScannerEngine:
         performance_diagnostics.record_startup_stage("universe_refresh_started")
         performance_diagnostics.record_startup_stage("reference_warmup_started")
         selection = self._universe_service.select_all(asset_classes)
-        included = _unique_symbols(selection.included)
+        included = _unique_symbols(selection.included)[:self._maximum_active_symbols]
         symbols = tuple(item.symbol.strip().upper() for item in included)
         with self._state_lock:
             self._prepared_selection = selection
@@ -135,7 +147,7 @@ class RealtimeScannerEngine:
         if selection is None:
             selection = self._universe_service.select_all(asset_classes)
         self._prepared_selection = None
-        included = _unique_symbols(selection.included)
+        included = _unique_symbols(selection.included)[:self._maximum_active_symbols]
         if selected_directly:
             performance_diagnostics.increment_startup_counter(
                 "reference_warmup_symbols_total", len(included)
@@ -318,9 +330,31 @@ class RealtimeScannerEngine:
             successful_records=tuple(successful_records),
         )
 
-        removed_symbols = (
-            self._active_symbols - active_symbols
-        )
+        now = self._clock()
+        with self._state_lock:
+            retained = {
+                symbol for symbol, seen_at in self._recent_interest.items()
+                if now - seen_at <= self._recent_interest_ttl
+            }
+            retained.update(
+                symbol for symbol, decision in self._decisions.items()
+                if not bool(getattr(decision, "qualified", True))
+            )
+            prior_active = set(self._active_symbols)
+            prior_asset_classes = dict(self._active_asset_classes)
+            prior_subscriptions = dict(self._subscription_symbols)
+        preserved = (prior_active & retained) - active_symbols
+        if preserved:
+            active_symbols.update(preserved)
+            for symbol in preserved:
+                asset_class = prior_asset_classes.get(symbol)
+                api_symbol = prior_subscriptions.get(symbol)
+                if asset_class is not None:
+                    active_asset_classes.setdefault(symbol, asset_class)
+                if api_symbol is not None:
+                    subscription_symbols.setdefault(symbol, api_symbol)
+
+        removed_symbols = prior_active - active_symbols
 
         for symbol in removed_symbols:
             self._decisions.pop(symbol, None)
@@ -396,6 +430,15 @@ class RealtimeScannerEngine:
 
             if normalized_symbol in self._active_symbols:
                 self._decisions[normalized_symbol] = decision
+                # Retain quality misses for adaptive Warrior observation;
+                # formally qualified symbols continue to follow the normal
+                # provider universe lifecycle.
+                if not bool(getattr(decision, "qualified", True)):
+                    with self._state_lock:
+                        self._recent_interest[normalized_symbol] = self._clock()
+                        self._recent_interest.move_to_end(normalized_symbol)
+                        while len(self._recent_interest) > self._recent_interest_limit:
+                            self._recent_interest.popitem(last=False)
 
         return decision
 

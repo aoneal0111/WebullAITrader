@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from collections import OrderedDict
+from datetime import timedelta
 from decimal import Decimal
 
 from app.momentum_scanner.models import CatalystStatus, CatalystType, ScannerObservation
@@ -28,6 +30,9 @@ class WarriorMomentumRuntime:
         self.config = config
         self._legacy_episode_tracker = LegacySetupEpisodeTracker()
         self._adaptive_context = WarriorAdaptiveContext() if config.adaptive_context_enabled else None
+        self._setup_continuity: OrderedDict[str, tuple[object, object, str]] = OrderedDict()
+        self._setup_continuity_limit = 512
+        self._setup_continuity_age = timedelta(seconds=120)
 
     def discover(self, observation: ScannerObservation, bars: tuple[MinuteBar, ...], *, session: str,
                  top_gapper: bool = False) -> MomentumCandidate:
@@ -35,12 +40,46 @@ class WarriorMomentumRuntime:
         metrics = calculate_metrics(observation)
         features = build_features(bars)
         setup = detect_best_setup(bars, self.config.setups)
+        normalized_symbol = observation.symbol.strip().upper()
+        prior_setup = self._setup_continuity.get(normalized_symbol)
         if setup is None:
-            self._legacy_episode_tracker.invalidate(observation.symbol)
+            # A temporary quality/execution miss must not erase a legitimate
+            # forming structure.  Continuity is observation-only: FORMING can
+            # be projected again, but a previous TRIGGERED setup is never
+            # resurrected into order authority without fresh geometry.
+            if prior_setup is not None:
+                prior, seen_at, prior_session = prior_setup
+                temporary_quality_miss = (
+                    metrics.percentage_change >= self.config.discovery.minimum_percentage_change
+                    and (
+                        metrics.relative_volume < self.config.discovery.minimum_relative_volume
+                        or metrics.dollar_volume < self.config.discovery.minimum_dollar_volume
+                        or (
+                            metrics.spread_percent is not None
+                            and metrics.spread_percent > self.config.discovery.maximum_spread_percent
+                        )
+                    )
+                )
+                if (
+                    getattr(prior, "state", None) is SetupState.FORMING
+                    and prior_session == session
+                    and observation.timestamp - seen_at <= self._setup_continuity_age
+                    and temporary_quality_miss
+                ):
+                    setup = prior
+                else:
+                    self._legacy_episode_tracker.invalidate(observation.symbol)
+                    self._setup_continuity.pop(normalized_symbol, None)
+            else:
+                self._legacy_episode_tracker.invalidate(observation.symbol)
         else:
             setup = self._legacy_episode_tracker.observe(
                 observation.symbol, setup, session=session,
             )
+            self._setup_continuity[normalized_symbol] = (setup, observation.timestamp, session)
+            self._setup_continuity.move_to_end(normalized_symbol)
+            while len(self._setup_continuity) > self._setup_continuity_limit:
+                self._setup_continuity.popitem(last=False)
         supported_catalyst = (
             observation.catalyst in {CatalystType.EARNINGS, CatalystType.SEC_FILING}
             or (observation.catalyst is CatalystType.NONE and observation.catalyst_status is not CatalystStatus.TRUE)
@@ -212,9 +251,18 @@ def warrior_observation_eligible(decision: object, config: WarriorMomentumConfig
         return False
     price = getattr(decision, "price", None)
     move = getattr(getattr(decision, "metrics", None), "percentage_change", None)
-    if price is None or price <= 0 or move is None or move < config.discovery.minimum_percentage_change * Decimal("4"):
+    # Observation is intentionally broader than formal qualification and
+    # entry.  Existing scanner score/momentum evidence is the quality signal;
+    # the legacy RVOL and turnover misses are precisely what adaptive PAPER
+    # observation is allowed to contextualize.  Keep the normal move floor so
+    # a weak candidate with identical failed quality rules is not retained.
+    if price is None or price <= 0 or move is None or move < config.discovery.minimum_percentage_change:
         return False
-    return Decimal(str(getattr(decision, "score", 0))) >= config.discovery.watch_score
+    score = Decimal(str(getattr(decision, "score", 0)))
+    return (
+        score >= config.discovery.near_qualified_score
+        or move >= config.discovery.minimum_percentage_change * Decimal("2")
+    ) and score >= config.discovery.watch_score
 
 
 def entry_rejections(candidate: MomentumCandidate, config: WarriorMomentumConfig,

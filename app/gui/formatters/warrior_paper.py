@@ -52,11 +52,15 @@ def _row(item) -> WatchlistRow:
     # catalyst NONE under Balanced V1).  The sidecar's entry blockers are the
     # authoritative presentation source.
     raw_blockers = tuple(dict.fromkeys(item.blocking_reasons))
+    scanner_notes = tuple(reason for reason in raw_blockers if reason == "scanner_rvol")
+    execution_blockers = tuple(reason for reason in raw_blockers if reason != "scanner_rvol")
     readable_blockers = tuple(dict.fromkeys(
-        _readable_blocker(reason) for reason in raw_blockers
+        _readable_blocker(reason) for reason in execution_blockers
     ))
     blocking = "\n".join(readable_blockers) or "--"
     explanations = (*candidate.explanations, *(
+        (_readable_blocker(reason) for reason in scanner_notes)
+    ), *(
         (f"Blocked: {blocking}",) if blocking != "--" else ()
     ))
     return WatchlistRow(
@@ -114,7 +118,7 @@ def _readable_blocker(reason: str) -> str:
         "PRICE_TOO_LOW": "Price is below the Warrior range",
         "PRICE_TOO_HIGH": "Price is above the Warrior range",
         "CHANGE_TOO_LOW": "Percentage change requirement not met",
-        "RVOL_LOW": "Relative volume requirement not met",
+        "RVOL_LOW": "Scanner RVOL below formal threshold (informational)",
         "FLOAT_HIGH": "Float exceeds the Warrior limit",
         "SESSION_NOT_ALLOWED": "Current session is not allowed for Warrior execution",
         "SESSION": "Current session is not allowed for Warrior execution",
@@ -123,7 +127,7 @@ def _readable_blocker(reason: str) -> str:
         "NO_CATALYST": "Required catalyst is missing",
         "CATALYST_UNKNOWN": "Catalyst status is unavailable",
         "CATALYST": "Required catalyst is missing",
-        "LIQUIDITY_LOW": "Liquidity requirement not met",
+        "LIQUIDITY_LOW": "Current participation/liquidity requirement not met",
         "LIQUIDITY": "Liquidity requirement not met",
         "HALTED": "Symbol is halted",
         "HALT_UNKNOWN": "Halt status is unavailable",
@@ -134,12 +138,15 @@ def _readable_blocker(reason: str) -> str:
         "STOP_INVALID": "Stop price is invalid",
         "BREAKOUT_NOT_CONFIRMED": "Breakout is not confirmed",
         "EXECUTION_NOT_ALLOWED": "Execution is not authorized",
-        "RISK_REJECTED": "Risk engine rejected the entry",
+        "RISK_REJECTED": "Warrior strategy/risk precondition not met",
         "STALE_MARKET_DATA": "Entry-critical market data is stale",
         "AWAITING_EXECUTION_QUOTE": "Waiting for fresh bid/ask",
         "STALE MARKET DATA": "Entry-critical market data is stale",
-        "RISK": "Risk gate rejected the entry",
-        "SCORE/RISK": "Risk engine rejected the entry",
+        "RISK": "Warrior strategy/risk precondition not met",
+        "SCORE/RISK": "Warrior strategy/risk precondition not met",
+        "SCANNER_RVOL": "Scanner RVOL below formal threshold (informational)",
+        "PARTICIPATION": "Current participation/liquidity requirement not met",
+        "STRATEGY_ELIGIBILITY": "Warrior strategy/risk precondition not met",
     }.get(normalized, reason.replace("_", " ").capitalize())
 
 

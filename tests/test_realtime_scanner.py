@@ -402,6 +402,51 @@ def test_removed_symbol_decision_is_deleted() -> None:
     assert snapshot.decisions == ()
 
 
+def test_quality_miss_is_retained_across_refresh_for_adaptive_observation() -> None:
+    universe = FakeUniverseService((universe_symbol("AEMD"), universe_symbol("STABLE")))
+    references = FakeReferenceService()
+    pipeline = FakePipeline()
+    pipeline.decisions["AEMD"] = scanner_decision("AEMD", qualified=False, score=58, relative_volume="0.01")
+    engine = RealtimeScannerEngine(universe, references, pipeline)
+
+    engine.refresh_universe()
+    engine.consume(FakeEvent("AEMD"))
+    universe.included = (universe_symbol("STABLE"),)
+
+    active = engine.refresh_universe()
+
+    assert "AEMD" in active
+    assert "AEMD" in engine.subscription_symbols
+    assert engine.snapshot().decisions[0].symbol == "AEMD"
+
+
+def test_new_mover_enters_after_startup_refresh() -> None:
+    universe = FakeUniverseService((universe_symbol("START"),))
+    references = FakeReferenceService()
+    engine = RealtimeScannerEngine(universe, references, FakePipeline())
+    engine.refresh_universe()
+
+    universe.included = (universe_symbol("START"), universe_symbol("NEWFAST"))
+    active = engine.refresh_universe()
+
+    assert active == ("NEWFAST", "START")
+    assert "NEWFAST" in engine.subscription_symbols
+    assert any(call[0] == "NEWFAST" for call in references.calls)
+
+
+def test_active_universe_and_warmup_are_bounded() -> None:
+    universe = FakeUniverseService(tuple(universe_symbol(f"S{index:03d}") for index in range(5)))
+    engine = RealtimeScannerEngine(
+        universe, FakeReferenceService(), FakePipeline(), maximum_active_symbols=2,
+    )
+
+    active = engine.refresh_universe()
+
+    assert active == ("S000", "S001")
+    assert len(engine.subscription_symbols) == 2
+    assert len(engine.pending_reference_symbols) == 0
+
+
 def test_force_refresh_is_forwarded() -> None:
     engine, references, _, _ = make_engine(
         (universe_symbol("AAA"),)

@@ -14,6 +14,7 @@ from app.strategies.warrior_momentum import (
     warrior_observation_eligible,
 )
 from app.momentum_scanner import evaluate_candidate
+import app.strategies.warrior_momentum.runtime as warrior_runtime_module
 
 
 def candidate(*, symbol="XYZ", rvol="2", move="80", dollar="12000000", spread="1.8",
@@ -240,3 +241,21 @@ def test_adaptive_reassessment_does_not_reintroduce_turnover_veto():
     # Re-arm/replacement callers use the same runtime predicate; the old
     # accumulated-turnover threshold is not a separate adaptive authority.
     assert runtime.current_execution_liquidity_ok(replace(value, dollar_volume=Decimal("500000")), quote_fresh=True) is True
+
+
+def test_forming_setup_survives_temporary_quality_miss_without_rearming(monkeypatch):
+    forming = SetupDetection(
+        SetupType.FLAT_TOP_BREAKOUT, SetupState.FORMING, Decimal("65"),
+        Decimal("10.05"), Decimal("9.80"), StopModel.RECENT_SWING_LOW,
+    )
+    calls = iter((forming, None))
+    monkeypatch.setattr(warrior_runtime_module, "detect_best_setup", lambda *_args, **_kwargs: next(calls))
+    runtime = WarriorMomentumRuntime(WarriorMomentumConfig(adaptive_context_enabled=True))
+    first = runtime.discover(_scanner_observation(move="40", dollar="2000000", spread="0.8"), (), session="REGULAR")
+    second_observation = replace(_scanner_observation(move="40", dollar="1200000", spread="2.0"),
+                                 timestamp=first.timestamp.replace(second=first.timestamp.second + 30))
+    second = runtime.discover(second_observation, (), session="REGULAR")
+
+    assert first.setup is not None and first.setup.state is SetupState.FORMING
+    assert second.setup is not None and second.setup.state is SetupState.FORMING
+    assert runtime.entry_signal(second) is None
