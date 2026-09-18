@@ -1312,7 +1312,31 @@ class AutonomousPaperExecutionBridge:
                 and active == lifecycle_id
                 and not active.startswith("recovered:")
             )
-            if not management_ready and not initial_protection_race:
+            # A recovered authoritative position can become stuck in
+            # RECONCILIATION_REQUIRED after an earlier protection attempt
+            # failed transiently.  Once durable Warrior management context
+            # proves the same lifecycle identity, permit only the protective
+            # STOP to heal that state.  Profit targets remain fail-closed
+            # until protection is actually working.
+            recovered_protection_repair = False
+            if (
+                reason_key in {"STOP", "STOP_LOSS"}
+                and active is not None
+                and active == lifecycle_id
+                and self._authoritative_quantity(normalized) > 0
+                and self.management_context_source is not None
+            ):
+                try:
+                    recovered_protection_repair = (
+                        self.management_context_source(normalized) == active
+                    )
+                except Exception:
+                    recovered_protection_repair = False
+            if (
+                not management_ready
+                and not initial_protection_race
+                and not recovered_protection_repair
+            ):
                 if protective:
                     performance_diagnostics.record_protection_event(
                         state="PROTECTION_SUBMIT_FAILED",
@@ -1394,6 +1418,7 @@ class AutonomousPaperExecutionBridge:
                             normalized, quantity, price, reason_key, identity,
                         )
                     if protective:
+                        self._management_incomplete.discard(normalized)
                         performance_diagnostics.record_protection_event(
                             state="PROTECTION_ALREADY_PRESENT",
                             symbol=normalized,
@@ -1415,9 +1440,12 @@ class AutonomousPaperExecutionBridge:
                     PaperExitSubmissionState.UNAVAILABLE, normalized,
                     identity, reason_key, self._exit_orders.get(key),
                 )
-            return self._place_exit(
+            result = self._place_exit(
                 normalized, quantity, price, reason_key, identity,
             )
+            if protective and result.protection_active:
+                self._management_incomplete.discard(normalized)
+            return result
 
     def _place_exit(
         self, normalized: str, quantity: int, price: Decimal,
