@@ -928,6 +928,83 @@ def test_authoritative_fill_establishes_protection_at_actual_quantity(tmp_path: 
         writer.close()
 
 
+def test_authoritative_open_position_targets_continue_after_entry_eligibility_disappears(tmp_path: Path) -> None:
+    """Retained PAPER management is independent from current entry qualification."""
+    store = ForwardCaptureStore(tmp_path / "retained-management.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": Decimal("100")}
+    submissions: list[tuple[str, int, Decimal]] = []
+
+    def submit_exit(symbol, quantity, price, reason, lifecycle):
+        submissions.append((reason, quantity, price))
+        return PaperExitSubmissionDecision(
+            PaperExitSubmissionState.SUBMITTED, symbol, lifecycle, reason,
+            order_id=f"order-{len(submissions)}",
+            activation_timestamp=T0 + timedelta(minutes=21),
+        )
+
+    service = WarriorForwardCaptureService(
+        store, writer,
+        paper_entry_submitter=lambda *_args: True,
+        paper_exit_submitter=submit_exit,
+        paper_position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+    )
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        # Simulate the post-entry state TJGC exposed: current scanner/Warrior
+        # entry eligibility has disappeared, but the authoritative position
+        # remains open and must still be managed from retained lifecycle state.
+        service.observe(
+            point(
+                observation=scanner(
+                    timestamp=T0 + timedelta(minutes=21),
+                    price=D("9.00"), bid=D("8.99"), ask=D("9.01"),
+                    current_volume=D("1"),
+                ),
+                bars=(),
+                historical_bars_available=False,
+                quote_observed_at=T0 + timedelta(minutes=21),
+                last_price_observed_at=T0 + timedelta(minutes=21),
+            ),
+            account=account(),
+        )
+        assert service._paper["XYZ"].remaining == 100
+
+        first = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=2),
+            signal.entry_trigger, signal.target_levels[0] + D("0.01"),
+            signal.entry_trigger, signal.target_levels[0], D("100"),
+        )
+        service.observe_market_bar("XYZ", first, first.timestamp + timedelta(minutes=1))
+        assert submissions[0][0] == "STOP"
+        assert submissions[1][0] == "FIRST_TARGET"
+
+        first_quantity = service._paper["XYZ"].first_quantity
+        position["XYZ"] = Decimal(100 - first_quantity)
+        second = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=3),
+            signal.target_levels[0], signal.target_levels[1] + D("0.01"),
+            signal.target_levels[0], signal.target_levels[1], D("100"),
+        )
+        service.observe_market_bar("XYZ", second, second.timestamp + timedelta(minutes=1))
+        assert service._paper["XYZ"].first_taken is True
+        assert submissions[-1][0] == "SECOND_TARGET"
+
+        second_quantity = service._paper["XYZ"].second_quantity
+        position["XYZ"] = Decimal(100 - first_quantity - second_quantity)
+        runner = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=4),
+            signal.target_levels[1], signal.target_levels[2] + D("0.01"),
+            signal.target_levels[1], signal.target_levels[2], D("100"),
+        )
+        service.observe_market_bar("XYZ", runner, runner.timestamp + timedelta(minutes=1))
+        assert service._paper["XYZ"].second_taken is True
+        assert submissions[-1][0] == "RUNNER_TARGET"
+    finally:
+        writer.close()
+
+
 def test_after_hours_management_bar_advances_retained_position(tmp_path: Path) -> None:
     store = ForwardCaptureStore(tmp_path / "after-hours-management.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
