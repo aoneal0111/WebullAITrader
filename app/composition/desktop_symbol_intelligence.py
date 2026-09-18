@@ -30,6 +30,7 @@ def create_desktop_symbol_intelligence_bundle(
     *,
     operational_configuration: object,
     shadow_runtime_factory: Callable[..., SecShadowRuntimeComposition],
+    symbol_intelligence_factory: Callable[..., SymbolIntelligenceComposition | None] = create_symbol_intelligence_composition,
 ) -> DesktopSymbolIntelligenceBundle:
     """Construct optional SEC/symbol-intelligence services outside trading core."""
 
@@ -43,7 +44,7 @@ def create_desktop_symbol_intelligence_bundle(
         if not eligible:
             activation_state = "INELIGIBLE"
         if eligible:
-            symbol_intelligence = create_symbol_intelligence_composition(
+            symbol_intelligence = symbol_intelligence_factory(
                 operational_configuration,
                 activate=True,
                 start=False,
