@@ -858,7 +858,12 @@ class WarriorDesktopSidecar:
         )
         if observation is None:
             return
-        completed = False
+        # A completed minute is a wall-clock boundary, not a dependency on
+        # receiving the first qualifying TRADE_SIZE event of the next minute.
+        # Quotes (or other later market events) must be allowed to close the
+        # prior trade accumulator so retained open-position management keeps
+        # advancing even when the feed becomes quote-heavy.
+        completed = self._complete_elapsed_bar(event)
         if (
             event.event_type is MarketEventType.TRADE
             and isinstance(event.payload, TradePayload)
@@ -866,7 +871,10 @@ class WarriorDesktopSidecar:
             and not event.payload.trade_id.startswith("snapshot")
         ):
             aggregate_started = perf_counter()
-            completed = self._aggregate_trade(event, observation.current_volume)
+            completed = (
+                self._aggregate_trade(event, observation.current_volume)
+                or completed
+            )
             performance_diagnostics.record_component_duration(
                 "warrior.trade_aggregation",
                 (perf_counter() - aggregate_started) * 1000.0,
@@ -1143,6 +1151,22 @@ class WarriorDesktopSidecar:
         else:
             priority = OrderFlowPriority.LOW
         self._order_flow.update_symbol(symbol, priority)
+
+    def _complete_elapsed_bar(self, event: MarketEvent) -> bool:
+        """Finalize a prior trade bar when any later event crosses its minute."""
+        if event.symbol is None:
+            return False
+        symbol = event.symbol.strip().upper()
+        current = self._accumulators.get(symbol)
+        if current is None:
+            return False
+        minute = event.timestamp.replace(second=0, microsecond=0)
+        if minute <= current.timestamp:
+            return False
+        self._bars.setdefault(symbol, []).append(current.completed())
+        self._bars[symbol] = self._bars[symbol][-120:]
+        self._accumulators.pop(symbol, None)
+        return True
 
     def _aggregate_trade(self, event: MarketEvent, cumulative: Decimal) -> bool:
         assert event.symbol is not None and isinstance(event.payload, TradePayload)
