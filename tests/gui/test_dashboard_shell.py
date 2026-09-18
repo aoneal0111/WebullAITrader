@@ -635,3 +635,21 @@ def test_repeated_window_open_close_cycles_destroy_native_widgets_cleanly(
         application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         application.processEvents()
         assert composition.close()
+
+
+def test_orders_page_exposes_bounded_operator_controls(window) -> None:
+    """Normal PAPER workstation exposes existing placement/cancellation boundaries."""
+    orders = window.orders
+
+    assert orders.order_entry_panel.isHidden() is False
+    assert orders.order_entry_panel.submit_button.isEnabled() is True
+    assert orders.cancel_selected_button.isEnabled() is False
+
+
+def test_operator_cancel_remains_disabled_without_selected_working_order(window) -> None:
+    """Cancellation cannot mutate anything until a cancellable order is selected."""
+    orders = window.orders
+    orders._orders_table.clearSelection()
+    orders._update_cancel_selected_state()
+
+    assert orders.cancel_selected_button.isEnabled() is False
