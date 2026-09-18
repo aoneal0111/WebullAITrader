@@ -18,6 +18,25 @@ def optional_metrics(root: object | None, *attributes: str) -> dict[str, int]:
     return {} if not callable(provider) else dict(provider())
 
 
+class RuntimeDriverMetricsSource:
+    """Late-bound diagnostic view of the desktop runtime driver."""
+
+    def __init__(self) -> None:
+        self._service: object | None = None
+
+    def bind(self, service: object) -> None:
+        self._service = service
+
+    def __call__(self, *attributes: str) -> dict[str, int]:
+        service = self._service
+        lock = getattr(service, "_lock", None)
+        if lock is None:
+            return {}
+        with lock:
+            driver = getattr(service, "_driver", None)
+        return optional_metrics(driver, *attributes)
+
+
 def create_desktop_memory_observability(
     *,
     operational_configuration: object,
@@ -109,6 +128,7 @@ def create_desktop_memory_observability(
 
 
 __all__ = [
+    "RuntimeDriverMetricsSource",
     "create_desktop_memory_observability",
     "optional_metrics",
 ]
