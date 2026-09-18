@@ -10,7 +10,6 @@ from enum import StrEnum
 from hashlib import sha256
 import logging
 from pathlib import Path
-import re
 from threading import RLock
 from time import monotonic, perf_counter
 from typing import Callable, Iterable
@@ -41,6 +40,11 @@ from .order_flow_runtime import (
     OrderFlowPollingService, OrderFlowPriority,
 )
 from .market_event_observer import CompositeMarketEventObserver
+from .capture_support import (
+    build_latency_diagnostic_record,
+    build_session_record,
+    safe_diagnostic_message,
+)
 from .projection_models import (
     WarriorFocusItem,
     WarriorPaperSnapshot,
@@ -1172,30 +1176,15 @@ class WarriorDesktopSidecar:
             self._bars[symbol] = sorted(values, key=lambda item: item.timestamp)[-120:]
 
     def _session_record(self, action: str, now: datetime) -> CaptureRecord:
-        metrics = None if self._writer is None else self._writer.metrics()
-        return CaptureRecord.create(
-            CaptureRecordType.OBSERVATION_SESSION, STRATEGY_VERSION, now,
-            {
-                "action": action, "strategy_version": STRATEGY_VERSION,
-                "schema_version": CAPTURE_SCHEMA_VERSION,
-                "trading_date": now.astimezone(EASTERN).date(),
-                "capture_start": self._started_at,
-                "capture_end": now if action == "END" else None,
-                "environment": self.environment,
-                "configuration_fingerprint": self.configuration_fingerprint,
-                "observation_run_key": self._run_key,
-                "capture_metrics": None if metrics is None else {
-                    "queue_depth": metrics.queue_depth,
-                    "records_written": metrics.records_written,
-                    "average_write_latency_ms": metrics.average_write_latency_ms,
-                    "maximum_write_latency_ms": metrics.maximum_write_latency_ms,
-                    "dropped_records": metrics.dropped_records,
-                    "duplicate_records": metrics.duplicate_records,
-                    "synchronous_fallback_records": metrics.synchronous_fallback_records,
-                    "gui_refresh_frequency_hz": metrics.gui_refresh_frequency_hz,
-                },
-            },
-            identity_parts=(action, self._run_key or "unstarted"),
+        return build_session_record(
+            writer=self._writer,
+            strategy_version=STRATEGY_VERSION,
+            action=action,
+            now=now,
+            started_at=self._started_at,
+            environment=self.environment,
+            configuration_fingerprint=self.configuration_fingerprint,
+            run_key=self._run_key,
         )
 
     def _update_health(self) -> None:
@@ -1243,31 +1232,20 @@ class WarriorDesktopSidecar:
         self._report_error_type = type(error).__name__
         self._last_error_type = f"REPORT:{type(error).__name__}"
 
-    def _persist_latency_diagnostic(self, kind: str, payload: dict[str, object]) -> None:
+    def _persist_latency_diagnostic(
+        self,
+        kind: str,
+        payload: dict[str, object],
+    ) -> None:
         writer = self._writer
         if writer is None:
             return
-        payload = {"diagnostic_kind": kind, **payload}
-        timestamp_value = payload.get("recorded_at") or payload.get("timestamp")
-        timestamp = (
-            datetime.fromisoformat(str(timestamp_value))
-            if timestamp_value is not None
-            else self._aware_now()
+        record = build_latency_diagnostic_record(
+            kind=kind,
+            payload=payload,
+            fallback_timestamp=self._aware_now(),
         )
-        symbol = str(payload.get("symbol") or "MARKET_DATA")
-        record_type = (
-            CaptureRecordType.CALLBACK_QUEUE_THRESHOLD
-            if kind == "callback_queue_threshold"
-            else CaptureRecordType.LATENCY_DIAGNOSTIC
-        )
-        identity = tuple(
-            str(payload.get(name) or "")
-            for name in ("source", "sequence", "threshold", "direction", "recorded_at")
-        )
-        accepted = writer.submit_diagnostic(CaptureRecord.create(
-            record_type, symbol, timestamp, payload, identity_parts=identity,
-        ))
-        if not accepted:
+        if not writer.submit_diagnostic(record):
             raise RuntimeError("diagnostic capture queue unavailable")
 
     def _aware_now(self) -> datetime:
@@ -1314,7 +1292,7 @@ class WarriorDesktopSidecar:
             self._record_di_entry_diagnostic(
                 "DI_RESULT_MISSING", symbol=symbol, timestamp=timestamp,
                 opportunity_id=opportunity_hint, reason="OTHER_GUARD",
-                error_type=type(exc).__name__, error_message=_safe_diagnostic_message(exc),
+                error_type=type(exc).__name__, error_message=safe_diagnostic_message(exc),
             )
             return None, None
         opportunity_id = opportunity_hint
@@ -1373,7 +1351,7 @@ class WarriorDesktopSidecar:
             self._record_di_entry_diagnostic(
                 "POLICY_ASSESS_EXCEPTION", symbol=symbol, timestamp=timestamp,
                 opportunity_id=opportunity_id,
-                error_type=type(exc).__name__, error_message=_safe_diagnostic_message(exc),
+                error_type=type(exc).__name__, error_message=safe_diagnostic_message(exc),
             )
             return result, None
 
@@ -1406,7 +1384,7 @@ class WarriorDesktopSidecar:
             return
 
 
-def _safe_diagnostic_message(error: Exception) -> str:
+def safe_diagnostic_message(error: Exception) -> str:
     message = str(error).replace("\r", " ").replace("\n", " ")
     message = re.sub(
         r"(?i)(token|secret|password|credential|account[_ -]?id|api[_ -]?key|access[_ -]?key)\s*[:=]\s*\S+",
