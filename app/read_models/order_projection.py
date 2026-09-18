@@ -36,8 +36,25 @@ class OrderProjection:
         with self._lock:
             return {"order_count": len(self._snapshot.orders)}
 
+    def reconcile_authoritative_orders(self, orders) -> None:
+        """Restore every active-campaign order into the execution projection."""
+        self._reconcile_restored_orders(
+            orders,
+            terminal_only=False,
+            source="paper-execution-authority-restore",
+        )
+
     def reconcile_historical_terminal_orders(self, orders) -> None:
-        """Add durable terminal orders to history without restoring execution authority."""
+        """Add durable terminal history without restoring execution authority."""
+        self._reconcile_restored_orders(
+            orders,
+            terminal_only=True,
+            source="paper-execution-history",
+        )
+
+    def _reconcile_restored_orders(
+        self, orders, *, terminal_only: bool, source: str,
+    ) -> None:
         terminal = {"FILLED", "CANCELLED", "CANCELED", "REJECTED", "EXPIRED"}
         with self._lock:
             current = self._snapshot
@@ -46,7 +63,7 @@ class OrderProjection:
                 status = getattr(getattr(order, "status", None), "value", None)
                 if status is None:
                     status = str(getattr(order, "status", ""))
-                if status.strip().upper() not in terminal:
+                if terminal_only and status.strip().upper() not in terminal:
                     continue
                 request = order.request
                 projected = _reduce_order(
@@ -76,7 +93,7 @@ class OrderProjection:
                         submitted_at=order.created_at,
                         lifecycle_id=request.strategy_lifecycle_id,
                         execution_reason=request.execution_reason,
-                        execution_source="paper-execution-history",
+                        execution_source=source,
                     ),
                 )
             if projected == current:
@@ -90,7 +107,7 @@ class OrderProjection:
         self._bus.publish(
             OrdersUpdated(
                 occurred_at=occurred_at,
-                source="paper-execution-history-projection",
+                source=source,
                 orders=published_orders,
                 projection_authority=ProjectionAuthority.PAPER_EXECUTION,
             )
