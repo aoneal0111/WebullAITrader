@@ -857,6 +857,52 @@ class WarriorDesktopSidecar:
             symbol=symbol,
         )
         if observation is None:
+            # Retained PAPER positions are management authority even when the
+            # scanner cannot assemble a discovery observation (for example,
+            # missing reference data or accumulated volume after recovery).
+            # Advance only from a real trade price or the adapter's retained
+            # last trade; never synthesize an executable mark from bid/ask.
+            if symbol in service.open_paper_symbols:
+                state = adapter.state_for(symbol)
+                retained_mark = (
+                    event.payload.price
+                    if (
+                        event.event_type is MarketEventType.TRADE
+                        and isinstance(event.payload, TradePayload)
+                    )
+                    else (
+                        None
+                        if state is None else state.last_price
+                    )
+                )
+                completed = self._complete_elapsed_bar(event)
+                if (
+                    retained_mark is not None
+                    and event.event_type in {
+                        MarketEventType.QUOTE, MarketEventType.TRADE,
+                    }
+                ):
+                    completed = (
+                        self._aggregate_retained_mark(event, retained_mark)
+                        or completed
+                    )
+                if completed is not None:
+                    observed_at = self._aware_now()
+                    service.invalidate_intraminute_shadow(
+                        symbol,
+                        event.timestamp,
+                        ShadowLatchedTransition.NEW_BAR_INVALIDATION,
+                        reason="NEW_COMPLETED_RETAINED_MANAGEMENT_BAR",
+                        processing_time=observed_at,
+                    )
+                    service.observe_market_bar(
+                        symbol, completed, observed_at,
+                    )
+                    if self._writer is not None:
+                        self._flush_capture_writer(self._writer)
+                    self._request_report_refresh(
+                        event.timestamp.astimezone(EASTERN).date()
+                    )
             return
         # A completed minute is a wall-clock boundary, not a dependency on
         # receiving the first qualifying TRADE_SIZE event of the next minute.
