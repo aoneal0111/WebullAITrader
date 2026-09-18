@@ -216,6 +216,7 @@ def test_portfolio_summary_prefers_authoritative_paper_account_metrics(
             ("ATLAS PAPER Cash", "$8,909.92"),
             ("ATLAS PAPER Realized P/L", "+$443.62"),
         ),
+        highlights=(),
     ))
 
     assert strip._cards["Equity"]._value.text() == "$10,629.82"
