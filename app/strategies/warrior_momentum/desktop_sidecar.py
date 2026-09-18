@@ -40,6 +40,7 @@ from .order_flow_runtime import (
     OrderFlowPollingService, OrderFlowPriority,
 )
 from .market_event_observer import CompositeMarketEventObserver
+from .capture_io import flush_capture_writer, request_report_refresh
 from .capture_support import (
     build_latency_diagnostic_record,
     build_session_record,
@@ -1196,33 +1197,20 @@ class WarriorDesktopSidecar:
             self._health = WarriorCaptureHealth.DEGRADED
 
     def _flush_capture_writer(self, writer: ForwardCaptureWriter) -> None:
-        started = perf_counter()
-        try:
-            writer.flush()
-        finally:
-            duration_ms = (perf_counter() - started) * 1000.0
-            performance_diagnostics.record_completed_bar_flush_duration(duration_ms)
-            performance_diagnostics.mark_latency_trace_stage(
-                "completed_bar_flush_duration_ms", duration_ms
-            )
+        flush_capture_writer(writer)
 
-    def _request_report_refresh(self, trading_date: date, *, persist: bool = False) -> None:
-        worker = self._report_worker
-        if worker is None:
-            return
-        started = perf_counter()
-        try:
-            worker.request_refresh(
-                trading_date,
-                configuration_fingerprint=self.configuration_fingerprint,
-                persist=persist,
-            )
-        finally:
-            duration_ms = (perf_counter() - started) * 1000.0
-            performance_diagnostics.record_report_request_duration(duration_ms)
-            performance_diagnostics.mark_latency_trace_stage(
-                "report_refresh_request_duration_ms", duration_ms
-            )
+    def _request_report_refresh(
+        self,
+        trading_date: date,
+        *,
+        persist: bool = False,
+    ) -> None:
+        request_report_refresh(
+            self._report_worker,
+            trading_date=trading_date,
+            configuration_fingerprint=self.configuration_fingerprint,
+            persist=persist,
+        )
 
     def _accept_report(self, report: DailyForwardReport) -> None:
         self._daily_report = report
