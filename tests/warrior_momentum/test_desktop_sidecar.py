@@ -145,6 +145,48 @@ def test_retained_quote_marks_build_zero_volume_management_bars(
     assert sidecar._accumulators["XYZ"].close == D("17.00")
 
 
+def test_retained_position_advances_without_complete_scanner_observation(
+    tmp_path: Path,
+) -> None:
+    """Recovered management cannot depend on scanner discovery completeness."""
+    scanner = MarketEventScannerAdapter(ScannerReferenceStore(()))
+    advanced: list[tuple] = []
+    invalidated: list[tuple] = []
+    service = SimpleNamespace(
+        open_paper_symbols=("XYZ",),
+        observe_market_bar=lambda *args: advanced.append(args),
+        invalidate_intraminute_shadow=lambda *args, **kwargs: invalidated.append(
+            (args, kwargs)
+        ),
+    )
+    sidecar = WarriorDesktopSidecar(
+        enabled=False,
+        storage_path=tmp_path / "retained-incomplete.sqlite3",
+        clock=lambda: T0 + timedelta(minutes=1),
+    )
+    sidecar._adapter = scanner
+    sidecar._service = service
+
+    first_trade = trade(1, T0, "16.20")
+    scanner.consume(first_trade)
+    sidecar._consume(first_trade)
+    assert advanced == []
+
+    next_quote = quote(T0 + timedelta(minutes=1))
+    scanner.consume(next_quote)
+    assert scanner.observation_for("XYZ") is None
+    sidecar._consume(next_quote)
+
+    assert len(advanced) == 1
+    symbol, completed, observed_at = advanced[0]
+    assert symbol == "XYZ"
+    assert completed.timestamp == T0.replace(second=0, microsecond=0)
+    assert completed.open == completed.high == completed.low == completed.close == D("16.20")
+    assert completed.volume == D("0")
+    assert observed_at == T0 + timedelta(minutes=1)
+    assert len(invalidated) == 1
+
+
 def test_historical_preload_merges_completed_bars_before_first_decision(
     tmp_path: Path,
 ) -> None:
