@@ -730,6 +730,7 @@ def create_desktop_composition(
         market_event_observer = CompositeMarketEventObserver(
             market_event_observer, warrior_forward_sidecar,
             trade_intelligence_observer, adaptive_entry_research_observer,
+            async_projections=True,
         )
 
     if crypto_research_runtime.enabled:

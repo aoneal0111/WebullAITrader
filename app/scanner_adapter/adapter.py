@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 
 from app.market_data.models import (
@@ -15,7 +16,7 @@ from app.market_data.models import (
     TradingHaltPayload,
     VolumeSemantics,
 )
-from app.market.calendar import EASTERN, market_session, trading_day_schedule
+from app.market.calendar import EASTERN, MarketSession, market_session, trading_day_schedule
 from app.momentum_scanner.models import ScannerObservation
 from app.scanner_adapter.models import AdapterResult, SymbolScannerState
 from app.scanner_adapter.reference_store import ScannerReferenceStore
@@ -40,6 +41,7 @@ class MarketEventScannerAdapter:
         self._active_trading_date: date | None = None
         self._price_observer = price_observer
         self._completeness_transitions: dict[str, dict[str, object]] = {}
+        self._session_cache: OrderedDict[date, object] = OrderedDict()
 
     def consume(self, event: MarketEvent) -> AdapterResult | None:
         if event.symbol is None:
@@ -393,6 +395,7 @@ class MarketEventScannerAdapter:
                 )
                 selected_volume = _select_snapshot_volume(
                     event, state.extended_volume, state.overnight_volume,
+                    session_selector=self._cached_market_session,
                 )
                 prior_authoritative = state.authoritative_volume
                 authoritative = max(
@@ -626,6 +629,31 @@ class MarketEventScannerAdapter:
     def state_count(self) -> int:
         return len(self._states)
 
+    def _cached_market_session(self, value: datetime) -> MarketSession:
+        """Preserve exchange-calendar semantics without repeated schedule calls."""
+        eastern = value.astimezone(EASTERN)
+        trading_date = eastern.date()
+        schedule = self._session_cache.get(trading_date)
+        if schedule is None and trading_date not in self._session_cache:
+            schedule = trading_day_schedule(eastern)
+            self._session_cache[trading_date] = schedule
+            while len(self._session_cache) > 8:
+                self._session_cache.popitem(last=False)
+        else:
+            self._session_cache.move_to_end(trading_date)
+        if schedule is None:
+            return MarketSession.CLOSED
+        current_time = eastern.time()
+        if current_time < time(4, 0):
+            return MarketSession.OVERNIGHT
+        if current_time < schedule.market_open.time():
+            return MarketSession.PREMARKET
+        if eastern < schedule.market_close:
+            return MarketSession.CORE
+        if current_time < time(20, 0):
+            return MarketSession.AFTER_HOURS
+        return MarketSession.OVERNIGHT
+
 
 def _latest_timestamp(
     left: datetime | None,
@@ -649,6 +677,8 @@ def _select_snapshot_volume(
     event: MarketEvent,
     prior_extended: Decimal | None = None,
     prior_overnight: Decimal | None = None,
+    *,
+    session_selector: Callable[[datetime], MarketSession] | None = None,
 ) -> Decimal:
     """Select one provider-authoritative accumulated volume without summing
     regular/extended/overnight fields whose overlap is not documented.
@@ -660,7 +690,11 @@ def _select_snapshot_volume(
     payload = event.payload
     assert isinstance(payload, TradePayload)
     candidates = [payload.size]
-    session = market_session(event.timestamp)
+    session = (
+        market_session(event.timestamp)
+        if session_selector is None
+        else session_selector(event.timestamp)
+    )
     if session.value in {"PREMARKET", "OVERNIGHT"}:
         candidates.extend(
             value for value in (

@@ -40,6 +40,7 @@ from .forward_store import ForwardCaptureStore
 from .order_flow_runtime import (
     OrderFlowPollingService, OrderFlowPriority,
 )
+from .projection_handoff import BoundedProjectionHandoff
 from .models import CandidateStatus, MinuteBar, MomentumCandidate, SetupState
 from .observability import NoOpWarriorObservabilitySink
 from .runtime import WarriorMomentumRuntime
@@ -696,21 +697,40 @@ class WarriorDesktopSidecar:
             metrics = self._last_metrics if writer is None else writer.metrics()
             if metrics is not None:
                 self._last_metrics = metrics
-            ranked = tuple(
-                (
-                    self._service.runtime
-                    if self._service is not None
-                    else WarriorMomentumRuntime(self.strategy_config)
-                ).rank(tuple(self._latest.values()))
+            candidates = tuple(self._latest.values())
+            runtime = (
+                self._service.runtime
+                if self._service is not None
+                else WarriorMomentumRuntime(self.strategy_config)
             )
-            ranked_symbols = {item.symbol.strip().upper() for item in ranked}
+            health = self._health
+            last_error = self._last_error_type
+            enabled = self.enabled
+            configuration_fingerprint = self.configuration_fingerprint
+            report = self._daily_report
+            stage_counts = {
+                name: len(values) for name, values in self._stage_symbols.items()
+            }
+            open_paper_trades = (
+                (0 if report is None else report.open_paper_positions)
+                if self._service is None else len(self._service.open_paper_symbols)
+            )
+            counterfactuals = (
+                0 if self._service is None else len(self._service.counterfactual_symbols)
+            )
             prior_focus_symbols = self._diagnostic_focus_symbols
+        finally:
+            self._lock.release()
+
+        ranked = tuple(runtime.rank(candidates))
+        ranked_symbols = {item.symbol.strip().upper() for item in ranked}
+        if prior_focus_symbols is not None:
             for item in ranked:
                 _safe_warrior_observe(
                     self._observability, "FOCUS_PROJECTION_INSERT", item.symbol,
                     focus_inserted=True, focus_rank=item.rank, focus_size=len(ranked),
                 )
-            for symbol in self._latest:
+            for symbol in {item.symbol.strip().upper() for item in candidates}:
                 if symbol not in ranked_symbols:
                     focus_action = (
                         "DROPPED_FROM_PRIOR_SNAPSHOT"
@@ -722,37 +742,33 @@ class WarriorDesktopSidecar:
                         focus_inserted=False, focus_action=focus_action,
                         focus_size=len(ranked),
                     )
-            if prior_focus_symbols is not None:
+            with self._lock:
                 self._diagnostic_focus_symbols = set(ranked_symbols)
-            report = self._daily_report
-            summary = WarriorPaperSummary(
-                discovered=len(self._stage_symbols["discovered"]),
-                stocks_in_play=len(self._stage_symbols["stocks_in_play"]),
-                near=len(self._stage_symbols["near"]),
-                qualified=len(self._stage_symbols["qualified"]),
-                setup_forming=len(self._stage_symbols["setup_forming"]),
-                triggered=len(self._stage_symbols["triggered"]),
-                entry_ready=len(self._stage_symbols["entry_ready"]),
-                open_paper_trades=(
-                    (0 if report is None else report.open_paper_positions)
-                    if self._service is None else len(self._service.open_paper_symbols)
-                ),
-                today_paper_r=None if report is None else report.total_r,
-                today_trades=0 if report is None else report.paper_trades,
-                triggered_but_blocked=len(self._stage_symbols["blocked"]),
-                tracked_counterfactuals=(
-                    0 if self._service is None else len(self._service.counterfactual_symbols)
-                ),
-            )
-            elapsed = max(monotonic() - self._publication_started, 1e-9)
-            return WarriorPaperSnapshot(
-                self.enabled, self._health, self.configuration_fingerprint,
-                tuple(self._focus_item(item) for item in ranked), summary,
-                metrics, self._last_error_type,
-                Decimal(str(self._publications / elapsed)),
-            )
-        finally:
-            self._lock.release()
+        summary = WarriorPaperSummary(
+            discovered=stage_counts["discovered"],
+            stocks_in_play=stage_counts["stocks_in_play"],
+            near=stage_counts["near"],
+            qualified=stage_counts["qualified"],
+            setup_forming=stage_counts["setup_forming"],
+            triggered=stage_counts["triggered"],
+            entry_ready=stage_counts["entry_ready"],
+            open_paper_trades=open_paper_trades,
+            today_paper_r=None if report is None else report.total_r,
+            today_trades=0 if report is None else report.paper_trades,
+            triggered_but_blocked=stage_counts["blocked"],
+            tracked_counterfactuals=counterfactuals,
+        )
+        elapsed = max(monotonic() - self._publication_started, 1e-9)
+        return WarriorPaperSnapshot(
+            enabled, health, configuration_fingerprint,
+            tuple(self._focus_item(item) for item in ranked), summary,
+            metrics, last_error,
+            Decimal(str(self._publications / elapsed)),
+        )
+
+    def set_research_observer(self, observer: object | None) -> None:
+        """Replace the advisory observer without changing Warrior authority."""
+        self._research_observer = observer
 
     def management_context(self, symbol: str) -> dict[str, object] | None:
         """Return the active Warrior management facts for read-only GUI use."""
@@ -1443,20 +1459,103 @@ class CompositeMarketEventObserver:
     def __init__(self, primary: Callable[[MarketEvent], object] | None,
                  warrior: WarriorDesktopSidecar,
                  research: object | None = None,
-                 adaptive_entry: object | None = None) -> None:
+                 adaptive_entry: object | None = None,
+                 *, async_projections: bool = False,
+                 projection_capacity: int = 512) -> None:
         self.primary = primary
         self.warrior = warrior
         self.research = research
         self.adaptive_entry = adaptive_entry
         self.adaptive_entry_failures = 0
+        self.async_projections = bool(async_projections)
+        self._research_handoff = None
+        self._adaptive_handoff = None
+        if self.async_projections:
+            self._research_handoff = BoundedProjectionHandoff(
+                self._dispatch_research, maximum_keys=projection_capacity,
+            )
+            self._adaptive_handoff = BoundedProjectionHandoff(
+                self._dispatch_adaptive, maximum_keys=projection_capacity,
+            )
+            setter = getattr(self.warrior, "set_research_observer", None)
+            if research is not None and callable(setter):
+                setter(_ResearchHandoffProxy(self._research_handoff))
+
+    def start(self, _environment: str | None = None) -> None:
+        if self._research_handoff is not None:
+            self._research_handoff.start()
+        if self._adaptive_handoff is not None:
+            self._adaptive_handoff.start()
+        research_start = getattr(self.research, "start", None)
+        if callable(research_start):
+            research_start(_environment)
+        adaptive_start = getattr(self.adaptive_entry, "start", None)
+        if callable(adaptive_start):
+            adaptive_start(_environment)
+        self.warrior.start(_environment)
+
+    def stop(self) -> None:
+        if self._research_handoff is not None:
+            self._research_handoff.stop(drain=False)
+        if self._adaptive_handoff is not None:
+            self._adaptive_handoff.stop(drain=False)
+        research_stop = getattr(self.research, "stop", None)
+        if callable(research_stop):
+            try:
+                research_stop()
+            except Exception:
+                pass
+        adaptive_stop = getattr(self.adaptive_entry, "stop", None)
+        if callable(adaptive_stop):
+            try:
+                adaptive_stop()
+            except Exception:
+                pass
+        self.warrior.stop()
+
+    def projection_metrics(self) -> dict[str, dict[str, int | float]]:
+        return {
+            "research": {} if self._research_handoff is None else self._research_handoff.memory_metrics(),
+            "adaptive": {} if self._adaptive_handoff is None else self._adaptive_handoff.memory_metrics(),
+        }
+
+    def _dispatch_research(self, value: object) -> None:
+        if self.research is None:
+            return
+        kind, payload = value
+        if kind == "event":
+            self.research(payload)
+        elif kind == "decision":
+            callback = getattr(self.research, "observe_scanner_decision", None)
+            if callable(callback):
+                callback(payload)
+        else:
+            point, candidate, signal = payload
+            callback = getattr(self.research, "observe_warrior_decision", None)
+            if callable(callback):
+                callback(point, candidate, signal)
+
+    def _dispatch_adaptive(self, event: object) -> None:
+        if not callable(self.adaptive_entry):
+            return
+        try:
+            self.adaptive_entry(event)
+        except Exception:
+            self.adaptive_entry_failures += 1
 
     def __call__(self, event: MarketEvent) -> None:
         if self.primary is not None:
             self._timed("paper.market_event", self.primary, event)
         self._timed("warrior.desktop_sidecar", self.warrior, event)
-        if callable(self.research):
+        if self._research_handoff is not None:
+            self._research_handoff.submit(
+                _projection_key(event), ("event", event),
+            )
+        elif callable(self.research):
             self._timed("research.trade_intelligence", self.research, event)
-        if callable(self.adaptive_entry):
+        if self._adaptive_handoff is not None:
+            self._adaptive_handoff.submit(_projection_key(event), event)
+        elif callable(self.adaptive_entry):
             try:
                 self._timed("research.adaptive_entry", self.adaptive_entry, event)
             except Exception:
@@ -1484,7 +1583,12 @@ class CompositeMarketEventObserver:
     def observe_scanner_decision(self, decision: object) -> None:
         observer = getattr(self.research, "observe_scanner_decision", None)
         if callable(observer):
-            observer(decision)
+            if self._research_handoff is not None:
+                self._research_handoff.submit(
+                    _projection_key(decision), ("decision", decision),
+                )
+            else:
+                observer(decision)
 
     def reset_symbol(self, symbol: str) -> None:
         observer = getattr(self.research, "reset_symbol", None)
@@ -1510,36 +1614,36 @@ class CompositeMarketEventObserver:
     ) -> int:
         return self.warrior.preload_historical_bars(symbol, bars)
 
-    def start(self, environment: str | None = None) -> None:
-        research_start = getattr(self.research, "start", None)
-        if callable(research_start):
-            research_start(environment)
-        adaptive_start = getattr(self.adaptive_entry, "start", None)
-        if callable(adaptive_start):
-            adaptive_start(environment)
-        self.warrior.start(environment)
-
-    def stop(self) -> None:
-        research_stop = getattr(self.research, "stop", None)
-        if callable(research_stop):
-            try:
-                research_stop()
-            except Exception:
-                pass
-        adaptive_stop = getattr(self.adaptive_entry, "stop", None)
-        if callable(adaptive_stop):
-            try:
-                adaptive_stop()
-            except Exception:
-                pass
-        self.warrior.stop()
-
     def retained_symbols(self) -> tuple[str, ...]:
         values = set(self.warrior.retained_symbols())
         research_values = getattr(self.research, "retained_symbols", None)
         if callable(research_values):
             values.update(research_values())
         return tuple(sorted(values))
+
+
+class _ResearchHandoffProxy:
+    """Advisory TI facade used by the authoritative Warrior sidecar."""
+
+    def __init__(self, handoff: BoundedProjectionHandoff) -> None:
+        self._handoff = handoff
+
+    def __call__(self, event: object) -> None:
+        self._handoff.submit(_projection_key(event), ("event", event))
+
+    def observe_warrior_decision(
+        self, point: object, candidate: object, signal: object,
+    ) -> None:
+        self._handoff.submit(
+            _projection_key(candidate), ("warrior", (point, candidate, signal)),
+        )
+
+
+def _projection_key(value: object) -> str:
+    symbol = getattr(value, "symbol", None)
+    if symbol is None and isinstance(value, tuple) and value:
+        symbol = getattr(value[0], "symbol", None)
+    return str(symbol or "__GLOBAL__").strip().upper()
 
 
 def _blocking_reasons(candidate: MomentumCandidate, entry_ready: bool) -> tuple[str, ...]:

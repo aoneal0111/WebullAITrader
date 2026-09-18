@@ -92,6 +92,9 @@ class OfficialSdkStreamBackend:
         self._messages_enqueued = 0
         self._messages_dequeued = 0
         self._message_queue_high_water = 0
+        self._startup_buffered_count = 0
+        self._oldest_buffered_age_ms = 0.0
+        self._oldest_buffered_age_high_water_ms = 0.0
         self._connected = Event()
         self._registration_ready = Event()
         self._identity_mismatch = Event()
@@ -137,6 +140,9 @@ class OfficialSdkStreamBackend:
                 "high_water_depth": self._message_queue_high_water,
                 "messages_enqueued": self._messages_enqueued,
                 "messages_dequeued": self._messages_dequeued,
+                "startup_buffered_count": self._startup_buffered_count,
+                "oldest_buffered_age_ms": self._oldest_buffered_age_ms,
+                "oldest_buffered_age_high_water_ms": self._oldest_buffered_age_high_water_ms,
             }
 
     @property
@@ -285,6 +291,9 @@ class OfficialSdkStreamBackend:
         self._generation_started_at = self._clock()
         self._generation_first_raw_at = None
         self._generation_first_dequeued_at = None
+        self._startup_buffered_count = 0
+        self._oldest_buffered_age_ms = 0.0
+        self._oldest_buffered_age_high_water_ms = 0.0
         self._last_raw_callback_monotonic = None
         self._last_raw_callback_at = None
         performance_diagnostics.record_startup_stage("stream_connect_started")
@@ -500,6 +509,17 @@ class OfficialSdkStreamBackend:
                 self._message_queue_depth -= 1
                 if self._generation_first_dequeued_at is None:
                     self._generation_first_dequeued_at = self._clock()
+                    self._startup_buffered_count = self._message_queue_depth + 1
+                if isinstance(message, _ReceivedStreamPayload):
+                    age_ms = max(
+                        0.0,
+                        (self._clock() - message.received_timestamp).total_seconds()
+                        * 1000.0,
+                    )
+                    self._oldest_buffered_age_ms = age_ms
+                    self._oldest_buffered_age_high_water_ms = max(
+                        self._oldest_buffered_age_high_water_ms, age_ms,
+                    )
             performance_diagnostics.increment_startup_counter("callbacks_dequeued")
             performance_diagnostics.record_startup_stage("first_callback_dequeued")
             if not self._consumption_started:
@@ -529,6 +549,17 @@ class OfficialSdkStreamBackend:
                 self._message_queue_depth -= 1
                 if self._generation_first_dequeued_at is None:
                     self._generation_first_dequeued_at = self._clock()
+                    self._startup_buffered_count = self._message_queue_depth + 1
+                if isinstance(message, _ReceivedStreamPayload):
+                    age_ms = max(
+                        0.0,
+                        (self._clock() - message.received_timestamp).total_seconds()
+                        * 1000.0,
+                    )
+                    self._oldest_buffered_age_ms = age_ms
+                    self._oldest_buffered_age_high_water_ms = max(
+                        self._oldest_buffered_age_high_water_ms, age_ms,
+                    )
             performance_diagnostics.increment_startup_counter("callbacks_dequeued")
             performance_diagnostics.record_startup_stage("first_callback_dequeued")
             if not self._consumption_started:
