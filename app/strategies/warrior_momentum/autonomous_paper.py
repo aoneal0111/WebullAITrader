@@ -436,23 +436,38 @@ class AutonomousPaperExecutionBridge:
                 if not self._reconcile_correlated_exits(symbol, identity):
                     self._management_incomplete.add(symbol)
                     continue
-                stops = tuple(
+                open_sells = tuple(
                     order for order in self.order_book.open_orders_for_symbol(symbol)
                     if order.request.side is OrderSide.SELL
                     and order.request.strategy_lifecycle_id == identity
-                    and order.request.order_type is OrderType.STOP
                 )
-                if stops and int(stops[0].remaining_quantity) == quantity:
+                stops = tuple(
+                    order for order in open_sells
+                    if order.request.order_type is OrderType.STOP
+                )
+                reserved_target_quantity = sum(
+                    int(order.remaining_quantity)
+                    for order in open_sells
+                    if order.request.order_type is not OrderType.STOP
+                )
+                desired_stop_quantity = max(
+                    0, quantity - reserved_target_quantity,
+                )
+                if (
+                    stops
+                    and int(stops[0].remaining_quantity)
+                    == desired_stop_quantity
+                ):
                     self._management_incomplete.discard(symbol)
                     performance_diagnostics.record_protection_event(
                         state="PROTECTION_RECONCILED",
                         symbol=symbol,
                         lifecycle_id=identity,
                         authoritative_open_quantity=quantity,
-                        protected_quantity=quantity,
+                        protected_quantity=desired_stop_quantity,
                         stop_price=stops[0].request.stop_price,
                         order_id=stops[0].order_id,
-                        reason="RESTORED_PROTECTION_MATCHES_POSITION",
+                        reason="RESTORED_BRACKET_MATCHES_POSITION",
                     )
                     reconciled.append(symbol)
                     continue
@@ -463,7 +478,13 @@ class AutonomousPaperExecutionBridge:
                     self._exit_orders.pop((identity, "STOP"), None)
                     self._exit_keys.pop((identity, "STOP"), None)
                     self._reconcile_terminal_exits()
-                result = self._place_exit(symbol, quantity, stop, "STOP", identity)
+                if desired_stop_quantity == 0:
+                    self._management_incomplete.discard(symbol)
+                    reconciled.append(symbol)
+                    continue
+                result = self._place_exit(
+                    symbol, desired_stop_quantity, stop, "STOP", identity,
+                )
                 if result.protection_active:
                     self._management_incomplete.discard(symbol)
                     performance_diagnostics.record_protection_event(
@@ -471,10 +492,10 @@ class AutonomousPaperExecutionBridge:
                         symbol=symbol,
                         lifecycle_id=identity,
                         authoritative_open_quantity=quantity,
-                        protected_quantity=quantity,
+                        protected_quantity=desired_stop_quantity,
                         stop_price=stop,
                         order_id=result.order_id,
-                        reason="RESTORED_PROTECTION_SUBMITTED",
+                        reason="RESTORED_BRACKET_PROTECTION_SUBMITTED",
                     )
                     reconciled.append(symbol)
                 else:
@@ -1370,6 +1391,49 @@ class AutonomousPaperExecutionBridge:
                         PaperExitSubmissionState.UNAVAILABLE, normalized,
                         identity, reason_key,
                     )
+                correlated_sells = tuple(
+                    order
+                    for order in self.order_book.open_orders_for_symbol(normalized)
+                    if order.request.side is OrderSide.SELL
+                    and order.request.strategy_lifecycle_id == identity
+                )
+                if protective:
+                    target_reservation = sum(
+                        int(order.remaining_quantity)
+                        for order in correlated_sells
+                        if order.request.order_type is not OrderType.STOP
+                    )
+                    correlated_stop = next((
+                        order for order in correlated_sells
+                        if order.request.order_type is OrderType.STOP
+                    ), None)
+                    desired_stop = max(
+                        0,
+                        int(self._authoritative_quantity(normalized))
+                        - target_reservation,
+                    )
+                    if (
+                        target_reservation
+                        and correlated_stop is not None
+                        and int(correlated_stop.remaining_quantity)
+                        == desired_stop
+                    ):
+                        self._management_incomplete.discard(normalized)
+                        performance_diagnostics.record_protection_event(
+                            state="PROTECTION_ALREADY_PRESENT",
+                            symbol=normalized,
+                            lifecycle_id=identity,
+                            authoritative_open_quantity=quantity,
+                            protected_quantity=desired_stop,
+                            stop_price=correlated_stop.request.stop_price,
+                            order_id=correlated_stop.order_id,
+                            reason="CORRELATED_TARGET_RESERVED",
+                        )
+                        return PaperExitSubmissionDecision(
+                            PaperExitSubmissionState.WORKING, normalized,
+                            identity, reason_key, correlated_stop.order_id,
+                            correlated_stop.created_at,
+                        )
                 working_sell = next((
                     order for order in self.order_book.open_orders_for_symbol(normalized)
                     if order.request.side is OrderSide.SELL
