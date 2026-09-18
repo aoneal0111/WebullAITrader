@@ -354,10 +354,7 @@ def test_adaptive_premarket_structural_entry_ignores_old_turnover_proxy(tmp_path
 def test_execution_entry_signal_uses_fresh_ask_inside_existing_displacement(tmp_path: Path) -> None:
     store = ForwardCaptureStore(tmp_path / "execution-entry-price.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
-    service = WarriorForwardCaptureService(
-        store, writer,
-        config=WarriorMomentumConfig(adaptive_context_enabled=True),
-    )
+    service = WarriorForwardCaptureService(store, writer)
     try:
         candidate, signal = service.observe(point(), account=None)
         assert signal is not None
@@ -379,10 +376,7 @@ def test_execution_entry_signal_uses_fresh_ask_inside_existing_displacement(tmp_
 def test_execution_entry_signal_refuses_dead_limit_outside_displacement(tmp_path: Path) -> None:
     store = ForwardCaptureStore(tmp_path / "execution-entry-missed.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
-    service = WarriorForwardCaptureService(
-        store, writer,
-        config=WarriorMomentumConfig(adaptive_context_enabled=True),
-    )
+    service = WarriorForwardCaptureService(store, writer)
     try:
         candidate, signal = service.observe(point(), account=None)
         assert signal is not None
