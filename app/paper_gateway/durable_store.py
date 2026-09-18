@@ -152,19 +152,31 @@ class DurablePaperExecutionStore:
                         and opportunity_id
                         and lifecycle_id
                     ):
-                        connection.execute(
-                            "INSERT INTO consumed_opportunities "
-                            "(opportunity_id,lifecycle_id,symbol,session,episode_id,status,consumed_at,paper_campaign_id) "
-                            "VALUES(?,?,?,?,?,?,?,?) "
-                            "ON CONFLICT(paper_campaign_id,opportunity_id) DO UPDATE SET "
-                            "lifecycle_id=excluded.lifecycle_id,status=excluded.status,consumed_at=excluded.consumed_at",
-                            (
-                                str(opportunity_id), str(lifecycle_id), order.symbol,
-                                str(order.request.metadata.get("session", "")),
-                                str(order.request.metadata.get("structural_episode_id", "")),
-                                order.status.value, order.updated_at.isoformat(), campaign_id,
-                            ),
-                        )
+                        # Opportunity consumption means authoritative entry
+                        # participation, not merely an attempted BUY.  A
+                        # zero-fill cancellation/expiry must remain eligible
+                        # for a later bounded structural lifecycle.
+                        if order.filled_quantity > 0:
+                            connection.execute(
+                                "INSERT INTO consumed_opportunities "
+                                "(opportunity_id,lifecycle_id,symbol,session,episode_id,status,consumed_at,paper_campaign_id) "
+                                "VALUES(?,?,?,?,?,?,?,?) "
+                                "ON CONFLICT(paper_campaign_id,opportunity_id) DO UPDATE SET "
+                                "lifecycle_id=excluded.lifecycle_id,status=excluded.status,consumed_at=excluded.consumed_at",
+                                (
+                                    str(opportunity_id), str(lifecycle_id), order.symbol,
+                                    str(order.request.metadata.get("session", "")),
+                                    str(order.request.metadata.get("structural_episode_id", "")),
+                                    order.status.value, order.updated_at.isoformat(), campaign_id,
+                                ),
+                            )
+                        else:
+                            connection.execute(
+                                "DELETE FROM consumed_opportunities "
+                                "WHERE paper_campaign_id=? AND opportunity_id=? "
+                                "AND lifecycle_id=?",
+                                (campaign_id, str(opportunity_id), str(lifecycle_id)),
+                            )
                 for event in event_values:
                     connection.execute(
                         "INSERT OR IGNORE INTO events(sequence,event_type,payload) VALUES(?,?,?)",
@@ -419,7 +431,7 @@ class DurablePaperExecutionStore:
                 continue
             opportunity_id = order.request.metadata.get("opportunity_id")
             lifecycle_id = order.request.strategy_lifecycle_id
-            if not opportunity_id or not lifecycle_id:
+            if not opportunity_id or not lifecycle_id or order.filled_quantity <= 0:
                 continue
             connection.execute(
                 "INSERT OR IGNORE INTO consumed_opportunities "
