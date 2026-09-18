@@ -681,3 +681,41 @@ def test_recover_stream_resets_engine_state_before_reconnecting() -> None:
         "connect",
         "subscribe",
     ]
+
+
+def test_long_universe_rotation_stays_bounded_and_retains_positions() -> None:
+    transport = FakeTransport()
+    engine = FakeEngine()
+    retained = ["RISK"]
+    coordinator = LiveScannerCoordinator(
+        transport,
+        engine,
+        retained_channels_source=lambda: retained,
+        maximum_subscription_channels=5,
+    )
+    coordinator.start()
+
+    observed_symbols = set(coordinator.channels)
+    for rotation in range(150):
+        engine.active_symbols = tuple(
+            f"S{rotation:03d}{offset:02d}" for offset in range(10)
+        )
+        coordinator.refresh_universe()
+        observed_symbols.update(coordinator.channels)
+        assert len(coordinator.channels) == 5
+        assert "RISK" in coordinator.channels
+
+    assert len(observed_symbols) > 100
+    assert all(len(channels) <= 5 for channels in transport.subscriptions)
+
+
+def test_retained_position_overflow_fails_closed() -> None:
+    coordinator = LiveScannerCoordinator(
+        FakeTransport(),
+        FakeEngine(),
+        retained_channels_source=lambda: ("A", "B"),
+        maximum_subscription_channels=1,
+    )
+
+    with pytest.raises(RuntimeError, match="retained position channels exceed"):
+        coordinator.start()

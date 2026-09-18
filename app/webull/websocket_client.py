@@ -399,9 +399,34 @@ class OfficialSdkStreamBackend:
         if not self._connected.is_set() or not self._registration_ready.is_set():
             raise RuntimeError("streaming session registration is not ready")
         normalized_channels = tuple(sorted(set(channels)))
+        if len(normalized_channels) > 100:
+            raise ValueError(
+                "Webull market-data subscriptions are limited to 100 symbols"
+            )
         if self._subscription_acknowledged.is_set() and self._active_subscription == normalized_channels:
             self._emit_diagnostic("DUPLICATE_SUBSCRIPTION_SKIPPED")
             return
+
+        # The official SDK's subscribe endpoint is additive.  Replacing Atlas's
+        # local tuple without first removing the prior server-side set leaks
+        # tickers across universe rotations and eventually trips Webull's
+        # TOO_MANY_SYMBOLS_SUBSCRIPTION terminal error.
+        if self._active_subscription:
+            unsubscribe = getattr(self.client, "unsubscribe", None)
+            if not callable(unsubscribe):
+                raise TypeError(
+                    "official SDK streaming client has no unsubscribe method"
+                )
+            unsubscribe(unsubscribe_all=True)
+            self._active_subscription = None
+            self._subscription_acknowledged.clear()
+            self._emit_diagnostic("ACTIVE_SUBSCRIPTION_RELEASED")
+
+        if not normalized_channels:
+            self._active_subscription = ()
+            self._subscription_acknowledged.set()
+            return
+
         subscribe = getattr(self.client, "subscribe", None)
         if not callable(subscribe):
             raise TypeError("official SDK streaming client has no subscribe method")

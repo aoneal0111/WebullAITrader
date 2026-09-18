@@ -182,7 +182,17 @@ class FakeSdkClient:
         self.on_connect_success(self, object(), self.arguments["session_id"])
 
     def subscribe(self, **kwargs):
+        symbols = set(kwargs.get("symbols", ()))
+        active = getattr(self, "active_symbols", set()) | symbols
+        if len(active) > 100:
+            raise RuntimeError("TOO_MANY_SYMBOLS_SUBSCRIPTION")
+        self.active_symbols = active
         self.calls.append(("subscribe", kwargs))
+
+    def unsubscribe(self, **kwargs):
+        if kwargs.get("unsubscribe_all"):
+            self.active_symbols = set()
+        self.calls.append(("unsubscribe", kwargs))
 
     def loop_stop(self):
         self.calls.append("loop_stop")
@@ -370,3 +380,45 @@ def test_wss_configuration_uses_sdk_default_and_reaches_subscription_stage():
     assert observed["sdk_client"].calls[0] == "connect"
     assert observed["sdk_client"].calls[1][0] == "subscribe"
     assert observed["sdk_client"].calls[1][1]["symbols"] == ("AAPL",)
+
+
+def test_universe_rotations_replace_the_server_side_subscription():
+    observed = {}
+
+    def factory(**kwargs):
+        observed["client"] = FakeSdkClient(kwargs)
+        return observed["client"]
+
+    backend = create_official_stream_backend(
+        credentials(), subscription(), client_factory=factory
+    )
+    backend.connect()
+
+    for rotation in range(150):
+        backend.subscribe(
+            tuple(f"S{rotation:03d}{offset:03d}" for offset in range(100))
+        )
+        assert len(observed["client"].active_symbols) == 100
+
+    calls = observed["client"].calls
+    assert sum(call[0] == "subscribe" for call in calls if isinstance(call, tuple)) == 150
+    assert sum(call[0] == "unsubscribe" for call in calls if isinstance(call, tuple)) == 149
+
+
+def test_subscription_limit_rejects_oversized_set_before_replacing_active_set():
+    observed = {}
+
+    def factory(**kwargs):
+        observed["client"] = FakeSdkClient(kwargs)
+        return observed["client"]
+
+    backend = create_official_stream_backend(
+        credentials(), subscription(), client_factory=factory
+    )
+    backend.connect()
+    backend.subscribe(("KEEP",))
+
+    with pytest.raises(ValueError, match="limited to 100"):
+        backend.subscribe(tuple(f"S{index:03d}" for index in range(101)))
+
+    assert observed["client"].active_symbols == {"KEEP"}

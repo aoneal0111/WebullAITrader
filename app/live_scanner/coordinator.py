@@ -42,6 +42,7 @@ class LiveScannerCoordinator:
         event_observer: Callable[[Any], object] | None = None,
         retained_channels_source: Callable[[], Iterable[str]] | None = None,
         universe_refresh_interval_seconds: float = 60.0,
+        maximum_subscription_channels: int = 100,
     ) -> None:
         if maximum_events_per_cycle <= 0:
             raise ValueError(
@@ -65,6 +66,9 @@ class LiveScannerCoordinator:
         if universe_refresh_interval_seconds < 0:
             raise ValueError("universe refresh interval cannot be negative")
         self._universe_refresh_interval_seconds = float(universe_refresh_interval_seconds)
+        if maximum_subscription_channels <= 0:
+            raise ValueError("maximum subscription channels must be positive")
+        self._maximum_subscription_channels = int(maximum_subscription_channels)
 
         self._channels: tuple[str, ...] = ()
         self._scanner_channels: tuple[str, ...] = self._default_channels
