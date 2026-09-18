@@ -9,21 +9,18 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.configuration import load_configuration
-from app.services.chart_market_data import ChartMarketDataService
 from app.operations_core import ApplicationStateStore, OperationsBus
 from app.order_cancellation import OrderCancellationRuntime
 from app.order_placement import OrderPlacementRuntime
 from app.paper_trading.order_book import PaperOrderBook
 from app.paper_trading.execution_engine import PaperExecutionEngine
 from app.services import OrderCommandFactory, RuntimeService, TradingService
-from app.operations.runtime import PaperRuntimeEvent, RuntimeHealthUpdate
+from app.operations.runtime import PaperRuntimeEvent
 from app.webull.client_factories import (
-    MarketDataClientFactory,
     market_data_configuration,
     trading_configuration,
 )
-from app.webull.request_audit import AuditedMarketDataClient, RequestIsolationGuard
-from app.webull.sdk_market_data import LazyOfficialDataClient
+from app.webull.request_audit import RequestIsolationGuard
 from app.webull.market_data_session import utc_now
 from app.strategies.warrior_momentum.desktop_sidecar import (
     CompositeMarketEventObserver, WarriorDesktopSidecar,
@@ -32,7 +29,6 @@ from app.strategies.warrior_momentum.desktop_sidecar import (
 from app.strategies.warrior_momentum.configuration import WarriorMomentumConfig
 from app.strategies.warrior_momentum.forward_models import PaperAccountContext
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
-from app.strategies.warrior_momentum.execution_quote import WebullExecutionQuoteSource
 from app.strategies.warrior_momentum.forward_runtime import management_context_available
 from app.strategies.warrior_momentum.observability import create_warrior_observability_sink
 from app.trade_intelligence.runtime import TradeIntelligenceRuntimeObserver
@@ -51,6 +47,7 @@ from app.crypto_research import (
 )
 from .desktop_optional_research import create_optional_research_runtimes
 from .desktop_observability import create_desktop_memory_observability, optional_metrics
+from .desktop_market_services import create_desktop_market_services
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -271,38 +268,14 @@ def create_desktop_composition(
         position_source=lambda: runtime_projections.position_projection.snapshot,
         order_source=lambda: runtime_projections.order_projection.snapshot,
     )
-    chart_observation_sequence = 0
-
-    def publish_chart_observation(event_type: str, symbol: str, count: int) -> None:
-        nonlocal chart_observation_sequence
-        chart_observation_sequence += 1
-        runtime_projections.sink(PaperRuntimeEvent(
-            sequence=chart_observation_sequence,
-            timestamp=utc_now(),
-            event_type=event_type,
-            message=f"Loaded {count} historical bars for {symbol} through REST.",
-            cycle=0,
-            symbol=symbol,
-            source="atlas-chart-rest",
-            health=RuntimeHealthUpdate(
-                market_data_status="CONNECTED",
-                market_data_rest_status="CONNECTED",
-                historical_bars_status="AVAILABLE",
-            ),
-        ))
-
-    shared_rest_market_data = LazyOfficialDataClient(
-        lambda: AuditedMarketDataClient(
-            MarketDataClientFactory(chart_market_configuration).create(),
-            chart_request_guard,
-            chart_market_configuration,
-        )
+    market_services = create_desktop_market_services(
+        chart_market_configuration=chart_market_configuration,
+        chart_request_guard=chart_request_guard,
+        runtime_projections=runtime_projections,
     )
-    chart_market_data_service = ChartMarketDataService(
-        shared_rest_market_data,
-        observation_sink=publish_chart_observation,
-    )
-    execution_quote_source = WebullExecutionQuoteSource(shared_rest_market_data)
+    shared_rest_market_data = market_services.shared_rest_market_data
+    chart_market_data_service = market_services.chart_market_data_service
+    execution_quote_source = market_services.execution_quote_source
 
     def position_average_cost(symbol: str) -> Decimal | None:
         position = runtime_projections.position_projection.position_for_symbol(
