@@ -208,6 +208,7 @@ class WarriorMomentumRuntime:
             reference_price=candidate.price, stop_price=setup.stop_price,
             stop_model=setup.stop_model, risk_per_share=risk,
             target_levels=(setup.trigger + risk, setup.trigger + risk * 2, setup.trigger + risk * 3),
+            structural_entry_trigger=setup.trigger,
             catalyst_state=candidate.catalyst_status, relative_volume=candidate.relative_volume,
             float_shares=candidate.float_shares, spread_percent=candidate.spread_percent,
             volume=candidate.volume, dollar_volume=candidate.dollar_volume,
