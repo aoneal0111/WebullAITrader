@@ -47,16 +47,11 @@ from app.adaptive_entry_research import AdaptiveWorkingEntryObserver
 from app.memory_observability import MemoryObservability
 from app.performance_diagnostics import performance_diagnostics
 from app.crypto_research import (
-    CryptoCatalystCollectionConfig,
-    CryptoCatalystCollectionSink,
-    CryptoIntelligenceResearchRuntime,
     CryptoCatalystAcquisitionRuntime,
-    adapt_catalyst_provider,
-    set_catalyst_provider_enabled,
-    CryptoPair,
+    CryptoIntelligenceResearchRuntime,
     CryptoResearchRuntime,
-    WebullCryptoResearchProvider,
 )
+from .desktop_optional_research import create_optional_research_runtimes
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -565,78 +560,17 @@ def create_desktop_composition(
         warrior_source=warrior_forward_sidecar.adaptive_entry_context,
     )
 
-    crypto_data_client = LazyOfficialDataClient(
-        lambda: AuditedMarketDataClient(
-            MarketDataClientFactory(chart_market_configuration).create(
-                timeout_seconds=5.0
-            ),
-            chart_request_guard,
-            chart_market_configuration,
-        )
+    optional_research = create_optional_research_runtimes(
+        operational_configuration=operational_configuration,
+        chart_market_configuration=chart_market_configuration,
+        chart_request_guard=chart_request_guard,
+        catalyst_providers=catalyst_providers,
     )
-    crypto_research_runtime = CryptoResearchRuntime(
-        enabled=operational_configuration.crypto_discovery_enabled,
-        provider=WebullCryptoResearchProvider(crypto_data_client),
-        configured_pairs=tuple(
-            CryptoPair.configured(value)
-            for value in operational_configuration.crypto_discovery_symbols
-        ),
-        path=operational_configuration.crypto_discovery_path,
-        queue_capacity=operational_configuration.crypto_discovery_queue_capacity,
-        refresh_seconds=operational_configuration.crypto_discovery_refresh_seconds,
-        intelligence_history_max_symbols=operational_configuration.crypto_intelligence_history_max_symbols,
-        intelligence_history_bar_count=operational_configuration.crypto_intelligence_history_bar_count,
-        intelligence_history_request_budget=operational_configuration.crypto_intelligence_history_request_budget,
-        intelligence_m1_refresh_seconds=operational_configuration.crypto_intelligence_m1_refresh_seconds,
-        intelligence_m5_refresh_seconds=operational_configuration.crypto_intelligence_m5_refresh_seconds,
+    crypto_research_runtime = optional_research.crypto_research_runtime
+    crypto_catalyst_acquisition_runtime = (
+        optional_research.crypto_catalyst_acquisition_runtime
     )
-    crypto_catalyst_acquisition_runtime = None
-    if operational_configuration.crypto_catalyst_acquisition_enabled:
-        provider_flags = {
-            "SEC_EDGAR": operational_configuration.crypto_catalyst_sec_enabled,
-            "FEDERAL_REGISTER": operational_configuration.crypto_catalyst_federal_register_enabled,
-            "STATUSPAGE": operational_configuration.crypto_catalyst_statuspage_enabled,
-            "BYBIT": operational_configuration.crypto_catalyst_bybit_enabled,
-        }
-        composed_catalyst_providers = tuple(
-            adapt_catalyst_provider(
-                set_catalyst_provider_enabled(
-                    provider,
-                    provider_flags.get(str(getattr(provider, "provider_id", "")), False),
-                )
-            )
-            for provider in catalyst_providers
-        )
-        crypto_catalyst_acquisition_runtime = CryptoCatalystAcquisitionRuntime(
-            enabled=True,
-            providers=composed_catalyst_providers,
-            cadences={
-                "SEC_EDGAR": operational_configuration.crypto_catalyst_sec_cadence_seconds,
-                "FEDERAL_REGISTER": operational_configuration.crypto_catalyst_federal_register_cadence_seconds,
-                "STATUSPAGE": operational_configuration.crypto_catalyst_statuspage_cadence_seconds,
-                "BYBIT": operational_configuration.crypto_catalyst_bybit_cadence_seconds,
-            },
-            provider_enabled=provider_flags,
-            scheduler_tick_seconds=operational_configuration.crypto_catalyst_scheduler_tick_seconds,
-        )
-    crypto_intelligence_runtime = None
-    if operational_configuration.crypto_intelligence_enabled:
-        collection_config = CryptoCatalystCollectionConfig.from_environment()
-        collection_sink = (
-            CryptoCatalystCollectionSink(collection_config)
-            if collection_config.enabled
-            else None
-        )
-        crypto_intelligence_runtime = CryptoIntelligenceResearchRuntime(
-            enabled=True,
-            catalyst_view=(None if crypto_catalyst_acquisition_runtime is None else crypto_catalyst_acquisition_runtime),
-            collection=collection_sink,
-            maximum_active_decisions=operational_configuration.crypto_intelligence_max_active_decisions,
-        )
-        crypto_research_runtime.configure_intelligence(
-            context_sink=crypto_intelligence_runtime.submit_context,
-            outcome_sink=crypto_intelligence_runtime.update_outcomes,
-        )
+    crypto_intelligence_runtime = optional_research.crypto_intelligence_runtime
 
     def optional_metrics(root: object | None, *attributes: str) -> dict[str, int]:
         """Resolve a live diagnostic owner without creating or retaining one."""
@@ -733,12 +667,7 @@ def create_desktop_composition(
             async_projections=True,
         )
 
-    if crypto_research_runtime.enabled:
-        crypto_research_runtime.start()
-    if crypto_catalyst_acquisition_runtime is not None:
-        crypto_catalyst_acquisition_runtime.start()
-    if crypto_intelligence_runtime is not None and crypto_intelligence_runtime.enabled:
-        crypto_intelligence_runtime.start()
+    optional_research.start()
 
     # D2B1 consumes the existing D1 predicate.  Repository opening is local;
     # all network-capable construction remains behind lease authorization.
