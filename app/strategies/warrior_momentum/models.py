@@ -77,6 +77,7 @@ class ReasonCode(StrEnum):
     STALE_MARKET_DATA = "STALE_MARKET_DATA"
     PROCESSING_DELAYED = "PROCESSING_DELAYED"
     AWAITING_EXECUTION_QUOTE = "AWAITING_EXECUTION_QUOTE"
+    ENTRY_PRICE_DISPLACED = "ENTRY_PRICE_DISPLACED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +146,7 @@ class SetupDetection:
     # never identity.
     structural_episode_id: str | None = None
     structural_anchor: str | None = None
+    structural_entry_trigger: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
