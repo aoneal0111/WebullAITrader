@@ -1058,8 +1058,15 @@ class WarriorForwardCaptureService:
         if executable == signal.entry_trigger:
             return signal
         risk = executable - signal.stop_price
-        if risk <= ZERO or risk > self.config.entry.maximum_risk_per_share:
+        if risk <= ZERO:
             return None
+        # The canonical setup already passed the strategy's structural
+        # risk-per-share gate.  Moving the executable limit to a fresh ask
+        # inside the existing displacement envelope must not reclassify that
+        # setup as structurally invalid.  Position sizing below uses this
+        # actual executable risk, so the account risk budget remains
+        # authoritative without turning a few cents of execution displacement
+        # into a hidden second setup threshold.
         return replace(
             signal,
             entry_trigger=executable,
