@@ -10,6 +10,7 @@ from enum import StrEnum
 from hashlib import sha256
 import logging
 from pathlib import Path
+import re
 from threading import RLock
 from time import monotonic, perf_counter
 from typing import Callable, Iterable
@@ -39,20 +40,7 @@ from .forward_store import ForwardCaptureStore
 from .order_flow_runtime import (
     OrderFlowPollingService, OrderFlowPriority,
 )
-from .market_event_observer import CompositeMarketEventObserver
-from .capture_io import flush_capture_writer, request_report_refresh
-from .capture_support import (
-    build_latency_diagnostic_record,
-    build_session_record,
-    safe_diagnostic_message,
-)
-from .projection_models import (
-    WarriorFocusItem,
-    WarriorPaperSnapshot,
-    WarriorPaperSummary,
-    blocking_reasons,
-    scanner_classification,
-)
+from .projection_handoff import BoundedProjectionHandoff
 from .models import CandidateStatus, MinuteBar, MomentumCandidate, SetupState
 from .observability import NoOpWarriorObservabilitySink
 from .runtime import WarriorMomentumRuntime
@@ -84,6 +72,50 @@ class WarriorCaptureHealth(StrEnum):
     RUNNING = "RUNNING"
     DEGRADED = "DEGRADED"
     STOPPED = "STOPPED"
+
+
+@dataclass(frozen=True, slots=True)
+class WarriorPaperSummary:
+    discovered: int = 0
+    stocks_in_play: int = 0
+    near: int = 0
+    qualified: int = 0
+    setup_forming: int = 0
+    triggered: int = 0
+    entry_ready: int = 0
+    open_paper_trades: int = 0
+    today_paper_r: Decimal | None = None
+    today_trades: int = 0
+    triggered_but_blocked: int = 0
+    tracked_counterfactuals: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class WarriorFocusItem:
+    candidate: MomentumCandidate
+    float_provenance: FloatProvenance
+    entry_trigger: Decimal | None
+    stop_price: Decimal | None
+    blocking_reasons: tuple[str, ...]
+    market_data_stale: bool = False
+    market_data_age_seconds: Decimal | None = None
+    decision_timestamp: datetime | None = None
+    decision_last: Decimal | None = None
+    decision_bid: Decimal | None = None
+    decision_ask: Decimal | None = None
+    decision_spread_percent: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WarriorPaperSnapshot:
+    enabled: bool
+    health: WarriorCaptureHealth
+    configuration_fingerprint: str
+    items: tuple[WarriorFocusItem, ...] = ()
+    summary: WarriorPaperSummary = WarriorPaperSummary()
+    metrics: CaptureMetrics | None = None
+    last_error_type: str | None = None
+    publication_rate_hz: Decimal = Decimal("0")
 
 
 @dataclass(slots=True)
@@ -888,7 +920,7 @@ class WarriorDesktopSidecar:
             )
             scanner_classification = None
             if scanner_decision is not None:
-                scanner_classification = scanner_classification(
+                scanner_classification = _scanner_classification(
                     scanner_decision,
                     False if self._scanner_ranked_source is None
                     else self._scanner_ranked_source(symbol),
@@ -995,7 +1027,7 @@ class WarriorDesktopSidecar:
                     session=candidate.session,
                 )
                 self._provenance[symbol] = provenance
-                self._blocking[symbol] = blocking_reasons(candidate, signal is not None)
+                self._blocking[symbol] = _blocking_reasons(candidate, signal is not None)
                 ages = tuple(
                     age for age in (quote_freshness, last_price_freshness)
                     if age is not None
@@ -1177,15 +1209,30 @@ class WarriorDesktopSidecar:
             self._bars[symbol] = sorted(values, key=lambda item: item.timestamp)[-120:]
 
     def _session_record(self, action: str, now: datetime) -> CaptureRecord:
-        return build_session_record(
-            writer=self._writer,
-            strategy_version=STRATEGY_VERSION,
-            action=action,
-            now=now,
-            started_at=self._started_at,
-            environment=self.environment,
-            configuration_fingerprint=self.configuration_fingerprint,
-            run_key=self._run_key,
+        metrics = None if self._writer is None else self._writer.metrics()
+        return CaptureRecord.create(
+            CaptureRecordType.OBSERVATION_SESSION, STRATEGY_VERSION, now,
+            {
+                "action": action, "strategy_version": STRATEGY_VERSION,
+                "schema_version": CAPTURE_SCHEMA_VERSION,
+                "trading_date": now.astimezone(EASTERN).date(),
+                "capture_start": self._started_at,
+                "capture_end": now if action == "END" else None,
+                "environment": self.environment,
+                "configuration_fingerprint": self.configuration_fingerprint,
+                "observation_run_key": self._run_key,
+                "capture_metrics": None if metrics is None else {
+                    "queue_depth": metrics.queue_depth,
+                    "records_written": metrics.records_written,
+                    "average_write_latency_ms": metrics.average_write_latency_ms,
+                    "maximum_write_latency_ms": metrics.maximum_write_latency_ms,
+                    "dropped_records": metrics.dropped_records,
+                    "duplicate_records": metrics.duplicate_records,
+                    "synchronous_fallback_records": metrics.synchronous_fallback_records,
+                    "gui_refresh_frequency_hz": metrics.gui_refresh_frequency_hz,
+                },
+            },
+            identity_parts=(action, self._run_key or "unstarted"),
         )
 
     def _update_health(self) -> None:
@@ -1197,20 +1244,33 @@ class WarriorDesktopSidecar:
             self._health = WarriorCaptureHealth.DEGRADED
 
     def _flush_capture_writer(self, writer: ForwardCaptureWriter) -> None:
-        flush_capture_writer(writer)
+        started = perf_counter()
+        try:
+            writer.flush()
+        finally:
+            duration_ms = (perf_counter() - started) * 1000.0
+            performance_diagnostics.record_completed_bar_flush_duration(duration_ms)
+            performance_diagnostics.mark_latency_trace_stage(
+                "completed_bar_flush_duration_ms", duration_ms
+            )
 
-    def _request_report_refresh(
-        self,
-        trading_date: date,
-        *,
-        persist: bool = False,
-    ) -> None:
-        request_report_refresh(
-            self._report_worker,
-            trading_date=trading_date,
-            configuration_fingerprint=self.configuration_fingerprint,
-            persist=persist,
-        )
+    def _request_report_refresh(self, trading_date: date, *, persist: bool = False) -> None:
+        worker = self._report_worker
+        if worker is None:
+            return
+        started = perf_counter()
+        try:
+            worker.request_refresh(
+                trading_date,
+                configuration_fingerprint=self.configuration_fingerprint,
+                persist=persist,
+            )
+        finally:
+            duration_ms = (perf_counter() - started) * 1000.0
+            performance_diagnostics.record_report_request_duration(duration_ms)
+            performance_diagnostics.mark_latency_trace_stage(
+                "report_refresh_request_duration_ms", duration_ms
+            )
 
     def _accept_report(self, report: DailyForwardReport) -> None:
         self._daily_report = report
@@ -1220,20 +1280,31 @@ class WarriorDesktopSidecar:
         self._report_error_type = type(error).__name__
         self._last_error_type = f"REPORT:{type(error).__name__}"
 
-    def _persist_latency_diagnostic(
-        self,
-        kind: str,
-        payload: dict[str, object],
-    ) -> None:
+    def _persist_latency_diagnostic(self, kind: str, payload: dict[str, object]) -> None:
         writer = self._writer
         if writer is None:
             return
-        record = build_latency_diagnostic_record(
-            kind=kind,
-            payload=payload,
-            fallback_timestamp=self._aware_now(),
+        payload = {"diagnostic_kind": kind, **payload}
+        timestamp_value = payload.get("recorded_at") or payload.get("timestamp")
+        timestamp = (
+            datetime.fromisoformat(str(timestamp_value))
+            if timestamp_value is not None
+            else self._aware_now()
         )
-        if not writer.submit_diagnostic(record):
+        symbol = str(payload.get("symbol") or "MARKET_DATA")
+        record_type = (
+            CaptureRecordType.CALLBACK_QUEUE_THRESHOLD
+            if kind == "callback_queue_threshold"
+            else CaptureRecordType.LATENCY_DIAGNOSTIC
+        )
+        identity = tuple(
+            str(payload.get(name) or "")
+            for name in ("source", "sequence", "threshold", "direction", "recorded_at")
+        )
+        accepted = writer.submit_diagnostic(CaptureRecord.create(
+            record_type, symbol, timestamp, payload, identity_parts=identity,
+        ))
+        if not accepted:
             raise RuntimeError("diagnostic capture queue unavailable")
 
     def _aware_now(self) -> datetime:
@@ -1280,7 +1351,7 @@ class WarriorDesktopSidecar:
             self._record_di_entry_diagnostic(
                 "DI_RESULT_MISSING", symbol=symbol, timestamp=timestamp,
                 opportunity_id=opportunity_hint, reason="OTHER_GUARD",
-                error_type=type(exc).__name__, error_message=safe_diagnostic_message(exc),
+                error_type=type(exc).__name__, error_message=_safe_diagnostic_message(exc),
             )
             return None, None
         opportunity_id = opportunity_hint
@@ -1339,7 +1410,7 @@ class WarriorDesktopSidecar:
             self._record_di_entry_diagnostic(
                 "POLICY_ASSESS_EXCEPTION", symbol=symbol, timestamp=timestamp,
                 opportunity_id=opportunity_id,
-                error_type=type(exc).__name__, error_message=safe_diagnostic_message(exc),
+                error_type=type(exc).__name__, error_message=_safe_diagnostic_message(exc),
             )
             return result, None
 
@@ -1372,7 +1443,7 @@ class WarriorDesktopSidecar:
             return
 
 
-def safe_diagnostic_message(error: Exception) -> str:
+def _safe_diagnostic_message(error: Exception) -> str:
     message = str(error).replace("\r", " ").replace("\n", " ")
     message = re.sub(
         r"(?i)(token|secret|password|credential|account[_ -]?id|api[_ -]?key|access[_ -]?key)\s*[:=]\s*\S+",
@@ -1382,7 +1453,200 @@ def safe_diagnostic_message(error: Exception) -> str:
     return message[:256] if message else "<empty>"
 
 
-def blocking_reasons(candidate: MomentumCandidate, entry_ready: bool) -> tuple[str, ...]:
+class CompositeMarketEventObserver:
+    """Preserve existing paper observer while adding an isolated sidecar."""
+
+    def __init__(self, primary: Callable[[MarketEvent], object] | None,
+                 warrior: WarriorDesktopSidecar,
+                 research: object | None = None,
+                 adaptive_entry: object | None = None,
+                 *, async_projections: bool = False,
+                 projection_capacity: int = 512) -> None:
+        self.primary = primary
+        self.warrior = warrior
+        self.research = research
+        self.adaptive_entry = adaptive_entry
+        self.adaptive_entry_failures = 0
+        self.async_projections = bool(async_projections)
+        self._research_handoff = None
+        self._adaptive_handoff = None
+        if self.async_projections:
+            self._research_handoff = BoundedProjectionHandoff(
+                self._dispatch_research, maximum_keys=projection_capacity,
+            )
+            self._adaptive_handoff = BoundedProjectionHandoff(
+                self._dispatch_adaptive, maximum_keys=projection_capacity,
+            )
+            setter = getattr(self.warrior, "set_research_observer", None)
+            if research is not None and callable(setter):
+                setter(_ResearchHandoffProxy(self._research_handoff))
+
+    def start(self, _environment: str | None = None) -> None:
+        if self._research_handoff is not None:
+            self._research_handoff.start()
+        if self._adaptive_handoff is not None:
+            self._adaptive_handoff.start()
+        research_start = getattr(self.research, "start", None)
+        if callable(research_start):
+            research_start(_environment)
+        adaptive_start = getattr(self.adaptive_entry, "start", None)
+        if callable(adaptive_start):
+            adaptive_start(_environment)
+        self.warrior.start(_environment)
+
+    def stop(self) -> None:
+        if self._research_handoff is not None:
+            self._research_handoff.stop(drain=False)
+        if self._adaptive_handoff is not None:
+            self._adaptive_handoff.stop(drain=False)
+        research_stop = getattr(self.research, "stop", None)
+        if callable(research_stop):
+            try:
+                research_stop()
+            except Exception:
+                pass
+        adaptive_stop = getattr(self.adaptive_entry, "stop", None)
+        if callable(adaptive_stop):
+            try:
+                adaptive_stop()
+            except Exception:
+                pass
+        self.warrior.stop()
+
+    def projection_metrics(self) -> dict[str, dict[str, int | float]]:
+        return {
+            "research": {} if self._research_handoff is None else self._research_handoff.memory_metrics(),
+            "adaptive": {} if self._adaptive_handoff is None else self._adaptive_handoff.memory_metrics(),
+        }
+
+    def _dispatch_research(self, value: object) -> None:
+        if self.research is None:
+            return
+        kind, payload = value
+        if kind == "event":
+            self.research(payload)
+        elif kind == "decision":
+            callback = getattr(self.research, "observe_scanner_decision", None)
+            if callable(callback):
+                callback(payload)
+        else:
+            point, candidate, signal = payload
+            callback = getattr(self.research, "observe_warrior_decision", None)
+            if callable(callback):
+                callback(point, candidate, signal)
+
+    def _dispatch_adaptive(self, event: object) -> None:
+        if not callable(self.adaptive_entry):
+            return
+        try:
+            self.adaptive_entry(event)
+        except Exception:
+            self.adaptive_entry_failures += 1
+
+    def __call__(self, event: MarketEvent) -> None:
+        if self.primary is not None:
+            self._timed("paper.market_event", self.primary, event)
+        self._timed("warrior.desktop_sidecar", self.warrior, event)
+        if self._research_handoff is not None:
+            self._research_handoff.submit(
+                _projection_key(event), ("event", event),
+            )
+        elif callable(self.research):
+            self._timed("research.trade_intelligence", self.research, event)
+        if self._adaptive_handoff is not None:
+            self._adaptive_handoff.submit(_projection_key(event), event)
+        elif callable(self.adaptive_entry):
+            try:
+                self._timed("research.adaptive_entry", self.adaptive_entry, event)
+            except Exception:
+                # Defense in depth: adaptive research runs last and can never
+                # unwind the authoritative PAPER/Warrior event pipeline.
+                self.adaptive_entry_failures += 1
+
+    @staticmethod
+    def _timed(component: str, observer: Callable[[MarketEvent], object], event: MarketEvent) -> object:
+        started = perf_counter()
+        success = False
+        try:
+            result = observer(event)
+            success = True
+            return result
+        finally:
+            performance_diagnostics.record_component_duration(
+                component,
+                (perf_counter() - started) * 1000.0,
+                event_type=getattr(getattr(event, "event_type", None), "value", None),
+                symbol=getattr(event, "symbol", None),
+                success=success,
+            )
+
+    def observe_scanner_decision(self, decision: object) -> None:
+        observer = getattr(self.research, "observe_scanner_decision", None)
+        if callable(observer):
+            if self._research_handoff is not None:
+                self._research_handoff.submit(
+                    _projection_key(decision), ("decision", decision),
+                )
+            else:
+                observer(decision)
+
+    def reset_symbol(self, symbol: str) -> None:
+        observer = getattr(self.research, "reset_symbol", None)
+        if callable(observer):
+            observer(symbol)
+
+    def bind_scanner_adapter(self, adapter: MarketEventScannerAdapter) -> None:
+        self.warrior.bind_scanner_adapter(adapter)
+
+    def bind_scanner_decision_source(
+        self, source: Callable[[str], object | None],
+        ranked_source: Callable[[str], bool] | None = None,
+    ) -> None:
+        self.warrior.bind_scanner_decision_source(source, ranked_source)
+
+    def needs_historical_preload(self, symbol: str) -> bool:
+        return self.warrior.needs_historical_preload(symbol)
+
+    def preload_historical_bars(
+        self,
+        symbol: str,
+        bars: Iterable[object],
+    ) -> int:
+        return self.warrior.preload_historical_bars(symbol, bars)
+
+    def retained_symbols(self) -> tuple[str, ...]:
+        values = set(self.warrior.retained_symbols())
+        research_values = getattr(self.research, "retained_symbols", None)
+        if callable(research_values):
+            values.update(research_values())
+        return tuple(sorted(values))
+
+
+class _ResearchHandoffProxy:
+    """Advisory TI facade used by the authoritative Warrior sidecar."""
+
+    def __init__(self, handoff: BoundedProjectionHandoff) -> None:
+        self._handoff = handoff
+
+    def __call__(self, event: object) -> None:
+        self._handoff.submit(_projection_key(event), ("event", event))
+
+    def observe_warrior_decision(
+        self, point: object, candidate: object, signal: object,
+    ) -> None:
+        self._handoff.submit(
+            _projection_key(candidate), ("warrior", (point, candidate, signal)),
+        )
+
+
+def _projection_key(value: object) -> str:
+    symbol = getattr(value, "symbol", None)
+    if symbol is None and isinstance(value, tuple) and value:
+        symbol = getattr(value[0], "symbol", None)
+    return str(symbol or "__GLOBAL__").strip().upper()
+
+
+def _blocking_reasons(candidate: MomentumCandidate, entry_ready: bool) -> tuple[str, ...]:
     if entry_ready:
         return ()
     mapping = {
@@ -1402,7 +1666,7 @@ def blocking_reasons(candidate: MomentumCandidate, entry_ready: bool) -> tuple[s
     ))
 
 
-def scanner_classification(decision: object, ranked: bool) -> str | None:
+def _scanner_classification(decision: object, ranked: bool) -> str | None:
     """Mirror the existing scanner projection labels for captured context."""
     if ranked:
         return "QUALIFYING"
