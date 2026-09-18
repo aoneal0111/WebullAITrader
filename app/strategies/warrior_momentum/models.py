@@ -229,6 +229,7 @@ class MomentumEntrySignal:
     taxonomy_invalidation_reason: tuple[str, ...] = ()
     structural_episode_id: str | None = None
     structural_anchor: str | None = None
+    structural_entry_trigger: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.strategy_id != STRATEGY_ID:
