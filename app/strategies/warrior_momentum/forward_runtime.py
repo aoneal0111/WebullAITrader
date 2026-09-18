@@ -57,33 +57,44 @@ def management_context_available(
 ) -> str | None:
     """Return the matching active PAPER lifecycle ID, when available.
 
-    Matching is structural when a lifecycle is supplied; symbol is only the
-    lookup partition and never the identity of an active trade.
+    This hot execution-readiness path is deliberately bounded to the newest
+    symbol-local lifecycle records. It must never materialize the full forward
+    capture corpus as that can stall market-event processing for seconds.
     """
     try:
         store = ForwardCaptureStore(storage_path)
-        records = store.records(symbol=symbol, record_type=CaptureRecordType.MANAGEMENT_CONTEXT)
+        contexts = store.latest_records_for_symbol(
+            symbol=symbol,
+            record_type=CaptureRecordType.MANAGEMENT_CONTEXT,
+            limit=512,
+        )
+        if not contexts:
+            return None
+
+        records = contexts
         if configuration_fingerprint is not None:
-            attributed = tuple(records_with_configuration_fingerprint(store.records()))
-            records = tuple(
-                record for record, fingerprint in attributed
-                if record.symbol == symbol
-                and record.record_type is CaptureRecordType.MANAGEMENT_CONTEXT
-                and fingerprint == configuration_fingerprint
+            direct = tuple(
+                record for record in contexts
+                if record.payload.get("configuration_fingerprint")
+                == configuration_fingerprint
             )
+            records = direct
             if not records and allow_compatible_generation:
                 entries = {
                     str(item.payload.get("lifecycle_id") or lifecycle_identity(
                         _signal_from_entry(item, item.payload)
                     )): item
-                    for item, _fingerprint in attributed
-                    if item.symbol == symbol
-                    and item.record_type is CaptureRecordType.PAPER_FILL
-                    and item.payload.get("action") == "ENTRY"
+                    for item in store.latest_records_for_symbol(
+                        symbol=symbol,
+                        record_type=CaptureRecordType.PAPER_FILL,
+                        limit=512,
+                    )
+                    if item.payload.get("action") == "ENTRY"
                 }
                 compatible: list[CaptureRecord] = []
-                for item, fingerprint in attributed:
+                for item in contexts:
                     payload = item.payload
+                    fingerprint = payload.get("configuration_fingerprint")
                     entry = entries.get(str(payload.get("lifecycle_id")))
                     try:
                         trigger = Decimal(entry.payload["entry_trigger"])
@@ -92,9 +103,7 @@ def management_context_available(
                     except (AttributeError, KeyError, TypeError, ValueError):
                         continue
                     if (
-                        item.symbol == symbol
-                        and item.record_type is CaptureRecordType.MANAGEMENT_CONTEXT
-                        and fingerprint not in (None, configuration_fingerprint)
+                        fingerprint not in (None, configuration_fingerprint)
                         and entry is not None
                         and payload.get("environment") == "PAPER"
                         and payload.get("strategy") == "WARRIOR_MOMENTUM_V1"
@@ -105,16 +114,19 @@ def management_context_available(
                     ):
                         compatible.append(item)
                 records = tuple(compatible)
+
         if not records:
             return None
-        for record in reversed(records):
+
+        # latest_records_for_symbol is newest-first. The newest matching
+        # lifecycle owns recovery; a CLOSED record must never revive an older
+        # MANAGING state.
+        for record in records:
             payload = record.payload
             candidate = payload.get("lifecycle_id")
             if lifecycle_id is not None and candidate != lifecycle_id:
                 continue
             if payload.get("environment") == "PAPER" and bool(candidate):
-                # The newest matching context owns recovery.  Never skip a
-                # CLOSED record and revive an older MANAGING record.
                 if payload.get("phase") not in {"MANAGING", "EXIT_WORKING"}:
                     return None
                 return str(candidate) if payload.get("stop") is not None else None
