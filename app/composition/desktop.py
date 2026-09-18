@@ -104,68 +104,12 @@ class DesktopComposition:
     symbol_intelligence_activation_state: str = "DISABLED"
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
-        """Close composed resources in lifecycle order."""
+        from .desktop_lifecycle import close_desktop_composition
 
-        symbol_intelligence_stopped = True
-
-        crypto = self.crypto_research_runtime
-        if crypto is not None:
-            try:
-                crypto.close(timeout_seconds=min(timeout_seconds, 2.0))
-            except Exception:
-                # Research has no authority over application shutdown.
-                pass
-        acquisition = self.crypto_catalyst_acquisition_runtime
-        if acquisition is not None:
-            try:
-                acquisition.close(timeout_seconds=min(timeout_seconds, 2.0))
-            except Exception:
-                pass
-        intelligence = self.crypto_intelligence_runtime
-        if intelligence is not None:
-            try:
-                intelligence.close(timeout_seconds=min(timeout_seconds, 2.0))
-            except Exception:
-                pass
-        diagnostics = self.memory_observability
-        if diagnostics is not None and diagnostics.enabled:
-            try:
-                diagnostics.record_lifecycle("shutdown")
-            except Exception:
-                pass
-            try:
-                diagnostics.sample()
-            except Exception:
-                pass
-            try:
-                diagnostics.close(timeout_seconds=min(timeout_seconds, 2.0))
-            except Exception:
-                # Diagnostics have no authority over production shutdown.
-                pass
-        if self.symbol_intelligence is not None:
-            try:
-                symbol_intelligence_stopped = self.symbol_intelligence.close(
-                    timeout_seconds=min(timeout_seconds, 5.0)
-                )
-            except Exception:
-                symbol_intelligence_stopped = False
-        runtime_stopped = self.runtime_service.close(
-            timeout_seconds=timeout_seconds
+        return close_desktop_composition(
+            self,
+            timeout_seconds=timeout_seconds,
         )
-        if self.paper_trading_commands is not None:
-            self.paper_trading_commands.close()
-        if self.warrior_forward_sidecar is not None:
-            self.warrior_forward_sidecar.stop()
-        if self.trade_intelligence_observer is not None:
-            self.trade_intelligence_observer.stop(timeout_seconds=timeout_seconds)
-        self.state_store.close()
-        try:
-            performance_diagnostics.finish_run()
-        except Exception:
-            # Performance evidence is strictly non-authoritative.
-            pass
-        return runtime_stopped and symbol_intelligence_stopped
-
 
 def create_desktop_composition(
     driver_factory: Callable[[], object] | None = None,
