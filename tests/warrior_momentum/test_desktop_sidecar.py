@@ -89,6 +89,36 @@ def test_enabled_sidecar_shares_adapter_coalesces_ticks_and_flushes_session(tmp_
     assert sidecar.snapshot().health is WarriorCaptureHealth.STOPPED
 
 
+def test_quote_in_next_minute_finalizes_prior_trade_bar(tmp_path: Path) -> None:
+    """Management cadence cannot depend on another TRADE_SIZE tick arriving."""
+    path = tmp_path / "quote-rollover.sqlite3"
+    scanner = adapter()
+    sidecar = WarriorDesktopSidecar(enabled=True, storage_path=path, clock=lambda: T0)
+    sidecar.bind_scanner_adapter(scanner)
+    sidecar.start("PAPER")
+    try:
+        deliver(scanner, sidecar, quote(T0))
+        deliver(scanner, sidecar, trade(2, T0 + timedelta(seconds=1), "10.20"))
+        assert "XYZ" in sidecar._accumulators
+        assert sidecar._bars.get("XYZ", []) == []
+
+        # No next-minute trade arrives. A quote crossing the minute boundary
+        # must still finalize the completed trade bar and drive one completed
+        # Warrior evaluation/management boundary.
+        deliver(scanner, sidecar, quote(T0 + timedelta(minutes=1)))
+        assert "XYZ" not in sidecar._accumulators
+        assert len(sidecar._bars["XYZ"]) == 1
+        assert sidecar._bars["XYZ"][0].timestamp == T0.replace(second=0, microsecond=0)
+
+        assert sidecar._writer is not None
+        sidecar._writer.flush()
+        store = ForwardCaptureStore(path)
+        decisions = store.records(record_type=CaptureRecordType.DECISION)
+        assert len(decisions) == 2
+    finally:
+        sidecar.stop()
+
+
 def test_historical_preload_merges_completed_bars_before_first_decision(
     tmp_path: Path,
 ) -> None:
