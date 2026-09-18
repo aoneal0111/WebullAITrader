@@ -695,8 +695,10 @@ class WarriorForwardCaptureService:
                 records.append(blocked)
                 signal = None
             else:
-                executable_signal = self._execution_entry_signal(
-                    value, assessed, signal,
+                executable_signal = (
+                    self._execution_entry_signal(value, assessed, signal)
+                    if self.config.adaptive_context_enabled
+                    else signal
                 )
                 if executable_signal is None:
                     shadow_reasons.append(ReasonCode.ENTRY_PRICE_DISPLACED.value)
