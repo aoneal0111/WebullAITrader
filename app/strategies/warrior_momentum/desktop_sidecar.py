@@ -54,6 +54,10 @@ _RUNTIME_LOGGER = logging.getLogger("atlas.runtime")
 
 STRATEGY_VERSION = "WARRIOR_MOMENTUM_V1"
 _PROTECTION_AUDIT_INTERVAL_SECONDS = 15.0
+# Triggered structures need fresh execution-sensitive decisions without turning
+# every market tick into a full Warrior/research pass. This cadence is a
+# processing bound, not a trading threshold or setup-policy change.
+_INTRAMINUTE_REEVALUATION_SECONDS = 1.0
 
 
 def _safe_warrior_observe(sink: object | None, event: str, symbol: object, **fields: object) -> None:
@@ -250,6 +254,7 @@ class WarriorDesktopSidecar:
         self._protection_dirty: set[str] = set()
         self._last_protection_quantity: dict[str, int] = {}
         self._last_protection_attempt_at: dict[str, float] = {}
+        self._last_intraminute_evaluation_at: dict[str, datetime] = {}
 
     def bind_scanner_adapter(self, adapter: MarketEventScannerAdapter) -> None:
         if not isinstance(adapter, MarketEventScannerAdapter):
@@ -876,7 +881,29 @@ class WarriorDesktopSidecar:
                 reason="NEW_COMPLETED_BAR",
                 processing_time=self._aware_now(),
             )
-        if symbol not in self._first_observed or completed:
+        intraminute_due = False
+        if symbol in self._first_observed and not completed:
+            prior_candidate = self._latest.get(symbol)
+            prior_setup = None if prior_candidate is None else prior_candidate.setup
+            structurally_triggered = (
+                prior_setup is not None
+                and prior_setup.state is SetupState.TRIGGERED
+            )
+            last_intraminute = self._last_intraminute_evaluation_at.get(symbol)
+            intraminute_due = bool(
+                structurally_triggered
+                and event.event_type in {MarketEventType.QUOTE, MarketEventType.TRADE}
+                and (
+                    last_intraminute is None
+                    or (event.timestamp - last_intraminute).total_seconds()
+                    >= _INTRAMINUTE_REEVALUATION_SECONDS
+                )
+            )
+            if intraminute_due:
+                # Reserve the slot before evaluation so an exception cannot
+                # create an unbounded retry loop on a hot symbol.
+                self._last_intraminute_evaluation_at[symbol] = event.timestamp
+        if symbol not in self._first_observed or completed or intraminute_due:
             available_bars = tuple(self._bars.get(symbol, ())[-120:])
             history = canonical_completed_history(
                 available_bars, observation.timestamp,
