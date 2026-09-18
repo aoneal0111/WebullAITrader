@@ -239,6 +239,13 @@ def create_desktop_composition(
             position_quantity_source=trading_state_sources.position_quantity,
             clock=paper_clock,
         )
+        if paper_trading_commands.durable_store is not None:
+            # History is a presentation concern. Only terminal orders from prior
+            # campaigns enter the shared read model; old working orders retain
+            # no execution, protection, or buying-power authority.
+            runtime_projections.order_projection.reconcile_historical_terminal_orders(
+                paper_trading_commands.durable_store.historical_orders()
+            )
         paper_campaign_holder["id"] = paper_trading_commands.paper_campaign_id
         paper_campaign_holder["capital"] = (
             paper_trading_commands.durable_store.active_campaign_capital()
