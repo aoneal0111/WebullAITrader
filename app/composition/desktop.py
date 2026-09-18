@@ -37,6 +37,7 @@ from app.trade_intelligence.decision_intelligence.entry_timing import (
     EntryIntelligenceConfig, HistoricalPaperEntryTimingPolicy, PAPER_ONLY,
 )
 from app.memory_observability import MemoryObservability
+from app.performance_diagnostics import performance_diagnostics
 from app.crypto_research import (
     CryptoCatalystAcquisitionRuntime,
     CryptoIntelligenceResearchRuntime,
@@ -64,7 +65,7 @@ from app.paper_trading.command_composition import (
 )
 from app.paper_gateway.durable_store import NO_ACTIVE_PAPER_CAMPAIGN_ID
 from app.portfolio_intelligence import PortfolioIntelligenceService, PortfolioRiskLimits, load_portfolio_intelligence_configuration
-from app.symbol_intelligence.composition import SymbolIntelligenceComposition
+from app.symbol_intelligence.composition import SymbolIntelligenceComposition, create_symbol_intelligence_composition
 from app.composition.sec_shadow_runtime import (
     SecShadowRuntimeComposition,
     create_sec_shadow_runtime,
@@ -483,6 +484,7 @@ def create_desktop_composition(
     symbol_intelligence_bundle = create_desktop_symbol_intelligence_bundle(
         operational_configuration=operational_configuration,
         shadow_runtime_factory=shadow_runtime_factory,
+        symbol_intelligence_factory=create_symbol_intelligence_composition,
     )
     symbol_intelligence = symbol_intelligence_bundle.symbol_intelligence
     symbol_intelligence_activation_state = (
