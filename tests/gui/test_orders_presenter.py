@@ -51,3 +51,15 @@ def test_orders_presenter_renders_canonical_empty_projection() -> None:
 
     assert page.states == [state]
     assert page.projections == [state.order_projection]
+
+
+def test_orders_presenter_does_not_repaint_unchanged_projection() -> None:
+    page = OrdersPageSpy()
+    presenter = OrdersPresenter(page)  # type: ignore[arg-type]
+    state = ApplicationState()
+
+    presenter.render(state)
+    presenter.render(state)
+
+    assert page.states == [state, state]
+    assert page.projections == [state.order_projection]
