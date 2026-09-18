@@ -52,6 +52,8 @@ class ForwardCaptureStore:
                     ON capture_records(symbol, timestamp, sequence);
                 CREATE INDEX IF NOT EXISTS capture_type_time
                     ON capture_records(record_type, timestamp, sequence);
+                CREATE INDEX IF NOT EXISTS capture_symbol_type_sequence
+                    ON capture_records(symbol, record_type, sequence);
             """)
             row = connection.execute(
                 "SELECT schema_version FROM capture_metadata WHERE singleton=1"
@@ -103,6 +105,24 @@ class ForwardCaptureStore:
             rows = connection.execute(
                 "SELECT schema_version,record_id,record_type,symbol,timestamp,payload_json "
                 f"FROM capture_records{where} ORDER BY sequence", values,
+            ).fetchall()
+        return self._materialize(rows)
+
+    def latest_records_for_symbol(
+        self, *, symbol: str, record_type: CaptureRecordType, limit: int,
+    ) -> tuple[CaptureRecord, ...]:
+        """Return a bounded newest-first slice for one symbol and record type."""
+        if limit <= 0:
+            raise ValueError("record recovery limit must be positive")
+        normalized = symbol.strip().upper()
+        if not normalized:
+            return ()
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT schema_version,record_id,record_type,symbol,timestamp,payload_json "
+                "FROM capture_records WHERE symbol=? AND record_type=? "
+                "ORDER BY sequence DESC LIMIT ?",
+                (normalized, record_type.value, int(limit)),
             ).fetchall()
         return self._materialize(rows)
 
