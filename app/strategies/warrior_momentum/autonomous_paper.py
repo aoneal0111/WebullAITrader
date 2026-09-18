@@ -1379,25 +1379,17 @@ class AutonomousPaperExecutionBridge:
                     identity, reason_key,
                 )
             if self.order_book is not None:
-                if not self._reconcile_correlated_exits(normalized, identity):
-                    self._management_incomplete.add(normalized)
-                    return PaperExitSubmissionDecision(
-                        PaperExitSubmissionState.UNAVAILABLE, normalized,
-                        identity, reason_key,
-                    )
-                if not self._reconcile_protective_quantity(normalized, identity):
-                    self._management_incomplete.add(normalized)
-                    return PaperExitSubmissionDecision(
-                        PaperExitSubmissionState.UNAVAILABLE, normalized,
-                        identity, reason_key,
-                    )
-                correlated_sells = tuple(
-                    order
-                    for order in self.order_book.open_orders_for_symbol(normalized)
-                    if order.request.side is OrderSide.SELL
-                    and order.request.strategy_lifecycle_id == identity
-                )
+                # A valid target/stop bracket already reserves the complete
+                # authoritative position.  Recognize it before any mutating
+                # reconciliation helper can collapse the target back into a
+                # full-size stop.
                 if protective:
+                    correlated_sells = tuple(
+                        order
+                        for order in self.order_book.open_orders_for_symbol(normalized)
+                        if order.request.side is OrderSide.SELL
+                        and order.request.strategy_lifecycle_id == identity
+                    )
                     target_reservation = sum(
                         int(order.remaining_quantity)
                         for order in correlated_sells
@@ -1434,6 +1426,18 @@ class AutonomousPaperExecutionBridge:
                             identity, reason_key, correlated_stop.order_id,
                             correlated_stop.created_at,
                         )
+                if not self._reconcile_correlated_exits(normalized, identity):
+                    self._management_incomplete.add(normalized)
+                    return PaperExitSubmissionDecision(
+                        PaperExitSubmissionState.UNAVAILABLE, normalized,
+                        identity, reason_key,
+                    )
+                if not self._reconcile_protective_quantity(normalized, identity):
+                    self._management_incomplete.add(normalized)
+                    return PaperExitSubmissionDecision(
+                        PaperExitSubmissionState.UNAVAILABLE, normalized,
+                        identity, reason_key,
+                    )
                 working_sell = next((
                     order for order in self.order_book.open_orders_for_symbol(normalized)
                     if order.request.side is OrderSide.SELL
