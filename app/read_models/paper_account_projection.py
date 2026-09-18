@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from threading import RLock
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 
 from app.operations.runtime import PaperRuntimeEvent
 from app.operations_core import OperationsBus, PaperAccountUpdated
@@ -115,6 +115,83 @@ class PaperAccountProjection:
                     self._starting_cash = capital["starting_cash"]
                     self._multiplier = capital["buying_power_multiplier"]
                     self._cash = self._starting_cash
+            self._snapshot = self._build()
+        self._publish()
+
+    def reconcile_from_paper_orders(self, orders: Iterable[object]) -> None:
+        """Rebuild cash and realized P&L from authoritative durable fills."""
+        capital = self._capital()
+        starting_cash = (
+            self._starting_cash
+            if capital is None else capital["starting_cash"]
+        )
+        fills: list[tuple[datetime, str, str, Decimal, Decimal, Decimal]] = []
+        for order in orders:
+            request = getattr(order, "request", None)
+            side = getattr(request, "side", None)
+            side_value = getattr(side, "value", side)
+            symbol = getattr(order, "symbol", None)
+            if not isinstance(symbol, str) or side_value not in {"BUY", "SELL"}:
+                continue
+            for fill in getattr(order, "fills", ()):
+                timestamp = getattr(fill, "timestamp", None)
+                quantity = getattr(fill, "quantity", None)
+                price = getattr(fill, "price", None)
+                commission = getattr(fill, "commission", ZERO)
+                if (
+                    not isinstance(timestamp, datetime)
+                    or timestamp.tzinfo is None
+                    or not isinstance(quantity, Decimal)
+                    or quantity <= ZERO
+                    or not isinstance(price, Decimal)
+                    or price <= ZERO
+                    or not isinstance(commission, Decimal)
+                    or commission < ZERO
+                ):
+                    continue
+                fills.append(
+                    (timestamp, symbol, side_value, quantity, price, commission)
+                )
+
+        cash = starting_cash
+        realized = ZERO
+        fees = ZERO
+        inventory: dict[str, tuple[Decimal, Decimal]] = {}
+        for _at, symbol, side, quantity, price, commission in sorted(
+            fills, key=lambda item: (item[0], item[1], item[2])
+        ):
+            current_quantity, average_cost = inventory.get(
+                symbol, (ZERO, ZERO)
+            )
+            notional = quantity * price
+            fees += commission
+            if side == "BUY":
+                new_quantity = current_quantity + quantity
+                average_cost = (
+                    current_quantity * average_cost + notional
+                ) / new_quantity
+                inventory[symbol] = (new_quantity, average_cost)
+                cash -= notional + commission
+                continue
+            if quantity > current_quantity:
+                raise ValueError(
+                    "durable PAPER sell fill exceeds restored long inventory"
+                )
+            realized += (price - average_cost) * quantity - commission
+            remaining = current_quantity - quantity
+            inventory[symbol] = (
+                (remaining, average_cost) if remaining > ZERO else (ZERO, ZERO)
+            )
+            cash += notional - commission
+
+        with self._lock:
+            self._starting_cash = starting_cash
+            if capital is not None:
+                self._multiplier = capital["buying_power_multiplier"]
+            self._cash = cash
+            self._realized = realized
+            self._fees = fees
+            self._has_fills = bool(fills)
             self._snapshot = self._build()
         self._publish()
 

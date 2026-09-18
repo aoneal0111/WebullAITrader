@@ -284,10 +284,13 @@ def create_desktop_composition(
         # any management/protection callbacks can observe a live quote.  The
         # bridge is deliberately held in reconciliation until this seed is
         # complete.
+        restored_paper_orders = paper_trading_commands.order_book.history()
         runtime_projections.position_projection.reconcile_from_paper_orders(
-            paper_trading_commands.order_book.history(),
+            restored_paper_orders,
         )
-        runtime_projections.paper_account_projection.refresh()
+        runtime_projections.paper_account_projection.reconcile_from_paper_orders(
+            restored_paper_orders,
+        )
         autonomous_paper_bridge.begin_reconciliation()
         autonomous_paper_bridge.reconcile()
         autonomous_paper_bridge.reconcile_protection()

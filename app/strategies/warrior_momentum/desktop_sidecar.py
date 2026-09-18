@@ -864,12 +864,13 @@ class WarriorDesktopSidecar:
         # prior trade accumulator so retained open-position management keeps
         # advancing even when the feed becomes quote-heavy.
         completed = self._complete_elapsed_bar(event)
-        if (
+        qualifying_trade = (
             event.event_type is MarketEventType.TRADE
             and isinstance(event.payload, TradePayload)
             and event.payload.volume_semantics is VolumeSemantics.TRADE_SIZE
             and not event.payload.trade_id.startswith("snapshot")
-        ):
+        )
+        if qualifying_trade:
             aggregate_started = perf_counter()
             completed = (
                 self._aggregate_trade(event, observation.current_volume)
@@ -880,6 +881,18 @@ class WarriorDesktopSidecar:
                 (perf_counter() - aggregate_started) * 1000.0,
                 event_type="TRADE",
                 symbol=symbol,
+            )
+        elif (
+            symbol in service.open_paper_symbols
+            and event.event_type in {MarketEventType.QUOTE, MarketEventType.TRADE}
+            and observation.price is not None
+        ):
+            # Recovered positions must keep receiving completed management
+            # bars when after-hours traffic is quote-only.  A shared-adapter
+            # last price shapes OHLC but never invents traded volume.
+            completed = (
+                self._aggregate_retained_mark(event, observation.price)
+                or completed
             )
         if completed:
             service.invalidate_intraminute_shadow(
@@ -1167,6 +1180,28 @@ class WarriorDesktopSidecar:
         self._bars[symbol] = self._bars[symbol][-120:]
         self._accumulators.pop(symbol, None)
         return True
+
+    def _aggregate_retained_mark(
+        self, event: MarketEvent, price: Decimal,
+    ) -> bool:
+        """Build a zero-volume management bar from a retained live mark."""
+        assert event.symbol is not None
+        symbol = event.symbol.strip().upper()
+        minute = event.timestamp.replace(second=0, microsecond=0)
+        current = self._accumulators.get(symbol)
+        completed = False
+        if current is not None and minute > current.timestamp:
+            self._bars.setdefault(symbol, []).append(current.completed())
+            self._bars[symbol] = self._bars[symbol][-120:]
+            completed = True
+            current = None
+        if current is None:
+            self._accumulators[symbol] = _BarAccumulator(
+                symbol, minute, price, price, price, price, Decimal("0"),
+            )
+        elif minute == current.timestamp:
+            current.update(price, Decimal("0"))
+        return completed
 
     def _aggregate_trade(self, event: MarketEvent, cumulative: Decimal) -> bool:
         assert event.symbol is not None and isinstance(event.payload, TradePayload)

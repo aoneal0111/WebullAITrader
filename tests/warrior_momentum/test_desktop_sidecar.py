@@ -119,6 +119,32 @@ def test_quote_in_next_minute_finalizes_prior_trade_bar(tmp_path: Path) -> None:
         sidecar.stop()
 
 
+def test_retained_quote_marks_build_zero_volume_management_bars(
+    tmp_path: Path,
+) -> None:
+    """Quote-only retained symbols still cross completed-bar boundaries."""
+    sidecar = WarriorDesktopSidecar(
+        enabled=False,
+        storage_path=tmp_path / "retained-quote.sqlite3",
+    )
+
+    assert not sidecar._aggregate_retained_mark(quote(T0), D("16.20"))
+    assert not sidecar._aggregate_retained_mark(
+        quote(T0 + timedelta(seconds=30)), D("17.10"),
+    )
+    assert sidecar._aggregate_retained_mark(
+        quote(T0 + timedelta(minutes=1)), D("17.00"),
+    )
+
+    completed = sidecar._bars["XYZ"]
+    assert len(completed) == 1
+    assert completed[0].open == D("16.20")
+    assert completed[0].high == D("17.10")
+    assert completed[0].close == D("17.10")
+    assert completed[0].volume == D("0")
+    assert sidecar._accumulators["XYZ"].close == D("17.00")
+
+
 def test_historical_preload_merges_completed_bars_before_first_decision(
     tmp_path: Path,
 ) -> None:

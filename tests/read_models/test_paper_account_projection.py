@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 
 from app.operations.runtime import PaperRuntimeEvent
 from app.operations_core import OperationsBus
@@ -154,3 +155,36 @@ def test_two_symbol_aggregation_and_partial_exit_accounting():
     assert snapshot.realized_pnl == Decimal("0")
     assert snapshot.unrealized_pnl == Decimal("0")
     assert snapshot.active_position_count == 0
+
+
+def test_durable_fill_reconciliation_restores_cash_and_realized_pnl():
+    positions, _orders, account = _projection(Decimal("10000"))
+    buy_fill = SimpleNamespace(
+        order_id="buy", quantity=Decimal("98"), price=Decimal("15.65"),
+        commission=Decimal("0"), timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    sell_fill = SimpleNamespace(
+        order_id="sell", quantity=Decimal("49"), price=Decimal("17.10"),
+        commission=Decimal("0"), timestamp=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+    durable_orders = (
+        SimpleNamespace(
+            symbol="TJGC", request=SimpleNamespace(side="BUY"),
+            fills=(buy_fill,),
+        ),
+        SimpleNamespace(
+            symbol="TJGC", request=SimpleNamespace(side="SELL"),
+            fills=(sell_fill,),
+        ),
+    )
+
+    positions.reconcile_from_paper_orders(durable_orders)
+    account.reconcile_from_paper_orders(durable_orders)
+
+    snapshot = account.snapshot
+    assert snapshot.current_cash == Decimal("9304.20")
+    assert snapshot.realized_pnl == Decimal("71.05")
+    assert snapshot.fees == Decimal("0")
+    assert snapshot.active_position_count == 1
+    assert snapshot.buying_power == Decimal("9304.20")
+    assert snapshot.current_equity is None
