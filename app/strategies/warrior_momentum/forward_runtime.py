@@ -2650,10 +2650,13 @@ class WarriorForwardCaptureService:
         ),)
 
     def _recover(self) -> None:
-        attributed = tuple(records_with_configuration_fingerprint(self.store.records()))
+        all_attributed = tuple(
+            records_with_configuration_fingerprint(self.store.records())
+        )
+        attributed = all_attributed
         if self.paper_campaign_id is not None:
             attributed = tuple(
-                (record, fingerprint) for record, fingerprint in attributed
+                (record, fingerprint) for record, fingerprint in all_attributed
                 if record.record_type not in {
                     CaptureRecordType.PAPER_FILL,
                     CaptureRecordType.MANAGEMENT_CONTEXT,
@@ -2678,9 +2681,17 @@ class WarriorForwardCaptureService:
             if record.record_type is CaptureRecordType.PAPER_FILL
             and record.payload.get("action") == "ENTRY"
         }
+        current_symbols = {
+            record.symbol
+            for record in records
+            if record.record_type is CaptureRecordType.PAPER_FILL
+            and record.payload.get("action") == "ENTRY"
+        }
         entries: dict[str, CaptureRecord] = {}
         contexts: dict[str, CaptureRecord] = {}
-        for record, fingerprint in attributed:
+        fingerprints: dict[str, str | None] = {}
+        for record, fingerprint in all_attributed:
+            fingerprints[record.record_id] = fingerprint
             payload = record.payload
             if record.record_type is CaptureRecordType.PAPER_FILL and payload.get("action") == "ENTRY":
                 lifecycle = payload.get("lifecycle_id") or lifecycle_identity(
@@ -2692,18 +2703,28 @@ class WarriorForwardCaptureService:
                 if not lifecycle:
                     continue
                 contexts[str(lifecycle)] = record
+
+        # A restart creates a new campaign, but an authoritative open position
+        # can still belong to the most recent proven Warrior lifecycle from a
+        # prior campaign. Recover at most one such lifecycle per symbol. Closed
+        # history and bare broker positions never create management authority.
+        recoverable_by_symbol: dict[
+            str, tuple[CaptureRecord, CaptureRecord]
+        ] = {}
         for lifecycle, context in contexts.items():
             if lifecycle in current_lifecycles:
                 continue
             entry = entries.get(lifecycle)
-            if entry is None:
+            if entry is None or entry.symbol in current_symbols:
                 continue
-            context_fingerprint = next(
-                fingerprint for record, fingerprint in attributed
-                if record.record_id == context.record_id
-            )
-            if not self._compatible_recovery_context(
-                entry, context, context_fingerprint,
+            entry_fingerprint = fingerprints.get(entry.record_id)
+            context_fingerprint = fingerprints.get(context.record_id)
+            if (
+                entry_fingerprint is None
+                or entry_fingerprint != context_fingerprint
+                or not self._compatible_recovery_context(
+                    entry, context, context_fingerprint,
+                )
             ):
                 continue
             symbol_quantity = (
@@ -2712,6 +2733,10 @@ class WarriorForwardCaptureService:
             )
             if symbol_quantity <= 0:
                 continue
+            previous = recoverable_by_symbol.get(entry.symbol)
+            if previous is None or context.timestamp > previous[1].timestamp:
+                recoverable_by_symbol[entry.symbol] = (entry, context)
+        for entry, context in recoverable_by_symbol.values():
             records += (entry, context)
         for record in records:
             if record.record_type is not CaptureRecordType.MINUTE_BAR:
@@ -2871,7 +2896,7 @@ class WarriorForwardCaptureService:
         context_fingerprint: str | None,
     ) -> bool:
         """Permit only structurally proven same-lifecycle migration."""
-        if context_fingerprint in (None, self.configuration_fingerprint):
+        if context_fingerprint is None or entry.symbol != context.symbol:
             return False
         entry_payload = entry.payload
         context_payload = context.payload
