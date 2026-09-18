@@ -36,6 +36,53 @@ class OrderProjection:
         with self._lock:
             return {"order_count": len(self._snapshot.orders)}
 
+    def reconcile_historical_terminal_orders(self, orders) -> None:
+        """Add durable terminal orders to history without restoring execution authority."""
+        terminal = {"FILLED", "CANCELLED", "CANCELED", "REJECTED", "EXPIRED"}
+        with self._lock:
+            current = self._snapshot
+            projected = current
+            for order in orders:
+                status = getattr(getattr(order, "status", None), "value", None)
+                if status is None:
+                    status = str(getattr(order, "status", ""))
+                if status.strip().upper() not in terminal:
+                    continue
+                request = order.request
+                projected = _reduce_order(
+                    projected,
+                    OperationsOrder(
+                        order_id=order.order_id,
+                        symbol=order.symbol,
+                        side=request.side.value,
+                        quantity=str(request.quantity),
+                        status=status,
+                        updated_at=order.updated_at,
+                        order_type=request.order_type.value,
+                        limit_price=(
+                            None if request.limit_price is None
+                            else str(request.limit_price)
+                        ),
+                        stop_price=(
+                            None if request.stop_price is None
+                            else str(request.stop_price)
+                        ),
+                        filled_quantity=str(order.filled_quantity),
+                        remaining_quantity=str(order.remaining_quantity),
+                        average_fill_price=(
+                            None if order.average_fill_price is None
+                            else str(order.average_fill_price)
+                        ),
+                        submitted_at=order.created_at,
+                        lifecycle_id=request.strategy_lifecycle_id,
+                        execution_reason=request.execution_reason,
+                        execution_source="paper-execution-history",
+                    ),
+                )
+            if projected == current:
+                return
+            self._snapshot = projected
+
     def __call__(self, event: PaperRuntimeEvent) -> None:
         if not isinstance(event, PaperRuntimeEvent):
             raise TypeError("event must be a PaperRuntimeEvent")
