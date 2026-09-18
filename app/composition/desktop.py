@@ -4,9 +4,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-import os
 from pathlib import Path
-from types import SimpleNamespace
 
 from app.configuration import load_configuration
 from app.operations_core import ApplicationStateStore, OperationsBus
@@ -26,11 +24,8 @@ from app.strategies.warrior_momentum.desktop_sidecar import (
     CompositeMarketEventObserver, WarriorDesktopSidecar,
     strategy_configuration_fingerprint,
 )
-from app.strategies.warrior_momentum.configuration import WarriorMomentumConfig
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
 from app.strategies.warrior_momentum.forward_runtime import management_context_available
-from app.strategies.warrior_momentum.observability import create_warrior_observability_sink
-from app.trade_intelligence.runtime import TradeIntelligenceRuntimeObserver
 from app.trade_intelligence.taxonomy_paper_bridge import TaxonomyPaperExecutionBridge
 from app.trade_intelligence.decision_intelligence import HistoricalDecisionIntelligence
 from app.trade_intelligence.decision_intelligence.entry_timing import (
@@ -47,6 +42,7 @@ from .desktop_optional_research import create_optional_research_runtimes
 from .desktop_observability import RuntimeDriverMetricsSource, create_desktop_memory_observability
 from .desktop_market_services import create_desktop_market_services
 from .desktop_trading_state import DesktopTradingStateSources
+from .desktop_intelligence import create_desktop_intelligence_composition
 from .desktop_research_observers import (
     create_adaptive_entry_research_observer,
     create_entry_opportunity_value_observer,
@@ -136,29 +132,15 @@ def create_desktop_composition(
         )
 
     operational_configuration = load_configuration()
-    warrior_observability = create_warrior_observability_sink(SimpleNamespace(
-        observability_enabled=os.getenv("ATLAS_WARRIOR_D3_DIAGNOSTICS_ENABLED", "false").strip().lower() == "true",
-        observability_root=os.getenv("ATLAS_WARRIOR_D3_DIAGNOSTICS_ROOT") or None,
-        observability_session_id=os.getenv("ATLAS_WARRIOR_D3_DIAGNOSTICS_SESSION_ID") or None,
-    ))
-    configured_warrior_strategy = WarriorMomentumConfig.from_env()
-    warrior_strategy_config = WarriorMomentumConfig(
-        adaptive_context_enabled=(
-            configured_warrior_strategy.adaptive_context_enabled
-            and operational_configuration.environment.value == "PAPER"
-        )
+    intelligence_composition = create_desktop_intelligence_composition(
+        operational_configuration=operational_configuration,
     )
-    trade_intelligence_observer = TradeIntelligenceRuntimeObserver(
-        enabled=(
-            operational_configuration.trade_intelligence_enabled
-            and not operational_configuration.live_trading_enabled
-        ),
-        environment=operational_configuration.environment.value,
-        path=operational_configuration.trade_intelligence_path,
-        capacity=operational_configuration.trade_intelligence_queue_capacity,
-        observability=warrior_observability,
-        warrior_observation_enabled=warrior_strategy_config.adaptive_context_enabled,
+    warrior_observability = intelligence_composition.warrior_observability
+    warrior_strategy_config = intelligence_composition.warrior_strategy_config
+    trade_intelligence_observer = (
+        intelligence_composition.trade_intelligence_observer
     )
+
     chart_market_configuration = market_data_configuration(
         operational_configuration
     )
