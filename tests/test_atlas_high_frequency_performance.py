@@ -134,6 +134,46 @@ def test_identical_zero_and_candidate_snapshots_publish_only_on_change() -> None
     assert len(events) == 1
 
 
+def test_scanner_projection_cadence_coalesces_fast_changing_snapshots() -> None:
+    events = []
+    diagnostics = PerformanceDiagnostics()
+    sequences = count(1)
+    publisher = ScannerSnapshotPublisher(
+        events.append,
+        lambda: next(sequences),
+        source="cadence-test",
+        stale_after=timedelta(seconds=30),
+        diagnostics=diagnostics,
+        minimum_publish_interval=timedelta(milliseconds=125),
+    )
+
+    publisher.publish(_snapshot(_candidate(score=90), processed=1), cycle=17, now=NOW)
+    publisher.publish(
+        _snapshot(_candidate(score=91), processed=2),
+        cycle=17,
+        now=NOW + timedelta(milliseconds=25),
+    )
+    publisher.publish(
+        _snapshot(_candidate(score=92), processed=3),
+        cycle=17,
+        now=NOW + timedelta(milliseconds=124),
+    )
+
+    assert len(events) == 1
+    assert publisher.authoritative_snapshot.processed_events == 3
+    assert publisher.last_changed is False
+
+    publisher.publish(
+        _snapshot(_candidate(score=93), processed=4),
+        cycle=17,
+        now=NOW + timedelta(milliseconds=125),
+    )
+
+    assert len(events) == 2
+    assert publisher.authoritative_snapshot.processed_events == 4
+    assert publisher.last_changed is True
+
+
 def test_technical_only_candidate_is_visible_without_becoming_ranked() -> None:
     events = []
     sequences = count(1)
