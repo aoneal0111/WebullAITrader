@@ -733,6 +733,155 @@ def test_activation_bar_cannot_retroactively_stop_and_targets_remain_eligible(tm
         composition.close()
 
 
+def test_bridge_rebalances_correlated_stop_across_targets_and_runner(tmp_path: Path) -> None:
+    """Real PAPER bridge keeps exactly bounded protection through target scales."""
+    store = ForwardCaptureStore(tmp_path / "correlated-target-management.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": Decimal("0")}
+    composition = create_paper_trading_command_composition(
+        at=T0 + timedelta(minutes=20),
+        position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+        position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+    )
+    service = WarriorForwardCaptureService(
+        store,
+        writer,
+        paper_entry_submitter=bridge.submit_entry,
+        paper_exit_submitter=bridge.ensure_exit,
+        paper_position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
+    )
+
+    def paper_quote(sequence: int, bid: Decimal, ask: Decimal) -> None:
+        composition.gateway.process_market_event(MarketEvent(
+            sequence,
+            session_timestamp(sequence, at=T0 + timedelta(minutes=20)),
+            "XYZ",
+            "correlated-management-test",
+            MarketEventType.QUOTE,
+            QuotePayload(bid, ask, D("10000"), D("10000")),
+        ))
+
+    def open_sells():
+        return tuple(
+            order for order in composition.order_book.open_orders_for_symbol("XYZ")
+            if order.request.side.value == "SELL"
+        )
+
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        shares = int(composition.order_book.open_orders()[0].quantity)
+
+        # Authoritative entry fill, then first management bar establishes stop.
+        paper_quote(1, signal.entry_trigger - D("0.01"), signal.entry_trigger)
+        position["XYZ"] = Decimal(shares)
+        activation_bar = MinuteBar(
+            "XYZ",
+            signal.timestamp + timedelta(minutes=1),
+            signal.entry_trigger,
+            signal.entry_trigger,
+            signal.entry_trigger,
+            signal.entry_trigger,
+            D("100"),
+        )
+        service.observe_market_bar(
+            "XYZ", activation_bar, activation_bar.timestamp + timedelta(minutes=1),
+        )
+        sells = open_sells()
+        assert len(sells) == 1
+        assert sells[0].request.order_type.value == "STOP"
+        assert int(sells[0].remaining_quantity) == shares
+
+        # FIRST_TARGET must coexist with a reduced stop; reservations cannot
+        # exceed the authoritative position.
+        first_bar = MinuteBar(
+            "XYZ",
+            signal.timestamp + timedelta(minutes=2),
+            signal.entry_trigger,
+            signal.target_levels[0] + D("0.01"),
+            signal.entry_trigger,
+            signal.target_levels[0],
+            D("100"),
+        )
+        service.observe_market_bar(
+            "XYZ", first_bar, first_bar.timestamp + timedelta(minutes=1),
+        )
+        state = service._paper["XYZ"]
+        first_quantity = state.first_quantity
+        sells = open_sells()
+        assert {order.request.order_type.value for order in sells} == {"LIMIT", "STOP"}
+        assert sum(int(order.remaining_quantity) for order in sells) == shares
+        first_target = next(order for order in sells if order.request.order_type.value == "LIMIT")
+        first_stop = next(order for order in sells if order.request.order_type.value == "STOP")
+        assert first_target.request.execution_reason == "FIRST_TARGET"
+        assert int(first_target.remaining_quantity) == first_quantity
+        assert int(first_stop.remaining_quantity) == shares - first_quantity
+
+        paper_quote(2, signal.target_levels[0], signal.target_levels[0] + D("0.01"))
+        position["XYZ"] = Decimal(shares - first_quantity)
+
+        # SECOND_TARGET must repeat the same correlated reservation invariant.
+        second_bar = MinuteBar(
+            "XYZ",
+            signal.timestamp + timedelta(minutes=3),
+            signal.target_levels[0],
+            signal.target_levels[1] + D("0.01"),
+            signal.target_levels[0],
+            signal.target_levels[1],
+            D("100"),
+        )
+        service.observe_market_bar(
+            "XYZ", second_bar, second_bar.timestamp + timedelta(minutes=1),
+        )
+        state = service._paper["XYZ"]
+        assert state.first_taken is True
+        second_quantity = state.second_quantity
+        remaining_after_first = shares - first_quantity
+        sells = open_sells()
+        assert {order.request.order_type.value for order in sells} == {"LIMIT", "STOP"}
+        assert sum(int(order.remaining_quantity) for order in sells) == remaining_after_first
+        second_target = next(order for order in sells if order.request.order_type.value == "LIMIT")
+        second_stop = next(order for order in sells if order.request.order_type.value == "STOP")
+        assert second_target.request.execution_reason == "SECOND_TARGET"
+        assert int(second_target.remaining_quantity) == second_quantity
+        assert int(second_stop.remaining_quantity) == remaining_after_first - second_quantity
+
+        paper_quote(3, signal.target_levels[1], signal.target_levels[1] + D("0.01"))
+        runner_quantity = shares - first_quantity - second_quantity
+        position["XYZ"] = Decimal(runner_quantity)
+
+        # A full runner target replaces the remaining stop with exactly one
+        # bounded target for the authoritative remainder.
+        runner_bar = MinuteBar(
+            "XYZ",
+            signal.timestamp + timedelta(minutes=4),
+            signal.target_levels[1],
+            signal.target_levels[2] + D("0.01"),
+            signal.target_levels[1],
+            signal.target_levels[2],
+            D("100"),
+        )
+        service.observe_market_bar(
+            "XYZ", runner_bar, runner_bar.timestamp + timedelta(minutes=1),
+        )
+        state = service._paper["XYZ"]
+        assert state.second_taken is True
+        sells = open_sells()
+        assert len(sells) == 1
+        assert sells[0].request.order_type.value == "LIMIT"
+        assert sells[0].request.execution_reason == "RUNNER_TARGET"
+        assert int(sells[0].remaining_quantity) == runner_quantity
+        assert bridge.has_execution_ownership("XYZ") is True
+    finally:
+        writer.close()
+        composition.close()
+
+
 def test_profit_defense_tracks_peak_and_tightens_after_confirmed_giveback(tmp_path: Path) -> None:
     store = ForwardCaptureStore(tmp_path / "profit-defense.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
