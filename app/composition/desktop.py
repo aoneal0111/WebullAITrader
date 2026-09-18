@@ -43,6 +43,7 @@ from .desktop_observability import RuntimeDriverMetricsSource, create_desktop_me
 from .desktop_market_services import create_desktop_market_services
 from .desktop_trading_state import DesktopTradingStateSources
 from .desktop_intelligence import create_desktop_intelligence_composition
+from .desktop_finalization import finalize_desktop_runtime
 from .desktop_research_observers import (
     create_adaptive_entry_research_observer,
     create_entry_opportunity_value_observer,
@@ -410,35 +411,20 @@ def create_desktop_composition(
     )
     sec_shadow_runtime = symbol_intelligence_bundle.sec_shadow_runtime
 
-    try:
-        runtime_service = create_desktop_runtime_service(
-            bus,
-            driver_factory=driver_factory,
-            runtime_mode=configuration.runtime_mode,
-            event_sink=runtime_projections.sink,
-            market_event_observer=market_event_observer,
-            sec_shadow_evaluator=sec_shadow_runtime.evaluator,
-        )
-        runtime_driver_metrics.bind(runtime_service)
-        trading_service = TradingService(
-            placement_runtime,
-            cancellation_runtime,
-        )
-    except Exception as error:
-        # No DesktopComposition exists yet, so propagate the original failure
-        # with the owner attached when cleanup is incomplete.  This keeps a
-        # live worker/heartbeat/lease reachable for deterministic retry.
-        if symbol_intelligence is not None:
-            try:
-                cleanup_complete = symbol_intelligence.close(timeout_seconds=5.0)
-            except Exception:
-                cleanup_complete = False
-            if not cleanup_complete:
-                setattr(error, "symbol_intelligence_holder", symbol_intelligence)
-        raise
-    if memory_observability.enabled:
-        memory_observability.record_lifecycle("startup")
-        memory_observability.start()
+    runtime_service, trading_service = finalize_desktop_runtime(
+        runtime_service_factory=create_desktop_runtime_service,
+        bus=bus,
+        driver_factory=driver_factory,
+        runtime_mode=configuration.runtime_mode,
+        event_sink=runtime_projections.sink,
+        market_event_observer=market_event_observer,
+        sec_shadow_runtime=sec_shadow_runtime,
+        placement_runtime=placement_runtime,
+        cancellation_runtime=cancellation_runtime,
+        runtime_driver_metrics=runtime_driver_metrics,
+        symbol_intelligence=symbol_intelligence,
+        memory_observability=memory_observability,
+    )
 
     result = DesktopComposition(
         bus=bus,
