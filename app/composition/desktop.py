@@ -4,7 +4,6 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-import inspect
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -66,16 +65,14 @@ from app.paper_trading.command_composition import (
 )
 from app.paper_gateway.durable_store import NO_ACTIVE_PAPER_CAMPAIGN_ID
 from app.portfolio_intelligence import PortfolioAccount, PortfolioIntelligenceService, PortfolioRiskLimits, load_portfolio_intelligence_configuration
-from app.symbol_intelligence.composition import (
-    SymbolIntelligenceComposition,
-    SymbolIntelligenceRepositoryComposition,
-    create_symbol_intelligence_composition,
-)
-from app.symbol_intelligence.network_ownership_runtime import evaluate_sec_acquisition_eligibility
+from app.symbol_intelligence.composition import SymbolIntelligenceComposition
 from app.composition.sec_shadow_runtime import (
     SecShadowRuntimeComposition,
-    SecShadowRuntimeState,
     create_sec_shadow_runtime,
+)
+from .desktop_symbol_intelligence import (
+    create_desktop_symbol_intelligence_bundle,
+    start_desktop_symbol_intelligence,
 )
 
 
@@ -607,62 +604,15 @@ def create_desktop_composition(
 
     # D2B1 consumes the existing D1 predicate.  Repository opening is local;
     # all network-capable construction remains behind lease authorization.
-    symbol_intelligence = None
-    symbol_intelligence_activation_state = "DISABLED"
-    activation_state_holder = [symbol_intelligence_activation_state]
-    try:
-        eligible = evaluate_sec_acquisition_eligibility(operational_configuration).eligible
-        if not eligible:
-            symbol_intelligence_activation_state = "INELIGIBLE"
-        if eligible:
-            symbol_intelligence = create_symbol_intelligence_composition(
-                operational_configuration, activate=True, start=False,
-                activation_diagnostics_callback=lambda state: activation_state_holder.__setitem__(0, state),
-            )
-            symbol_intelligence_activation_state = activation_state_holder[0]
-            symbol_intelligence_activation_state = (
-                "ACTIVE" if symbol_intelligence is not None else "LEASE_DENIED"
-            )
-    except Exception:
-        # Migration acquisition is isolated from the legacy desktop path.
-        symbol_intelligence = None
-        symbol_intelligence_activation_state = "CONSTRUCTION_ERROR"
-
-    shared_repository_composition = (
-        None if symbol_intelligence is None
-        else SymbolIntelligenceRepositoryComposition(symbol_intelligence.repository)
+    symbol_intelligence_bundle = create_desktop_symbol_intelligence_bundle(
+        operational_configuration=operational_configuration,
+        shadow_runtime_factory=shadow_runtime_factory,
     )
-    shadow_construction_failed = False
-    try:
-        if shared_repository_composition is not None:
-            parameters = inspect.signature(shadow_runtime_factory).parameters
-            accepts_repository = (
-                "repository_composition" in parameters
-                or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
-            )
-            if accepts_repository:
-                sec_shadow_runtime = shadow_runtime_factory(
-                    operational_configuration,
-                    repository_composition=shared_repository_composition,
-                )
-            else:
-                # Preserve narrowly-scoped test/extension factories using the
-                # pre-D2B single-argument contract.
-                sec_shadow_runtime = shadow_runtime_factory(operational_configuration)
-        else:
-            sec_shadow_runtime = shadow_runtime_factory(operational_configuration)
-    except Exception:
-        # Shadow is observational only.  Its failure must not terminate the
-        # legacy desktop path, but acquisition ownership must remain reachable
-        # if cleanup cannot be confirmed complete.
-        shadow_construction_failed = True
-        symbol_intelligence_activation_state = "CONSTRUCTION_ERROR"
-        sec_shadow_runtime = SecShadowRuntimeComposition(
-            state=SecShadowRuntimeState.CONSTRUCTION_ERROR,
-        )
-        if symbol_intelligence is not None:
-            if symbol_intelligence.close(timeout_seconds=5.0):
-                symbol_intelligence = None
+    symbol_intelligence = symbol_intelligence_bundle.symbol_intelligence
+    symbol_intelligence_activation_state = (
+        symbol_intelligence_bundle.activation_state
+    )
+    sec_shadow_runtime = symbol_intelligence_bundle.sec_shadow_runtime
 
     try:
         runtime_service = create_desktop_runtime_service(
@@ -723,24 +673,10 @@ def create_desktop_composition(
         symbol_intelligence=symbol_intelligence,
         sec_shadow_runtime=sec_shadow_runtime,
     )
-    if symbol_intelligence is not None and not shadow_construction_failed:
-        try:
-            if not symbol_intelligence.start():
-                if symbol_intelligence.close():
-                    result.symbol_intelligence = None
-                result.symbol_intelligence_activation_state = "START_ERROR"
-        except Exception:
-            try:
-                cleanup_complete = symbol_intelligence.close()
-            except Exception:
-                cleanup_complete = False
-            if cleanup_complete:
-                result.symbol_intelligence = None
-            result.symbol_intelligence_activation_state = "START_ERROR"
     result.symbol_intelligence_activation_state = (
-        "ACTIVE" if result.symbol_intelligence is not None
-        else symbol_intelligence_activation_state
+        start_desktop_symbol_intelligence(symbol_intelligence_bundle)
     )
+    result.symbol_intelligence = symbol_intelligence_bundle.symbol_intelligence
     return result
 __all__ = [
     "DesktopComposition",
