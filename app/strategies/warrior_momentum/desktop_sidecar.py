@@ -895,8 +895,11 @@ class WarriorDesktopSidecar:
                         reason="NEW_COMPLETED_RETAINED_MANAGEMENT_BAR",
                         processing_time=observed_at,
                     )
+                    # Aggregators return a completion flag and append
+                    # the authoritative immutable bar to the completed store.
+                    management_bar = self._bars[symbol][-1]
                     service.observe_market_bar(
-                        symbol, completed, observed_at,
+                        symbol, management_bar, observed_at,
                     )
                     if self._writer is not None:
                         self._flush_capture_writer(self._writer)
