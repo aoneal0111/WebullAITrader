@@ -43,6 +43,7 @@ from .desktop_observability import RuntimeDriverMetricsSource, create_desktop_me
 from .desktop_market_services import create_desktop_market_services
 from .desktop_trading_state import DesktopTradingStateSources
 from .desktop_intelligence import create_desktop_intelligence_composition
+from .desktop_projections import create_desktop_projection_composition
 from .desktop_finalization import finalize_desktop_runtime
 from .desktop_research_observers import (
     create_adaptive_entry_research_observer,
@@ -152,38 +153,15 @@ def create_desktop_composition(
     # Subscriptions and execution permissions are not chart selections. Atlas
     # candidates and explicit operator interaction own chart focus.
     chart_default_symbol = None
-    paper_campaign_holder: dict[str, object] = {"id": None, "capital": None}
 
-
-    trading_state_holder: dict[str, DesktopTradingStateSources] = {}
-
-    runtime_projections = create_runtime_projection_pipeline(
-        operations_bus=bus,
-        account_id=(
-            operational_configuration.account_id
-            or PAPER_ACCOUNT_ID
-        ),
-        watchlist_stale_after=timedelta(
-            seconds=(
-                operational_configuration.maximum_market_data_age_seconds
-            )
-        ),
-        portfolio_account_source=lambda: trading_state_holder["sources"].portfolio_account(),
-        portfolio_intelligence_service=PortfolioIntelligenceService(
-            configuration=load_portfolio_intelligence_configuration(),
-            limits=PortfolioRiskLimits(
-                maximum_open_positions=operational_configuration.max_open_positions,
-            )
-        ),
-        paper_account_campaign_id_source=lambda: paper_campaign_holder["id"],
-        paper_account_capital_source=lambda: paper_campaign_holder["capital"],
-    )
-    trading_state_sources = DesktopTradingStateSources(
+    projection_composition = create_desktop_projection_composition(
+        bus=bus,
         state_store=state_store,
-        runtime_projections=runtime_projections,
         operational_configuration=operational_configuration,
     )
-    trading_state_holder["sources"] = trading_state_sources
+    runtime_projections = projection_composition.runtime_projections
+    trading_state_sources = projection_composition.trading_state_sources
+    paper_campaign_holder = projection_composition.paper_campaign_holder
     trade_intelligence_observer.bind_authoritative_focus_sources(
         position_source=lambda: runtime_projections.position_projection.snapshot,
         order_source=lambda: runtime_projections.order_projection.snapshot,
