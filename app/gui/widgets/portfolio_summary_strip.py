@@ -71,7 +71,15 @@ class PortfolioSummaryStrip(QWidget):
         metrics = dict(snapshot.metrics)
         metrics.update(snapshot.highlights)
         for source, card in self._cards.items():
-            value = metrics.get(source, "--")
+            # The compact Account/Risk strip represents the active account.
+            # In PAPER mode the durable paper ledger is authoritative for
+            # account-level values, while the generic portfolio summary can
+            # legitimately have no realized-P/L attribution after recovery.
+            paper_source = f"ATLAS PAPER {source}"
+            value = metrics.get(
+                paper_source,
+                metrics.get(source, "--"),
+            )
             card.set_value(value)
             card.set_tone(
                 _value_tone(value)
