@@ -44,7 +44,7 @@ from app.crypto_research import (
     CryptoResearchRuntime,
 )
 from .desktop_optional_research import create_optional_research_runtimes
-from .desktop_observability import create_desktop_memory_observability, optional_metrics
+from .desktop_observability import RuntimeDriverMetricsSource, create_desktop_memory_observability
 from .desktop_market_services import create_desktop_market_services
 from .desktop_trading_state import DesktopTradingStateSources
 from .desktop_research_observers import (
@@ -446,16 +446,7 @@ def create_desktop_composition(
     )
     crypto_intelligence_runtime = optional_research.crypto_intelligence_runtime
 
-    runtime_service_holder: dict[str, object] = {}
-
-    def runtime_driver_metrics(*attributes: str) -> dict[str, int]:
-        service = runtime_service_holder.get("service")
-        lock = getattr(service, "_lock", None)
-        if lock is None:
-            return {}
-        with lock:
-            driver = getattr(service, "_driver", None)
-        return optional_metrics(driver, *attributes)
+    runtime_driver_metrics = RuntimeDriverMetricsSource()
 
     memory_observability = create_desktop_memory_observability(
         operational_configuration=operational_configuration,
@@ -502,7 +493,7 @@ def create_desktop_composition(
             market_event_observer=market_event_observer,
             sec_shadow_evaluator=sec_shadow_runtime.evaluator,
         )
-        runtime_service_holder["service"] = runtime_service
+        runtime_driver_metrics.bind(runtime_service)
         trading_service = TradingService(
             placement_runtime,
             cancellation_runtime,
