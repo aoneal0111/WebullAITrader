@@ -27,7 +27,6 @@ from app.strategies.warrior_momentum.desktop_sidecar import (
     strategy_configuration_fingerprint,
 )
 from app.strategies.warrior_momentum.configuration import WarriorMomentumConfig
-from app.strategies.warrior_momentum.forward_models import PaperAccountContext
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
 from app.strategies.warrior_momentum.forward_runtime import management_context_available
 from app.strategies.warrior_momentum.observability import create_warrior_observability_sink
@@ -48,6 +47,7 @@ from app.crypto_research import (
 from .desktop_optional_research import create_optional_research_runtimes
 from .desktop_observability import create_desktop_memory_observability, optional_metrics
 from .desktop_market_services import create_desktop_market_services
+from .desktop_trading_state import DesktopTradingStateSources
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -61,7 +61,7 @@ from app.paper_trading.command_composition import (
     create_paper_trading_command_composition,
 )
 from app.paper_gateway.durable_store import NO_ACTIVE_PAPER_CAMPAIGN_ID
-from app.portfolio_intelligence import PortfolioAccount, PortfolioIntelligenceService, PortfolioRiskLimits, load_portfolio_intelligence_configuration
+from app.portfolio_intelligence import PortfolioIntelligenceService, PortfolioRiskLimits, load_portfolio_intelligence_configuration
 from app.symbol_intelligence.composition import SymbolIntelligenceComposition
 from app.composition.sec_shadow_runtime import (
     SecShadowRuntimeComposition,
@@ -223,25 +223,7 @@ def create_desktop_composition(
     # candidates and explicit operator interaction own chart focus.
     chart_default_symbol = None
     paper_campaign_holder: dict[str, object] = {"id": None, "capital": None}
-    def portfolio_account_source() -> PortfolioAccount:
-        state = state_store.snapshot()
-        account = state.broker_account
-        if operational_configuration.environment.value == "PAPER":
-            paper_account = state.paper_account
-            if paper_account is not None:
-                return PortfolioAccount(
-                    paper_account.campaign_id, paper_account.current_equity,
-                    paper_account.current_cash, paper_account.buying_power,
-                )
-        if account is not None:
-            return PortfolioAccount(account.account_id, account.equity, account.cash_balance, account.buying_power, account.currency)
-        paper = state.paper_runtime
-        return PortfolioAccount(
-            operational_configuration.account_id or PAPER_ACCOUNT_ID,
-            paper.current_equity if paper is not None else None,
-            None,
-            None,
-        )
+
 
     runtime_projections = create_runtime_projection_pipeline(
         operations_bus=bus,
@@ -254,7 +236,7 @@ def create_desktop_composition(
                 operational_configuration.maximum_market_data_age_seconds
             )
         ),
-        portfolio_account_source=portfolio_account_source,
+        portfolio_account_source=lambda: trading_state_sources.portfolio_account(),
         portfolio_intelligence_service=PortfolioIntelligenceService(
             configuration=load_portfolio_intelligence_configuration(),
             limits=PortfolioRiskLimits(
@@ -263,6 +245,11 @@ def create_desktop_composition(
         ),
         paper_account_campaign_id_source=lambda: paper_campaign_holder["id"],
         paper_account_capital_source=lambda: paper_campaign_holder["capital"],
+    )
+    trading_state_sources = DesktopTradingStateSources(
+        state_store=state_store,
+        runtime_projections=runtime_projections,
+        operational_configuration=operational_configuration,
     )
     trade_intelligence_observer.bind_authoritative_focus_sources(
         position_source=lambda: runtime_projections.position_projection.snapshot,
@@ -277,33 +264,6 @@ def create_desktop_composition(
     chart_market_data_service = market_services.chart_market_data_service
     execution_quote_source = market_services.execution_quote_source
 
-    def position_average_cost(symbol: str) -> Decimal | None:
-        position = runtime_projections.position_projection.position_for_symbol(
-            symbol,
-        )
-        return (
-            None
-            if position is None
-            else Decimal(position.average_cost)
-        )
-
-    def position_quantity(symbol: str) -> Decimal:
-        position = runtime_projections.position_projection.position_for_symbol(
-            symbol,
-        )
-        return (
-            Decimal("0")
-            if position is None
-            else Decimal(position.quantity)
-        )
-
-    def adaptive_position(symbol: str) -> tuple[Decimal, datetime]:
-        position = runtime_projections.position_projection.position_for_symbol(
-            symbol,
-        )
-        if position is None:
-            return Decimal("0"), utc_now()
-        return Decimal(position.quantity), position.updated_at
 
     paper_trading_commands = None
     decision_intelligence_observer = None
@@ -364,8 +324,8 @@ def create_desktop_composition(
             order_book=paper_order_book,
             event_sink=paper_runtime_event_sink,
             persistence_path=paper_persistence_path,
-            position_average_cost_source=position_average_cost,
-            position_quantity_source=position_quantity,
+            position_average_cost_source=trading_state_sources.position_average_cost,
+            position_quantity_source=trading_state_sources.position_quantity,
             clock=paper_clock,
         )
         paper_campaign_holder["id"] = paper_trading_commands.paper_campaign_id
@@ -385,34 +345,6 @@ def create_desktop_composition(
             paper_trading_commands.gateway.process_market_event
         )
 
-    def warrior_account_context() -> PaperAccountContext | None:
-        state = state_store.snapshot()
-        account = state.broker_account
-        paper_account = (
-            state.paper_account
-            if operational_configuration.environment.value == "PAPER"
-            else None
-        )
-        if paper_account is not None:
-            equity = paper_account.current_equity
-            buying_power = paper_account.buying_power
-        elif account is not None:
-            equity = getattr(account, "equity", None)
-            buying_power = getattr(account, "buying_power", None)
-        else:
-            paper = state.paper_runtime
-            equity = None if paper is None else paper.current_equity
-            buying_power = equity
-        if equity is None or buying_power is None:
-            return None
-        return PaperAccountContext(
-            equity=Decimal(equity), buying_power=Decimal(buying_power),
-            allowed_symbols=frozenset(operational_configuration.allowed_symbols),
-            risk_engine_approved=True, broker_restriction=False,
-            symbol_authorization_mode=(
-                operational_configuration.paper_symbol_authorization_mode
-            ),
-        )
 
     autonomous_paper_bridge = None
     if paper_trading_commands is not None:
@@ -423,7 +355,7 @@ def create_desktop_composition(
             enabled=operational_configuration.warrior_forward_paper_enabled,
             order_book=paper_trading_commands.order_book,
             durable_store=paper_trading_commands.durable_store,
-            position_quantity_source=position_quantity,
+            position_quantity_source=trading_state_sources.position_quantity,
             management_context_source=lambda symbol: management_context_available(
                 operational_configuration.warrior_forward_capture_path, symbol,
                 configuration_fingerprint=strategy_configuration_fingerprint(),
@@ -485,12 +417,12 @@ def create_desktop_composition(
         storage_path=operational_configuration.warrior_forward_capture_path,
         environment=operational_configuration.environment.value,
         strategy_config=warrior_strategy_config,
-        account_context_source=warrior_account_context,
+        account_context_source=trading_state_sources.warrior_account_context,
         paper_entry_submitter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.submit_entry_decision),
         paper_entry_replacer=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.consider_entry_replacement),
         paper_entry_rearmer=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.submit_rearmed_entry),
         paper_exit_submitter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.ensure_exit),
-        paper_position_quantity_source=(None if paper_trading_commands is None else position_quantity),
+        paper_position_quantity_source=(None if paper_trading_commands is None else trading_state_sources.position_quantity),
         paper_execution_ownership_source=(
             None if autonomous_paper_bridge is None
             else autonomous_paper_bridge.has_execution_ownership
@@ -526,7 +458,7 @@ def create_desktop_composition(
             (lambda _symbol: ()) if paper_order_book is None
             else paper_order_book.open_orders_for_symbol
         ),
-        position_source=adaptive_position,
+        position_source=trading_state_sources.adaptive_position,
         warrior_source=warrior_forward_sidecar.adaptive_entry_context,
     )
 
