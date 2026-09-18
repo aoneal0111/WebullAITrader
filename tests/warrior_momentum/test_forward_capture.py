@@ -25,7 +25,10 @@ from app.strategies.warrior_momentum import (
     build_daily_report, persist_daily_report, replay_captured_decision,
 )
 from app.strategies.warrior_momentum.desktop_sidecar import strategy_configuration_fingerprint
-from app.strategies.warrior_momentum.forward_runtime import management_context_available
+from app.strategies.warrior_momentum.forward_runtime import (
+    _signal_from_entry,
+    management_context_available,
+)
 from app.strategies.warrior_momentum.configuration import WarriorMomentumConfig
 from app.strategies.warrior_momentum.autonomous_paper import (
     PaperExitSubmissionDecision, PaperExitSubmissionState,
@@ -1431,6 +1434,37 @@ def test_restart_recovery_duplicate_prevention_and_replay_equivalence(tmp_path: 
         for item in store.records(record_type=CaptureRecordType.STATE_TRANSITION)
     )
     assert store.integrity_check() == "ok"
+
+
+def test_recovered_entry_preserves_persisted_lifecycle_identity(
+    tmp_path: Path,
+) -> None:
+    """Recovery must retain execution ownership instead of recomputing identity."""
+    store = ForwardCaptureStore(tmp_path / "recovered-identity.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(store, writer)
+
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        writer.flush()
+        entry = next(
+            item
+            for item in store.records(record_type=CaptureRecordType.PAPER_FILL)
+            if item.payload.get("action") == "ENTRY"
+        )
+        persisted = (
+            "WARRIOR_MOMENTUM_V1|XYZ|LEGACY_EPISODE|"
+            "recovered-execution-owner"
+        )
+        payload = dict(entry.payload)
+        payload["lifecycle_id"] = persisted
+
+        restored = _signal_from_entry(entry, payload)
+
+        assert lifecycle_identity(restored) == persisted
+    finally:
+        writer.close()
 
 
 def test_management_context_restores_stop_and_trailing_state(tmp_path: Path) -> None:
