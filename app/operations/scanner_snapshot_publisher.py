@@ -59,11 +59,14 @@ class ScannerSnapshotPublisher:
         source: str,
         stale_after: timedelta,
         diagnostics: PerformanceDiagnostics = performance_diagnostics,
+        minimum_publish_interval: timedelta = timedelta(),
     ) -> None:
         if not callable(event_sink) or not callable(sequence_source):
             raise TypeError("scanner publisher sinks must be callable")
         if stale_after <= timedelta():
             raise ValueError("scanner stale_after must be positive")
+        if minimum_publish_interval < timedelta():
+            raise ValueError("minimum_publish_interval must be non-negative")
         self._sink = event_sink
         self._sequence = sequence_source
         self._source = source
@@ -79,6 +82,8 @@ class ScannerSnapshotPublisher:
         self._last_stale_symbols: tuple[str, ...] = ()
         self._published_experiments: dict[str, tuple[object, ...]] = {}
         self._diagnostics = diagnostics
+        self._minimum_publish_interval = minimum_publish_interval
+        self._last_projection_publish_at: datetime | None = None
 
     @property
     def last_changed(self) -> bool:
@@ -124,6 +129,17 @@ class ScannerSnapshotPublisher:
         now: datetime,
     ) -> tuple[str, ...]:
         self._latest_snapshot = snapshot
+        if (
+            self._minimum_publish_interval > timedelta()
+            and self._last_projection_publish_at is not None
+            and now - self._last_projection_publish_at
+            < self._minimum_publish_interval
+        ):
+            self._last_changed = False
+            self._diagnostics.increment(
+                "scanner_snapshots_suppressed_unchanged"
+            )
+            return ()
         ranked = snapshot.ranked_candidates
         ranked_symbols = {candidate.symbol for candidate in ranked}
         decisions = {decision.symbol: decision for decision in snapshot.decisions}
@@ -369,18 +385,6 @@ class ScannerSnapshotPublisher:
                     metadata=metadata,
                 ),
             )
-            _LOGGER.info(
-                "event_type=%s symbol=%s rank=%d score=%d",
-                (
-                    "candidate_qualified"
-                    if candidate.symbol in ranked_symbols
-                    else "candidate_watching"
-                ),
-                candidate.symbol,
-                candidate.scanner_rank or display_rank,
-                candidate.score,
-            )
-
         self._displayed_symbols = current
         self._published_display_fingerprints = display_fingerprints
         self._published_symbols = ranked_symbols
@@ -388,6 +392,7 @@ class ScannerSnapshotPublisher:
             candidate.symbol: candidate for candidate in ranked
         }
         self._last_decisions = decisions
+        self._last_projection_publish_at = now
         return stale_symbols
 
     def _record_population_diagnostics(
