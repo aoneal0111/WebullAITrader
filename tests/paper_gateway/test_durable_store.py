@@ -620,3 +620,40 @@ def test_ambiguous_commit_failure_recovers_once_and_blocks_resubmission(tmp_path
     assert restored_bridge.submit_entry(Signal(), 100, Decimal("50")) is False
     assert len(restarted.order_book.history()) == 1
     restarted.close()
+
+
+def test_zero_fill_buy_does_not_consume_durable_opportunity(tmp_path) -> None:
+    path = tmp_path / "paper.sqlite3"
+    composition = create_paper_trading_command_composition(persistence_path=str(path))
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+        durable_store=composition.durable_store,
+    )
+    signal = Signal()
+    signal.opportunity_id = "opportunity-zero-fill"
+    assert bridge.submit_entry(signal, 100, Decimal("50"))
+    assert composition.durable_store.consumed_opportunity(
+        "opportunity-zero-fill"
+    ) is None
+    composition.close()
+
+
+def test_authoritative_buy_fill_consumes_durable_opportunity(tmp_path) -> None:
+    path = tmp_path / "paper.sqlite3"
+    composition = create_paper_trading_command_composition(persistence_path=str(path))
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+        durable_store=composition.durable_store,
+    )
+    signal = Signal()
+    signal.opportunity_id = "opportunity-filled"
+    assert bridge.submit_entry(signal, 100, Decimal("50"))
+    composition.gateway.process_market_event(quote(1, "9.99", "10"))
+    marker = composition.durable_store.consumed_opportunity("opportunity-filled")
+    assert marker is not None
+    assert marker["lifecycle_id"] == "trade-a"
+    composition.close()
