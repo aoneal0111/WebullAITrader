@@ -784,24 +784,37 @@ def test_recovered_position_can_heal_protection_then_resume_target_management(
         shares = int(entry.quantity)
         position["XYZ"] = Decimal(shares)
 
-        # Reproduce the live TJGC seam: execution ownership and durable
-        # management context agree, but a prior protection failure left the
-        # recovered symbol marked management-incomplete and with no sell order.
-        bridge._recovered_symbols.add("XYZ")
-        bridge._management_incomplete.add("XYZ")
+        # Reproduce the live TJGC restart seam through the real recovery
+        # boundary. Execution ownership is restored before the asynchronous
+        # durable management-context lookup exposes the matching lifecycle.
+        recovered_bridge = AutonomousPaperExecutionBridge(
+            composition.trading_service,
+            composition.order_command_factory,
+            order_book=composition.order_book,
+            position_quantity_source=lambda symbol: position.get(
+                symbol, Decimal("0"),
+            ),
+            management_context_source=lambda symbol: (
+                context["identity"] if symbol == "XYZ" else None
+            ),
+        )
+        context["identity"] = None
+        assert recovered_bridge.reconcile().value == "READY"
         assert (
-            bridge.management_readiness("XYZ")
+            recovered_bridge.management_readiness("XYZ")
             is AutonomousManagementReadiness.RECONCILIATION_REQUIRED
         )
         assert composition.order_book.open_orders_for_symbol("XYZ") == ()
 
-        repaired = bridge.ensure_exit(
+        # The durable context becomes visible after execution recovery. The
+        # bridge must now permit only protection to heal the fail-closed state.
+        context["identity"] = identity
+        repaired = recovered_bridge.ensure_exit(
             "XYZ", shares, signal.stop_price, "STOP", identity,
         )
         assert repaired.protection_active is True
-        assert "XYZ" not in bridge._management_incomplete
         assert (
-            bridge.management_readiness("XYZ")
+            recovered_bridge.management_readiness("XYZ")
             is AutonomousManagementReadiness.READY
         )
 
@@ -817,7 +830,7 @@ def test_recovered_position_can_heal_protection_then_resume_target_management(
         # Once the recovered stop is authoritative, the existing target path
         # must be available immediately rather than remaining fail-closed.
         target_quantity = max(1, shares // 3)
-        target = bridge.ensure_exit(
+        target = recovered_bridge.ensure_exit(
             "XYZ", target_quantity, signal.target_levels[0],
             "FIRST_TARGET", identity,
         )
