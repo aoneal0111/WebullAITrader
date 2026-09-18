@@ -45,13 +45,13 @@ from app.trade_intelligence.decision_intelligence.entry_timing import (
 from app.entry_opportunity_value import EntryOpportunityValueRuntimeObserver
 from app.adaptive_entry_research import AdaptiveWorkingEntryObserver
 from app.memory_observability import MemoryObservability
-from app.performance_diagnostics import performance_diagnostics
 from app.crypto_research import (
     CryptoCatalystAcquisitionRuntime,
     CryptoIntelligenceResearchRuntime,
     CryptoResearchRuntime,
 )
 from .desktop_optional_research import create_optional_research_runtimes
+from .desktop_observability import create_desktop_memory_observability, optional_metrics
 
 from .desktop_runtime import create_desktop_runtime_service
 from .desktop_runtime_config import DesktopRuntimeConfiguration
@@ -572,17 +572,6 @@ def create_desktop_composition(
     )
     crypto_intelligence_runtime = optional_research.crypto_intelligence_runtime
 
-    def optional_metrics(root: object | None, *attributes: str) -> dict[str, int]:
-        """Resolve a live diagnostic owner without creating or retaining one."""
-
-        current = root
-        for attribute in attributes:
-            current = getattr(current, attribute, None)
-            if current is None:
-                return {}
-        provider = getattr(current, "memory_metrics", None)
-        return {} if not callable(provider) else dict(provider())
-
     runtime_service_holder: dict[str, object] = {}
 
     def runtime_driver_metrics(*attributes: str) -> dict[str, int]:
@@ -594,72 +583,19 @@ def create_desktop_composition(
             driver = getattr(service, "_driver", None)
         return optional_metrics(driver, *attributes)
 
-    def realtime_scanner_metrics() -> dict[str, int]:
-        return runtime_driver_metrics("_scanner", "_engine")
-
-    memory_observability = MemoryObservability(
-        {
-            "warrior_forward_runtime": lambda: optional_metrics(
-                warrior_forward_sidecar, "_service"
-            ),
-            "warrior_forward_report": lambda: optional_metrics(
-                warrior_forward_sidecar, "_report_worker"
-            ),
-            "websocket_callback_queue": lambda: runtime_driver_metrics(
-                "_market_data"
-            ),
-            "trade_intelligence_runtime": trade_intelligence_observer.memory_metrics,
-            "trade_intelligence_discovery_worker": lambda: optional_metrics(
-                trade_intelligence_observer, "_service", "_discovery_worker"
-            ),
-            "multi_strategy_discovery_engine": lambda: optional_metrics(
-                trade_intelligence_observer,
-                "_service",
-                "_discovery_worker",
-                "engine",
-            ),
-            "realtime_scanner": realtime_scanner_metrics,
-            "scanner_snapshot_publisher": lambda: runtime_driver_metrics(
-                "_scanner_publisher"
-            ),
-            "adaptive_entry_runtime": adaptive_entry_research_observer.memory_metrics,
-            "adaptive_entry_worker": lambda: optional_metrics(
-                adaptive_entry_research_observer, "_worker"
-            ),
-            "crypto_research": crypto_research_runtime.memory_metrics,
-            "paper_order_book": paper_order_book.memory_metrics,
-            "order_projection": runtime_projections.order_projection.memory_metrics,
-            "position_projection": (
-                runtime_projections.position_projection.memory_metrics
-            ),
-            "decision_projection": (
-                runtime_projections.decision_projection.memory_metrics
-            ),
-            "health_projection": runtime_projections.health_projection.memory_metrics,
-            "watchlist_projection": (
-                runtime_projections.watchlist_projection.memory_metrics
-            ),
-            "timeline_projection": runtime_projections.timeline_projection.memory_metrics,
-            "application_state": state_store.memory_metrics,
-            "operations_bus": bus.memory_metrics,
-            "startup": performance_diagnostics.startup_metrics,
-        },
-        enabled=operational_configuration.memory_observability_enabled,
-        path=operational_configuration.memory_observability_path,
-        interval_seconds=(
-            operational_configuration.memory_observability_interval_seconds
-        ),
-        tracemalloc_enabled=(
-            operational_configuration.memory_tracemalloc_enabled
-        ),
-        tracemalloc_snapshot_interval_seconds=(
-            operational_configuration
-            .memory_tracemalloc_snapshot_interval_seconds
-        ),
-        gc_tracked_objects_enabled=(
-            operational_configuration.memory_gc_tracked_objects_enabled
-        ),
+    memory_observability = create_desktop_memory_observability(
+        operational_configuration=operational_configuration,
+        warrior_forward_sidecar=warrior_forward_sidecar,
+        runtime_driver_metrics=runtime_driver_metrics,
+        trade_intelligence_observer=trade_intelligence_observer,
+        adaptive_entry_research_observer=adaptive_entry_research_observer,
+        crypto_research_runtime=crypto_research_runtime,
+        paper_order_book=paper_order_book,
+        runtime_projections=runtime_projections,
+        state_store=state_store,
+        bus=bus,
     )
+
     if warrior_forward_sidecar.enabled or trade_intelligence_observer.enabled:
         market_event_observer = CompositeMarketEventObserver(
             market_event_observer, warrior_forward_sidecar,
