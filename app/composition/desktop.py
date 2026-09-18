@@ -240,11 +240,14 @@ def create_desktop_composition(
             clock=paper_clock,
         )
         if paper_trading_commands.durable_store is not None:
-            # History is a presentation concern. Only terminal orders from prior
-            # campaigns enter the shared read model; old working orders retain
-            # no execution, protection, or buying-power authority.
+            # Restore the active campaign exactly as held by the authoritative
+            # order book, including working protection. Prior campaigns remain
+            # presentation-only terminal history.
             runtime_projections.order_projection.reconcile_historical_terminal_orders(
                 paper_trading_commands.durable_store.historical_orders()
+            )
+            runtime_projections.order_projection.reconcile_authoritative_orders(
+                paper_trading_commands.durable_store.orders()
             )
         paper_campaign_holder["id"] = paper_trading_commands.paper_campaign_id
         paper_campaign_holder["capital"] = (
