@@ -157,6 +157,9 @@ class DesktopBrokerRuntimeDriver:
             stale_after=timedelta(
                 seconds=configuration.maximum_market_data_age_seconds
             ),
+            # The scanner remains event-authoritative; only its desktop
+            # projection is coalesced to a bounded 8 Hz update cadence.
+            minimum_publish_interval=timedelta(milliseconds=125),
         )
 
     @property
@@ -963,19 +966,6 @@ class DesktopBrokerRuntimeDriver:
                     finally:
                         performance_diagnostics.record_projection_duration(
                             (perf_counter() - projection_started) * 1000.0
-                        )
-                    self._scanner_log(
-                        "scanner_snapshot_counters",
-                        f"ranked_candidates={len(snapshot.ranked_candidates)}; "
-                        f"processed_events={snapshot.processed_events}; "
-                        f"ignored_events={snapshot.ignored_events}; "
-                        f"active_symbols={len(snapshot.active_symbols)}.",
-                    )
-                    if self._scanner_publisher.last_changed:
-                        self._scanner_log(
-                            "scanner_snapshot_published",
-                            f"Published {len(snapshot.ranked_candidates)} "
-                            "ranked candidates.",
                         )
                     self._publish_scanner_observation_if_due(force=False)
                     # Candidate/display freshness is not transport liveness.
