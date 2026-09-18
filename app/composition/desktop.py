@@ -225,6 +225,8 @@ def create_desktop_composition(
     paper_campaign_holder: dict[str, object] = {"id": None, "capital": None}
 
 
+    trading_state_holder: dict[str, DesktopTradingStateSources] = {}
+
     runtime_projections = create_runtime_projection_pipeline(
         operations_bus=bus,
         account_id=(
@@ -236,7 +238,7 @@ def create_desktop_composition(
                 operational_configuration.maximum_market_data_age_seconds
             )
         ),
-        portfolio_account_source=lambda: trading_state_sources.portfolio_account(),
+        portfolio_account_source=lambda: trading_state_holder["sources"].portfolio_account(),
         portfolio_intelligence_service=PortfolioIntelligenceService(
             configuration=load_portfolio_intelligence_configuration(),
             limits=PortfolioRiskLimits(
@@ -251,6 +253,7 @@ def create_desktop_composition(
         runtime_projections=runtime_projections,
         operational_configuration=operational_configuration,
     )
+    trading_state_holder["sources"] = trading_state_sources
     trade_intelligence_observer.bind_authoritative_focus_sources(
         position_source=lambda: runtime_projections.position_projection.snapshot,
         order_source=lambda: runtime_projections.order_projection.snapshot,
