@@ -245,3 +245,59 @@ def test_partial_fill_protection_survives_parent_entry_expiry_with_stale_context
     finally:
         writer.close()
         composition.close()
+
+def test_repeated_protection_reconciliation_preserves_correlated_target_bracket(
+    tmp_path: Path,
+):
+    """A full-position STOP request must not destroy an active target bracket."""
+
+    position = {"XYZ": D("98")}
+    lifecycle = "WARRIOR_MOMENTUM_V1|XYZ|LEGACY_EPISODE|bracket"
+    composition = create_session_paper_composition(at=NOW)
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+        position_quantity_source=lambda symbol: position.get(symbol, D("0")),
+        management_context_source=lambda _symbol: lifecycle,
+    )
+    bridge._active_by_symbol["XYZ"] = lifecycle
+    try:
+        protected = bridge.ensure_exit(
+            "XYZ", 98, D("15.2045"), "STOP", lifecycle,
+        )
+        assert protected.protection_active is True
+
+        target = bridge.ensure_exit(
+            "XYZ", 55, D("16.1023"), "FIRST_TARGET", lifecycle,
+        )
+        assert target.protection_active is True
+
+        before = tuple(
+            order for order in composition.order_book.open_orders_for_symbol("XYZ")
+            if order.request.side.value == "SELL"
+        )
+        assert sorted(
+            (order.request.order_type.value, int(order.remaining_quantity))
+            for order in before
+        ) == [("LIMIT", 55), ("STOP", 43)]
+
+        repeated = bridge.ensure_exit(
+            "XYZ", 98, D("15.2045"), "STOP", lifecycle,
+        )
+        assert repeated.protection_active is True
+
+        after = tuple(
+            order for order in composition.order_book.open_orders_for_symbol("XYZ")
+            if order.request.side.value == "SELL"
+        )
+        assert {order.order_id for order in after} == {
+            order.order_id for order in before
+        }
+        assert sorted(
+            (order.request.order_type.value, int(order.remaining_quantity))
+            for order in after
+        ) == [("LIMIT", 55), ("STOP", 43)]
+    finally:
+        composition.close()
+
