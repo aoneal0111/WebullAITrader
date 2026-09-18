@@ -41,6 +41,13 @@ from .order_flow_runtime import (
     OrderFlowPollingService, OrderFlowPriority,
 )
 from .market_event_observer import CompositeMarketEventObserver
+from .projection_models import (
+    WarriorFocusItem,
+    WarriorPaperSnapshot,
+    WarriorPaperSummary,
+    blocking_reasons,
+    scanner_classification,
+)
 from .models import CandidateStatus, MinuteBar, MomentumCandidate, SetupState
 from .observability import NoOpWarriorObservabilitySink
 from .runtime import WarriorMomentumRuntime
@@ -72,50 +79,6 @@ class WarriorCaptureHealth(StrEnum):
     RUNNING = "RUNNING"
     DEGRADED = "DEGRADED"
     STOPPED = "STOPPED"
-
-
-@dataclass(frozen=True, slots=True)
-class WarriorPaperSummary:
-    discovered: int = 0
-    stocks_in_play: int = 0
-    near: int = 0
-    qualified: int = 0
-    setup_forming: int = 0
-    triggered: int = 0
-    entry_ready: int = 0
-    open_paper_trades: int = 0
-    today_paper_r: Decimal | None = None
-    today_trades: int = 0
-    triggered_but_blocked: int = 0
-    tracked_counterfactuals: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class WarriorFocusItem:
-    candidate: MomentumCandidate
-    float_provenance: FloatProvenance
-    entry_trigger: Decimal | None
-    stop_price: Decimal | None
-    blocking_reasons: tuple[str, ...]
-    market_data_stale: bool = False
-    market_data_age_seconds: Decimal | None = None
-    decision_timestamp: datetime | None = None
-    decision_last: Decimal | None = None
-    decision_bid: Decimal | None = None
-    decision_ask: Decimal | None = None
-    decision_spread_percent: Decimal | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class WarriorPaperSnapshot:
-    enabled: bool
-    health: WarriorCaptureHealth
-    configuration_fingerprint: str
-    items: tuple[WarriorFocusItem, ...] = ()
-    summary: WarriorPaperSummary = WarriorPaperSummary()
-    metrics: CaptureMetrics | None = None
-    last_error_type: str | None = None
-    publication_rate_hz: Decimal = Decimal("0")
 
 
 @dataclass(slots=True)
@@ -920,7 +883,7 @@ class WarriorDesktopSidecar:
             )
             scanner_classification = None
             if scanner_decision is not None:
-                scanner_classification = _scanner_classification(
+                scanner_classification = scanner_classification(
                     scanner_decision,
                     False if self._scanner_ranked_source is None
                     else self._scanner_ranked_source(symbol),
@@ -1027,7 +990,7 @@ class WarriorDesktopSidecar:
                     session=candidate.session,
                 )
                 self._provenance[symbol] = provenance
-                self._blocking[symbol] = _blocking_reasons(candidate, signal is not None)
+                self._blocking[symbol] = blocking_reasons(candidate, signal is not None)
                 ages = tuple(
                     age for age in (quote_freshness, last_price_freshness)
                     if age is not None
@@ -1453,7 +1416,7 @@ def _safe_diagnostic_message(error: Exception) -> str:
     return message[:256] if message else "<empty>"
 
 
-def _blocking_reasons(candidate: MomentumCandidate, entry_ready: bool) -> tuple[str, ...]:
+def blocking_reasons(candidate: MomentumCandidate, entry_ready: bool) -> tuple[str, ...]:
     if entry_ready:
         return ()
     mapping = {
@@ -1473,7 +1436,7 @@ def _blocking_reasons(candidate: MomentumCandidate, entry_ready: bool) -> tuple[
     ))
 
 
-def _scanner_classification(decision: object, ranked: bool) -> str | None:
+def scanner_classification(decision: object, ranked: bool) -> str | None:
     """Mirror the existing scanner projection labels for captured context."""
     if ranked:
         return "QUALIFYING"
