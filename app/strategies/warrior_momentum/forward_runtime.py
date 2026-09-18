@@ -2128,7 +2128,8 @@ class WarriorForwardCaptureService:
                     ))
         fill = CaptureRecord.create(
             CaptureRecordType.PAPER_FILL, signal.symbol, signal.timestamp,
-            {"action": "ANALYTICAL_ENTRY", "setup": signal.setup_type.value,
+            {"action": "ENTRY", "entry_authority": "ANALYTICAL_FORWARD_CAPTURE",
+             "setup": signal.setup_type.value,
              "lifecycle_id": lifecycle_identity(signal),
              "entry_trigger": signal.entry_trigger, "fill_price": signal.entry_trigger,
              "structural_stop": signal.stop_price, "stop_model": signal.stop_model.value,
