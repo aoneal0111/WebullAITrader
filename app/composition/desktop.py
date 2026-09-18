@@ -468,6 +468,7 @@ def create_desktop_composition(
         runtime_projections=runtime_projections,
         state_store=state_store,
         bus=bus,
+        observability_factory=MemoryObservability,
     )
 
     if warrior_forward_sidecar.enabled or trade_intelligence_observer.enabled:
