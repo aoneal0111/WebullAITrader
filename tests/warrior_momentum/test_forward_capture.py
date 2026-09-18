@@ -25,6 +25,7 @@ from app.strategies.warrior_momentum import (
     build_daily_report, persist_daily_report, replay_captured_decision,
 )
 from app.strategies.warrior_momentum.desktop_sidecar import strategy_configuration_fingerprint
+from app.strategies.warrior_momentum.forward_runtime import management_context_available
 from app.strategies.warrior_momentum.configuration import WarriorMomentumConfig
 from app.strategies.warrior_momentum.autonomous_paper import (
     PaperExitSubmissionDecision, PaperExitSubmissionState,
@@ -1469,3 +1470,85 @@ def test_capture_writer_is_bounded_fail_closed_and_gui_isolated(tmp_path: Path) 
     writer.close()
     source = Path("app/strategies/warrior_momentum/forward_queue.py").read_text(encoding="utf-8")
     assert "PySide6" not in source and "PyQt" not in source
+
+
+def test_management_context_lookup_is_symbol_local_and_bounded(tmp_path: Path) -> None:
+    path = tmp_path / "management-readiness.sqlite3"
+    store = ForwardCaptureStore(path)
+    fingerprint = "current-fingerprint"
+    lifecycle = "WARRIOR_MOMENTUM_V1|XYZ|episode"
+    records = [
+        CaptureRecord.create(
+            CaptureRecordType.MANAGEMENT_CONTEXT,
+            "NOISE",
+            T0 + timedelta(seconds=index),
+            {
+                "environment": "PAPER",
+                "strategy": "WARRIOR_MOMENTUM_V1",
+                "lifecycle_id": f"noise-{index}",
+                "phase": "MANAGING",
+                "stop": "9.50",
+                "configuration_fingerprint": fingerprint,
+            },
+            identity_parts=("noise", str(index)),
+        )
+        for index in range(600)
+    ]
+    records.append(CaptureRecord.create(
+        CaptureRecordType.MANAGEMENT_CONTEXT,
+        "XYZ",
+        T0 + timedelta(minutes=20),
+        {
+            "environment": "PAPER",
+            "strategy": "WARRIOR_MOMENTUM_V1",
+            "lifecycle_id": lifecycle,
+            "phase": "MANAGING",
+            "stop": "10.00",
+            "configuration_fingerprint": fingerprint,
+        },
+        identity_parts=("target",),
+    ))
+    store.append_batch(tuple(records))
+    materialized_before = store.records_materialized_total()
+
+    assert management_context_available(
+        path, "XYZ", lifecycle_id=lifecycle,
+        configuration_fingerprint=fingerprint,
+    ) == lifecycle
+
+    assert store.records_materialized_total() == materialized_before
+    # Prove the dedicated store boundary itself is bounded and symbol-local.
+    latest = store.latest_records_for_symbol(
+        symbol="XYZ", record_type=CaptureRecordType.MANAGEMENT_CONTEXT, limit=8,
+    )
+    assert len(latest) == 1
+    assert latest[0].payload["lifecycle_id"] == lifecycle
+
+
+def test_management_context_lookup_does_not_revive_closed_lifecycle(tmp_path: Path) -> None:
+    path = tmp_path / "management-closed.sqlite3"
+    store = ForwardCaptureStore(path)
+    fingerprint = "current-fingerprint"
+    lifecycle = "WARRIOR_MOMENTUM_V1|XYZ|episode"
+    base = {
+        "environment": "PAPER",
+        "strategy": "WARRIOR_MOMENTUM_V1",
+        "lifecycle_id": lifecycle,
+        "stop": "10.00",
+        "configuration_fingerprint": fingerprint,
+    }
+    store.append_batch((
+        CaptureRecord.create(
+            CaptureRecordType.MANAGEMENT_CONTEXT, "XYZ", T0,
+            {**base, "phase": "MANAGING"}, identity_parts=("managing",),
+        ),
+        CaptureRecord.create(
+            CaptureRecordType.MANAGEMENT_CONTEXT, "XYZ", T0 + timedelta(minutes=1),
+            {**base, "phase": "CLOSED"}, identity_parts=("closed",),
+        ),
+    ))
+
+    assert management_context_available(
+        path, "XYZ", lifecycle_id=lifecycle,
+        configuration_fingerprint=fingerprint,
+    ) is None
