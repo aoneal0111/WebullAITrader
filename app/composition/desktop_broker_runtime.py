@@ -307,6 +307,8 @@ def create_configured_desktop_broker_driver(
                     tradable=record.tradable,
                     updated_at=record.as_of,
                     current_volume=record.current_volume,
+                    extended_volume=record.extended_volume,
+                    overnight_volume=record.overnight_volume,
                     catalyst_source=record.catalyst_source,
                     catalyst_published_at=record.catalyst_published_at,
                     catalyst_source_url=record.catalyst_source_url,

@@ -38,7 +38,12 @@ def event_log_from_json(payload: str) -> MarketEventLog:
 
 def _payload(kind, value):
     if kind is MarketEventType.QUOTE: return QuotePayload(*(_decimal(value[key]) for key in ("bid", "ask", "bid_size", "ask_size")))
-    if kind is MarketEventType.TRADE: return TradePayload(_decimal(value["price"]), _decimal(value["size"]), value["trade_id"])
+    if kind is MarketEventType.TRADE: return TradePayload(
+        _decimal(value["price"]), _decimal(value["size"]), value["trade_id"],
+        VolumeSemantics(value.get("volume_semantics", VolumeSemantics.TRADE_SIZE.value)),
+        _optional(value.get("extended_volume")),
+        _optional(value.get("overnight_volume")),
+    )
     if kind is MarketEventType.BOOK_SNAPSHOT:
         levels = lambda name: tuple(BookLevel(_decimal(item["price"]), _decimal(item["size"])) for item in value[name])
         return OrderBookSnapshotPayload(levels("bids"), levels("asks"))

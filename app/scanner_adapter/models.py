@@ -10,6 +10,7 @@ from app.momentum_scanner.models import (
     ScannerObservation,
     FloatProvenance,
 )
+from app.market_data.models import VolumeSemantics
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +25,8 @@ class ScannerReferenceData:
     updated_at: datetime | None = None
     catalyst_status: CatalystStatus = CatalystStatus.UNKNOWN
     current_volume: Decimal | None = None
+    extended_volume: Decimal | None = None
+    overnight_volume: Decimal | None = None
     catalyst_source: str | None = None
     catalyst_published_at: datetime | None = None
     catalyst_source_url: str | None = None
@@ -48,6 +51,10 @@ class ScannerReferenceData:
             raise ValueError("float_shares must be positive when provided")
         if self.current_volume is not None and self.current_volume < 0:
             raise ValueError("current_volume must be non-negative when provided")
+        for name in ("extended_volume", "overnight_volume"):
+            value = getattr(self, name)
+            if value is not None and value < 0:
+                raise ValueError(f"{name} must be non-negative when provided")
 
         if self.updated_at is not None and self.updated_at.tzinfo is None:
             raise ValueError("updated_at must be timezone-aware")
@@ -78,6 +85,11 @@ class SymbolScannerState:
     bid_size: Decimal | None = None
     ask_size: Decimal | None = None
     cumulative_volume: Decimal = Decimal("0")
+    authoritative_volume: Decimal | None = None
+    local_trade_volume: Decimal = Decimal("0")
+    extended_volume: Decimal | None = None
+    overnight_volume: Decimal | None = None
+    volume_semantics: VolumeSemantics | None = None
     halted: bool = False
     trading_date: date | None = None
 
@@ -119,6 +131,12 @@ class SymbolScannerState:
 
         if self.cumulative_volume < 0:
             raise ValueError("cumulative_volume cannot be negative")
+        for name in ("authoritative_volume", "extended_volume", "overnight_volume"):
+            value = getattr(self, name)
+            if value is not None and value < 0:
+                raise ValueError(f"{name} cannot be negative")
+        if self.local_trade_volume < 0:
+            raise ValueError("local_trade_volume cannot be negative")
 
         object.__setattr__(self, "symbol", symbol)
 

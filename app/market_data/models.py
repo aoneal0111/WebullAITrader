@@ -13,6 +13,8 @@ class MarketSession(StrEnum):
  PRE_MARKET="PRE_MARKET";REGULAR="REGULAR";AFTER_HOURS="AFTER_HOURS";CLOSED="CLOSED";HOLIDAY="HOLIDAY";HALTED="HALTED"
 class CorporateActionType(StrEnum):
  SPLIT="SPLIT";REVERSE_SPLIT="REVERSE_SPLIT";DIVIDEND="DIVIDEND";SYMBOL_CHANGE="SYMBOL_CHANGE";MERGER="MERGER";DELISTING="DELISTING"
+class VolumeSemantics(StrEnum):
+ TRADE_SIZE="TRADE_SIZE";ACCUMULATED="ACCUMULATED"
 @dataclass(frozen=True,slots=True)
 class BookLevel:price:Decimal;size:Decimal
 @dataclass(frozen=True,slots=True)
@@ -21,7 +23,13 @@ class QuotePayload:
  bids:tuple[BookLevel,...]=()
  asks:tuple[BookLevel,...]=()
 @dataclass(frozen=True,slots=True)
-class TradePayload:price:Decimal;size:Decimal;trade_id:str
+class TradePayload:
+ price:Decimal
+ size:Decimal
+ trade_id:str
+ volume_semantics:VolumeSemantics=VolumeSemantics.TRADE_SIZE
+ extended_volume:Decimal|None=None
+ overnight_volume:Decimal|None=None
 @dataclass(frozen=True,slots=True)
 class OrderBookSnapshotPayload:bids:tuple[BookLevel,...];asks:tuple[BookLevel,...]
 @dataclass(frozen=True,slots=True)

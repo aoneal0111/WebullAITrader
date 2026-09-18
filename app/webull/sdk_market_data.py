@@ -520,6 +520,8 @@ class WebullScannerReferenceProvider:
             catalyst_status=catalyst_status,
             as_of=self._clock(),
             current_volume=_positive(row, "volume"),
+            extended_volume=_optional_positive(row, "ext_volume"),
+            overnight_volume=_optional_positive(row, "ovn_volume"),
             catalyst_source=selected.source,
             catalyst_published_at=selected.published_at,
             catalyst_source_url=selected.source_url,

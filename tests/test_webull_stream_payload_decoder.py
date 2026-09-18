@@ -7,7 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.market_data.models import MarketEventType
+from app.market_data.models import (
+    MarketEvent, MarketEventLog, MarketEventType, TradePayload, VolumeSemantics,
+)
+from app.market_data.recorder import event_log_from_json, event_log_to_json, record_event
 from app.webull.configuration import ReconnectPolicy
 from app.webull.errors import SerializationError
 from app.webull.market_event_parser import (
@@ -296,6 +299,49 @@ def test_sparse_sdk_snapshot_is_valid_skipped_traffic_not_a_decode_failure() -> 
     )
     assert lifecycle == []
     assert not any(args == ("stream_receive", "decode_failed") for args, _ in logger.records)
+
+
+def test_snapshot_and_tick_volume_semantics_are_distinct() -> None:
+    parser = WebullMarketEventParser(clock=lambda: NOW)
+    snapshot = parser({
+        "event_type": "SNAPSHOT", "symbol": "AAPL", "timestamp": NOW.isoformat(),
+        "last_price": "200", "volume": "100000", "ext_volume": "500",
+        "ovn_volume": "700",
+    })
+    tick = parser({
+        "event_type": "TICK", "symbol": "AAPL", "timestamp": NOW.isoformat(),
+        "last_price": "200", "size": "25",
+    })
+
+    assert snapshot is not None and tick is not None
+    assert snapshot.payload.volume_semantics is VolumeSemantics.ACCUMULATED
+    assert snapshot.payload.size == Decimal("100000")
+    assert snapshot.payload.extended_volume == Decimal("500")
+    assert snapshot.payload.overnight_volume == Decimal("700")
+    assert tick.payload.volume_semantics is VolumeSemantics.TRADE_SIZE
+    assert tick.payload.size == Decimal("25")
+
+
+def test_record_replay_preserves_typed_volume_semantics() -> None:
+    snapshot = MarketEvent(
+        1, NOW, "AAPL", "WEBULL", MarketEventType.TRADE,
+        TradePayload(
+            Decimal("200"), Decimal("100000"), "snapshot",
+            volume_semantics=VolumeSemantics.ACCUMULATED,
+            extended_volume=Decimal("500"), overnight_volume=Decimal("700"),
+        ),
+    )
+    tick = MarketEvent(
+        2, NOW, "AAPL", "WEBULL", MarketEventType.TRADE,
+        TradePayload(Decimal("200"), Decimal("25"), "tick-1"),
+    )
+    log = record_event(record_event(MarketEventLog(), snapshot), tick)
+    replay = event_log_from_json(event_log_to_json(log))
+
+    assert replay.events[0].payload.volume_semantics is VolumeSemantics.ACCUMULATED
+    assert replay.events[0].payload.extended_volume == Decimal("500")
+    assert replay.events[0].payload.overnight_volume == Decimal("700")
+    assert replay.events[1].payload.volume_semantics is VolumeSemantics.TRADE_SIZE
 
 
 def test_sparse_sdk_snapshot_recovers_an_isolated_decode_failure() -> None:

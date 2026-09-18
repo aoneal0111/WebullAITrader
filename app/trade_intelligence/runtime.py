@@ -18,7 +18,7 @@ from typing import Callable
 
 from app.live_scanner.session import scanner_session
 from app.market.calendar import EASTERN
-from app.market_data.models import MarketEvent, MarketEventType, TradePayload
+from app.market_data.models import MarketEvent, MarketEventType, TradePayload, VolumeSemantics
 from app.momentum_scanner.models import ScannerDecision
 from app.performance_diagnostics import performance_diagnostics
 from app.opportunity_discovery import (
@@ -574,6 +574,13 @@ class TradeIntelligenceRuntimeObserver:
             self._publish_metrics()
     def _observe_trade_bar(self, event: MarketEvent) -> None:
         assert event.symbol is not None and isinstance(event.payload, TradePayload)
+        # Accumulated snapshot volume is scanner authority, not a trade/bar
+        # delta.  Only individual trade quantities belong in TI bars.
+        if (
+            event.payload.volume_semantics is not VolumeSemantics.TRADE_SIZE
+            or event.payload.trade_id.startswith("snapshot")
+        ):
+            return
         symbol = event.symbol.strip().upper()
         minute = _utc(event.timestamp).replace(second=0, microsecond=0)
         price, size = event.payload.price, max(Decimal("0"), event.payload.size)

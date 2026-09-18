@@ -22,7 +22,7 @@ __all__=(
  "QuotePayload","TradePayload","OrderBookSnapshotPayload","OrderBookDeltaPayload","MarketStatusPayload",
  "TradingHaltPayload","ResumePayload","SymbolMetadataPayload","CorporateActionPayload","SessionChangePayload",
  "HeartbeatPayload","ClockSyncPayload","MarketEvent","MarketEventLog","ClockMeasurement","MarketEventType",
- "MarketSession","CorporateActionType","append_event","collect_available","collect_next","corporate_actions",
+ "MarketSession","CorporateActionType","VolumeSemantics","append_event","collect_available","collect_next","corporate_actions",
  "create_replay","event_log_from_json","event_log_to_json","heartbeat_is_stale","latest_recorded_session",
  "market_data_to_json","market_data_to_text","measure_clock","next_event","pause","record_event",
  "recorded_session","replay_all","resume","seek",

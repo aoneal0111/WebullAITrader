@@ -40,7 +40,12 @@ def _validate_payload(payload):
    if payload.bids and payload.asks and payload.bids[0].price > payload.asks[0].price:
     raise ValueError("quote book must not be crossed")
   if payload.bid>payload.ask:raise ValueError("bid must not exceed ask")
- elif isinstance(payload,TradePayload):_positive(payload.price,"price");_nonnegative(payload.size,"size");_text(payload.trade_id,"trade_id")
+ elif isinstance(payload,TradePayload):
+  _positive(payload.price,"price");_nonnegative(payload.size,"size");_text(payload.trade_id,"trade_id")
+  if not isinstance(payload.volume_semantics,VolumeSemantics):raise ValueError("volume semantics is invalid")
+  for name in ("extended_volume","overnight_volume"):
+   value=getattr(payload,name)
+   if value is not None:_nonnegative(value,name)
  elif isinstance(payload,OrderBookSnapshotPayload):
   for level in (*payload.bids,*payload.asks):_level(level)
   if payload.bids and payload.asks and max(x.price for x in payload.bids)>min(x.price for x in payload.asks):raise ValueError("book bid must not exceed ask")

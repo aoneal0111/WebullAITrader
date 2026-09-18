@@ -12,7 +12,10 @@ import json
 import re
 import zlib
 
-from app.market_data.models import BookLevel, MarketEvent, MarketEventType, QuotePayload, TradePayload
+from app.market_data.models import (
+    BookLevel, MarketEvent, MarketEventType, QuotePayload, TradePayload,
+    VolumeSemantics,
+)
 from app.webull.errors import SerializationError
 
 
@@ -315,6 +318,9 @@ def _decode_sdk_result(topic: object, value: object) -> Mapping[str, object] | N
             "timestamp": getattr(value, "last_trade_time", None) or timestamp,
             "last_price": price,
             "size": volume, "trade_id": "snapshot",
+            "volume_semantics": VolumeSemantics.ACCUMULATED,
+            "extended_volume": getattr(value, "ext_volume", None),
+            "overnight_volume": getattr(value, "ovn_volume", None),
         }
     raise _serialization_error(
         "unsupported Webull SDK streaming topic",
@@ -468,6 +474,21 @@ class WebullMarketEventParser:
                     "snapshot-retained-price"
                     if retained_snapshot_price
                     else str(_first(message, "trade_id", "id", "serial_no") or sequence)
+                ),
+                volume_semantics=(
+                    VolumeSemantics.ACCUMULATED
+                    if event_name == "SNAPSHOT"
+                    else VolumeSemantics.TRADE_SIZE
+                ),
+                extended_volume=(
+                    _decimal(message, "ext_volume")
+                    if event_name == "SNAPSHOT" and message.get("ext_volume") is not None
+                    else None
+                ),
+                overnight_volume=(
+                    _decimal(message, "ovn_volume")
+                    if event_name == "SNAPSHOT" and message.get("ovn_volume") is not None
+                    else None
                 ),
             )
         else:

@@ -223,6 +223,8 @@ def _reference_store():
         previous_close=Decimal("5"),
         average_30_day_volume=Decimal("100"),
         float_shares=Decimal("1000"),
+        current_volume=Decimal("0"),
+        updated_at=NOW,
     ),))
 
 

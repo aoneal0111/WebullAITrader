@@ -9,6 +9,7 @@ from app.market_data.models import (
     ResumePayload,
     TradePayload,
     TradingHaltPayload,
+    VolumeSemantics,
 )
 from app.momentum_scanner.models import CatalystStatus, CatalystType, FloatProvenance
 from app.momentum_scanner.rules import MomentumScannerConfig
@@ -29,7 +30,7 @@ def reference_data(
     float_provenance: FloatProvenance = FloatProvenance.AUTHORITATIVE_FLOAT,
     catalyst: CatalystType | None = None,
     catalyst_status: CatalystStatus = CatalystStatus.TRUE,
-    current_volume: Decimal | None = None,
+    current_volume: Decimal | None = Decimal("0"),
 ) -> ScannerReferenceData:
     return ScannerReferenceData(
         symbol="TEST",
@@ -694,7 +695,10 @@ def test_next_trading_date_resets_all_symbols_and_ignores_late_events() -> None:
         assert state.cumulative_volume == Decimal("0")
 
     adapter.consume(_dated_trade(day_two + timedelta(seconds=1), 6, "7", "OTHER"))
-    assert adapter.state_for("OTHER").cumulative_volume == Decimal("7")
+    # A tick before a same-day authoritative seed is retained only as a local
+    # observation; it must not masquerade as current-day volume.
+    assert adapter.state_for("OTHER").cumulative_volume == Decimal("0")
+    assert adapter.state_for("OTHER").local_trade_volume == Decimal("7")
 
     # A late prior-date trade cannot contaminate the new-day numerator.
     assert adapter.consume(_dated_trade(day_one, 7, "999")) is None
@@ -728,3 +732,116 @@ def test_rvol_and_dollar_volume_use_current_day_volume_only() -> None:
     assert result.observation.current_volume == Decimal("125")
     assert result.observation.current_volume / result.observation.average_30_day_volume == Decimal("0.00125")
     assert result.observation.price * result.observation.current_volume == Decimal("750")
+
+
+def test_unseeded_trade_is_not_authoritative_current_volume() -> None:
+    adapter = MarketEventScannerAdapter(ScannerReferenceStore((reference_data(current_volume=None),)))
+    adapter.consume(quote_event())
+    result = adapter.consume(trade_event(size=Decimal("1")))
+
+    assert result is not None
+    assert result.observation is None
+    assert result.state.authoritative_volume is None
+    assert result.state.local_trade_volume == Decimal("1")
+    assert result.state.cumulative_volume == Decimal("0")
+
+
+def test_snapshot_seed_plus_tick_is_typed_and_not_double_counted() -> None:
+    adapter = MarketEventScannerAdapter(ScannerReferenceStore((reference_data(current_volume=None),)))
+    adapter.consume(quote_event())
+    adapter.consume(trade_event(size=Decimal("25")))
+    snapshot = replace(
+        trade_event(sequence=3, size=Decimal("100000")),
+        payload=TradePayload(
+            Decimal("6"), Decimal("100000"), "snapshot",
+            volume_semantics=VolumeSemantics.ACCUMULATED,
+        ),
+    )
+    seeded = adapter.consume(snapshot)
+    assert seeded is not None
+    assert seeded.state.authoritative_volume == Decimal("100000")
+    assert seeded.state.local_trade_volume == Decimal("25")
+    assert seeded.state.cumulative_volume == Decimal("100000")
+
+    next_tick = adapter.consume(replace(
+        trade_event(sequence=4, size=Decimal("25")),
+        timestamp=NOW + timedelta(seconds=1),
+    ))
+    assert next_tick is not None
+    assert next_tick.state.cumulative_volume == Decimal("100025")
+
+
+def test_same_day_reference_seed_plus_tick_uses_authoritative_volume() -> None:
+    adapter = MarketEventScannerAdapter(
+        ScannerReferenceStore((reference_data(current_volume=Decimal("100000")),))
+    )
+    adapter.consume(quote_event())
+    result = adapter.consume(trade_event(size=Decimal("25")))
+
+    assert result is not None and result.observation is not None
+    assert result.observation.current_volume == Decimal("100025")
+    assert result.observation.price * result.observation.current_volume == Decimal("600150")
+    assert result.observation.current_volume / result.observation.average_30_day_volume == Decimal("1.00025")
+
+
+def test_session_snapshot_fields_are_preserved_without_summing_overlapping_totals() -> None:
+    adapter = MarketEventScannerAdapter(ScannerReferenceStore((reference_data(current_volume=None),)))
+    session_time = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    adapter.consume(replace(quote_event(), timestamp=session_time))
+    event = replace(
+        trade_event(), timestamp=session_time,
+        payload=TradePayload(
+            Decimal("6"), Decimal("100"), "snapshot",
+            volume_semantics=VolumeSemantics.ACCUMULATED,
+            extended_volume=Decimal("500"), overnight_volume=Decimal("700"),
+        ),
+    )
+    result = adapter.consume(event)
+    assert result is not None
+    assert result.state.extended_volume == Decimal("500")
+    assert result.state.overnight_volume == Decimal("700")
+    assert result.state.cumulative_volume == Decimal("700")
+
+
+def test_session_transition_keeps_authoritative_volume_monotonic() -> None:
+    adapter = MarketEventScannerAdapter(ScannerReferenceStore((reference_data(current_volume=None),)))
+    premarket = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    regular = datetime(2026, 7, 20, 13, 30, tzinfo=timezone.utc)
+    later_regular = datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc)
+
+    def snapshot(timestamp: datetime, sequence: int, volume: str, ext: str) -> None:
+        adapter.consume(replace(
+            trade_event(sequence=sequence), timestamp=timestamp,
+            payload=TradePayload(
+                Decimal("6"), Decimal(volume), "snapshot",
+                volume_semantics=VolumeSemantics.ACCUMULATED,
+                extended_volume=Decimal(ext),
+            ),
+        ))
+
+    snapshot(premarket, 1, "10000", "100000")
+    assert adapter.state_for("TEST").cumulative_volume == Decimal("100000")
+    snapshot(regular, 2, "20000", "100000")
+    assert adapter.state_for("TEST").cumulative_volume == Decimal("100000")
+    snapshot(later_regular, 3, "120000", "100000")
+    assert adapter.state_for("TEST").cumulative_volume == Decimal("120000")
+
+    # A newer but stale-smaller provider update cannot regress the authority.
+    snapshot(later_regular + timedelta(seconds=1), 4, "90000", "90000")
+    assert adapter.state_for("TEST").cumulative_volume == Decimal("120000")
+
+
+def test_late_snapshot_replaces_local_observation_without_fake_velocity() -> None:
+    adapter = MarketEventScannerAdapter(ScannerReferenceStore((reference_data(current_volume=None),)))
+    adapter.consume(quote_event())
+    adapter.consume(trade_event(size=Decimal("1")))
+    seeded = adapter.consume(replace(
+        trade_event(sequence=3, size=Decimal("100000")),
+        payload=TradePayload(
+            Decimal("6"), Decimal("100000"), "snapshot",
+            volume_semantics=VolumeSemantics.ACCUMULATED,
+        ),
+    ))
+    assert seeded is not None
+    assert seeded.state.cumulative_volume == Decimal("100000")
+    assert seeded.state.local_trade_volume == Decimal("1")

@@ -13,8 +13,9 @@ from app.market_data.models import (
     ResumePayload,
     TradePayload,
     TradingHaltPayload,
+    VolumeSemantics,
 )
-from app.market.calendar import EASTERN, trading_day_schedule
+from app.market.calendar import EASTERN, market_session, trading_day_schedule
 from app.momentum_scanner.models import ScannerObservation
 from app.scanner_adapter.models import AdapterResult, SymbolScannerState
 from app.scanner_adapter.reference_store import ScannerReferenceStore
@@ -63,6 +64,8 @@ class MarketEventScannerAdapter:
             previous = self._new_state(symbol, trading_date)
         elif previous.trading_date != trading_date:
             previous = self._new_state(symbol, trading_date)
+        else:
+            previous = self._seed_existing_state(previous, trading_date)
 
         state = self._apply(previous, event)
         self._states[symbol] = state
@@ -234,6 +237,11 @@ class MarketEventScannerAdapter:
             self._states[normalized] = replace(
                 current,
                 cumulative_volume=Decimal("0"),
+                authoritative_volume=None,
+                local_trade_volume=Decimal("0"),
+                extended_volume=None,
+                overnight_volume=None,
+                volume_semantics=None,
             )
 
     def _new_state(self, symbol: str, trading_date: date) -> SymbolScannerState:
@@ -256,6 +264,36 @@ class MarketEventScannerAdapter:
             symbol=symbol,
             trading_date=trading_date,
             cumulative_volume=seed,
+            authoritative_volume=(seed if reference_date == trading_date and reference is not None and reference.current_volume is not None else None),
+            extended_volume=(reference.extended_volume if reference_date == trading_date and reference is not None else None),
+            overnight_volume=(reference.overnight_volume if reference_date == trading_date and reference is not None else None),
+            volume_semantics=(VolumeSemantics.ACCUMULATED if seed > 0 else None),
+        )
+
+    def _seed_existing_state(
+        self, state: SymbolScannerState, trading_date: date,
+    ) -> SymbolScannerState:
+        """Apply a newly completed same-day reference warmup without replaying
+        local ticks as authoritative volume."""
+        if state.authoritative_volume is not None:
+            return state
+        reference = self.reference_store.get(state.symbol)
+        if reference is None or reference.current_volume is None:
+            return state
+        reference_date = (
+            _effective_trading_date(reference.updated_at)
+            if reference.updated_at is not None else None
+        )
+        if reference_date != trading_date:
+            return state
+        seed = reference.current_volume
+        return replace(
+            state,
+            cumulative_volume=seed,
+            authoritative_volume=seed,
+            extended_volume=reference.extended_volume,
+            overnight_volume=reference.overnight_volume,
+            volume_semantics=VolumeSemantics.ACCUMULATED,
         )
 
     def _advance_trading_date(self, trading_date: date) -> None:
@@ -265,6 +303,11 @@ class MarketEventScannerAdapter:
                 state,
                 trading_date=trading_date,
                 cumulative_volume=Decimal("0"),
+                authoritative_volume=None,
+                local_trade_volume=Decimal("0"),
+                extended_volume=None,
+                overnight_volume=None,
+                volume_semantics=None,
             )
             for symbol, state in self._states.items()
         }
@@ -332,7 +375,11 @@ class MarketEventScannerAdapter:
             if not isinstance(event.payload, TradePayload):
                 raise TypeError("TRADE event requires TradePayload")
 
-            if event.payload.trade_id.startswith("snapshot"):
+            is_snapshot = (
+                event.payload.trade_id.startswith("snapshot")
+                or event.payload.volume_semantics is VolumeSemantics.ACCUMULATED
+            )
+            if is_snapshot:
                 if (
                     state.snapshot_timestamp is not None
                     and event.timestamp < state.snapshot_timestamp
@@ -343,6 +390,13 @@ class MarketEventScannerAdapter:
                 )
                 retained_price = (
                     event.payload.trade_id == "snapshot-retained-price"
+                )
+                selected_volume = _select_snapshot_volume(
+                    event, state.extended_volume, state.overnight_volume,
+                )
+                prior_authoritative = state.authoritative_volume
+                authoritative = max(
+                    prior_authoritative or Decimal("0"), selected_volume,
                 )
                 return replace(
                     state,
@@ -372,9 +426,19 @@ class MarketEventScannerAdapter:
                         )
                         else state.last_price
                     ),
-                    cumulative_volume=max(
-                        state.cumulative_volume, event.payload.size
+                    cumulative_volume=authoritative,
+                    authoritative_volume=authoritative,
+                    extended_volume=(
+                        event.payload.extended_volume
+                        if event.payload.extended_volume is not None
+                        else state.extended_volume
                     ),
+                    overnight_volume=(
+                        event.payload.overnight_volume
+                        if event.payload.overnight_volume is not None
+                        else state.overnight_volume
+                    ),
+                    volume_semantics=VolumeSemantics.ACCUMULATED,
                 )
 
             if (
@@ -386,6 +450,27 @@ class MarketEventScannerAdapter:
             is_newer_than_snapshot = (
                 newest_snapshot is None or event.timestamp > newest_snapshot
             )
+            authoritative = state.authoritative_volume
+            if authoritative is None:
+                return replace(
+                    state,
+                    timestamp=_latest_timestamp(state.timestamp, event.timestamp),
+                    trade_timestamp=event.timestamp,
+                    last_price_timestamp=(
+                        event.timestamp if is_newer_than_snapshot
+                        else state.last_price_timestamp
+                    ),
+                    last_price_received_timestamp=(
+                        event.received_timestamp if is_newer_than_snapshot
+                        else state.last_price_received_timestamp
+                    ),
+                    last_price=(
+                        event.payload.price if is_newer_than_snapshot
+                        else state.last_price
+                    ),
+                    local_trade_volume=state.local_trade_volume + event.payload.size,
+                    volume_semantics=VolumeSemantics.TRADE_SIZE,
+                )
             return replace(
                 state,
                 timestamp=_latest_timestamp(state.timestamp, event.timestamp),
@@ -406,10 +491,16 @@ class MarketEventScannerAdapter:
                     else state.last_price
                 ),
                 cumulative_volume=(
-                    state.cumulative_volume + event.payload.size
+                    authoritative + event.payload.size
                     if is_newer_than_snapshot
                     else state.cumulative_volume
                 ),
+                authoritative_volume=(
+                    authoritative + event.payload.size
+                    if is_newer_than_snapshot
+                    else authoritative
+                ),
+                volume_semantics=VolumeSemantics.ACCUMULATED,
             )
 
         if event.event_type is MarketEventType.TRADING_HALT:
@@ -469,7 +560,7 @@ class MarketEventScannerAdapter:
         if state.ask is None:
             missing.append("ask")
 
-        if state.cumulative_volume <= 0:
+        if state.authoritative_volume is None:
             missing.append("current_volume")
 
         if reference is None:
@@ -501,7 +592,7 @@ class MarketEventScannerAdapter:
                 timestamp=state.timestamp,
                 price=state.last_price,
                 previous_close=reference.previous_close,
-                current_volume=state.cumulative_volume,
+                current_volume=state.authoritative_volume,
                 average_30_day_volume=(
                     reference.average_30_day_volume
                 ),
@@ -552,4 +643,39 @@ def _effective_trading_date(value: datetime | None) -> date | None:
         return None
     schedule = trading_day_schedule(value.astimezone(EASTERN))
     return None if schedule is None else schedule.trading_date
+
+
+def _select_snapshot_volume(
+    event: MarketEvent,
+    prior_extended: Decimal | None = None,
+    prior_overnight: Decimal | None = None,
+) -> Decimal:
+    """Select one provider-authoritative accumulated volume without summing
+    regular/extended/overnight fields whose overlap is not documented.
+
+    The SDK exposes separate accumulated fields.  We preserve all of them on
+    state and select the largest applicable field rather than double-counting
+    potentially overlapping totals.
+    """
+    payload = event.payload
+    assert isinstance(payload, TradePayload)
+    candidates = [payload.size]
+    session = market_session(event.timestamp)
+    if session.value in {"PREMARKET", "OVERNIGHT"}:
+        candidates.extend(
+            value for value in (
+                payload.overnight_volume if payload.overnight_volume is not None else prior_overnight,
+                payload.extended_volume if payload.extended_volume is not None else prior_extended,
+            )
+            if value is not None
+        )
+    elif session.value == "AFTER_HOURS":
+        candidates.extend(
+            value for value in (
+                payload.extended_volume if payload.extended_volume is not None else prior_extended,
+                payload.overnight_volume if payload.overnight_volume is not None else prior_overnight,
+            )
+            if value is not None
+        )
+    return max(candidates)
 

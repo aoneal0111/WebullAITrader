@@ -17,7 +17,9 @@ from typing import Callable, Iterable
 
 from app.live_scanner.session import scanner_session
 from app.market.calendar import EASTERN
-from app.market_data.models import MarketEvent, MarketEventType, QuotePayload, TradePayload
+from app.market_data.models import (
+    MarketEvent, MarketEventType, QuotePayload, TradePayload, VolumeSemantics,
+)
 from app.scanner_adapter.adapter import MarketEventScannerAdapter
 from app.performance_diagnostics import performance_diagnostics
 from app.services.runtime_diagnostics import log_runtime_exception
@@ -836,7 +838,12 @@ class WarriorDesktopSidecar:
         if observation is None:
             return
         completed = False
-        if event.event_type is MarketEventType.TRADE and isinstance(event.payload, TradePayload):
+        if (
+            event.event_type is MarketEventType.TRADE
+            and isinstance(event.payload, TradePayload)
+            and event.payload.volume_semantics is VolumeSemantics.TRADE_SIZE
+            and not event.payload.trade_id.startswith("snapshot")
+        ):
             aggregate_started = perf_counter()
             completed = self._aggregate_trade(event, observation.current_volume)
             performance_diagnostics.record_component_duration(

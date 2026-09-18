@@ -31,6 +31,8 @@ class ReferenceRecord:
     catalyst_status: CatalystStatus = CatalystStatus.UNKNOWN
     as_of: datetime = datetime.min.replace(tzinfo=UTC)
     current_volume: Decimal | None = None
+    extended_volume: Decimal | None = None
+    overnight_volume: Decimal | None = None
     catalyst_source: str | None = None
     catalyst_published_at: datetime | None = None
     catalyst_source_url: str | None = None
@@ -60,6 +62,10 @@ class ReferenceRecord:
                 raise ValueError(f"{field_name} must be positive when supplied")
         if self.current_volume is not None and self.current_volume < ZERO:
             raise ValueError("current_volume must be non-negative when supplied")
+        for field_name in ("extended_volume", "overnight_volume"):
+            value = getattr(self, field_name)
+            if value is not None and value < ZERO:
+                raise ValueError(f"{field_name} must be non-negative when supplied")
 
         if self.as_of.tzinfo is None:
             raise ValueError("as_of must be timezone-aware")
