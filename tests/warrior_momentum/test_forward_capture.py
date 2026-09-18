@@ -33,6 +33,7 @@ from app.strategies.warrior_momentum.configuration import WarriorMomentumConfig
 from app.strategies.warrior_momentum.autonomous_paper import (
     PaperExitSubmissionDecision, PaperExitSubmissionState,
     AutonomousManagementReadiness, AutonomousPaperExecutionBridge,
+    lifecycle_identity,
 )
 from app.paper_trade_experiment.harness import PaperExperimentJournal
 from app.trade_intelligence.decision_intelligence.entry_timing import (
