@@ -886,7 +886,7 @@ class WarriorDesktopSidecar:
                         self._aggregate_retained_mark(event, retained_mark)
                         or completed
                     )
-                if completed is not None:
+                if completed:
                     observed_at = self._aware_now()
                     service.invalidate_intraminute_shadow(
                         symbol,
