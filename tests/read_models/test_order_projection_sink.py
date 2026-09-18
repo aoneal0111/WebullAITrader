@@ -1,4 +1,6 @@
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -153,3 +155,60 @@ def test_projection_rejects_wrong_event_type() -> None:
 
     with pytest.raises(TypeError, match="event must be a PaperRuntimeEvent"):
         projection(object())  # type: ignore[arg-type]
+
+
+def _historical_order(order_id: str, status: str, *, updated_at=NOW):
+    return SimpleNamespace(
+        order_id=order_id,
+        symbol="AAPL",
+        status=SimpleNamespace(value=status),
+        created_at=NOW,
+        updated_at=updated_at,
+        filled_quantity=Decimal("10") if status == "FILLED" else Decimal("0"),
+        remaining_quantity=Decimal("0") if status == "FILLED" else Decimal("10"),
+        average_fill_price=Decimal("10") if status == "FILLED" else None,
+        request=SimpleNamespace(
+            side=SimpleNamespace(value="BUY"),
+            quantity=Decimal("10"),
+            order_type=SimpleNamespace(value="LIMIT"),
+            limit_price=Decimal("10"),
+            stop_price=None,
+            strategy_lifecycle_id=f"life-{order_id}",
+            execution_reason="ENTRY",
+        ),
+    )
+
+
+def test_historical_reconciliation_publishes_terminal_orders_only() -> None:
+    bus = OperationsBus()
+    store = ApplicationStateStore(bus)
+    projection = OrderProjection(bus)
+
+    projection.reconcile_historical_terminal_orders((
+        _historical_order("filled-old", "FILLED"),
+        _historical_order("cancelled-old", "CANCELLED"),
+        _historical_order("working-old", "WORKING"),
+    ))
+
+    assert tuple(order.order_id for order in projection.snapshot.orders) == (
+        "cancelled-old", "filled-old",
+    )
+    assert tuple(order.order_id for order in store.snapshot().order_projection.orders) == (
+        "cancelled-old", "filled-old",
+    )
+    assert all(
+        order.execution_source == "paper-execution-history"
+        for order in projection.snapshot.orders
+    )
+
+
+def test_live_order_upserts_over_historical_terminal_snapshot() -> None:
+    projection = OrderProjection(OperationsBus())
+    projection.reconcile_historical_terminal_orders((
+        _historical_order("order-1", "CANCELLED"),
+    ))
+
+    projection(event(order_id="order-1", status="FILLED", timestamp=NOW + timedelta(minutes=1)))
+
+    assert projection.snapshot.orders[0].status == "FILLED"
+    assert projection.snapshot.orders[0].execution_source is None
