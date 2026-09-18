@@ -235,3 +235,25 @@ def test_authoritative_reconciliation_restores_working_protection() -> None:
     assert projected.stop_price == "9.50"
     assert projected.execution_source == "paper-execution-authority-restore"
     assert store.snapshot().order_projection.orders == (projected,)
+
+
+def test_hot_projection_retains_all_active_and_bounds_terminal_tail() -> None:
+    projection = OrderProjection(OperationsBus())
+    for index in range(60):
+        projection(event(
+            sequence=index + 1,
+            order_id=f"filled-{index}",
+            status="FILLED",
+            timestamp=NOW + timedelta(seconds=index),
+        ))
+    projection(event(
+        sequence=61,
+        order_id="working-stop",
+        status="WORKING",
+        timestamp=NOW,
+    ))
+
+    orders = projection.snapshot.orders
+    assert len(orders) == 51
+    assert any(order.order_id == "working-stop" for order in orders)
+    assert sum(order.status == "FILLED" for order in orders) == 50
