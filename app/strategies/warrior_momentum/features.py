@@ -5,10 +5,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from app.market.calendar import EASTERN
+
 from .models import FeatureSnapshot, MinuteBar
 
 HUNDRED = Decimal("100")
 BAR_INTERVAL = timedelta(minutes=1)
+CANONICAL_HISTORY_LIMIT = 120
 
 
 def aligned_bars(bars: tuple[MinuteBar, ...]) -> tuple[MinuteBar, ...]:
@@ -57,6 +60,40 @@ def completed_bars_as_of(
         bar for bar in aligned_bars(bars)
         if bar.timestamp + BAR_INTERVAL <= as_of
     )
+
+
+def canonical_completed_history(
+    bars: tuple[MinuteBar, ...], as_of: datetime, *, session: str,
+) -> tuple[MinuteBar, ...]:
+    """Return bounded, same-day completed setup history for a session evaluation.
+
+    This is the single history contract used by the execution-authoritative
+    Warrior detector.  It deliberately tolerates delivery lag: an older
+    completed bar remains valid evidence, while freshness gates independently
+    prevent execution on stale quotes.  Same-day regular bars remain eligible
+    to seed premarket/after-hours structure; the explicit session is carried
+    in the evidence rather than silently discarding valid prior-session bars.
+    """
+    # Preload and live delivery can overlap at the same candle boundary.  A
+    # deterministic timestamp/value ordering makes the merge idempotent and
+    # prevents duplicate delivery from inflating detector history.
+    ordered = sorted(
+        bars,
+        key=lambda item: (
+            item.timestamp, item.symbol.strip().upper(), str(item.open),
+            str(item.high), str(item.low), str(item.close), str(item.volume),
+        ),
+    )
+    unique_by_timestamp: dict[datetime, MinuteBar] = {}
+    for item in ordered:
+        unique_by_timestamp.setdefault(item.timestamp, item)
+    completed = completed_bars_as_of(tuple(unique_by_timestamp.values()), as_of)
+    trading_date = as_of.astimezone(EASTERN).date()
+    filtered = tuple(
+        bar for bar in completed
+        if bar.timestamp.astimezone(EASTERN).date() == trading_date
+    )
+    return contiguous_tail(filtered)[-CANONICAL_HISTORY_LIMIT:]
 
 
 def current_completed_bar_tail(
@@ -170,6 +207,7 @@ __all__ = [
     "aligned_bars",
     "contiguous_tail",
     "completed_bars_as_of",
+    "canonical_completed_history",
     "current_completed_bar_tail",
     "rolling_change",
     "build_features",

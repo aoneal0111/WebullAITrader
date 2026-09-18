@@ -23,7 +23,7 @@ from app.performance_diagnostics import performance_diagnostics
 from app.services.runtime_diagnostics import log_runtime_exception
 
 from .configuration import WarriorMomentumConfig
-from .features import contiguous_tail, current_completed_bar_tail
+from .features import canonical_completed_history, contiguous_tail, current_completed_bar_tail
 from .forward_models import (
     CAPTURE_SCHEMA_VERSION, CaptureMetrics, CaptureRecord, CaptureRecordType,
     FloatProvenance, ForwardCaptureConfiguration, PaperAccountContext,
@@ -854,10 +854,16 @@ class WarriorDesktopSidecar:
                 processing_time=self._aware_now(),
             )
         if symbol not in self._first_observed or completed:
-            history = current_completed_bar_tail(
-                tuple(self._bars.get(symbol, ())[-120:]),
-                observation.timestamp,
+            available_bars = tuple(self._bars.get(symbol, ())[-120:])
+            history = canonical_completed_history(
+                available_bars, observation.timestamp,
+                session=scanner_session(observation.timestamp).value,
             )
+            # Historical preload is useful only when the live bar stream has
+            # reached the same point in time.  A stale preload must not make a
+            # current decision appear to have fresh setup history.
+            if not current_completed_bar_tail(available_bars, observation.timestamp):
+                history = ()
             quote_freshness = last_price_freshness = None
             state = adapter.state_for(symbol)
             evaluated_at = self._aware_now()
@@ -988,31 +994,34 @@ class WarriorDesktopSidecar:
                 execution_quote_requested=False,
                 paper_order_created=signal is not None,
             )
-            was_latest = symbol in self._latest
-            self._latest[symbol] = candidate
-            _safe_warrior_observe(
-            self._observability, "FOCUS_PROJECTION_REPLACE", symbol,
-            focus_action="REPLACE_EXISTING" if was_latest else "FIRST_INSERT",
-            session=candidate.session,
-            )
-            self._provenance[symbol] = provenance
-            self._blocking[symbol] = _blocking_reasons(candidate, signal is not None)
-            ages = tuple(
-                age for age in (quote_freshness, last_price_freshness)
-                if age is not None
-            )
-            self._market_data_age[symbol] = max(ages) if len(ages) == 2 else None
-            market_timestamps = tuple(
-                timestamp for timestamp in (
-                    None if state is None else state.quote_timestamp,
-                    None if state is None else state.last_price_timestamp,
-                ) if timestamp is not None
-            )
-            self._market_data_timestamp[symbol] = (
-                min(market_timestamps) if len(market_timestamps) == 2 else None
-            )
+            prior_latest = self._latest.get(symbol)
+            accepted_latest = prior_latest is None or candidate.timestamp >= prior_latest.timestamp
+            if accepted_latest:
+                self._latest[symbol] = candidate
+                _safe_warrior_observe(
+                    self._observability, "FOCUS_PROJECTION_REPLACE", symbol,
+                    focus_action="REPLACE_EXISTING" if prior_latest is not None else "FIRST_INSERT",
+                    session=candidate.session,
+                )
+                self._provenance[symbol] = provenance
+                self._blocking[symbol] = _blocking_reasons(candidate, signal is not None)
+                ages = tuple(
+                    age for age in (quote_freshness, last_price_freshness)
+                    if age is not None
+                )
+                self._market_data_age[symbol] = max(ages) if len(ages) == 2 else None
+                market_timestamps = tuple(
+                    timestamp for timestamp in (
+                        None if state is None else state.quote_timestamp,
+                        None if state is None else state.last_price_timestamp,
+                    ) if timestamp is not None
+                )
+                self._market_data_timestamp[symbol] = (
+                    min(market_timestamps) if len(market_timestamps) == 2 else None
+                )
             self._observe_stages(candidate, signal is not None)
-            self._update_order_flow_priority(symbol, candidate, signal is not None)
+            if accepted_latest:
+                self._update_order_flow_priority(symbol, candidate, signal is not None)
             research_decision = getattr(
                 self._research_observer, "observe_warrior_decision", None,
             )

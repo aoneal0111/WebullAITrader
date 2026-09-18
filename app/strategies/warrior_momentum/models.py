@@ -148,6 +148,24 @@ class SetupDetection:
 
 
 @dataclass(frozen=True, slots=True)
+class WarriorSetupEvidence:
+    """Canonical point-in-time setup evidence shared by Warrior projections."""
+
+    symbol: str
+    session: str
+    evaluation_timestamp: datetime
+    completed_bar_cutoff: datetime
+    completed_bar_count: int
+    bar_timestamps: tuple[datetime, ...]
+    detector: str | None
+    state: SetupState
+    trigger: Decimal | None = None
+    structural_stop: Decimal | None = None
+    opportunity_id: str | None = None
+    structural_invalidation: tuple[ReasonCode, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class MomentumCandidate:
     rank: int
     symbol: str
@@ -175,6 +193,7 @@ class MomentumCandidate:
     policy_version: str = "CONSERVATIVE_V1"
     bid: Decimal | None = None
     ask: Decimal | None = None
+    setup_evidence: WarriorSetupEvidence | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -101,6 +101,7 @@ def test_point_in_time_capture_persists_evidence_and_excludes_future_bar(capture
     service.observe(value)
     writer.flush()
     discovery = store.records(record_type=CaptureRecordType.DISCOVERY)[0].payload
+    decision = store.records(record_type=CaptureRecordType.DECISION)[0].payload
     spread = store.records(record_type=CaptureRecordType.SPREAD_EVIDENCE)[0].payload
     catalyst = store.records(record_type=CaptureRecordType.CATALYST_EVIDENCE)[0].payload
     stored_bars = store.records(record_type=CaptureRecordType.MINUTE_BAR)
@@ -111,6 +112,9 @@ def test_point_in_time_capture_persists_evidence_and_excludes_future_bar(capture
     assert catalyst["event_timestamp"] == (T0 - timedelta(hours=1)).isoformat()
     assert len(stored_bars) == len(bars())
     assert all(item.payload["bar_timestamp"] != future.timestamp.isoformat() for item in stored_bars)
+    evidence = decision["canonical_setup_evidence"]
+    assert evidence["completed_bar_cutoff"] == (T0 + timedelta(minutes=20)).isoformat()
+    assert evidence["bar_timestamps"] == [item.timestamp.isoformat() for item in bars()]
 
 
 def test_quality_preserves_unknown_unavailable_and_missing_provenance(capture) -> None:
@@ -371,8 +375,10 @@ def test_adaptive_rearm_requires_current_quote_safety_after_strategy_signal(tmp_
         writer.close()
 
 
-def test_enabled_entry_treatment_uses_real_armed_taxonomy_path_once(tmp_path: Path) -> None:
-    """The enabled seam uses detector output and the normal PAPER gateway."""
+def test_taxonomy_trigger_remains_advisory_when_canonical_warrior_is_not_ready(
+    tmp_path: Path,
+) -> None:
+    """A taxonomy trigger cannot create execution authority by itself."""
     store = ForwardCaptureStore(tmp_path / "entry-intelligence.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
     journal = PaperExperimentJournal(tmp_path / "experiment.sqlite3")
@@ -406,32 +412,8 @@ def test_enabled_entry_treatment_uses_real_armed_taxonomy_path_once(tmp_path: Pa
             point(bars=pretrigger), account=account(),
         )
         assert candidate.setup is not None
-        assert len(composition.order_book.history()) == 1
-        order = composition.order_book.history()[0]
-        assert order.request.strategy_lifecycle_id
-        reports = composition.gateway.process_market_event(MarketEvent(
-            1, session_timestamp(1, at=T0 + timedelta(minutes=20)), "XYZ", "armed-test",
-            MarketEventType.QUOTE,
-            QuotePayload(D("9.99"), D("10"), D("1000"), D("1000")),
-        ))
-        assert reports and reports[0].fills
-        # The later ordinary trigger is evaluated through the same forward
-        # runtime; it is shadowed because the treatment already owns the
-        # opportunity's single real lifecycle.
-        forward.observe(point(), account=account())
-        assignment = journal._connection.execute(
-            "SELECT assignment_id, arm FROM experiment_assignments"
-        ).fetchone()
-        assert assignment[1] == "TREATMENT"
-        assert journal.assignment_for_lifecycle(order.request.strategy_lifecycle_id)[0] == assignment[0]
-        shadow_types = {
-            row[0] for row in journal._connection.execute(
-                "SELECT shadow_type FROM experiment_shadows WHERE assignment_id=?",
-                (assignment[0],),
-            )
-        }
-        assert "CONTROL_DECISION" in shadow_types
-        assert len(composition.order_book.history()) == 1
+        assert signal is None
+        assert len(composition.order_book.history()) == 0
     finally:
         intelligence.close()
         journal.close()

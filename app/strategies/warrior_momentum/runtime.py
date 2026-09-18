@@ -9,16 +9,17 @@ from decimal import Decimal
 
 from app.momentum_scanner.models import CatalystStatus, CatalystType, ScannerObservation
 from app.momentum_scanner.rules import calculate_metrics
+from app.market.calendar import EASTERN
 
 from .configuration import AtlasStrategy, StrategySelection, WarriorMomentumConfig
 from .discovery import (
     candidate_status, detect_stocks_in_play, discovery_qualified,
     discovery_reasons,
 )
-from .features import build_features, completed_bars_as_of
+from .features import build_features, canonical_completed_history
 from .models import (
     STRATEGY_ID, CandidateStatus, MinuteBar, MomentumCandidate, MomentumEntrySignal,
-    ReasonCode, SetupState,
+    ReasonCode, SetupState, WarriorSetupEvidence,
 )
 from .scoring import momentum_score
 from .setups import LegacySetupEpisodeTracker, detect_best_setup
@@ -33,14 +34,28 @@ class WarriorMomentumRuntime:
         self._setup_continuity: OrderedDict[str, tuple[object, object, str]] = OrderedDict()
         self._setup_continuity_limit = 512
         self._setup_continuity_age = timedelta(seconds=120)
+        self._canonical_candidates: OrderedDict[str, MomentumCandidate] = OrderedDict()
+        self._canonical_candidate_limit = 512
 
     def discover(self, observation: ScannerObservation, bars: tuple[MinuteBar, ...], *, session: str,
                  top_gapper: bool = False) -> MomentumCandidate:
-        bars = completed_bars_as_of(bars, observation.timestamp)
+        normalized_symbol = observation.symbol.strip().upper()
+        prior_candidate = self._canonical_candidates.get(normalized_symbol)
+        if (
+            prior_candidate is not None
+            and prior_candidate.timestamp.astimezone(EASTERN).date()
+            == observation.timestamp.astimezone(EASTERN).date()
+            and observation.timestamp < prior_candidate.timestamp
+        ):
+            # Older callbacks cannot regress the execution-authoritative
+            # setup lifecycle.  The newest canonical result remains visible.
+            return prior_candidate
+        bars = canonical_completed_history(
+            bars, observation.timestamp, session=session,
+        )
         metrics = calculate_metrics(observation)
         features = build_features(bars)
         setup = detect_best_setup(bars, self.config.setups)
-        normalized_symbol = observation.symbol.strip().upper()
         prior_setup = self._setup_continuity.get(normalized_symbol)
         if setup is None:
             # A temporary quality/execution miss must not erase a legitimate
@@ -102,6 +117,26 @@ class WarriorMomentumRuntime:
         status = candidate_status(score.total, tuple(reasons), self.config.discovery)
         if setup is not None and setup.state is SetupState.FORMING and status in {CandidateStatus.QUALIFIED, CandidateStatus.NEAR_QUALIFIED}:
             status = CandidateStatus.SETUP_FORMING
+        evidence = WarriorSetupEvidence(
+            symbol=normalized_symbol,
+            session=session,
+            evaluation_timestamp=observation.timestamp,
+            completed_bar_cutoff=observation.timestamp,
+            completed_bar_count=len(bars),
+            bar_timestamps=tuple(bar.timestamp for bar in bars),
+            detector=None if setup is None else setup.setup_type.value,
+            state=(
+                SetupState.UNKNOWN if setup is None and len(bars) < 5
+                else SetupState.NOT_FORMED if setup is None
+                else setup.state
+            ),
+            trigger=None if setup is None else setup.trigger,
+            structural_stop=None if setup is None else setup.stop_price,
+            opportunity_id=None if setup is None else setup.taxonomy_opportunity_id,
+            structural_invalidation=(
+                () if setup is None else setup.reason_codes
+            ),
+        )
         candidate = MomentumCandidate(
             rank=0, symbol=observation.symbol.strip().upper(), timestamp=observation.timestamp,
             price=observation.price, percentage_change=metrics.percentage_change,
@@ -119,6 +154,7 @@ class WarriorMomentumRuntime:
             discovery_qualified=discovery_qualified(tuple(reasons)),
             policy_version=self.config.policy_version,
             bid=observation.bid, ask=observation.ask,
+            setup_evidence=evidence,
         )
         candidate = replace(candidate, explanations=_explanations(candidate))
         if self._adaptive_context is not None:
@@ -144,7 +180,12 @@ class WarriorMomentumRuntime:
                     reason_codes=contextual_reasons,
                     discovery_qualified=discovery_qualified(contextual_reasons),
                 )
-        return replace(candidate, explanations=_explanations(candidate))
+        candidate = replace(candidate, explanations=_explanations(candidate))
+        self._canonical_candidates[normalized_symbol] = candidate
+        self._canonical_candidates.move_to_end(normalized_symbol)
+        while len(self._canonical_candidates) > self._canonical_candidate_limit:
+            self._canonical_candidates.popitem(last=False)
+        return candidate
 
     def rank(self, candidates: tuple[MomentumCandidate, ...], *, limit: int = 25) -> tuple[MomentumCandidate, ...]:
         ordered = sorted(candidates, key=lambda item: (-item.score.total, -item.relative_volume,

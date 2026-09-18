@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 import pytest
 
@@ -9,12 +9,13 @@ from app.momentum_scanner.models import CatalystStatus, CatalystType
 from app.momentum_scanner.models import AssetClass, ScannerObservation
 from app.strategies.warrior_momentum import (
     AdaptiveDecision, AdaptiveReason, MomentumCandidate, MomentumScore,
-    SetupDetection, SetupState, SetupType, StopModel, WarriorAdaptiveContext,
+    MinuteBar, SetupDetection, SetupState, SetupType, StopModel, WarriorAdaptiveContext,
     WarriorMomentumConfig, WarriorMomentumRuntime, ReasonCode,
     warrior_observation_eligible,
 )
 from app.momentum_scanner import evaluate_candidate
 import app.strategies.warrior_momentum.runtime as warrior_runtime_module
+from app.strategies.warrior_momentum.features import canonical_completed_history
 
 
 def candidate(*, symbol="XYZ", rvol="2", move="80", dollar="12000000", spread="1.8",
@@ -259,3 +260,83 @@ def test_forming_setup_survives_temporary_quality_miss_without_rearming(monkeypa
     assert first.setup is not None and first.setup.state is SetupState.FORMING
     assert second.setup is not None and second.setup.state is SetupState.FORMING
     assert runtime.entry_signal(second) is None
+
+
+def test_canonical_setup_evidence_uses_bounded_point_in_time_history(monkeypatch):
+    setup = SetupDetection(
+        SetupType.HIGH_OF_DAY_BREAKOUT, SetupState.FORMING,
+        Decimal("70"), Decimal("10.2"), Decimal("9.8"), StopModel.RECENT_SWING_LOW,
+    )
+    monkeypatch.setattr(warrior_runtime_module, "detect_best_setup", lambda *_args, **_kwargs: setup)
+    runtime = WarriorMomentumRuntime()
+    observed_at = datetime(2026, 9, 17, 14, 0, tzinfo=UTC)
+    history = tuple(
+        MinuteBar("DISC", observed_at - timedelta(minutes=offset),
+                  Decimal("10"), Decimal("10.2"), Decimal("9.8"), Decimal("10.1"), Decimal("100"))
+        for offset in (5, 4, 3)
+    )
+    candidate_value = replace(
+        _scanner_observation(), timestamp=observed_at,
+    )
+    future = MinuteBar("DISC", observed_at, Decimal("10"), Decimal("12"), Decimal("9"), Decimal("11"), Decimal("999"))
+    prior_day = MinuteBar("DISC", observed_at - timedelta(days=1), Decimal("10"), Decimal("10"), Decimal("9"), Decimal("9.5"), Decimal("100"))
+    result = runtime.discover(candidate_value, (*history, future, prior_day), session="REGULAR")
+
+    evidence = result.setup_evidence
+    assert evidence is not None
+    assert evidence.completed_bar_cutoff == observed_at
+    assert evidence.completed_bar_count == 3
+    assert evidence.bar_timestamps == tuple(item.timestamp for item in history)
+    assert evidence.detector == SetupType.HIGH_OF_DAY_BREAKOUT.value
+    assert evidence.state is SetupState.FORMING
+
+
+def test_older_canonical_evaluation_cannot_regress_newer_setup(monkeypatch):
+    monkeypatch.setattr(warrior_runtime_module, "detect_best_setup", lambda *_args, **_kwargs: None)
+    runtime = WarriorMomentumRuntime()
+    newer = replace(_scanner_observation(), timestamp=datetime(2026, 9, 17, 14, 5, tzinfo=UTC))
+    older = replace(_scanner_observation(), timestamp=datetime(2026, 9, 17, 14, 4, tzinfo=UTC))
+    current = runtime.discover(newer, (), session="REGULAR")
+    regressed = runtime.discover(older, (), session="REGULAR")
+
+    assert regressed is current
+    assert regressed.setup_evidence is not None
+    assert regressed.setup_evidence.evaluation_timestamp == newer.timestamp
+
+
+def test_canonical_history_merges_duplicates_and_caps_bounded_union():
+    observed_at = datetime(2026, 9, 17, 14, 30, tzinfo=UTC)
+    bars = tuple(
+        MinuteBar("DISC", observed_at - timedelta(minutes=offset),
+                  Decimal("10"), Decimal("10.2"), Decimal("9.8"), Decimal("10.1"), Decimal("100"))
+        for offset in range(130, 0, -1)
+    )
+    history = canonical_completed_history(
+        (*bars, bars[-1], MinuteBar(
+            "DISC", observed_at, Decimal("10"), Decimal("12"), Decimal("9"), Decimal("11"), Decimal("999"),
+        )),
+        observed_at,
+        session="PREMARKET",
+    )
+    assert len(history) == 120
+    assert len({item.timestamp for item in history}) == len(history)
+    assert history[0].timestamp < history[-1].timestamp
+    assert history[-1].timestamp == observed_at - timedelta(minutes=1)
+
+
+def test_history_insufficient_does_not_fabricate_setup(monkeypatch):
+    runtime = WarriorMomentumRuntime()
+    observed_at = datetime(2026, 9, 17, 14, 5, tzinfo=UTC)
+    two_bars = tuple(
+        MinuteBar("DISC", observed_at - timedelta(minutes=offset),
+                  Decimal("10"), Decimal("10.2"), Decimal("9.8"), Decimal("10.1"), Decimal("100"))
+        for offset in (2, 1)
+    )
+    result = runtime.discover(
+        replace(_scanner_observation(), timestamp=observed_at),
+        two_bars,
+        session="REGULAR",
+    )
+    assert result.setup is None
+    assert result.setup_evidence is not None
+    assert result.setup_evidence.state is SetupState.UNKNOWN

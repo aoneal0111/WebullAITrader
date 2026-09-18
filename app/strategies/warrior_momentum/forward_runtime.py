@@ -12,7 +12,7 @@ from app.performance_diagnostics import performance_diagnostics
 from app.configuration.models import PaperSymbolAuthorizationMode
 
 from .configuration import WarriorMomentumConfig
-from .features import build_features, completed_bars_as_of
+from .features import build_features, canonical_completed_history
 from .forward_models import (
     CaptureRecord, CaptureRecordType, FloatProvenance,
     ForwardCaptureConfiguration, ForwardTransition, PaperAccountContext,
@@ -310,7 +310,9 @@ class WarriorForwardCaptureService:
                     observation.price - live_state.entry_price
                 ) / live_state.signal.risk_per_share
                 self._update_peak(live_state)
-        completed = completed_bars_as_of(value.bars, observation.timestamp)
+        completed = canonical_completed_history(
+            value.bars, observation.timestamp, session=value.session,
+        )
         for bar in completed:
             self.observe_market_bar(symbol, bar, observation.timestamp)
         candidate = self.runtime.discover(
@@ -446,9 +448,9 @@ class WarriorForwardCaptureService:
                 self.runtime, self.capture_config.quote_stale_after_seconds,
             )
         )
-        if taxonomy_signal is not None and signal is None and taxonomy_candidate is not None:
-            candidate, assessed, signal = taxonomy_candidate, taxonomy_candidate, taxonomy_signal
-            technical_signal = taxonomy_signal
+        # Taxonomy output is advisory.  Only the canonical forward Warrior
+        # result can create execution authority; a raw research trigger must
+        # never overwrite a canonical NO_SETUP result.
         if signal is not None:
             if self._account_refresh_source is not None:
                 account = self._account_refresh_source()
@@ -508,7 +510,7 @@ class WarriorForwardCaptureService:
                     # Entry intelligence is advisory and fail-closed to the
                     # existing signal path.
                     pass
-        if treatment_signal is not None:
+        if treatment_signal is not None and signal is not None:
             signal = treatment_signal
         if intelligence_result is not None and self._pretrigger_shadow is not None:
             try:
@@ -3079,6 +3081,22 @@ def _decision_record(value, candidate, completed, features) -> CaptureRecord:
             "stop_price": setup.stop_price,
             "stop_model": None if setup.stop_model is None else setup.stop_model.value,
             "resistance": setup.resistance,
+        },
+        "canonical_setup_evidence": None if candidate.setup_evidence is None else {
+            "symbol": candidate.setup_evidence.symbol,
+            "session": candidate.setup_evidence.session,
+            "evaluation_timestamp": candidate.setup_evidence.evaluation_timestamp,
+            "completed_bar_cutoff": candidate.setup_evidence.completed_bar_cutoff,
+            "completed_bar_count": candidate.setup_evidence.completed_bar_count,
+            "bar_timestamps": candidate.setup_evidence.bar_timestamps,
+            "detector": candidate.setup_evidence.detector,
+            "state": candidate.setup_evidence.state.value,
+            "trigger": candidate.setup_evidence.trigger,
+            "structural_stop": candidate.setup_evidence.structural_stop,
+            "opportunity_id": candidate.setup_evidence.opportunity_id,
+            "structural_invalidation": tuple(
+                code.value for code in candidate.setup_evidence.structural_invalidation
+            ),
         },
         "reason_codes": tuple(code.value for code in candidate.reason_codes),
         "setup_diagnostics": tuple(
