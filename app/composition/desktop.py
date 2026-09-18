@@ -240,12 +240,9 @@ def create_desktop_composition(
             clock=paper_clock,
         )
         if paper_trading_commands.durable_store is not None:
-            # Restore the active campaign exactly as held by the authoritative
-            # order book, including working protection. Prior campaigns remain
-            # presentation-only terminal history.
-            runtime_projections.order_projection.reconcile_historical_terminal_orders(
-                paper_trading_commands.durable_store.historical_orders()
-            )
+            # Keep durable cross-campaign history in SQLite.  The hot projection
+            # restores only the active campaign so GUI refreshes never rebuild
+            # the entire historical order book.
             runtime_projections.order_projection.reconcile_authoritative_orders(
                 paper_trading_commands.durable_store.orders()
             )
