@@ -82,6 +82,19 @@ class OrderProjection:
             if projected == current:
                 return
             self._snapshot = projected
+            published_orders = tuple(
+                _to_operations_order(order) for order in projected.orders
+            )
+            occurred_at = max(order.updated_at for order in projected.orders)
+
+        self._bus.publish(
+            OrdersUpdated(
+                occurred_at=occurred_at,
+                source="paper-execution-history-projection",
+                orders=published_orders,
+                projection_authority=ProjectionAuthority.PAPER_EXECUTION,
+            )
+        )
 
     def __call__(self, event: PaperRuntimeEvent) -> None:
         if not isinstance(event, PaperRuntimeEvent):
