@@ -39,7 +39,7 @@ from .models import (
     ReasonCode, SetupState,
 )
 from .risk import size_position
-from .runtime import WarriorMomentumRuntime, entry_rejections
+from .runtime import WarriorMomentumRuntime, entry_rejections, execution_liquidity_ok
 from .shadow_analysis import ShadowOpportunityAnalyzer
 from .shadow_latched import (
     ShadowLatchedPlanResearch,
@@ -1113,7 +1113,13 @@ class WarriorForwardCaptureService:
                     age is not None and age >= ZERO and age <= stale_limit
                     for age in freshness
                 ),
-                liquidity_ok=candidate.dollar_volume >= self.config.entry.minimum_dollar_volume,
+                liquidity_ok=self.runtime.current_execution_liquidity_ok(
+                    candidate,
+                    quote_fresh=all(
+                        age is not None and age >= ZERO and age <= stale_limit
+                        for age in freshness
+                    ),
+                ),
                 thesis_valid=thesis_valid, quality_ok=quality_ok,
                 replacement_budget_available=replacement_budget,
                 structural_stop=state.signal.stop_price,
@@ -1139,7 +1145,13 @@ class WarriorForwardCaptureService:
                 and signal.session in self.config.entry.allowed_sessions
                 and candidate.spread_percent is not None
                 and candidate.spread_percent <= self.config.entry.maximum_spread_percent
-                and candidate.dollar_volume >= self.config.entry.minimum_dollar_volume
+                and self.runtime.current_execution_liquidity_ok(
+                    candidate,
+                    quote_fresh=all(
+                        age is not None and age >= ZERO and age <= stale_limit
+                        for age in freshness
+                    ),
+                )
                 and account.risk_engine_approved
                 and not account.broker_restriction
                 and thesis_valid
@@ -1181,6 +1193,21 @@ class WarriorForwardCaptureService:
     ) -> None:
         """Re-arm only after a terminal unfilled lifecycle, never a position."""
         if self._paper_entry_rearmer is None:
+            return
+        stale_limit = self.capture_config.quote_stale_after_seconds
+        quote_fresh = all(
+            age is not None and ZERO <= age <= stale_limit
+            for age in (
+                value.quote_freshness_seconds,
+                value.last_price_freshness_seconds,
+            )
+        ) and all(
+            age is None or ZERO <= age <= stale_limit
+            for age in (value.processing_age_seconds, value.delivery_age_seconds)
+        )
+        if not self.runtime.current_execution_liquidity_ok(
+            candidate, quote_fresh=quote_fresh,
+        ):
             return
         position = size_position(
             signal, account_equity=account.equity,
@@ -1230,7 +1257,9 @@ class WarriorForwardCaptureService:
             signal.timestamp.date(), signal.symbol, opportunity_id,
             entry_anchor=signal.entry_trigger, structural_stop=signal.stop_price,
             spread_ok=(candidate.spread_percent is not None and candidate.spread_percent <= self.config.entry.maximum_spread_percent),
-            liquidity_ok=candidate.dollar_volume >= self.config.entry.minimum_dollar_volume,
+            liquidity_ok=self.runtime.current_execution_liquidity_ok(
+                candidate, quote_fresh=freshness_ok,
+            ),
             freshness_ok=freshness_ok,
             position_quantity=(self._paper_position_quantity_source(signal.symbol)
                               if self._paper_position_quantity_source is not None else ZERO),
@@ -1321,7 +1350,9 @@ class WarriorForwardCaptureService:
             entry_anchor=signal.entry_trigger, structural_stop=signal.stop_price,
             trigger_price=trigger_price, live_price=live_price,
             spread_ok=(candidate.spread_percent is not None and candidate.spread_percent <= self.config.entry.maximum_spread_percent),
-            liquidity_ok=candidate.dollar_volume >= self.config.entry.minimum_dollar_volume,
+            liquidity_ok=self.runtime.current_execution_liquidity_ok(
+                candidate, quote_fresh=freshness_ok,
+            ),
             freshness_ok=freshness_ok, position_quantity=position_quantity,
             working_entry=working_entry,
             lifecycle_count=len(record.attempts),
@@ -1424,7 +1455,9 @@ class WarriorForwardCaptureService:
             entry_anchor=signal.entry_trigger,
             structural_stop=signal.stop_price,
             spread_ok=(candidate.spread_percent is not None and candidate.spread_percent <= self.config.entry.maximum_spread_percent),
-            liquidity_ok=candidate.dollar_volume >= self.config.entry.minimum_dollar_volume,
+            liquidity_ok=self.runtime.current_execution_liquidity_ok(
+                candidate, quote_fresh=freshness_ok,
+            ),
             freshness_ok=freshness_ok,
             classification=pullback_classification,
             structure=structure,
@@ -1503,7 +1536,16 @@ class WarriorForwardCaptureService:
             or candidate.price <= state.entry_price
             or candidate.spread_percent is None
             or candidate.spread_percent > self.config.entry.maximum_spread_percent
-            or candidate.dollar_volume < self.config.entry.minimum_dollar_volume
+            or not self.runtime.current_execution_liquidity_ok(
+                candidate,
+                quote_fresh=(
+                    value.halt_state_known and value.volume_known
+                    and value.quote_freshness_seconds is not None
+                    and value.last_price_freshness_seconds is not None
+                    and ZERO <= value.quote_freshness_seconds <= self.capture_config.quote_stale_after_seconds
+                    and ZERO <= value.last_price_freshness_seconds <= self.capture_config.quote_stale_after_seconds
+                ),
+            )
             or not candidate.tradable or candidate.halted
             or signal.session not in self.config.entry.allowed_sessions
             or not account.risk_engine_approved or account.broker_restriction
@@ -3100,8 +3142,10 @@ def _gate_diagnostics(candidate, config, account):
          "observed": candidate.spread_percent, "limit": config.entry.maximum_spread_percent},
         {"gate": "catalyst", "passed": not config.entry.require_catalyst_for_entry or candidate.catalyst_status.value == "TRUE",
          "observed": candidate.catalyst_status.value, "limit": "TRUE"},
-        {"gate": "liquidity", "passed": candidate.dollar_volume >= config.entry.minimum_dollar_volume,
-         "observed": candidate.dollar_volume, "limit": config.entry.minimum_dollar_volume},
+        {"gate": "liquidity", "passed": execution_liquidity_ok(candidate, config),
+         "observed": candidate.dollar_volume,
+         "limit": (config.entry.minimum_dollar_volume
+                   if not config.adaptive_context_enabled else "CURRENT_QUOTE_AND_SPREAD")},
         {"gate": "tradability", "passed": candidate.tradable, "observed": candidate.tradable, "limit": True},
         {"gate": "halt", "passed": not candidate.halted, "observed": candidate.halted, "limit": False},
         {"gate": "session", "passed": candidate.session in config.entry.allowed_sessions,

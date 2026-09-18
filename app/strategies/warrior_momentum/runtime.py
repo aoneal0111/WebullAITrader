@@ -161,6 +161,18 @@ class WarriorMomentumRuntime:
         return replace(candidate, status=status,
                        reason_codes=tuple(dict.fromkeys((*candidate.reason_codes, *rejections)))), None
 
+    def current_execution_liquidity_ok(
+        self, candidate: MomentumCandidate, *, quote_fresh: bool = True,
+    ) -> bool:
+        """Validate executable quote quality without using turnover as a proxy.
+
+        Adaptive PAPER mode has already assessed participation separately.  At
+        the final execution boundary we only accept a valid, fresh, tradable
+        quote within the existing spread safety policy.  The legacy path keeps
+        its exact accumulated-dollar-volume requirement for compatibility.
+        """
+        return execution_liquidity_ok(candidate, self.config, quote_fresh=quote_fresh)
+
     def technical_entry_signal(self, candidate: MomentumCandidate) -> MomentumEntrySignal | None:
         """Recognize technical actionability without execution authorization."""
         ignored = {ReasonCode.SPREAD_WIDE, ReasonCode.STALE_MARKET_DATA}
@@ -249,6 +261,25 @@ def entry_rejections(candidate: MomentumCandidate, config: WarriorMomentumConfig
     return tuple(dict.fromkeys(reasons))
 
 
+def execution_liquidity_ok(
+    candidate: MomentumCandidate, config: WarriorMomentumConfig, *, quote_fresh: bool = True,
+) -> bool:
+    """Shared final quote-safety predicate for execution and diagnostics."""
+    if not config.adaptive_context_enabled:
+        return candidate.dollar_volume >= config.entry.minimum_dollar_volume
+    if not quote_fresh or candidate.halted or not candidate.tradable:
+        return False
+    if candidate.price is None or candidate.price <= 0:
+        return False
+    if candidate.bid is None or candidate.ask is None:
+        return False
+    if candidate.bid <= 0 or candidate.ask <= 0 or candidate.ask < candidate.bid:
+        return False
+    if candidate.spread_percent is None:
+        return False
+    return candidate.spread_percent <= config.entry.maximum_spread_percent
+
+
 def _explanations(candidate: MomentumCandidate) -> tuple[str, ...]:
     result = [f"Change {candidate.percentage_change:+.1f}%", f"RVOL {candidate.relative_volume:.1f}x"]
     result.append("Float unavailable" if candidate.float_shares is None else f"Float {candidate.float_shares / Decimal('1000000'):.1f}M")
@@ -267,4 +298,5 @@ def _explanations(candidate: MomentumCandidate) -> tuple[str, ...]:
     return tuple(result)
 
 
-__all__ = ["WarriorMomentumRuntime", "create_selected_experiment", "entry_rejections", "warrior_observation_eligible"]
+__all__ = ["WarriorMomentumRuntime", "create_selected_experiment", "entry_rejections",
+           "execution_liquidity_ok", "warrior_observation_eligible"]

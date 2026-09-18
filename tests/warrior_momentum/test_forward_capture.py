@@ -25,6 +25,7 @@ from app.strategies.warrior_momentum import (
     build_daily_report, persist_daily_report, replay_captured_decision,
 )
 from app.strategies.warrior_momentum.desktop_sidecar import strategy_configuration_fingerprint
+from app.strategies.warrior_momentum.configuration import WarriorMomentumConfig
 from app.strategies.warrior_momentum.autonomous_paper import (
     PaperExitSubmissionDecision, PaperExitSubmissionState,
     AutonomousPaperExecutionBridge,
@@ -310,6 +311,64 @@ def test_after_hours_signal_reaches_normal_paper_gateway_once(tmp_path: Path) ->
     finally:
         writer.close()
         composition.close()
+
+
+def test_adaptive_premarket_structural_entry_ignores_old_turnover_proxy(tmp_path: Path) -> None:
+    """A valid adaptive re-assessment uses quote safety, not $2.5M turnover."""
+    store = ForwardCaptureStore(tmp_path / "adaptive-liquidity.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    submitted = []
+    service = WarriorForwardCaptureService(
+        store, writer,
+        config=WarriorMomentumConfig(adaptive_context_enabled=True),
+        paper_entry_submitter=lambda *args: (submitted.append(args) or True),
+    )
+    try:
+        candidate, signal = service.observe(
+            point(session="PREMARKET"), account=account(),
+        )
+        assert signal is not None
+        reassessed_signal = replace(
+            signal,
+            timestamp=signal.timestamp + timedelta(minutes=1),
+            entry_trigger=signal.entry_trigger + D("0.01"),
+            stop_price=signal.stop_price + D("0.001"),
+        )
+        low_turnover = replace(
+            candidate, dollar_volume=D("1500000"),
+            bid=D("10.18"), ask=D("10.22"),
+        )
+        assert service.authorize_new_structural_entry(
+            low_turnover, reassessed_signal, account(),
+            freshness_ok=True, higher_low=True,
+        ) is True
+        assert len(submitted) == 2
+    finally:
+        writer.close()
+
+
+def test_adaptive_rearm_requires_current_quote_safety_after_strategy_signal(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "adaptive-rearm-liquidity.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    rearmed = []
+    service = WarriorForwardCaptureService(
+        store, writer,
+        config=WarriorMomentumConfig(adaptive_context_enabled=True),
+        paper_entry_submitter=lambda *_args: True,
+        paper_entry_rearmer=lambda *args, **kwargs: rearmed.append((args, kwargs)),
+    )
+    try:
+        candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        low_turnover = replace(candidate, dollar_volume=D("1200000"))
+        service._consider_fast_momentum_rearm(point(), low_turnover, signal, account())
+        assert rearmed
+        rearmed.clear()
+        invalid_quote = replace(low_turnover, bid=None, ask=None)
+        service._consider_fast_momentum_rearm(point(), invalid_quote, signal, account())
+        assert not rearmed
+    finally:
+        writer.close()
 
 
 def test_enabled_entry_treatment_uses_real_armed_taxonomy_path_once(tmp_path: Path) -> None:

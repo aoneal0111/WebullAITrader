@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+import pytest
 
 from app.momentum_scanner.models import CatalystStatus, CatalystType
 from app.momentum_scanner.models import AssetClass, ScannerObservation
@@ -197,3 +198,45 @@ def test_adaptive_observation_route_rejects_weak_or_unsafe_candidates():
     halted = replace(weak, halted=True)
     assert warrior_observation_eligible(weak) is False
     assert warrior_observation_eligible(halted) is False
+
+
+def test_adaptive_execution_liquidity_uses_current_quote_not_turnover():
+    runtime = WarriorMomentumRuntime(WarriorMomentumConfig(adaptive_context_enabled=True))
+    low_turnover = replace(candidate(dollar="1200000", spread="0.8"), bid=Decimal("9.96"), ask=Decimal("10.04"))
+    assert runtime.current_execution_liquidity_ok(low_turnover, quote_fresh=True) is True
+
+
+def test_adaptive_execution_liquidity_preserves_quote_safety_rails():
+    runtime = WarriorMomentumRuntime(WarriorMomentumConfig(adaptive_context_enabled=True))
+    base = replace(candidate(dollar="1200000", spread="0.8"), bid=Decimal("9.96"), ask=Decimal("10.04"))
+    assert runtime.current_execution_liquidity_ok(replace(base, bid=None), quote_fresh=True) is False
+    assert runtime.current_execution_liquidity_ok(base, quote_fresh=False) is False
+    assert runtime.current_execution_liquidity_ok(replace(base, spread_percent=Decimal("1.3")), quote_fresh=True) is False
+    assert runtime.current_execution_liquidity_ok(replace(base, halted=True), quote_fresh=True) is False
+    assert runtime.current_execution_liquidity_ok(replace(base, tradable=False), quote_fresh=True) is False
+
+
+def test_non_adaptive_execution_liquidity_preserves_legacy_turnover_veto():
+    runtime = WarriorMomentumRuntime()
+    low_turnover = replace(candidate(dollar="1200000", spread="0.8"), bid=Decimal("9.96"), ask=Decimal("10.04"))
+    assert runtime.current_execution_liquidity_ok(low_turnover, quote_fresh=True) is False
+    assert runtime.current_execution_liquidity_ok(replace(low_turnover, dollar_volume=Decimal("2500000")), quote_fresh=True) is True
+
+
+@pytest.mark.parametrize("session", ["PREMARKET", "REGULAR", "AFTER_HOURS"])
+def test_adaptive_low_turnover_has_no_session_specific_2_5m_execution_cliff(session):
+    runtime = WarriorMomentumRuntime(WarriorMomentumConfig(adaptive_context_enabled=True))
+    value = replace(
+        candidate(symbol=f"CPOP_{session}", dollar="1500000", spread="0.9"),
+        session=session, bid=Decimal("9.95"), ask=Decimal("10.05"),
+    )
+    assert runtime.current_execution_liquidity_ok(value, quote_fresh=True) is True
+
+
+def test_adaptive_reassessment_does_not_reintroduce_turnover_veto():
+    runtime = WarriorMomentumRuntime(WarriorMomentumConfig(adaptive_context_enabled=True))
+    value = replace(candidate(dollar="1500000", spread="0.8"), bid=Decimal("9.96"), ask=Decimal("10.04"))
+    assert runtime.current_execution_liquidity_ok(value, quote_fresh=True) is True
+    # Re-arm/replacement callers use the same runtime predicate; the old
+    # accumulated-turnover threshold is not a separate adaptive authority.
+    assert runtime.current_execution_liquidity_ok(replace(value, dollar_volume=Decimal("500000")), quote_fresh=True) is True
