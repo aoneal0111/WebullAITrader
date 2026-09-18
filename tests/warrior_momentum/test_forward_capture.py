@@ -1977,3 +1977,58 @@ def test_management_context_lookup_does_not_revive_closed_lifecycle(tmp_path: Pa
         path, "XYZ", lifecycle_id=lifecycle,
         configuration_fingerprint=fingerprint,
     ) is None
+
+
+def test_pending_first_target_retry_preserves_partial_quantity(
+    tmp_path: Path,
+) -> None:
+    """A working partial target must never be retried as a full-position exit."""
+
+    store = ForwardCaptureStore(tmp_path / "pending-target-quantity.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": Decimal("98")}
+    submissions: list[tuple[str, int]] = []
+
+    def submit_exit(symbol, quantity, price, reason, lifecycle):
+        submissions.append((reason, quantity))
+        return PaperExitSubmissionDecision(
+            PaperExitSubmissionState.SUBMITTED, symbol, lifecycle, reason,
+            order_id=f"order-{len(submissions)}",
+            activation_timestamp=T0 + timedelta(minutes=1),
+        )
+
+    service = WarriorForwardCaptureService(
+        store, writer,
+        paper_entry_submitter=lambda *_args: True,
+        paper_exit_submitter=submit_exit,
+        paper_position_quantity_source=lambda symbol: position.get(
+            symbol, Decimal("0"),
+        ),
+    )
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        first_bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=1),
+            signal.entry_trigger, signal.target_levels[0] + D("0.01"),
+            signal.entry_trigger, signal.target_levels[0], D("100"),
+        )
+        service.observe_market_bar(
+            "XYZ", first_bar, first_bar.timestamp + timedelta(minutes=1),
+        )
+        first_quantity = service._paper["XYZ"].first_quantity
+        assert 0 < first_quantity < position["XYZ"]
+        assert submissions[-1] == ("FIRST_TARGET", first_quantity)
+
+        retry_bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=2),
+            signal.target_levels[0], signal.target_levels[0] + D("0.02"),
+            signal.entry_trigger, signal.target_levels[0], D("100"),
+        )
+        service.observe_market_bar(
+            "XYZ", retry_bar, retry_bar.timestamp + timedelta(minutes=1),
+        )
+        assert submissions[-1] == ("FIRST_TARGET", first_quantity)
+        assert submissions[-1][1] != int(position["XYZ"])
+    finally:
+        writer.close()
