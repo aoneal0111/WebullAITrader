@@ -2717,14 +2717,9 @@ class WarriorForwardCaptureService:
             entry = entries.get(lifecycle)
             if entry is None or entry.symbol in current_symbols:
                 continue
-            entry_fingerprint = fingerprints.get(entry.record_id)
             context_fingerprint = fingerprints.get(context.record_id)
-            if (
-                entry_fingerprint is None
-                or entry_fingerprint != context_fingerprint
-                or not self._compatible_recovery_context(
-                    entry, context, context_fingerprint,
-                )
+            if not self._compatible_recovery_context(
+                entry, context, context_fingerprint,
             ):
                 continue
             symbol_quantity = (
