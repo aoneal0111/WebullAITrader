@@ -3339,6 +3339,11 @@ def _signal_from_entry(record, payload) -> MomentumEntrySignal:
         None if payload.get("float_shares") is None else Decimal(payload["float_shares"]),
         None if payload.get("spread_percent") is None else Decimal(payload["spread_percent"]),
         ZERO, ZERO, Decimal("0"), (), False,
+        taxonomy_execution_identity=(
+            None
+            if not str(payload.get("lifecycle_id") or "").strip()
+            else str(payload["lifecycle_id"]).strip()
+        ),
     )
 
 
