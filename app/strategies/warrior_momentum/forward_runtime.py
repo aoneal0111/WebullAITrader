@@ -2467,7 +2467,18 @@ class WarriorForwardCaptureService:
         if stop_eligible:
             requested = (state.stop, quantity, "STOP")
         elif state.exit_reason is not None and state.exit_price is not None:
-            requested = (state.exit_price, quantity, state.exit_reason)
+            # A working partial target remains reserved at its original
+            # milestone size until the authoritative position decreases.
+            # Retrying it with the full remaining position would destroy the
+            # correlated target/stop bracket on every later management bar.
+            pending_quantity = quantity
+            if state.exit_reason == "FIRST_TARGET":
+                pending_quantity = min(state.first_quantity, quantity)
+            elif state.exit_reason == "SECOND_TARGET":
+                pending_quantity = min(state.second_quantity, quantity)
+            requested = (
+                state.exit_price, pending_quantity, state.exit_reason,
+            )
         elif not state.first_taken and bar.high >= signal.target_levels[0]:
             requested = (signal.target_levels[0], min(state.first_quantity, quantity), "FIRST_TARGET")
         elif not state.second_taken and bar.high >= signal.target_levels[1]:
