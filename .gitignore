@@ -113,3 +113,30 @@ recording_committed_full/
 API keys.txt
 atlas_symbol_pytest_temp/
 *.bad
+
+# Atlas local validation / forensic artifacts
+# Keep generated evidence out of Git status without deleting local evidence.
+/.atlas_*_tmp*/
+/.checkpoint-*-tmp*/
+/.di2_*_tmp*/
+/.dientry*_tmp*/
+/.first-tranche-offline-tmp/
+/.handoff*-tmp*/
+/.learning*-tmp*/
+/.profit-reentry*-tmp*/
+/.scale-*-202609*/
+/.status-proof-tmp*/
+/.tmp_*/
+/.universe-*-tmp*/
+/Tempatlas-*/
+/Usersaonea*/
+forensic_snapshots/
+gui_redesign_review_*/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*-bak
+atlas-*-current.txt
+atlas-*.png
+font-test.png
+tests/gui/_render_*_review.py
