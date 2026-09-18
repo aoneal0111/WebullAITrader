@@ -30,10 +30,11 @@ def create_desktop_memory_observability(
     runtime_projections: object,
     state_store: object,
     bus: object,
-) -> MemoryObservability:
+    observability_factory: Callable[..., object] = MemoryObservability,
+) -> object:
     """Build diagnostic-only memory telemetry outside desktop trading composition."""
 
-    return MemoryObservability(
+    return observability_factory(
         {
             "warrior_forward_runtime": lambda: optional_metrics(
                 warrior_forward_sidecar, "_service"
