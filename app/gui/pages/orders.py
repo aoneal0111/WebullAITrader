@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -34,7 +35,7 @@ from app.gui.widgets.order_entry_panel import OrderEntryPanel
 
 
 class OrdersPage(QWidget):
-    """Read-only presentation surface for immutable open-order snapshots."""
+    """Operator order supervision with bounded paper placement/cancellation."""
 
     ALL_STATUSES = "ALL STATUSES"
 
@@ -105,10 +106,10 @@ class OrdersPage(QWidget):
         self.order_entry_panel.order_validated.connect(
             self._place_validated_order
         )
-        # Manual entry remains available to explicitly privileged recovery
-        # tooling through this compatibility object, but is deliberately not
-        # mounted in the normal autonomous workstation.
-        self.order_entry_panel.hide()
+        # Operator placement is visible only through the existing bounded
+        # TradingService/OrderCommandFactory boundary.  When those dependencies
+        # are unavailable the panel remains visible but execution-disabled.
+        root.addWidget(self.order_entry_panel)
         orders_panel = QFrame()
         orders_panel.setObjectName("contentPanel")
 
@@ -123,9 +124,17 @@ class OrdersPage(QWidget):
 
         self._order_count = QLabel("0 orders")
         self._order_count.setObjectName("mutedText")
+        self._operator_status = QLabel("Select a working order to cancel.")
+        self._operator_status.setObjectName("mutedText")
+        self.cancel_selected_button = QPushButton("Cancel Selected")
+        self.cancel_selected_button.setObjectName("secondaryButton")
+        self.cancel_selected_button.setEnabled(False)
+        self.cancel_selected_button.clicked.connect(self._cancel_selected_order)
 
         orders_header.addWidget(orders_title)
         orders_header.addStretch()
+        orders_header.addWidget(self._operator_status)
+        orders_header.addWidget(self.cancel_selected_button)
         orders_header.addWidget(self._order_count)
 
         self._orders_table = QTableWidget(0, 12)
@@ -170,6 +179,9 @@ class OrdersPage(QWidget):
 
         self._orders_table.itemSelectionChanged.connect(
             self._render_selected_order
+        )
+        self._orders_table.itemSelectionChanged.connect(
+            self._update_cancel_selected_state
         )
 
         orders_layout.addLayout(orders_header)
@@ -338,6 +350,79 @@ class OrdersPage(QWidget):
         else:
             self.order_entry_panel.show_submission_error(
                 result.gateway_message
+            )
+
+    def _selected_cancellation_target(self) -> tuple[str, str | None, str] | None:
+        selected = self._orders_table.selectedItems()
+        if not selected:
+            return None
+        order_id = selected[0].data(Qt.ItemDataRole.UserRole)
+        if not isinstance(order_id, str) or not order_id.strip():
+            return None
+        if self._projected_orders is not None:
+            order = next(
+                (item for item in self._visible_projected_orders if item.order_id == order_id),
+                None,
+            )
+            return None if order is None else (order.order_id, None, order.status)
+        order = next(
+            (item for item in self._visible_orders if item.broker_order_id == order_id),
+            None,
+        )
+        return (
+            None
+            if order is None
+            else (order.broker_order_id, order.client_order_id, order.status.value)
+        )
+
+    def _update_cancel_selected_state(self) -> None:
+        target = self._selected_cancellation_target()
+        cancellable = {
+            "ACCEPTED", "SUBMITTED", "REPLACED", "PARTIALLY_FILLED", "WORKING", "OPEN",
+        }
+        enabled = bool(
+            target is not None
+            and target[2].upper() in cancellable
+            and self._trading_service is not None
+            and self._order_command_factory is not None
+        )
+        self.cancel_selected_button.setEnabled(enabled)
+        if target is None:
+            self._operator_status.setText("Select a working order to cancel.")
+        elif target[2].upper() not in cancellable:
+            self._operator_status.setText(f"Selected order is {target[2]}.")
+        elif not enabled:
+            self._operator_status.setText("Cancellation service is unavailable.")
+        else:
+            self._operator_status.setText("Cancellation available for selected order.")
+
+    def _cancel_selected_order(self) -> None:
+        target = self._selected_cancellation_target()
+        if target is None:
+            self._operator_status.setText("No cancellable order is selected.")
+            return
+        if self._trading_service is None or self._order_command_factory is None:
+            self._operator_status.setText("Cancellation service is unavailable.")
+            return
+        broker_order_id, client_order_id, _status = target
+        try:
+            request = self._order_command_factory.create_cancellation_request(
+                broker_order_id,
+                client_order_id,
+                source="desktop_operator",
+            )
+            result = self._trading_service.cancel_order(request)
+        except Exception as exc:
+            self._operator_status.setText(f"Cancellation error: {exc}")
+            return
+        if result.success:
+            self._operator_status.setText(
+                f"Cancellation accepted: {result.broker_order_id}."
+            )
+            self.cancel_selected_button.setEnabled(False)
+        else:
+            self._operator_status.setText(
+                f"Cancellation refused: {result.gateway_message}"
             )
 
     @staticmethod
