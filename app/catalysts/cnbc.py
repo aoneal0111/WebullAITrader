@@ -220,6 +220,19 @@ class CNBCCatalystProvider:
     def feed_ids(self) -> tuple[int, ...]:
         return tuple(feed.feed_id for feed in self._feeds)
 
+    def recent_stories(
+        self, as_of: datetime | None = None
+    ) -> tuple[CNBCStory, ...]:
+        """Return the bounded fresh snapshot for discovery-only consumers."""
+
+        now = _utc_as_of(as_of)
+        cutoff = now - timedelta(minutes=self._policy.freshness_minutes)
+        return tuple(
+            story
+            for story in self._stories()
+            if cutoff <= story.published_at <= now
+        )
+
     def get_evidence(
         self, symbol: str, as_of: datetime | None = None
     ) -> CatalystEvidence:

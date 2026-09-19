@@ -258,6 +258,19 @@ class MarketWatchCatalystProvider:
     def feed_urls(self) -> tuple[str, str]:
         return self._feeds[0].url, self._feeds[1].url
 
+    def recent_stories(
+        self, as_of: datetime | None = None
+    ) -> tuple[MarketWatchStory, ...]:
+        """Return the bounded fresh snapshot for discovery-only consumers."""
+
+        now = _utc_as_of(as_of)
+        cutoff = now - timedelta(minutes=self._policy.freshness_minutes)
+        return tuple(
+            story
+            for story in self._stories(now)
+            if cutoff <= story.published_at <= now + _MAX_FUTURE_SKEW
+        )
+
     def get_evidence(
         self, symbol: str, as_of: datetime | None = None
     ) -> CatalystEvidence:
