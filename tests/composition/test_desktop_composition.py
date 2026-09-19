@@ -133,7 +133,27 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
             point(bars=pretrigger), account=account(),
         )
         assert candidate.setup is not None
-        assert signal is not None
+        sidecar._writer.flush()
+        failure_evidence = {
+            "di_entry": [
+                record.payload
+                for record in sidecar._store.records(
+                    record_type=CaptureRecordType.DI_ENTRY_DIAGNOSTIC,
+                )
+            ],
+            "transitions": [
+                record.payload
+                for record in sidecar._store.records(
+                    record_type=CaptureRecordType.STATE_TRANSITION,
+                )
+            ][-4:],
+            "experiment_decisions": list(
+                sidecar._paper_entry_intelligence._journal._connection.execute(
+                    "SELECT decision_json FROM experiment_decisions"
+                )
+            ),
+        }
+        assert signal is not None, failure_evidence
         paper = composition.paper_order_book
         assert paper is not None and len(paper.history()) == 1
         order = paper.history()[0]
