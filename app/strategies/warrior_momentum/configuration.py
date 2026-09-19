@@ -209,7 +209,27 @@ class WarriorMomentumConfig:
         raw = os.getenv("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED", "false").strip().lower()
         if raw not in {"true", "false"}:
             raise ValueError("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED must be true or false")
-        return cls(adaptive_context_enabled=raw == "true")
+        diagnostics = os.getenv(
+            "ATLAS_WARRIOR_D3_DIAGNOSTICS_ENABLED", "false",
+        ).strip().lower()
+        if diagnostics not in {"true", "false"}:
+            raise ValueError(
+                "ATLAS_WARRIOR_D3_DIAGNOSTICS_ENABLED must be true or false"
+            )
+        diagnostics_root = os.getenv(
+            "ATLAS_WARRIOR_D3_DIAGNOSTICS_ROOT", "",
+        ).strip()
+        diagnostics_session_id = os.getenv(
+            "ATLAS_WARRIOR_D3_DIAGNOSTICS_SESSION_ID", "",
+        ).strip()
+        return cls(
+            adaptive_context_enabled=raw == "true",
+            observability_enabled=diagnostics == "true",
+            observability_root=(
+                Path(diagnostics_root) if diagnostics_root else None
+            ),
+            observability_session_id=diagnostics_session_id or None,
+        )
 
     @classmethod
     def conservative_v1(cls) -> "WarriorMomentumConfig":
