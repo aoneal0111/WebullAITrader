@@ -65,6 +65,18 @@ def close_desktop_composition(
         timeout_seconds=timeout_seconds
     )
 
+    daily_review_exporter = getattr(
+        composition,
+        "daily_review_exporter",
+        None,
+    )
+    if daily_review_exporter is not None:
+        try:
+            daily_review_exporter.export(composition)
+        except Exception:
+            # Review export is diagnostic-only and cannot block shutdown.
+            pass
+
     paper_trading_commands = getattr(
         composition,
         "paper_trading_commands",

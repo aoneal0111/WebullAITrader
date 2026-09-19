@@ -33,6 +33,7 @@ from app.trade_intelligence.decision_intelligence.entry_timing import (
 )
 from app.memory_observability import MemoryObservability
 from app.performance_diagnostics import performance_diagnostics
+from app.daily_review import DailyReviewExporter
 from app.crypto_research import (
     CryptoCatalystAcquisitionRuntime,
     CryptoIntelligenceResearchRuntime,
@@ -100,6 +101,7 @@ class DesktopComposition:
     symbol_intelligence: SymbolIntelligenceComposition | None = None
     sec_shadow_runtime: SecShadowRuntimeComposition | None = None
     symbol_intelligence_activation_state: str = "DISABLED"
+    daily_review_exporter: DailyReviewExporter | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         from .desktop_lifecycle import close_desktop_composition
@@ -442,6 +444,17 @@ def create_desktop_composition(
         memory_observability=memory_observability,
         symbol_intelligence=symbol_intelligence,
         sec_shadow_runtime=sec_shadow_runtime,
+        daily_review_exporter=DailyReviewExporter(
+            operational_configuration.execution_database_path.parent
+            / "daily_reviews",
+            retention_days=14,
+            clock=paper_clock or utc_now,
+            catalyst_watch_path=(
+                operational_configuration.execution_database_path.with_name(
+                    "catalyst_watch_seeds.json"
+                )
+            ),
+        ),
     )
     result.symbol_intelligence_activation_state = (
         start_desktop_symbol_intelligence(symbol_intelligence_bundle)
