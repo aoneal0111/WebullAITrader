@@ -124,8 +124,15 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
         # Supply deterministic, qualified historical evidence.  An empty
         # intelligence journal must correctly fall back to CONTROL rather than
         # authorizing an experimental entry.
-        sidecar._decision_intelligence_observer.observe_decision = (
-            lambda **_kwargs: replace(
+        original_observe_decision = (
+            sidecar._decision_intelligence_observer.observe_decision
+        )
+
+        def qualified_historical_decision(**kwargs):
+            # Preserve the production observer's durable timeline side effects;
+            # only its returned research evidence is made deterministic.
+            original_observe_decision(**kwargs)
+            return replace(
                 _result(),
                 readiness_memberships=(
                     {
@@ -138,6 +145,9 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
                     },
                 ),
             )
+
+        sidecar._decision_intelligence_observer.observe_decision = (
+            qualified_historical_decision
         )
 
         # Allocation is adjusted only on this production-composed policy object
