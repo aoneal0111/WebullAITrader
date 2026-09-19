@@ -9,6 +9,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.market.calendar import EASTERN
+
 
 class DailyReviewExporter:
     """Write one local JSON review bundle per UTC trading day.
@@ -69,9 +71,13 @@ class DailyReviewExporter:
         return tuple(sorted(removed))
 
     def _payload(self, composition: object, generated_at: datetime) -> dict[str, Any]:
-        order_book = getattr(composition, "paper_order_book", None)
-        history = tuple(order_book.history()) if order_book is not None else ()
-        orders = [_order(order) for order in history]
+        trading_date = generated_at.astimezone(EASTERN).date()
+        history = _authoritative_orders(composition)
+        daily_history = tuple(
+            order for order in history
+            if _order_touches_trading_date(order, trading_date)
+        )
+        orders = [_order(order) for order in daily_history]
         fills = [
             fill
             for order in orders
@@ -93,7 +99,8 @@ class DailyReviewExporter:
         return {
             "schema_version": 1,
             "generated_at": generated_at.isoformat(),
-            "trading_date_utc": generated_at.date().isoformat(),
+            "trading_date": trading_date.isoformat(),
+            "trading_timezone": str(EASTERN),
             "environment": "PAPER",
             "summary": {
                 "order_count": len(orders),
@@ -120,6 +127,39 @@ class DailyReviewExporter:
                 "raw_provider_payloads_included": False,
             },
         }
+
+
+def _authoritative_orders(composition: object) -> tuple[object, ...]:
+    commands = getattr(composition, "paper_trading_commands", None)
+    durable_store = getattr(commands, "durable_store", None)
+    if durable_store is not None:
+        try:
+            return tuple(durable_store.orders())
+        except Exception:
+            # Review export is best-effort; retain the in-memory fallback.
+            pass
+    order_book = getattr(composition, "paper_order_book", None)
+    return tuple(order_book.history()) if order_book is not None else ()
+
+
+def _order_touches_trading_date(order: object, trading_date: date) -> bool:
+    timestamps = [
+        getattr(order, "created_at", None),
+        getattr(order, "updated_at", None),
+    ]
+    timestamps.extend(
+        getattr(fill, "timestamp", None)
+        for fill in getattr(order, "fills", ())
+    )
+    for timestamp in timestamps:
+        if not isinstance(timestamp, datetime):
+            continue
+        try:
+            if _aware_utc(timestamp).astimezone(EASTERN).date() == trading_date:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _order(order: object) -> dict[str, Any]:
