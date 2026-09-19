@@ -7,6 +7,7 @@ from app.market_data.models import MarketEvent, MarketEventType, QuotePayload, T
 from app.scanner_adapter import MarketEventScannerAdapter, ScannerReferenceData, ScannerReferenceStore
 from app.momentum_scanner.models import CatalystStatus, CatalystType
 from tests.trade_intelligence.test_entry_timing import _result
+from tests.warrior_momentum.test_forward_capture import bars
 import app.composition.desktop as desktop_module
 
 
@@ -46,11 +47,14 @@ def test_composed_market_event_ingress_reaches_experiment_journal(monkeypatch, t
     observer.bind_scanner_adapter(scanner)
     sidecar = composition.warrior_forward_sidecar
     assert sidecar is not None
+    canonical_bars = bars()
     sidecar.preload_historical_bars("XYZ", tuple(
         SimpleNamespace(
-            timestamp=now - timedelta(minutes=(8 - index)), open=D("10.00"),
-            high=D("10.10"), low=D("9.90"), close=D("10.00"), volume=D("1000"),
-        ) for index in range(8)
+            timestamp=now - timedelta(minutes=(len(canonical_bars) - index)),
+            open=item.open, high=item.high, low=item.low, close=item.close,
+            volume=item.volume,
+        )
+        for index, item in enumerate(canonical_bars)
     ))
     observer.start("PAPER")
     try:
