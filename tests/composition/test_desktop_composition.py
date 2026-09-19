@@ -122,7 +122,19 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
         # intelligence journal must correctly fall back to CONTROL rather than
         # authorizing an experimental entry.
         sidecar._decision_intelligence_observer.observe_decision = (
-            lambda **_kwargs: _result()
+            lambda **_kwargs: replace(
+                _result(),
+                readiness_memberships=(
+                    {
+                        "strategy": "HIGH_OF_DAY_BREAKOUT",
+                        "state": "TRIGGER_ARMED",
+                    },
+                    {
+                        "strategy": "FLAT_TOP_BREAKOUT",
+                        "state": "TRIGGER_ARMED",
+                    },
+                ),
+            )
         )
 
         # Allocation is adjusted only on this production-composed policy object
