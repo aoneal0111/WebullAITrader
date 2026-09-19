@@ -110,7 +110,10 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
         paper_persistence_path=tmp_path / "paper.sqlite3",
         paper_clock=lambda: datetime(2026, 8, 10, 14, 50, tzinfo=UTC),
     )
-    pretrigger = (*bars()[:-1], bar(4, "9.96", "10", "9.94", "9.95", "300"))
+    # Use the supported canonical HIGH_OF_DAY/FLAT_TOP fixture.  The prior
+    # BULL_FLAG-forming variant was intentionally ineligible for historical
+    # treatment and therefore could never produce an executable signal.
+    pretrigger = bars()
     try:
         sidecar = composition.warrior_forward_sidecar
         assert sidecar is not None
