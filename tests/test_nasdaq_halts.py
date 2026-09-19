@@ -13,14 +13,14 @@ RSS = b'''<?xml version="1.0"?>
 <rss xmlns:ndaq="http://www.nasdaqtrader.com/">
   <channel><item>
     <ndaq:HaltDate>09/18/2026</ndaq:HaltDate>
-    <ndaq:HaltTime>14:31:05</ndaq:HaltTime>
+    <ndaq:HaltTime>14:31:05.000</ndaq:HaltTime>
     <ndaq:IssueSymbol>tjgc</ndaq:IssueSymbol>
     <ndaq:IssueName>TJGC Holdings</ndaq:IssueName>
     <ndaq:Market>NASDAQ</ndaq:Market>
     <ndaq:ReasonCode>T1</ndaq:ReasonCode>
     <ndaq:ResumptionDate>09/18/2026</ndaq:ResumptionDate>
-    <ndaq:ResumptionQuoteTime>14:45:00</ndaq:ResumptionQuoteTime>
-    <ndaq:ResumptionTradeTime>14:50:00</ndaq:ResumptionTradeTime>
+    <ndaq:ResumptionQuoteTime>14:45:00.250</ndaq:ResumptionQuoteTime>
+    <ndaq:ResumptionTradeTime>14:50:00.125</ndaq:ResumptionTradeTime>
   </item></channel>
 </rss>'''
 
@@ -48,7 +48,8 @@ def test_parse_official_namespaced_halt_and_resumption_fields():
     assert record.reason_code == "T1"
     assert record.halt_date == date(2026, 9, 18)
     assert record.halt_time == time(14, 31, 5)
-    assert record.resumption_trade_time == time(14, 50)
+    assert record.resumption_quote_time == time(14, 45, microsecond=250_000)
+    assert record.resumption_trade_time == time(14, 50, microsecond=125_000)
     assert record.resumed is True
 
 
