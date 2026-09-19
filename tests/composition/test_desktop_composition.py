@@ -118,6 +118,13 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
         assert sidecar._service is not None
         assert sidecar._decision_intelligence_observer is not None
 
+        # Supply deterministic, qualified historical evidence.  An empty
+        # intelligence journal must correctly fall back to CONTROL rather than
+        # authorizing an experimental entry.
+        sidecar._decision_intelligence_observer.observe_decision = (
+            lambda **_kwargs: _result()
+        )
+
         # Allocation is adjusted only on this production-composed policy object
         # to make the deterministic fixture exercise TREATMENT.
         sidecar._paper_entry_intelligence.config = replace(
@@ -133,41 +140,6 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
             point(bars=pretrigger), account=account(),
         )
         assert candidate.setup is not None
-        sidecar._writer.flush()
-        failure_evidence = {
-            "di_entry": [
-                {
-                    key: record.payload.get(key)
-                    for key in (
-                        "event", "reason", "opportunity_id",
-                        "treatment_decision", "error_type", "error_message",
-                    )
-                    if record.payload.get(key) is not None
-                }
-                for record in sidecar._store.records(
-                    record_type=CaptureRecordType.DI_ENTRY_DIAGNOSTIC,
-                )
-            ],
-            "transitions": [
-                {
-                    "to": record.payload.get("to"),
-                    "reason_codes": record.payload.get("reason_codes"),
-                    "blocking_gates": record.payload.get("blocking_gates"),
-                }
-                for record in sidecar._store.records(
-                    record_type=CaptureRecordType.STATE_TRANSITION,
-                )
-            ][-4:],
-            "experiment_decisions": [
-                json.loads(row[0])
-                for row in sidecar._paper_entry_intelligence._journal._connection.execute(
-                    "SELECT decision_json FROM experiment_decisions"
-                )
-            ],
-        }
-        if signal is None:
-            print("ATLAS_TREATMENT_FAILURE_EVIDENCE")
-            print(json.dumps(failure_evidence, indent=2, default=str))
         assert signal is not None
         paper = composition.paper_order_book
         assert paper is not None and len(paper.history()) == 1
