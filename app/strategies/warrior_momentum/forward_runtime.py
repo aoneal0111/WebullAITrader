@@ -522,7 +522,14 @@ class WarriorForwardCaptureService:
                     # Entry intelligence is advisory and fail-closed to the
                     # existing signal path.
                     pass
-        if treatment_signal is not None and signal is not None:
+        if treatment_signal is not None and (
+            signal is not None
+            or self._decision_intelligence_entry_observer is not None
+        ):
+            # The production-owned DI/entry callback may authorize an earlier
+            # PAPER treatment before the conventional Warrior trigger.  The
+            # legacy split callback remains advisory unless a canonical signal
+            # already exists.
             signal = treatment_signal
         if intelligence_result is not None and self._pretrigger_shadow is not None:
             try:
