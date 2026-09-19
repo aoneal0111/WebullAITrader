@@ -136,24 +136,39 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
         sidecar._writer.flush()
         failure_evidence = {
             "di_entry": [
-                record.payload
+                {
+                    key: record.payload.get(key)
+                    for key in (
+                        "event", "reason", "opportunity_id",
+                        "treatment_decision", "error_type", "error_message",
+                    )
+                    if record.payload.get(key) is not None
+                }
                 for record in sidecar._store.records(
                     record_type=CaptureRecordType.DI_ENTRY_DIAGNOSTIC,
                 )
             ],
             "transitions": [
-                record.payload
+                {
+                    "to": record.payload.get("to"),
+                    "reason_codes": record.payload.get("reason_codes"),
+                    "blocking_gates": record.payload.get("blocking_gates"),
+                }
                 for record in sidecar._store.records(
                     record_type=CaptureRecordType.STATE_TRANSITION,
                 )
             ][-4:],
-            "experiment_decisions": list(
-                sidecar._paper_entry_intelligence._journal._connection.execute(
+            "experiment_decisions": [
+                json.loads(row[0])
+                for row in sidecar._paper_entry_intelligence._journal._connection.execute(
                     "SELECT decision_json FROM experiment_decisions"
                 )
-            ),
+            ],
         }
-        assert signal is not None, failure_evidence
+        if signal is None:
+            print("ATLAS_TREATMENT_FAILURE_EVIDENCE")
+            print(json.dumps(failure_evidence, indent=2, default=str))
+        assert signal is not None
         paper = composition.paper_order_book
         assert paper is not None and len(paper.history()) == 1
         order = paper.history()[0]
