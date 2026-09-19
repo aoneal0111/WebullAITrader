@@ -31,6 +31,7 @@ def reference_data(
     catalyst: CatalystType | None = None,
     catalyst_status: CatalystStatus = CatalystStatus.TRUE,
     current_volume: Decimal | None = Decimal("0"),
+    regulatory_halted: bool = False,
 ) -> ScannerReferenceData:
     return ScannerReferenceData(
         symbol="TEST",
@@ -49,6 +50,7 @@ def reference_data(
         tradable=True,
         updated_at=NOW,
         current_volume=current_volume,
+        regulatory_halted=regulatory_halted,
     )
 
 
@@ -845,3 +847,34 @@ def test_late_snapshot_replaces_local_observation_without_fake_velocity() -> Non
     assert seeded is not None
     assert seeded.state.cumulative_volume == Decimal("100000")
     assert seeded.state.local_trade_volume == Decimal("1")
+
+
+
+def test_regulatory_halt_blocks_scanner_without_overwriting_stream_state() -> None:
+    store = ScannerReferenceStore((
+        reference_data(regulatory_halted=True),
+    ))
+    adapter = MarketEventScannerAdapter(store)
+
+    adapter.consume(quote_event())
+    result = adapter.consume(trade_event())
+
+    assert result is not None
+    assert result.observation is not None
+    assert result.observation.halted is True
+    assert result.state.halted is False
+
+
+def test_regulatory_resumption_restores_reference_market_state() -> None:
+    store = ScannerReferenceStore((
+        reference_data(regulatory_halted=True),
+    ))
+    adapter = MarketEventScannerAdapter(store)
+    adapter.consume(quote_event())
+    adapter.consume(trade_event())
+    store.put(reference_data(regulatory_halted=False))
+
+    observation = adapter.observation_for("TEST")
+
+    assert observation is not None
+    assert observation.halted is False

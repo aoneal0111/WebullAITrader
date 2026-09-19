@@ -29,6 +29,10 @@ from app.live_execution.broker_factory import (
     build_webull_broker,
     build_webull_market_data_stream,
 )
+from app.market.nasdaq_halts import (
+    NasdaqHaltFeedStatus,
+    NasdaqTradeHaltSource,
+)
 from app.operations.runtime import RuntimeEventSink
 from app.paper_trade_experiment import (
     PaperTradeExperimentJournal,
@@ -292,8 +296,27 @@ def create_configured_desktop_broker_driver(
             ),
         )
         reference_store = ScannerReferenceStore()
+        nasdaq_halt_source = (
+            NasdaqTradeHaltSource()
+            if configuration.nasdaq_trade_halts_enabled
+            else None
+        )
 
         def store_reference(record) -> None:
+            halt_snapshot = (
+                None
+                if nasdaq_halt_source is None
+                else nasdaq_halt_source.snapshot()
+            )
+            halt_record = (
+                halt_snapshot.active_for_symbol(record.symbol)
+                if (
+                    halt_snapshot is not None
+                    and halt_snapshot.status is NasdaqHaltFeedStatus.AVAILABLE
+                )
+                else None
+            )
+            regulatory_halted = halt_record is not None
             reference_store.put(
                 ScannerReferenceData(
                     symbol=record.symbol,
@@ -304,7 +327,7 @@ def create_configured_desktop_broker_driver(
                     catalyst=record.catalyst,
                     catalyst_headline=record.catalyst_headline,
                     catalyst_status=record.catalyst_status,
-                    tradable=record.tradable,
+                    tradable=(record.tradable and not regulatory_halted),
                     updated_at=record.as_of,
                     current_volume=record.current_volume,
                     extended_volume=record.extended_volume,
@@ -315,6 +338,7 @@ def create_configured_desktop_broker_driver(
                     corroborating_sources=record.corroborating_sources,
                     catalyst_evidence_count=record.catalyst_evidence_count,
                     catalyst_event_count=record.catalyst_event_count,
+                    regulatory_halted=regulatory_halted,
                 )
             )
 

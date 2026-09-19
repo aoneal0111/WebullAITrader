@@ -338,3 +338,4 @@ class OperationalConfiguration:
     symbol_intelligence_sec_edgar: SymbolIntelligenceSECEdgarConfiguration = (
         dataclasses.field(default_factory=SymbolIntelligenceSECEdgarConfiguration)
     )
+    nasdaq_trade_halts_enabled: bool = False

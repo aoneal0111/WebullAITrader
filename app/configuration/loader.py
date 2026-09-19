@@ -469,6 +469,9 @@ def load_configuration(env=None):
         historical_entry_experiment_mode=historical_mode,
         historical_entry_experiment_path=historical_path,
         symbol_intelligence_sec_edgar=symbol_intelligence_sec_configuration,
+        nasdaq_trade_halts_enabled=_bool(
+            e.get("NASDAQ_TRADE_HALTS_ENABLED", "false")
+        ),
     )
 
 

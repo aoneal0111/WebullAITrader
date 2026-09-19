@@ -34,6 +34,7 @@ class ScannerReferenceData:
     catalyst_evidence_count: int = 0
     catalyst_event_count: int = 0
     float_provenance: FloatProvenance = FloatProvenance.AUTHORITATIVE_FLOAT
+    regulatory_halted: bool = False
 
     def __post_init__(self) -> None:
         symbol = self.symbol.strip().upper()

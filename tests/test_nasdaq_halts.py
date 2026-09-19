@@ -91,3 +91,29 @@ def test_parser_rejects_dtd_and_incomplete_records():
         parse_nasdaq_trade_halt_rss(b'<!DOCTYPE rss><rss><channel/></rss>')
     with pytest.raises(ValueError, match="required identity"):
         parse_nasdaq_trade_halt_rss(b'<rss><channel><item/></channel></rss>')
+
+
+
+def test_latest_symbol_record_controls_active_halt_state():
+    payload = RSS.replace(
+        b"</channel>",
+        b"""<item>
+          <ndaq:HaltDate>09/19/2026</ndaq:HaltDate>
+          <ndaq:HaltTime>09:31:00</ndaq:HaltTime>
+          <ndaq:IssueSymbol>TJGC</ndaq:IssueSymbol>
+          <ndaq:Market>NASDAQ</ndaq:Market>
+          <ndaq:ReasonCode>LUDP</ndaq:ReasonCode>
+        </item></channel>""",
+    )
+    snapshot = NasdaqTradeHaltSource(
+        Transport(payload=payload), clock=lambda: 1.0
+    ).snapshot()
+
+    assert snapshot.active_for_symbol("tjgc").reason_code == "LUDP"
+
+
+def test_resumed_latest_record_is_not_reported_as_active():
+    snapshot = NasdaqTradeHaltSource(Transport(), clock=lambda: 1.0).snapshot()
+
+    assert snapshot.for_symbol("TJGC") is not None
+    assert snapshot.active_for_symbol("TJGC") is None

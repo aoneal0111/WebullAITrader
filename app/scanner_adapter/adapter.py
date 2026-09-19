@@ -613,7 +613,7 @@ class MarketEventScannerAdapter:
                 bid=state.bid,
                 ask=state.ask,
                 tradable=reference.tradable,
-                halted=state.halted,
+                halted=(state.halted or reference.regulatory_halted),
                 last_price_timestamp=state.last_price_timestamp,
                 quote_timestamp=state.quote_timestamp,
                 trade_timestamp=state.trade_timestamp,

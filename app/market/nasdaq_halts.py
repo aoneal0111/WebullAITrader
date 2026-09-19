@@ -49,10 +49,18 @@ class NasdaqHaltSnapshot:
 
     def for_symbol(self, symbol: str) -> NasdaqTradeHalt | None:
         normalized = str(symbol).strip().upper()
-        return next(
-            (record for record in self.records if record.symbol == normalized),
-            None,
+        matches = tuple(
+            record for record in self.records if record.symbol == normalized
         )
+        return max(
+            matches,
+            key=lambda record: (record.halt_date, record.halt_time),
+            default=None,
+        )
+
+    def active_for_symbol(self, symbol: str) -> NasdaqTradeHalt | None:
+        record = self.for_symbol(symbol)
+        return record if record is not None and not record.resumed else None
 
 
 class NasdaqHaltFeedTransport(Protocol):
