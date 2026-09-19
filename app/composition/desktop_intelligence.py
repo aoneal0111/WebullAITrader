@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
-from types import SimpleNamespace
+from dataclasses import dataclass, replace
 
 from app.strategies.warrior_momentum.configuration import WarriorMomentumConfig
 from app.strategies.warrior_momentum.observability import (
@@ -24,30 +22,16 @@ def create_desktop_intelligence_composition(
 ) -> DesktopIntelligenceComposition:
     """Compose advisory intelligence and Warrior observability outside the core root."""
 
-    warrior_observability = create_warrior_observability_sink(
-        SimpleNamespace(
-            observability_enabled=(
-                os.getenv(
-                    "ATLAS_WARRIOR_D3_DIAGNOSTICS_ENABLED",
-                    "false",
-                ).strip().lower()
-                == "true"
-            ),
-            observability_root=(
-                os.getenv("ATLAS_WARRIOR_D3_DIAGNOSTICS_ROOT") or None
-            ),
-            observability_session_id=(
-                os.getenv("ATLAS_WARRIOR_D3_DIAGNOSTICS_SESSION_ID") or None
-            ),
-        )
-    )
-
     configured_warrior_strategy = WarriorMomentumConfig.from_env()
-    warrior_strategy_config = WarriorMomentumConfig(
+    warrior_strategy_config = replace(
+        configured_warrior_strategy,
         adaptive_context_enabled=(
             configured_warrior_strategy.adaptive_context_enabled
             and operational_configuration.environment.value == "PAPER"
-        )
+        ),
+    )
+    warrior_observability = create_warrior_observability_sink(
+        warrior_strategy_config
     )
 
     trade_intelligence_observer = TradeIntelligenceRuntimeObserver(
