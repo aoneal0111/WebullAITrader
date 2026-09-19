@@ -83,8 +83,25 @@ def test_daily_review_exports_authoritative_orders_account_and_seeds(tmp_path):
         clock=lambda: NOW,
         catalyst_watch_path=watch_path,
     )
+    old_fill = SimpleNamespace(
+        quantity=Decimal("2"), price=Decimal("9.50"),
+        commission=Decimal("0"), timestamp=NOW - timedelta(days=1),
+    )
+    old_order = SimpleNamespace(
+        order_id="PAPER-OLD", symbol="OLD", request=request,
+        status=SimpleNamespace(value="FILLED"),
+        filled_quantity=Decimal("2"), remaining_quantity=Decimal("0"),
+        average_fill_price=Decimal("9.50"),
+        created_at=NOW - timedelta(days=1),
+        updated_at=NOW - timedelta(days=1),
+        fills=(old_fill,),
+    )
+    durable_store = SimpleNamespace(orders=lambda: (old_order, order))
     composition = SimpleNamespace(
-        paper_order_book=OrderBook((order,)),
+        # Durable history must win over the process-local order book so a
+        # same-day restart cannot erase earlier review evidence.
+        paper_order_book=OrderBook(()),
+        paper_trading_commands=SimpleNamespace(durable_store=durable_store),
         runtime_projections=projections,
     )
 
@@ -92,6 +109,8 @@ def test_daily_review_exports_authoritative_orders_account_and_seeds(tmp_path):
 
     assert target is not None and target.exists()
     payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["trading_date"] == "2026-09-19"
+    assert payload["trading_timezone"] == "America/New_York"
     assert payload["summary"] == {
         "order_count": 1,
         "fill_count": 1,
@@ -100,6 +119,7 @@ def test_daily_review_exports_authoritative_orders_account_and_seeds(tmp_path):
         "active_position_count": 1,
         "catalyst_watch_seed_count": 1,
     }
+    assert [item["order_id"] for item in payload["orders"]] == ["PAPER-ONE"]
     assert payload["orders"][0]["strategy_lifecycle_id"] == "WARRIOR|XYZ|episode"
     assert payload["fills"][0]["price"] == "10.25"
     assert payload["account"]["current_cash"] == "9948.75"
