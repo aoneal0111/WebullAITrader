@@ -206,12 +206,10 @@ def _parse_time(value: str, *, required: bool = False) -> time | None:
         if required:
             raise ValueError("required Nasdaq halt time is missing")
         return None
-    pieces = text.split(":")
-    if len(pieces) not in {2, 3}:
-        raise ValueError("Nasdaq halt time is malformed")
-    hour, minute = int(pieces[0]), int(pieces[1])
-    second = int(pieces[2]) if len(pieces) == 3 else 0
-    return time(hour, minute, second)
+    try:
+        return time.fromisoformat(text)
+    except ValueError as error:
+        raise ValueError("Nasdaq halt time is malformed") from error
 
 
 __all__ = [
