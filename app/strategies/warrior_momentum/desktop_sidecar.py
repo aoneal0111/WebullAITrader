@@ -148,9 +148,19 @@ class _BarAccumulator:
 def strategy_configuration_fingerprint(
     config: WarriorMomentumConfig = WarriorMomentumConfig(),
 ) -> str:
+    configuration = asdict(config)
+    # Diagnostic destinations and session labels do not alter trading policy.
+    # Excluding them keeps restarts and test-specific paths within the same
+    # compatible strategy generation.
+    for field_name in (
+        "observability_enabled",
+        "observability_root",
+        "observability_session_id",
+    ):
+        configuration.pop(field_name, None)
     material = canonical_json({
         "strategy_version": STRATEGY_VERSION,
-        "configuration": asdict(config),
+        "configuration": configuration,
     })
     return sha256(material.encode("utf-8")).hexdigest()
 
