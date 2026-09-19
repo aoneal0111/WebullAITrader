@@ -105,6 +105,7 @@ def test_daily_review_exports_authoritative_orders_account_and_seeds(tmp_path):
     assert payload["account"]["current_cash"] == "9948.75"
     assert "account_id" not in payload["account"]
     assert "unexpected" not in payload["catalyst_watch_seeds"][0]
+    assert payload["positions"][0]["symbol"] == "XYZ"
 
 
 def test_daily_review_prunes_only_expired_review_files(tmp_path):

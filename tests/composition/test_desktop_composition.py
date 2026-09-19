@@ -68,6 +68,7 @@ def test_paper_entry_experiment_is_composed_only_by_explicit_paper_opt_in(
         "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_MODE": "PAPER_TREATMENT",
         "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_PATH": str(tmp_path / "experiment.sqlite3"),
         "WARRIOR_FORWARD_PAPER_ENABLED": "true",
+        "WARRIOR_FORWARD_CAPTURE_PATH": str(tmp_path / "forward_capture.sqlite3"),
         "ALLOWED_SYMBOLS": "XYZ",
     })
     monkeypatch.setattr(desktop_module, "load_configuration", lambda: configuration)

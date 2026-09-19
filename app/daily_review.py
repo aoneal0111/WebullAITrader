@@ -215,6 +215,13 @@ def _json_value(value: object) -> Any:
         }
     if isinstance(value, (tuple, list)):
         return [_json_value(item) for item in value]
+    attributes = getattr(value, "__dict__", None)
+    if isinstance(attributes, dict):
+        return {
+            str(key): _json_value(item)
+            for key, item in attributes.items()
+            if str(key) not in {"account_id", "account_id_redacted"}
+        }
     enum_value = getattr(value, "value", None)
     if isinstance(enum_value, (str, int, float, bool)):
         return enum_value
