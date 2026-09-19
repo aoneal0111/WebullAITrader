@@ -125,6 +125,22 @@ def test_8k_evidence_preserves_sec_fields_and_scanner_tuple() -> None:
     )
 
 
+def test_official_ticker_directory_is_bounded_cached_and_sorted() -> None:
+    provider, client = provider_for(
+        Response(submissions()),
+        ticker_response=Response(
+            {
+                "0": {"ticker": "ZZZ", "cik_str": 123456, "title": "Zed"},
+                "1": {"ticker": "AAA", "cik_str": 654321, "title": "Alpha"},
+            }
+        ),
+    )
+
+    assert provider.listed_symbols() == ("AAA", "ZZZ")
+    assert provider.listed_symbols() == ("AAA", "ZZZ")
+    assert [call[0] for call in client.calls] == [TICKERS_URL]
+
+
 def test_provider_observability_is_structured_and_redacted(caplog) -> None:
     caplog.set_level("DEBUG", logger="app.catalysts.sec_edgar")
     user_agent = "private operator contact@example.invalid"

@@ -32,6 +32,10 @@ class SecShadowingCatalystProvider:
     def name(self) -> str:
         return self._legacy_provider.name
 
+    def listed_symbols(self) -> tuple[str, ...]:
+        source = getattr(self._legacy_provider, "listed_symbols", None)
+        return tuple(source()) if callable(source) else ()
+
     def get_evidence(
         self,
         symbol: str,

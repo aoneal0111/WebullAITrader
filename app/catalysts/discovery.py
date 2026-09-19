@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 from threading import RLock
+import time
 from typing import Protocol
 
 
@@ -64,6 +65,41 @@ class CatalystWatchSeed:
         object.__setattr__(self, "provider_event_id", self.provider_event_id.strip())
         object.__setattr__(self, "published_at", self.published_at.astimezone(UTC))
         object.__setattr__(self, "discovered_at", self.discovered_at.astimezone(UTC))
+
+
+class CatalystDiscoveryRuntime:
+    """Throttle feed backfills and expose observation-only subscription seeds."""
+
+    def __init__(
+        self,
+        service: "CatalystDiscoveryService",
+        *,
+        refresh_seconds: float = 300.0,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if not isinstance(service, CatalystDiscoveryService):
+            raise TypeError("service must be CatalystDiscoveryService")
+        if refresh_seconds <= 0:
+            raise ValueError("refresh_seconds must be positive")
+        self._service = service
+        self._refresh_seconds = float(refresh_seconds)
+        self._monotonic = monotonic
+        self._next_refresh = 0.0
+        self._symbols: tuple[str, ...] = ()
+        self._lock = RLock()
+
+    def symbols(self) -> tuple[str, ...]:
+        now = self._monotonic()
+        with self._lock:
+            if now < self._next_refresh:
+                return self._symbols
+            try:
+                self._symbols = self._service.symbols_after_refresh()
+            except Exception:
+                if not self._symbols:
+                    self._symbols = self._service.symbols()
+            self._next_refresh = now + self._refresh_seconds
+            return self._symbols
 
 
 class CatalystDiscoveryService:
@@ -160,6 +196,11 @@ class CatalystDiscoveryService:
     def symbols(self, as_of: datetime | None = None) -> tuple[str, ...]:
         return tuple(dict.fromkeys(seed.symbol for seed in self.snapshot(as_of)))
 
+    def symbols_after_refresh(
+        self, as_of: datetime | None = None
+    ) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(seed.symbol for seed in self.refresh(as_of)))
+
     def _load(self) -> None:
         if self._path is None or not self._path.exists():
             return
@@ -245,6 +286,7 @@ def _ordered(seeds: Iterable[CatalystWatchSeed]) -> list[CatalystWatchSeed]:
 
 
 __all__ = [
+    "CatalystDiscoveryRuntime",
     "CatalystDiscoveryService",
     "CatalystWatchSeed",
     "DiscoveryStory",

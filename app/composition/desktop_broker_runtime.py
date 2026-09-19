@@ -11,6 +11,10 @@ from app.catalysts import (
     build_catalyst_providers,
 )
 from app.catalysts.sec_shadow_parity import SecCatalystShadowEvaluator
+from app.catalysts.discovery import (
+    CatalystDiscoveryRuntime,
+    CatalystDiscoveryService,
+)
 from app.composition.desktop_infrastructure import (
     create_desktop_scanner_infrastructure,
 )
@@ -282,6 +286,34 @@ def create_configured_desktop_broker_driver(
             data_client, configuration,
             sec_shadow_evaluator=sec_shadow_evaluator,
         )
+        discovery_story_sources = tuple(
+            provider
+            for provider in catalyst_providers
+            if callable(getattr(provider, "recent_stories", None))
+        )
+        discovery_symbol_directory = next(
+            (
+                provider
+                for provider in catalyst_providers
+                if callable(getattr(provider, "listed_symbols", None))
+            ),
+            None,
+        )
+        catalyst_discovery_runtime = (
+            CatalystDiscoveryRuntime(
+                CatalystDiscoveryService(
+                    discovery_story_sources,
+                    discovery_symbol_directory.listed_symbols,
+                    path=configuration.execution_database_path.with_name(
+                        "catalyst_watch_seeds.json"
+                    ),
+                    maximum_seeds=25,
+                    clock=clock,
+                )
+            )
+            if discovery_story_sources and discovery_symbol_directory is not None
+            else None
+        )
         reference_provider = WebullScannerReferenceProvider(
             data_client,
             universe_provider,
@@ -412,8 +444,19 @@ def create_configured_desktop_broker_driver(
                 ),
             )
         retained = getattr(market_event_observer, "retained_symbols", None)
-        if callable(retained):
-            scanner_coordinator.set_retained_channels_source(retained)
+        if callable(retained) or catalyst_discovery_runtime is not None:
+            def retained_and_discovered_symbols() -> tuple[str, ...]:
+                managed = tuple(retained()) if callable(retained) else ()
+                discovered = (
+                    catalyst_discovery_runtime.symbols()
+                    if catalyst_discovery_runtime is not None
+                    else ()
+                )
+                return tuple(dict.fromkeys((*managed, *discovered)))
+
+            scanner_coordinator.set_retained_channels_source(
+                retained_and_discovered_symbols
+            )
 
     # Capability probing must not mutate the scanner's live subscription
     # session. Use an independent stream for startup capability checks.

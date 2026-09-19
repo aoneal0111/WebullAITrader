@@ -230,13 +230,21 @@ class SECEdgarCatalystProvider:
             source=self.name,
         )
 
+    def listed_symbols(self) -> tuple[str, ...]:
+        """Return the bounded official SEC ticker directory for discovery."""
+
+        return tuple(sorted(self._ticker_mapping_snapshot()))
+
     def _cik_for_symbol(self, symbol: str) -> int | None:
+        return self._ticker_mapping_snapshot().get(symbol)
+
+    def _ticker_mapping_snapshot(self) -> Mapping[str, int]:
         now = self._monotonic()
         with self._cache_lock:
             cached = self._ticker_cache
             if cached is not None and cached.expires_at > now:
                 _log_cache("ticker_mapping", hit=True)
-                return _mapping_value(cached.value, symbol)
+                return _mapping(cached.value)
         _log_cache("ticker_mapping", hit=False)
         with self._ticker_fetch_lock:
             now = self._monotonic()
@@ -244,7 +252,7 @@ class SECEdgarCatalystProvider:
                 cached = self._ticker_cache
                 if cached is not None and cached.expires_at > now:
                     _log_cache("ticker_mapping", hit=True)
-                    return _mapping_value(cached.value, symbol)
+                    return _mapping(cached.value)
             payload = self._request_json(_TICKER_URL)
             mapping = _ticker_mapping(
                 payload,
@@ -254,7 +262,7 @@ class SECEdgarCatalystProvider:
                 self._ticker_cache = _CacheEntry(
                     mapping, now + self._policy.ticker_cache_seconds
                 )
-            return mapping.get(symbol)
+            return mapping
 
     def _company_submissions(self, cik: int) -> Mapping[str, object]:
         now = self._monotonic()

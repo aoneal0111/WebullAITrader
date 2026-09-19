@@ -1,7 +1,10 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from app.catalysts.discovery import CatalystDiscoveryService
+from app.catalysts.discovery import (
+    CatalystDiscoveryRuntime,
+    CatalystDiscoveryService,
+)
 
 
 NOW = datetime(2026, 9, 19, 8, 50, tzinfo=UTC)
@@ -122,3 +125,32 @@ def test_stale_and_ambiguous_headline_tokens_do_not_seed():
     )
 
     assert service.refresh() == ()
+
+
+def test_runtime_refreshes_once_per_interval_and_preserves_watch_set(tmp_path):
+    source = Source(
+        (
+            Story(
+                "ABCD announces results",
+                NOW - timedelta(minutes=5),
+                "https://example.test/one",
+                "one",
+            ),
+        )
+    )
+    service = CatalystDiscoveryService(
+        (source,),
+        lambda: ("ABCD",),
+        path=tmp_path / "watch-seeds.json",
+        clock=lambda: NOW,
+    )
+    ticks = iter((10.0, 11.0, 400.0))
+    runtime = CatalystDiscoveryRuntime(
+        service,
+        refresh_seconds=300,
+        monotonic=lambda: next(ticks),
+    )
+
+    assert runtime.symbols() == ("ABCD",)
+    assert runtime.symbols() == ("ABCD",)
+    assert runtime.symbols() == ("ABCD",)
