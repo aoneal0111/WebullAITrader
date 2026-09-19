@@ -12,7 +12,9 @@ import app.composition.desktop as desktop_module
 
 
 def test_composed_market_event_ingress_reaches_experiment_journal(monkeypatch, tmp_path):
-    now = datetime.now(UTC).replace(microsecond=0)
+    # A fixed weekday keeps scanner trading-day resolution deterministic.
+    # Using wall-clock "now" makes this composition test fail on weekends.
+    now = datetime(2026, 8, 10, 14, 50, tzinfo=UTC)
     configuration = load_configuration({
         "WEBULL_TRADING_ENVIRONMENT": "PAPER",
         "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_ENABLED": "true",
