@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from typing import Callable
 
 from app.catalysts.sec_shadow_parity import SecCatalystParityStore, SecCatalystShadowEvaluator
 from app.catalysts.sec_symbol_intelligence_adapter import SecSymbolIntelligenceCatalystAdapter
 from app.configuration.models import OperationalConfiguration, TradingEnvironment
+from app.webull.market_data_session import utc_now
 from app.symbol_intelligence.composition import (
     SymbolIntelligenceRepositoryComposition,
     create_symbol_intelligence_repository_composition,
@@ -63,7 +64,7 @@ def create_sec_shadow_runtime(
         if repository_composition is None:
             return SecShadowRuntimeComposition(SecShadowRuntimeState.NO_SYMBOL_INTELLIGENCE)
 
-    effective_clock = clock or (lambda: datetime.now(UTC))
+    effective_clock = clock or utc_now
     try:
         adapter = adapter_factory(
             repository_composition.repository,
