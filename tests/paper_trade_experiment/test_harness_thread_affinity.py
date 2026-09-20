@@ -291,7 +291,10 @@ def test_real_desktop_callback_worker_thread_persists_assignment(tmp_path: Path,
                 sidecar._service.observe, point(), account=account(),
             ).result()
         assert candidate is not None
-        assert signal is not None
+        # Empty setup/readiness evidence is intentionally ineligible.  This
+        # test proves the assignment crosses the real worker-thread boundary;
+        # it must not require or authorize an executable treatment signal.
+        assert signal is None
         sidecar._writer.flush()
         journal = sidecar._paper_entry_intelligence._journal
         assert journal is not None
