@@ -102,6 +102,12 @@ def test_daily_review_exports_authoritative_orders_account_and_seeds(tmp_path):
         # same-day restart cannot erase earlier review evidence.
         paper_order_book=OrderBook(()),
         paper_trading_commands=SimpleNamespace(durable_store=durable_store),
+        paper_entry_intelligence=SimpleNamespace(
+            _journal=SimpleNamespace(status=lambda: {
+                "framework_version": "ATLAS_PAPER_EXPERIMENTS_V1",
+                "experiments": [],
+            })
+        ),
         runtime_projections=projections,
     )
 
@@ -128,6 +134,10 @@ def test_daily_review_exports_authoritative_orders_account_and_seeds(tmp_path):
     assert "account_id" not in payload["account"]
     assert "unexpected" not in payload["catalyst_watch_seeds"][0]
     assert payload["positions"][0]["symbol"] == "XYZ"
+    assert payload["shadow_experiments"] == {
+        "framework_version": "ATLAS_PAPER_EXPERIMENTS_V1",
+        "experiments": [],
+    }
     assert payload["performance_attribution"][0]["status"] == "OPEN"
     assert payload["performance_attribution"][0]["entry_quantity"] == "5"
 
