@@ -119,7 +119,7 @@ def test_daily_review_exports_authoritative_orders_account_and_seeds(tmp_path):
         "active_position_count": 1,
         "catalyst_watch_seed_count": 1,
         "attributed_lifecycle_count": 1,
-        "attributed_net_realized_pnl": "0.00",
+        "attributed_net_realized_pnl": "0",
     }
     assert [item["order_id"] for item in payload["orders"]] == ["PAPER-ONE"]
     assert payload["orders"][0]["strategy_lifecycle_id"] == "WARRIOR|XYZ|episode"
