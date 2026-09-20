@@ -149,6 +149,16 @@ def test_outcomes_are_idempotent_and_unfilled_assignment_remains_visible(tmp_pat
         assert not journal.record_outcome(assignment.assignment_id, {"state": "REJECTED", "R": 0}, outcome_id="event-1")
         report = journal.status()["experiments"][0]
         assert report["progress"][CONTROL_ARM] == {"assigned": 1, "completed": 1}
+        assert report["metrics"][CONTROL_ARM]["r_mean"] == 0.0
+        assert journal.record_outcome(
+            assignment.assignment_id,
+            {"pnl": "12.50", "MFE": "1.75", "MAE": "-0.25"},
+            outcome_id="event-2",
+        )
+        metrics = journal.status()["experiments"][0]["metrics"][CONTROL_ARM]
+        assert metrics["pnl_mean"] == 12.5
+        assert metrics["mfe_mean"] == 1.75
+        assert metrics["mae_mean"] == -0.25
     finally:
         journal.close()
 
