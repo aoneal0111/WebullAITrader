@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from uuid import uuid4
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -26,6 +27,16 @@ PAPER_MODES = frozenset({"PAPER", "TEST"})
 
 def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _finite_float(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        numeric = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    return float(numeric) if numeric.is_finite() else None
 
 
 def _now() -> str:
@@ -496,9 +507,9 @@ class PaperExperimentJournal:
                         except (TypeError, ValueError):
                             continue
                         for key in ("PnL", "pnl", "R", "r", "MFE", "mfe", "MAE", "mae"):
-                            value = outcome.get(key)
-                            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                                numeric.setdefault(key.lower(), []).append(float(value))
+                            value = _finite_float(outcome.get(key))
+                            if value is not None:
+                                numeric.setdefault(key.lower(), []).append(value)
                     metrics: dict[str, Any] = {"outcomes": len(outcome_rows)}
                     for key, values in numeric.items():
                         metrics[key + "_count"] = len(values)
