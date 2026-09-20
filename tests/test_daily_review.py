@@ -5,7 +5,7 @@ from decimal import Decimal
 import json
 from types import SimpleNamespace
 
-from app.daily_review import DailyReviewExporter
+from app.daily_review import DailyReviewExporter, _lifecycle_attribution
 
 
 NOW = datetime(2026, 9, 19, 20, 0, tzinfo=UTC)
@@ -118,6 +118,8 @@ def test_daily_review_exports_authoritative_orders_account_and_seeds(tmp_path):
         "filled_sell_count": 0,
         "active_position_count": 1,
         "catalyst_watch_seed_count": 1,
+        "attributed_lifecycle_count": 1,
+        "attributed_net_realized_pnl": "0.00",
     }
     assert [item["order_id"] for item in payload["orders"]] == ["PAPER-ONE"]
     assert payload["orders"][0]["strategy_lifecycle_id"] == "WARRIOR|XYZ|episode"
@@ -126,6 +128,46 @@ def test_daily_review_exports_authoritative_orders_account_and_seeds(tmp_path):
     assert "account_id" not in payload["account"]
     assert "unexpected" not in payload["catalyst_watch_seeds"][0]
     assert payload["positions"][0]["symbol"] == "XYZ"
+    assert payload["performance_attribution"][0]["status"] == "OPEN"
+    assert payload["performance_attribution"][0]["entry_quantity"] == "5"
+
+
+def test_lifecycle_attribution_calculates_realized_outcome():
+    attribution = _lifecycle_attribution([
+        {
+            "order_id": "BUY-1", "symbol": "XYZ", "side": "BUY",
+            "quantity": "10", "price": "10", "commission": "0.25",
+            "timestamp": (NOW - timedelta(minutes=10)).isoformat(),
+            "execution_reason": "ENTRY",
+            "strategy_lifecycle_id": "WARRIOR|XYZ|episode",
+        },
+        {
+            "order_id": "SELL-1", "symbol": "XYZ", "side": "SELL",
+            "quantity": "4", "price": "12", "commission": "0.25",
+            "timestamp": NOW.isoformat(),
+            "execution_reason": "FIRST_TARGET",
+            "strategy_lifecycle_id": "WARRIOR|XYZ|episode",
+        },
+    ])
+
+    assert attribution == [{
+        "strategy_lifecycle_id": "WARRIOR|XYZ|episode",
+        "symbol": "XYZ",
+        "status": "OPEN",
+        "entry_quantity": "10",
+        "exit_quantity": "4",
+        "remaining_quantity": "6",
+        "matched_quantity": "4",
+        "average_entry_price": "10",
+        "average_exit_price": "12",
+        "gross_realized_pnl": "8",
+        "commissions": "0.50",
+        "net_realized_pnl": "7.50",
+        "holding_seconds": 600,
+        "first_entry_at": (NOW - timedelta(minutes=10)).isoformat(),
+        "last_exit_at": NOW.isoformat(),
+        "exit_reasons": ["FIRST_TARGET"],
+    }]
 
 
 def test_daily_review_prunes_only_expired_review_files(tmp_path):
