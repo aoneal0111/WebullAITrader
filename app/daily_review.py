@@ -97,6 +97,7 @@ class DailyReviewExporter:
         )
         seeds = _load_catalyst_seeds(self._catalyst_watch_path)
         attribution = _lifecycle_attribution(fills)
+        experiment_status = _experiment_status(composition)
         return {
             "schema_version": 2,
             "generated_at": generated_at.isoformat(),
@@ -130,6 +131,7 @@ class DailyReviewExporter:
             "orders": orders,
             "fills": fills,
             "performance_attribution": attribution,
+            "shadow_experiments": experiment_status,
             "catalyst_watch_seeds": seeds,
             "privacy": {
                 "credentials_included": False,
@@ -137,6 +139,19 @@ class DailyReviewExporter:
                 "raw_provider_payloads_included": False,
             },
         }
+
+
+def _experiment_status(composition: object) -> dict[str, Any] | None:
+    policy = getattr(composition, "paper_entry_intelligence", None)
+    journal = getattr(policy, "_journal", None)
+    status = getattr(journal, "status", None)
+    if not callable(status):
+        return None
+    try:
+        value = status()
+    except Exception:
+        return None
+    return _json_value(value) if isinstance(value, dict) else None
 
 
 def _authoritative_orders(composition: object) -> tuple[object, ...]:
