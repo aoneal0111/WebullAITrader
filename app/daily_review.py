@@ -96,8 +96,9 @@ class DailyReviewExporter:
             )
         )
         seeds = _load_catalyst_seeds(self._catalyst_watch_path)
+        attribution = _lifecycle_attribution(fills)
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "generated_at": generated_at.isoformat(),
             "trading_date": trading_date.isoformat(),
             "trading_timezone": str(EASTERN),
@@ -115,11 +116,20 @@ class DailyReviewExporter:
                     [item for item in positions if _nonzero(item.get("quantity"))]
                 ),
                 "catalyst_watch_seed_count": len(seeds),
+                "attributed_lifecycle_count": len(attribution),
+                "attributed_net_realized_pnl": _json_value(sum(
+                    (
+                        Decimal(item["net_realized_pnl"])
+                        for item in attribution
+                    ),
+                    Decimal("0"),
+                )),
             },
             "account": account,
             "positions": positions,
             "orders": orders,
             "fills": fills,
+            "performance_attribution": attribution,
             "catalyst_watch_seeds": seeds,
             "privacy": {
                 "credentials_included": False,
@@ -202,6 +212,124 @@ def _order(order: object) -> dict[str, Any]:
         for fill in getattr(order, "fills", ())
     ]
     return values
+
+
+def _lifecycle_attribution(
+    fills: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for fill in fills:
+        lifecycle = str(
+            fill.get("strategy_lifecycle_id")
+            or f"UNATTRIBUTED:{fill.get('order_id', '')}"
+        )
+        symbol = str(fill.get("symbol") or "").strip().upper()
+        grouped.setdefault((lifecycle, symbol), []).append(fill)
+
+    results: list[dict[str, Any]] = []
+    for (lifecycle, symbol), lifecycle_fills in sorted(grouped.items()):
+        buys = [fill for fill in lifecycle_fills if fill.get("side") == "BUY"]
+        sells = [fill for fill in lifecycle_fills if fill.get("side") == "SELL"]
+        buy_quantity = sum((_decimal(fill.get("quantity")) for fill in buys), Decimal("0"))
+        sell_quantity = sum((_decimal(fill.get("quantity")) for fill in sells), Decimal("0"))
+        buy_notional = sum((
+            _decimal(fill.get("quantity")) * _decimal(fill.get("price"))
+            for fill in buys
+        ), Decimal("0"))
+        sell_notional = sum((
+            _decimal(fill.get("quantity")) * _decimal(fill.get("price"))
+            for fill in sells
+        ), Decimal("0"))
+        average_entry = (
+            None if buy_quantity == 0 else buy_notional / buy_quantity
+        )
+        average_exit = (
+            None if sell_quantity == 0 else sell_notional / sell_quantity
+        )
+        matched_quantity = min(buy_quantity, sell_quantity)
+        gross_realized = (
+            Decimal("0")
+            if average_entry is None or average_exit is None
+            else matched_quantity * (average_exit - average_entry)
+        )
+        commissions = sum((
+            _decimal(fill.get("commission")) for fill in lifecycle_fills
+        ), Decimal("0"))
+        first_entry = _first_timestamp(buys)
+        last_exit = _last_timestamp(sells)
+        holding_seconds = (
+            None
+            if first_entry is None or last_exit is None
+            else max(0, int((last_exit - first_entry).total_seconds()))
+        )
+        remaining = buy_quantity - sell_quantity
+        status = (
+            "CLOSED" if buy_quantity > 0 and remaining == 0
+            else "OPEN" if buy_quantity > 0 and remaining > 0
+            else "OVER_EXITED" if remaining < 0
+            else "EXIT_ONLY" if sell_quantity > 0
+            else "NO_FILLS"
+        )
+        results.append({
+            "strategy_lifecycle_id": lifecycle,
+            "symbol": symbol,
+            "status": status,
+            "entry_quantity": _json_value(buy_quantity),
+            "exit_quantity": _json_value(sell_quantity),
+            "remaining_quantity": _json_value(remaining),
+            "matched_quantity": _json_value(matched_quantity),
+            "average_entry_price": _json_value(average_entry),
+            "average_exit_price": _json_value(average_exit),
+            "gross_realized_pnl": _json_value(gross_realized),
+            "commissions": _json_value(commissions),
+            "net_realized_pnl": _json_value(gross_realized - commissions),
+            "holding_seconds": holding_seconds,
+            "first_entry_at": _json_value(first_entry),
+            "last_exit_at": _json_value(last_exit),
+            "exit_reasons": sorted({
+                str(fill["execution_reason"])
+                for fill in sells
+                if fill.get("execution_reason")
+            }),
+        })
+    return results
+
+
+def _decimal(value: object) -> Decimal:
+    if value is None:
+        return Decimal("0")
+    try:
+        result = Decimal(str(value))
+    except Exception:
+        return Decimal("0")
+    return result if result.is_finite() else Decimal("0")
+
+
+def _fill_timestamp(fill: dict[str, Any]) -> datetime | None:
+    value = fill.get("timestamp")
+    if isinstance(value, datetime):
+        timestamp = value
+    elif isinstance(value, str):
+        try:
+            timestamp = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    try:
+        return _aware_utc(timestamp)
+    except ValueError:
+        return None
+
+
+def _first_timestamp(fills: list[dict[str, Any]]) -> datetime | None:
+    values = [value for fill in fills if (value := _fill_timestamp(fill)) is not None]
+    return min(values) if values else None
+
+
+def _last_timestamp(fills: list[dict[str, Any]]) -> datetime | None:
+    values = [value for fill in fills if (value := _fill_timestamp(fill)) is not None]
+    return max(values) if values else None
 
 
 def _snapshot_items(snapshot: object, attribute: str) -> list[dict[str, Any]]:
