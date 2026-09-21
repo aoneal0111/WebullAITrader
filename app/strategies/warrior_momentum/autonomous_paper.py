@@ -1643,11 +1643,24 @@ class AutonomousPaperExecutionBridge:
         self._exit_keys.pop((identity, "STOP"), None)
         self._reconcile_terminal_exits()
         target = self._place_exit(normalized, quantity, price, reason_key, identity)
+        replacement_stop_price = protective_order.request.stop_price
+        if reason_key == "FIRST_TARGET":
+            # Once price has reached the first planned reward milestone, the
+            # unreserved remainder must no longer retain the original-loss
+            # stop.  Use authoritative fill history rather than the planned
+            # trigger so limit-price improvement is respected.
+            _filled, _consumed, average_entry = self._lifecycle_fill_state(
+                identity, Decimal(replacement_stop_price),
+            )
+            if average_entry is not None:
+                replacement_stop_price = max(
+                    Decimal(replacement_stop_price), average_entry,
+                )
         if not target.protection_active:
             self._place_exit(
                 normalized,
                 int(self.position_quantity_source(normalized)),
-                protective_order.request.stop_price,
+                replacement_stop_price,
                 "STOP",
                 identity,
             )
@@ -1658,7 +1671,7 @@ class AutonomousPaperExecutionBridge:
         )
         if remainder:
             protection = self._place_exit(
-                normalized, remainder, protective_order.request.stop_price,
+                normalized, remainder, replacement_stop_price,
                 "STOP", identity,
             )
             if not protection.protection_active:
@@ -1675,7 +1688,7 @@ class AutonomousPaperExecutionBridge:
                 restored = self._place_exit(
                     normalized,
                     int(self.position_quantity_source(normalized)),
-                    protective_order.request.stop_price,
+                    replacement_stop_price,
                     "STOP",
                     identity,
                 )

@@ -651,6 +651,10 @@ def test_target_coordinates_with_protection_and_authoritative_partial_remainder(
                  if order.request.side.value == "SELL"]
         assert {order.request.order_type.value for order in sells} == {"LIMIT", "STOP"}
         assert sorted(int(order.quantity) for order in sells) == [379, 380]
+        remainder_stop = next(
+            order for order in sells if order.request.order_type.value == "STOP"
+        )
+        assert remainder_stop.request.stop_price == Decimal("10")
 
         full_quote(2, "10.50", "10.51")
         position["PMI"] = Decimal("380")

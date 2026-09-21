@@ -943,6 +943,8 @@ def test_bridge_rebalances_correlated_stop_across_targets_and_runner(tmp_path: P
         assert first_target.request.execution_reason == "FIRST_TARGET"
         assert int(first_target.remaining_quantity) == first_quantity
         assert int(first_stop.remaining_quantity) == shares - first_quantity
+        assert first_stop.request.stop_price == signal.entry_trigger
+        assert state.stop == signal.entry_trigger
 
         paper_quote(2, signal.target_levels[0], signal.target_levels[0] + D("0.01"))
         position["XYZ"] = Decimal(shares - first_quantity)
@@ -2028,12 +2030,66 @@ def test_pending_first_target_retry_preserves_partial_quantity(
         retry_bar = MinuteBar(
             "XYZ", signal.timestamp + timedelta(minutes=2),
             signal.target_levels[0], signal.target_levels[0] + D("0.02"),
-            signal.entry_trigger, signal.target_levels[0], D("100"),
+            signal.target_levels[0], signal.target_levels[0], D("100"),
         )
         service.observe_market_bar(
             "XYZ", retry_bar, retry_bar.timestamp + timedelta(minutes=1),
         )
         assert submissions[-1] == ("FIRST_TARGET", first_quantity)
         assert submissions[-1][1] != int(position["XYZ"])
+    finally:
+        writer.close()
+
+
+def test_unfilled_first_target_reversal_protects_full_position_at_break_even(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "unfilled-target-reversal.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": Decimal("100")}
+    submissions: list[tuple[str, int, Decimal]] = []
+
+    def submit_exit(symbol, quantity, price, reason, lifecycle):
+        submissions.append((reason, quantity, price))
+        return PaperExitSubmissionDecision(
+            PaperExitSubmissionState.SUBMITTED, symbol, lifecycle, reason,
+            order_id=f"order-{len(submissions)}",
+            activation_timestamp=T0 + timedelta(minutes=1),
+        )
+
+    service = WarriorForwardCaptureService(
+        store, writer,
+        paper_entry_submitter=lambda *_args: True,
+        paper_exit_submitter=submit_exit,
+        paper_position_quantity_source=lambda symbol: position.get(
+            symbol, Decimal("0"),
+        ),
+    )
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        target_bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=1),
+            signal.entry_trigger, signal.target_levels[0] + D("0.01"),
+            signal.entry_trigger, signal.target_levels[0], D("100"),
+        )
+        service.observe_market_bar(
+            "XYZ", target_bar, target_bar.timestamp + timedelta(minutes=1),
+        )
+        state = service._paper["XYZ"]
+        assert state.first_taken is False
+        assert state.exit_reason == "FIRST_TARGET"
+        assert state.stop == state.entry_price
+
+        reversal = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=2),
+            signal.target_levels[0], signal.target_levels[0],
+            signal.entry_trigger - D("0.01"), signal.entry_trigger,
+            D("100"),
+        )
+        service.observe_market_bar(
+            "XYZ", reversal, reversal.timestamp + timedelta(minutes=1),
+        )
+        assert submissions[-1] == ("STOP", 100, signal.entry_trigger)
     finally:
         writer.close()

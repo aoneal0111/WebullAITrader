@@ -2531,6 +2531,17 @@ class WarriorForwardCaptureService:
                 state.stop = max(state.stop, price)
                 state.profit_defense_stop_tightened = True
                 state.profit_defense_last_action = reason
+            elif (
+                reason == "FIRST_TARGET"
+                and state.peak_r is not None
+                and state.peak_r
+                >= self.config.trade_management.move_stop_to_breakeven_after_r
+            ):
+                # A working passive target is not a realized partial.  Still
+                # retain the configured break-even floor after the market has
+                # proved +1R so a subsequent STOP replacement cannot restore
+                # the original-loss stop while cancelling that target.
+                state.stop = max(state.stop, state.entry_price)
             elif reason == "PROFIT_DEFENSE_RUNNER_EXIT":
                 state.profit_defense_runner_exit = True
                 state.profit_defense_last_action = reason
