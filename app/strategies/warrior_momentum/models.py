@@ -230,6 +230,7 @@ class MomentumEntrySignal:
     structural_episode_id: str | None = None
     structural_anchor: str | None = None
     structural_entry_trigger: Decimal | None = None
+    structural_stop_price: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.strategy_id != STRATEGY_ID:

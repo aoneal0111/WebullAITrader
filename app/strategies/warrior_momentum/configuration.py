@@ -151,10 +151,21 @@ class TradeManagementConfig:
     runner_percent: Decimal = Decimal("0.25")
     move_stop_to_breakeven_after_r: Decimal = Decimal("1")
     profit_defense_enabled: bool = True
-    profit_defense_activation_r: Decimal = Decimal("1.25")
-    profit_defense_tighten_giveback_r: Decimal = Decimal("0.30")
-    profit_defense_exit_activation_r: Decimal = Decimal("2.0")
-    profit_defense_exit_giveback_r: Decimal = Decimal("0.50")
+    profit_defense_activation_r: Decimal = Decimal("1.50")
+    profit_defense_tighten_giveback_r: Decimal = Decimal("0.45")
+    profit_defense_exit_activation_r: Decimal = Decimal("2.50")
+    profit_defense_exit_giveback_r: Decimal = Decimal("0.75")
+    adaptive_exit_enabled: bool = True
+    initial_stop_volatility_multiplier: Decimal = Decimal("1.50")
+    initial_stop_spread_multiplier: Decimal = Decimal("2.50")
+    initial_stop_max_widening_r: Decimal = Decimal("2.00")
+    exit_range_lookback: int = 5
+    exit_volatility_baseline_r: Decimal = Decimal("0.50")
+    exit_volatility_allowance_max_r: Decimal = Decimal("0.35")
+    exit_supportive_allowance_r: Decimal = Decimal("0.20")
+    exit_adverse_reduction_r: Decimal = Decimal("0.10")
+    exit_depth_imbalance_threshold: Decimal = Decimal("0.15")
+    exit_minimum_giveback_r: Decimal = Decimal("0.25")
     max_add_on_legs: int = 1
 
     def __post_init__(self) -> None:
@@ -165,9 +176,22 @@ class TradeManagementConfig:
             self.profit_defense_tighten_giveback_r,
             self.profit_defense_exit_activation_r,
             self.profit_defense_exit_giveback_r,
+            self.exit_volatility_baseline_r,
+            self.exit_volatility_allowance_max_r,
+            self.exit_supportive_allowance_r,
+            self.exit_adverse_reduction_r,
+            self.exit_depth_imbalance_threshold,
+            self.exit_minimum_giveback_r,
         ):
             if value < 0:
                 raise ValueError("profit-defense thresholds must be non-negative")
+        if (
+            self.initial_stop_volatility_multiplier <= 0
+            or self.initial_stop_spread_multiplier <= 0
+            or self.initial_stop_max_widening_r < 1
+            or self.exit_range_lookback <= 0
+        ):
+            raise ValueError("adaptive exit bounds must be positive")
         if self.max_add_on_legs != 1:
             raise ValueError("Phase 1 supports exactly one add-on leg")
 
