@@ -46,10 +46,17 @@ class OrderFlowPollingConfig:
     footprint_fresh_seconds: Decimal = Decimal("45")
     capital_flow_fresh_seconds: Decimal = Decimal("240")
     maximum_backoff_seconds: Decimal = Decimal("300")
+    circuit_failure_threshold: int = 3
+    circuit_probe_seconds: Decimal = Decimal("300")
     diagnostics_capacity: int = 128
 
     def __post_init__(self) -> None:
-        if self.maximum_active_symbols <= 0 or self.diagnostics_capacity <= 0:
+        if (
+            self.maximum_active_symbols <= 0
+            or self.diagnostics_capacity <= 0
+            or self.circuit_failure_threshold <= 0
+            or self.circuit_probe_seconds <= 0
+        ):
             raise ValueError("polling bounds must be positive")
 
 
@@ -114,6 +121,10 @@ class OrderFlowPollingService:
         self._thread: Thread | None = None
         self._running = False
         self._dropped_symbols = 0
+        self._endpoint_failures = {"FOOTPRINT": 0, "CAPITAL_FLOW": 0}
+        self._circuit_open_until: dict[str, datetime | None] = {
+            "FOOTPRINT": None, "CAPITAL_FLOW": None,
+        }
 
     @property
     def running(self) -> bool:
@@ -251,6 +262,8 @@ class OrderFlowPollingService:
     def _refresh(
         self, symbol: str, priority: OrderFlowPriority, endpoint: str, now: datetime,
     ) -> None:
+        if self._defer_for_open_circuit(symbol, priority, endpoint, now):
+            return
         started = perf_counter()
         success = False
         failure: str | None = None
@@ -280,6 +293,9 @@ class OrderFlowPollingService:
                 None, 0, next_refresh,
             )
             self._store_entry(symbol, endpoint, entry, priority)
+            with self._lock:
+                self._endpoint_failures[endpoint] = 0
+                self._circuit_open_until[endpoint] = None
             success = True
         except Exception as exc:
             failure = type(exc).__name__
@@ -375,9 +391,21 @@ class OrderFlowPollingService:
             if "CAPABILITY_UNAVAILABLE" in error_text:
                 event = "ORDER_FLOW_CAPABILITY_UNAVAILABLE"
                 freshness = OrderFlowFreshness.UNAVAILABLE
+                self._open_circuit(endpoint, now)
             else:
                 event = "ORDER_FLOW_RATE_LIMITED" if "429" in error_text else "ORDER_FLOW_FETCH_FAILED"
                 freshness = OrderFlowFreshness.ERROR
+                self._endpoint_failures[endpoint] += 1
+                if (
+                    self._endpoint_failures[endpoint]
+                    >= self._config.circuit_failure_threshold
+                ):
+                    self._open_circuit(endpoint, now)
+                    next_refresh = self._circuit_open_until[endpoint] or next_refresh
+                    if endpoint == "FOOTPRINT":
+                        tracked.footprint_due = next_refresh
+                    else:
+                        tracked.capital_due = next_refresh
             entry = OrderFlowCacheEntry(
                 symbol, endpoint, now, None, freshness,
                 type(error).__name__, count, next_refresh,
@@ -388,6 +416,54 @@ class OrderFlowPollingService:
                 event, symbol, endpoint, priority, now, freshness,
                 type(error).__name__,
             ))
+
+    def _open_circuit(self, endpoint: str, now: datetime) -> None:
+        probe_at = now + timedelta(
+            seconds=float(self._config.circuit_probe_seconds)
+        )
+        current = self._circuit_open_until[endpoint]
+        if current is None or probe_at > current:
+            self._circuit_open_until[endpoint] = probe_at
+
+    def _defer_for_open_circuit(
+        self,
+        symbol: str,
+        priority: OrderFlowPriority,
+        endpoint: str,
+        now: datetime,
+    ) -> bool:
+        with self._lock:
+            probe_at = self._circuit_open_until[endpoint]
+            if probe_at is None or now >= probe_at:
+                return False
+            tracked = self._tracked.get(symbol)
+            if tracked is None:
+                return True
+            if endpoint == "FOOTPRINT":
+                tracked.footprint_due = probe_at
+            else:
+                tracked.capital_due = probe_at
+            target = (
+                self._footprint if endpoint == "FOOTPRINT"
+                else self._capital_flow
+            )
+            target[symbol] = OrderFlowCacheEntry(
+                symbol, endpoint, None, None,
+                OrderFlowFreshness.UNAVAILABLE,
+                "ORDER_FLOW_CIRCUIT_OPEN",
+                tracked.failure_counts[endpoint], probe_at,
+            )
+            if not any(
+                item.event == "ORDER_FLOW_CIRCUIT_OPEN"
+                and item.endpoint == endpoint
+                for item in self._diagnostics
+            ):
+                self._diagnostics.append(OrderFlowDiagnostic(
+                    "ORDER_FLOW_CIRCUIT_OPEN", symbol, endpoint, priority,
+                    now, OrderFlowFreshness.UNAVAILABLE,
+                    "provider temporarily disabled",
+                ))
+            return True
 
 
 __all__ = [

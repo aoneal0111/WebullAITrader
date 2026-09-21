@@ -175,6 +175,7 @@ class PerformanceSnapshot:
     research_events_enqueued: int = 0
     research_events_completed: int = 0
     research_events_rejected: int = 0
+    research_events_coalesced: int = 0
     research_failures: int = 0
     processing_delayed_events: int = 0
     report_refresh_failures: int = 0
@@ -240,6 +241,7 @@ class PerformanceDiagnostics:
             "research_events_enqueued": 0,
             "research_events_completed": 0,
             "research_events_rejected": 0,
+            "research_events_coalesced": 0,
             "research_failures": 0,
             "processing_delayed_events": 0,
             "report_refresh_failures": 0,

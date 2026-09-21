@@ -162,3 +162,29 @@ def test_missing_provider_capability_is_explicit_and_isolated():
         item.event == "ORDER_FLOW_CAPABILITY_UNAVAILABLE"
         for item in polling.diagnostics
     ) == 2
+
+
+def test_repeated_endpoint_failures_open_shared_circuit_and_probe_later():
+    clock, provider = Clock(), Provider()
+    provider.footprint_fail.update({"A", "B", "C", "D"})
+    polling = service(
+        clock, provider,
+        circuit_failure_threshold=3,
+        circuit_probe_seconds=D("300"),
+    )
+    for symbol in ("A", "B", "C", "D"):
+        assert polling.update_symbol(symbol, OrderFlowPriority.HIGH)
+
+    polling.poll_once()
+    assert provider.footprint_calls == ["A", "B", "C"]
+    assert polling.cache_entry("D", "FOOTPRINT").error == "ORDER_FLOW_CIRCUIT_OPEN"
+    assert any(
+        item.event == "ORDER_FLOW_CIRCUIT_OPEN"
+        for item in polling.diagnostics
+    )
+
+    provider.footprint_fail.clear()
+    clock.value += timedelta(seconds=301)
+    polling.poll_once()
+    assert provider.footprint_calls == ["A", "B", "C", "A", "B", "C", "D"]
+    assert polling.cache_entry("A", "FOOTPRINT").freshness is OrderFlowFreshness.FRESH

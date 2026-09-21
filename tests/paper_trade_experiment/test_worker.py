@@ -252,3 +252,44 @@ def test_stop_drains_fifo_and_preserves_reference_labels(tmp_path) -> None:
         if key != "logical_candidate_identity"
     } == expected[0].features
     assert worker.metrics().completed == len(sequence)
+
+
+def test_price_backlog_keeps_only_latest_pending_observation_per_symbol(
+    tmp_path,
+) -> None:
+    entered = Event()
+    release = Event()
+    observed = []
+
+    class SlowPriceJournal:
+        def __init__(self, _path):
+            pass
+
+        def observe_price(self, symbol, timestamp, price):
+            observed.append((symbol, timestamp, price))
+            entered.set()
+            if len(observed) == 1:
+                assert release.wait(2)
+
+    worker = PaperTradeExperimentWorker(
+        tmp_path / "latest-only.sqlite3",
+        execution_environment="TEST",
+        capacity=8,
+        journal_factory=SlowPriceJournal,
+    )
+    assert worker.observe_price("VEEE", T0, Decimal("10"))
+    assert entered.wait(2)
+    for index in range(1, 101):
+        assert worker.observe_price(
+            "VEEE",
+            T0 + timedelta(milliseconds=index),
+            Decimal("10") + Decimal(index) / Decimal("100"),
+        )
+
+    metrics = worker.metrics()
+    assert metrics.queue_depth == 0
+    assert metrics.coalesced == 100
+    release.set()
+    assert worker.close(timeout_seconds=2)
+    assert len(observed) == 2
+    assert observed[-1][2] == Decimal("11")

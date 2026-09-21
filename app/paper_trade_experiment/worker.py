@@ -132,6 +132,12 @@ class PaperTradeExperimentWorker:
         self._decision_state_signatures: dict[str, str] = {}
         self._decision_states: dict[str, object] = {}
         self._pending_ids: set[str] = set()
+        # Price observations are retrospective learning inputs, not execution
+        # authority. Keep at most one queued/in-flight observation plus the
+        # newest replacement per symbol so a slow journal cannot accumulate
+        # minutes of obsolete ticks.
+        self._pending_price_symbols_by_id: dict[str, str] = {}
+        self._coalesced_price_work: dict[str, ResearchDecisionWork] = {}
         self._thread = Thread(
             target=self._run,
             name="atlas-experiment-research",
@@ -262,6 +268,13 @@ class PaperTradeExperimentWorker:
                 enqueued_at=now,
                 prepared=prepared,
             )
+            if normalized in self._pending_price_symbols_by_id.values():
+                self._coalesced_price_work[normalized] = work
+                self._coalesced += 1
+                self._observations_accepted += 1
+                self._last_accepted_observation[normalized] = observation
+                performance_diagnostics.increment("research_events_coalesced")
+                return True
             try:
                 self._queue.put_nowait(work)
             except Full:
@@ -271,6 +284,7 @@ class PaperTradeExperimentWorker:
             self._observations_accepted += 1
             self._last_accepted_observation[normalized] = observation
             self._pending_ids.add(prepared.work_id)
+            self._pending_price_symbols_by_id[prepared.work_id] = normalized
             self._record_pressure_recovery()
             depth = self._queue.qsize()
             self._queue_high_water = max(self._queue_high_water, depth)
@@ -467,6 +481,10 @@ class PaperTradeExperimentWorker:
                         self._oldest_outstanding_at = (
                             durable[0].enqueued_at if durable else None
                         )
+                    for item in (
+                        processing if supports_durable else (prepared_work,)
+                    ):
+                        self._complete_price_work(item.work_id)
                 performance_diagnostics.increment(
                     "research_events_completed", len(lag_values)
                 )
@@ -517,6 +535,34 @@ class PaperTradeExperimentWorker:
             except Empty:
                 break
         return batch
+
+    def _complete_price_work(self, work_id: str) -> None:
+        """Release one price slot and admit only its newest replacement."""
+
+        with self._lock:
+            symbol = self._pending_price_symbols_by_id.pop(work_id, None)
+            if symbol is None:
+                return
+            replacement = self._coalesced_price_work.pop(symbol, None)
+            if replacement is None:
+                return
+            try:
+                self._queue.put_nowait(replacement)
+            except Full:
+                # The consumer owns this call, so a full queue means newer
+                # authoritative decision work won admission first. Preserve
+                # explicit pressure accounting instead of blocking it.
+                self._record_pressure_rejection()
+                return
+            self._enqueued += 1
+            self._pending_ids.add(replacement.prepared.work_id)
+            self._pending_price_symbols_by_id[
+                replacement.prepared.work_id
+            ] = symbol
+            depth = self._queue.qsize()
+            self._queue_high_water = max(self._queue_high_water, depth)
+            performance_diagnostics.increment("research_events_enqueued")
+            performance_diagnostics.set_research_queue_depth(depth)
 
     def _checkpoint_pending(
         self, journal: PaperTradeExperimentJournal | None,
