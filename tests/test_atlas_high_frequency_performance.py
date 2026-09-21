@@ -1016,8 +1016,8 @@ def test_scanner_freshness_preserves_independent_last_and_quote_timestamps() -> 
         assert reevaluated_metadata["scanner_quote_freshness"] == "STALE"
 
 
-def test_scanner_publisher_retains_stale_candidate_for_operator_context() -> None:
-    """Expired market data remains visible but cannot be labelled LIVE."""
+def test_scanner_publisher_removes_stale_candidate_from_bounded_projection() -> None:
+    """Expired market data cannot displace live candidates in the top-N UI."""
     events = []
     sequences = count(1)
 
@@ -1060,7 +1060,7 @@ def test_scanner_publisher_retains_stale_candidate_for_operator_context() -> Non
         now=NOW + timedelta(seconds=6),
     )
 
-    assert "XYZ" in publisher._displayed_symbols
+    assert "XYZ" not in publisher._displayed_symbols
     assert publisher.last_stale_symbols == ("XYZ",)
 
     removals = [
@@ -1071,4 +1071,4 @@ def test_scanner_publisher_retains_stale_candidate_for_operator_context() -> Non
         and event.watchlist.subscribed is False
     ]
 
-    assert removals == []
+    assert len(removals) == 1

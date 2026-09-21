@@ -154,8 +154,25 @@ class ScannerSnapshotPublisher:
                     decision.symbol,
                 ),
             )
+        )
+        # A fresh evaluation timestamp does not make old market evidence
+        # executable.  Do not let candidates with a stale trade or quote
+        # occupy the bounded scanner projection; doing so displaced live
+        # opportunities while repeatedly rendering rows that could never
+        # pass the execution freshness gate.
+        stale_symbols = tuple(
+            candidate.symbol
+            for candidate in complete_ranked
+            if _market_data_is_stale(
+                candidate, now=now, stale_after=self._stale_after,
+                fallback=snapshot.timestamp,
+            )
+        )
+        stale_symbol_set = set(stale_symbols)
+        display_candidates = tuple(
+            candidate for candidate in complete_ranked
+            if candidate.symbol not in stale_symbol_set
         )[:_MAX_DISPLAYED_DECISIONS]
-        display_candidates = complete_ranked
         self._record_population_diagnostics(
             snapshot,
             decisions,
@@ -183,21 +200,13 @@ class ScannerSnapshotPublisher:
             if snapshot.session != "UNKNOWN"
             else scanner_session(now).value
         )
-        stale_symbols = tuple(
-            candidate.symbol
-            for candidate in display_candidates
-            if _market_data_is_stale(
-                candidate, now=now, stale_after=self._stale_after,
-                fallback=snapshot.timestamp,
-            )
-        )
         self._last_stale_symbols = stale_symbols
 
         display_fingerprints = {
             candidate.symbol: (
                 session,
                 candidate,
-                candidate.symbol in stale_symbols,
+                candidate.symbol in stale_symbol_set,
                 _component_freshness(
                     candidate.last_price_timestamp,
                     now=now,
@@ -245,7 +254,7 @@ class ScannerSnapshotPublisher:
                 now=now,
                 stale_after=self._stale_after,
             )
-            stale = candidate.symbol in stale_symbols
+            stale = candidate.symbol in stale_symbol_set
             metadata = (
                 ("scanner_rank", str(candidate.scanner_rank or display_rank)),
                 ("scanner_score", str(candidate.score)),
