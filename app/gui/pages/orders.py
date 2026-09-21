@@ -166,6 +166,12 @@ class OrdersPage(QWidget):
             QAbstractItemView.EditTrigger.NoEditTriggers
         )
         self._orders_table.setSortingEnabled(True)
+        # Operators need the current trading activity first. Keep UPDATED as
+        # the initial sort while retaining normal header-click sorting.
+        self._orders_table.sortItems(
+            11,
+            Qt.SortOrder.DescendingOrder,
+        )
         self._orders_table.verticalHeader().setVisible(False)
 
         table_header = self._orders_table.horizontalHeader()
