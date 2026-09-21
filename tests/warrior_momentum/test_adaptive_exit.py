@@ -26,7 +26,7 @@ def signal() -> MomentumEntrySignal:
         strategy_id="WARRIOR_MOMENTUM_V1", symbol="XYZ", timestamp=NOW,
         session="REGULAR", momentum_score=D("80"), setup_type=SetupType.BULL_FLAG,
         entry_trigger=D("2.00"), reference_price=D("2.00"),
-        stop_price=D("1.97"), stop_model=StopModel.PATTERN_LOW,
+        stop_price=D("1.97"), stop_model=StopModel.FLAG_LOW,
         risk_per_share=D("0.03"),
         target_levels=(D("2.03"), D("2.06"), D("2.09")),
         catalyst_state=CatalystStatus.TRUE, relative_volume=D("20"),
