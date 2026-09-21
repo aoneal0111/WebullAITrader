@@ -479,7 +479,12 @@ def test_taxonomy_trigger_remains_advisory_when_canonical_warrior_is_not_ready(
         composition.close()
 
 
-def test_enabled_entry_experiment_control_uses_normal_paper_path(tmp_path: Path) -> None:
+def test_enabled_entry_experiment_control_uses_normal_paper_path(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    # This fixture proves the legacy control path, so opt out of the PAPER
+    # adaptive policy that is enabled by default.
+    monkeypatch.setenv("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED", "false")
     store = ForwardCaptureStore(tmp_path / "control-entry-intelligence.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
     journal = PaperExperimentJournal(tmp_path / "control-experiment.sqlite3")

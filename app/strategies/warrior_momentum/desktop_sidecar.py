@@ -985,9 +985,11 @@ class WarriorDesktopSidecar:
                 self._last_intraminute_evaluation_at[symbol] = event.timestamp
         if symbol not in self._first_observed or completed or intraminute_due:
             available_bars = tuple(self._bars.get(symbol, ())[-120:])
+            evaluated_at = self._aware_now()
+            decision_session = scanner_session(evaluated_at).value
             history = canonical_completed_history(
                 available_bars, observation.timestamp,
-                session=scanner_session(observation.timestamp).value,
+                session=decision_session,
             )
             # Historical preload is useful only when the live bar stream has
             # reached the same point in time.  A stale preload must not make a
@@ -996,7 +998,6 @@ class WarriorDesktopSidecar:
                 history = ()
             quote_freshness = last_price_freshness = None
             state = adapter.state_for(symbol)
-            evaluated_at = self._aware_now()
             processing_age = (
                 None
                 if event.received_timestamp is None
@@ -1041,7 +1042,7 @@ class WarriorDesktopSidecar:
                 symbol=symbol,
             )
             point_in_time = PointInTimeObservation(
-                    observation, scanner_session(observation.timestamp).value,
+                    observation, decision_session,
                     history, float_provenance=provenance,
                     catalyst_source="WEBULL_EARNINGS_SEC",
                     quote_observed_at=(None if state is None else state.quote_timestamp),
@@ -1203,7 +1204,7 @@ class WarriorDesktopSidecar:
                 ),
                 halted=observation.halted,
                 tradable=observation.tradable,
-                session=scanner_session(observation.timestamp).value,
+                session=scanner_session(evaluated_at).value,
                 execution_permitted=self._accept_execution,
             ))
 

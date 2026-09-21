@@ -91,6 +91,7 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
     monkeypatch, tmp_path,
 ) -> None:
     """Acceptance proof through the real desktop PAPER composition root."""
+    monkeypatch.setenv("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED", "false")
     intelligence_path = tmp_path / "intelligence.sqlite3"
     configuration = load_configuration({
         "WEBULL_TRADING_ENVIRONMENT": "PAPER",
@@ -268,6 +269,7 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
 def test_legacy_triggered_callback_assigns_before_ineligible_treatment(
     monkeypatch, tmp_path,
 ) -> None:
+    monkeypatch.setenv("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED", "false")
     configuration = load_configuration({
         "WEBULL_TRADING_ENVIRONMENT": "PAPER",
         "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_ENABLED": "true",
@@ -321,6 +323,7 @@ def test_legacy_triggered_callback_assigns_before_ineligible_treatment(
 def test_di_entry_callback_exception_is_visible_and_fail_closed(
     monkeypatch, tmp_path,
 ) -> None:
+    monkeypatch.setenv("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED", "false")
     configuration = load_configuration({
         "WEBULL_TRADING_ENVIRONMENT": "PAPER",
         "ATLAS_HISTORICAL_ENTRY_EXPERIMENT_ENABLED": "true",

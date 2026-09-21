@@ -119,11 +119,11 @@ def test_adaptive_discovery_keeps_absolute_liquidity_and_catastrophic_spread_har
     assert ReasonCode.SPREAD_WIDE in catastrophic.reason_codes
 
 
-def test_adaptive_flag_is_explicit_and_off_by_default(monkeypatch):
+def test_adaptive_flag_is_on_by_default_with_explicit_kill_switch(monkeypatch):
     monkeypatch.delenv("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED", raising=False)
-    assert WarriorMomentumConfig.from_env().adaptive_context_enabled is False
-    monkeypatch.setenv("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED", "true")
     assert WarriorMomentumConfig.from_env().adaptive_context_enabled is True
+    monkeypatch.setenv("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED", "false")
+    assert WarriorMomentumConfig.from_env().adaptive_context_enabled is False
 
 
 def test_daily_participation_uses_intraday_velocity_not_30_day_rvol():

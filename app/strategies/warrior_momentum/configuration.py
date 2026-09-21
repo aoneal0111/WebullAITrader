@@ -206,7 +206,11 @@ class WarriorMomentumConfig:
     @classmethod
     def from_env(cls) -> "WarriorMomentumConfig":
         """Build the normal config, enabling adaptive context only explicitly."""
-        raw = os.getenv("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED", "false").strip().lower()
+        # Adaptive participation is the PAPER default.  It replaces the fixed
+        # 30-day RVOL gate with bounded intraday evidence while the desktop
+        # composition still forces it off outside PAPER.  Operators retain an
+        # explicit false kill switch.
+        raw = os.getenv("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED", "true").strip().lower()
         if raw not in {"true", "false"}:
             raise ValueError("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED must be true or false")
         diagnostics = os.getenv(
