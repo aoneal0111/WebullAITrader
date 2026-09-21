@@ -74,7 +74,7 @@ def _row(item) -> WatchlistRow:
         relative_volume=f"{candidate.relative_volume:.2f}x",
         dollar_volume=f"${candidate.dollar_volume:,.0f}",
         spread="--" if candidate.spread_percent is None else f"{candidate.spread_percent:.2f}%",
-        catalyst=candidate.catalyst_type.value, session=candidate.session,
+        catalyst=_catalyst_label(candidate), session=candidate.session,
         float_shares=("--" if candidate.float_shares is None else f"{candidate.float_shares / 1_000_000:.1f}M"),
         setup="NO SETUP" if setup is None else setup.setup_type.value.replace("_", " "),
         setup_state="--" if setup is None else setup.state.value,
@@ -148,6 +148,16 @@ def _readable_blocker(reason: str) -> str:
         "PARTICIPATION": "Current participation/liquidity requirement not met",
         "STRATEGY_ELIGIBILITY": "Warrior strategy/risk precondition not met",
     }.get(normalized, reason.replace("_", " ").capitalize())
+
+
+def _catalyst_label(candidate) -> str:
+    """Distinguish confirmed NONE from missing provider evidence."""
+    status = candidate.catalyst_status.value
+    if status == "UNAVAILABLE":
+        return "UNAVAILABLE"
+    if status == "UNKNOWN":
+        return "UNKNOWN"
+    return candidate.catalyst_type.value
 
 
 __all__ = ["WarriorPaperView", "format_warrior_paper"]

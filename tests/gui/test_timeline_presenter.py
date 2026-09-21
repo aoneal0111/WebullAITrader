@@ -126,3 +126,49 @@ def test_timeline_presenter_bounds_live_activity_rows() -> None:
 
     assert len(snapshot.entries) == 100
     assert snapshot.entries == expected.entries
+
+
+def test_timeline_projection_coalesces_repetitive_runtime_progress() -> None:
+    entries = (
+        OperationsTimelineEntry(
+            timestamp=NOW,
+            category="SYSTEM",
+            severity="SUCCESS",
+            source="desktop-broker-runtime:1",
+            title="Reference Warmup Completed",
+            description="Scanner qualification became ready for 71 symbols.",
+        ),
+        OperationsTimelineEntry(
+            timestamp=NOW - timedelta(seconds=4),
+            category="SYSTEM",
+            severity="SUCCESS",
+            source="desktop-broker-runtime:1",
+            title="Reference Warmup Completed",
+            description="Scanner qualification became ready for 70 symbols.",
+        ),
+        OperationsTimelineEntry(
+            timestamp=NOW - timedelta(seconds=8),
+            category="BROKER",
+            severity="INFO",
+            source="desktop-broker-runtime:1",
+            title="Broker Rest Observed",
+            description="Broker account, balances, positions, and orders loaded.",
+        ),
+        OperationsTimelineEntry(
+            timestamp=NOW - timedelta(seconds=12),
+            category="BROKER",
+            severity="INFO",
+            source="desktop-broker-runtime:1",
+            title="Broker Rest Observed",
+            description="Broker account, balances, positions, and orders loaded.",
+        ),
+    )
+    state = ApplicationState(
+        timeline_projection=project_operational_timeline(entries),
+    )
+
+    snapshot = project_timeline_activity(state)
+
+    assert len(snapshot.entries) == 2
+    assert snapshot.entries[0].message.endswith("ready for 71 symbols.")
+    assert snapshot.entries[1].message.startswith("Broker Rest Observed:")

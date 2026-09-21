@@ -62,6 +62,22 @@ def test_repeated_observations_track_improvement_and_are_bounded():
     assert context.symbol_state_count <= 2
 
 
+def test_same_observation_is_idempotent_across_discovery_and_entry_checks():
+    context = WarriorAdaptiveContext()
+    value = candidate(symbol="ONCE", rvol="0.4", dollar="12000000")
+
+    discovered = context.evaluate(value)
+    permitted = context.permits_contextual_rvol_spread(value)
+    repeated = context.evaluate(value)
+
+    assert permitted is (discovered.decision in {
+        AdaptiveDecision.FORMING,
+        AdaptiveDecision.READY,
+    })
+    assert repeated == discovered
+    assert repeated.observation_count == 1
+
+
 def test_disabled_runtime_preserves_legacy_rejections():
     value = candidate(rvol="1", spread="2", reasons=(ReasonCode.RVOL_LOW, ReasonCode.SPREAD_WIDE))
     legacy = WarriorMomentumRuntime().assess_entry(value)

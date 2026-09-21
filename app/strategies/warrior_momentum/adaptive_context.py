@@ -71,6 +71,8 @@ class _SymbolState:
     prior_timestamp: object | None = None
     prior_participation: Decimal | None = None
     prior_score: Decimal | None = None
+    last_fingerprint: tuple[object, ...] | None = None
+    last_result: AdaptiveContextResult | None = None
 
 
 def _clip(value: Decimal) -> Decimal:
@@ -144,6 +146,28 @@ class WarriorAdaptiveContext:
             self._symbols[symbol] = state
         elif state.first_seen is None:
             state.first_seen = candidate.timestamp
+        fingerprint = (
+            candidate.timestamp,
+            session,
+            candidate.price,
+            candidate.percentage_change,
+            candidate.relative_volume,
+            candidate.volume,
+            candidate.dollar_volume,
+            candidate.spread_percent,
+            candidate.halted,
+            candidate.tradable,
+            tuple(candidate.reason_codes),
+            None if candidate.setup is None else candidate.setup.setup_type,
+            None if candidate.setup is None else candidate.setup.state,
+            None if candidate.setup is None else candidate.setup.score,
+        )
+        if state.last_fingerprint == fingerprint and state.last_result is not None:
+            # Discovery and entry assessment intentionally consult the same
+            # adaptive context.  Re-reading one market observation must not
+            # mutate velocity, percentiles, or observation count a second
+            # time and thereby produce a different execution decision.
+            return state.last_result
         state.observations += 1
 
         spread = candidate.spread_percent
@@ -236,9 +260,14 @@ class WarriorAdaptiveContext:
         state.prior_timestamp = candidate.timestamp
         state.session = session
         metrics["spread"].append(spread or Decimal("0")); metrics["dollar"].append(dollar); metrics["move"].append(move)
-        return AdaptiveContextResult(momentum, participation, liquidity, execution, structure, freshness, score,
-                                     decision, tuple(reasons), state.observations, dollar, velocity,
-                                     bootstrap_required)
+        result = AdaptiveContextResult(
+            momentum, participation, liquidity, execution, structure,
+            freshness, score, decision, tuple(reasons), state.observations,
+            dollar, velocity, bootstrap_required,
+        )
+        state.last_fingerprint = fingerprint
+        state.last_result = result
+        return result
 
     def permits_contextual_rvol_spread(self, candidate: MomentumCandidate) -> bool:
         result = self.evaluate(candidate)

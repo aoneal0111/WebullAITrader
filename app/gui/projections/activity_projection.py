@@ -4,6 +4,31 @@ from app.gui.models import ActivityEntry, ActivitySnapshot
 from app.operations_core import ApplicationState
 
 
+_COALESCED_PROGRESS_TITLES = {
+    "Broker Rest Observed",
+    "Reference Warmup Completed",
+}
+
+
+def _coalesce_progress(entries):
+    """Keep only the newest row for high-frequency progress notifications."""
+    seen: set[tuple[str, str, str, str | None]] = set()
+    result = []
+    for entry in entries:
+        key = (
+            entry.title,
+            entry.source,
+            entry.category.value,
+            entry.related_symbol,
+        )
+        if entry.title in _COALESCED_PROGRESS_TITLES:
+            if key in seen:
+                continue
+            seen.add(key)
+        result.append(entry)
+    return tuple(result)
+
+
 def project_timeline_activity(
     state: ApplicationState,
     *,
@@ -21,7 +46,7 @@ def project_timeline_activity(
         raise ValueError("limit must be a positive integer or None")
 
     if state.timeline_projection.entries:
-        entries = state.timeline_projection.entries
+        entries = _coalesce_progress(state.timeline_projection.entries)
         if limit is not None:
             entries = entries[:limit]
         return ActivitySnapshot(

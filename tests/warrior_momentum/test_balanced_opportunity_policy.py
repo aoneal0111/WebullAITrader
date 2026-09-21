@@ -227,6 +227,23 @@ def test_balanced_observability_keeps_catalyst_fact_out_of_blockers() -> None:
     assert "catalyst" not in row.blocking_reasons.lower()
 
 
+def test_focus_distinguishes_unknown_catalyst_from_confirmed_none() -> None:
+    candidate = replace(
+        discover(observation()),
+        catalyst_status=CatalystStatus.UNKNOWN,
+        catalyst_type=CatalystType.NONE,
+    )
+    view = format_warrior_paper(WarriorPaperSnapshot(
+        True, WarriorCaptureHealth.RUNNING, "unknown-catalyst",
+        (WarriorFocusItem(
+            candidate, CaptureFloatProvenance.AUTHORITATIVE_FLOAT,
+            None, None, (),
+        ),),
+    ))
+
+    assert view.focus.rows[0].catalyst == "UNKNOWN"
+
+
 def test_aemd_like_valid_trigger_missing_catalyst_reaches_balanced_paper_path() -> None:
     runtime, (assessed, signal) = assess_with_trigger(observation())
     assert assessed.status is CandidateStatus.ENTRY_READY
