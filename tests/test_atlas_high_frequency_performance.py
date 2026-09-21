@@ -585,7 +585,7 @@ def test_shutdown_is_clean_while_high_frequency_state_updates_arrive() -> None:
     assert finished.is_set()
 
 
-def test_suppressed_scanner_snapshot_retains_current_stale_symbols() -> None:
+def test_suppressed_scanner_snapshot_excludes_current_stale_symbols() -> None:
     diagnostics = PerformanceDiagnostics()
     sequences = count(1)
     publisher = ScannerSnapshotPublisher(
@@ -627,7 +627,7 @@ def test_suppressed_scanner_snapshot_retains_current_stale_symbols() -> None:
 
     assert publisher.last_changed is True
     assert publisher.last_stale_symbols == ("STALE",)
-    assert "STALE" in publisher._displayed_symbols
+    assert "STALE" not in publisher._displayed_symbols
 
     publisher.publish(
         second,
@@ -803,13 +803,8 @@ def test_scanner_freshness_distinguishes_evaluation_from_old_market_timestamp() 
         and event.watchlist is not None
         and event.watchlist.subscribed is True
     ]
-    assert live_events
-    assert dict(live_events[-1].watchlist.metadata or ())[
-        "scanner_freshness"
-    ] == "STALE"
-    metadata = dict(live_events[-1].watchlist.metadata or ())
-    assert metadata["scanner_market_age_ms"] == "120000"
-    assert metadata["scanner_evaluation_age_ms"] == "0"
+    assert live_events == []
+    assert "CLOCK" not in publisher._displayed_symbols
 
     stale_now = received_now + timedelta(seconds=6)
 
@@ -822,7 +817,7 @@ def test_scanner_freshness_distinguishes_evaluation_from_old_market_timestamp() 
     )
 
     assert publisher.last_stale_symbols == ("CLOCK",)
-    assert "CLOCK" in publisher._displayed_symbols
+    assert "CLOCK" not in publisher._displayed_symbols
 
     removals = [
         event
@@ -899,15 +894,10 @@ def test_scanner_freshness_uses_market_timestamp_not_evaluation_timestamp() -> N
         and event.watchlist.subscribed is True
     ]
 
-    assert published
+    assert published == []
+    assert "XYZ" not in publisher._displayed_symbols
 
-    metadata = dict(published[-1].watchlist.metadata or ())
-    assert metadata["scanner_freshness"] == "STALE"
-    assert published[-1].watchlist.quote is not None
-    assert published[-1].watchlist.quote.timestamp == market_timestamp
-    assert published[-1].watchlist.quote.stale is True
-
-    # Candidate context remains visible, explicitly stale.
+    # Stale candidate context remains excluded from scanner focus.
     events.clear()
 
     publisher.publish(
@@ -917,7 +907,7 @@ def test_scanner_freshness_uses_market_timestamp_not_evaluation_timestamp() -> N
     )
 
     assert publisher.last_stale_symbols == ("XYZ",)
-    assert "XYZ" in publisher._displayed_symbols
+    assert "XYZ" not in publisher._displayed_symbols
 
     removals = [
         event
@@ -967,27 +957,13 @@ def test_scanner_freshness_preserves_independent_last_and_quote_timestamps() -> 
 
         publisher.publish(snapshot, cycle=1, now=NOW)
 
-        published = next(
+        published = [
             event for event in events
             if event.symbol == symbol and event.watchlist is not None
-        )
-        metadata = dict(published.watchlist.metadata or ())
-        assert metadata["scanner_freshness"] == "STALE"
-        assert metadata["scanner_market_age_ms"] == "30000"
-        assert metadata["scanner_last_price_timestamp"] == last_timestamp.isoformat()
-        assert metadata["scanner_quote_timestamp"] == quote_timestamp.isoformat()
-        assert metadata["scanner_last_price_freshness"] == (
-            "LIVE" if last_timestamp == NOW else "STALE"
-        )
-        assert metadata["scanner_quote_freshness"] == (
-            "LIVE" if quote_timestamp == NOW else "STALE"
-        )
-        assert metadata["scanner_last_price_age_ms"] == (
-            "0" if last_timestamp == NOW else "30000"
-        )
-        assert metadata["scanner_quote_age_ms"] == (
-            "0" if quote_timestamp == NOW else "30000"
-        )
+        ]
+        assert published == []
+        assert publisher.last_stale_symbols == (symbol,)
+        assert symbol not in publisher._displayed_symbols
         assert published.watchlist.quote is not None
         assert published.watchlist.quote.timestamp == old
         assert published.watchlist.quote.stale is True
