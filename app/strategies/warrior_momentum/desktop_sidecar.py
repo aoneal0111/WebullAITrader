@@ -62,7 +62,39 @@ _INTRAMINUTE_REEVALUATION_SECONDS = 1.0
 # it fresh for active scanner candidates without letting every hot-feed tick
 # become a full research/evaluation pass.  This matches the entry-data stale
 # boundary, so a prior veto cannot remain authoritative after its inputs age.
-_ACTIVE_CANDIDATE_REEVALUATION_SECONDS = 5.0
+_ACTIVE_CANDIDATE_MIN_REEVALUATION_SECONDS = 5.0
+_ACTIVE_CANDIDATE_MAX_REEVALUATION_SECONDS = 30.0
+_ACTIVE_CANDIDATE_PRICE_CHANGE_PERCENT = Decimal("1.0")
+_ACTIVE_CANDIDATE_VOLUME_CHANGE_PERCENT = Decimal("10")
+_ACTIVE_CANDIDATE_MIN_VOLUME_CHANGE = Decimal("250000")
+
+
+def _meaningful_active_candidate_change(
+    prior: MomentumCandidate,
+    observation: object,
+) -> bool:
+    """Bound quote-led refreshes to material changes, not feed frequency."""
+
+    price = getattr(observation, "price", None)
+    price_changed = bool(
+        price is not None
+        and prior.price > 0
+        and abs(price - prior.price) / prior.price * Decimal("100")
+        >= _ACTIVE_CANDIDATE_PRICE_CHANGE_PERCENT
+    )
+    volume = getattr(observation, "current_volume", None)
+    volume_delta = (
+        Decimal("0")
+        if volume is None
+        else max(Decimal("0"), volume - prior.volume)
+    )
+    volume_changed = bool(
+        prior.volume > 0
+        and volume_delta >= _ACTIVE_CANDIDATE_MIN_VOLUME_CHANGE
+        and volume_delta / prior.volume * Decimal("100")
+        >= _ACTIVE_CANDIDATE_VOLUME_CHANGE_PERCENT
+    )
+    return price_changed or volume_changed
 
 
 def _safe_warrior_observe(sink: object | None, event: str, symbol: object, **fields: object) -> None:
@@ -988,25 +1020,38 @@ class WarriorDesktopSidecar:
                 )
             )
             last_intraminute = self._last_intraminute_evaluation_at.get(symbol)
-            reevaluation_interval = (
-                _INTRAMINUTE_REEVALUATION_SECONDS
-                if structurally_triggered
-                else _ACTIVE_CANDIDATE_REEVALUATION_SECONDS
-            )
             comparison_timestamp = (
                 last_intraminute
                 if last_intraminute is not None
                 else (None if prior_candidate is None else prior_candidate.timestamp)
             )
+            elapsed = (
+                None
+                if comparison_timestamp is None
+                else (event.timestamp - comparison_timestamp).total_seconds()
+            )
+            active_refresh_due = bool(
+                active_candidate
+                and elapsed is not None
+                and (
+                    elapsed >= _ACTIVE_CANDIDATE_MAX_REEVALUATION_SECONDS
+                    or (
+                        elapsed >= _ACTIVE_CANDIDATE_MIN_REEVALUATION_SECONDS
+                        and _meaningful_active_candidate_change(
+                            prior_candidate, observation,
+                        )
+                    )
+                )
+            )
             intraminute_due = bool(
-                (structurally_triggered or active_candidate)
+                (structurally_triggered or active_refresh_due)
                 and event.event_type in {MarketEventType.QUOTE, MarketEventType.TRADE}
                 and prior_candidate is not None
                 and event.timestamp > prior_candidate.timestamp
                 and (
-                    comparison_timestamp is None
-                    or (event.timestamp - comparison_timestamp).total_seconds()
-                    >= reevaluation_interval
+                    active_refresh_due
+                    or elapsed is None
+                    or elapsed >= _INTRAMINUTE_REEVALUATION_SECONDS
                 )
             )
             if intraminute_due:
@@ -1210,6 +1255,35 @@ class WarriorDesktopSidecar:
         else:
             state = adapter.state_for(symbol)
             evaluated_at = self._aware_now()
+            # Market freshness is live-state, not decision-state. Keep the GUI
+            # projection current on the lightweight shadow path so avoiding a
+            # full research pass does not falsely display stale entry data.
+            if state is not None:
+                freshness_ages = tuple(
+                    Decimal(str(max(
+                        0, (evaluated_at - timestamp).total_seconds(),
+                    )))
+                    for timestamp in (
+                        state.quote_timestamp,
+                        state.last_price_timestamp,
+                    )
+                    if timestamp is not None
+                )
+                self._market_data_age[symbol] = (
+                    max(freshness_ages) if len(freshness_ages) == 2 else None
+                )
+                freshness_timestamps = tuple(
+                    timestamp
+                    for timestamp in (
+                        state.quote_timestamp,
+                        state.last_price_timestamp,
+                    )
+                    if timestamp is not None
+                )
+                self._market_data_timestamp[symbol] = (
+                    min(freshness_timestamps)
+                    if len(freshness_timestamps) == 2 else None
+                )
             service.observe_intraminute_shadow(ShadowMarketObservation(
                 symbol=symbol,
                 observed_at=evaluated_at,
