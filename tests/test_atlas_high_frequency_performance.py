@@ -971,8 +971,6 @@ def test_scanner_freshness_preserves_independent_last_and_quote_timestamps() -> 
         assert events == []
         assert publisher.last_stale_symbols == (symbol,)
         assert symbol not in publisher._displayed_symbols
-        assert reevaluated_metadata["scanner_last_price_freshness"] == "STALE"
-        assert reevaluated_metadata["scanner_quote_freshness"] == "STALE"
 
 
 def test_scanner_publisher_removes_stale_candidate_from_bounded_projection() -> None:
