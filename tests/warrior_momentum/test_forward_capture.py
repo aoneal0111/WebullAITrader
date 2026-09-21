@@ -1828,7 +1828,7 @@ def test_daily_report_python_eastern_boundary_filter_remains_authoritative(
     assert dict(report.funnel)["DISCOVERED"] == 3
 
 
-def test_daily_report_malformed_analytical_exit_still_fails(tmp_path: Path) -> None:
+def test_daily_report_ignores_incomplete_analytical_exit(tmp_path: Path) -> None:
     store = ForwardCaptureStore(tmp_path / "malformed-report.sqlite3")
     store.append_batch((CaptureRecord.create(
         CaptureRecordType.STATE_TRANSITION,
@@ -1838,8 +1838,10 @@ def test_daily_report_malformed_analytical_exit_still_fails(tmp_path: Path) -> N
         identity_parts=("missing-realized",),
     ),))
 
-    with pytest.raises(KeyError, match="realized_r"):
-        build_daily_report(store, T0.date())
+    report = build_daily_report(store, T0.date())
+
+    assert report.paper_trades == 0
+    assert report.total_r is None
 
 
 def test_persist_daily_report_uses_same_day_timestamp_without_materializing_payloads(

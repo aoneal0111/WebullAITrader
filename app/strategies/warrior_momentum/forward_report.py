@@ -128,6 +128,12 @@ def build_daily_report(
             continue
         if payload.get("authority") == _AUTHORITATIVE_POSITION_PROJECTION:
             continue
+        # Older authoritative and interrupted lifecycle records may describe
+        # a close without the complete analytical R/MAE/MFE tuple.  They are
+        # valid forensic records but not valid performance samples, and must
+        # not make the entire daily report fail.
+        if not {"realized_r", "mae_r", "mfe_r"}.issubset(payload):
+            continue
         exits.append(payload)
     realized = [Decimal(item["realized_r"]) for item in exits]
     maes = [Decimal(item["mae_r"]) for item in exits]
@@ -349,6 +355,11 @@ def _completed_trades(records):
             and payload.get("to") == ForwardTransition.PAPER_EXIT.value
             and opened.get(record.symbol)
         ):
+            if "realized_r" not in payload:
+                # Preserve the unmatched entry for a later complete close
+                # record.  A projection-only or interrupted close is not a
+                # performance observation.
+                continue
             entry = opened[record.symbol].pop(0)
             completed.append({
                 **entry,
