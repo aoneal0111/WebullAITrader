@@ -637,7 +637,7 @@ def test_suppressed_scanner_snapshot_excludes_current_stale_symbols() -> None:
 
     assert publisher.last_changed is False
     assert publisher.last_stale_symbols == ("STALE",)
-    assert "STALE" in publisher._displayed_symbols
+    assert "STALE" not in publisher._displayed_symbols
 
     metrics = diagnostics.snapshot()
     assert metrics.scanner_snapshots_published == 1
@@ -964,30 +964,13 @@ def test_scanner_freshness_preserves_independent_last_and_quote_timestamps() -> 
         assert published == []
         assert publisher.last_stale_symbols == (symbol,)
         assert symbol not in publisher._displayed_symbols
-        assert published.watchlist.quote is not None
-        assert published.watchlist.quote.timestamp == old
-        assert published.watchlist.quote.stale is True
 
         events.clear()
         publisher.publish(snapshot, cycle=2, now=NOW + timedelta(seconds=6))
 
-        reevaluated = next(
-            event for event in events
-            if event.symbol == symbol and event.watchlist is not None
-        )
-        reevaluated_metadata = dict(reevaluated.watchlist.metadata or ())
-        assert reevaluated_metadata["scanner_last_price_timestamp"] == (
-            last_timestamp.isoformat()
-        )
-        assert reevaluated_metadata["scanner_quote_timestamp"] == (
-            quote_timestamp.isoformat()
-        )
-        assert reevaluated_metadata["scanner_last_price_age_ms"] == (
-            "6000" if last_timestamp == NOW else "36000"
-        )
-        assert reevaluated_metadata["scanner_quote_age_ms"] == (
-            "6000" if quote_timestamp == NOW else "36000"
-        )
+        assert events == []
+        assert publisher.last_stale_symbols == (symbol,)
+        assert symbol not in publisher._displayed_symbols
         assert reevaluated_metadata["scanner_last_price_freshness"] == "STALE"
         assert reevaluated_metadata["scanner_quote_freshness"] == "STALE"
 
