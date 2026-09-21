@@ -62,7 +62,7 @@ def test_disabled_sidecar_is_inert_and_default_configuration_is_frozen(tmp_path:
     assert scanner_session(datetime(2026, 8, 11, 15, 0, tzinfo=UTC)).value == "REGULAR"
 
 
-def test_enabled_sidecar_shares_adapter_coalesces_ticks_and_flushes_session(tmp_path: Path) -> None:
+def test_enabled_sidecar_bounds_active_intraminute_refresh_and_flushes_session(tmp_path: Path) -> None:
     path = tmp_path / "forward.sqlite3"
     scanner = adapter()
     sidecar = WarriorDesktopSidecar(enabled=True, storage_path=path, clock=lambda: T0)
@@ -74,10 +74,13 @@ def test_enabled_sidecar_shares_adapter_coalesces_ticks_and_flushes_session(tmp_
         deliver(scanner, sidecar, trade(index, T0 + timedelta(seconds=index), "10.21"))
     store = ForwardCaptureStore(path)
     sidecar._writer.flush()
-    assert len(store.records(record_type=CaptureRecordType.DECISION)) == 1
+    # Active candidates are refreshed at a bounded five-second cadence. This
+    # prevents a NO_SETUP result from remaining authoritative for minutes,
+    # while still coalescing the intervening hot-feed ticks.
+    assert len(store.records(record_type=CaptureRecordType.DECISION)) == 4
     deliver(scanner, sidecar, trade(20, T0 + timedelta(minutes=1), "10.25"))
     sidecar._writer.flush()
-    assert len(store.records(record_type=CaptureRecordType.DECISION)) == 2
+    assert len(store.records(record_type=CaptureRecordType.DECISION)) == 5
     running = sidecar.snapshot()
     assert running.health is WarriorCaptureHealth.RUNNING
     assert running.summary.discovered == 1 and len(running.items) == 1
@@ -87,6 +90,44 @@ def test_enabled_sidecar_shares_adapter_coalesces_ticks_and_flushes_session(tmp_
     assert sessions[0].payload["configuration_fingerprint"] == sidecar.configuration_fingerprint
     assert store.records(record_type=CaptureRecordType.DAILY_REPORT)
     assert sidecar.snapshot().health is WarriorCaptureHealth.STOPPED
+
+
+def test_active_no_setup_candidate_is_reconsidered_before_next_bar(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "active-no-setup-refresh.sqlite3"
+    scanner = adapter()
+    sidecar = WarriorDesktopSidecar(
+        enabled=True,
+        storage_path=path,
+        clock=lambda: T0,
+    )
+    sidecar.bind_scanner_adapter(scanner)
+    sidecar.start("PAPER")
+    try:
+        deliver(scanner, sidecar, quote(T0))
+        deliver(scanner, sidecar, trade(2, T0 + timedelta(seconds=1), "10.20"))
+        first = sidecar._latest["XYZ"]
+        assert first.discovery_qualified
+        assert first.setup is None
+
+        # No minute bar has completed. A newer quote after the bounded refresh
+        # interval must nevertheless replace the old NO_SETUP decision.
+        deliver(scanner, sidecar, quote(T0 + timedelta(seconds=7)))
+
+        refreshed = sidecar._latest["XYZ"]
+        assert refreshed.timestamp == T0 + timedelta(seconds=7)
+        assert refreshed.timestamp > first.timestamp
+        assert sidecar._bars.get("XYZ", []) == []
+
+        assert sidecar._writer is not None
+        sidecar._writer.flush()
+        decisions = ForwardCaptureStore(path).records(
+            record_type=CaptureRecordType.DECISION,
+        )
+        assert len(decisions) == 2
+    finally:
+        sidecar.stop()
 
 
 def test_quote_in_next_minute_finalizes_prior_trade_bar(tmp_path: Path) -> None:

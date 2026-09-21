@@ -58,6 +58,11 @@ _PROTECTION_AUDIT_INTERVAL_SECONDS = 15.0
 # every market tick into a full Warrior/research pass. This cadence is a
 # processing bound, not a trading threshold or setup-policy change.
 _INTRAMINUTE_REEVALUATION_SECONDS = 1.0
+# A non-triggered verdict (especially NO_SETUP) is still time-sensitive.  Keep
+# it fresh for active scanner candidates without letting every hot-feed tick
+# become a full research/evaluation pass.  This matches the entry-data stale
+# boundary, so a prior veto cannot remain authoritative after its inputs age.
+_ACTIVE_CANDIDATE_REEVALUATION_SECONDS = 5.0
 
 
 def _safe_warrior_observe(sink: object | None, event: str, symbol: object, **fields: object) -> None:
@@ -969,14 +974,39 @@ class WarriorDesktopSidecar:
                 prior_setup is not None
                 and prior_setup.state is SetupState.TRIGGERED
             )
-            last_intraminute = self._last_intraminute_evaluation_at.get(symbol)
-            intraminute_due = bool(
-                structurally_triggered
-                and event.event_type in {MarketEventType.QUOTE, MarketEventType.TRADE}
+            active_candidate = bool(
+                prior_candidate is not None
                 and (
-                    last_intraminute is None
-                    or (event.timestamp - last_intraminute).total_seconds()
-                    >= _INTRAMINUTE_REEVALUATION_SECONDS
+                    prior_candidate.discovery_qualified
+                    or prior_candidate.status in {
+                        CandidateStatus.NEAR_QUALIFIED,
+                        CandidateStatus.QUALIFIED,
+                        CandidateStatus.SETUP_FORMING,
+                        CandidateStatus.ENTRY_READY,
+                        CandidateStatus.AWAITING_EXECUTION_DATA,
+                    }
+                )
+            )
+            last_intraminute = self._last_intraminute_evaluation_at.get(symbol)
+            reevaluation_interval = (
+                _INTRAMINUTE_REEVALUATION_SECONDS
+                if structurally_triggered
+                else _ACTIVE_CANDIDATE_REEVALUATION_SECONDS
+            )
+            comparison_timestamp = (
+                last_intraminute
+                if last_intraminute is not None
+                else (None if prior_candidate is None else prior_candidate.timestamp)
+            )
+            intraminute_due = bool(
+                (structurally_triggered or active_candidate)
+                and event.event_type in {MarketEventType.QUOTE, MarketEventType.TRADE}
+                and prior_candidate is not None
+                and event.timestamp > prior_candidate.timestamp
+                and (
+                    comparison_timestamp is None
+                    or (event.timestamp - comparison_timestamp).total_seconds()
+                    >= reevaluation_interval
                 )
             )
             if intraminute_due:
