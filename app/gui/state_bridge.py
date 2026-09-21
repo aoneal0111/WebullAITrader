@@ -31,7 +31,7 @@ class QtStateBridge(QObject):
         state_store: ApplicationStateStore,
         parent: QObject | None = None,
         *,
-        refresh_interval_ms: int = 125,
+        refresh_interval_ms: int = 250,
         diagnostics: PerformanceDiagnostics = performance_diagnostics,
     ) -> None:
         super().__init__(parent)
