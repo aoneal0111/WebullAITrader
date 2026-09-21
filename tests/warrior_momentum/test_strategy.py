@@ -130,6 +130,28 @@ def test_micro_pullback_uses_configured_minimum_pullback_bars() -> None:
     assert result.setup_type is SetupType.MICRO_PULLBACK
 
 
+def test_micro_pullback_recognizes_longer_bounded_dip_before_reclaim() -> None:
+    bars = (
+        bar(0, "10.00", "10.15", "9.98", "10.10", "180"),
+        bar(1, "10.10", "10.35", "10.08", "10.30", "240"),
+        bar(2, "10.30", "10.60", "10.28", "10.55", "300"),
+        bar(3, "10.52", "10.55", "10.38", "10.44", "240"),
+        bar(4, "10.44", "10.50", "10.36", "10.42", "210"),
+        bar(5, "10.42", "10.48", "10.37", "10.43", "190"),
+        bar(6, "10.43", "10.51", "10.39", "10.47", "160"),
+        bar(7, "10.48", "10.62", "10.46", "10.58", "320"),
+    )
+
+    result = detect_micro_pullback(
+        bars,
+        SetupConfig(minimum_pullback_bars=2, maximum_pullback_bars=6),
+    )
+
+    assert result.state is SetupState.TRIGGERED
+    assert result.setup_type is SetupType.MICRO_PULLBACK
+    assert result.stop_price == D("10.36")
+
+
 def test_bull_flag_uses_configured_minimum_consolidation_bars() -> None:
     bars = (
         bar(0, "10.00", "10.20", "9.98", "10.18"),

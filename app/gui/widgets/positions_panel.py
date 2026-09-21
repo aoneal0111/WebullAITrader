@@ -230,9 +230,10 @@ class PositionsPanel(QWidget):
             )
             return
         rows = snapshot.rows
-        symbols = {row[0].strip().upper() for row in rows}
-        if self._selected_symbol not in symbols:
-            self._selected_symbol = None
+        # Broker refreshes can briefly publish an empty or partial projection
+        # between two authoritative snapshots.  Keep the operator's selection
+        # through that gap so the management card restores when the position
+        # reappears instead of flashing and falling back to SELECT A POSITION.
         self._render_management(snapshot)
         self._table.clearSelection()
         self._render_rows(self._table, rows)

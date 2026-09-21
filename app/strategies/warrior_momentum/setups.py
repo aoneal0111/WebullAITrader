@@ -138,25 +138,61 @@ def detect_micro_pullback(bars: tuple[MinuteBar, ...], config: SetupConfig = Set
         return _unknown(kind)
 
     latest = ordered[-1]
-    pullback_start = -(config.minimum_pullback_bars + 1)
-    impulse_start = pullback_start - impulse_bars
-
-    impulse = ordered[impulse_start:pullback_start]
-    pullback = ordered[pullback_start:-1]
-    impulse_change = (impulse[-1].high - impulse[0].open) / impulse[0].open * HUNDRED
-    peak = impulse[-1].high
-    depth = (peak - min(bar.low for bar in pullback)) / peak * HUNDRED
-    controlled = all(bar.low >= impulse[0].open for bar in pullback) and pullback[-1].low >= pullback[0].low
-    reduced_selling = pullback[-1].volume <= pullback[0].volume
-    resistance = max(bar.high for bar in pullback)
-    stop = min(bar.low for bar in pullback)
-    trigger = resistance * (Decimal("1") + config.breakout_buffer_percent / HUNDRED)
-    base_ok = impulse_change >= config.minimum_impulse_percent and depth <= config.maximum_micro_pullback_percent and controlled and reduced_selling
-    if base_ok and latest.close >= trigger:
-        return _with_episode(SetupDetection(kind, SetupState.TRIGGERED, Decimal("88"), trigger, stop, StopModel.MICRO_PULLBACK_LOW, resistance), ordered, required_bars)
-    if base_ok:
-        return _with_episode(SetupDetection(kind, SetupState.FORMING, Decimal("70"), trigger, stop, StopModel.MICRO_PULLBACK_LOW, resistance,
-                              (ReasonCode.BREAKOUT_NOT_CONFIRMED,)), ordered, required_bars)
+    maximum_pullback_bars = min(
+        config.maximum_pullback_bars,
+        len(ordered) - impulse_bars - 1,
+    )
+    for pullback_bars in range(
+        config.minimum_pullback_bars,
+        maximum_pullback_bars + 1,
+    ):
+        pullback_start = -(pullback_bars + 1)
+        impulse_start = pullback_start - impulse_bars
+        impulse = ordered[impulse_start:pullback_start]
+        pullback = ordered[pullback_start:-1]
+        impulse_change = (
+            (impulse[-1].high - impulse[0].open)
+            / impulse[0].open
+            * HUNDRED
+        )
+        peak = impulse[-1].high
+        depth = (peak - min(bar.low for bar in pullback)) / peak * HUNDRED
+        controlled = (
+            all(bar.low >= impulse[0].open for bar in pullback)
+            and pullback[-1].low >= pullback[0].low
+        )
+        reduced_selling = pullback[-1].volume <= pullback[0].volume
+        resistance = max(bar.high for bar in pullback)
+        stop = min(bar.low for bar in pullback)
+        trigger = resistance * (
+            Decimal("1") + config.breakout_buffer_percent / HUNDRED
+        )
+        base_ok = (
+            impulse_change >= config.minimum_impulse_percent
+            and depth <= config.maximum_micro_pullback_percent
+            and controlled
+            and reduced_selling
+        )
+        if not base_ok:
+            continue
+        if latest.close >= trigger:
+            return _with_episode(
+                SetupDetection(
+                    kind, SetupState.TRIGGERED, Decimal("88"), trigger, stop,
+                    StopModel.MICRO_PULLBACK_LOW, resistance,
+                ),
+                ordered,
+                impulse_bars + pullback_bars + 1,
+            )
+        return _with_episode(
+            SetupDetection(
+                kind, SetupState.FORMING, Decimal("70"), trigger, stop,
+                StopModel.MICRO_PULLBACK_LOW, resistance,
+                (ReasonCode.BREAKOUT_NOT_CONFIRMED,),
+            ),
+            ordered,
+            impulse_bars + pullback_bars + 1,
+        )
     return SetupDetection(kind, SetupState.NOT_FORMED, Decimal("10"), reason_codes=(ReasonCode.NO_SETUP,))
 
 

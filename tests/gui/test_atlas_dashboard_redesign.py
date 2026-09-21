@@ -358,6 +358,39 @@ def test_position_lifecycle_converges_without_contradictory_empty_state(
     panel.render(empty)
     assert panel._symbol.text() == "POSITION STATE UNAVAILABLE"
     assert "SNAPSHOT UNAVAILABLE" in panel._position_state.text()
+
+
+def test_position_selection_survives_transient_empty_broker_projection(
+    application,
+) -> None:
+    del application
+    panel = PositionsPanel()
+    panel.set_runtime_phase(
+        RuntimeState.RUNNING,
+        positions_synchronized=True,
+        positions_status="AVAILABLE",
+    )
+    row = (
+        "GRML", "LONG", "320", "$5.02", "$5.07", "+$16.00",
+        "+1.00%", "$0.00", "10:00:00",
+    )
+    management = PositionManagementRow(
+        symbol="GRML", side="LONG", quantity="320", average_entry="$5.02",
+        mark="$5.07", unrealized_pnl="+$16.00", unrealized_percent="+1.00%",
+        realized_pnl="$0.00", updated_at="10:00:00",
+    )
+    populated = PositionsSnapshot(rows=(row,), management=(management,))
+
+    panel.render(populated)
+    panel.select_symbol("GRML")
+    panel.render(populated)
+    panel.render(PositionsSnapshot.initial())
+
+    assert panel.selected_symbol == "GRML"
+
+    panel.render(populated)
+    assert panel.selected_symbol == "GRML"
+    assert panel._symbol.text() == "GRML"
     assert "AWAITING" not in panel._table._empty_state.text()
     panel.close()
 

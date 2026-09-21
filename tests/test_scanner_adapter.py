@@ -336,6 +336,25 @@ def test_pipeline_evaluates_and_ranks_candidate() -> None:
     assert pipeline.ranked(limit=10) == (decision,)
 
 
+def test_pipeline_expires_stale_candidates_before_ranking() -> None:
+    clock = {"value": NOW}
+    store = ScannerReferenceStore((reference_data(),))
+    pipeline = MomentumScannerPipeline(
+        MarketEventScannerAdapter(store),
+        clock=lambda: clock["value"],
+        candidate_retention_seconds=120,
+    )
+    assert pipeline.consume(quote_event()) is None
+    decision = pipeline.consume(trade_event(size=Decimal("1000000")))
+    assert decision is not None
+    assert pipeline.ranked(limit=25) == (decision,)
+
+    clock["value"] = NOW + timedelta(seconds=121)
+    assert pipeline.ranked(limit=25) == ()
+    assert pipeline.latest_decision("TEST") is None
+    assert pipeline.memory_metrics()["latest_decision_count"] == 0
+
+
 def test_processing_delayed_detection_counts_every_event_but_aggregates_logs(
     caplog,
 ) -> None:

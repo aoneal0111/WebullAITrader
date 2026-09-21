@@ -34,6 +34,7 @@ _QUALIFICATION_RULES = (
 
 _LOGGER = logging.getLogger("atlas.scanner")
 _PROCESSING_AGE_WARNING_SECONDS = 5.0
+DEFAULT_CANDIDATE_RETENTION_SECONDS = 120.0
 
 
 class MomentumScannerPipeline:
@@ -44,11 +45,15 @@ class MomentumScannerPipeline:
         *,
         decision_sink: Callable[[ScannerDecision], object] | None = None,
         clock: Callable[[], datetime] | None = None,
+        candidate_retention_seconds: float = DEFAULT_CANDIDATE_RETENTION_SECONDS,
     ) -> None:
+        if candidate_retention_seconds <= 0:
+            raise ValueError("candidate retention seconds must be positive")
         self.adapter = adapter
         self.config = config
         self._latest: dict[str, ScannerDecision] = {}
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._candidate_retention_seconds = float(candidate_retention_seconds)
         if decision_sink is not None and not callable(decision_sink):
             raise TypeError("decision_sink must be callable or None")
         self._decision_sink = decision_sink
@@ -70,6 +75,7 @@ class MomentumScannerPipeline:
             self.config,
         )
         observed_at = self._clock()
+        self._prune_stale(observed_at)
         decision = replace(
             decision,
             observed_at=observed_at,
@@ -185,6 +191,7 @@ class MomentumScannerPipeline:
         self,
         symbol: str,
     ) -> ScannerDecision | None:
+        self._prune_stale(self._clock())
         return self._latest.get(symbol.strip().upper())
 
     def memory_metrics(self) -> dict[str, int]:
@@ -213,16 +220,29 @@ class MomentumScannerPipeline:
         *,
         limit: int = 25,
     ) -> tuple[ScannerDecision, ...]:
+        self._prune_stale(self._clock())
         return rank_candidates(
             self._latest.values(),
             limit=limit,
         )
 
     def all_latest(self) -> tuple[ScannerDecision, ...]:
+        self._prune_stale(self._clock())
         return tuple(
             self._latest[symbol]
             for symbol in sorted(self._latest)
         )
+
+    def _prune_stale(self, now: datetime) -> None:
+        """Remove discovery snapshots that no longer have live evidence."""
+        cutoff = now.timestamp() - self._candidate_retention_seconds
+        stale = tuple(
+            symbol for symbol, decision in self._latest.items()
+            if decision.observed_at is None
+            or decision.observed_at.timestamp() < cutoff
+        )
+        for symbol in stale:
+            self._latest.pop(symbol, None)
 
     def close(self) -> None:
         close = getattr(self._decision_sink, "close", None)
