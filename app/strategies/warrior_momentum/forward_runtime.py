@@ -876,12 +876,20 @@ class WarriorForwardCaptureService:
             and self._paper_entry_submitter is not None
             and execution_record is None
         ):
+            existing_execution_reason = None
+            if technical_signal.symbol in self._paper:
+                existing_execution_reason = (
+                    PaperEntryAuthorizationReason.WORKING_ORDER_EXISTS
+                    if self._working_entry_is_active(self._paper[technical_signal.symbol])
+                    else PaperEntryAuthorizationReason.POSITION_EXISTS
+                )
             try:
                 execution_record = _prebridge_execution_gate_record(
                     assessed, technical_signal, value, account,
                     config=self.config,
                     stale_after=self.capture_config.quote_stale_after_seconds,
                     execution_permitted=self._execution_permitted(),
+                    existing_execution_reason=existing_execution_reason,
                 )
             except Exception:
                 execution_record = None
@@ -3402,6 +3410,7 @@ def _prebridge_execution_gate_record(
     config: WarriorMomentumConfig,
     stale_after: Decimal,
     execution_permitted: bool,
+    existing_execution_reason: PaperEntryAuthorizationReason | None = None,
 ) -> CaptureRecord:
     """Explain a refusal/deferment before the PAPER bridge was invoked."""
 
@@ -3428,7 +3437,14 @@ def _prebridge_execution_gate_record(
         or value.last_price_freshness_seconds > stale_after
         or ReasonCode.STALE_MARKET_DATA in candidate.reason_codes
     )
-    if stale:
+    if existing_execution_reason is not None:
+        result = PaperEntryAuthorizationResult.REFUSED
+        reason = existing_execution_reason
+        gates = (*gates, PaperEntryGateDecision(
+            "existing_execution_owner", False,
+            existing_execution_reason.value, "CLEAR",
+        ))
+    elif stale:
         result = PaperEntryAuthorizationResult.DEFERRED
         reason = PaperEntryAuthorizationReason.EXECUTION_DATA_UNAVAILABLE
     elif not execution_permitted:
@@ -3462,8 +3478,14 @@ def _prebridge_execution_gate_record(
         result = PaperEntryAuthorizationResult.REFUSED
         reason = PaperEntryAuthorizationReason.SPREAD_WIDE
     else:
-        result = PaperEntryAuthorizationResult.REFUSED
-        reason = PaperEntryAuthorizationReason.RISK_REJECTED
+        # Every observable pre-bridge gate passed, but no authoritative bridge
+        # decision was returned on this observation.  Never manufacture a risk
+        # rejection to fill that evidence gap.
+        result = PaperEntryAuthorizationResult.DEFERRED
+        reason = PaperEntryAuthorizationReason.AUTHORIZATION_OUTCOME_UNAVAILABLE
+        gates = (*gates, PaperEntryGateDecision(
+            "execution_boundary_observed", False, "UNAVAILABLE", "AVAILABLE",
+        ))
     decision = PaperEntryAuthorizationDecision(
         result, reason, signal.symbol, lifecycle_identity(signal), gates,
     )

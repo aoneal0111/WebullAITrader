@@ -168,6 +168,7 @@ def test_report_uses_exact_authoritative_ids_and_marks_unavailable_metrics(
     assert protection["reserved_working_sell_quantity_exceeds_remaining_position"] is False
     assert protection["working_sell_trigger_quantity"] == "6"
     assert protection["reserved_working_sell_quantity"] == "2"
+    assert protection["read_only_reconciliation_preview"] is None
     assert report["execution_integrity"]["active_campaign_symbol_inventory"] == [{
         "paper_campaign_id": "campaign-1", "symbol": "TEST", "quantity": "4",
     }]
@@ -216,3 +217,45 @@ def test_report_deduplicates_identical_fill_ids(tmp_path: Path) -> None:
 
     assert report["execution_integrity"]["exact_duplicate_fill_records_suppressed"] == 1
     assert report["completed_trade_lifecycles"][0]["buy_quantity"] == "10"
+
+
+def test_report_previews_legacy_partial_target_upgrade_without_mutation(
+    tmp_path: Path,
+) -> None:
+    execution = tmp_path / "execution.sqlite3"
+    experiment = tmp_path / "experiment.sqlite3"
+    forward = tmp_path / "forward.sqlite3"
+    _execution(execution)
+    _experiment(experiment)
+    _forward(forward)
+    with sqlite3.connect(execution) as connection:
+        payload = json.loads(connection.execute(
+            "SELECT payload FROM orders WHERE order_id='stop-2'"
+        ).fetchone()[0])
+        payload["request"]["quantity"] = "2"
+        payload["request"]["metadata"] = {}
+        connection.execute(
+            "UPDATE orders SET payload=? WHERE order_id='stop-2'",
+            (json.dumps(payload),),
+        )
+
+    report = build_paper_capture_report(
+        experiment_path=experiment, execution_path=execution,
+        forward_path=forward,
+    )
+
+    preview = report["open_positions"][0][
+        "persisted_position_and_protection"
+    ]["read_only_reconciliation_preview"]
+    assert preview == {
+        "action": "ATOMIC_UPGRADE_EXISTING_STOP_TO_CONTINGENT_OCO",
+        "existing_stop_order_id": "stop-2",
+        "correlated_target_order_id": "target-2",
+        "current_stop_quantity": "2",
+        "intended_stop_quantity": "4",
+        "intended_hard_stop_coverage": "4",
+        "intended_reserved_sell_quantity": "2",
+        "requires_new_order": False,
+        "requires_cancellation": False,
+        "mutation_performed": False,
+    }

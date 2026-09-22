@@ -510,8 +510,11 @@ class PaperOrderGateway:
             },
         )
 
-    def amend_protective_stop(self, order_id: str, remaining: int, price: Decimal) -> bool:
-        """Local PAPER amendment: preserve fills and identity without a cancel gap."""
+    def amend_protective_stop(
+        self, order_id: str, remaining: int, price: Decimal,
+        correlated_target_order_id: str | None = None,
+    ) -> bool:
+        """Atomically amend protection, optionally upgrading a legacy bracket."""
         with self._lock:
             self._require_durability()
             order = self._order_book.get(order_id)
@@ -521,14 +524,21 @@ class PaperOrderGateway:
                     or remaining <= 0 or not price.is_finite()
                     or price < order.request.stop_price):
                 return False
-            contingent = (
-                order.request.metadata.get("reservation_mode")
-                == "CONTINGENT_OCO"
-            )
-            correlated_target_order_id = (
-                order.request.metadata.get("correlated_target_order_id")
-                if contingent else None
-            )
+            target = None
+            if correlated_target_order_id is not None:
+                try:
+                    target = self._order_book.get(correlated_target_order_id)
+                except Exception:
+                    return False
+                if (
+                    target.is_terminal
+                    or target.symbol != order.symbol
+                    or target.side is not PaperOrderSide.SELL
+                    or target.request.order_type is PaperOrderType.STOP
+                    or target.request.strategy_lifecycle_id
+                    != order.request.strategy_lifecycle_id
+                ):
+                    return False
             reserved = sum((item.remaining_quantity
                 for item in self._order_book.open_orders_for_symbol(order.symbol)
                 if item.side is PaperOrderSide.SELL
@@ -536,11 +546,24 @@ class PaperOrderGateway:
                 and item.order_id != correlated_target_order_id), Decimal("0"))
             if Decimal(remaining) + reserved > self._long_position_quantity(order.symbol):
                 return False
-            if order.remaining_quantity == remaining and order.request.stop_price == price:
+            metadata = {
+                **order.request.metadata,
+                "reservation_mode": (
+                    "CONTINGENT_OCO"
+                    if target is not None else "ACTIVE_PROTECTION"
+                ),
+            }
+            if target is not None:
+                metadata["correlated_target_order_id"] = target.order_id
+            else:
+                metadata.pop("correlated_target_order_id", None)
+            if (order.remaining_quantity == remaining
+                    and order.request.stop_price == price
+                    and dict(order.request.metadata) == metadata):
                 return True
             updated = replace(order, updated_at=max(self._now(), order.updated_at),
                 request=replace(order.request, quantity=order.filled_quantity + Decimal(remaining),
-                                stop_price=price))
+                                stop_price=price, metadata=metadata))
             event = self._order_event(updated, event_type="ORDER_UPDATED",
                 message="Protective stop amended to current filled exposure; fills preserved.")
             self._persist_event(event, updated)

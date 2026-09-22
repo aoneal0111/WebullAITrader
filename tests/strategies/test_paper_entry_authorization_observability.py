@@ -218,6 +218,32 @@ def test_authorization_result_is_appended_without_changing_submission(tmp_path):
         assert records[0].payload["result"] == "AUTHORIZED"
         assert records[0].payload["submission_attempted"] is True
         assert len(composition.order_book.open_orders()) == 1
+
+        # A duplicate observation is blocked by the already-owned lifecycle.
+        # Its observation-only diagnostic must not relabel that fact as a risk
+        # rejection or imply a second submission attempt.
+        _, duplicate = service.observe(
+            _observation(),
+            account=PaperAccountContext(
+                Decimal("50000"), Decimal("25000"), frozenset({"XYZ"}),
+            ),
+        )
+        writer.flush()
+        assert duplicate is None
+        records = store.records(
+            record_type=CaptureRecordType.EXECUTION_GATE_DECISION,
+        )
+        assert [record.payload["final_reason"] for record in records] == [
+            "AUTHORIZED", "WORKING_ORDER_EXISTS",
+        ]
+        assert records[-1].payload["submission_attempted"] is False
+        assert records[-1].payload["gates"][-1] == {
+            "gate": "existing_execution_owner",
+            "passed": False,
+            "observed": "WORKING_ORDER_EXISTS",
+            "required": "CLEAR",
+        }
+        assert len(composition.order_book.open_orders()) == 1
     finally:
         writer.close()
         composition.close()

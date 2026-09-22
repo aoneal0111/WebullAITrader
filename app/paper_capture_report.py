@@ -539,6 +539,17 @@ def build_paper_capture_report(
         ), ZERO)
         remaining = _decimal(position["remaining_quantity"])
         persisted = active_inventory.get((position["paper_campaign_id"], symbol or ""))
+        stops = [
+            order for order in orders
+            if order["order_type"] in {"STOP", "STOP_LIMIT"}
+        ]
+        targets = [order for order in orders if order["order_type"] == "LIMIT"]
+        legacy_upgrade = (
+            len(stops) == 1 and len(targets) == 1
+            and stops[0]["reservation_mode"] != "CONTINGENT_OCO"
+            and hard_stop < remaining and passive_target > ZERO
+            and hard_stop + passive_target == remaining
+        )
         position["persisted_position_and_protection"] = {
             "persisted_symbol_inventory": None if persisted is None else str(persisted),
             "lifecycle_inventory_matches_persisted_symbol_inventory": persisted == remaining,
@@ -555,6 +566,21 @@ def build_paper_capture_report(
                     ("RESERVED_WORKING_SELL_QUANTITY_EXCEEDS_REMAINING_POSITION", reserved > remaining),
                 ) if present
             ],
+            "read_only_reconciliation_preview": (
+                {
+                    "action": "ATOMIC_UPGRADE_EXISTING_STOP_TO_CONTINGENT_OCO",
+                    "existing_stop_order_id": stops[0]["order_id"],
+                    "correlated_target_order_id": targets[0]["order_id"],
+                    "current_stop_quantity": str(hard_stop),
+                    "intended_stop_quantity": str(remaining),
+                    "intended_hard_stop_coverage": str(remaining),
+                    "intended_reserved_sell_quantity": str(passive_target),
+                    "requires_new_order": False,
+                    "requires_cancellation": False,
+                    "mutation_performed": False,
+                }
+                if legacy_upgrade else None
+            ),
         }
     unmatched = [*identity_unmatched, *({
         "paper_campaign_id": item["paper_campaign_id"],

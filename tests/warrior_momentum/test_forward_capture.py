@@ -1002,7 +1002,22 @@ def test_recovered_position_can_heal_protection_then_resume_target_management(
             if order.request.side.value == "SELL"
         )
         assert {order.request.order_type.value for order in sells} == {"LIMIT", "STOP"}
-        assert sum(int(order.remaining_quantity) for order in sells) == shares
+        recovered_target = next(
+            order for order in sells if order.request.order_type.value == "LIMIT"
+        )
+        recovered_stop = next(
+            order for order in sells if order.request.order_type.value == "STOP"
+        )
+        assert int(recovered_target.remaining_quantity) == target_quantity
+        assert int(recovered_stop.remaining_quantity) == shares
+        assert recovered_stop.request.metadata["reservation_mode"] == "CONTINGENT_OCO"
+        assert recovered_stop.request.metadata["correlated_target_order_id"] == (
+            recovered_target.order_id
+        )
+        assert sum(
+            int(order.remaining_quantity) for order in sells
+            if order.request.metadata.get("reservation_mode") != "CONTINGENT_OCO"
+        ) == target_quantity
     finally:
         writer.close()
         composition.close()
@@ -1072,8 +1087,8 @@ def test_bridge_rebalances_correlated_stop_across_targets_and_runner(tmp_path: P
         assert sells[0].request.order_type.value == "STOP"
         assert int(sells[0].remaining_quantity) == shares
 
-        # FIRST_TARGET must coexist with a reduced stop; reservations cannot
-        # exceed the authoritative position.
+        # FIRST_TARGET reserves its shares while a non-reserving contingent
+        # stop retains hard-stop authority for every remaining share.
         first_bar = MinuteBar(
             "XYZ",
             signal.timestamp + timedelta(minutes=2),
@@ -1090,19 +1105,24 @@ def test_bridge_rebalances_correlated_stop_across_targets_and_runner(tmp_path: P
         first_quantity = state.first_quantity
         sells = open_sells()
         assert {order.request.order_type.value for order in sells} == {"LIMIT", "STOP"}
-        assert sum(int(order.remaining_quantity) for order in sells) == shares
+        assert sum(
+            int(order.remaining_quantity) for order in sells
+            if order.request.metadata.get("reservation_mode") != "CONTINGENT_OCO"
+        ) == first_quantity
         first_target = next(order for order in sells if order.request.order_type.value == "LIMIT")
         first_stop = next(order for order in sells if order.request.order_type.value == "STOP")
         assert first_target.request.execution_reason == "FIRST_TARGET"
         assert int(first_target.remaining_quantity) == first_quantity
-        assert int(first_stop.remaining_quantity) == shares - first_quantity
+        assert int(first_stop.remaining_quantity) == shares
+        assert first_stop.request.metadata["reservation_mode"] == "CONTINGENT_OCO"
+        assert first_stop.request.metadata["correlated_target_order_id"] == first_target.order_id
         assert first_stop.request.stop_price == signal.entry_trigger
         assert state.stop == signal.entry_trigger
 
         paper_quote(2, signal.target_levels[0], signal.target_levels[0] + D("0.01"))
         position["XYZ"] = Decimal(shares - first_quantity)
 
-        # SECOND_TARGET must repeat the same correlated reservation invariant.
+        # SECOND_TARGET repeats full contingent downside coverage.
         second_bar = MinuteBar(
             "XYZ",
             signal.timestamp + timedelta(minutes=3),
@@ -1121,12 +1141,16 @@ def test_bridge_rebalances_correlated_stop_across_targets_and_runner(tmp_path: P
         remaining_after_first = shares - first_quantity
         sells = open_sells()
         assert {order.request.order_type.value for order in sells} == {"LIMIT", "STOP"}
-        assert sum(int(order.remaining_quantity) for order in sells) == remaining_after_first
+        assert sum(
+            int(order.remaining_quantity) for order in sells
+            if order.request.metadata.get("reservation_mode") != "CONTINGENT_OCO"
+        ) == second_quantity
         second_target = next(order for order in sells if order.request.order_type.value == "LIMIT")
         second_stop = next(order for order in sells if order.request.order_type.value == "STOP")
         assert second_target.request.execution_reason == "SECOND_TARGET"
         assert int(second_target.remaining_quantity) == second_quantity
-        assert int(second_stop.remaining_quantity) == remaining_after_first - second_quantity
+        assert int(second_stop.remaining_quantity) == remaining_after_first
+        assert second_stop.request.metadata["reservation_mode"] == "CONTINGENT_OCO"
 
         paper_quote(3, signal.target_levels[1], signal.target_levels[1] + D("0.01"))
         runner_quantity = shares - first_quantity - second_quantity

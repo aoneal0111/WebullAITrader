@@ -705,10 +705,12 @@ def test_target_coordinates_with_protection_and_authoritative_partial_remainder(
         sells = [order for order in composition.order_book.open_orders_for_symbol("PMI")
                  if order.request.side.value == "SELL"]
         assert {order.request.order_type.value for order in sells} == {"LIMIT", "STOP"}
-        assert sorted(int(order.quantity) for order in sells) == [379, 380]
+        assert sorted(int(order.quantity) for order in sells) == [379, 759]
         remainder_stop = next(
             order for order in sells if order.request.order_type.value == "STOP"
         )
+        assert remainder_stop.request.metadata["reservation_mode"] == "CONTINGENT_OCO"
+        assert remainder_stop.request.metadata["correlated_target_order_id"] == first.order_id
         assert remainder_stop.request.stop_price == Decimal("10")
 
         full_quote(2, "10.50", "10.51")
@@ -717,7 +719,7 @@ def test_target_coordinates_with_protection_and_authoritative_partial_remainder(
         assert second.protection_active
         sells = [order for order in composition.order_book.open_orders_for_symbol("PMI")
                  if order.request.side.value == "SELL"]
-        assert sorted(int(order.quantity) for order in sells) == [189, 191]
+        assert sorted(int(order.quantity) for order in sells) == [189, 380]
 
         full_quote(3, "11.00", "11.01")
         position["PMI"] = Decimal("191")
@@ -1126,6 +1128,235 @@ def test_full_runner_bracket_survives_recovery_and_replaces_after_target_cancel(
         ) == position["PMI"]
     finally:
         second.close()
+
+
+def test_legacy_partial_target_bracket_recovery_upgrades_full_contingent_stop(
+    tmp_path,
+):
+    """A target-reserved legacy half may not remain outside stop coverage."""
+    position = {"PMI": Decimal("0")}
+    path = tmp_path / "legacy-partial-target.sqlite3"
+
+    def build(at=session_timestamp(0)):
+        composition = create_paper_trading_command_composition(
+            position_quantity_source=lambda symbol: position[symbol],
+            persistence_path=str(path),
+            at=at,
+        )
+        bridge = AutonomousPaperExecutionBridge(
+            composition.trading_service,
+            composition.order_command_factory,
+            order_book=composition.order_book,
+            position_quantity_source=lambda symbol: position[symbol],
+            management_context_source=lambda _symbol: "trade-a",
+            protection_amender=composition.gateway.amend_protective_stop,
+        )
+        return composition, bridge
+
+    first, bridge = build()
+    try:
+        assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+        _paper_quote(first, 1, "9.99", "10")
+        position["PMI"] = Decimal("100")
+        target_result = first.trading_service.place_order(
+            first.order_command_factory.create_placement_request(
+                OrderEntryCommand(
+                    symbol="PMI", side="SELL", quantity=Decimal("50"),
+                    order_type="LIMIT", limit_price=Decimal("10.5"),
+                    stop_price=None, time_in_force="GTC",
+                    strategy_lifecycle_id="trade-a",
+                    metadata={"source": "legacy-fixture", "reason": "FIRST_TARGET"},
+                )
+            )
+        )
+        stop_result = first.trading_service.place_order(
+            first.order_command_factory.create_placement_request(
+                OrderEntryCommand(
+                    symbol="PMI", side="SELL", quantity=Decimal("50"),
+                    order_type="STOP", limit_price=None,
+                    stop_price=Decimal("9.5"), time_in_force="GTC",
+                    strategy_lifecycle_id="trade-a",
+                    metadata={"source": "legacy-fixture", "reason": "STOP"},
+                )
+            )
+        )
+        assert target_result.success and stop_result.success
+        target = first.order_book.get(target_result.broker_order_id)
+        legacy_sells = first.order_book.open_orders_for_symbol("PMI")
+        legacy_stop = next(
+            order for order in legacy_sells
+            if order.request.order_type is OrderType.STOP
+        )
+        assert legacy_stop.remaining_quantity == Decimal("50")
+        assert legacy_stop.request.metadata.get("reservation_mode") is None
+        reports = first.gateway.process_market_event(MarketEvent(
+            2, session_timestamp(2), "PMI", "legacy-target-partial",
+            MarketEventType.QUOTE,
+            QuotePayload(
+                Decimal("10.5"), Decimal("10.51"),
+                Decimal("20"), Decimal("20"),
+            ),
+        ))
+        assert sum(
+            (fill.quantity for report in reports for fill in report.fills),
+            Decimal("0"),
+        ) == Decimal("20")
+        position["PMI"] = Decimal("80")
+    finally:
+        first.close()
+
+    second, recovered = build(session_timestamp(3))
+    try:
+        assert recovered.reconcile() is AutonomousPaperReadiness.READY
+        assert recovered.reconcile_protection() == ("PMI",)
+        sells = second.order_book.open_orders_for_symbol("PMI")
+        stop = next(
+            order for order in sells if order.request.order_type is OrderType.STOP
+        )
+        restored_target = next(
+            order for order in sells if order.request.order_type is OrderType.LIMIT
+        )
+        assert restored_target.order_id == target.order_id
+        assert stop.order_id == legacy_stop.order_id
+        assert stop.remaining_quantity == Decimal("80")
+        assert stop.request.metadata["reservation_mode"] == "CONTINGENT_OCO"
+        assert stop.request.metadata["correlated_target_order_id"] == target.order_id
+        assert sum(
+            order.remaining_quantity for order in sells
+            if order.request.metadata.get("reservation_mode") != "CONTINGENT_OCO"
+        ) == Decimal("30")
+
+        # Reconciliation is idempotent: it neither replaces the recovered
+        # stop nor appends another durable order.
+        history_count = len(second.order_book.history())
+        assert recovered.reconcile_protection() == ("PMI",)
+        assert len(second.order_book.history()) == history_count
+        assert next(
+            order for order in second.order_book.open_orders_for_symbol("PMI")
+            if order.request.order_type is OrderType.STOP
+        ).order_id == legacy_stop.order_id
+
+        cancellation = second.gateway.cancel_order(OrderCancellationRequest(
+            request_id="cancel-recovered-legacy-target",
+            session_id=second.session_id,
+            account_id=second.account_id,
+            broker_order_id=restored_target.order_id,
+            client_order_id=restored_target.request.client_order_id,
+        ))
+        assert cancellation.accepted
+        assert recovered.reconcile_protection() == ("PMI",)
+        active_stop = second.order_book.open_orders_for_symbol("PMI")[0]
+        assert active_stop.order_id == legacy_stop.order_id
+        assert active_stop.remaining_quantity == Decimal("80")
+        assert active_stop.request.metadata["reservation_mode"] == "ACTIVE_PROTECTION"
+        assert "correlated_target_order_id" not in active_stop.request.metadata
+
+        replacement = recovered.ensure_exit(
+            "PMI", 40, Decimal("10.6"), "RUNNER_TARGET", "trade-a",
+        )
+        assert replacement.protection_active
+        replacement_sells = second.order_book.open_orders_for_symbol("PMI")
+        replacement_target = next(
+            order for order in replacement_sells
+            if order.request.order_type is OrderType.LIMIT
+        )
+        replacement_stop = next(
+            order for order in replacement_sells
+            if order.request.order_type is OrderType.STOP
+        )
+        assert replacement_target.remaining_quantity == Decimal("40")
+        assert replacement_stop.remaining_quantity == Decimal("80")
+        assert replacement_stop.request.metadata["correlated_target_order_id"] == (
+            replacement_target.order_id
+        )
+        assert sum(
+            order.remaining_quantity for order in replacement_sells
+            if order.request.metadata.get("reservation_mode") != "CONTINGENT_OCO"
+        ) == Decimal("40")
+    finally:
+        second.close()
+
+
+def test_legacy_bracket_upgrade_persistence_failure_is_fail_closed_and_recoverable(
+    tmp_path,
+):
+    position = {"PMI": Decimal("0")}
+    path = tmp_path / "legacy-upgrade-crash.sqlite3"
+
+    def build():
+        composition = create_paper_trading_command_composition(
+            position_quantity_source=lambda symbol: position[symbol],
+            persistence_path=str(path),
+        )
+        return composition, AutonomousPaperExecutionBridge(
+            composition.trading_service,
+            composition.order_command_factory,
+            order_book=composition.order_book,
+            position_quantity_source=lambda symbol: position[symbol],
+            management_context_source=lambda _symbol: "trade-a",
+            protection_amender=composition.gateway.amend_protective_stop,
+        )
+
+    first, bridge = build()
+    try:
+        assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+        _paper_quote(first, 1, "9.99", "10")
+        position["PMI"] = Decimal("100")
+        for command in (
+            OrderEntryCommand(
+                symbol="PMI", side="SELL", quantity=Decimal("50"),
+                order_type="LIMIT", limit_price=Decimal("10.5"),
+                stop_price=None, time_in_force="GTC",
+                strategy_lifecycle_id="trade-a",
+                metadata={"source": "legacy-fixture", "reason": "FIRST_TARGET"},
+            ),
+            OrderEntryCommand(
+                symbol="PMI", side="SELL", quantity=Decimal("50"),
+                order_type="STOP", limit_price=None, stop_price=Decimal("9.5"),
+                time_in_force="GTC", strategy_lifecycle_id="trade-a",
+                metadata={"source": "legacy-fixture", "reason": "STOP"},
+            ),
+        ):
+            assert first.trading_service.place_order(
+                first.order_command_factory.create_placement_request(command)
+            ).success
+    finally:
+        first.close()
+
+    failed, recovery = build()
+    legacy_stop = next(
+        order for order in failed.order_book.open_orders_for_symbol("PMI")
+        if order.request.order_type is OrderType.STOP
+    )
+    try:
+        assert recovery.reconcile() is AutonomousPaperReadiness.READY
+        store_type = type(failed.durable_store)
+        with patch.object(store_type, "persist", side_effect=OSError("disk full")):
+            assert recovery.reconcile_protection() == ()
+        unchanged = failed.order_book.get(legacy_stop.order_id)
+        assert unchanged.remaining_quantity == Decimal("50")
+        assert unchanged.request.metadata.get("reservation_mode") is None
+        persisted = {
+            order.order_id: order for order in failed.durable_store.orders()
+        }[legacy_stop.order_id]
+        assert persisted.remaining_quantity == Decimal("50")
+        assert persisted.request.metadata.get("reservation_mode") is None
+    finally:
+        failed.close()
+
+    restarted, recovered = build()
+    try:
+        assert recovered.reconcile() is AutonomousPaperReadiness.READY
+        assert recovered.reconcile_protection() == ("PMI",)
+        stop = next(
+            order for order in restarted.order_book.open_orders_for_symbol("PMI")
+            if order.request.order_type is OrderType.STOP
+        )
+        assert stop.order_id == legacy_stop.order_id
+        assert stop.remaining_quantity == Decimal("100")
+        assert stop.request.metadata["reservation_mode"] == "CONTINGENT_OCO"
+    finally:
+        restarted.close()
 
 
 def test_full_runner_target_fill_cannot_race_contingent_stop_into_oversell():
