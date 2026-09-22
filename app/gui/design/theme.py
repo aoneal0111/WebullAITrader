@@ -165,6 +165,12 @@ def application_stylesheet() -> str:
     QTabBar::tab {{ color: {Colors.TEXT_MUTED}; background: transparent; padding: 9px 14px; border-bottom: 2px solid transparent; }}
     QTabBar::tab:hover {{ color: {Colors.TEXT}; }}
     QTabBar::tab:selected {{ color: {Colors.TEXT_STRONG}; border-bottom-color: {Colors.ACCENT}; }}
+    QWidget#assetNavigation {{ background: {Colors.BACKGROUND}; color: {Colors.TEXT}; }}
+    QTabBar#assetMarketTabs {{ background: {Colors.BACKGROUND}; color: {Colors.TEXT}; border: 0; }}
+    QTabBar#assetMarketTabs::tab {{ background: {Colors.SURFACE_RAISED}; color: {Colors.TEXT}; border: 1px solid {Colors.BORDER}; border-bottom: 2px solid {Colors.BORDER}; padding: 9px 14px; }}
+    QTabBar#assetMarketTabs::tab:hover {{ background: {Colors.SURFACE_HOVER}; color: {Colors.TEXT_STRONG}; }}
+    QTabBar#assetMarketTabs::tab:selected {{ background: {Colors.ACCENT_SOFT}; color: {Colors.TEXT_STRONG}; border-bottom: 2px solid {Colors.ACCENT}; }}
+
     QComboBox, QLineEdit, QSpinBox, QDateTimeEdit {{ background: {Colors.SURFACE_ALT}; color: {Colors.TEXT}; border: 1px solid {Colors.BORDER}; border-radius: 5px; padding: 6px 8px; }}
     QComboBox:hover, QLineEdit:hover, QSpinBox:hover, QDateTimeEdit:hover {{ border-color: {Colors.BORDER_STRONG}; }}
     QComboBox::drop-down {{ border: 0; width: 22px; }}

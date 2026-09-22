@@ -1,5 +1,5 @@
 """Market navigation is independent of market lifecycle and execution."""
-from PySide6.QtCore import QThread, Signal, QTimer
+from PySide6.QtCore import QThread, Signal, QTimer, Qt
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QTabBar, QPushButton, QLabel, QComboBox
 from app.assets import AssetType
 
@@ -25,12 +25,16 @@ class AssetNavigation(QWidget):
 
     def __init__(self, modules=None, parent=None):
         super().__init__(parent)
+        self.setObjectName("assetNavigation")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.modules = modules
         self.assets = tuple(AssetType)
         self.task = None
         self.last_error = ""
         row = QHBoxLayout(self)
         self.tabs = QTabBar()
+        self.tabs.setObjectName("assetMarketTabs")
+        self.tabs.setDrawBase(False)
         for asset in self.assets:
             self.tabs.addTab(asset.value.title())
         row.addWidget(self.tabs)
@@ -43,6 +47,7 @@ class AssetNavigation(QWidget):
         self.budget.currentIndexChanged.connect(self._budget_changed)
         row.addWidget(self.budget)
         self.toggle = QPushButton("Start market")
+        self.toggle.setObjectName("secondaryButton")
         row.addWidget(self.toggle)
         self.tabs.currentChanged.connect(self._select)
         self.toggle.clicked.connect(self._toggle)
