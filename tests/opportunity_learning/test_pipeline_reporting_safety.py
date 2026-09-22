@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 import ast
+import gc
 
 import pytest
 
@@ -84,3 +85,25 @@ def test_learning_package_has_no_execution_or_runtime_dependencies():
                 calls.append(node.func.attr)
         assert not any(any(part in module.lower() for part in forbidden_modules) for module in imports)
         assert forbidden_calls.isdisjoint(calls)
+
+
+def test_research_source_is_stable_when_gc_runs_during_snapshot_reads(tmp_path):
+    # sqlite3 connection context managers commit/rollback but do not close.
+    # Disable automatic collection to reproduce deferred WAL checkpointing.
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        source = tmp_path / "source.sqlite3"
+        store = ExperienceStore(source)
+        experience = make_experience()
+        store.put_experience(experience)
+        before = file_identity(source)
+        snapshot = create_external_snapshot(source, tmp_path / "external")
+        reader = ImmutableSnapshotReader(snapshot.main_copy, authoritative_paths=(source,))
+        assert reader.experiences() == (experience,)
+        gc.collect()
+        assert file_identity(source) == before
+        assert reader.integrity_check() == "ok"
+    finally:
+        if was_enabled:
+            gc.enable()

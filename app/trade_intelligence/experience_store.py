@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import asdict
 from datetime import date, datetime
 from decimal import Decimal
@@ -42,7 +43,9 @@ class ExperienceStore:
         return connection
 
     def _initialize(self) -> None:
-        with self._connect() as db:
+        # Connection.__exit__ handles transactions, not closure. Close explicitly
+        # so WAL checkpoint timing never depends on Python garbage collection.
+        with closing(self._connect()) as db, db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=FULL")
             db.executescript("""
@@ -303,7 +306,7 @@ class ExperienceStore:
     def put_experience(self, value: TradeOpportunityExperience) -> bool:
         payload = experience_payload(value)
         digest = _digest(payload)
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             row = db.execute(
                 "SELECT payload_digest FROM experiences WHERE experience_id=?",
                 (value.experience_id,),
@@ -344,7 +347,7 @@ class ExperienceStore:
 
     def put_experiences(self, values: Iterable[TradeOpportunityExperience]) -> tuple[int, int]:
         inserted = duplicate = 0
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             for value in values:
                 payload = experience_payload(value)
                 digest = _digest(payload)
@@ -383,19 +386,19 @@ class ExperienceStore:
         return inserted, duplicate
 
     def get_experience(self, experience_id: str) -> TradeOpportunityExperience | None:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             row = db.execute("SELECT payload_json FROM experiences WHERE experience_id=?", (experience_id,)).fetchone()
         return None if row is None else _experience_from_json(row[0])
 
     def experiences(self) -> tuple[TradeOpportunityExperience, ...]:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             rows = db.execute("SELECT payload_json FROM experiences ORDER BY decision_timestamp,experience_id").fetchall()
         return tuple(_experience_from_json(row[0]) for row in rows)
 
     def put_outcome(self, value: HorizonOutcome) -> bool:
         payload = canonical_json(asdict(value))
         digest = _digest(payload)
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             row = db.execute(
                 "SELECT payload_digest FROM outcomes WHERE experience_id=? AND horizon_minutes=?",
                 (value.experience_id, value.horizon_minutes),
@@ -419,7 +422,7 @@ class ExperienceStore:
 
     def put_outcomes(self, values: Iterable[HorizonOutcome]) -> tuple[int, int]:
         inserted = duplicate = 0
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             for value in values:
                 payload = canonical_json(asdict(value))
                 digest = _digest(payload)
@@ -449,7 +452,7 @@ class ExperienceStore:
     def analog_experiences(
         self, signature: str, as_of: datetime, limit: int,
     ) -> tuple[TradeOpportunityExperience, ...]:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             rows = db.execute(
                 """SELECT payload_json FROM experiences
                    WHERE analog_signature=? AND decision_timestamp<?
@@ -460,7 +463,7 @@ class ExperienceStore:
 
     def aggregate_report(self) -> dict[str, object]:
         """History-scaled cohort report using indexed/scalar SQL projections."""
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             def grouped(column: str) -> dict[str, int]:
                 return dict(db.execute(
                     f"SELECT COALESCE({column},'UNAVAILABLE'),COUNT(*) FROM experiences GROUP BY {column} ORDER BY 1"
@@ -561,7 +564,7 @@ class ExperienceStore:
             sql += " WHERE experience_id=?"
             args = (experience_id,)
         sql += " ORDER BY experience_id,horizon_minutes"
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             rows = db.execute(sql, args).fetchall()
         return tuple(_outcome_from_json(row[0]) for row in rows)
 
@@ -569,7 +572,7 @@ class ExperienceStore:
         if not experience_ids:
             return {}
         placeholders = ",".join("?" for _ in experience_ids)
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             rows = db.execute(
                 f"""SELECT experience_id,payload_json FROM outcomes
                     WHERE experience_id IN ({placeholders})
@@ -582,7 +585,7 @@ class ExperienceStore:
         return {key: tuple(value) for key, value in grouped.items()}
 
     def checkpoint_and_size_bytes(self) -> int:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         return sum(
             item.stat().st_size for item in (
@@ -591,7 +594,7 @@ class ExperienceStore:
         )
 
     def incomplete_experiences(self) -> tuple[TradeOpportunityExperience, ...]:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             rows = db.execute("""
                 SELECT e.payload_json FROM experiences e
                 LEFT JOIN outcomes o ON o.experience_id=e.experience_id
@@ -602,7 +605,7 @@ class ExperienceStore:
 
     def put_bar(self, bar: PriceBar) -> bool:
         payload = canonical_json(asdict(bar))
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             existing = db.execute(
                 "SELECT payload_json FROM future_bars WHERE symbol=? AND bar_timestamp=?",
                 (bar.symbol.upper(), bar.timestamp.isoformat()),
@@ -620,7 +623,7 @@ class ExperienceStore:
             return cursor.rowcount == 1
 
     def bars(self, symbol: str) -> tuple[PriceBar, ...]:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             rows = db.execute(
                 "SELECT payload_json FROM future_bars WHERE symbol=? ORDER BY bar_timestamp",
                 (symbol.upper(),),
@@ -629,7 +632,7 @@ class ExperienceStore:
 
     def prune_bars(self) -> None:
         """Keep only bars needed by at least one incomplete experience."""
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             oldest = db.execute("""
                 SELECT MIN(e.decision_timestamp) FROM experiences e
                 WHERE (SELECT COUNT(*) FROM outcomes o WHERE o.experience_id=e.experience_id)<6
@@ -640,7 +643,7 @@ class ExperienceStore:
                 db.execute("DELETE FROM future_bars WHERE bar_timestamp < ?", (oldest,))
 
     def checkpoint_work(self, work_id: str, work_type: str, accepted_at: datetime, payload_json: str) -> bool:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             cursor = db.execute(
                 """INSERT OR IGNORE INTO work_ledger(
                    work_id,work_type,state,accepted_at,payload_json)
@@ -650,7 +653,7 @@ class ExperienceStore:
             return cursor.rowcount == 1
 
     def start_work(self, work_id: str, timestamp: datetime) -> None:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.execute(
                 """UPDATE work_ledger SET state='STARTED',started_at=?,
                    attempt_count=attempt_count+1
@@ -662,7 +665,7 @@ class ExperienceStore:
         self, work_id: str, timestamp: datetime, *, dependency_type: str,
         dependency_id: str,
     ) -> None:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.execute(
                 """UPDATE work_ledger SET state='DEPENDENCY_DEFERRED',
                    dependency_type=?,dependency_id=?,deferred_at=?,
@@ -672,24 +675,24 @@ class ExperienceStore:
             )
 
     def complete_work(self, work_id: str, timestamp: datetime, error: str | None = None) -> None:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.execute(
                 "UPDATE work_ledger SET state=?,completed_at=?,error=? WHERE work_id=?",
                 ("FAILED" if error else "COMPLETED", timestamp.isoformat(), error, work_id),
             )
 
     def work_state(self, work_id: str) -> str | None:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             row = db.execute(
                 "SELECT state FROM work_ledger WHERE work_id=?", (work_id,),
             ).fetchone()
         return None if row is None else str(row[0])
 
     def accounting(self) -> dict[str, int]:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             rows = db.execute("SELECT state,COUNT(*) FROM work_ledger GROUP BY state").fetchall()
         values = {row[0]: row[1] for row in rows}
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             admission = db.execute(
                 "SELECT suppressed_duplicate,rejected,pressure_episodes FROM admission_accounting WHERE id=1"
             ).fetchone()
@@ -711,7 +714,7 @@ class ExperienceStore:
         }
 
     def record_admission_accounting(self, *, suppressed: int, rejected: int, pressure_episodes: int) -> None:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.execute(
                 """UPDATE admission_accounting SET
                    suppressed_duplicate=suppressed_duplicate+?,
@@ -721,12 +724,12 @@ class ExperienceStore:
             )
 
     def recover_started_work(self) -> int:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             cursor = db.execute("UPDATE work_ledger SET state='CHECKPOINTED',started_at=NULL WHERE state='STARTED'")
             return cursor.rowcount
 
     def recoverable_work(self) -> tuple[tuple[str, str, str, datetime], ...]:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             rows = db.execute(
                 """SELECT work_id,work_type,payload_json,accepted_at
                    FROM work_ledger WHERE state IN (
@@ -737,12 +740,12 @@ class ExperienceStore:
         return tuple((row[0], row[1], row[2], datetime.fromisoformat(row[3])) for row in rows)
 
     def count(self) -> int:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             return int(db.execute("SELECT COUNT(*) FROM experiences").fetchone()[0])
 
     def put_actual_paper_outcome(self, value: ActualPaperExecutionOutcome) -> bool:
         payload = canonical_json(asdict(value))
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             cursor = db.execute(
                 "INSERT OR IGNORE INTO actual_paper_outcomes VALUES(?,?,?)",
                 (value.execution_record_identity, value.experience_id, payload),
@@ -752,7 +755,7 @@ class ExperienceStore:
     def put_decision_observation(self, value: DecisionObservation) -> bool:
         payload = canonical_json(asdict(value))
         digest = _digest(payload)
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             row = db.execute(
                 "SELECT payload_digest FROM experience_decisions WHERE decision_id=?",
                 (value.decision_id,),
@@ -772,7 +775,7 @@ class ExperienceStore:
             return True
 
     def decision_observations(self, experience_id: str) -> tuple[DecisionObservation, ...]:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             rows = db.execute(
                 "SELECT payload_json FROM experience_decisions WHERE experience_id=? ORDER BY observed_at,decision_id",
                 (experience_id,),
@@ -782,7 +785,7 @@ class ExperienceStore:
     def put_paper_execution_observation(self, value: PaperExecutionObservation) -> bool:
         payload = canonical_json(asdict(value))
         digest = _digest(payload)
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             row = db.execute(
                 "SELECT payload_digest FROM paper_execution_observations WHERE observation_id=?",
                 (value.observation_id,),
@@ -800,7 +803,7 @@ class ExperienceStore:
             return True
 
     def has_actual_paper_execution(self, experience_id: str) -> bool:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             row = db.execute(
                 """SELECT 1 FROM paper_execution_observations
                    WHERE experience_id=? AND event_type IN (
@@ -877,7 +880,7 @@ class ExperienceStore:
             "strategy_transition_observations", "position_correlation_observations",
             "position_thesis_observations", "add_on_research_candidates",
         )
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             return {
                 table: int(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
                 for table in tables
@@ -892,7 +895,7 @@ class ExperienceStore:
         digest = _digest(payload)
         columns = (identity_name, *column_names, "payload_json", "payload_digest")
         placeholders = ",".join("?" for _ in columns)
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             row = db.execute(
                 f"SELECT payload_digest FROM {table} WHERE {identity_name}=?",
                 (identity,),
@@ -910,7 +913,7 @@ class ExperienceStore:
     def put_research_generation(self, value: ResearchGeneration) -> bool:
         payload = canonical_json(asdict(value))
         digest = _digest(payload)
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             row = db.execute(
                 "SELECT payload_digest FROM research_generations WHERE generation_id=?",
                 (value.generation_id,),
@@ -962,7 +965,7 @@ class ExperienceStore:
 
     def complete_research_generation(self, value: ResearchGenerationCompletion) -> bool:
         payload = canonical_json(asdict(value))
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             row = db.execute(
                 "SELECT payload_json FROM research_generation_completions WHERE generation_id=?",
                 (value.generation_id,),
@@ -988,7 +991,7 @@ class ExperienceStore:
     ) -> DatasetPartition:
         if assigned_at.tzinfo is None:
             raise ValueError("assignment timestamp must be timezone-aware")
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             generation_row = db.execute(
                 "SELECT payload_json FROM research_generations WHERE generation_id=?",
                 (generation_id,),
@@ -1021,7 +1024,7 @@ class ExperienceStore:
             return partition
 
     def generation_assignments(self, generation_id: str) -> tuple[tuple[str, date, DatasetPartition], ...]:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             rows = db.execute(
                 """SELECT experience_id,session_date,partition_name
                    FROM research_generation_assignments WHERE generation_id=?

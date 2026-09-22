@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -74,7 +75,7 @@ class ImmutableSnapshotReader:
             raise ValueError("authoritative runtime SQLite databases may not be opened")
 
     def integrity_check(self) -> str:
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             return str(db.execute("PRAGMA integrity_check").fetchone()[0])
 
     def experiences(self):
@@ -98,11 +99,11 @@ class ImmutableSnapshotReader:
         ))
 
     def _rows(self, sql):
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             return db.execute(sql).fetchall()
 
     def _rows_if_table(self, table, sql):
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
             return () if exists is None else db.execute(sql).fetchall()
 
