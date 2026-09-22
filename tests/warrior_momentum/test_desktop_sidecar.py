@@ -215,6 +215,50 @@ def test_active_candidate_has_max_age_backstop_and_lightweight_freshness(
         sidecar.stop()
 
 
+def test_active_candidate_reevaluation_uses_receipt_clock_across_provider_timelines(
+    tmp_path: Path,
+) -> None:
+    """A future snapshot/source clock must not freeze later live decisions."""
+    path = tmp_path / "cross-timeline-refresh.sqlite3"
+    scanner = adapter()
+    sidecar = WarriorDesktopSidecar(
+        enabled=True,
+        storage_path=path,
+        clock=lambda: T0 + timedelta(minutes=10, seconds=31),
+    )
+    sidecar.bind_scanner_adapter(scanner)
+    sidecar.start("PAPER")
+    try:
+        initial_quote = replace(quote(T0), received_timestamp=T0)
+        deliver(scanner, sidecar, initial_quote)
+        future_trade = replace(
+            trade(2, T0 + timedelta(minutes=10), "10.20"),
+            received_timestamp=T0 + timedelta(seconds=1),
+        )
+        deliver(scanner, sidecar, future_trade)
+        first = sidecar._latest["XYZ"]
+
+        # The quote source timeline is behind the snapshot/trade timeline,
+        # while its local receipt time is current and advances past the
+        # reevaluation backstop.
+        later_received_quote = replace(
+            quote(T0 + timedelta(minutes=1)),
+            sequence=3,
+            received_timestamp=T0 + timedelta(seconds=32),
+        )
+        deliver(scanner, sidecar, later_received_quote)
+
+        assert sidecar._latest["XYZ"] is not first
+        assert sidecar._writer is not None
+        sidecar._writer.flush()
+        decisions = ForwardCaptureStore(path).records(
+            record_type=CaptureRecordType.DECISION,
+        )
+        assert len(decisions) == 2
+    finally:
+        sidecar.stop()
+
+
 def test_quote_in_next_minute_finalizes_prior_trade_bar(tmp_path: Path) -> None:
     """Management cadence cannot depend on another TRADE_SIZE tick arriving."""
     path = tmp_path / "quote-rollover.sqlite3"

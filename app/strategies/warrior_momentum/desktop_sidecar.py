@@ -1036,6 +1036,7 @@ class WarriorDesktopSidecar:
                 reason="NEW_COMPLETED_BAR",
                 processing_time=self._aware_now(),
             )
+        scheduling_timestamp = event.received_timestamp or event.timestamp
         intraminute_due = False
         if symbol in self._first_observed and not completed:
             prior_candidate = self._latest.get(symbol)
@@ -1058,6 +1059,12 @@ class WarriorDesktopSidecar:
                 )
             )
             last_intraminute = self._last_intraminute_evaluation_at.get(symbol)
+            # Quote, trade, and retained-snapshot source timestamps are
+            # independent Webull timelines.  A snapshot can therefore be
+            # later than a subsequently received live quote without either
+            # event being stale.  Cadence is a local processing concern, so
+            # schedule reevaluations on receipt time and retain provider time
+            # exclusively for per-channel ordering and market-data safety.
             comparison_timestamp = (
                 last_intraminute
                 if last_intraminute is not None
@@ -1066,7 +1073,7 @@ class WarriorDesktopSidecar:
             elapsed = (
                 None
                 if comparison_timestamp is None
-                else (event.timestamp - comparison_timestamp).total_seconds()
+                else (scheduling_timestamp - comparison_timestamp).total_seconds()
             )
             active_refresh_due = bool(
                 active_candidate
@@ -1085,7 +1092,6 @@ class WarriorDesktopSidecar:
                 (structurally_triggered or active_refresh_due)
                 and event.event_type in {MarketEventType.QUOTE, MarketEventType.TRADE}
                 and prior_candidate is not None
-                and event.timestamp > prior_candidate.timestamp
                 and (
                     active_refresh_due
                     or elapsed is None
@@ -1095,8 +1101,11 @@ class WarriorDesktopSidecar:
             if intraminute_due:
                 # Reserve the slot before evaluation so an exception cannot
                 # create an unbounded retry loop on a hot symbol.
-                self._last_intraminute_evaluation_at[symbol] = event.timestamp
+                self._last_intraminute_evaluation_at[symbol] = scheduling_timestamp
         if symbol not in self._first_observed or completed or intraminute_due:
+            # Anchor every full evaluation in the same local cadence domain,
+            # including the initial and completed-bar evaluations.
+            self._last_intraminute_evaluation_at[symbol] = scheduling_timestamp
             available_bars = tuple(self._bars.get(symbol, ())[-120:])
             evaluated_at = self._aware_now()
             decision_session = scanner_session(evaluated_at).value
