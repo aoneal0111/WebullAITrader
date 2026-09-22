@@ -173,3 +173,19 @@ journal failure is still excluded from the composition suite.
 
 Installer-equivalent validation: 385 passed, 1 documented pre-existing test deselected.
 No authenticated derivative API or external AI call was run.
+
+## Normal Stop repair
+
+The equity Stop button had incorrectly shared market deactivation's open-exposure
+guard and global lifecycle-task busy gate. It could refuse or ignore the click
+while Emergency Stop directly requested runtime shutdown. Normal Stop now calls
+the same non-blocking cooperative runtime stop API directly. It immediately shows
+STOPPING, disables Start/Stop while shutting down, and displays completion when
+RuntimeStopped is observed. It neither joins worker threads on the GUI thread nor
+requires positions to be flat. Emergency Stop remains unchanged. Neither button
+guarantees flattening or continued management after the runtime stops. Crypto
+market deactivation retains its separate exposure guard.
+
+Focused stop/lifecycle/layout verification: 33 passed, including a regression with
+open exposure and an unrelated lifecycle task in progress. Windows runtime
+shutdown latency has not been measured here.

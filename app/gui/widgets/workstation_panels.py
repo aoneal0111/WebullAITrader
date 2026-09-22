@@ -65,6 +65,7 @@ class RuntimeControlsPanel(QWidget):
         )
         self.stop_button = QPushButton("STOP")
         self.stop_button.setObjectName("secondaryButton")
+        self.stop_button.setToolTip("Stop the equity runtime. This does not close positions or cancel orders.")
         self.stop_button.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
         )
@@ -91,6 +92,7 @@ class RuntimeControlsPanel(QWidget):
     def set_runtime_status(self, mode: str, runtime: str) -> None:
         normalized_mode = mode.upper() or "--"
         normalized_runtime = runtime.upper() or "--"
+        self.stop_button.setText("STOPPING…" if normalized_runtime == "STOPPING" else "STOP")
         self.mode_label.setText(f"Mode: {normalized_mode}")
         self.runtime_label.setText(f"\u25cf  Runtime: {normalized_runtime}")
         self.mode_label.setProperty(

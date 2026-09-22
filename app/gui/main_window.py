@@ -254,10 +254,11 @@ class MainWindow(QMainWindow):
         self.emergency_button = controls.emergency_stop_button
         if self._asset_modules is None:
             self.start_button.clicked.connect(self._runtime_service.start)
-            self.stop_button.clicked.connect(lambda checked=False: self._runtime_service.stop())
         else:
             self.start_button.clicked.connect(lambda: self.asset_navigation.run_action(AssetType.EQUITY, True))
-            self.stop_button.clicked.connect(lambda: self.asset_navigation.run_action(AssetType.EQUITY, False))
+        # Runtime Stop must remain available with exposure or another market's
+        # lifecycle task in flight. Module deactivation is a different action.
+        self.stop_button.clicked.connect(self._stop_runtime)
         self.pause_button.clicked.connect(self._toggle_replay)
         header.reset_layout_requested.connect(self.reset_layout)
         header.settings_requested.connect(lambda: self.pages.setCurrentIndex(4))
@@ -488,6 +489,18 @@ class MainWindow(QMainWindow):
         else:
             workspace.play()
 
+    def _stop_runtime(self) -> None:
+        requested = self._runtime_service.stop("Operator requested shutdown.")
+        if requested:
+            self.stop_button.setText("STOPPING…")
+            self.stop_button.setEnabled(False)
+            self.start_button.setEnabled(False)
+            self.statusBar().showMessage(
+                "Stop requested. Waiting for runtime shutdown; positions are not closed by Stop.",
+            )
+        else:
+            self.statusBar().showMessage("Runtime is already stopped.", 5000)
+
     def _emergency_stop(self) -> None:
         self._runtime_service.stop()
         self.statusBar().showMessage(
@@ -496,6 +509,9 @@ class MainWindow(QMainWindow):
         )
 
     def _render_state(self, state: ApplicationState) -> None:
+        if (state.runtime.phase.value == "STOPPED"
+                and self.statusBar().currentMessage().startswith("Stop requested.")):
+            self.statusBar().showMessage("Runtime stopped. Stop did not close positions.", 5000)
         if self._asset_modules is None:
             self.crypto_research.set_runtime_phase(state.runtime.phase)
         self._presentation.render(state)

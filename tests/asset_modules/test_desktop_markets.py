@@ -69,3 +69,37 @@ def test_real_crypto_pages_do_not_show_equity_rows(monkeypatch, tmp_path):
         window.close()
         modules.crypto_supervisor.paper.close()
         composition.close()
+
+
+def test_equity_stop_bypasses_exposure_guard_and_other_market_task(monkeypatch, tmp_path):
+    from app.asset_modules.lifecycle import AssetModules, ModuleAdapter
+    from app.gui.widgets.workstation_panels import RuntimeControlsPanel
+    app = QApplication.instance() or QApplication([])
+    composition = create_desktop_composition(paper_persistence_path=tmp_path/'equity.sqlite3')
+    adapter_calls = []
+    modules = AssetModules({AssetType.EQUITY: ModuleAdapter(
+        lambda: True, lambda: adapter_calls.append('stop'), lambda: True, lambda: True)})
+    window = MainWindow(composition.bus, composition.state_store,
+                        composition.runtime_service, composition.trading_service,
+                        composition.order_command_factory, asset_modules=modules)
+    calls = []
+    monkeypatch.setattr(composition.runtime_service, 'stop', lambda reason='': calls.append(reason) or True)
+    try:
+        # The old routing silently ignored Stop while any lifecycle task existed.
+        window.asset_navigation.task = object()
+        window.stop_button.setEnabled(True)
+        window.stop_button.click()
+        assert calls == ['Operator requested shutdown.']
+        assert adapter_calls == []
+        assert window.stop_button.text() == 'STOPPING…'
+        assert not window.stop_button.isEnabled()
+        assert 'positions are not closed' in window.statusBar().currentMessage()
+        window.stop_button.click()
+        assert len(calls) == 1
+        controls = window.dashboard.market_workspace.runtime_controls
+        controls.set_runtime_status('PAPER','STOPPED')
+        assert window.stop_button.text() == 'STOP'
+    finally:
+        window.asset_navigation.task = None
+        window.close()
+        composition.close()

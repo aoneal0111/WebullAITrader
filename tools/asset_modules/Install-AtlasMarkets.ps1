@@ -16,7 +16,8 @@ try {
     $Current = git rev-parse HEAD
     if ($LASTEXITCODE -ne 0) { throw "Cannot read repository commit." }
     if ($Current -ne $Manifest.commit) {
-        if ($Current -ne $Manifest.base) { throw "Expected base $($Manifest.base); found $Current. No files changed." }
+        $AcceptedBases = @($Manifest.base) + @($Manifest.accepted_bases)
+        if ($Current -notin $AcceptedBases) { throw "Unsupported base $Current. No files changed." }
         $Bundle = Join-Path $PSScriptRoot "atlas-markets.bundle"
         $Hash = (Get-FileHash -LiteralPath $Bundle -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($Hash -ne $Manifest.bundle_sha256) { throw "Bundle checksum mismatch." }
