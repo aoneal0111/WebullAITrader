@@ -554,6 +554,13 @@ def test_ambiguous_expiry_commit_recovers_without_duplicate_event(tmp_path) -> N
     delegate = DurablePaperExecutionStore(path, account_id=PAPER_ACCOUNT_ID)
 
     class CommitThenFail:
+        @property
+        def event_sequence_watermark(self):
+            return delegate.event_sequence_watermark
+
+        def reserve_event_sequences(self, count=1):
+            return delegate.reserve_event_sequences(count)
+
         def orders(self):
             return delegate.orders()
 

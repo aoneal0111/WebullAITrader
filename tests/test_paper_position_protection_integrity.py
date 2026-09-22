@@ -280,7 +280,20 @@ def test_repeated_protection_reconciliation_preserves_correlated_target_bracket(
         assert sorted(
             (order.request.order_type.value, int(order.remaining_quantity))
             for order in before
-        ) == [("LIMIT", 55), ("STOP", 43)]
+        ) == [("LIMIT", 55), ("STOP", 98)]
+        before_stop = next(
+            order for order in before
+            if order.request.order_type.value == "STOP"
+        )
+        before_target = next(
+            order for order in before
+            if order.request.order_type.value == "LIMIT"
+        )
+        assert before_stop.request.metadata["reservation_mode"] == "CONTINGENT_OCO"
+        assert (
+            before_stop.request.metadata["correlated_target_order_id"]
+            == before_target.order_id
+        )
 
         repeated = bridge.ensure_exit(
             "XYZ", 98, D("15.2045"), "STOP", lifecycle,
@@ -291,10 +304,6 @@ def test_repeated_protection_reconciliation_preserves_correlated_target_bracket(
             order for order in composition.order_book.open_orders_for_symbol("XYZ")
             if order.request.side.value == "SELL"
         )
-        before_target = next(
-            order for order in before
-            if order.request.order_type.value == "LIMIT"
-        )
         after_target = next(
             order for order in after
             if order.request.order_type.value == "LIMIT"
@@ -303,8 +312,17 @@ def test_repeated_protection_reconciliation_preserves_correlated_target_bracket(
         assert sorted(
             (order.request.order_type.value, int(order.remaining_quantity))
             for order in after
-        ) == [("LIMIT", 55), ("STOP", 43)]
-        assert sum(int(order.remaining_quantity) for order in after) == 98
+        ) == [("LIMIT", 55), ("STOP", 98)]
+        after_stop = next(
+            order for order in after
+            if order.request.order_type.value == "STOP"
+        )
+        assert after_stop.order_id == before_stop.order_id
+        assert after_stop.request.metadata["reservation_mode"] == "CONTINGENT_OCO"
+        assert (
+            after_stop.request.metadata["correlated_target_order_id"]
+            == after_target.order_id
+        )
     finally:
         composition.close()
 

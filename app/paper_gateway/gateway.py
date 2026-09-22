@@ -161,7 +161,9 @@ class PaperOrderGateway:
             restored_events = self._durable_store.events()
             for restored in self._durable_store.orders():
                 self._order_book.restore(restored)
-            self._sequence = max((event.sequence for event in restored_events), default=0)
+            # Event identifiers are global to the durable table even though
+            # trading-state replay remains isolated to the active campaign.
+            self._sequence = self._durable_store.event_sequence_watermark
             if self._event_sink is not None:
                 for event in restored_events:
                     self._event_sink(event)
@@ -1116,6 +1118,18 @@ class PaperOrderGateway:
         )
 
     def _next_sequence(self) -> int:
+        if self._durable_store is not None:
+            self._require_durability()
+            try:
+                sequence = self._durable_store.reserve_event_sequences(1)[0]
+            except Exception as exc:
+                self._mark_durability_failed(exc, None)
+                raise PaperDurabilityError(
+                    "authoritative PAPER sequence allocation failed; "
+                    "PAPER is disabled"
+                ) from exc
+            self._sequence = max(self._sequence, sequence)
+            return sequence
         self._sequence += 1
         return self._sequence
 
@@ -1182,8 +1196,11 @@ class PaperOrderGateway:
         )
         if self._event_sink is None:
             return
+        self._sequence += 1
         diagnostic = PaperRuntimeEvent(
-            sequence=self._next_sequence(),
+            # This health diagnostic is deliberately sink-only because the
+            # durable authority just failed.  Never recurse into allocation.
+            sequence=self._sequence,
             timestamp=self._now(),
             event_type="PAPER_DURABILITY_FAILED",
             message="Authoritative PAPER persistence failed; PAPER execution is disabled.",

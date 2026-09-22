@@ -1,15 +1,19 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 import json
 import sqlite3
-from threading import Thread, get_ident
+from threading import Barrier, Thread, get_ident
 
 import pytest
 
 from app.market_data.models import MarketEvent, MarketEventType, QuotePayload
 from app.operations_core import OperationsBus
 from app.composition.runtime_projection_pipeline import create_runtime_projection_pipeline
-from app.paper_gateway.durable_store import DurablePaperExecutionStore
+from app.paper_gateway.durable_store import (
+    DurablePaperExecutionStore,
+    PaperEventConflictError,
+)
 from app.operations.runtime import PaperRuntimeEvent
 from app.paper_trading.command_composition import PAPER_ACCOUNT_ID
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
@@ -328,7 +332,12 @@ class _TrackedConnection:
 
     def commit(self):
         self._records.append(("commit", self._owner, get_ident()))
-        if self._failures.get("commit_after"):
+        self._failures["commit_calls"] += 1
+        commit_after = self._failures.get("commit_after") or (
+            self._failures.get("commit_after_on_call")
+            == self._failures["commit_calls"]
+        )
+        if commit_after:
             self._connection.commit()
             raise sqlite3.OperationalError("injected ambiguous commit failure")
         if self._failures.get("commit"):
@@ -352,6 +361,8 @@ class _ConnectionFactory:
             "execute": False,
             "commit": False,
             "commit_after": False,
+            "commit_after_on_call": None,
+            "commit_calls": 0,
         }
 
     def __call__(self, *args, **kwargs):
@@ -598,12 +609,17 @@ def test_ambiguous_commit_failure_recovers_once_and_blocks_resubmission(tmp_path
         composition.order_command_factory,
         order_book=composition.order_book,
     )
-    factory.failures["commit_after"] = True
+    # Two globally durable sequence reservations precede the atomic
+    # order/event transaction. Fail ambiguously only after that transaction
+    # commits so restart recovery must find the mutation exactly once.
+    factory.failures["commit_after_on_call"] = (
+        factory.failures["commit_calls"] + 3
+    )
 
     assert bridge.submit_entry(Signal(), 100, Decimal("50")) is False
     assert composition.order_book.history() == ()
     assert composition.gateway.durability_failed
-    factory.failures["commit_after"] = False
+    factory.failures["commit_after_on_call"] = None
     composition.close()
     store.close()
 
@@ -657,4 +673,231 @@ def test_authoritative_buy_fill_consumes_durable_opportunity(tmp_path) -> None:
     marker = composition.durable_store.consumed_opportunity("opportunity-filled")
     assert marker is not None
     assert marker["lifecycle_id"] == "trade-a"
+    composition.close()
+
+
+def _evidence_event(sequence: int, *, message: str = "evidence") -> PaperRuntimeEvent:
+    return PaperRuntimeEvent(
+        sequence=sequence,
+        timestamp=datetime(2026, 9, 22, tzinfo=timezone.utc),
+        event_type="PAPER_TEST_EVIDENCE",
+        message=message,
+        cycle=0,
+        symbol="GDC",
+        source="durable-sequence-test",
+    )
+
+
+def test_legacy_campaignless_events_seed_global_gateway_sequence(tmp_path) -> None:
+    path = tmp_path / "legacy-global-sequence.sqlite3"
+    store = DurablePaperExecutionStore(path, account_id=PAPER_ACCOUNT_ID)
+    store.persist(_evidence_event(214, message="legacy evidence"))
+    store.close()
+
+    # Model the production legacy rows without assigning them a campaign.
+    with sqlite3.connect(path) as connection:
+        payload = json.loads(connection.execute(
+            "SELECT payload FROM events WHERE sequence=214"
+        ).fetchone()[0])
+        payload.pop("paper_campaign_id")
+        connection.execute(
+            "UPDATE events SET payload=? WHERE sequence=214",
+            (json.dumps(payload, sort_keys=True),),
+        )
+
+    events = []
+    composition = create_paper_trading_command_composition(
+        persistence_path=str(path), event_sink=events.append,
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert composition.durable_store.events() == ()
+    assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+    assert [event.sequence for event in events] == [215, 216]
+    assert [event.sequence for event in composition.durable_store.events()] == [215, 216]
+    assert [event.sequence for event in composition.durable_store.historical_events()] == [214, 215, 216]
+    composition.close()
+
+    with sqlite3.connect(path) as connection:
+        legacy = json.loads(connection.execute(
+            "SELECT payload FROM events WHERE sequence=214"
+        ).fetchone()[0])
+        assert "paper_campaign_id" not in legacy
+
+
+def test_event_sequences_span_campaigns_and_replay_stays_isolated(tmp_path) -> None:
+    path = tmp_path / "campaign-sequences.sqlite3"
+    store = DurablePaperExecutionStore(path, account_id=PAPER_ACCOUNT_ID)
+    first_campaign = store.active_campaign_id
+    store.persist(_evidence_event(1, message="first campaign"))
+    second_campaign = store.start_new_paper_campaign(
+        operation_key="new-campaign", campaign_id="paper-second",
+    )
+    store.persist(_evidence_event(2, message="second campaign"))
+
+    assert first_campaign != second_campaign
+    assert [event.sequence for event in store.events()] == [2]
+    assert [event.sequence for event in store.historical_events()] == [1, 2]
+    assert store.event_sequence_watermark == 2
+    store.close()
+
+
+def test_sequence_gaps_and_repeated_restart_never_reuse_identifiers(tmp_path) -> None:
+    path = tmp_path / "sequence-gaps.sqlite3"
+    store = DurablePaperExecutionStore(path, account_id=PAPER_ACCOUNT_ID)
+    store.persist(_evidence_event(5))
+    assert store.reserve_event_sequences() == (6,)
+    store.close()
+
+    restarted = DurablePaperExecutionStore(path, account_id=PAPER_ACCOUNT_ID)
+    assert restarted.reserve_event_sequences() == (7,)
+    restarted.close()
+    repeated = DurablePaperExecutionStore(path, account_id=PAPER_ACCOUNT_ID)
+    assert repeated.reserve_event_sequences(2) == (8, 9)
+    assert [event.sequence for event in repeated.historical_events()] == [5]
+    repeated.close()
+
+
+def test_exact_retry_is_idempotent_but_conflicting_duplicate_rolls_back_order(tmp_path) -> None:
+    path = tmp_path / "event-retry.sqlite3"
+    emitted = []
+    composition = create_paper_trading_command_composition(
+        persistence_path=str(path), event_sink=emitted.append,
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+    order = composition.order_book.history()[0]
+    durable = composition.durable_store
+    original_events = tuple(emitted)
+
+    durable.persist_batch(original_events, order)
+    assert len(durable.events()) == 2
+    assert len(durable.orders()) == 1
+    durable_before_conflict = durable.orders()[0]
+
+    changed_order = replace(
+        order,
+        request=replace(order.request, quantity=order.request.quantity + 1),
+    )
+    conflict = replace(original_events[0], message="different evidence")
+    with pytest.raises(PaperEventConflictError, match="sequence conflict"):
+        durable.persist(conflict, changed_order)
+    assert durable.orders()[0] == durable_before_conflict
+    assert len(durable.events()) == 2
+    composition.close()
+
+
+def test_reservation_rollback_reuses_only_uncommitted_sequence(tmp_path) -> None:
+    factory = _ConnectionFactory()
+    store = DurablePaperExecutionStore(
+        tmp_path / "reservation-rollback.sqlite3",
+        account_id=PAPER_ACCOUNT_ID,
+        connection_factory=factory,
+    )
+    assert store.event_sequence_watermark == 0
+    factory.failures["commit"] = True
+    with pytest.raises(sqlite3.OperationalError, match="commit failure"):
+        store.reserve_event_sequences()
+    factory.failures["commit"] = False
+    assert store.event_sequence_watermark == 0
+    assert store.reserve_event_sequences() == (1,)
+    store.close()
+
+
+def test_ambiguous_reservation_commit_is_never_reused(tmp_path) -> None:
+    factory = _ConnectionFactory()
+    store = DurablePaperExecutionStore(
+        tmp_path / "ambiguous-reservation.sqlite3",
+        account_id=PAPER_ACCOUNT_ID,
+        connection_factory=factory,
+    )
+    factory.failures["commit_after"] = True
+    with pytest.raises(sqlite3.OperationalError, match="ambiguous commit"):
+        store.reserve_event_sequences()
+    factory.failures["commit_after"] = False
+    assert store.event_sequence_watermark == 1
+    assert store.reserve_event_sequences() == (2,)
+    store.close()
+
+
+def test_concurrent_store_instances_allocate_one_global_namespace(tmp_path) -> None:
+    path = tmp_path / "concurrent-allocation.sqlite3"
+    first = DurablePaperExecutionStore(
+        path, account_id=PAPER_ACCOUNT_ID, busy_timeout_seconds=5,
+    )
+    second = DurablePaperExecutionStore(
+        path, account_id=PAPER_ACCOUNT_ID, busy_timeout_seconds=5,
+    )
+    barrier = Barrier(3)
+    allocated = []
+    errors = []
+
+    def reserve(store) -> None:
+        try:
+            barrier.wait(timeout=5)
+            for _ in range(25):
+                sequence = store.reserve_event_sequences()[0]
+                store.persist(_evidence_event(sequence))
+                allocated.append(sequence)
+        except Exception as exc:
+            errors.append(exc)
+
+    workers = [Thread(target=reserve, args=(store,)) for store in (first, second)]
+    for worker in workers:
+        worker.start()
+    barrier.wait(timeout=5)
+    for worker in workers:
+        worker.join(timeout=10)
+
+    assert errors == []
+    assert all(not worker.is_alive() for worker in workers)
+    assert sorted(allocated) == list(range(1, 51))
+    assert first.event_sequence_watermark == 50
+    assert second.event_sequence_watermark == 50
+    assert [event.sequence for event in first.historical_events()] == list(
+        range(1, 51)
+    )
+    first.close()
+    second.close()
+
+
+def test_committed_order_mutation_always_has_its_durable_event(tmp_path) -> None:
+    path = tmp_path / "mutation-audit.sqlite3"
+    emitted = []
+    composition = create_paper_trading_command_composition(
+        persistence_path=str(path), event_sink=emitted.append,
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+    order = composition.order_book.history()[0]
+    from app.order_cancellation import OrderCancellationRequest
+    result = composition.trading_service.cancel_order(OrderCancellationRequest(
+        request_id="audit-cancel",
+        session_id=composition.session_id,
+        account_id=composition.account_id,
+        broker_order_id=order.order_id,
+        client_order_id=order.request.client_order_id,
+    ))
+    assert result.success
+    durable_order = composition.durable_store.orders()[0]
+    durable_events = composition.durable_store.events()
+    assert durable_order.status.value == "CANCELLED"
+    assert any(
+        event.event_type == "ORDER_CANCELLED"
+        and event.order is not None
+        and event.order.order_id == durable_order.order_id
+        and event.order.status == "CANCELLED"
+        for event in durable_events
+    )
     composition.close()

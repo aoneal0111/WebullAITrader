@@ -27,9 +27,14 @@ LEGACY_PAPER_CAMPAIGN_ID = "legacy-paper-campaign"
 NO_ACTIVE_PAPER_CAMPAIGN_ID = "no-active-paper-campaign"
 DEFAULT_ATLAS_PAPER_STARTING_CASH = Decimal("10000")
 DEFAULT_BUSY_TIMEOUT_SECONDS = 1.0
+EVENT_SEQUENCE_WATERMARK_KEY = "event_sequence_watermark"
 
 
 ConnectionFactory = Callable[..., sqlite3.Connection]
+
+
+class PaperEventConflictError(RuntimeError):
+    """A durable sequence already names different PAPER evidence."""
 
 
 class DurablePaperExecutionStore:
@@ -112,6 +117,7 @@ class DurablePaperExecutionStore:
                     raise ValueError("PAPER execution store identity mismatch")
                 self._ensure_initial_campaign(connection)
                 self._backfill_consumed_opportunities(connection)
+                self._synchronize_event_sequence_watermark(connection)
             finally:
                 connection.close()
 
@@ -141,15 +147,68 @@ class DurablePaperExecutionStore:
                     raise RuntimeError(
                         "no active PAPER campaign; start a new campaign explicitly"
                     )
-                for order in ((order,) if order is not None else ()) + orders:
+                order_values = ((order,) if order is not None else ()) + orders
+                serialized_events = tuple(
+                    (
+                        event,
+                        json.dumps(
+                            _event_payload(event, campaign_id), sort_keys=True,
+                        ),
+                    )
+                    for event in event_values
+                )
+                existing_events = {}
+                for event, payload in serialized_events:
+                    if event.sequence <= 0:
+                        raise ValueError("PAPER event sequence must be positive")
+                    row = connection.execute(
+                        "SELECT event_type,payload FROM events WHERE sequence=?",
+                        (event.sequence,),
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    existing_events[event.sequence] = row
+                    if row[0] != event.event_type or row[1] != payload:
+                        raise PaperEventConflictError(
+                            "PAPER event sequence conflict at "
+                            f"{event.sequence}: durable evidence differs"
+                        )
+                if existing_events and len(existing_events) != len(event_values):
+                    raise PaperEventConflictError(
+                        "PAPER event batch is only partially durable"
+                    )
+                retry = len(existing_events) == len(event_values)
+                serialized_orders = tuple(
+                    (
+                        value,
+                        json.dumps(
+                            _order_payload(value, campaign_id), sort_keys=True,
+                        ),
+                    )
+                    for value in order_values
+                )
+                if retry:
+                    for value, payload in serialized_orders:
+                        row = connection.execute(
+                            "SELECT payload FROM orders WHERE order_id=?",
+                            (value.order_id,),
+                        ).fetchone()
+                        if row is None or row[0] != payload:
+                            raise PaperEventConflictError(
+                                "PAPER event retry does not match its durable "
+                                f"order mutation: {value.order_id}"
+                            )
+                    connection.commit()
+                    return
+                for value, payload in serialized_orders:
                     connection.execute(
                         "INSERT INTO orders(order_id,payload) VALUES(?,?) ON CONFLICT(order_id) DO UPDATE SET payload=excluded.payload",
-                        (order.order_id, json.dumps(_order_payload(order, campaign_id), sort_keys=True)),
+                        (value.order_id, payload),
                     )
-                    opportunity_id = order.request.metadata.get("opportunity_id")
-                    lifecycle_id = order.request.strategy_lifecycle_id
+                    opportunity_id = value.request.metadata.get("opportunity_id")
+                    lifecycle_id = value.request.strategy_lifecycle_id
                     if (
-                        order.request.side is OrderSide.BUY
+                        value.request.side is OrderSide.BUY
                         and opportunity_id
                         and lifecycle_id
                     ):
@@ -157,7 +216,7 @@ class DurablePaperExecutionStore:
                         # participation, not merely an attempted BUY.  A
                         # zero-fill cancellation/expiry must remain eligible
                         # for a later bounded structural lifecycle.
-                        if order.filled_quantity > 0:
+                        if value.filled_quantity > 0:
                             connection.execute(
                                 "INSERT INTO consumed_opportunities "
                                 "(opportunity_id,lifecycle_id,symbol,session,episode_id,status,consumed_at,paper_campaign_id) "
@@ -165,10 +224,10 @@ class DurablePaperExecutionStore:
                                 "ON CONFLICT(paper_campaign_id,opportunity_id) DO UPDATE SET "
                                 "lifecycle_id=excluded.lifecycle_id,status=excluded.status,consumed_at=excluded.consumed_at",
                                 (
-                                    str(opportunity_id), str(lifecycle_id), order.symbol,
-                                    str(order.request.metadata.get("session", "")),
-                                    str(order.request.metadata.get("structural_episode_id", "")),
-                                    order.status.value, order.updated_at.isoformat(), campaign_id,
+                                    str(opportunity_id), str(lifecycle_id), value.symbol,
+                                    str(value.request.metadata.get("session", "")),
+                                    str(value.request.metadata.get("structural_episode_id", "")),
+                                    value.status.value, value.updated_at.isoformat(), campaign_id,
                                 ),
                             )
                         else:
@@ -178,15 +237,15 @@ class DurablePaperExecutionStore:
                                 "AND lifecycle_id=?",
                                 (campaign_id, str(opportunity_id), str(lifecycle_id)),
                             )
-                for event in event_values:
+                for event, payload in serialized_events:
                     connection.execute(
-                        "INSERT OR IGNORE INTO events(sequence,event_type,payload) VALUES(?,?,?)",
-                        (
-                            event.sequence,
-                            event.event_type,
-                            json.dumps(_event_payload(event, campaign_id), sort_keys=True),
-                        ),
+                        "INSERT INTO events(sequence,event_type,payload) VALUES(?,?,?)",
+                        (event.sequence, event.event_type, payload),
                     )
+                self._advance_event_sequence_watermark(
+                    connection,
+                    max(event.sequence for event in event_values),
+                )
                 connection.commit()
             except Exception:
                 try:
@@ -194,6 +253,47 @@ class DurablePaperExecutionStore:
                 except Exception:
                     pass
                 raise
+            finally:
+                connection.close()
+
+    def reserve_event_sequences(self, count: int = 1) -> tuple[int, ...]:
+        """Reserve globally unique event sequences in one durable transaction.
+
+        Reservations intentionally survive a later event-write failure.  That
+        can leave a sequence gap, but it prevents reuse after an ambiguous
+        commit, process crash, or concurrent writer allocation.
+        """
+        if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+            raise ValueError("event sequence reservation count must be positive")
+        with self._lock:
+            self._require_open()
+            connection = self._open_connection()
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                current = self._event_sequence_watermark(connection)
+                end = current + count
+                self._set_metadata(
+                    connection, EVENT_SEQUENCE_WATERMARK_KEY, str(end),
+                )
+                connection.commit()
+                return tuple(range(current + 1, end + 1))
+            except Exception:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                connection.close()
+
+    @property
+    def event_sequence_watermark(self) -> int:
+        """Return the global allocation watermark, not campaign replay state."""
+        with self._lock:
+            self._require_open()
+            connection = self._open_connection()
+            try:
+                return self._event_sequence_watermark(connection)
             finally:
                 connection.close()
 
@@ -421,6 +521,57 @@ class DurablePaperExecutionStore:
         )
         self._set_metadata(connection, "active_campaign_id", campaign_id)
 
+    def _synchronize_event_sequence_watermark(
+        self, connection: sqlite3.Connection,
+    ) -> None:
+        """Migrate only allocator metadata; never rewrite legacy evidence."""
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            durable_max = int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(sequence),0) FROM events"
+                ).fetchone()[0]
+            )
+            recorded = self._metadata_optional(
+                connection, EVENT_SEQUENCE_WATERMARK_KEY,
+            )
+            watermark = max(durable_max, int(recorded or 0))
+            self._set_metadata(
+                connection, EVENT_SEQUENCE_WATERMARK_KEY, str(watermark),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    @classmethod
+    def _event_sequence_watermark(cls, connection: sqlite3.Connection) -> int:
+        recorded = cls._metadata_optional(
+            connection, EVENT_SEQUENCE_WATERMARK_KEY,
+        )
+        durable_max = int(
+            connection.execute(
+                "SELECT COALESCE(MAX(sequence),0) FROM events"
+            ).fetchone()[0]
+        )
+        return max(durable_max, int(recorded or 0))
+
+    @classmethod
+    def _advance_event_sequence_watermark(
+        cls, connection: sqlite3.Connection, sequence: int,
+    ) -> None:
+        current = cls._event_sequence_watermark(connection)
+        recorded = int(
+            cls._metadata_optional(
+                connection, EVENT_SEQUENCE_WATERMARK_KEY,
+            ) or 0
+        )
+        desired = max(current, sequence)
+        if desired > recorded:
+            cls._set_metadata(
+                connection, EVENT_SEQUENCE_WATERMARK_KEY, str(desired),
+            )
+
     @staticmethod
     def _backfill_consumed_opportunities(connection: sqlite3.Connection) -> None:
         campaign_id = DurablePaperExecutionStore._active_campaign_id(connection)
@@ -614,6 +765,8 @@ def _event_from_payload(value: dict) -> PaperRuntimeEvent:
 __all__ = [
     "DEFAULT_BUSY_TIMEOUT_SECONDS",
     "DurablePaperExecutionStore",
+    "PaperEventConflictError",
+    "EVENT_SEQUENCE_WATERMARK_KEY",
     "SCHEMA_VERSION",
     "LEGACY_PAPER_CAMPAIGN_ID",
     "NO_ACTIVE_PAPER_CAMPAIGN_ID",
