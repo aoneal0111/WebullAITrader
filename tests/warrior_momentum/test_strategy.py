@@ -521,11 +521,36 @@ def test_configuration_defaults_existing_and_live_false(monkeypatch) -> None:
         WarriorMomentumConfig(live_execution_enabled=True)
 
 
-def test_only_production_catalyst_sources_are_claimed() -> None:
+@pytest.mark.parametrize(
+    "catalyst_type",
+    tuple(item for item in CatalystType if item is not CatalystType.NONE),
+)
+def test_all_material_aggregated_catalyst_types_are_preserved(
+    catalyst_type: CatalystType,
+) -> None:
     runtime = WarriorMomentumRuntime()
-    candidate = runtime.discover(observation(catalyst=CatalystType.FDA,
-                                             catalyst_status=CatalystStatus.TRUE),
-                                 hod_bars(), session="REGULAR")
+    candidate = runtime.discover(
+        observation(
+            catalyst=catalyst_type,
+            catalyst_status=CatalystStatus.TRUE,
+        ),
+        hod_bars(),
+        session="PREMARKET",
+    )
+    assert candidate.catalyst_type is catalyst_type
+    assert candidate.catalyst_status is CatalystStatus.TRUE
+
+
+def test_inconsistent_true_without_catalyst_type_fails_unknown() -> None:
+    runtime = WarriorMomentumRuntime()
+    candidate = runtime.discover(
+        observation(
+            catalyst=CatalystType.NONE,
+            catalyst_status=CatalystStatus.TRUE,
+        ),
+        hod_bars(),
+        session="PREMARKET",
+    )
     assert candidate.catalyst_type is CatalystType.NONE
     assert candidate.catalyst_status is CatalystStatus.UNKNOWN
 

@@ -1157,7 +1157,21 @@ class WarriorDesktopSidecar:
             point_in_time = PointInTimeObservation(
                     observation, decision_session,
                     history, float_provenance=provenance,
-                    catalyst_source="WEBULL_EARNINGS_SEC",
+                    catalyst_event_timestamp=observation.catalyst_published_at,
+                    catalyst_event_date=(
+                        None
+                        if observation.catalyst_published_at is None
+                        else observation.catalyst_published_at.date()
+                    ),
+                    catalyst_source=(
+                        observation.catalyst_source
+                        or "UNATTRIBUTED_CATALYST_EVIDENCE"
+                    ),
+                    catalyst_source_classification=(
+                        "AGGREGATED_PRODUCTION_EVIDENCE"
+                        if observation.catalyst_source
+                        else "PRODUCTION_MARKET_DATA"
+                    ),
                     quote_observed_at=(None if state is None else state.quote_timestamp),
                     quote_freshness_seconds=quote_freshness,
                     last_price_observed_at=(

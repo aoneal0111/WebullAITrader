@@ -91,6 +91,52 @@ def test_enabled_sidecar_coalesces_immaterial_ticks_and_flushes_session(tmp_path
     assert sidecar.snapshot().health is WarriorCaptureHealth.STOPPED
 
 
+def test_sidecar_preserves_aggregated_catalyst_type_source_and_time(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "aggregated-catalyst.sqlite3"
+    published_at = T0 - timedelta(minutes=20)
+    reference = ScannerReferenceData(
+        symbol="XYZ",
+        previous_close=D("8"),
+        average_30_day_volume=D("100000"),
+        float_shares=D("6000000"),
+        catalyst=CatalystType.ACQUISITION,
+        catalyst_headline="XYZ announces a business combination",
+        catalyst_status=CatalystStatus.TRUE,
+        current_volume=D("1000000"),
+        updated_at=T0,
+        catalyst_source="CNBC+MARKETWATCH",
+        catalyst_published_at=published_at,
+        catalyst_source_url="https://example.test/xyz-deal",
+        corroborating_sources=("CNBC", "MARKETWATCH"),
+        catalyst_evidence_count=2,
+        catalyst_event_count=1,
+    )
+    scanner = MarketEventScannerAdapter(ScannerReferenceStore((reference,)))
+    sidecar = WarriorDesktopSidecar(enabled=True, storage_path=path, clock=lambda: T0)
+    sidecar.bind_scanner_adapter(scanner)
+    sidecar.start("PAPER")
+    try:
+        deliver(scanner, sidecar, quote())
+        deliver(scanner, sidecar, trade(2, T0 + timedelta(seconds=1), "10.20"))
+        sidecar._writer.flush()
+
+        candidate = sidecar._latest["XYZ"]
+        assert candidate.catalyst_type is CatalystType.ACQUISITION
+        assert candidate.catalyst_status is CatalystStatus.TRUE
+
+        catalyst = ForwardCaptureStore(path).records(
+            record_type=CaptureRecordType.CATALYST_EVIDENCE,
+        )[0].payload
+        assert catalyst["event_type"] == "ACQUISITION"
+        assert catalyst["event_timestamp"] == published_at.isoformat()
+        assert catalyst["source"] == "CNBC+MARKETWATCH"
+        assert catalyst["source_classification"] == "AGGREGATED_PRODUCTION_EVIDENCE"
+    finally:
+        sidecar.stop()
+
+
 def test_active_no_setup_candidate_is_reconsidered_before_next_bar(
     tmp_path: Path,
 ) -> None:

@@ -96,8 +96,11 @@ class WarriorMomentumRuntime:
             while len(self._setup_continuity) > self._setup_continuity_limit:
                 self._setup_continuity.popitem(last=False)
         supported_catalyst = (
-            observation.catalyst in {CatalystType.EARNINGS, CatalystType.SEC_FILING}
-            or (observation.catalyst is CatalystType.NONE and observation.catalyst_status is not CatalystStatus.TRUE)
+            observation.catalyst_status is CatalystStatus.TRUE
+            and observation.catalyst is not CatalystType.NONE
+        ) or (
+            observation.catalyst_status is not CatalystStatus.TRUE
+            and observation.catalyst is CatalystType.NONE
         )
         catalyst_status = observation.catalyst_status if supported_catalyst else CatalystStatus.UNKNOWN
         catalyst_type = observation.catalyst if supported_catalyst else CatalystType.NONE
