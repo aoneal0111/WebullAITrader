@@ -240,8 +240,46 @@ class PaperTradeExperimentJournal:
                     resumed INTEGER NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS research_capture_gaps (
+                    gap_id TEXT PRIMARY KEY,
+                    worker_session_id TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL,
+                    first_source_timestamp TEXT,
+                    last_source_timestamp TEXT,
+                    episode_count INTEGER NOT NULL DEFAULT 1 CHECK(episode_count > 0),
+                    rejected_count INTEGER NOT NULL CHECK(rejected_count > 0),
+                    affected_symbols_json TEXT NOT NULL,
+                    affected_symbol_overflow INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS research_capture_gaps_time
+                    ON research_capture_gaps(started_at, gap_id);
+                CREATE TABLE IF NOT EXISTS research_worker_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    enqueued INTEGER NOT NULL,
+                    completed INTEGER NOT NULL,
+                    rejected INTEGER NOT NULL,
+                    queue_high_water INTEGER NOT NULL,
+                    lag_max_ms REAL NOT NULL,
+                    pressure_episodes INTEGER NOT NULL
+                );
                 """
             )
+            gap_columns = {
+                str(row[1]) for row in connection.execute(
+                    "PRAGMA table_info(research_capture_gaps)"
+                )
+            }
+            if "episode_count" not in gap_columns:
+                connection.execute(
+                    "ALTER TABLE research_capture_gaps ADD COLUMN "
+                    "episode_count INTEGER NOT NULL DEFAULT 1"
+                )
             existing = connection.execute(
                 "SELECT value FROM experiment_metadata WHERE key='schema_version'"
             ).fetchone()
@@ -504,6 +542,98 @@ class PaperTradeExperimentJournal:
                 (rejected, queue_high_water, lag_max_ms, resumed,
                  datetime.now(UTC).isoformat()),
             )
+
+    def record_capture_gaps(self, gaps: Iterable[Mapping[str, Any]]) -> int:
+        """Persist bounded pressure episodes without reconstructing lost evidence."""
+
+        inserted = 0
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as connection:
+            for gap in gaps:
+                cursor = connection.execute(
+                    """INSERT OR IGNORE INTO research_capture_gaps(
+                       gap_id,worker_session_id,reason,started_at,ended_at,
+                       first_source_timestamp,last_source_timestamp,episode_count,rejected_count,
+                       affected_symbols_json,affected_symbol_overflow,created_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        str(gap["gap_id"]), str(gap["worker_session_id"]),
+                        str(gap["reason"]), str(gap["started_at"]),
+                        str(gap["ended_at"]), gap.get("first_source_timestamp"),
+                        gap.get("last_source_timestamp"), int(gap.get("episode_count", 1)),
+                        int(gap["rejected_count"]),
+                        _json({"symbols": list(gap.get("affected_symbols", ())) }),
+                        int(gap.get("affected_symbol_overflow", 0)), now,
+                    ),
+                )
+                inserted += max(0, cursor.rowcount)
+        return inserted
+
+    def record_worker_session(
+        self, *, session_id: str, started_at: datetime,
+        enqueued: int, completed: int, rejected: int,
+        queue_high_water: int, lag_max_ms: float, pressure_episodes: int,
+        ended_at: datetime | None = None,
+    ) -> None:
+        """Upsert one worker-local session, separate from cumulative telemetry."""
+
+        updated_at = datetime.now(UTC).isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO research_worker_sessions(
+                   session_id,started_at,updated_at,ended_at,enqueued,completed,
+                   rejected,queue_high_water,lag_max_ms,pressure_episodes
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(session_id) DO UPDATE SET
+                   updated_at=excluded.updated_at,ended_at=excluded.ended_at,
+                   enqueued=excluded.enqueued,completed=excluded.completed,
+                   rejected=excluded.rejected,
+                   queue_high_water=excluded.queue_high_water,
+                   lag_max_ms=excluded.lag_max_ms,
+                   pressure_episodes=excluded.pressure_episodes""",
+                (
+                    session_id, started_at.astimezone(UTC).isoformat(), updated_at,
+                    None if ended_at is None else ended_at.astimezone(UTC).isoformat(),
+                    enqueued, completed, rejected, queue_high_water,
+                    lag_max_ms, pressure_episodes,
+                ),
+            )
+
+    def capture_health_snapshot(self) -> Mapping[str, Any]:
+        """Return bounded cumulative, session, and explicit-gap diagnostics."""
+
+        with self._connect() as connection:
+            telemetry = connection.execute(
+                "SELECT * FROM research_worker_telemetry WHERE singleton=1"
+            ).fetchone()
+            latest_session = connection.execute(
+                "SELECT * FROM research_worker_sessions "
+                "ORDER BY started_at DESC,session_id DESC LIMIT 1"
+            ).fetchone()
+            gap = connection.execute(
+                """SELECT COALESCE(SUM(episode_count),0) AS episodes,
+                          COALESCE(SUM(rejected_count),0) AS observations,
+                          MIN(started_at) AS first_gap_at,
+                          MAX(ended_at) AS last_gap_at
+                   FROM research_capture_gaps"""
+            ).fetchone()
+            gap_reasons = tuple(
+                (str(row[0]), int(row[1]), int(row[2]))
+                for row in connection.execute(
+                    """SELECT reason,SUM(episode_count),SUM(rejected_count)
+                       FROM research_capture_gaps GROUP BY reason ORDER BY reason"""
+                )
+            )
+        return {
+            "cumulative": None if telemetry is None else dict(telemetry),
+            "latest_session": (
+                None if latest_session is None else dict(latest_session)
+            ),
+            "explicit_gaps": {
+                **dict(gap),
+                "by_reason": gap_reasons,
+            },
+        }
 
     def active_query_plan(self, symbol: str, timestamp: datetime) -> tuple[str, ...]:
         """Expose the bounded hot-query plan for diagnostics and tests."""

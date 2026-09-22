@@ -27,6 +27,7 @@ from tests.paper_trade_experiment.test_incremental_horizon_engine import (
 
 
 RUN_SCALING = os.environ.get("ATLAS_RUN_RESEARCH_SCALING") == "1"
+RUN_BURST = os.environ.get("ATLAS_RUN_RESEARCH_BURST") == "1"
 COUNTS = (10_000, 50_000, 100_000, 250_000, 500_000)
 SYMBOL_COUNT = 12
 
@@ -72,6 +73,56 @@ def _percentile(values: list[float], fraction: float) -> float:
         return 0.0
     index = round((len(values) - 1) * fraction)
     return sorted(values)[index]
+
+
+def _run_bounded_burst(path, *, observations: int = 20_000) -> dict[str, object]:
+    """Overdrive a scaled bounded queue without producer-side throttling."""
+
+    worker = PaperTradeExperimentWorker(
+        path, execution_environment="TEST", capacity=128,
+    )
+    admission_ms: list[float] = []
+    accepted = 0
+    started = perf_counter()
+    for index in range(observations):
+        symbol = f"B{index % 256:03d}"
+        call_started = perf_counter()
+        admitted = worker.observe_price(
+            symbol,
+            T0 + timedelta(milliseconds=index),
+            Decimal("5") + Decimal(index % 101) / Decimal("1000"),
+        )
+        admission_ms.append((perf_counter() - call_started) * 1000.0)
+        accepted += int(admitted)
+    submitted_at = perf_counter()
+    assert worker.close(timeout_seconds=120)
+    finished = perf_counter()
+    metrics = worker.metrics()
+    journal = PaperTradeExperimentJournal(path)
+    snapshot = journal.completeness_snapshot()
+    health = journal.capture_health_snapshot()
+    journal.close()
+    result = {
+        "observations": observations,
+        "accepted_calls": accepted,
+        "rejected_calls": observations - accepted,
+        "producer_rate": observations / (submitted_at - started),
+        "drain_rate": metrics.completed / (finished - started),
+        "admission_p50_ms": median(admission_ms),
+        "admission_p95_ms": _percentile(admission_ms, 0.95),
+        "admission_p99_ms": _percentile(admission_ms, 0.99),
+        "admission_max_ms": max(admission_ms),
+        "completed": metrics.completed,
+        "coalesced": metrics.coalesced,
+        "coalesced_observation_gaps": metrics.coalesced_observation_gaps,
+        "queue_hwm": metrics.queue_high_water,
+        "durable_accepted": snapshot["items_accepted"],
+        "durable_outstanding": snapshot["durable_outstanding"],
+        "gap_episodes": health["explicit_gaps"]["episodes"],
+        "gap_observations": health["explicit_gaps"]["observations"],
+    }
+    print(f"ATLAS_RESEARCH_BURST {result}")
+    return result
 
 
 def _run_workload(path, market_observations: int) -> dict[str, float | int]:
@@ -255,3 +306,15 @@ def test_report_full_history_contention_retains_research_headroom(tmp_path) -> N
     assert loaded["service_rate"] >= 171
     assert loaded["rejections"] == 0
     assert loaded["durable_outstanding"] == 0
+
+
+@pytest.mark.skipif(not RUN_BURST, reason="explicit bounded burst validation")
+def test_bounded_burst_remains_nonblocking_and_records_pressure(tmp_path) -> None:
+    result = _run_bounded_burst(tmp_path / "research-burst.sqlite3")
+    assert result["admission_p99_ms"] < 10
+    assert result["queue_hwm"] <= 128
+    assert result["durable_outstanding"] == 0
+    assert result["gap_episodes"] >= 1
+    assert result["gap_observations"] == (
+        result["rejected_calls"] + result["coalesced_observation_gaps"]
+    )

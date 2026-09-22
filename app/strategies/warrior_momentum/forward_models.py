@@ -48,6 +48,7 @@ class CaptureRecordType(StrEnum):
     CALLBACK_QUEUE_THRESHOLD = "CALLBACK_QUEUE_THRESHOLD"
     EXECUTION_GATE_DECISION = "EXECUTION_GATE_DECISION"
     DI_ENTRY_DIAGNOSTIC = "DI_ENTRY_DIAGNOSTIC"
+    EXECUTION_PRICE_PATH = "EXECUTION_PRICE_PATH"
 
 
 def is_phase_a_shadow_payload(payload: Mapping[str, object]) -> bool:

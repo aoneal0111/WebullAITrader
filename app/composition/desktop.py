@@ -201,6 +201,7 @@ def create_desktop_composition(
         )
     )
     market_event_observer = None
+    warrior_forward_sidecar = None
     if placement_runtime is None:
         def paper_runtime_event_sink(event: PaperRuntimeEvent) -> None:
             runtime_projections.sink(event)
@@ -218,6 +219,8 @@ def create_desktop_composition(
             if decision_intelligence_observer is not None:
                 decision_intelligence_observer.observe_paper_event(event)
             paper_entry_intelligence.observe_paper_event(event)
+            if warrior_forward_sidecar is not None:
+                warrior_forward_sidecar.observe_paper_event(event)
             trade_intelligence_observer.observe_paper_fact(
                 observation_id=f"{event.source}:{event.sequence}:{event.event_type}",
                 observed_at=event.timestamp, event_type=event.event_type,
@@ -346,6 +349,10 @@ def create_desktop_composition(
         paper_entry_intelligence=paper_entry_intelligence,
         observability=warrior_observability,
     )
+    if paper_trading_commands is not None:
+        warrior_forward_sidecar.restore_execution_lifecycles(
+            paper_trading_commands.order_book.history()
+        )
 
     adaptive_entry_research_observer = create_adaptive_entry_research_observer(
         operational_configuration=operational_configuration,

@@ -12,6 +12,7 @@ from queue import Empty, Full, Queue
 from threading import Event, RLock, Thread
 from time import monotonic
 from typing import Callable
+from uuid import uuid4
 
 from app.momentum_scanner import ScannerDecision
 from app.performance_diagnostics import performance_diagnostics
@@ -35,6 +36,8 @@ _LOGGER = logging.getLogger("atlas.research")
 # 8,192 provides 28.7% headroom while keeping memory strictly bounded.
 DEFAULT_RESEARCH_QUEUE_CAPACITY = 8192
 DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 30.0
+MAX_GAP_SYMBOLS = 32
+SESSION_CHECKPOINT_SECONDS = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +81,9 @@ class ResearchWorkerMetrics:
     evidence_incomplete_counts: tuple[tuple[str, int], ...] = ()
     last_decision_received_at: datetime | None = None
     last_work_completed_at: datetime | None = None
+    capture_gap_episodes: int = 0
+    capture_gap_observations: int = 0
+    coalesced_observation_gaps: int = 0
 
 
 JournalFactory = Callable[[str | Path], PaperTradeExperimentJournal]
@@ -149,6 +155,15 @@ class PaperTradeExperimentWorker:
         }
         self._last_decision_received_at: datetime | None = None
         self._last_work_completed_at: datetime | None = None
+        self._session_id = "research-session-" + uuid4().hex
+        self._session_started_at = self._aware_now()
+        self._last_session_checkpoint = monotonic()
+        self._active_gap: dict[str, object] | None = None
+        self._active_coalesced_gap: dict[str, object] | None = None
+        self._pending_gaps: deque[dict[str, object]] = deque()
+        self._capture_gap_episodes = 0
+        self._capture_gap_observations = 0
+        self._coalesced_observation_gaps = 0
         self._last_accepted_observation: dict[
             str, tuple[datetime, object]
         ] = {}
@@ -161,6 +176,7 @@ class PaperTradeExperimentWorker:
         # minutes of obsolete ticks.
         self._pending_price_symbols_by_id: dict[str, str] = {}
         self._coalesced_price_work: dict[str, ResearchDecisionWork] = {}
+        self._coalesced_price_timestamp: dict[str, datetime] = {}
         self._thread = Thread(
             target=self._run,
             name="atlas-experiment-research",
@@ -221,6 +237,14 @@ class PaperTradeExperimentWorker:
                 logical_decision_state_signature(snapshot)
                 if state_changed else self._decision_state_signatures[symbol]
             )
+            if self._queue.full():
+                self._record_pressure_rejection(
+                    symbol=symbol,
+                    source_timestamp=(
+                        snapshot.last_price_timestamp or snapshot.timestamp
+                    ),
+                )
+                return False
             identity = (
                 logical_candidate_identity(
                     snapshot,
@@ -281,9 +305,6 @@ class PaperTradeExperimentWorker:
             observed_at = timestamp.astimezone(UTC)
             observed = Decimal(price)
             now = self._aware_now()
-            prepared = prepare_price_observation(
-                normalized, observed_at, observed, enqueued_at=now
-            )
         except (AttributeError, TypeError, ValueError):
             self._reject("invalid research price observation")
             return False
@@ -296,6 +317,15 @@ class PaperTradeExperimentWorker:
             if self._last_accepted_observation.get(normalized) == observation:
                 self._suppressed_duplicates += 1
                 return True
+            pending_symbol = normalized in self._pending_price_symbols_by_id.values()
+            if not pending_symbol and self._queue.full():
+                self._record_pressure_rejection(
+                    symbol=normalized, source_timestamp=observed_at,
+                )
+                return False
+            prepared = prepare_price_observation(
+                normalized, observed_at, observed, enqueued_at=now
+            )
             if prepared.work_id in self._pending_ids:
                 self._suppressed_duplicates += 1
                 return True
@@ -307,9 +337,19 @@ class PaperTradeExperimentWorker:
                 enqueued_at=now,
                 prepared=prepared,
             )
-            if normalized in self._pending_price_symbols_by_id.values():
+            if pending_symbol:
+                displaced = self._coalesced_price_work.get(normalized)
+                displaced_at = self._coalesced_price_timestamp.get(normalized)
                 self._coalesced_price_work[normalized] = work
+                self._coalesced_price_timestamp[normalized] = observed_at
                 self._coalesced += 1
+                if displaced is not None:
+                    assert displaced_at is not None
+                    self._coalesced_observation_gaps += 1
+                    self._record_coalesced_observation(
+                        symbol=normalized,
+                        source_timestamp=displaced_at,
+                    )
                 self._observations_accepted += 1
                 self._last_accepted_observation[normalized] = observation
                 performance_diagnostics.increment("research_events_coalesced")
@@ -398,6 +438,9 @@ class PaperTradeExperimentWorker:
                 )),
                 last_decision_received_at=self._last_decision_received_at,
                 last_work_completed_at=self._last_work_completed_at,
+                capture_gap_episodes=self._capture_gap_episodes,
+                capture_gap_observations=self._capture_gap_observations,
+                coalesced_observation_gaps=self._coalesced_observation_gaps,
             )
 
     def reset_symbol(self, symbol: str) -> None:
@@ -421,6 +464,7 @@ class PaperTradeExperimentWorker:
         supports_durable = False
         try:
             journal = self._journal_factory(self._path)
+            self._persist_worker_session(journal)
             supports_durable = all(callable(getattr(journal, name, None)) for name in (
                 "checkpoint_work_items", "recoverable_work_items",
                 "process_prepared_work",
@@ -538,6 +582,8 @@ class PaperTradeExperimentWorker:
                     "research_events_completed", len(lag_values)
                 )
                 performance_diagnostics.record_research_worker_lag(max(lag_values))
+                self._persist_capture_gaps(journal)
+                self._checkpoint_session_if_due(journal)
                 if not supports_durable:
                     assert work is not None
                     self._queue.task_done()
@@ -549,6 +595,11 @@ class PaperTradeExperimentWorker:
             self._checkpoint_pending(journal)
             return
         finally:
+            with self._lock:
+                self._finish_active_gap()
+                self._finish_coalesced_gap()
+            self._persist_capture_gaps(journal)
+            self._persist_worker_session(journal, ended_at=self._aware_now())
             telemetry = getattr(journal, "record_worker_telemetry", None)
             if callable(telemetry):
                 try:
@@ -593,6 +644,7 @@ class PaperTradeExperimentWorker:
             if symbol is None:
                 return
             replacement = self._coalesced_price_work.pop(symbol, None)
+            self._coalesced_price_timestamp.pop(symbol, None)
             if replacement is None:
                 return
             try:
@@ -697,26 +749,195 @@ class PaperTradeExperimentWorker:
         performance_diagnostics.increment("research_failures")
         self._log_failure(message, error)
 
-    def _record_pressure_rejection(self) -> None:
+    def _record_pressure_rejection(
+        self, *, symbol: str | None = None,
+        source_timestamp: datetime | None = None,
+    ) -> None:
+        now = self._aware_now()
         self._rejected += 1
+        self._capture_gap_observations += 1
         if not self._pressure_active:
             self._pressure_active = True
             self._pressure_episodes += 1
+            self._capture_gap_episodes += 1
+            self._active_gap = {
+                "gap_id": f"{self._session_id}:gap:{self._pressure_episodes}",
+                "worker_session_id": self._session_id,
+                "reason": "BOUNDED_RESEARCH_QUEUE_FULL",
+                "started_at": now.isoformat(),
+                "ended_at": now.isoformat(),
+                "first_source_timestamp": None,
+                "last_source_timestamp": None,
+                "episode_count": 1,
+                "rejected_count": 0,
+                "affected_symbols": [],
+                "affected_symbol_overflow": 0,
+            }
             _LOGGER.error(
                 "event_type=experiment_research_pressure "
                 "reason=bounded_research_queue_full capacity=%d",
                 self._queue.maxsize,
             )
+        gap = self._active_gap
+        assert gap is not None
+        gap["ended_at"] = now.isoformat()
+        gap["rejected_count"] = int(gap["rejected_count"]) + 1
+        if source_timestamp is not None and source_timestamp.tzinfo is not None:
+            source_text = source_timestamp.astimezone(UTC).isoformat()
+            if gap["first_source_timestamp"] is None:
+                gap["first_source_timestamp"] = source_text
+            gap["last_source_timestamp"] = source_text
+        if symbol:
+            symbols = gap["affected_symbols"]
+            assert isinstance(symbols, list)
+            normalized = symbol.strip().upper()
+            if normalized not in symbols:
+                if len(symbols) < MAX_GAP_SYMBOLS:
+                    symbols.append(normalized)
+                else:
+                    gap["affected_symbol_overflow"] = int(
+                        gap["affected_symbol_overflow"]
+                    ) + 1
         performance_diagnostics.increment("research_events_rejected")
 
     def _record_pressure_recovery(self) -> None:
         if self._pressure_active:
             self._pressure_active = False
+            self._finish_active_gap()
             _LOGGER.info(
                 "event_type=experiment_research_pressure_recovered "
                 "queue_depth=%d",
                 self._queue.qsize(),
             )
+
+    def _finish_active_gap(self) -> None:
+        if self._active_gap is not None:
+            self._queue_gap(self._active_gap)
+            self._active_gap = None
+
+    def _record_coalesced_observation(
+        self, *, symbol: str, source_timestamp: datetime,
+    ) -> None:
+        now = self._aware_now()
+        self._capture_gap_observations += 1
+        if self._active_coalesced_gap is None:
+            self._capture_gap_episodes += 1
+            self._active_coalesced_gap = {
+                "gap_id": (
+                    f"{self._session_id}:coalesced:"
+                    f"{self._capture_gap_episodes}"
+                ),
+                "worker_session_id": self._session_id,
+                "reason": "INTERMEDIATE_PRICE_OBSERVATION_COALESCED",
+                "started_at": now.isoformat(),
+                "ended_at": now.isoformat(),
+                "first_source_timestamp": None,
+                "last_source_timestamp": None,
+                "episode_count": 1,
+                "rejected_count": 0,
+                "affected_symbols": [],
+                "affected_symbol_overflow": 0,
+            }
+        gap = self._active_coalesced_gap
+        gap["ended_at"] = now.isoformat()
+        gap["rejected_count"] = int(gap["rejected_count"]) + 1
+        source_text = source_timestamp.astimezone(UTC).isoformat()
+        if gap["first_source_timestamp"] is None:
+            gap["first_source_timestamp"] = source_text
+        gap["last_source_timestamp"] = source_text
+        symbols = gap["affected_symbols"]
+        assert isinstance(symbols, list)
+        if symbol not in symbols:
+            if len(symbols) < MAX_GAP_SYMBOLS:
+                symbols.append(symbol)
+            else:
+                gap["affected_symbol_overflow"] = int(
+                    gap["affected_symbol_overflow"]
+                ) + 1
+
+    def _finish_coalesced_gap(self) -> None:
+        if self._active_coalesced_gap is not None:
+            self._queue_gap(self._active_coalesced_gap)
+            self._active_coalesced_gap = None
+
+    def _queue_gap(self, gap: dict[str, object]) -> None:
+        """Keep one bounded pending aggregate per fixed gap reason."""
+
+        existing = next((
+            item for item in self._pending_gaps
+            if item["reason"] == gap["reason"]
+        ), None)
+        if existing is None:
+            self._pending_gaps.append(gap)
+            return
+        existing["ended_at"] = gap["ended_at"]
+        existing["last_source_timestamp"] = gap["last_source_timestamp"]
+        existing["episode_count"] = (
+            int(existing.get("episode_count", 1))
+            + int(gap.get("episode_count", 1))
+        )
+        existing["rejected_count"] = (
+            int(existing["rejected_count"]) + int(gap["rejected_count"])
+        )
+        existing["affected_symbol_overflow"] = (
+            int(existing["affected_symbol_overflow"])
+            + int(gap["affected_symbol_overflow"])
+        )
+        existing_symbols = existing["affected_symbols"]
+        incoming_symbols = gap["affected_symbols"]
+        assert isinstance(existing_symbols, list)
+        assert isinstance(incoming_symbols, list)
+        for symbol in incoming_symbols:
+            if symbol in existing_symbols:
+                continue
+            if len(existing_symbols) < MAX_GAP_SYMBOLS:
+                existing_symbols.append(symbol)
+            else:
+                existing["affected_symbol_overflow"] = int(
+                    existing["affected_symbol_overflow"]
+                ) + 1
+
+    def _persist_capture_gaps(self, journal: object | None) -> None:
+        writer = getattr(journal, "record_capture_gaps", None)
+        if not callable(writer):
+            return
+        with self._lock:
+            self._finish_coalesced_gap()
+            if not self._pending_gaps:
+                return
+            pending = tuple(self._pending_gaps)
+            self._pending_gaps.clear()
+        try:
+            writer(pending)
+        except Exception:
+            with self._lock:
+                self._pending_gaps.extendleft(reversed(pending))
+            raise
+
+    def _persist_worker_session(
+        self, journal: object | None, *, ended_at: datetime | None = None,
+    ) -> None:
+        writer = getattr(journal, "record_worker_session", None)
+        if not callable(writer):
+            return
+        with self._lock:
+            snapshot = {
+                "session_id": self._session_id,
+                "started_at": self._session_started_at,
+                "enqueued": self._enqueued,
+                "completed": self._completed,
+                "rejected": self._rejected,
+                "queue_high_water": self._queue_high_water,
+                "lag_max_ms": self._maximum_lag_ms,
+                "pressure_episodes": self._pressure_episodes,
+                "ended_at": ended_at,
+            }
+        writer(**snapshot)
+        self._last_session_checkpoint = monotonic()
+
+    def _checkpoint_session_if_due(self, journal: object | None) -> None:
+        if monotonic() - self._last_session_checkpoint >= SESSION_CHECKPOINT_SECONDS:
+            self._persist_worker_session(journal)
 
     def _reject(self, message: str) -> None:
         with self._lock:

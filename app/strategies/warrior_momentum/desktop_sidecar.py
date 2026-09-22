@@ -307,12 +307,28 @@ class WarriorDesktopSidecar:
         self._last_protection_attempt_at: dict[str, float] = {}
         self._last_intraminute_evaluation_at: dict[str, datetime] = {}
         self._last_session_policy_minute: datetime | None = None
+        self._execution_recovery_orders: tuple[object, ...] = ()
 
     def bind_scanner_adapter(self, adapter: MarketEventScannerAdapter) -> None:
         if not isinstance(adapter, MarketEventScannerAdapter):
             raise TypeError("Warrior sidecar requires the shared scanner adapter")
         with self._lock:
             self._adapter = adapter
+
+    def restore_execution_lifecycles(self, orders: Iterable[object]) -> None:
+        """Stage authoritative active-campaign fills for prospective recovery."""
+        with self._lock:
+            self._execution_recovery_orders = tuple(orders)
+            if self._service is not None:
+                self._service.restore_execution_lifecycles(
+                    self._execution_recovery_orders
+                )
+
+    def observe_paper_event(self, event: object) -> None:
+        """Forward authoritative PAPER fills to research-only path capture."""
+        with self._lock:
+            if self._service is not None:
+                self._service.observe_paper_event(event)
 
     def bind_scanner_decision_source(
         self, source: Callable[[str], object | None],
@@ -515,6 +531,10 @@ class WarriorDesktopSidecar:
                         self._paper_entry_intelligence, "assess", None,
                     ) if self.environment.upper() == "PAPER" else None,
                 )
+                if self._execution_recovery_orders:
+                    self._service.restore_execution_lifecycles(
+                        self._execution_recovery_orders
+                    )
                 self._restore_bars()
                 now = self._aware_now()
                 self._started_at = now

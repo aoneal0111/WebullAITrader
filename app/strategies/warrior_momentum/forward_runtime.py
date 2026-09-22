@@ -6,7 +6,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_FLOOR
-from typing import Callable
+from typing import Callable, Iterable
 
 from app.performance_diagnostics import performance_diagnostics
 from app.configuration.models import PaperSymbolAuthorizationMode
@@ -301,6 +301,13 @@ class WarriorForwardCaptureService:
         self._seen_bars: set[tuple[str, datetime]] = set()
         self._paper: dict[str, _PaperState] = {}
         self._counterfactual: dict[str, _CounterState] = {}
+        # Prospective-only execution paths.  The caps prevent a bad identity
+        # stream from turning research capture into unbounded process state.
+        self._execution_paths: OrderedDict[tuple[str, str], dict[str, object]] = OrderedDict()
+        self._execution_path_max_active = 128
+        self._execution_path_max_samples = 20_000
+        self._execution_path_min_interval_seconds = 1.0
+        self._execution_path_gap_seconds = 5.0
         self._shadow = (
             ShadowOpportunityAnalyzer(
                 store, configuration_fingerprint=configuration_fingerprint,
@@ -319,6 +326,7 @@ class WarriorForwardCaptureService:
     ) -> tuple[MomentumCandidate, MomentumEntrySignal | None]:
         observation = value.observation
         symbol = observation.symbol.strip().upper()
+        self._observe_execution_price_path(value)
         live_state = self._paper.get(symbol)
         if (
             live_state is not None
@@ -909,6 +917,153 @@ class WarriorForwardCaptureService:
                 pass
         self._submit_records(tuple(records))
         return assessed, signal
+
+    def observe_paper_event(self, event: object) -> None:
+        """Anchor prospective path capture to an authoritative PAPER fill."""
+        fill = getattr(event, "fill", None)
+        order = getattr(event, "order", None)
+        lifecycle = str(getattr(order, "lifecycle_id", None) or "").strip()
+        campaign = str(self.paper_campaign_id or "").strip()
+        if fill is None or not lifecycle or not campaign:
+            return
+        symbol = str(getattr(fill, "symbol", "")).strip().upper()
+        side = str(getattr(fill, "side", "")).strip().upper()
+        quantity = Decimal(str(getattr(fill, "quantity", "0")))
+        timestamp = getattr(fill, "timestamp", None)
+        price = Decimal(str(getattr(fill, "fill_price", "0")))
+        if not symbol or side not in {"BUY", "SELL"} or quantity <= 0 or timestamp is None:
+            return
+        key = campaign, lifecycle
+        state = self._execution_paths.get(key)
+        if state is None and side == "BUY":
+            if len(self._execution_paths) >= self._execution_path_max_active:
+                self._submit_records((CaptureRecord.create(
+                    CaptureRecordType.EXECUTION_PRICE_PATH, symbol, timestamp,
+                    {"action": "CAPTURE_LIMIT_REACHED", "paper_campaign_id": campaign,
+                     "lifecycle_id": lifecycle, "limit": self._execution_path_max_active},
+                    identity_parts=(campaign, lifecycle, "active-limit"),
+                ),))
+                return
+            state = {
+                "symbol": symbol, "quantity": Decimal("0"), "samples": 0,
+                "last_sample_at": timestamp, "path_started_at": timestamp,
+                "missing_intervals": 0, "stale_quotes": 0,
+                "sample_limit_recorded": False,
+            }
+            self._execution_paths[key] = state
+        if state is None:
+            # A sell without a locally observed/recovered entry remains
+            # explicit; it is never guessed into another lifecycle.
+            self._submit_records((CaptureRecord.create(
+                CaptureRecordType.EXECUTION_PRICE_PATH, symbol, timestamp,
+                {"action": "UNMATCHED_FILL", "paper_campaign_id": campaign,
+                 "lifecycle_id": lifecycle, "side": side, "quantity": quantity,
+                 "price": price, "reason": "NO_ACTIVE_AUTHORITATIVE_PATH"},
+                identity_parts=(campaign, lifecycle, str(getattr(event, "sequence", ""))),
+            ),))
+            return
+        state["quantity"] = Decimal(str(state["quantity"])) + (
+            quantity if side == "BUY" else -quantity
+        )
+        payload = {
+            "action": "FILL", "paper_campaign_id": campaign,
+            "lifecycle_id": lifecycle, "order_id": getattr(order, "order_id", None),
+            "fill_event_id": f"{getattr(event, 'source', '')}:{getattr(event, 'sequence', '')}",
+            "side": side, "quantity": quantity, "price": price,
+            "fill_timestamp": timestamp,
+            "remaining_quantity": state["quantity"],
+        }
+        self._submit_records((CaptureRecord.create(
+            CaptureRecordType.EXECUTION_PRICE_PATH, symbol, timestamp, payload,
+            identity_parts=(campaign, lifecycle, payload["fill_event_id"]),
+        ),))
+        if Decimal(str(state["quantity"])) <= 0:
+            self._execution_paths.pop(key, None)
+
+    def restore_execution_lifecycles(self, orders: Iterable[object]) -> None:
+        """Resume open paths without pretending the pre-restart path exists."""
+        campaign = str(self.paper_campaign_id or "").strip()
+        grouped: dict[str, list[tuple[datetime, str, Decimal, str]]] = {}
+        for order in orders:
+            request = getattr(order, "request", None)
+            lifecycle = str(getattr(request, "strategy_lifecycle_id", None) or "").strip()
+            if not lifecycle:
+                continue
+            side = str(getattr(getattr(request, "side", None), "value", getattr(request, "side", ""))).upper()
+            symbol = str(getattr(request, "symbol", "")).strip().upper()
+            for fill in getattr(order, "fills", ()):
+                grouped.setdefault(lifecycle, []).append((
+                    fill.timestamp, side, Decimal(str(fill.quantity)), symbol,
+                ))
+        for lifecycle, fills in grouped.items():
+            fills.sort(key=lambda item: item[0])
+            quantity = sum((qty if side == "BUY" else -qty for _, side, qty, _ in fills), Decimal("0"))
+            if quantity <= 0 or len(self._execution_paths) >= self._execution_path_max_active:
+                continue
+            timestamp, _, _, symbol = fills[-1]
+            key = campaign, lifecycle
+            self._execution_paths[key] = {
+                "symbol": symbol, "quantity": quantity, "samples": 0,
+                "last_sample_at": None, "path_started_at": timestamp,
+                "missing_intervals": 0, "stale_quotes": 0,
+                "sample_limit_recorded": False,
+            }
+            self._submit_records((CaptureRecord.create(
+                CaptureRecordType.EXECUTION_PRICE_PATH, symbol, timestamp,
+                {"action": "RECOVERY", "paper_campaign_id": campaign,
+                 "lifecycle_id": lifecycle, "remaining_quantity": quantity,
+                 "historical_path": "UNAVAILABLE_BEFORE_RESTART",
+                 "prospective_capture_starts_at": None,
+                 "recovered_through_fill_timestamp": timestamp},
+                identity_parts=(campaign, lifecycle, "recovery", timestamp.isoformat()),
+            ),))
+
+    def _observe_execution_price_path(self, value: PointInTimeObservation) -> None:
+        observation = value.observation
+        timestamp = value.quote_observed_at or observation.timestamp
+        now = value.evaluation_timestamp or observation.timestamp
+        for (campaign, lifecycle), state in tuple(self._execution_paths.items()):
+            if state["symbol"] != observation.symbol:
+                continue
+            last = state["last_sample_at"]
+            if last is not None and (timestamp - last).total_seconds() < self._execution_path_min_interval_seconds:
+                continue
+            samples = int(state["samples"])
+            if samples >= self._execution_path_max_samples:
+                if not bool(state["sample_limit_recorded"]):
+                    state["sample_limit_recorded"] = True
+                    self._submit_records((CaptureRecord.create(
+                        CaptureRecordType.EXECUTION_PRICE_PATH,
+                        observation.symbol, now,
+                        {"action": "CAPTURE_LIMIT_REACHED",
+                         "paper_campaign_id": campaign,
+                         "lifecycle_id": lifecycle,
+                         "limit": self._execution_path_max_samples},
+                        identity_parts=(campaign, lifecycle, "sample-limit"),
+                    ),))
+                continue
+            gap_seconds = None if last is None else max(0.0, (timestamp - last).total_seconds())
+            stale_seconds = max(0.0, (now - timestamp).total_seconds())
+            missing = gap_seconds is not None and gap_seconds > self._execution_path_gap_seconds
+            stale = stale_seconds > float(self.capture_config.quote_stale_after_seconds)
+            state["samples"] = samples + 1
+            state["last_sample_at"] = timestamp
+            state["missing_intervals"] = int(state["missing_intervals"]) + int(missing)
+            state["stale_quotes"] = int(state["stale_quotes"]) + int(stale)
+            midpoint = None
+            if observation.bid is not None and observation.ask is not None:
+                midpoint = (observation.bid + observation.ask) / Decimal("2")
+            self._submit_records((CaptureRecord.create(
+                CaptureRecordType.EXECUTION_PRICE_PATH, observation.symbol, now,
+                {"action": "QUOTE", "paper_campaign_id": campaign,
+                 "lifecycle_id": lifecycle, "quote_timestamp": timestamp,
+                 "bid": observation.bid, "ask": observation.ask,
+                 "midpoint": midpoint, "last": observation.price,
+                 "quote_age_seconds": Decimal(str(stale_seconds)),
+                 "stale_quote": stale, "interval_seconds": gap_seconds,
+                 "missing_interval": missing, "sample_number": samples + 1},
+                identity_parts=(campaign, lifecycle, timestamp.isoformat()),
+            ),))
 
     def _remember_memory_identity(self, symbol: str, opportunity_id: str) -> None:
         """Retain one latest identity per symbol with deterministic eviction."""
@@ -2890,6 +3045,7 @@ class WarriorForwardCaptureService:
             CaptureRecordType.PAPER_FILL, state.signal.symbol, timestamp,
             {"action": action, "label": label, "fill_price": price,
              "filled_shares": quantity, "remaining_before": state.remaining,
+             "lifecycle_id": lifecycle_identity(state.signal),
              "active_stop": state.stop, "source": "SIMULATED_PAPER",
              "live_execution_authorized": False,
              "authority": "ANALYTICAL_FORWARD_CAPTURE"},

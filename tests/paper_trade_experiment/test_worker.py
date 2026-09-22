@@ -128,6 +128,11 @@ def test_metrics_identify_capture_path_activity_and_incomplete_evidence(
     assert reasons["CATALYST_PUBLISHED_AT_NOT_RECORDED"] == 1
     assert reasons["DECISION_TIMESTAMP_NOT_RECORDED"] == 1
     assert reasons["LAST_PRICE_NOT_RECORDED"] == 1
+    journal = PaperTradeExperimentJournal(path)
+    health = journal.capture_health_snapshot()
+    journal.close()
+    assert health["latest_session"]["ended_at"] is not None
+    assert health["latest_session"]["completed"] == 2
 
 
 def test_bounded_saturation_is_explicit_and_capture_recovers(tmp_path) -> None:
@@ -342,3 +347,4 @@ def test_price_backlog_keeps_only_latest_pending_observation_per_symbol(
     assert worker.close(timeout_seconds=2)
     assert len(observed) == 2
     assert observed[-1][2] == Decimal("11")
+    assert worker.metrics().coalesced_observation_gaps == 99

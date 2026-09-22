@@ -6,6 +6,7 @@ from decimal import Decimal, Decimal as D
 from pathlib import Path
 from threading import Event
 from time import sleep
+from types import SimpleNamespace
 
 import pytest
 
@@ -96,6 +97,78 @@ def capture(tmp_path: Path):
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
     service = WarriorForwardCaptureService(store, writer)
     yield store, writer, service
+    writer.close()
+
+
+def test_authoritative_fill_path_is_prospective_bounded_and_flags_gaps(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "forward.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(
+        store, writer, paper_campaign_id="paper-campaign",
+    )
+    entry_at = T0 + timedelta(minutes=20)
+    event = SimpleNamespace(
+        fill=SimpleNamespace(
+            symbol="XYZ", side="BUY", quantity=D("10"),
+            fill_price=D("10.20"), timestamp=entry_at,
+        ),
+        order=SimpleNamespace(lifecycle_id="life-1", order_id="order-1"),
+        source="paper-gateway", sequence=7,
+    )
+    service.observe_paper_event(event)
+    service.observe(point(
+        observation=scanner(timestamp=entry_at + timedelta(seconds=2)),
+        quote_observed_at=entry_at + timedelta(seconds=2),
+        evaluation_timestamp=entry_at + timedelta(seconds=2),
+    ))
+    service.observe(point(
+        observation=scanner(timestamp=entry_at + timedelta(seconds=10)),
+        quote_observed_at=entry_at + timedelta(seconds=10),
+        evaluation_timestamp=entry_at + timedelta(seconds=17),
+    ))
+    service.observe_paper_event(SimpleNamespace(
+        fill=SimpleNamespace(
+            symbol="XYZ", side="SELL", quantity=D("10"),
+            fill_price=D("10.40"), timestamp=entry_at + timedelta(seconds=20),
+        ),
+        order=SimpleNamespace(lifecycle_id="life-1", order_id="order-2"),
+        source="paper-gateway", sequence=8,
+    ))
+    writer.flush()
+    records = store.records(record_type=CaptureRecordType.EXECUTION_PRICE_PATH)
+    fills = [record.payload for record in records if record.payload["action"] == "FILL"]
+    quotes = [record.payload for record in records if record.payload["action"] == "QUOTE"]
+    assert [fill["side"] for fill in fills] == ["BUY", "SELL"]
+    assert fills[-1]["remaining_quantity"] == "0"
+    assert quotes[-1]["stale_quote"] is True
+    assert quotes[-1]["missing_interval"] is True
+    writer.close()
+
+
+def test_execution_path_restart_labels_pre_restart_interval_unavailable(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "forward.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(
+        store, writer, paper_campaign_id="paper-campaign",
+    )
+    request = SimpleNamespace(
+        strategy_lifecycle_id="life-recovered", side=SimpleNamespace(value="BUY"),
+        symbol="XYZ",
+    )
+    service.restore_execution_lifecycles((SimpleNamespace(
+        request=request,
+        fills=(SimpleNamespace(timestamp=T0, quantity=D("5")),),
+    ),))
+    writer.flush()
+    recovery = store.records(
+        record_type=CaptureRecordType.EXECUTION_PRICE_PATH,
+    )[0].payload
+    assert recovery["action"] == "RECOVERY"
+    assert recovery["historical_path"] == "UNAVAILABLE_BEFORE_RESTART"
     writer.close()
 
 
@@ -554,6 +627,9 @@ def test_paper_entry_partial_exit_stop_first_and_survives_candidate_removal(capt
     writer.flush()
     fills = [item.payload for item in store.records(record_type=CaptureRecordType.PAPER_FILL)]
     assert fills[0]["action"] == "ENTRY"
+    assert {
+        item.get("lifecycle_id") for item in fills
+    } == {lifecycle_identity(signal)}
     contexts = store.records(record_type=CaptureRecordType.MANAGEMENT_CONTEXT)
     assert contexts and contexts[0].payload["environment"] == "PAPER"
     assert Decimal(contexts[0].payload["stop"]) == signal.stop_price
