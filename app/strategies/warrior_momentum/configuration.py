@@ -141,6 +141,27 @@ class RiskConfig:
     maximum_position_dollars: Decimal = Decimal("25000")
     maximum_position_equity_percentage: Decimal = Decimal("0.50")
 
+    maximum_stop_distance_percent: Decimal = Decimal("8")
+    maximum_campaign_loss_fraction: Decimal = Decimal("0.02")
+    maximum_gross_exposure_fraction: Decimal = Decimal("0.50")
+
+    def __post_init__(self) -> None:
+        for name in ("configured_per_trade_risk", "equity_risk_percentage",
+                     "maximum_position_dollars", "maximum_position_equity_percentage",
+                     "maximum_stop_distance_percent", "maximum_campaign_loss_fraction",
+                     "maximum_gross_exposure_fraction"):
+            value = getattr(self, name)
+            if not value.is_finite() or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+        for name in ("equity_risk_percentage", "maximum_position_equity_percentage",
+                     "maximum_campaign_loss_fraction", "maximum_gross_exposure_fraction"):
+            if getattr(self, name) > 1:
+                raise ValueError(f"{name} must not exceed one")
+        if self.maximum_stop_distance_percent > 100:
+            raise ValueError("maximum_stop_distance_percent must not exceed 100")
+        if self.maximum_quantity <= 0:
+            raise ValueError("maximum_quantity must be positive")
+
 
 @dataclass(frozen=True, slots=True)
 class TradeManagementConfig:

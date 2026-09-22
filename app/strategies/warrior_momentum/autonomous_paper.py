@@ -72,6 +72,7 @@ class PaperEntryAuthorizationReason(StrEnum):
 
 
 class PaperExitSubmissionState(StrEnum):
+    COMPLETED = "COMPLETED"
     SUBMITTED = "SUBMITTED"
     WORKING = "WORKING"
     UNAVAILABLE = "UNAVAILABLE"
@@ -248,6 +249,7 @@ class AutonomousPaperExecutionBridge:
     durable_store: DurablePaperExecutionStore | None = None
     position_quantity_source: Callable[[str], Decimal] | None = None
     management_context_source: Callable[[str], str | None] | None = None
+    protection_amender: Callable[[str, int, Decimal], bool] | None = None
     _seen_entries: OrderedDict[str, None] = field(default_factory=OrderedDict, init=False)
     _active_by_symbol: dict[str, str] = field(default_factory=dict, init=False)
     _entry_orders: dict[str, str] = field(default_factory=dict, init=False)
@@ -470,6 +472,14 @@ class AutonomousPaperExecutionBridge:
                         reason="RESTORED_BRACKET_MATCHES_POSITION",
                     )
                     reconciled.append(symbol)
+                    continue
+                if stops and desired_stop_quantity > 0 and self.protection_amender is not None:
+                    if self.protection_amender(stops[0].order_id, desired_stop_quantity,
+                                               stops[0].request.stop_price):
+                        self._management_incomplete.discard(symbol)
+                        reconciled.append(symbol)
+                    else:
+                        self._management_incomplete.add(symbol)
                     continue
                 if stops and not self._cancel_working_order(stops[0]):
                     self._management_incomplete.add(symbol)
@@ -1379,6 +1389,35 @@ class AutonomousPaperExecutionBridge:
                     identity, reason_key,
                 )
             if self.order_book is not None:
+                triggered_stop = next((order for order in self.order_book.open_orders_for_symbol(normalized)
+                    if order.request.strategy_lifecycle_id == identity
+                    and order.request.order_type is OrderType.STOP
+                    and order.request.metadata.get("stop_triggered") is True), None)
+                if triggered_stop is not None:
+                    # Never replace a partially executed stop with a fresh,
+                    # untriggered order or a new profit target on a rebound.
+                    return PaperExitSubmissionDecision(
+                        PaperExitSubmissionState.WORKING, normalized, identity,
+                        "STOP", triggered_stop.order_id, triggered_stop.created_at,
+                    )
+            if self.order_book is not None and reason_key in {"FIRST_TARGET", "SECOND_TARGET"}:
+                attempts = sorted((order for order in self.order_book.history()
+                    if order.symbol == normalized and order.request.side is OrderSide.SELL
+                    and order.request.strategy_lifecycle_id == identity
+                    and order.request.execution_reason == reason_key),
+                    key=lambda order: (order.created_at, order.order_id))
+                if attempts:
+                    budget = int(attempts[0].quantity)
+                    filled = sum(int(order.filled_quantity) for order in attempts)
+                    if filled >= budget:
+                        return PaperExitSubmissionDecision(
+                            PaperExitSubmissionState.COMPLETED, normalized,
+                            identity, reason_key, attempts[-1].order_id,
+                        )
+                    # Cancel/retry and recovery may spend only the unfilled
+                    # part of the original milestone, never half again.
+                    quantity = min(quantity, budget - filled)
+            if self.order_book is not None:
                 # A valid target/stop bracket already reserves the complete
                 # authoritative position.  Recognize it before any mutating
                 # reconciliation helper can collapse the target back into a
@@ -1479,6 +1518,11 @@ class AutonomousPaperExecutionBridge:
                             normalized, quantity, price, reason_key, identity,
                         )
                     if protective and working_sell.request.stop_price is not None and Decimal(price) > Decimal(working_sell.request.stop_price):
+                        if self.protection_amender is not None:
+                            amended = self.protection_amender(working_sell.order_id, quantity, Decimal(price))
+                            return PaperExitSubmissionDecision(
+                                PaperExitSubmissionState.WORKING if amended else PaperExitSubmissionState.UNAVAILABLE,
+                                normalized, identity, reason_key, working_sell.order_id, working_sell.created_at)
                         if not self._cancel_working_order(working_sell):
                             self._management_incomplete.add(normalized)
                             return PaperExitSubmissionDecision(
@@ -1758,6 +1802,11 @@ class AutonomousPaperExecutionBridge:
         desired = max(0, int(self.position_quantity_source(normalized)) - reserved)
         if int(stop.remaining_quantity) == desired:
             return True
+        if desired > 0 and self.protection_amender is not None:
+            amended = self.protection_amender(stop.order_id, desired, stop.request.stop_price)
+            if not amended:
+                self._management_incomplete.add(normalized)
+            return amended
         if not self._cancel_working_order(stop):
             self._management_incomplete.add(normalized)
             return False

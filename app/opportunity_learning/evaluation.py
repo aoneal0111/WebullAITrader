@@ -57,7 +57,14 @@ def evaluate_challenger(challenger, examples: tuple[LearningExample, ...]) -> Ev
     predicted = [(item, prediction) for item, prediction in predicted if prediction.evidence_status is EvidenceStatus.SUFFICIENT]
     y = [float(target_value(item.labels, challenger.target)) for item, _ in predicted]
     p = [prediction.probability for _, prediction in predicted]
-    returns = [item.labels.expected_return_r for item, _ in predicted if item.labels.expected_return_r is not None]
+    # Classification quality uses all evaluable examples; trading statistics
+    # must use only opportunities this challenger would actually select.
+    selected = [(item, prediction) for item, prediction in predicted
+                if prediction.probability is not None and prediction.probability >= .5]
+    selected.sort(key=lambda pair: (pair[0].features.decision_timestamp,
+                                    pair[0].features.experience_id))
+    returns = [item.labels.expected_return_r for item, _ in selected
+               if item.labels.expected_return_r is not None]
     return EvaluationMetrics(
         len(predicted), _mean(y), _auc(y, p), _pr_auc(y, p),
         _mean([(a - b) ** 2 for a, b in zip(y, p)]),

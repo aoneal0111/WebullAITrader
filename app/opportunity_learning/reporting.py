@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+from .economics import selected_cost_sensitivity
 from .cohorts import analyze_blockers, analyze_feature_cohorts
 from .contracts import LearningTarget, ResearchEvidencePolicy
 from .dataset import assess_sufficiency, latest_by_experience
@@ -51,7 +52,18 @@ def build_research_report(examples, challengers, policy: ResearchEvidencePolicy 
         challenger_reports[challenger.challenger_id] = {
             "target": challenger.target.value,
             "partitions": partitions,
-            "champion_comparison": asdict(compare_champion(challenger, examples)),
+            "cost_sensitivity": {
+                name: (selected_cost_sensitivity(challenger, tuple(
+                    item for item in examples if item.partition.value == name))
+                    if name != "HOLDOUT" or challenger.challenger_id in selected_challenger_ids
+                    else {"status": "UNTOUCHED_UNTIL_SELECTION"})
+                for name in ("TRAIN", "VALIDATION", "HOLDOUT")
+            },
+            "champion_comparison": asdict(compare_champion(challenger, tuple(
+                item for item in examples
+                if item.partition.value != "HOLDOUT"
+                or challenger.challenger_id in selected_challenger_ids
+            ))),
         }
     return {
         "dataset": dataset,

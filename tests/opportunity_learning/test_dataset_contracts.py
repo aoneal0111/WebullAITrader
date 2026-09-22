@@ -50,6 +50,11 @@ def test_later_decision_cannot_change_earlier_vector():
     assert feature_digest(before.features) == feature_digest(after.features)
     assert before.features.as_mapping()["last_price"] == 10.0
     assert len(build_learning_examples((exp,), (), (initial, later))) == 2
+    outcomes = OutcomeEngine().evaluate(exp, path([(Decimal("11.6"), Decimal("9.8"), Decimal("11.5"))]))
+    labeled = build_learning_examples((exp,), outcomes, (initial, later))
+    assert labeled[0].labels is not None
+    assert labeled[1].labels is None  # prior profit is not a future outcome at 12
+
 
 
 def test_future_feature_timestamp_is_rejected_by_memory_contract():

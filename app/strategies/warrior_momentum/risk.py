@@ -15,6 +15,13 @@ def size_position(
     broker_restriction: bool = False, config: RiskConfig = RiskConfig(),
     symbol_authorized: bool | None = None,
 ) -> PositionSize:
+    # Reject unsuitable structure rather than tightening a stop inside market
+    # noise. This gate also applies after adaptive widening and on re-entry.
+    values = (signal.risk_per_share, signal.reference_price, account_equity, buying_power)
+    if any(not value.is_finite() or value <= 0 for value in values):
+        return PositionSize(0, Decimal("0"), Decimal("0"), False, (ReasonCode.RISK_REJECTED,))
+    if signal.risk_per_share / signal.reference_price * 100 > config.maximum_stop_distance_percent:
+        return PositionSize(0, Decimal("0"), Decimal("0"), False, (ReasonCode.RISK_REJECTED,))
     risk_budget = min(config.configured_per_trade_risk, config.equity_risk_percentage * account_equity)
     raw = int((risk_budget / signal.risk_per_share).to_integral_value(rounding=ROUND_FLOOR))
     affordable = int((buying_power / signal.reference_price).to_integral_value(rounding=ROUND_FLOOR))

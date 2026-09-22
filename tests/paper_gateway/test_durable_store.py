@@ -254,7 +254,8 @@ def test_replaying_same_store_twice_is_idempotent(tmp_path) -> None:
         composition = create_paper_trading_command_composition(persistence_path=str(path))
         snapshots.append((len(composition.order_book.history()), len(composition.durable_store.events())))
         composition.close()
-    assert snapshots == [(2, 6), (2, 6)]
+    # Includes one durable stop-trigger transition; replay adds no events.
+    assert snapshots == [(2, 7), (2, 7)]
 
 
 def test_cancelled_order_replays_terminal_and_not_working(tmp_path) -> None:

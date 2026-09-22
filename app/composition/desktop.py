@@ -275,6 +275,7 @@ def create_desktop_composition(
             enabled=operational_configuration.warrior_forward_paper_enabled,
             order_book=paper_trading_commands.order_book,
             durable_store=paper_trading_commands.durable_store,
+            protection_amender=paper_trading_commands.gateway.amend_protective_stop,
             position_quantity_source=trading_state_sources.position_quantity,
             management_context_source=lambda symbol: management_context_available(
                 operational_configuration.warrior_forward_capture_path, symbol,

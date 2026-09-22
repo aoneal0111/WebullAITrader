@@ -575,3 +575,12 @@ def test_replay_signal_simulation_is_conservative_and_deterministic() -> None:
     assert first == second
     assert first is not None and first.exit_price == sig.stop_price
     assert first.r_multiple == D("-1")
+
+
+def test_wide_percentage_stop_rejected_after_adaptive_widening():
+    wide = replace(signal(), reference_price=D("4.01"), entry_trigger=D("4.01"),
+                   stop_price=D("3.3923"), risk_per_share=D("0.6177"))
+    result = size_position(wide, account_equity=D("10000"), buying_power=D("10000"),
+                           allowed_symbols=frozenset({"XYZ"}))
+    assert not result.approved
+    assert result.shares == 0

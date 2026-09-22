@@ -159,3 +159,28 @@ def test_delayed_queued_quote_cannot_fill_working_paper_order() -> None:
     assert book.get(placement.broker_order_id).status is OrderStatus.FILLED
 
 
+
+
+def test_cancellation_rereads_fill_that_arrived_while_waiting_for_lock():
+    from app.paper_trading.orders import apply_fill
+    book = PaperOrderBook()
+    gateway = PaperOrderGateway(book, clock=lambda: NOW)
+    ack = gateway.place_order(placement_request())
+    original_lock = gateway._lock
+    class FillBeforeLock:
+        def __enter__(self):
+            current = book.get(ack.broker_order_id)
+            book.update(apply_fill(current, Decimal("3"), Decimal("100"), at=NOW))
+            original_lock.acquire()
+        def __exit__(self, *args):
+            original_lock.release()
+    gateway._lock = FillBeforeLock()
+    result = gateway.cancel_order(OrderCancellationRequest(
+        request_id="cancel-race", session_id="session-1", account_id="paper-account",
+        broker_order_id=ack.broker_order_id, client_order_id="client-1"))
+    assert result.accepted
+    order = book.get(ack.broker_order_id)
+    assert order.status is OrderStatus.CANCELLED
+    assert order.filled_quantity == 3
+    assert order.remaining_quantity == 7
+    assert len(order.fills) == 1

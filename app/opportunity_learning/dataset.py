@@ -71,7 +71,11 @@ def build_learning_examples(
             previous_blockers = point.blockers
             partition = experience.partition if generation is None else generation.partition_for(experience.key.session_date)
             vector = extract_learning_features(experience, point, first_at=first_at, blocker_transitions=transitions)
-            labels = labels_from_outcomes(tuple(by_outcome[experience.experience_id]))
+            # HorizonOutcome is anchored to the original experience snapshot,
+            # not to every later decision in that episode. Reusing its result
+            # after the move has happened teaches hindsight as an entry edge.
+            labels = (labels_from_outcomes(tuple(by_outcome[experience.experience_id]))
+                      if point.snapshot == experience.snapshot else None)
             result.append(LearningExample(
                 vector, labels, partition,
                 point.atlas_decision in CHAMPION_SELECTIONS or point.actually_traded,

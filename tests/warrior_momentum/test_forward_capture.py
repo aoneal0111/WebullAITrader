@@ -2095,3 +2095,35 @@ def test_unfilled_first_target_reversal_protects_full_position_at_break_even(
         assert submissions[-1] == ("STOP", 100, signal.entry_trigger)
     finally:
         writer.close()
+
+
+def test_quote_protection_reconciliation_preserves_target_fill_evidence(tmp_path):
+    store = ForwardCaptureStore(tmp_path / "target-fill.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": D("100")}
+    service = WarriorForwardCaptureService(
+        store, writer, paper_entry_submitter=lambda *_: True,
+        paper_exit_submitter=lambda *_: True,
+        paper_position_quantity_source=lambda symbol: position[symbol],
+    )
+    try:
+        _, signal = service.observe(point(), account=account())
+        assert signal is not None
+        state = service._paper["XYZ"]
+        state.authoritative_position_seen = True
+        state.remaining = 100
+        state.managed_quantity = 100
+        state.first_quantity = 50
+        state.exit_reason = "FIRST_TARGET"
+        state.exit_price = signal.target_levels[0]
+        position["XYZ"] = D("50")
+        service.reconcile_authoritative_protection("XYZ", signal.timestamp)
+        assert state.remaining == 100
+        next_bar = MinuteBar("XYZ", signal.timestamp + timedelta(minutes=2),
+            signal.entry_trigger, signal.entry_trigger, signal.entry_trigger,
+            signal.entry_trigger, D("100"))
+        service._advance_authoritative_paper(state, next_bar, next_bar.timestamp + timedelta(minutes=1))
+        assert state.first_taken
+        assert state.remaining == 50
+    finally:
+        writer.close()

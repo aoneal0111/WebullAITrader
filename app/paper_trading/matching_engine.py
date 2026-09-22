@@ -203,7 +203,8 @@ def _execution_price(
                 raise MatchingError("stop order requires stop_price")
             # A triggered sell stop becomes immediately marketable.  The
             # executable bid, not the historical stop level, owns the fill.
-            return market_price if market_price <= stop_price else None
+            return market_price if (order.request.metadata.get("stop_triggered") is True
+                                    or market_price <= stop_price) else None
 
     raise MatchingError(
         f"unsupported order type for matching: {order_type}"

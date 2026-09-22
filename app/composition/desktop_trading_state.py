@@ -6,6 +6,7 @@ from decimal import Decimal
 from app.paper_trading.command_composition import PAPER_ACCOUNT_ID
 from app.portfolio_intelligence import PortfolioAccount
 from app.strategies.warrior_momentum.forward_models import PaperAccountContext
+from app.strategies.warrior_momentum.configuration import RiskConfig
 from app.webull.market_data_session import utc_now
 
 
@@ -18,10 +19,12 @@ class DesktopTradingStateSources:
         state_store: object,
         runtime_projections: object,
         operational_configuration: object,
+        risk_policy: RiskConfig = RiskConfig(),
     ) -> None:
         self._state_store = state_store
         self._runtime_projections = runtime_projections
         self._configuration = operational_configuration
+        self._risk_policy = risk_policy
 
     def portfolio_account(self) -> PortfolioAccount:
         state = self._state_store.snapshot()
@@ -101,11 +104,32 @@ class DesktopTradingStateSources:
         if equity is None or buying_power is None:
             return None
 
+        risk_approved = False
+        exposure = Decimal("0")
+        exposure_limit = None
+        if paper_account is not None:
+            # Use durable campaign capital, not a restart-local or daily P/L
+            # counter. Restarting Atlas must not replenish the loss budget.
+            starting = Decimal(paper_account.starting_equity)
+            current = Decimal(equity)
+            gross = paper_account.gross_exposure
+            if (starting.is_finite() and starting > 0 and current.is_finite()
+                    and gross is not None and Decimal(gross).is_finite()
+                    and paper_account.valuation_complete):
+                exposure = max(Decimal("0"), Decimal(gross))
+                exposure_limit = current * self._risk_policy.maximum_gross_exposure_fraction
+                risk_approved = (
+                    current > starting * (1 - self._risk_policy.maximum_campaign_loss_fraction)
+                    and exposure < exposure_limit
+                )
+
         return PaperAccountContext(
             equity=Decimal(equity),
             buying_power=Decimal(buying_power),
             allowed_symbols=frozenset(self._configuration.allowed_symbols),
-            risk_engine_approved=True,
+            existing_exposure=exposure,
+            exposure_limit=exposure_limit,
+            risk_engine_approved=risk_approved,
             broker_restriction=False,
             symbol_authorization_mode=(
                 self._configuration.paper_symbol_authorization_mode

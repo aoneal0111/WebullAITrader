@@ -126,6 +126,7 @@ class DurablePaperExecutionStore:
         self,
         events: Iterable[PaperRuntimeEvent],
         order: PaperOrder | None = None,
+        *, orders: tuple[PaperOrder, ...] = (),
     ) -> None:
         event_values = tuple(events)
         if not event_values:
@@ -140,7 +141,7 @@ class DurablePaperExecutionStore:
                     raise RuntimeError(
                         "no active PAPER campaign; start a new campaign explicitly"
                     )
-                if order is not None:
+                for order in ((order,) if order is not None else ()) + orders:
                     connection.execute(
                         "INSERT INTO orders(order_id,payload) VALUES(?,?) ON CONFLICT(order_id) DO UPDATE SET payload=excluded.payload",
                         (order.order_id, json.dumps(_order_payload(order, campaign_id), sort_keys=True)),

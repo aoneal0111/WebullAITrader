@@ -1283,6 +1283,9 @@ class WarriorForwardCaptureService:
                     ),
                 )
                 and account.risk_engine_approved
+                and Decimal(ask) > state.signal.stop_price > ZERO
+                and (Decimal(ask) - state.signal.stop_price) / Decimal(ask) * Decimal("100")
+                    <= self.config.risk.maximum_stop_distance_percent
                 and not account.broker_restriction
                 and thesis_valid
                 and self._execution_permitted()
@@ -2457,6 +2460,7 @@ class WarriorForwardCaptureService:
         if (
             not state.first_taken
             and not state.second_taken
+            and state.exit_reason is None
             and state.managed_quantity != quantity
         ):
             state.managed_quantity = quantity
@@ -2603,6 +2607,18 @@ class WarriorForwardCaptureService:
                 state.exit_reason = reason
                 state.exit_price = price
             result = self._submit_exit(state, price, requested_quantity, reason)
+            if (isinstance(result, PaperExitSubmissionDecision)
+                    and result.state is PaperExitSubmissionState.COMPLETED):
+                if reason == "FIRST_TARGET":
+                    state.first_taken = True
+                elif reason == "SECOND_TARGET":
+                    state.second_taken = True
+                state.exit_reason = None
+                state.exit_price = None
+                state.prior_low = bar.low
+                records.append(_management_context_record(
+                    signal.symbol, observed_at, signal, state, phase="MANAGING"))
+                return tuple(records)
             if reason == "STOP":
                 self._capture_stop_activation(state, result, bar)
             active = (
@@ -2805,8 +2821,12 @@ class WarriorForwardCaptureService:
         quantity = max(0, int(self._paper_position_quantity_source(symbol)))
         if quantity <= 0:
             return False
+        # Preserve a decrease until bar management acknowledges the target fill.
+        # Overwriting remaining here erased the only completion evidence and
+        # caused FIRST_TARGET to be issued repeatedly down to a one-share runner.
+        if not state.authoritative_position_seen or quantity > state.remaining:
+            state.remaining = quantity
         state.authoritative_position_seen = True
-        state.remaining = quantity
         result = self._submit_exit(state, state.stop, quantity, "STOP")
         active = (
             result.protection_active

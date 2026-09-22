@@ -1,8 +1,9 @@
-﻿"""Paper-only adapters for order placement and cancellation."""
+"""Paper-only adapters for order placement and cancellation."""
 
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -451,6 +452,9 @@ class PaperOrderGateway:
         try:
             with self._lock:
                 self._require_durability()
+                # A fill may have arrived while cancellation waited for the
+                # gateway lock. Never persist the pre-lock order snapshot.
+                existing = self._order_book.get(request.broker_order_id)
                 terminal_reason = _cancellation_reason(request)
                 cancelled = transition_cancel_order(
                     existing,
@@ -505,6 +509,34 @@ class PaperOrderGateway:
                 "source": "paper_order_gateway",
             },
         )
+
+    def amend_protective_stop(self, order_id: str, remaining: int, price: Decimal) -> bool:
+        """Local PAPER amendment: preserve fills and identity without a cancel gap."""
+        with self._lock:
+            self._require_durability()
+            order = self._order_book.get(order_id)
+            if (order.is_terminal or order.side is not PaperOrderSide.SELL
+                    or order.request.order_type is not PaperOrderType.STOP
+                    or not order.request.strategy_lifecycle_id
+                    or remaining <= 0 or not price.is_finite()
+                    or price < order.request.stop_price):
+                return False
+            reserved = sum((item.remaining_quantity
+                for item in self._order_book.open_orders_for_symbol(order.symbol)
+                if item.side is PaperOrderSide.SELL and item.order_id != order_id), Decimal("0"))
+            if Decimal(remaining) + reserved > self._long_position_quantity(order.symbol):
+                return False
+            if order.remaining_quantity == remaining and order.request.stop_price == price:
+                return True
+            updated = replace(order, updated_at=max(self._now(), order.updated_at),
+                request=replace(order.request, quantity=order.filled_quantity + Decimal(remaining),
+                                stop_price=price))
+            event = self._order_event(updated, event_type="ORDER_UPDATED",
+                message="Protective stop amended to current filled exposure; fills preserved.")
+            self._persist_event(event, updated)
+            self._order_book.update(updated)
+            self._emit_event(event)
+            return True
 
     def process_market_event(
         self,
@@ -565,11 +597,12 @@ class PaperOrderGateway:
                     evaluated_at,
                 )
                 invalidation_events = self._invalidate_entry_orders(quote)
+                bracket_events = self._activate_correlated_stops(quote)
             except PaperDurabilityError:
                 return ()
             for event in temporal_events:
                 self._emit_event(event)
-            for event in invalidation_events:
+            for event in invalidation_events + bracket_events:
                 self._emit_event(event)
             durable_transitions: list[
                 tuple[ExecutionReport, PaperRuntimeEvent]
@@ -678,6 +711,71 @@ class PaperOrderGateway:
                     symbol=event.symbol,
                 )
             return reports
+
+    def _activate_correlated_stops(self, quote: MarketQuote) -> tuple[PaperRuntimeEvent, ...]:
+        """Atomically switch a split target/stop bracket to full downside exit.
+
+        Runs under the gateway lock, before matching, including after restart.
+        A target reservation is never allowed to strand shares below the stop.
+        Once triggered, the stop remains triggered across partial fills/rebounds.
+        """
+        events = []
+        changes = []
+        open_orders = self._order_book.open_orders_for_symbol(quote.symbol)
+        handled = set()
+        for stop in open_orders:
+            identity = stop.request.strategy_lifecycle_id
+            if (not identity or identity in handled
+                    or stop.side is not PaperOrderSide.SELL
+                    or stop.request.order_type is not PaperOrderType.STOP
+                    or quote.timestamp < stop.updated_at):
+                continue
+            triggered = stop.request.metadata.get("stop_triggered") is True
+            if not triggered and quote.bid_price > stop.request.stop_price:
+                continue
+            handled.add(identity)
+            siblings = [item for item in open_orders
+                        if item.request.strategy_lifecycle_id == identity
+                        and item.order_id != stop.order_id]
+            # Stale evidence cannot cancel an order created after that quote.
+            if any(item.updated_at > quote.timestamp for item in siblings):
+                continue
+            inventory = sum((item.filled_quantity if item.side is PaperOrderSide.BUY
+                             else -item.filled_quantity)
+                            for item in self._order_book.history()
+                            if item.symbol == quote.symbol
+                            and item.request.strategy_lifecycle_id == identity)
+            inventory = max(Decimal("0"), min(inventory, self._long_position_quantity(quote.symbol)))
+            for sibling in siblings:
+                cancelled = transition_cancel_order(
+                    sibling, at=quote.timestamp,
+                    reason=OrderTerminalReason.PROTECTIVE_REPLACED,
+                )
+                changes.append(cancelled)
+                events.append(self._order_event(cancelled, event_type="ORDER_CANCELLED",
+                    message="Correlated stop triggered; target/entry remainder cancelled."))
+            if inventory <= 0:
+                updated = transition_cancel_order(stop, at=quote.timestamp,
+                    reason=OrderTerminalReason.PROTECTIVE_REPLACED)
+            else:
+                if triggered and not siblings and stop.remaining_quantity == inventory:
+                    continue
+                updated = replace(stop, updated_at=quote.timestamp,
+                    request=replace(stop.request, quantity=stop.filled_quantity + inventory,
+                        metadata={**stop.request.metadata, "stop_triggered": True}))
+            changes.append(updated)
+            events.append(self._order_event(updated, event_type="ORDER_UPDATED",
+                message="Correlated stop owns the full remaining lifecycle position."))
+        if changes:
+            if self._durable_store is not None:
+                try:
+                    self._durable_store.persist_batch(tuple(events), orders=tuple(changes))
+                except Exception as exc:
+                    self._mark_durability_failed(exc, quote.symbol)
+                    raise PaperDurabilityError("bracket transition persistence failed") from exc
+            for order in changes:
+                self._order_book.update(order)
+        return tuple(events)
 
     def _observe_stale_market_event(self, order: PaperOrder, result: object) -> None:
         """Record a bounded diagnostic for a rejected stale PAPER fill."""
