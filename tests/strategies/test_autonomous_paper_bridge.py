@@ -1277,6 +1277,116 @@ def test_legacy_partial_target_bracket_recovery_upgrades_full_contingent_stop(
         second.close()
 
 
+def test_recovered_valid_bracket_is_idempotent_when_stop_sorts_before_target(
+    tmp_path,
+):
+    """Startup must not duplicate a target because opaque IDs restore stop first."""
+    position = {"PMI": Decimal("0")}
+    path = tmp_path / "valid-correlated-bracket.sqlite3"
+
+    def build():
+        composition = create_paper_trading_command_composition(
+            position_quantity_source=lambda symbol: position[symbol],
+            persistence_path=str(path),
+        )
+        bridge = AutonomousPaperExecutionBridge(
+            composition.trading_service,
+            composition.order_command_factory,
+            order_book=composition.order_book,
+            position_quantity_source=lambda symbol: position[symbol],
+            management_context_source=lambda _symbol: "trade-a",
+            protection_amender=composition.gateway.amend_protective_stop,
+        )
+        return composition, bridge
+
+    first, bridge = build()
+    try:
+        target_id = "PAPER-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+        stop_id = "PAPER-00000000000000000000000000000001"
+        with patch(
+            "app.paper_trading.orders._new_order_id",
+            side_effect=(
+                "PAPER-EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+                target_id,
+                stop_id,
+            ),
+        ):
+            assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+            _paper_quote(first, 1, "9.99", "10")
+            position["PMI"] = Decimal("100")
+            target_result = first.trading_service.place_order(
+                first.order_command_factory.create_placement_request(
+                    OrderEntryCommand(
+                        symbol="PMI", side="SELL", quantity=Decimal("50"),
+                        order_type="LIMIT", limit_price=Decimal("10.5"),
+                        stop_price=None, time_in_force="GTC",
+                        strategy_lifecycle_id="trade-a",
+                        metadata={
+                            "source": "recovery-fixture",
+                            "reason": "FIRST_TARGET",
+                        },
+                    )
+                )
+            )
+            assert target_result.success
+            assert target_result.broker_order_id == target_id
+            stop_result = first.trading_service.place_order(
+                first.order_command_factory.create_placement_request(
+                    OrderEntryCommand(
+                        symbol="PMI", side="SELL", quantity=Decimal("100"),
+                        order_type="STOP", limit_price=None,
+                        stop_price=Decimal("9.5"), time_in_force="GTC",
+                        strategy_lifecycle_id="trade-a",
+                        metadata={
+                            "source": "recovery-fixture", "reason": "STOP",
+                            "reservation_mode": "CONTINGENT_OCO",
+                            "correlated_target_order_id": target_id,
+                        },
+                    )
+                )
+            )
+            assert stop_result.success
+            assert stop_result.broker_order_id == stop_id
+    finally:
+        first.close()
+
+    second, recovered = build()
+    try:
+        assert recovered.reconcile() is AutonomousPaperReadiness.READY
+        assert recovered._exit_orders[("trade-a", "FIRST_TARGET")] == target_id
+        assert recovered._exit_orders[("trade-a", "STOP")] == stop_id
+        history_before = tuple(second.order_book.history())
+        events_before = tuple(second.durable_store.events())
+        watermark_before = second.durable_store.event_sequence_watermark
+
+        assert recovered.reconcile_protection() == ("PMI",)
+        assert recovered.reconcile_protection() == ("PMI",)
+        result = recovered.ensure_exit(
+            "PMI", 50, Decimal("10.5"), "FIRST_TARGET", "trade-a",
+        )
+
+        assert result.state.value == "WORKING"
+        assert result.order_id == target_id
+        assert tuple(second.order_book.history()) == history_before
+        assert tuple(second.durable_store.events()) == events_before
+        assert second.durable_store.event_sequence_watermark == watermark_before
+        sells = second.order_book.open_orders_for_symbol("PMI")
+        assert {order.order_id for order in sells} == {target_id, stop_id}
+        restored_stop = next(
+            order for order in sells
+            if order.request.order_type is OrderType.STOP
+        )
+        assert restored_stop.remaining_quantity == Decimal("100")
+        assert restored_stop.request.metadata["reservation_mode"] == (
+            "CONTINGENT_OCO"
+        )
+        assert restored_stop.request.metadata[
+            "correlated_target_order_id"
+        ] == target_id
+    finally:
+        second.close()
+
+
 def test_legacy_bracket_upgrade_persistence_failure_is_fail_closed_and_recoverable(
     tmp_path,
 ):

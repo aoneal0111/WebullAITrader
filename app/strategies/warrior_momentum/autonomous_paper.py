@@ -388,25 +388,29 @@ class AutonomousPaperExecutionBridge:
                         recovered_identity is None or context_identity != recovered_identity
                     ):
                         self._management_incomplete.add(symbol)
-                    if sells:
-                        sell_identity = sells[0].request.strategy_lifecycle_id
-                        if recovered_identity and sell_identity and sell_identity != recovered_identity:
+                    for sell in sells:
+                        sell_identity = sell.request.strategy_lifecycle_id
+                        if (
+                            recovered_identity
+                            and sell_identity
+                            and sell_identity != recovered_identity
+                        ):
                             self._readiness = AutonomousPaperReadiness.BLOCKED
                             return self._readiness
                         recovered_reason = (
-                            sells[0].request.execution_reason
+                            sell.request.execution_reason
                             or "LEGACY_EXIT_UNKNOWN"
                         )
                         recovered_key = (
                             self._active_by_symbol[symbol], recovered_reason,
                         )
-                        self._exit_orders[recovered_key] = sells[0].order_id
+                        self._exit_orders[recovered_key] = sell.order_id
                         self._remember(self._exit_keys, recovered_key)
                         if (
                             recovered_reason in {
                                 "STOP", "STOP_LOSS", "LEGACY_EXIT_UNKNOWN",
                             }
-                            and sells[0].request.order_type is not OrderType.STOP
+                            and sell.request.order_type is not OrderType.STOP
                         ):
                             # Legacy STOP requests were persisted as LIMITs.
                             # Retain ownership and suppress duplicates, but do
@@ -1522,11 +1526,27 @@ class AutonomousPaperExecutionBridge:
                         PaperExitSubmissionState.UNAVAILABLE, normalized,
                         identity, reason_key,
                     )
-                working_sell = next((
-                    order for order in self.order_book.open_orders_for_symbol(normalized)
+                working_sells = tuple(
+                    order
+                    for order in self.order_book.open_orders_for_symbol(
+                        normalized
+                    )
                     if order.request.side is OrderSide.SELL
                     and order.request.strategy_lifecycle_id == identity
+                )
+                # Durable recovery is ordered by opaque order ID, not by the
+                # target/stop relationship.  Once reconciliation has proved
+                # the bracket valid, prefer the already-working milestone
+                # over an earlier-sorting stop.  Otherwise a recovered
+                # FIRST_TARGET can incorrectly replace a healthy bracket and
+                # create a duplicate target.
+                working_sell = next((
+                    order for order in working_sells
+                    if not protective
+                    and order.request.execution_reason == reason_key
                 ), None)
+                if working_sell is None:
+                    working_sell = next(iter(working_sells), None)
                 if working_sell is not None:
                     protective = reason_key in {"STOP", "STOP_LOSS"}
                     if not protective and working_sell.request.order_type is OrderType.STOP:
