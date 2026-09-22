@@ -49,13 +49,16 @@ class WebullCatalystProvider:
                     source_url=_row_text(
                         recent,
                         "source_url",
+                        "sourceUrl",
                         "url",
                         "link",
                     ),
                     provider_event_id=_row_text(
                         recent,
                         "event_id",
+                        "eventId",
                         "earnings_id",
+                        "earningsId",
                         "id",
                     ),
                 )
@@ -80,15 +83,20 @@ class WebullCatalystProvider:
                     source_url=_row_text(
                         recent,
                         "source_url",
+                        "sourceUrl",
                         "filing_url",
+                        "filingUrl",
                         "url",
                         "link",
                     ),
                     provider_event_id=_row_text(
                         recent,
                         "accession_number",
+                        "accessionNumber",
                         "filing_id",
+                        "filingId",
                         "event_id",
+                        "eventId",
                         "id",
                     ),
                 )
@@ -124,7 +132,9 @@ def _catalyst_response_rows(
     """Return catalyst rows and whether the reachable schema is understood."""
 
     value = _response_value(response)
-    if isinstance(value, Mapping):
+    for _ in range(4):
+        if not isinstance(value, Mapping):
+            break
         selected = next((key for key in containers if key in value), None)
         if selected is None:
             return (), False
@@ -166,6 +176,13 @@ def _row_date(row: Mapping[str, object]) -> date | None:
         "filing_date",
         "filed_date",
         "accepted_time",
+        "expectedPublishDate",
+        "reportDate",
+        "earningsDate",
+        "publishDate",
+        "filingDate",
+        "filedDate",
+        "acceptedTime",
         "date",
     ):
         parsed = _date(row.get(key))
@@ -183,6 +200,13 @@ def _row_timestamp(row: Mapping[str, object]) -> datetime | None:
         "filing_date",
         "filed_date",
         "accepted_time",
+        "expectedPublishDate",
+        "reportDate",
+        "earningsDate",
+        "publishDate",
+        "filingDate",
+        "filedDate",
+        "acceptedTime",
         "date",
     ):
         parsed = _timestamp(row.get(key))
@@ -194,9 +218,28 @@ def _row_timestamp(row: Mapping[str, object]) -> datetime | None:
 def _timestamp(value: object) -> datetime | None:
     if value is None:
         return None
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+        if abs(seconds) >= 100_000_000_000:
+            seconds /= 1000
+        try:
+            return datetime.fromtimestamp(seconds, UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
     text = str(value).strip()
     if not text:
         return None
+    try:
+        numeric = float(text)
+    except ValueError:
+        numeric = None
+    if numeric is not None and text.replace(".", "", 1).isdigit():
+        if abs(numeric) >= 100_000_000_000:
+            numeric /= 1000
+        try:
+            return datetime.fromtimestamp(numeric, UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
     try:
         if len(text) == 10:
             return datetime.combine(date.fromisoformat(text), datetime.min.time(), UTC)
@@ -213,27 +256,14 @@ def _timestamp(value: object) -> datetime | None:
 
 
 def _date(value: object) -> date | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        if len(text) == 10:
-            return date.fromisoformat(text)
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC).date()
-    except ValueError:
-        try:
-            return date.fromisoformat(text[:10])
-        except ValueError:
-            return None
+    parsed = _timestamp(value)
+    return None if parsed is None else parsed.date()
 
 
 def _headline(row: Mapping[str, object], fallback: str) -> str:
-    for key in ("headline", "title", "form_type", "event_type"):
+    for key in (
+        "headline", "title", "form_type", "formType", "event_type", "eventType",
+    ):
         value = str(row.get(key, "")).strip()
         if value:
             return value

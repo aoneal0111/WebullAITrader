@@ -59,6 +59,43 @@ def test_watchlist_presenter_prepares_immutable_ui_model() -> None:
     assert row.stale == "LIVE"
 
 
+def test_watchlist_catalyst_label_distinguishes_no_result_from_no_catalyst() -> None:
+    state = WatchlistState(
+        ordered_symbols=("TRUE", "FALSE", "UNKNOWN", "DOWN"),
+        entries=tuple(
+            WatchlistEntry(symbol=symbol, metadata=metadata)
+            for symbol, metadata in (
+                ("TRUE", (
+                    ("scanner_catalyst", "SEC_FILING"),
+                    ("scanner_catalyst_status", "TRUE"),
+                    ("scanner_catalyst_headline", "8-K"),
+                )),
+                ("FALSE", (
+                    ("scanner_catalyst", "NONE"),
+                    ("scanner_catalyst_status", "FALSE"),
+                )),
+                ("UNKNOWN", (
+                    ("scanner_catalyst", "NONE"),
+                    ("scanner_catalyst_status", "UNKNOWN"),
+                )),
+                ("DOWN", (
+                    ("scanner_catalyst", "NONE"),
+                    ("scanner_catalyst_status", "UNAVAILABLE"),
+                )),
+            )
+        ),
+    )
+
+    rows = format_watchlist(state).rows
+
+    assert tuple(row.catalyst for row in rows) == (
+        "SEC_FILING: 8-K",
+        "NO CATALYST",
+        "UNKNOWN",
+        "UNAVAILABLE",
+    )
+
+
 def test_watchlist_presenter_sorts_raw_projected_values() -> None:
     view = View()
     presenter = WatchlistPresenter(view)

@@ -273,6 +273,7 @@ class ScannerSnapshotPublisher:
                     else _decimal(candidate.metrics.spread_percent),
                 ),
                 ("scanner_catalyst", candidate.catalyst.value),
+                ("scanner_catalyst_status", candidate.catalyst_status.value),
                 (
                     "scanner_catalyst_headline",
                     candidate.catalyst_headline or "--",

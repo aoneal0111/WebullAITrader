@@ -81,7 +81,7 @@ _CLASSIFIERS: tuple[tuple[CatalystType, tuple[re.Pattern[str], ...]], ...] = (
             for pattern in (
                 r"\bto acquire\b|\bacquires?\b|\bto be acquired\b",
                 r"\b(?:announces?|agrees? to|completes?|closes?)\b.*"
-                r"\b(?:acquisition|merger|buyout)\b",
+                r"\b(?:acquisition|merger|buyout|business combination)\b",
                 r"\bmerges? with\b",
             )
         ),
@@ -127,6 +127,10 @@ _STRONG_OTHER = tuple(
         r"\b(?:declares?|increases?|raises?)\b.*\bdividend\b",
         r"\b(?:patent granted|granted (?:a )?patent)\b",
         r"\b(?:launches?|receives?)\b.*\b(?:product|certification)\b",
+        r"\b(?:begins?|commences?|starts?)\b.*\btrading\b.*"
+        r"\b(?:Nasdaq|NYSE)\b",
+        r"\b(?:government|federal|national)\b.*"
+        r"\b(?:investment|funding|security agreement|offtake agreement)\b",
     )
 )
 

@@ -248,6 +248,8 @@ def test_technical_only_candidate_is_visible_without_becoming_ranked() -> None:
     metadata = dict(watch_events[0].watchlist.metadata or ())
     assert metadata["scanner_rank"] == "2"
     assert metadata["scanner_score"] == "82"
+    assert metadata["scanner_catalyst"] == "NONE"
+    assert metadata["scanner_catalyst_status"] == "UNKNOWN"
     assert metadata["scanner_classification"] == "WATCHING"
     assert metadata["technical_qualifies_without_catalyst"] == "true"
 

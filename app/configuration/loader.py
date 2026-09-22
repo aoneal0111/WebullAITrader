@@ -250,6 +250,11 @@ def load_configuration(env=None):
         if sec_user_agent
         else None
     )
+    paper_catalyst_news_enabled = (
+        trading_environment is TradingEnvironment.PAPER
+        and _bool(e.get("ATLAS_PAPER_CATALYST_NEWS_ENABLED", "true"))
+    )
+    paper_news_default = "true" if paper_catalyst_news_enabled else "false"
     yahoo_finance_news_configuration = (
         YahooFinanceNewsConfiguration(
             freshness_minutes=_non_negative_int(
@@ -262,7 +267,7 @@ def load_configuration(env=None):
                 e, "YAHOO_FINANCE_NEWS_CACHE_TTL_SECONDS", 300.0
             ),
         )
-        if _bool(e.get("YAHOO_FINANCE_NEWS_ENABLED", "false"))
+        if _bool(e.get("YAHOO_FINANCE_NEWS_ENABLED", paper_news_default))
         else None
     )
     cnbc_news_configuration = (
@@ -285,7 +290,7 @@ def load_configuration(env=None):
             max_items=_int(e, "CNBC_NEWS_MAX_ITEMS", 512),
             max_payload_bytes=_int(e, "CNBC_NEWS_MAX_PAYLOAD_BYTES", 1_000_000),
         )
-        if _bool(e.get("CNBC_NEWS_ENABLED", "false"))
+        if _bool(e.get("CNBC_NEWS_ENABLED", paper_news_default))
         else None
     )
     marketwatch_news_configuration = (
@@ -310,7 +315,7 @@ def load_configuration(env=None):
                 e, "MARKETWATCH_NEWS_MAX_PAYLOAD_BYTES", 250_000
             ),
         )
-        if _bool(e.get("MARKETWATCH_NEWS_ENABLED", "false"))
+        if _bool(e.get("MARKETWATCH_NEWS_ENABLED", paper_news_default))
         else None
     )
     for section_name, section in (
@@ -627,6 +632,5 @@ def _symbols(v):
             }
         )
     )
-
 
 

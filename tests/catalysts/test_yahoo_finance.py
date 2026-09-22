@@ -683,6 +683,21 @@ def test_configuration_defaults_disabled_and_parses_explicit_yahoo_policy() -> N
     assert enabled.yahoo_finance_news.cache_ttl_seconds == 180.0
 
 
+def test_paper_configuration_enables_bounded_news_with_explicit_kill_switch() -> None:
+    enabled = load_configuration({"WEBULL_TRADING_ENVIRONMENT": "PAPER"})
+    disabled = load_configuration({
+        "WEBULL_TRADING_ENVIRONMENT": "PAPER",
+        "ATLAS_PAPER_CATALYST_NEWS_ENABLED": "false",
+    })
+
+    assert enabled.yahoo_finance_news is not None
+    assert enabled.cnbc_news is not None
+    assert enabled.marketwatch_news is not None
+    assert disabled.yahoo_finance_news is None
+    assert disabled.cnbc_news is None
+    assert disabled.marketwatch_news is None
+
+
 def test_disabled_composition_preserves_webull_only_path() -> None:
     configuration = load_configuration({})
     providers = build_catalyst_providers(SimpleNamespace(), configuration)

@@ -17,9 +17,34 @@ from app.catalysts import (
     CatalystType,
     WebullCatalystProvider,
 )
+from app.catalysts.headline_classification import classify_catalyst_headline
 
 
 NOW = datetime(2026, 7, 30, 15, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("headline", "expected"),
+    (
+        (
+            "newcleo completes business combination and begins trading on Nasdaq",
+            CatalystType.ACQUISITION,
+        ),
+        (
+            "Company begins trading on Nasdaq following its listing",
+            CatalystType.OTHER,
+        ),
+        (
+            "Federal government announces strategic funding agreement with Company",
+            CatalystType.OTHER,
+        ),
+    ),
+)
+def test_material_listing_and_government_headlines_are_catalysts(
+    headline: str,
+    expected: CatalystType,
+) -> None:
+    assert classify_catalyst_headline(headline) is expected
 
 
 class Response:

@@ -56,6 +56,7 @@ def watchlist_metadata(candidate: MomentumCandidate) -> tuple[tuple[str, str], .
         ("scanner_dollar_volume", format(candidate.dollar_volume, "f")),
         ("scanner_spread", "--" if candidate.spread_percent is None else format(candidate.spread_percent, "f")),
         ("scanner_catalyst", candidate.catalyst_type.value),
+        ("scanner_catalyst_status", candidate.catalyst_status.value),
         ("warrior_catalyst_status", candidate.catalyst_status.value),
         ("scanner_session", candidate.session),
         ("warrior_float", "--" if candidate.float_shares is None else format(candidate.float_shares, "f")),

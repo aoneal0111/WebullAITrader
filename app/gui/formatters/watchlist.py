@@ -108,10 +108,7 @@ def _empty_state(health: HealthState | None) -> tuple[str, str]:
 
 def _row(entry, selected_symbol: str | None) -> WatchlistRow:
     metadata = dict(entry.metadata)
-    catalyst = metadata.get("scanner_catalyst", "--")
-    headline = metadata.get("scanner_catalyst_headline", "--")
-    if catalyst != "--" and headline != "--":
-        catalyst = f"{catalyst}: {headline}"
+    catalyst = _catalyst_label(metadata)
     return WatchlistRow(
                 symbol=entry.symbol,
                 selected=entry.symbol == selected_symbol,
@@ -173,6 +170,26 @@ def _row(entry, selected_symbol: str | None) -> WatchlistRow:
                 strategy_status=metadata.get("warrior_status", "--").replace("_", " "),
                 explanations=metadata.get("warrior_explanations", "--"),
     )
+
+
+def _catalyst_label(metadata: dict[str, str]) -> str:
+    status = metadata.get(
+        "scanner_catalyst_status",
+        metadata.get("warrior_catalyst_status", "UNKNOWN"),
+    ).upper()
+    catalyst = metadata.get("scanner_catalyst", "--")
+    headline = metadata.get("scanner_catalyst_headline", "--")
+    if status == "UNAVAILABLE":
+        return "UNAVAILABLE"
+    if status == "UNKNOWN":
+        return "UNKNOWN"
+    if status == "FALSE":
+        return "NO CATALYST"
+    if catalyst in {"--", "NONE"}:
+        return "UNKNOWN"
+    if headline != "--":
+        return f"{catalyst}: {headline}"
+    return catalyst
 
 
 def _sort_value(entry, sort_field: str):

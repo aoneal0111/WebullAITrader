@@ -178,6 +178,34 @@ def test_production_sec_filings_container_and_publish_date_are_true() -> None:
     assert reference.catalyst_headline == "8-K | Material event"
 
 
+def test_nested_camel_case_sec_payload_and_epoch_timestamp_are_true() -> None:
+    published_at = datetime(2026, 7, 30, 1, 0, tzinfo=UTC)
+
+    class NestedFilingsFundamentals:
+        def get_earnings_calendar(self, symbol, category):
+            return Response({"data": {"items": []}})
+
+        def get_sec_filings(self, symbol, category):
+            return Response({
+                "data": {
+                    "filings": [{
+                        "acceptedTime": str(int(published_at.timestamp() * 1000)),
+                        "formType": "8-K",
+                        "accessionNumber": "0000000000-26-000001",
+                        "filingUrl": "https://www.sec.gov/filing",
+                    }],
+                },
+            })
+
+    reference = _reference_with_fundamentals(NestedFilingsFundamentals())
+
+    assert reference.catalyst is CatalystType.SEC_FILING
+    assert reference.catalyst_status is CatalystStatus.TRUE
+    assert reference.catalyst_headline == "8-K"
+    assert reference.catalyst_published_at == published_at
+    assert reference.catalyst_source_url == "https://www.sec.gov/filing"
+
+
 def test_valid_production_responses_without_recent_event_are_false() -> None:
     class OldEvidenceFundamentals:
         def get_earnings_calendar(self, symbol, category):
