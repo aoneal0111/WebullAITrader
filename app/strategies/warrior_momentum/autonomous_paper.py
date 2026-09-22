@@ -1524,6 +1524,7 @@ class AutonomousPaperExecutionBridge:
         reason_key: str, identity: str,
     ) -> PaperExitSubmissionDecision:
         protective = reason_key in {"STOP", "STOP_LOSS"}
+        immediate = reason_key in {"SESSION_CLOSE", "OVERNIGHT_CAPABILITY_LOST"}
         if protective:
             performance_diagnostics.record_protection_event(
                 state="PROTECTION_SUBMIT_ATTEMPT",
@@ -1539,8 +1540,8 @@ class AutonomousPaperExecutionBridge:
                 self.order_command_factory.create_placement_request(
                     OrderEntryCommand(
                         symbol=normalized, side="SELL", quantity=Decimal(quantity),
-                        order_type="STOP" if protective else "LIMIT",
-                        limit_price=None if protective else Decimal(price),
+                        order_type="STOP" if protective else "MARKET" if immediate else "LIMIT",
+                        limit_price=None if protective or immediate else Decimal(price),
                         stop_price=Decimal(price) if protective else None,
                         # Position management must survive DAY rollover.  Entry
                         # validity is handled separately before exposure exists.
@@ -1600,6 +1601,19 @@ class AutonomousPaperExecutionBridge:
             identity, reason_key, result.broker_order_id,
             self._order_created_at(result.broker_order_id),
         )
+
+    def cancel_working_entries(self, reason: str = "SESSION_ENTRY_CUTOFF") -> tuple[str, ...]:
+        """Cancel autonomous BUY orders while preserving protective SELL orders."""
+        if self.order_book is None:
+            return ()
+        cancelled: list[str] = []
+        with self._lock:
+            for order in tuple(self.order_book.open_orders()):
+                if order.request.side is not OrderSide.BUY:
+                    continue
+                if self._cancel_working_order(order):
+                    cancelled.append(order.order_id)
+        return tuple(cancelled)
 
     def _order_created_at(self, order_id: str | None) -> datetime | None:
         if self.order_book is None or order_id is None:

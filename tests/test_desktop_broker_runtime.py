@@ -29,6 +29,7 @@ from app.operations_core import (
 from app.read_models.health_projection import HealthProjection
 from app.services.runtime_drivers import DesktopBrokerRuntimeDriver
 from app.webull.sdk_market_data import WebullScannerUniverseProvider
+from app.webull.market_data_session import MarketDataSession
 
 
 NOW = datetime(2026, 7, 30, 15, 0, tzinfo=UTC)
@@ -1000,6 +1001,47 @@ def test_candidate_freshness_does_not_trigger_transport_recovery() -> None:
 
     assert scanner.recover_calls == 0
     assert driver._scanner_events_since_observation == 1
+
+
+def test_feed_watchdog_defers_stale_recovery_across_session_transition() -> None:
+    driver = object.__new__(DesktopBrokerRuntimeDriver)
+    driver._clock = lambda: datetime(2026, 9, 22, 0, 0, tzinfo=UTC)
+    driver._last_capability_session = MarketDataSession.AFTER_HOURS
+    driver._configuration = configuration()
+    driver._feed_payload_monotonic = lambda: (_ for _ in ()).throw(
+        AssertionError("watchdog inspected stale feed before session probe")
+    )
+
+    driver._run_feed_watchdog()
+
+
+def test_overnight_transition_probe_sets_capability_pause() -> None:
+    class Probe:
+        def run(self):
+            return SimpleNamespace(
+                scanner_ready=False,
+                reason="OVERNIGHT_ENTITLEMENT_REQUIRED",
+            )
+
+    driver = object.__new__(DesktopBrokerRuntimeDriver)
+    driver._clock = lambda: datetime(2026, 9, 22, 0, 0, tzinfo=UTC)
+    driver._last_capability_session = MarketDataSession.AFTER_HOURS
+    driver._scanner_pause_session = None
+    driver._scanner = None
+    capability_losses = []
+    driver._market_event_observer = SimpleNamespace(
+        overnight_capability_lost=capability_losses.append,
+    )
+    driver._market_data_probe = Probe()
+    driver._scanner_configuration_changed = False
+    driver._capability_refresh_requested = False
+    driver._publish_probe_result = lambda result: None
+
+    driver._retry_scanner_after_session_transition(Event())
+
+    assert driver._last_capability_session is MarketDataSession.OVERNIGHT
+    assert driver._scanner_pause_session is MarketDataSession.OVERNIGHT
+    assert capability_losses == [datetime(2026, 9, 22, 0, 0, tzinfo=UTC)]
 
 
 def test_scanner_qualification_diagnostics_handles_missing_decision(caplog) -> None:

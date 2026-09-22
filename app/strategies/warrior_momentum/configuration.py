@@ -197,6 +197,30 @@ class TradeManagementConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionManagementConfig:
+    """Bounded PAPER policy for the after-hours/overnight boundary."""
+
+    enabled: bool = True
+    after_hours_entry_cutoff_minutes: int = 30
+    flatten_lead_minutes: int = 5
+    overnight_carry_enabled: bool = False
+    overnight_minimum_current_r: Decimal = Decimal("0.50")
+    overnight_minimum_peak_r: Decimal = Decimal("1.00")
+    overnight_maximum_giveback_r: Decimal = Decimal("0.75")
+    overnight_minimum_pressure_score: int = 0
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.flatten_lead_minutes <= self.after_hours_entry_cutoff_minutes < 240:
+            raise ValueError("session-management minute bounds are invalid")
+        if any(value < 0 for value in (
+            self.overnight_minimum_current_r,
+            self.overnight_minimum_peak_r,
+            self.overnight_maximum_giveback_r,
+        )):
+            raise ValueError("overnight risk thresholds must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
 class WarriorMomentumConfig:
     discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
     weights: ScoreWeights = field(default_factory=ScoreWeights)
@@ -205,6 +229,7 @@ class WarriorMomentumConfig:
     adaptive_entry: AdaptiveEntryConfig = field(default_factory=AdaptiveEntryConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     trade_management: TradeManagementConfig = field(default_factory=TradeManagementConfig)
+    session_management: SessionManagementConfig = field(default_factory=SessionManagementConfig)
     top_gapper_count: int = 10
     telemetry_symbol_limit: int = 10
     live_execution_enabled: bool = False
@@ -250,6 +275,11 @@ class WarriorMomentumConfig:
         diagnostics_session_id = os.getenv(
             "ATLAS_WARRIOR_D3_DIAGNOSTICS_SESSION_ID", "",
         ).strip()
+        overnight = os.getenv(
+            "ATLAS_WARRIOR_OVERNIGHT_CARRY_ENABLED", "false",
+        ).strip().lower()
+        if overnight not in {"true", "false"}:
+            raise ValueError("ATLAS_WARRIOR_OVERNIGHT_CARRY_ENABLED must be true or false")
         return cls(
             adaptive_context_enabled=raw == "true",
             observability_enabled=diagnostics == "true",
@@ -257,6 +287,9 @@ class WarriorMomentumConfig:
                 Path(diagnostics_root) if diagnostics_root else None
             ),
             observability_session_id=diagnostics_session_id or None,
+            session_management=SessionManagementConfig(
+                overnight_carry_enabled=overnight == "true",
+            ),
         )
 
     @classmethod
@@ -285,6 +318,7 @@ class WarriorMomentumConfig:
 __all__ = [
     "AtlasStrategy", "StrategySelection", "ScoreWeights", "DiscoveryConfig",
     "SetupConfig", "EntryConfig", "AdaptiveEntryConfig", "RiskConfig", "TradeManagementConfig",
+    "SessionManagementConfig",
     "WarriorMomentumConfig", "WARRIOR_ENTRY_ALLOWED_SESSIONS",
     "BALANCED_POLICY_VERSION", "CONSERVATIVE_POLICY_VERSION",
 ]

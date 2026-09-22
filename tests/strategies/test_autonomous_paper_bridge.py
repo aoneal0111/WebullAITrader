@@ -624,6 +624,61 @@ def test_duplicate_stop_signal_keeps_one_working_protective_order() -> None:
     composition.close()
 
 
+def test_session_cutoff_cancels_buy_entries_but_preserves_protective_sells() -> None:
+    composition = create_paper_trading_command_composition(
+        position_quantity_source=lambda symbol: Decimal("100") if symbol == "PMI" else Decimal("0"),
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+    )
+    assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+    _paper_quote(composition, 1, "9.99", "10")
+    assert bridge.ensure_exit(
+        "PMI", 100, Decimal("9.50"), "STOP", "trade-a",
+    ).protection_active
+    assert bridge.submit_entry(
+        Signal(symbol="LATE", lifecycle_id="trade-late"), 10, Decimal("5"),
+    )
+
+    cancelled = bridge.cancel_working_entries()
+
+    assert len(cancelled) == 1
+    remaining = composition.order_book.open_orders()
+    assert len(remaining) == 1
+    assert remaining[0].request.side.value == "SELL"
+    assert remaining[0].request.order_type is OrderType.STOP
+    composition.close()
+
+
+def test_session_close_replaces_protection_with_market_exit() -> None:
+    composition = create_paper_trading_command_composition(
+        position_quantity_source=lambda _symbol: Decimal("100"),
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+        position_quantity_source=lambda _symbol: Decimal("100"),
+    )
+    assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+    _paper_quote(composition, 1, "9.99", "10")
+    assert bridge.ensure_exit(
+        "PMI", 100, Decimal("9.50"), "STOP", "trade-a",
+    ).protection_active
+    _paper_quote(composition, 2, "10.20", "10.21")
+
+    decision = bridge.ensure_exit(
+        "PMI", 100, Decimal("10.25"), "SESSION_CLOSE", "trade-a",
+    )
+
+    assert decision.state.value == "SUBMITTED"
+    working = composition.order_book.open_orders()
+    assert len(working) == 1
+    assert working[0].request.order_type is OrderType.MARKET
+    assert working[0].request.time_in_force.value == "GTC"
+    composition.close()
+
+
 def test_target_coordinates_with_protection_and_authoritative_partial_remainder() -> None:
     position = {"PMI": Decimal("0")}
     composition = create_paper_trading_command_composition(

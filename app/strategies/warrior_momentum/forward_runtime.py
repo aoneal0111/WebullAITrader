@@ -43,6 +43,10 @@ from .models import (
     ReasonCode, SetupState,
 )
 from .risk import size_position
+from .session_risk import (
+    assess_overnight_carry, entry_cutoff_reached, flatten_window_reached,
+    overnight_session_follows,
+)
 from .runtime import WarriorMomentumRuntime, entry_rejections, execution_liquidity_ok
 from .shadow_analysis import ShadowOpportunityAnalyzer
 from .shadow_latched import (
@@ -691,6 +695,20 @@ class WarriorForwardCaptureService:
         ))
         records.append(_quality_record(value, completed, self.capture_config))
 
+        if signal is not None:
+            if (
+                self.config.session_management.enabled
+                and entry_cutoff_reached(value.observation.timestamp, self.config.session_management)
+            ):
+                shadow_reasons.append(ReasonCode.SESSION_ENTRY_CUTOFF.value)
+                records.append(_transition_record(
+                    assessed, ForwardTransition.ENTRY_BLOCKED,
+                    (ReasonCode.SESSION_ENTRY_CUTOFF.value,),
+                    ({"gate": "session_entry_cutoff", "passed": False,
+                      "observed": value.observation.timestamp.isoformat(),
+                      "limit": self.config.session_management.after_hours_entry_cutoff_minutes},),
+                ))
+                signal = None
         if signal is not None:
             symbol_authorization = _paper_symbol_authorization(signal, account)
             if signal.symbol in self._paper:
@@ -2691,6 +2709,85 @@ class WarriorForwardCaptureService:
                 lifecycle_identity(state.signal),
             )
         return False
+
+    def manage_session_boundary(self, observed_at: datetime) -> tuple[tuple[str, str], ...]:
+        """Flatten or explicitly approve carry for each authoritative PAPER position."""
+        config = self.config.session_management
+        if not config.enabled or not flatten_window_reached(observed_at, config):
+            return ()
+        outcomes: list[tuple[str, str]] = []
+        records: list[CaptureRecord] = []
+        for symbol, state in tuple(self._paper.items()):
+            quantity = max(0, state.remaining)
+            if self._paper_position_quantity_source is not None:
+                quantity = max(0, int(self._paper_position_quantity_source(symbol)))
+            if quantity <= 0:
+                continue
+            evidence = state.latest_exit_evidence
+            adaptive = state.adaptive_exit_assessment
+            assessment = assess_overnight_carry(
+                config=config,
+                protection_active=state.protection_reconciled,
+                current_r=state.current_r,
+                peak_r=state.peak_r,
+                giveback_r=state.giveback_r,
+                quote_fresh=bool(evidence is not None and evidence.quote_fresh),
+                pressure_score=None if adaptive is None else adaptive.pressure_score,
+                overnight_available=overnight_session_follows(observed_at),
+            )
+            if assessment.carry:
+                outcomes.append((symbol, "OVERNIGHT_CARRY_APPROVED"))
+                records.append(_management_context_record(
+                    symbol, observed_at, state.signal, state, phase="OVERNIGHT_CARRY_APPROVED",
+                ))
+                continue
+            price = state.entry_price
+            if evidence is not None and evidence.best_bid is not None:
+                price = evidence.best_bid
+            result = self._submit_exit(state, price, quantity, "SESSION_CLOSE")
+            submitted = (
+                result.state in {PaperExitSubmissionState.SUBMITTED, PaperExitSubmissionState.WORKING}
+                if isinstance(result, PaperExitSubmissionDecision) else bool(result)
+            )
+            outcome = "SESSION_CLOSE_SUBMITTED" if submitted else "SESSION_CLOSE_UNAVAILABLE"
+            outcomes.append((symbol, outcome))
+            records.append(_management_context_record(
+                symbol, observed_at, state.signal, state, phase=outcome,
+            ))
+        if records:
+            self._submit_records(tuple(records))
+        return tuple(outcomes)
+
+    def flatten_for_overnight_capability_loss(
+        self, observed_at: datetime,
+    ) -> tuple[tuple[str, str], ...]:
+        """Submit exits when the new overnight session denies entitlement."""
+        outcomes: list[tuple[str, str]] = []
+        for symbol, state in tuple(self._paper.items()):
+            quantity = max(0, state.remaining)
+            if self._paper_position_quantity_source is not None:
+                quantity = max(0, int(self._paper_position_quantity_source(symbol)))
+            if quantity <= 0:
+                continue
+            evidence = state.latest_exit_evidence
+            price = (
+                evidence.best_bid
+                if evidence is not None and evidence.best_bid is not None
+                else state.entry_price
+            )
+            result = self._submit_exit(
+                state, price, quantity, "OVERNIGHT_CAPABILITY_LOST",
+            )
+            submitted = (
+                result.state in {PaperExitSubmissionState.SUBMITTED, PaperExitSubmissionState.WORKING}
+                if isinstance(result, PaperExitSubmissionDecision) else bool(result)
+            )
+            outcomes.append((
+                symbol,
+                "OVERNIGHT_CAPABILITY_EXIT_SUBMITTED"
+                if submitted else "OVERNIGHT_CAPABILITY_EXIT_UNAVAILABLE",
+            ))
+        return tuple(outcomes)
 
     def reconcile_authoritative_protection(
         self, symbol: str, observed_at: datetime,

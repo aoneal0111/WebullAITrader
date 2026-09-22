@@ -126,6 +126,7 @@ class DesktopBrokerRuntimeDriver:
         self._market_data_stop = Event()
         self._terminal_stream_failure_published = False
         self._scanner_pause_session: MarketDataSession | None = None
+        self._last_capability_session = current_market_data_session(self._clock)
         self._scanner_configuration_changed = False
         self._capability_refresh_requested = False
         self._cycles_completed = 0
@@ -1410,6 +1411,22 @@ class DesktopBrokerRuntimeDriver:
     def _run_feed_watchdog(self) -> None:
         if not hasattr(self, "_configuration"):
             return
+        if hasattr(self, "_clock"):
+            session = current_market_data_session(self._clock)
+            if session is not getattr(self, "_last_capability_session", session):
+                # Give the account loop one reconciliation cycle to re-probe
+                # the new session before interpreting an expected stream
+                # boundary as a transport failure.
+                return
+            if (
+                session is MarketDataSession.CLOSED
+                or session is MarketDataSession.OVERNIGHT
+                and getattr(self, "_scanner_pause_session", None) is MarketDataSession.OVERNIGHT
+            ):
+                # Expected session/capability pauses are not failures.
+                self._feed_stale = False
+                self._feed_recovery_pending = False
+                return
         now = monotonic()
         loop_gap = now - getattr(
             self, "_last_runtime_iteration_monotonic", now
@@ -1731,6 +1748,16 @@ class DesktopBrokerRuntimeDriver:
             self._configuration.reconciliation_interval_seconds
         )
         while not stop_event.is_set():
+            session_policy_tick = getattr(
+                self._market_event_observer, "session_policy_tick", None,
+            )
+            if callable(session_policy_tick):
+                try:
+                    session_policy_tick(self._clock())
+                except Exception as exc:
+                    self._scanner_error(
+                        "Unable to apply the PAPER session-boundary policy.", exc,
+                    )
             snapshot = self._account_poller(
                 self._broker,
                 clock=self._clock,
@@ -1771,10 +1798,9 @@ class DesktopBrokerRuntimeDriver:
                     )
         if self._market_data_probe is None:
             return
-        session_changed = (
-            self._scanner_pause_session is not None
-            and session is not self._scanner_pause_session
-        )
+        previous_session = getattr(self, "_last_capability_session", session)
+        session_changed = session is not previous_session
+        self._last_capability_session = session
         if not (
             session_changed
             or self._scanner_configuration_changed
@@ -1795,6 +1821,20 @@ class DesktopBrokerRuntimeDriver:
         self._capability_refresh_requested = False
         result = self._market_data_probe.run()
         self._publish_probe_result(result)
+        if getattr(result, "reason", None) == "OVERNIGHT_ENTITLEMENT_REQUIRED":
+            capability_lost = getattr(
+                self._market_event_observer, "overnight_capability_lost", None,
+            )
+            if callable(capability_lost):
+                try:
+                    capability_lost(self._clock())
+                except Exception as exc:
+                    self._scanner_error(
+                        "Unable to flatten PAPER positions after overnight capability denial.",
+                        exc,
+                    )
+            self._scanner_pause_session = MarketDataSession.OVERNIGHT
+            return
         if not result.scanner_ready or self._scanner_pause_session is None:
             return
         self._scanner_pause_session = None

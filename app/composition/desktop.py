@@ -320,6 +320,7 @@ def create_desktop_composition(
         paper_entry_replacer=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.consider_entry_replacement),
         paper_entry_rearmer=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.submit_rearmed_entry),
         paper_exit_submitter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.ensure_exit),
+        paper_entry_canceller=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.cancel_working_entries),
         paper_position_quantity_source=(None if paper_trading_commands is None else trading_state_sources.position_quantity),
         paper_execution_ownership_source=(
             None if autonomous_paper_bridge is None

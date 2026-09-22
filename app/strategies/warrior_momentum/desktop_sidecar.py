@@ -48,6 +48,7 @@ from .shadow_latched import (
     ShadowLatchedTransition,
     ShadowMarketObservation,
 )
+from .session_risk import entry_cutoff_reached, flatten_window_reached
 
 
 _RUNTIME_LOGGER = logging.getLogger("atlas.runtime")
@@ -212,6 +213,7 @@ class WarriorDesktopSidecar:
         account_context_source: Callable[[], PaperAccountContext | None] | None = None,
         paper_entry_submitter: Callable[[object, int, Decimal], bool] | None = None,
         paper_exit_submitter: Callable[[str, int, Decimal, str, str | None], object] | None = None,
+        paper_entry_canceller: Callable[[str], object] | None = None,
         paper_entry_replacer: Callable[..., object] | None = None,
         paper_entry_rearmer: Callable[..., object] | None = None,
         paper_position_quantity_source: Callable[[str], Decimal] | None = None,
@@ -238,6 +240,7 @@ class WarriorDesktopSidecar:
         self._account_source = account_context_source or (lambda: None)
         self._paper_entry_submitter = paper_entry_submitter
         self._paper_exit_submitter = paper_exit_submitter
+        self._paper_entry_canceller = paper_entry_canceller
         self._paper_entry_replacer = paper_entry_replacer
         self._paper_entry_rearmer = paper_entry_rearmer
         self._paper_position_quantity_source = paper_position_quantity_source
@@ -302,6 +305,7 @@ class WarriorDesktopSidecar:
         self._last_protection_quantity: dict[str, int] = {}
         self._last_protection_attempt_at: dict[str, float] = {}
         self._last_intraminute_evaluation_at: dict[str, datetime] = {}
+        self._last_session_policy_minute: datetime | None = None
 
     def bind_scanner_adapter(self, adapter: MarketEventScannerAdapter) -> None:
         if not isinstance(adapter, MarketEventScannerAdapter):
@@ -648,6 +652,7 @@ class WarriorDesktopSidecar:
             if self._health is not WarriorCaptureHealth.RUNNING:
                 return
             try:
+                self._apply_session_policy(event.timestamp)
                 self._consume(event)
                 if event.symbol is not None and self._service is not None:
                     normalized = event.symbol.strip().upper()
@@ -673,6 +678,7 @@ class WarriorDesktopSidecar:
                     reconcile_symbol, event.timestamp,
                 )
             )
+
         except Exception as exc:
             with self._lock:
                 self._protection_dirty.add(reconcile_symbol)
@@ -694,6 +700,38 @@ class WarriorDesktopSidecar:
                 symbol=reconcile_symbol,
                 success=protection_success,
             )
+
+    def _apply_session_policy(self, observed_at: datetime) -> None:
+        config = self.strategy_config.session_management
+        if not config.enabled or self._service is None:
+            return
+        minute = observed_at.replace(second=0, microsecond=0)
+        if minute == self._last_session_policy_minute:
+            return
+        self._last_session_policy_minute = minute
+        if entry_cutoff_reached(observed_at, config) and self._paper_entry_canceller is not None:
+            try:
+                self._paper_entry_canceller("SESSION_ENTRY_CUTOFF")
+            except Exception:
+                self._last_error_type = "SessionEntryCancellationFailed"
+        if flatten_window_reached(observed_at, config):
+            self._service.manage_session_boundary(observed_at)
+
+    def session_policy_tick(self, observed_at: datetime | None = None) -> None:
+        """Run the boundary policy even when the market stream is quiet."""
+        if not self.enabled:
+            return
+        with self._lock:
+            if self._health is WarriorCaptureHealth.RUNNING:
+                self._apply_session_policy(observed_at or self._aware_now())
+
+    def overnight_capability_lost(self, observed_at: datetime | None = None) -> None:
+        """Fail closed for carried positions when entitlement is denied."""
+        with self._lock:
+            if self._service is not None:
+                self._service.flatten_for_overnight_capability_loss(
+                    observed_at or self._aware_now(),
+                )
 
     def _protection_reconciliation_due(self, symbol: str) -> bool:
         """Return whether a protection audit is needed without doing I/O."""
@@ -1762,6 +1800,12 @@ class CompositeMarketEventObserver:
             except Exception:
                 pass
         self.warrior.stop()
+
+    def session_policy_tick(self, observed_at: datetime | None = None) -> None:
+        self.warrior.session_policy_tick(observed_at)
+
+    def overnight_capability_lost(self, observed_at: datetime | None = None) -> None:
+        self.warrior.overnight_capability_lost(observed_at)
 
     def projection_metrics(self) -> dict[str, dict[str, int | float]]:
         return {
