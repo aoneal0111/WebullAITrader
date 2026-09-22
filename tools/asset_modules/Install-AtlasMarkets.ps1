@@ -40,6 +40,9 @@ try {
         & $Python -m pytest tests/asset_modules tests/crypto_research `
             tests/gui/test_production_main_window_layout.py tests/gui/test_dashboard_shell.py `
             tests/composition/test_desktop_composition.py `
+            tests/warrior_momentum/test_entry_economics.py `
+            tests/warrior_momentum/test_adaptive_exit.py tests/warrior_momentum/test_strategy.py `
+            tests/strategies/test_autonomous_paper_bridge.py `
             -q -k "not test_production_desktop_historical_treatment_full_lifecycle_survives_restart" `
             --basetemp $TempTests
         $ValidationExit = $LASTEXITCODE

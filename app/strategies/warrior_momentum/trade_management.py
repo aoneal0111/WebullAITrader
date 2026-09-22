@@ -15,8 +15,8 @@ def planned_exits(signal: MomentumEntrySignal, shares: int, config: TradeManagem
     second = int((Decimal(shares) * config.second_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
     runner = shares - first - second
     return (
-        PaperExit("FIRST_TARGET", signal.entry_trigger + signal.risk_per_share * config.first_target_r, first),
-        PaperExit("SECOND_TARGET", signal.entry_trigger + signal.risk_per_share * config.second_target_r, second),
+        PaperExit("FIRST_TARGET", min(signal.target_levels[0], signal.entry_trigger + signal.risk_per_share * config.first_target_r), first),
+        PaperExit("SECOND_TARGET", min(signal.target_levels[1], signal.entry_trigger + signal.risk_per_share * config.second_target_r), second),
         PaperExit("RUNNER", signal.target_levels[-1], runner),
     )
 

@@ -32,6 +32,9 @@ def application_stylesheet() -> str:
     return f"""
     * {{ font-family: "{family}"; font-size: {Typography.MD}px; }}
     QMainWindow, QWidget#appRoot {{ background: {Colors.BACKGROUND}; color: {Colors.TEXT}; }}
+    QWidget#assetAnalysisPage {{ background: {Colors.BACKGROUND}; color: {Colors.TEXT}; }}
+    QGroupBox#assetAnalysisPanel {{ background: {Colors.SURFACE}; color: {Colors.TEXT}; border: 1px solid {Colors.BORDER}; border-radius: 5px; margin-top: 18px; padding-top: 8px; }}
+    QGroupBox#assetAnalysisPanel::title {{ subcontrol-origin: margin; subcontrol-position: top left; padding: 0 8px; color: {Colors.TEXT}; }}
     QWidget#navigationRail {{ background: {Colors.SIDEBAR}; border-right: 1px solid {Colors.BORDER}; }}
     QWidget#contentArea, QStackedWidget {{ background: {Colors.BACKGROUND}; }}
     QLabel {{ color: {Colors.TEXT}; }}

@@ -106,6 +106,14 @@ class EntryConfig:
     require_catalyst_for_entry: bool = False
     maximum_risk_per_share: Decimal = Decimal("1.00")
     allowed_sessions: frozenset[str] = WARRIOR_ENTRY_ALLOWED_SESSIONS
+    minimum_remaining_first_target_r: Decimal = Decimal("0.5")
+    minimum_remaining_final_target_r: Decimal = Decimal("1.5")
+
+    def __post_init__(self) -> None:
+        for value in (self.minimum_remaining_first_target_r, self.minimum_remaining_final_target_r):
+            if not value.is_finite() or value <= 0:
+                raise ValueError("remaining reward thresholds must be finite and positive")
+
 
 
 @dataclass(frozen=True, slots=True)

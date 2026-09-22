@@ -22,6 +22,7 @@ from .forward_models import (
 )
 from .autonomous_paper import lifecycle_identity
 from .execution_quote import ExecutionQuoteSource
+from .entry_economics import remaining_reward_ok
 from .execution_pursuit import (
     ExecutionPursuitAssessment, ExecutionPursuitDecision,
     assess_top_of_book_pursuit, depth_features, depth_transition,
@@ -741,6 +742,13 @@ class WarriorForwardCaptureService:
                 records.append(blocked)
                 signal = None
             else:
+                # Establish the volatility-adjusted plan before paying up.
+                # Execution displacement cannot move that plan's targets.
+                signal = adapt_initial_stop(
+                    signal, completed, spread_percent=assessed.spread_percent,
+                    config=self.config.trade_management,
+                    maximum_risk_per_share=self.config.entry.maximum_risk_per_share,
+                )
                 executable_signal = (
                     self._execution_entry_signal(value, assessed, signal)
                     if self.config.adaptive_context_enabled
@@ -759,13 +767,7 @@ class WarriorForwardCaptureService:
                     signal = None
                     position = None
                 else:
-                    signal = adapt_initial_stop(
-                        executable_signal,
-                        completed,
-                        spread_percent=assessed.spread_percent,
-                        config=self.config.trade_management,
-                        maximum_risk_per_share=self.config.entry.maximum_risk_per_share,
-                    )
+                    signal = executable_signal
                     position = size_position(
                     signal, account_equity=account.equity,
                     buying_power=account.buying_power,
@@ -777,6 +779,30 @@ class WarriorForwardCaptureService:
                     config=self.config.risk,
                     symbol_authorized=symbol_authorization.authorized,
                     )
+                if signal is not None and position is not None and position.approved:
+                    bid, ask = value.observation.bid, value.observation.ask
+                    economics_ok = bool(bid is not None and ask is not None and ask >= bid
+                        and remaining_reward_ok(
+                            entry=signal.entry_trigger, stop=signal.stop_price,
+                            targets=signal.target_levels, spread=ask - bid,
+                            minimum_first_r=self.config.entry.minimum_remaining_first_target_r,
+                            minimum_final_r=self.config.entry.minimum_remaining_final_target_r))
+                    if not economics_ok:
+                        records.append(_transition_record(
+                            assessed, ForwardTransition.ENTRY_BLOCKED,
+                            ("INSUFFICIENT_REMAINING_REWARD",),
+                            ({"gate": "remaining_reward", "passed": False,
+                              "entry": str(signal.entry_trigger), "stop": str(signal.stop_price),
+                              "targets": tuple(str(t) for t in signal.target_levels)},),
+                        ))
+                        shadow_reasons.append("INSUFFICIENT_REMAINING_REWARD")
+                        assessed = replace(
+                            assessed, status=CandidateStatus.INELIGIBLE_FOR_EXECUTION,
+                            reason_codes=(*assessed.reason_codes, ReasonCode.INSUFFICIENT_REMAINING_REWARD),
+                            explanations=(*assessed.explanations, "Entry blocked: insufficient reward remaining at the proposed price after a spread allowance."),
+                        )
+                        signal = None
+                        position = None
                 if position is not None and position.approved:
                     entry_value_quantity = position.shares
                     entry_records, execution_record, authorization_decision = self._open_paper(
@@ -1131,11 +1157,8 @@ class WarriorForwardCaptureService:
             entry_trigger=executable,
             reference_price=executable,
             risk_per_share=risk,
-            target_levels=(
-                executable + risk,
-                executable + risk * Decimal("2"),
-                executable + risk * Decimal("3"),
-            ),
+            # Paying more does not create a higher structural target.
+            target_levels=signal.target_levels,
             structural_entry_trigger=structural,
         )
 
@@ -1200,6 +1223,15 @@ class WarriorForwardCaptureService:
             record_pursuit("QUOTE_STALE")
             return
 
+        # This gate also applies to the legacy path without depth/size data.
+        if not remaining_reward_ok(
+            entry=Decimal(ask), stop=state.signal.stop_price,
+            targets=state.signal.target_levels, spread=Decimal(ask) - Decimal(bid),
+            minimum_first_r=self.config.entry.minimum_remaining_first_target_r,
+            minimum_final_r=self.config.entry.minimum_remaining_final_target_r,
+        ):
+            record_pursuit("INSUFFICIENT_REMAINING_REWARD")
+            return
         spread = candidate.spread_percent
         if (
             value.best_bid_size is not None
@@ -1255,7 +1287,7 @@ class WarriorForwardCaptureService:
                 structural_stop=state.signal.stop_price,
                 expected_reward=(
                     None if not state.signal.target_levels
-                    else state.signal.target_levels[-1] - state.signal.entry_trigger
+                    else state.signal.target_levels[-1] - Decimal(ask)
                 ),
                 depth=depth, ask_state=ask_state,
                 bid_advancing=bid_advancing,

@@ -381,7 +381,7 @@ def test_execution_entry_signal_uses_fresh_ask_inside_existing_displacement(tmp_
         assert executable.structural_entry_trigger == structural
         assert executable.entry_trigger == executable_ask
         assert executable.risk_per_share == executable_ask - signal.stop_price
-        assert executable.target_levels[0] == executable_ask + executable.risk_per_share
+        assert executable.target_levels == signal.target_levels
     finally:
         writer.close()
 

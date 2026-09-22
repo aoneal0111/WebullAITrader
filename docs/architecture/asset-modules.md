@@ -18,8 +18,10 @@ existing behavior.
 - Views for crypto positions, fills/activity and AI decisions never reuse equity rows.
   Hidden crypto views skip refresh work. The crypto scanner remains research-only;
   it cannot place orders. Paper proposals cross an explicit, separate simulator API.
-- Futures and options are visibly unavailable. The typed asset registry and lifecycle
-  adapters provide their integration points. They start no workers.
+- Futures and options have contract-specific analysis workspaces and working P/L
+  scenario calculators. They remain ANALYSIS ONLY: no connected quotes, simulated
+  derivative fills, autonomous trading, margin engine, exercise or assignment.
+  Their typed registry integration points start no workers.
 - One or two active markets is a workload ceiling, not a RAM/CPU guarantee. Existing
   equity event processing continues when equity is active but its tab is hidden.
 
@@ -99,3 +101,75 @@ Final local run: **283 passed, 1 explicitly deselected** in the focused suites.
 The excluded baseline failure is described above. The Gemini REST adapter has not
 been exercised against a paid account, and Windows installation must still run its
 local validation. No exchange execution adapter was added.
+
+
+## Entry economics and market workspaces (September 22 follow-up)
+
+The IMCC screenshots show a partial fill at 4.0799, with 136 shares and a stop at
+3.915; the remaining buy expired. The later 4.25 mark and +23.14 unrealized result
+are consistent with that holding. These pictures do not prove that the strategy
+can identify a future peak or that the entry was optimal.
+
+The code previously moved all targets upwards when raising the entry to an ask.
+The patch establishes the volatility-adjusted plan before execution repricing,
+preserves its targets, sizes against actual entry-to-stop risk, and rejects new
+entries or replacement requests if remaining reward is insufficient. The gate
+also covers the legacy replacement path without depth sizes. Planned exits cannot
+silently raise the preserved targets. Existing positions are not retroactively
+replanned; only new entry and replacement decisions use the new gate.
+
+Default paper policy: remaining first-target reward must be at least 0.5 times
+risk; final-target reward at least 1.5 times risk. Both reward and risk reserve one
+quoted spread for execution friction. EntryConfig holds the two thresholds. These
+are engineering guardrails, not calibrated profitability estimates. Targets remain
+R-based plans, not forecasts of achievable upside. Fees, gaps and adverse selection
+are not fully modeled. The previous absolute/percentage displacement caps remain.
+No early-entry predictor, AI model improvement, or proven trading edge is claimed.
+Rejected entries record INSUFFICIENT_REMAINING_REWARD and cannot return an
+executable signal. This policy needs forward paper evaluation before promotion.
+
+Crypto Mission Control now groups positions, a ranked spot scanner and selected-pair
+intelligence. It shows bid/ask, spread, volume acceleration, time-of-week relative
+volume, volatility, research events and quote age. Stale/missing position marks
+make equity/unrealized unavailable. Bid marks exclude exit costs. Only visible
+views refresh, using existing in-memory research snapshots. No extra data worker
+or AI provider is started by opening a page. Catalyst and depth not supplied by the
+snapshot are explicitly unavailable rather than invented.
+
+Futures columns cover exact contract, expiry, bid/ask, volume, open interest,
+tick size/value, margin and quote time. The scenario calculator uses tick-based
+P/L, whole contracts, direction and entered fees, and validates tick alignment.
+Options columns cover underlying, expiry, strike, right, bid/ask, volume/open
+interest, IV, Greeks, multiplier and time. The long-call/put calculator models
+expiry payoff only, with an explicit multiplier. No pre-expiry theoretical price,
+short-option exposure or assignment model is implied. Scenario inputs are not
+broker data and never submit orders. Orders/positions stay empty without adapters.
+
+### Primary research sources
+
+- Coinbase, order books: https://www.coinbase.com/learn/advanced-trading/what-is-an-order-book
+- CME, contract and tick P/L: https://www.cmegroup.com/education/courses/introduction-to-futures/calculating-futures-contract-profit-or-loss
+- OIC, volatility and Greeks: https://www.optionseducation.org/advancedconcepts/volatility-the-greeks
+- Webull data/permissions: https://developer.webull.com/apis/docs/market-data-api/overview/
+
+Webull documents separate OpenAPI subscriptions for OPRA options and CME-group
+futures data, independent of app subscriptions. Those entitlements have not been
+verified on the user's machine. Full futures/options testing remains blocked on
+implementing and validating their market-data and paper-execution adapters;
+these screens do not claim that work is done.
+
+### Validation limits
+
+Four test_forward_capture.py failures were reproduced on untouched commit 61f977b:
+test_enabled_entry_experiment_control_uses_normal_paper_path,
+test_authoritative_exit_submission_and_partial_fill_do_not_close,
+test_profit_defense_tracks_peak_and_tightens_after_confirmed_giveback, and
+test_profit_defense_runner_exit_is_limited_and_preserves_milestones.
+The modified full file has the same four failures; the other 46 tests pass.
+They are not hidden by claiming that the complete suite passes. The installer
+runs the separate new entry-economics regressions plus existing strategy, adaptive
+exit, execution bridge and market UI suites. The previously documented historical
+journal failure is still excluded from the composition suite.
+
+Installer-equivalent validation: 385 passed, 1 documented pre-existing test deselected.
+No authenticated derivative API or external AI call was run.

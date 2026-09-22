@@ -22,6 +22,7 @@ from app.gui.pages.dashboard import DashboardPage
 from app.gui.pages.crypto_research import CryptoResearchPage
 from app.gui.pages.orders import OrdersPage
 from app.gui.pages.placeholder import PlaceholderPage
+from app.gui.pages.market_analysis import DerivativeWorkspace
 from app.gui.pages.replay import ReplayPage
 from app.gui.presenters import (
     DashboardPresenter,
@@ -514,6 +515,10 @@ class MainWindow(QMainWindow):
                 names = ('Mission Control','Positions','Orders','Strategies','Settings',
                          'Activity','Decisions','Scanner','Replay','Operator Workspace')
                 page = CryptoPaperPage(names[route], self._asset_modules.crypto_supervisor)
+            elif asset in {AssetType.FUTURES, AssetType.OPTIONS}:
+                names = ("Mission Control", "Positions", "Orders", "Strategies",
+                         "Settings", "Activity", "Decisions", "Scanner", "Replay", "Operator Workspace")
+                page = DerivativeWorkspace(asset, names[route])
             else:
                 names = ("Mission Control", "Positions", "Orders", "Strategies",
                          "Settings", "Activity", "Decisions", "Scanner", "Replay", "Operator Workspace")
