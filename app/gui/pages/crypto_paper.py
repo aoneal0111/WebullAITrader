@@ -21,6 +21,7 @@ class CryptoPaperPage(QWidget):
         disclosure.setWordWrap(True)
         layout.addWidget(disclosure)
         self.enabled = QCheckBox('Enable AI paper proposals — shares crypto quotes and simulated account data with Gemini')
+        self.enabled.setObjectName('cryptoProposalToggle')
         self.enabled.setChecked(supervisor.entries_enabled)
         self.enabled.setEnabled(supervisor.provider is not None)
         self.enabled.toggled.connect(self.set_enabled)

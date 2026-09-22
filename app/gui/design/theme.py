@@ -165,6 +165,8 @@ def application_stylesheet() -> str:
     QTabBar::tab {{ color: {Colors.TEXT_MUTED}; background: transparent; padding: 9px 14px; border-bottom: 2px solid transparent; }}
     QTabBar::tab:hover {{ color: {Colors.TEXT}; }}
     QTabBar::tab:selected {{ color: {Colors.TEXT_STRONG}; border-bottom-color: {Colors.ACCENT}; }}
+    QCheckBox#cryptoProposalToggle {{ color: {Colors.TEXT}; }}
+    QCheckBox#cryptoProposalToggle:disabled {{ color: {Colors.TEXT_MUTED}; }}
     QWidget#assetNavigation {{ background: {Colors.BACKGROUND}; color: {Colors.TEXT}; }}
     QTabBar#assetMarketTabs {{ background: {Colors.BACKGROUND}; color: {Colors.TEXT}; border: 0; }}
     QTabBar#assetMarketTabs::tab {{ background: {Colors.SURFACE_RAISED}; color: {Colors.TEXT}; border: 1px solid {Colors.BORDER}; border-bottom: 2px solid {Colors.BORDER}; padding: 9px 14px; }}

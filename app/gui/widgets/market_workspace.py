@@ -1071,12 +1071,14 @@ class MarketWorkspace(QWidget):
         self.workspace_splitter = QSplitter(Qt.Orientation.Vertical)
         self.workspace_splitter.setObjectName("workstationVerticalSplitter")
         self.workspace_splitter.setHandleWidth(Dimensions.SPLITTER_HANDLE_WIDTH)
-        self.workspace_splitter.addWidget(self.middle_splitter)
+        self.workspace_splitter.addWidget(self.positions_section)
         self.workspace_splitter.addWidget(lower)
+        self.left_splitter.hide()
+        left_layout.addWidget(self.workspace_splitter)
         self.workspace_splitter.setStretchFactor(0, 48)
         self.workspace_splitter.setStretchFactor(1, 52)
         self.workspace_splitter.setSizes((390, 425))
-        layout.addWidget(self.workspace_splitter, 1)
+        layout.addWidget(self.middle_splitter, 1)
         layout.addWidget(self.portfolio_section)
 
         # Keep the intelligence rail available to internal integrations; it is

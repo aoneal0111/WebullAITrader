@@ -63,7 +63,7 @@ from app.gui.pages.crypto_paper import CryptoPaperPage
 
 
 class MainWindow(QMainWindow):
-    _PRIMARY_LAYOUT_VERSION = 4
+    _PRIMARY_LAYOUT_VERSION = 5
     _SCANNER_HEADER_LAYOUT_VERSION = 2
 
     def __init__(
