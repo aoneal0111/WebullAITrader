@@ -2630,7 +2630,9 @@ class WarriorForwardCaptureService:
             requested = (signal.target_levels[1], min(state.second_quantity, quantity), "SECOND_TARGET")
         elif bar.high >= signal.target_levels[2]:
             requested = (signal.target_levels[2], quantity, "RUNNER_TARGET")
-        if requested is None:
+        # The first protection-reconciliation bar is ambiguous.
+        # Do not bypass that safeguard through profit-defense exits.
+        if requested is None and not protection_activated_this_bar:
             requested = self._profit_defense_action(state, bar)
 
         if requested is not None:

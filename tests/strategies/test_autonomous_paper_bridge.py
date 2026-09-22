@@ -943,6 +943,240 @@ def test_partial_target_reversal_liquidates_reserved_shares_and_latches_stop(tmp
         composition.close()
 
 
+def test_full_runner_target_retains_contingent_stop_through_partial_fill_and_restart(
+    tmp_path,
+):
+    position = {"PMI": Decimal("0")}
+    path = tmp_path / "runner-bracket.sqlite3"
+
+    def build():
+        composition = create_paper_trading_command_composition(
+            position_quantity_source=lambda symbol: position[symbol],
+            persistence_path=str(path),
+        )
+        bridge = AutonomousPaperExecutionBridge(
+            composition.trading_service,
+            composition.order_command_factory,
+            order_book=composition.order_book,
+            position_quantity_source=lambda symbol: position[symbol],
+            management_context_source=lambda _symbol: "trade-a",
+            protection_amender=composition.gateway.amend_protective_stop,
+        )
+        return composition, bridge
+
+    composition, bridge = build()
+    try:
+        assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+        _paper_quote(composition, 1, "9.99", "10")
+        position["PMI"] = Decimal("100")
+        bridge.ensure_exit("PMI", 100, Decimal("9.5"), "STOP", "trade-a")
+        target = bridge.ensure_exit(
+            "PMI", 100, Decimal("10.5"), "RUNNER_TARGET", "trade-a",
+        )
+        sells = composition.order_book.open_orders_for_symbol("PMI")
+        stop = next(order for order in sells if order.request.order_type is OrderType.STOP)
+        assert stop.request.metadata["reservation_mode"] == "CONTINGENT_OCO"
+        assert sum(
+            order.remaining_quantity for order in sells
+            if order.request.metadata.get("reservation_mode") != "CONTINGENT_OCO"
+        ) == Decimal("100")
+
+        reports = composition.gateway.process_market_event(MarketEvent(
+            2, session_timestamp(2), "PMI", "runner-partial",
+            MarketEventType.QUOTE,
+            QuotePayload(
+                Decimal("10.5"), Decimal("10.51"),
+                Decimal("30"), Decimal("30"),
+            ),
+        ))
+        assert sum(
+            (fill.quantity for report in reports for fill in report.fills),
+            Decimal("0"),
+        ) == Decimal("30")
+        position["PMI"] = Decimal("70")
+
+        reports = composition.gateway.process_market_event(MarketEvent(
+            3, session_timestamp(3), "PMI", "runner-stop-race",
+            MarketEventType.QUOTE,
+            QuotePayload(
+                Decimal("9.49"), Decimal("9.50"),
+                Decimal("25"), Decimal("25"),
+            ),
+        ))
+        assert composition.order_book.get(target.order_id).status.value == "CANCELLED"
+        assert sum(
+            (fill.quantity for report in reports for fill in report.fills),
+            Decimal("0"),
+        ) == Decimal("25")
+        triggered = composition.order_book.open_orders_for_symbol("PMI")[0]
+        assert triggered.order_id == stop.order_id
+        assert triggered.remaining_quantity == Decimal("45")
+        assert triggered.request.metadata["stop_triggered"] is True
+        assert triggered.request.metadata["reservation_mode"] == "ACTIVE_PROTECTION"
+        position["PMI"] = Decimal("45")
+
+        composition.close()
+        composition, _recovered = build()
+        reports = composition.gateway.process_market_event(MarketEvent(
+            4, session_timestamp(4), "PMI", "runner-stop-restart",
+            MarketEventType.QUOTE,
+            QuotePayload(
+                Decimal("10.1"), Decimal("10.11"),
+                Decimal("100"), Decimal("100"),
+            ),
+        ))
+        assert sum(
+            (fill.quantity for report in reports for fill in report.fills),
+            Decimal("0"),
+        ) == Decimal("45")
+        assert composition.order_book.open_orders_for_symbol("PMI") == ()
+    finally:
+        composition.close()
+
+
+def test_full_runner_bracket_survives_recovery_and_replaces_after_target_cancel(
+    tmp_path,
+):
+    position = {"PMI": Decimal("0")}
+    path = tmp_path / "runner-recovery.sqlite3"
+
+    def build():
+        composition = create_paper_trading_command_composition(
+            position_quantity_source=lambda symbol: position[symbol],
+            persistence_path=str(path),
+        )
+        bridge = AutonomousPaperExecutionBridge(
+            composition.trading_service,
+            composition.order_command_factory,
+            order_book=composition.order_book,
+            position_quantity_source=lambda symbol: position[symbol],
+            management_context_source=lambda _symbol: "trade-a",
+            protection_amender=composition.gateway.amend_protective_stop,
+        )
+        return composition, bridge
+
+    first, bridge = build()
+    try:
+        assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+        _paper_quote(first, 1, "9.99", "10")
+        position["PMI"] = Decimal("100")
+        bridge.ensure_exit("PMI", 100, Decimal("9.5"), "STOP", "trade-a")
+        runner = bridge.ensure_exit(
+            "PMI", 100, Decimal("10.5"), "RUNNER_TARGET", "trade-a",
+        )
+        sells = first.order_book.open_orders_for_symbol("PMI")
+        stop_before_restart = next(
+            order for order in sells if order.request.order_type is OrderType.STOP
+        )
+        # Reproduce a durable target-only restart seam (for example, process
+        # loss between the two placements) without editing persistence.
+        cancellation = first.gateway.cancel_order(OrderCancellationRequest(
+            request_id="cancel-contingent-before-restart",
+            session_id=first.session_id,
+            account_id=first.account_id,
+            broker_order_id=stop_before_restart.order_id,
+            client_order_id=stop_before_restart.request.client_order_id,
+        ))
+        assert cancellation.accepted is True
+        assert first.order_book.get(runner.order_id).is_terminal is False
+    finally:
+        first.close()
+
+    second, recovered = build()
+    try:
+        assert recovered.reconcile() is AutonomousPaperReadiness.READY
+        assert recovered.reconcile_protection() == ("PMI",)
+        sells = second.order_book.open_orders_for_symbol("PMI")
+        assert {order.request.order_type for order in sells} == {
+            OrderType.LIMIT, OrderType.STOP,
+        }
+        stop = next(order for order in sells if order.request.order_type is OrderType.STOP)
+        target = next(order for order in sells if order.request.order_type is OrderType.LIMIT)
+        assert stop.request.metadata["correlated_target_order_id"] == target.order_id
+        assert stop.order_id != stop_before_restart.order_id
+
+        cancellation = second.gateway.cancel_order(OrderCancellationRequest(
+            request_id="cancel-runner-target",
+            session_id=second.session_id,
+            account_id=second.account_id,
+            broker_order_id=target.order_id,
+            client_order_id=target.request.client_order_id,
+        ))
+        assert cancellation.accepted is True
+        replacement = recovered.ensure_exit(
+            "PMI", 100, Decimal("10.6"), "RUNNER_TARGET", "trade-a",
+        )
+        assert replacement.protection_active is True
+        replaced_sells = second.order_book.open_orders_for_symbol("PMI")
+        assert len(replaced_sells) == 2
+        replacement_target = next(
+            order for order in replaced_sells
+            if order.request.order_type is OrderType.LIMIT
+        )
+        replacement_stop = next(
+            order for order in replaced_sells
+            if order.request.order_type is OrderType.STOP
+        )
+        assert replacement_target.request.limit_price == Decimal("10.6")
+        assert replacement_stop.order_id != stop.order_id
+        assert second.order_book.get(stop.order_id).status.value == "CANCELLED"
+        assert sum(
+            order.remaining_quantity for order in replaced_sells
+            if order.request.metadata.get("reservation_mode") != "CONTINGENT_OCO"
+        ) == position["PMI"]
+    finally:
+        second.close()
+
+
+def test_full_runner_target_fill_cannot_race_contingent_stop_into_oversell():
+    position = {"PMI": Decimal("0")}
+    composition = create_paper_trading_command_composition(
+        position_quantity_source=lambda symbol: position[symbol],
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+        position_quantity_source=lambda symbol: position[symbol],
+        management_context_source=lambda _symbol: "trade-a",
+    )
+    try:
+        assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+        _paper_quote(composition, 1, "9.99", "10")
+        position["PMI"] = Decimal("100")
+        bridge.ensure_exit("PMI", 100, Decimal("9.5"), "STOP", "trade-a")
+        target = bridge.ensure_exit(
+            "PMI", 100, Decimal("10.5"), "RUNNER_TARGET", "trade-a",
+        )
+        reports = composition.gateway.process_market_event(MarketEvent(
+            2, session_timestamp(2), "PMI", "runner-target-win",
+            MarketEventType.QUOTE,
+            QuotePayload(
+                Decimal("10.5"), Decimal("10.51"),
+                Decimal("100"), Decimal("100"),
+            ),
+        ))
+        assert sum(
+            (fill.quantity for report in reports for fill in report.fills),
+            Decimal("0"),
+        ) == Decimal("100")
+        assert composition.order_book.get(target.order_id).status.value == "FILLED"
+        position["PMI"] = Decimal("0")
+
+        reports = composition.gateway.process_market_event(MarketEvent(
+            3, session_timestamp(3), "PMI", "runner-post-fill-stop",
+            MarketEventType.QUOTE,
+            QuotePayload(
+                Decimal("9.49"), Decimal("9.50"),
+                Decimal("100"), Decimal("100"),
+            ),
+        ))
+        assert not any(report.fills for report in reports)
+        assert composition.order_book.open_orders_for_symbol("PMI") == ()
+    finally:
+        composition.close()
+
+
 def test_filled_target_cannot_be_reissued_after_recovery():
     position = {"PMI": Decimal("0")}
     composition = create_paper_trading_command_composition(

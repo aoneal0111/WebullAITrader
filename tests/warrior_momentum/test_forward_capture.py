@@ -662,6 +662,83 @@ def test_authoritative_exit_submission_and_partial_fill_do_not_close(tmp_path: P
         composition.close()
 
 
+def test_authoritative_first_protection_bar_defers_structural_exit_until_next_bar(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "deferred-first-bar-defense.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": Decimal("0")}
+    submitted: list[tuple[int, Decimal, str]] = []
+
+    def submit_exit(symbol, quantity, price, reason, lifecycle):
+        submitted.append((quantity, price, reason))
+        return PaperExitSubmissionDecision(
+            PaperExitSubmissionState.SUBMITTED, symbol, lifecycle, reason,
+            order_id=f"exit-{len(submitted)}",
+            activation_timestamp=None,
+        )
+
+    default_config = WarriorMomentumConfig()
+    config = replace(
+        default_config,
+        trade_management=replace(
+            default_config.trade_management,
+            initial_stop_volatility_multiplier=D("3"),
+        ),
+    )
+    service = WarriorForwardCaptureService(
+        store, writer, config=config,
+        paper_entry_submitter=lambda *_args: True,
+        paper_exit_submitter=submit_exit,
+        paper_position_quantity_source=lambda symbol: position.get(
+            symbol, Decimal("0"),
+        ),
+    )
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        assert signal.structural_stop_price is not None
+        assert signal.stop_price < signal.structural_stop_price
+        state = service._paper["XYZ"]
+        position["XYZ"] = Decimal(state.initial_quantity)
+        between_stops = (signal.stop_price + signal.structural_stop_price) / 2
+
+        ambiguous = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=1),
+            signal.structural_stop_price + D("0.01"),
+            signal.structural_stop_price + D("0.01"),
+            between_stops, between_stops, D("100"),
+        )
+        service.observe_market_bar(
+            "XYZ", ambiguous, ambiguous.timestamp + timedelta(minutes=1),
+        )
+
+        # This candle predates established protection ownership. Its completed
+        # close cannot retroactively authorize a structural market exit.
+        assert [reason for _quantity, _price, reason in submitted] == ["STOP"]
+        assert state.exit_reason is None
+        assert state.protection_reconciled is True
+        assert state.remaining == state.initial_quantity
+
+        confirmed = replace(
+            ambiguous,
+            timestamp=ambiguous.timestamp + timedelta(minutes=1),
+        )
+        service.observe_market_bar(
+            "XYZ", confirmed, confirmed.timestamp + timedelta(minutes=1),
+        )
+
+        assert [reason for _quantity, _price, reason in submitted] == [
+            "STOP", "STRUCTURAL_CLOSE_INVALIDATION",
+        ]
+        assert submitted[-1][0] == state.initial_quantity
+        assert submitted[-1][1] == between_stops
+        assert state.exit_reason == "STRUCTURAL_CLOSE_INVALIDATION"
+        assert state.remaining == state.initial_quantity
+    finally:
+        writer.close()
+
+
 def test_activation_bar_cannot_retroactively_stop_and_targets_remain_eligible(tmp_path: Path) -> None:
     store = ForwardCaptureStore(tmp_path / "sune_activation.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
@@ -979,8 +1056,9 @@ def test_bridge_rebalances_correlated_stop_across_targets_and_runner(tmp_path: P
         runner_quantity = shares - first_quantity - second_quantity
         position["XYZ"] = Decimal(runner_quantity)
 
-        # A full runner target replaces the remaining stop with exactly one
-        # bounded target for the authoritative remainder.
+        # A full runner target owns the share reservation while a persisted
+        # contingent stop retains hard-stop trigger authority for that same
+        # lifecycle without independently reserving the shares.
         runner_bar = MinuteBar(
             "XYZ",
             signal.timestamp + timedelta(minutes=4),
@@ -996,10 +1074,29 @@ def test_bridge_rebalances_correlated_stop_across_targets_and_runner(tmp_path: P
         state = service._paper["XYZ"]
         assert state.second_taken is True
         sells = open_sells()
-        assert len(sells) == 1
-        assert sells[0].request.order_type.value == "LIMIT"
-        assert sells[0].request.execution_reason == "RUNNER_TARGET"
-        assert int(sells[0].remaining_quantity) == runner_quantity
+        assert len(sells) == 2
+        runner_target = next(
+            order for order in sells
+            if order.request.order_type.value == "LIMIT"
+        )
+        runner_stop = next(
+            order for order in sells
+            if order.request.order_type.value == "STOP"
+        )
+        assert runner_target.request.execution_reason == "RUNNER_TARGET"
+        assert int(runner_target.remaining_quantity) == runner_quantity
+        assert int(runner_stop.remaining_quantity) == runner_quantity
+        assert runner_stop.request.metadata["reservation_mode"] == "CONTINGENT_OCO"
+        assert (
+            runner_stop.request.metadata["correlated_target_order_id"]
+            == runner_target.order_id
+        )
+        assert sum(
+            int(order.remaining_quantity)
+            for order in sells
+            if order.request.metadata.get("reservation_mode")
+            != "CONTINGENT_OCO"
+        ) == runner_quantity
         assert bridge.has_execution_ownership("XYZ") is True
     finally:
         writer.close()
@@ -1023,17 +1120,23 @@ def test_profit_defense_tracks_peak_and_tightens_after_confirmed_giveback(tmp_pa
         service.observe_market_bar("XYZ", first, first.timestamp)
         assert state.first_taken is True
         peak = signal.entry_trigger + risk * D("1.6")
-        giveback = signal.entry_trigger + risk * D("1.3")
+        current = signal.entry_trigger + risk * D("0.7")
         defense = MinuteBar(
             "XYZ", signal.timestamp + timedelta(minutes=2), peak, peak,
-            signal.entry_trigger + risk * D("1.2"), giveback, D("100"),
+            signal.entry_trigger + risk * D("0.6"), current, D("100"),
         )
         service.observe_market_bar("XYZ", defense, defense.timestamp)
         assert state.peak_price == peak
         assert state.peak_r == D("1.6")
         assert state.profit_defense_armed is True
+        assert state.adaptive_exit_assessment is not None
+        assert state.giveback_r is not None
+        assert (
+            state.giveback_r
+            >= state.adaptive_exit_assessment.tighten_giveback_r
+        )
         assert state.profit_defense_stop_tightened is True
-        assert state.stop == giveback
+        assert state.stop == current
         assert state.second_taken is False
     finally:
         writer.close()
@@ -1069,14 +1172,20 @@ def test_profit_defense_runner_exit_is_limited_and_preserves_milestones(tmp_path
                 signal.entry_trigger + risk * D("2.7"), D("100"),
             ), signal.timestamp + timedelta(minutes=3),
         )
-        current = signal.entry_trigger + risk * D("2.3")
+        current = signal.entry_trigger + risk * D("1.6")
         service.observe_market_bar(
             "XYZ", MinuteBar(
                     "XYZ", signal.timestamp + timedelta(minutes=4), current + D("0.01"),
-                        current + D("0.02"), signal.entry_trigger + risk * D("2.1"), current, D("100"),
+                        current + D("0.02"), signal.entry_trigger + risk * D("1.4"), current, D("100"),
             ), signal.timestamp + timedelta(minutes=4),
         )
         assert state.peak_r == D("2.8")
+        assert state.adaptive_exit_assessment is not None
+        assert state.giveback_r is not None
+        assert (
+            state.giveback_r
+            >= state.adaptive_exit_assessment.runner_exit_giveback_r
+        )
         assert state.profit_defense_runner_exit is True
         assert state.first_taken is True and state.second_taken is True
         writer.flush()

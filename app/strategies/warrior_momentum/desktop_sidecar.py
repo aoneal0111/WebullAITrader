@@ -158,6 +158,7 @@ class WarriorPaperSnapshot:
     metrics: CaptureMetrics | None = None
     last_error_type: str | None = None
     publication_rate_hz: Decimal = Decimal("0")
+    capture_path: str | None = None
 
 
 @dataclass(slots=True)
@@ -854,6 +855,7 @@ class WarriorDesktopSidecar:
             tuple(self._focus_item(item) for item in ranked), summary,
             metrics, last_error,
             Decimal(str(self._publications / elapsed)),
+            str(self.storage_path.resolve()),
         )
 
     def set_research_observer(self, observer: object | None) -> None:

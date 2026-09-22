@@ -6,7 +6,7 @@ from decimal import Decimal
 from threading import Event, get_ident
 
 from app.momentum_scanner import (
-    CatalystType,
+    CatalystStatus, CatalystType,
     MomentumScannerConfig,
     ScannerObservation,
     evaluate_candidate,
@@ -79,6 +79,55 @@ def test_slow_research_never_runs_or_blocks_on_market_caller(tmp_path) -> None:
     assert worker.close(timeout_seconds=2)
     assert worker.metrics().completed == 2
     assert not worker.thread.is_alive()
+
+
+def test_metrics_identify_capture_path_activity_and_incomplete_evidence(
+    tmp_path,
+) -> None:
+    path = tmp_path / "capture-health.sqlite3"
+    worker = PaperTradeExperimentWorker(
+        path, execution_environment="TEST",
+    )
+    complete = decision()
+    missing = replace(
+        decision(T0 + timedelta(seconds=1), "5.10"),
+        bid=None,
+        ask=None,
+        float_shares=None,
+        halted=None,
+        tradable=None,
+        catalyst_status=CatalystStatus.TRUE,
+        catalyst_source=None,
+        catalyst_published_at=None,
+        metrics=replace(
+            decision().metrics,
+            spread_percent=None,
+        ),
+    )
+    assert worker.submit(complete) is True
+    assert worker.submit(missing) is True
+    assert worker.submit(replace(complete, timestamp=None, price=None)) is False
+    assert worker.close(timeout_seconds=2)
+
+    metrics = worker.metrics()
+    reasons = dict(metrics.evidence_incomplete_counts)
+    assert metrics.journal_path == str(path.resolve())
+    assert metrics.decisions_received == 3
+    assert metrics.complete_decisions_received == 2
+    assert metrics.incomplete_decisions_received == 1
+    assert metrics.candidate_creations == 2
+    assert metrics.completed == 2
+    assert metrics.last_decision_received_at is not None
+    assert metrics.last_work_completed_at is not None
+    assert reasons["CATALYST_EVIDENCE_UNAVAILABLE"] == 1
+    assert reasons["QUOTE_EVIDENCE_NOT_RECORDED"] == 1
+    assert reasons["SPREAD_EVIDENCE_NOT_RECORDED"] == 1
+    assert reasons["FLOAT_EVIDENCE_NOT_RECORDED"] == 1
+    assert reasons["HALT_STATE_NOT_RECORDED"] == 1
+    assert reasons["CATALYST_SOURCE_NOT_RECORDED"] == 1
+    assert reasons["CATALYST_PUBLISHED_AT_NOT_RECORDED"] == 1
+    assert reasons["DECISION_TIMESTAMP_NOT_RECORDED"] == 1
+    assert reasons["LAST_PRICE_NOT_RECORDED"] == 1
 
 
 def test_bounded_saturation_is_explicit_and_capture_recovers(tmp_path) -> None:

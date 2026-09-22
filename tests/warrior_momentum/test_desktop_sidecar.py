@@ -82,6 +82,7 @@ def test_enabled_sidecar_coalesces_immaterial_ticks_and_flushes_session(tmp_path
     assert len(store.records(record_type=CaptureRecordType.DECISION)) == 2
     running = sidecar.snapshot()
     assert running.health is WarriorCaptureHealth.RUNNING
+    assert running.capture_path == str(path.resolve())
     assert running.summary.discovered == 1 and len(running.items) == 1
     sidecar.stop()
     sessions = store.records(record_type=CaptureRecordType.OBSERVATION_SESSION)

@@ -521,9 +521,19 @@ class PaperOrderGateway:
                     or remaining <= 0 or not price.is_finite()
                     or price < order.request.stop_price):
                 return False
+            contingent = (
+                order.request.metadata.get("reservation_mode")
+                == "CONTINGENT_OCO"
+            )
+            correlated_target_order_id = (
+                order.request.metadata.get("correlated_target_order_id")
+                if contingent else None
+            )
             reserved = sum((item.remaining_quantity
                 for item in self._order_book.open_orders_for_symbol(order.symbol)
-                if item.side is PaperOrderSide.SELL and item.order_id != order_id), Decimal("0"))
+                if item.side is PaperOrderSide.SELL
+                and item.order_id != order_id
+                and item.order_id != correlated_target_order_id), Decimal("0"))
             if Decimal(remaining) + reserved > self._long_position_quantity(order.symbol):
                 return False
             if order.remaining_quantity == remaining and order.request.stop_price == price:
@@ -762,7 +772,11 @@ class PaperOrderGateway:
                     continue
                 updated = replace(stop, updated_at=quote.timestamp,
                     request=replace(stop.request, quantity=stop.filled_quantity + inventory,
-                        metadata={**stop.request.metadata, "stop_triggered": True}))
+                        metadata={
+                            **stop.request.metadata,
+                            "reservation_mode": "ACTIVE_PROTECTION",
+                            "stop_triggered": True,
+                        }))
             changes.append(updated)
             events.append(self._order_event(updated, event_type="ORDER_UPDATED",
                 message="Correlated stop owns the full remaining lifecycle position."))

@@ -452,9 +452,25 @@ class AutonomousPaperExecutionBridge:
                     for order in open_sells
                     if order.request.order_type is not OrderType.STOP
                 )
+                full_position_target = next((
+                    order for order in open_sells
+                    if order.request.order_type is not OrderType.STOP
+                    and int(order.remaining_quantity) >= quantity
+                ), None)
                 desired_stop_quantity = max(
                     0, quantity - reserved_target_quantity,
                 )
+                contingent_stop = next((
+                    order for order in stops
+                    if order.request.metadata.get("reservation_mode")
+                    == "CONTINGENT_OCO"
+                ), None)
+                if contingent_stop is not None and reserved_target_quantity >= quantity:
+                    desired_stop_quantity = quantity
+                elif not stops and full_position_target is not None:
+                    # Heal a restart between durable target placement and the
+                    # contingent-stop placement that completes its OCO pair.
+                    desired_stop_quantity = quantity
                 if (
                     stops
                     and int(stops[0].remaining_quantity)
@@ -494,6 +510,10 @@ class AutonomousPaperExecutionBridge:
                     continue
                 result = self._place_exit(
                     symbol, desired_stop_quantity, stop, "STOP", identity,
+                    contingent_target_order_id=(
+                        None if full_position_target is None
+                        else full_position_target.order_id
+                    ),
                 )
                 if result.protection_active:
                     self._management_incomplete.discard(symbol)
@@ -1448,6 +1468,14 @@ class AutonomousPaperExecutionBridge:
                         authoritative_quantity - target_reservation,
                     )
                     if (
+                        correlated_stop is not None
+                        and correlated_stop.request.metadata.get(
+                            "reservation_mode"
+                        ) == "CONTINGENT_OCO"
+                        and target_reservation >= authoritative_quantity
+                    ):
+                        desired_stop = authoritative_quantity
+                    if (
                         target_reservation
                         and correlated_stop is not None
                         and int(correlated_stop.remaining_quantity)
@@ -1565,7 +1593,8 @@ class AutonomousPaperExecutionBridge:
 
     def _place_exit(
         self, normalized: str, quantity: int, price: Decimal,
-        reason_key: str, identity: str,
+        reason_key: str, identity: str, *,
+        contingent_target_order_id: str | None = None,
     ) -> PaperExitSubmissionDecision:
         protective = reason_key in {"STOP", "STOP_LOSS"}
         immediate = reason_key in {"SESSION_CLOSE", "OVERNIGHT_CAPABILITY_LOST"}
@@ -1595,6 +1624,16 @@ class AutonomousPaperExecutionBridge:
                             "source": "autonomous-paper",
                             "reason": reason_key,
                             "lifecycle_id": identity,
+                            **(
+                                {
+                                    "reservation_mode": "CONTINGENT_OCO",
+                                    "correlated_target_order_id": (
+                                        contingent_target_order_id
+                                    ),
+                                }
+                                if contingent_target_order_id is not None
+                                else {}
+                            ),
                         },
                     )
                 )
@@ -1723,6 +1762,8 @@ class AutonomousPaperExecutionBridge:
                 identity,
             )
             return target
+        if reason_key in {"SESSION_CLOSE", "OVERNIGHT_CAPABILITY_LOST"}:
+            return target
         remainder = max(
             0,
             int(self.position_quantity_source(normalized)) - quantity,
@@ -1731,6 +1772,43 @@ class AutonomousPaperExecutionBridge:
             protection = self._place_exit(
                 normalized, remainder, replacement_stop_price,
                 "STOP", identity,
+            )
+            if not protection.protection_active:
+                self._management_incomplete.add(normalized)
+                try:
+                    target_order = self.order_book.get(target.order_id)
+                except Exception:
+                    target_order = None
+                if target_order is not None and not target_order.is_terminal:
+                    self._cancel_working_order(target_order)
+                self._exit_orders.pop((identity, reason_key), None)
+                self._exit_keys.pop((identity, reason_key), None)
+                self._reconcile_terminal_exits()
+                restored = self._place_exit(
+                    normalized,
+                    int(self.position_quantity_source(normalized)),
+                    replacement_stop_price,
+                    "STOP",
+                    identity,
+                )
+                if not restored.protection_active:
+                    self._management_incomplete.add(normalized)
+                return PaperExitSubmissionDecision(
+                    PaperExitSubmissionState.UNAVAILABLE, normalized,
+                    identity, reason_key, target.order_id,
+                )
+        else:
+            # A full-position passive target is the sole share reservation.
+            # Persist a non-reserving OCO stop so the gateway can atomically
+            # cancel that target and transfer actual lifecycle inventory to
+            # hard-stop ownership before matching a downside quote.
+            protection = self._place_exit(
+                normalized,
+                int(self.position_quantity_source(normalized)),
+                replacement_stop_price,
+                "STOP",
+                identity,
+                contingent_target_order_id=target.order_id,
             )
             if not protection.protection_active:
                 self._management_incomplete.add(normalized)
@@ -1799,7 +1877,15 @@ class AutonomousPaperExecutionBridge:
              if order.request.order_type is not OrderType.STOP),
             0,
         )
-        desired = max(0, int(self.position_quantity_source(normalized)) - reserved)
+        authoritative = int(self.position_quantity_source(normalized))
+        contingent = (
+            stop.request.metadata.get("reservation_mode") == "CONTINGENT_OCO"
+        )
+        desired = (
+            authoritative
+            if contingent and reserved >= authoritative
+            else max(0, authoritative - reserved)
+        )
         if int(stop.remaining_quantity) == desired:
             return True
         if desired > 0 and self.protection_amender is not None:

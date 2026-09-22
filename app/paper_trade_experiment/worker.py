@@ -71,6 +71,13 @@ class ResearchWorkerMetrics:
     coalesced: int = 0
     pressure_episodes: int = 0
     legacy_outstanding: int = 0
+    journal_path: str = ""
+    decisions_received: int = 0
+    complete_decisions_received: int = 0
+    incomplete_decisions_received: int = 0
+    evidence_incomplete_counts: tuple[tuple[str, int], ...] = ()
+    last_decision_received_at: datetime | None = None
+    last_work_completed_at: datetime | None = None
 
 
 JournalFactory = Callable[[str | Path], PaperTradeExperimentJournal]
@@ -126,6 +133,22 @@ class PaperTradeExperimentWorker:
         self._pressure_episodes = 0
         self._pressure_active = False
         self._legacy_outstanding = 0
+        self._decisions_received = 0
+        self._complete_decisions_received = 0
+        self._incomplete_decisions_received = 0
+        self._evidence_incomplete_counts = {
+            "CATALYST_EVIDENCE_UNAVAILABLE": 0,
+            "QUOTE_EVIDENCE_NOT_RECORDED": 0,
+            "SPREAD_EVIDENCE_NOT_RECORDED": 0,
+            "FLOAT_EVIDENCE_NOT_RECORDED": 0,
+            "HALT_STATE_NOT_RECORDED": 0,
+            "CATALYST_SOURCE_NOT_RECORDED": 0,
+            "CATALYST_PUBLISHED_AT_NOT_RECORDED": 0,
+            "DECISION_TIMESTAMP_NOT_RECORDED": 0,
+            "LAST_PRICE_NOT_RECORDED": 0,
+        }
+        self._last_decision_received_at: datetime | None = None
+        self._last_work_completed_at: datetime | None = None
         self._last_accepted_observation: dict[
             str, tuple[datetime, object]
         ] = {}
@@ -152,10 +175,26 @@ class PaperTradeExperimentWorker:
         if not isinstance(decision, ScannerDecision):
             self._reject("invalid immutable scanner decision")
             return False
+        now = self._aware_now()
+        with self._lock:
+            self._decisions_received += 1
+            self._last_decision_received_at = now
+            if decision.timestamp is None:
+                self._evidence_incomplete_counts[
+                    "DECISION_TIMESTAMP_NOT_RECORDED"
+                ] += 1
+            if decision.price is None:
+                self._evidence_incomplete_counts[
+                    "LAST_PRICE_NOT_RECORDED"
+                ] += 1
+            if decision.timestamp is None or decision.price is None:
+                self._incomplete_decisions_received += 1
+            else:
+                self._complete_decisions_received += 1
+                self._record_evidence_completeness(decision)
         if decision.timestamp is None or decision.price is None:
             self._reject("incomplete scanner decision")
             return False
-        now = self._aware_now()
         snapshot = replace(decision)
         assert snapshot.timestamp is not None and snapshot.price is not None
         symbol = snapshot.symbol.strip().upper()
@@ -350,6 +389,15 @@ class PaperTradeExperimentWorker:
                 coalesced=self._coalesced,
                 pressure_episodes=self._pressure_episodes,
                 legacy_outstanding=self._legacy_outstanding,
+                journal_path=str(self._path.resolve()),
+                decisions_received=self._decisions_received,
+                complete_decisions_received=self._complete_decisions_received,
+                incomplete_decisions_received=self._incomplete_decisions_received,
+                evidence_incomplete_counts=tuple(sorted(
+                    self._evidence_incomplete_counts.items()
+                )),
+                last_decision_received_at=self._last_decision_received_at,
+                last_work_completed_at=self._last_work_completed_at,
             )
 
     def reset_symbol(self, symbol: str) -> None:
@@ -471,6 +519,7 @@ class PaperTradeExperimentWorker:
                         )
                 with self._lock:
                     self._completed += len(lag_values)
+                    self._last_work_completed_at = self._aware_now()
                     if not supports_durable:
                         self._pending_ids.discard(prepared_work.work_id)
                     self._maximum_lag_ms = max(
@@ -674,6 +723,39 @@ class PaperTradeExperimentWorker:
             self._rejected += 1
         performance_diagnostics.increment("research_events_rejected")
         self._log_failure(message)
+
+    def _record_evidence_completeness(self, decision: ScannerDecision) -> None:
+        """Count fixed, non-sensitive reasons a recorded decision is incomplete."""
+
+        if decision.catalyst_status.value in {"UNKNOWN", "UNAVAILABLE"}:
+            self._evidence_incomplete_counts[
+                "CATALYST_EVIDENCE_UNAVAILABLE"
+            ] += 1
+        if decision.bid is None or decision.ask is None:
+            self._evidence_incomplete_counts[
+                "QUOTE_EVIDENCE_NOT_RECORDED"
+            ] += 1
+        if decision.metrics.spread_percent is None:
+            self._evidence_incomplete_counts[
+                "SPREAD_EVIDENCE_NOT_RECORDED"
+            ] += 1
+        if decision.float_shares is None:
+            self._evidence_incomplete_counts[
+                "FLOAT_EVIDENCE_NOT_RECORDED"
+            ] += 1
+        if decision.halted is None or decision.tradable is None:
+            self._evidence_incomplete_counts[
+                "HALT_STATE_NOT_RECORDED"
+            ] += 1
+        if decision.catalyst_status.value == "TRUE":
+            if decision.catalyst_source is None:
+                self._evidence_incomplete_counts[
+                    "CATALYST_SOURCE_NOT_RECORDED"
+                ] += 1
+            if decision.catalyst_published_at is None:
+                self._evidence_incomplete_counts[
+                    "CATALYST_PUBLISHED_AT_NOT_RECORDED"
+                ] += 1
 
     def _log_failure(self, message: str, error: Exception | None = None) -> None:
         if self._failure_logged:
