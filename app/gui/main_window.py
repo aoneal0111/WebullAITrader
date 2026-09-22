@@ -57,6 +57,9 @@ from app.replay_workspace import ReplayWorkspace
 from app.services import OrderCommandFactory, RuntimeService, TradingService
 from app.services.chart_market_data import ChartMarketDataService
 from app.gui.formatters.warrior_paper import format_warrior_paper
+from app.assets import AssetType
+from app.gui.widgets.asset_navigation import AssetNavigation
+from app.gui.pages.crypto_paper import CryptoPaperPage
 
 
 class MainWindow(QMainWindow):
@@ -75,8 +78,11 @@ class MainWindow(QMainWindow):
         chart_default_symbol: str | None = None,
         warrior_forward_sidecar=None,
         settings: QSettings | None = None,
+        asset_modules=None,
     ) -> None:
         super().__init__()
+        self._asset_modules = asset_modules
+        self._selected_asset = AssetType.EQUITY
         self._bus = bus
         self._state_store = state_store
         self._runtime_service = runtime_service
@@ -179,6 +185,10 @@ class MainWindow(QMainWindow):
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
+        self.asset_navigation = AssetNavigation(self._asset_modules)
+        content_layout.addWidget(self.asset_navigation)
+        self.asset_surface = QStackedWidget()
+        self._asset_pages = {}
         self.pages = QStackedWidget()
         self.dashboard = DashboardPage(
             warrior_observability=(
@@ -218,13 +228,17 @@ class MainWindow(QMainWindow):
         self.scanner_research_tabs.setObjectName("scannerResearchTabs")
         self.scanner_research_tabs.addTab(self.watchlist, "Equity Scanner")
         self.crypto_research = CryptoResearchPage()
-        self.scanner_research_tabs.addTab(self.crypto_research, "Crypto Research")
         self.pages.addWidget(self.scanner_research_tabs)  # 7
         self.replay = ReplayPage()
         self.pages.addWidget(self.replay)  # 8
         self.operations = self.dashboard.operator_workspace
         self.pages.addWidget(self.operations)  # 9
-        content_layout.addWidget(self.pages, 1)
+        self.asset_surface.addWidget(self.pages)
+        content_layout.addWidget(self.asset_surface, 1)
+        self.asset_navigation.asset_selected.connect(self._select_asset)
+        self.pages.currentChanged.connect(lambda _: self._select_asset(self._selected_asset))
+        self.dashboard.market_workspace.crypto_scanner_section.hide()
+        self.dashboard.market_workspace.crypto_research._timer.stop()
         outer.addWidget(content, 1)
         self.sidebar.page_requested.connect(self.pages.setCurrentIndex)
         self.pages.currentChanged.connect(self.sidebar.set_current_page)
@@ -237,10 +251,12 @@ class MainWindow(QMainWindow):
         self.stop_button = controls.stop_button
         self.pause_button = header.pause_button
         self.emergency_button = controls.emergency_stop_button
-        self.start_button.clicked.connect(self._runtime_service.start)
-        self.stop_button.clicked.connect(
-            lambda checked=False: self._runtime_service.stop()
-        )
+        if self._asset_modules is None:
+            self.start_button.clicked.connect(self._runtime_service.start)
+            self.stop_button.clicked.connect(lambda checked=False: self._runtime_service.stop())
+        else:
+            self.start_button.clicked.connect(lambda: self.asset_navigation.run_action(AssetType.EQUITY, True))
+            self.stop_button.clicked.connect(lambda: self.asset_navigation.run_action(AssetType.EQUITY, False))
         self.pause_button.clicked.connect(self._toggle_replay)
         header.reset_layout_requested.connect(self.reset_layout)
         header.settings_requested.connect(lambda: self.pages.setCurrentIndex(4))
@@ -479,8 +495,37 @@ class MainWindow(QMainWindow):
         )
 
     def _render_state(self, state: ApplicationState) -> None:
-        self.crypto_research.set_runtime_phase(state.runtime.phase)
+        if self._asset_modules is None:
+            self.crypto_research.set_runtime_phase(state.runtime.phase)
         self._presentation.render(state)
+
+    def _select_asset(self, asset) -> None:
+        self._selected_asset = asset
+        self.global_status.setVisible(asset is AssetType.EQUITY)
+        if asset is AssetType.EQUITY:
+            self.asset_surface.setCurrentWidget(self.pages)
+            return
+        route = self.pages.currentIndex()
+        key = (asset, route)
+        if key not in self._asset_pages:
+            if asset is AssetType.CRYPTO and route == 7:
+                page = self.crypto_research
+            elif asset is AssetType.CRYPTO and getattr(self._asset_modules, 'crypto_supervisor', None):
+                names = ('Mission Control','Positions','Orders','Strategies','Settings',
+                         'Activity','Decisions','Scanner','Replay','Operator Workspace')
+                page = CryptoPaperPage(names[route], self._asset_modules.crypto_supervisor)
+            else:
+                names = ("Mission Control", "Positions", "Orders", "Strategies",
+                         "Settings", "Activity", "Decisions", "Scanner", "Replay", "Operator Workspace")
+                page = PlaceholderPage(
+                    f"{asset.value.title()} · {names[route]}",
+                    "Adapter not installed. No subscriptions or execution workers are running."
+                    if asset in {AssetType.FUTURES, AssetType.OPTIONS}
+                    else "Crypto research is available under Scanner. Paper execution integration is pending.",
+                )
+            self._asset_pages[key] = page
+            self.asset_surface.addWidget(page)
+        self.asset_surface.setCurrentWidget(self._asset_pages[key])
 
     def _render_replay_state(self, state: ApplicationState) -> None:
         self._replay_presenter.render(state)
@@ -500,6 +545,10 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self.asset_navigation.task is not None:
+            event.ignore()
+            QTimer.singleShot(50, self.close)
+            return
         # Joining the runtime here blocks the Qt event loop exactly when a busy
         # market-data worker most needs a responsive shutdown path. Request a
         # cooperative stop and poll status through the event loop instead.

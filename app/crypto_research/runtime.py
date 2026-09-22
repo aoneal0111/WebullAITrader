@@ -213,6 +213,7 @@ class CryptoResearchRuntime:
         with self._lock:
             if self._worker is not None:
                 return False
+            self._stop.clear()
             self._accepting = True
             self._stopped = False
             self._publish_status(CryptoResearchStatus.DISCOVERING)
@@ -617,13 +618,17 @@ class CryptoResearchRuntime:
         stopped = (poller is None or not poller.is_alive()) and (
             worker is None or not worker.is_alive()
         )
-        try:
-            self._store.close()
-        except Exception:
-            with self._lock:
-                self._persistence_failures += 1
+        if stopped:
+            try:
+                self._store.close()
+            except Exception:
+                with self._lock:
+                    self._persistence_failures += 1
         with self._lock:
             self._stopped = stopped
+            if stopped:
+                self._worker = self._poller = None
+                self._publish_status(CryptoResearchStatus.DISABLED)
         return stopped
 
     def _run_poller(self) -> None:

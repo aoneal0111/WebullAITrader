@@ -171,6 +171,7 @@ class CryptoCatalystCollectionSink:
         with self._lock:
             if self._worker is not None:
                 return False
+            self._stop.clear()
             self._accepting = True
             self._worker = Thread(target=self._run_worker, name="atlas-crypto-catalyst-collector", daemon=True)
             self._worker.start()
@@ -289,6 +290,8 @@ class CryptoCatalystCollectionSink:
             worker.join(max(0.0, timeout_seconds))
         with self._lock:
             self._shutdown_unflushed = self._queue.qsize()
+        if worker is not None and worker.is_alive():
+            return False
         if self.config.enabled and (worker is None or not worker.is_alive()):
             try:
                 self._write(self._run_record(RUN_END_RECORD, {
@@ -309,7 +312,9 @@ class CryptoCatalystCollectionSink:
                 with self._lock:
                     self._write_failures += 1
             self._handle = None
-        return worker is None or not worker.is_alive()
+        with self._lock:
+            self._worker = None
+        return True
 
     def _run_worker(self) -> None:
         while not self._stop.is_set() or not self._queue.empty():

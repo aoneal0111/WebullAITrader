@@ -28,8 +28,6 @@ class OptionalResearchRuntimes:
     crypto_intelligence_runtime: CryptoIntelligenceResearchRuntime | None
 
     def start(self) -> None:
-        if self.crypto_research_runtime.enabled:
-            self.crypto_research_runtime.start()
         if self.crypto_catalyst_acquisition_runtime is not None:
             self.crypto_catalyst_acquisition_runtime.start()
         if (
@@ -37,6 +35,16 @@ class OptionalResearchRuntimes:
             and self.crypto_intelligence_runtime.enabled
         ):
             self.crypto_intelligence_runtime.start()
+        if self.crypto_research_runtime.enabled:
+            self.crypto_research_runtime.start()
+
+    def close(self) -> bool:
+        # Stop the producer before its consumers; keep failed workers reserved.
+        results = [self.crypto_research_runtime.close()]
+        for runtime in (self.crypto_catalyst_acquisition_runtime, self.crypto_intelligence_runtime):
+            if runtime is not None:
+                results.append(runtime.close())
+        return all(results)
 
 
 def create_optional_research_runtimes(

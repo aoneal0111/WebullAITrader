@@ -81,7 +81,7 @@ class CryptoResearchPage(QWidget):
         layout.addWidget(self.table, 1)
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
-        self._timer.timeout.connect(self.refresh)
+        self._timer.timeout.connect(lambda: self.refresh() if self.isVisible() else None)
         self._timer.start()
         self.refresh()
 

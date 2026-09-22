@@ -95,6 +95,7 @@ class DesktopComposition:
     entry_opportunity_value_observer: EntryOpportunityValueRuntimeObserver | None = None
     adaptive_entry_research_observer: AdaptiveWorkingEntryObserver | None = None
     crypto_research_runtime: CryptoResearchRuntime | None = None
+    optional_research: object | None = None
     crypto_intelligence_runtime: CryptoIntelligenceResearchRuntime | None = None
     crypto_catalyst_acquisition_runtime: CryptoCatalystAcquisitionRuntime | None = None
     memory_observability: MemoryObservability | None = None
@@ -388,7 +389,7 @@ def create_desktop_composition(
             async_projections=True,
         )
 
-    optional_research.start()
+    # Markets are activated explicitly from the desktop market controls.
 
     # D2B1 consumes the existing D1 predicate.  Repository opening is local;
     # all network-capable construction remains behind lease authorization.
@@ -442,6 +443,7 @@ def create_desktop_composition(
         adaptive_entry_research_observer=adaptive_entry_research_observer,
         crypto_research_runtime=crypto_research_runtime,
         crypto_intelligence_runtime=crypto_intelligence_runtime,
+        optional_research=optional_research,
         crypto_catalyst_acquisition_runtime=crypto_catalyst_acquisition_runtime,
         memory_observability=memory_observability,
         symbol_intelligence=symbol_intelligence,

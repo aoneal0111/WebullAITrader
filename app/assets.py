@@ -8,6 +8,8 @@ class AssetType(StrEnum):
 
     EQUITY = "EQUITY"
     CRYPTO = "CRYPTO"
+    FUTURES = "FUTURES"
+    OPTIONS = "OPTIONS"
 
 
 __all__ = ["AssetType"]

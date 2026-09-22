@@ -95,14 +95,19 @@ def test_shell_retains_existing_pages_and_command_boundaries(window) -> None:
     )
 
 
-def test_detailed_scanner_page_retains_equity_crypto_tabs(window) -> None:
-    assert window.scanner_research_tabs.count() == 2
-    assert tuple(
-        window.scanner_research_tabs.tabText(index)
-        for index in range(window.scanner_research_tabs.count())
-    ) == ("Equity Scanner", "Crypto Research")
-    assert window.scanner_research_tabs.widget(0) is window.watchlist
-    assert window.scanner_research_tabs.widget(1) is window.crypto_research
+def test_asset_navigation_separates_scanners_without_starting_runtime(window):
+    from app.assets import AssetType
+    assert window.scanner_research_tabs.count() == 1
+    assert window.asset_navigation.tabs.count() == 4
+    window.pages.setCurrentIndex(7)
+    window.asset_navigation.tabs.setCurrentIndex(1)
+    assert window._selected_asset is AssetType.CRYPTO
+    assert window.asset_surface.currentWidget() is window.crypto_research
+    window.asset_navigation.tabs.setCurrentIndex(2)
+    assert window.asset_surface.currentWidget() is not window.pages
+    assert not window.asset_navigation.toggle.isEnabled()
+    window.asset_navigation.tabs.setCurrentIndex(0)
+    assert window.asset_surface.currentWidget() is window.pages
 
 
 def test_supported_minimum_size_has_no_horizontal_dashboard_scroll(
@@ -166,7 +171,7 @@ def test_dashboard_preserves_content_at_supported_resolutions(
     assert market_workspace.lower_splitter.orientation() == Qt.Orientation.Horizontal
     assert market_workspace.lower_splitter.count() == 2
     assert market_workspace.opportunities_section.isVisible()
-    assert market_workspace.crypto_scanner_section.isVisible()
+    assert not market_workspace.crypto_scanner_section.isVisible()
     assert market_workspace.watchlist._table.horizontalScrollBarPolicy() == (
         Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     )
@@ -458,7 +463,7 @@ def test_laptop_position_management_owns_primary_workspace(application, window) 
     assert not hasattr(market, "orders_section")
     assert market.lower_splitter.orientation() == Qt.Orientation.Horizontal
     assert market.lower_splitter.count() == 2
-    assert market.crypto_scanner_section.isVisible()
+    assert not market.crypto_scanner_section.isVisible()
     assert market.splitter.widget(0) is market.left_column
     assert market.splitter.widget(1) is market.right_workspace
     assert market.splitter.count() == 2

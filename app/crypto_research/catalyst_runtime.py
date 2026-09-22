@@ -243,7 +243,11 @@ class CryptoCatalystAcquisitionRuntime:
         worker = self._worker
         if worker is not None:
             worker.join(timeout_seconds)
-        return worker is None or not worker.is_alive()
+        stopped = worker is None or not worker.is_alive()
+        if stopped:
+            with self._lock:
+                self._worker = None
+        return stopped
 
     def metrics(self) -> CryptoCatalystAcquisitionMetrics:
         available = blocked = failed = 0

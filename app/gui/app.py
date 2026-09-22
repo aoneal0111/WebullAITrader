@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from PySide6.QtWidgets import QApplication
 
 from app.composition.desktop import create_desktop_composition
+from app.composition.asset_modules import create_asset_modules
 from app.configuration import load_configuration
 from app.gui.main_window import MainWindow
 from app.logging_config import configure_logging
@@ -32,6 +33,7 @@ def main() -> int:
         paper_persistence_path=configured_paper_persistence_path()
     )
 
+    asset_modules = create_asset_modules(composition)
     window = MainWindow(
         composition.bus,
         composition.state_store,
@@ -41,12 +43,15 @@ def main() -> int:
         chart_market_data_service=composition.chart_market_data_service,
         chart_default_symbol=composition.chart_default_symbol,
         warrior_forward_sidecar=composition.warrior_forward_sidecar,
+        asset_modules=asset_modules,
     )
     window.show()
 
     try:
         return application.exec()
     finally:
+        if asset_modules.crypto_supervisor.close():
+            asset_modules.crypto_supervisor.paper.close()
         composition.close()
 
 
