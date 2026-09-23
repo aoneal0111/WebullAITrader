@@ -65,6 +65,16 @@ def close_desktop_composition(
         timeout_seconds=timeout_seconds
     )
 
+    paper_validation_capture = getattr(
+        composition, "paper_validation_capture", None
+    )
+    if paper_validation_capture is not None:
+        try:
+            paper_validation_capture.close()
+        except Exception:
+            # Validation capture is diagnostic-only and cannot block shutdown.
+            pass
+
     daily_review_exporter = getattr(
         composition,
         "daily_review_exporter",

@@ -33,6 +33,10 @@ from app.trade_intelligence.decision_intelligence.entry_timing import (
 )
 from app.memory_observability import MemoryObservability
 from app.performance_diagnostics import performance_diagnostics
+from app.diagnostics.paper_validation_capture import (
+    PaperValidationCapture,
+    composition_snapshot,
+)
 from app.daily_review import DailyReviewExporter
 from app.crypto_research import (
     CryptoCatalystAcquisitionRuntime,
@@ -103,6 +107,7 @@ class DesktopComposition:
     sec_shadow_runtime: SecShadowRuntimeComposition | None = None
     symbol_intelligence_activation_state: str = "DISABLED"
     daily_review_exporter: DailyReviewExporter | None = None
+    paper_validation_capture: PaperValidationCapture | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         from .desktop_lifecycle import close_desktop_composition
@@ -471,6 +476,11 @@ def create_desktop_composition(
         start_desktop_symbol_intelligence(symbol_intelligence_bundle)
     )
     result.symbol_intelligence = symbol_intelligence_bundle.symbol_intelligence
+    capture = PaperValidationCapture.from_environment(
+        lambda: composition_snapshot(result)
+    )
+    result.paper_validation_capture = capture
+    capture.start()
     return result
 __all__ = [
     "DesktopComposition",
