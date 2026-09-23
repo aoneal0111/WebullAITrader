@@ -50,6 +50,7 @@ class CaptureRecordType(StrEnum):
     EXECUTION_GATE_DECISION = "EXECUTION_GATE_DECISION"
     DI_ENTRY_DIAGNOSTIC = "DI_ENTRY_DIAGNOSTIC"
     EXECUTION_PRICE_PATH = "EXECUTION_PRICE_PATH"
+    SETUP_LIFECYCLE = "SETUP_LIFECYCLE"
 
 
 def is_phase_a_shadow_payload(payload: Mapping[str, object]) -> bool:

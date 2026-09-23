@@ -1060,6 +1060,16 @@ class WarriorDesktopSidecar:
         finally:
             self._lock.release()
 
+    def setup_lifecycle_snapshot(
+        self, symbol: str | None = None,
+    ) -> object:
+        """Expose the bounded setup-timing read model without I/O."""
+        with self._lock:
+            service = self._service
+        if service is None:
+            return None if symbol is not None else ()
+        return service.setup_lifecycle_snapshot(symbol)
+
     def _consume(self, event: MarketEvent) -> None:
         adapter, service = self._adapter, self._service
         if adapter is None or service is None or event.symbol is None:
@@ -1209,6 +1219,13 @@ class WarriorDesktopSidecar:
                 active_candidate
                 and elapsed is not None
                 and (
+                    (
+                        prior_candidate is not None
+                        and prior_candidate.setup is not None
+                        and prior_candidate.setup.state is SetupState.FORMING
+                        and elapsed >= _ACTIVE_CANDIDATE_MIN_REEVALUATION_SECONDS
+                    )
+                    or
                     elapsed >= _ACTIVE_CANDIDATE_MAX_REEVALUATION_SECONDS
                     or (
                         elapsed >= _ACTIVE_CANDIDATE_MIN_REEVALUATION_SECONDS

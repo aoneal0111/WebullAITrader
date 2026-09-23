@@ -294,6 +294,10 @@ class WarriorForwardCaptureService:
         self._memory_geometry_keys: OrderedDict[str, str] = OrderedDict()
         self.runtime = WarriorMomentumRuntime(config)
         self._last_transition: dict[str, ForwardTransition] = {}
+        # Bounded, transition-only setup timing evidence. This is a
+        # diagnostic/read-model aid and never participates in authorization.
+        self._setup_lifecycles: OrderedDict[str, dict[str, object]] = OrderedDict()
+        self._setup_lifecycle_capacity = 512
         # Compact, latest-only execution-pursuit diagnostics.  This is not a
         # per-tick history and never becomes an execution authority.
         self._last_execution_pursuit: dict[str, ExecutionPursuitAssessment] = {}
@@ -375,6 +379,12 @@ class WarriorForwardCaptureService:
         setup = candidate.setup
         setup_state = "ENTRY_READY" if signal is not None else (
             "NO_SETUP" if setup is None else str(setup.state.value).upper()
+        )
+        lifecycle_timestamp = value.evaluation_timestamp or observation.timestamp
+        self._record_setup_lifecycle(
+            value, candidate, setup_state=setup_state,
+            technical_signal=technical_signal, signal=None,
+            timestamp=lifecycle_timestamp,
         )
         performance_diagnostics.record_setup_transition(
             symbol=symbol,
@@ -573,6 +583,11 @@ class WarriorForwardCaptureService:
         # authority or DI identity.  Active positions and working entries are
         # deliberately stronger authorities and keep the existing identity.
         if signal is not None:
+            self._record_setup_lifecycle(
+                value, assessed, setup_state="EXECUTION_ELIGIBLE",
+                technical_signal=technical_signal, signal=signal,
+                timestamp=value.evaluation_timestamp or observation.timestamp,
+            )
             self._reconcile_structural_opportunity(symbol, signal)
         conventional_signal = signal
         intelligence_result = None
@@ -956,6 +971,18 @@ class WarriorForwardCaptureService:
                         performance_diagnostics.record_entry_funnel(
                             symbol, stage="ORDER_INTENT", timestamp=value.evaluation_timestamp or observation.timestamp,
                         )
+                        self._record_setup_lifecycle(
+                            value, assessed, setup_state="ENTRY_AUTHORIZED",
+                            technical_signal=technical_signal, signal=signal,
+                            timestamp=value.evaluation_timestamp or observation.timestamp,
+                            lifecycle_stage="ENTRY_AUTHORIZED",
+                        )
+                        self._record_setup_lifecycle(
+                            value, assessed, setup_state="ORDER_SUBMITTED",
+                            technical_signal=technical_signal, signal=signal,
+                            timestamp=value.evaluation_timestamp or observation.timestamp,
+                            lifecycle_stage="ORDER_SUBMITTED",
+                        )
                     if entry_records:
                         from app.trade_intelligence.opportunity_memory import EntryAttemptSummary
                         self.opportunity_memory.record_entry_attempt(
@@ -1074,6 +1101,7 @@ class WarriorForwardCaptureService:
         campaign = str(self.paper_campaign_id or "").strip()
         if fill is None or not lifecycle or not campaign:
             return
+
         symbol = str(getattr(fill, "symbol", "")).strip().upper()
         side = str(getattr(fill, "side", "")).strip().upper()
         quantity = Decimal(str(getattr(fill, "quantity", "0")))
@@ -1127,6 +1155,142 @@ class WarriorForwardCaptureService:
         ),))
         if Decimal(str(state["quantity"])) <= 0:
             self._execution_paths.pop(key, None)
+
+    def _record_setup_lifecycle(
+        self,
+        value: PointInTimeObservation,
+        candidate: MomentumCandidate,
+        *,
+        setup_state: str,
+        technical_signal: MomentumEntrySignal | None,
+        signal: MomentumEntrySignal | None,
+        timestamp: datetime,
+        lifecycle_stage: str | None = None,
+    ) -> None:
+        """Maintain bounded transition-only setup timing evidence."""
+        symbol = candidate.symbol.strip().upper()
+        if not symbol:
+            return
+        record = self._setup_lifecycles.get(symbol)
+        if record is None:
+            if len(self._setup_lifecycles) >= self._setup_lifecycle_capacity:
+                self._setup_lifecycles.popitem(last=False)
+            record = {"symbol": symbol}
+            self._setup_lifecycles[symbol] = record
+        self._setup_lifecycles.move_to_end(symbol)
+        observation = value.observation
+        price = observation.price
+        hod = None
+        if (
+            price is not None
+            and candidate.distance_from_hod_percent is not None
+            and candidate.distance_from_hod_percent < Decimal("100")
+        ):
+            hod = price / (Decimal("1") - candidate.distance_from_hod_percent / HUNDRED)
+        setup = candidate.setup
+        if setup is None:
+            setup_reason = (
+                "SETUP_WAITING_FOR_HISTORY"
+                if len(value.bars) < 5 else "SETUP_WAITING_FOR_STRUCTURE"
+            )
+        elif setup.state is SetupState.FORMING:
+            setup_reason = "SETUP_WAITING_FOR_BREAKOUT"
+        elif setup.state is SetupState.TRIGGERED:
+            setup_reason = "SETUP_TRIGGERED"
+        else:
+            setup_reason = "SETUP_STRUCTURALLY_INVALID"
+        changed: dict[str, object] = {}
+        price_fields = {
+            "first_discovered_at": "price_at_first_discovery",
+            "first_observed_at": "price_at_first_observation",
+            "first_scanner_qualified_at": "price_at_first_qualification",
+            "first_setup_forming_at": "price_at_first_forming",
+            "first_setup_triggered_at": "price_at_first_trigger",
+            "first_entry_authorized_at": "price_at_entry_authorization",
+            "first_order_submitted_at": "price_at_order_submission",
+        }
+
+        def first(field: str, field_price: Decimal | None = price) -> None:
+            if record.get(field) is None:
+                record[field] = timestamp
+                changed[field] = timestamp
+                price_field = price_fields.get(field)
+                if (
+                    field_price is not None
+                    and price_field is not None
+                    and price_field not in record
+                ):
+                    record[price_field] = field_price
+                    changed[price_field] = field_price
+
+        first("first_discovered_at")
+        first("first_observed_at")
+        first("first_scanner_assessed_at")
+        first("first_warrior_evaluated_at")
+        if candidate.discovery_qualified:
+            first("first_scanner_qualified_at")
+        normalized_state = str(setup_state).upper()
+        if normalized_state in {"NO_SETUP", SetupState.NOT_FORMED.value, SetupState.UNKNOWN.value}:
+            first("first_setup_none_at")
+        elif normalized_state == SetupState.FORMING.value:
+            first("first_setup_forming_at")
+        elif normalized_state == SetupState.TRIGGERED.value:
+            first("first_setup_triggered_at")
+        if technical_signal is not None:
+            first("first_technical_signal_at")
+        if signal is not None:
+            first("first_execution_eligible_at")
+        if lifecycle_stage in {"ENTRY_AUTHORIZED", "ORDER_SUBMITTED"}:
+            first("first_entry_authorized_at")
+        if lifecycle_stage == "ORDER_SUBMITTED":
+            first("first_order_submitted_at")
+        for field, field_value in (
+            ("last_observation_at", timestamp),
+            ("session", candidate.session),
+            ("current_setup_type", None if setup is None else setup.setup_type.value),
+            ("trigger_price", None if setup is None else setup.trigger),
+            ("structural_stop", None if setup is None else setup.stop_price),
+            ("hod", hod),
+            ("source_identity", None if setup is None else setup.structural_episode_id),
+            ("setup_development_reason", setup_reason),
+        ):
+            if field == "last_observation_at":
+                if field not in record:
+                    changed[field] = field_value
+                record[field] = field_value
+            elif field == "hod":
+                # HOD is continuously changing market context, not a
+                # lifecycle transition. Keep it in the read model without
+                # emitting a diagnostic record for every update.
+                if field_value is not None:
+                    record[field] = field_value
+            elif field_value is not None and record.get(field) != field_value:
+                record[field] = field_value
+                changed[field] = field_value
+        if lifecycle_stage is not None:
+            record["last_transition"] = lifecycle_stage
+            changed["last_transition"] = lifecycle_stage
+        if not changed or self.writer is None:
+            return
+        payload = dict(record)
+        payload["transition"] = lifecycle_stage or normalized_state
+        payload["changed_fields"] = tuple(sorted(changed))
+        try:
+            self.writer.submit_diagnostic(CaptureRecord.create(
+                CaptureRecordType.SETUP_LIFECYCLE, symbol, timestamp, payload,
+                identity_parts=(str(payload["transition"]), ",".join(sorted(changed))),
+            ))
+        except Exception:
+            return
+
+    def setup_lifecycle_snapshot(
+        self, symbol: str | None = None,
+    ) -> tuple[dict[str, object], ...] | dict[str, object] | None:
+        """Return a bounded copy of setup lifecycle timing evidence."""
+        if symbol is not None:
+            value = self._setup_lifecycles.get(symbol.strip().upper())
+            return None if value is None else dict(value)
+        return tuple(dict(value) for value in self._setup_lifecycles.values())
 
     def restore_execution_lifecycles(self, orders: Iterable[object]) -> None:
         """Resume open paths without pretending the pre-restart path exists."""
