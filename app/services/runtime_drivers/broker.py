@@ -126,6 +126,8 @@ class DesktopBrokerRuntimeDriver:
         self._market_data_stop = Event()
         self._terminal_stream_failure_published = False
         self._market_data_consumer_state = "STOPPED"
+        self._market_data_consumer_attempted = False
+        self._market_data_first_event_consumed = False
         self._market_data_failure_stage = None
         self._market_data_failure_exception_class = None
         self._scanner_pause_session: MarketDataSession | None = None
@@ -487,6 +489,8 @@ class DesktopBrokerRuntimeDriver:
             return
         self._market_data_stop.clear()
         self._market_data_consumer_state = "RUNNING"
+        self._market_data_consumer_attempted = False
+        self._market_data_first_event_consumed = False
         self._market_data_failure_stage = None
         self._market_data_failure_exception_class = None
         performance_diagnostics.record_startup_stage(
@@ -953,10 +957,24 @@ class DesktopBrokerRuntimeDriver:
                 not stop_event.is_set()
                 and not self._market_data_stop.is_set()
             ):
-                self._market_data_failure_stage = "WATCHDOG"
-                self._run_feed_watchdog()
+                # Startup has to give the scanner one real receive
+                # opportunity before interpreting the absence of a
+                # normalized event as feed staleness.  Callbacks may already
+                # be buffered while reference/subscription setup completes.
+                if getattr(self, "_market_data_consumer_attempted", False):
+                    self._market_data_failure_stage = "WATCHDOG"
+                    self._run_feed_watchdog()
                 self._reconcile_temporal_orders()
                 if self._scanner is not None:
+                    if not bool(getattr(self._scanner, "connected", True)) or not bool(
+                        getattr(self._scanner, "running", True)
+                    ):
+                        # Reconnect transitions are deliberate.  Do not turn
+                        # the coordinator's temporary non-running state into
+                        # a terminal consumer exception.
+                        self._market_data_stop.wait(0.01)
+                        continue
+                    self._market_data_consumer_attempted = True
                     cycle = self._scanner.run_available()
                     performance_diagnostics.increment("scanner_evaluations")
                     performance_diagnostics.increment_startup_counter(
@@ -966,6 +984,8 @@ class DesktopBrokerRuntimeDriver:
                         "first_scanner_evaluation"
                     )
                     self._scanner_events_since_observation += cycle.events_read
+                    if cycle.events_read:
+                        self._market_data_first_event_consumed = True
                     if cycle.events_read == 0:
                         self._publish_scanner_observation_if_due()
                         self._run_feed_watchdog()

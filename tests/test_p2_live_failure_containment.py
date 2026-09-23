@@ -77,6 +77,8 @@ def test_consumer_exception_records_stage_and_terminal_state():
     driver._scanner = scanner
     driver._market_data_stop = Event()
     driver._market_data_consumer_state = "RUNNING"
+    driver._market_data_consumer_attempted = False
+    driver._market_data_first_event_consumed = False
     driver._market_data_failure_stage = None
     driver._market_data_failure_exception_class = None
     driver._market_data_transport = lambda: transport
