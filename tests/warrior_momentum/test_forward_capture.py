@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 from dataclasses import replace
 from decimal import Decimal, Decimal as D
 from pathlib import Path
+from queue import Full
 from threading import Event
 from time import sleep
 from types import SimpleNamespace
@@ -2113,6 +2114,32 @@ def test_capture_writer_is_bounded_fail_closed_and_gui_isolated(tmp_path: Path) 
     writer.close()
     source = Path("app/strategies/warrior_momentum/forward_queue.py").read_text(encoding="utf-8")
     assert "PySide6" not in source and "PyQt" not in source
+
+
+def test_capture_writer_reports_diagnostic_loss_separately_from_critical_failure(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    writer = ForwardCaptureWriter(
+        ForwardCaptureStore(tmp_path / "split-health.sqlite3"),
+        flush_interval_seconds=0.01,
+    )
+    record = CaptureRecord.create(
+        CaptureRecordType.LATENCY_DIAGNOSTIC, "XYZ", T0,
+        {"diagnostic_kind": "forced_overflow"},
+    )
+
+    def full(_record) -> None:
+        raise Full
+
+    monkeypatch.setattr(writer._diagnostic_queue, "put_nowait", full)
+    assert writer.submit_diagnostic(record) is False
+    metrics = writer.metrics()
+    assert metrics.diagnostic_dropped_records == 1
+    assert metrics.dropped_records == 0
+    assert metrics.critical_failure_count == 0
+    assert metrics.critical_failure_state is False
+    monkeypatch.undo()
+    writer.close()
 
 
 def test_management_context_lookup_is_symbol_local_and_bounded(tmp_path: Path) -> None:

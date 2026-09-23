@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 from pathlib import Path
+from queue import Full
 from types import SimpleNamespace
 
 import pytest
@@ -12,12 +13,14 @@ from app.gui.formatters.warrior_paper import format_warrior_paper
 from app.live_scanner.session import scanner_session
 from app.market_data.models import MarketEvent, MarketEventType, QuotePayload, TradePayload
 from app.momentum_scanner.models import CatalystStatus, CatalystType
+from app.read_models.health import HealthState
 from app.scanner_adapter import MarketEventScannerAdapter, ScannerReferenceData, ScannerReferenceStore
 from app.strategies.warrior_momentum import (
     CaptureRecord, CaptureRecordType, EvidenceMaturity, FloatProvenance,
     ForwardCaptureStore, MinuteBar, RiskConfig, WarriorCaptureHealth,
     WarriorDesktopSidecar, WarriorFocusItem, WarriorMomentumConfig,
-    WarriorMomentumRuntime, WarriorPaperSnapshot, build_cumulative_reports,
+    WarriorMomentumRuntime, WarriorObservabilityHealth, WarriorPaperSnapshot,
+    build_cumulative_reports,
     evidence_maturity, strategy_configuration_fingerprint,
 )
 from app.strategies.warrior_momentum.features import current_completed_bar_tail
@@ -47,6 +50,200 @@ def trade(sequence: int, at: datetime, price: str, size: str = "100") -> MarketE
 def deliver(scanner, sidecar, event) -> None:
     scanner.consume(event)
     sidecar(event)
+
+
+def force_diagnostic_drop(sidecar: WarriorDesktopSidecar, monkeypatch) -> None:
+    writer = sidecar._writer
+    assert writer is not None
+
+    def full(_record) -> None:
+        raise Full
+
+    monkeypatch.setattr(writer._diagnostic_queue, "put_nowait", full)
+    assert writer.submit_diagnostic(CaptureRecord.create(
+        CaptureRecordType.LATENCY_DIAGNOSTIC,
+        "XYZ",
+        T0,
+        {"diagnostic_kind": "forced_overflow"},
+    )) is False
+
+
+def test_diagnostic_overflow_does_not_stop_warrior_or_full_evaluation(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    scanner = adapter()
+    sidecar = WarriorDesktopSidecar(
+        enabled=True, storage_path=tmp_path / "diagnostic-overflow.sqlite3",
+        clock=lambda: T0 + timedelta(minutes=2),
+    )
+    sidecar.bind_scanner_adapter(scanner)
+    sidecar.start("PAPER")
+    try:
+        deliver(scanner, sidecar, quote(T0))
+        deliver(scanner, sidecar, trade(2, T0, "10.20"))
+        initial_evaluations = sidecar._publications
+        force_diagnostic_drop(sidecar, monkeypatch)
+        deliver(scanner, sidecar, trade(3, T0 + timedelta(minutes=1), "10.25"))
+
+        snapshot = sidecar.snapshot()
+        assert snapshot.metrics is not None
+        assert snapshot.metrics.diagnostic_dropped_records >= 1
+        assert snapshot.metrics.critical_failure_count == 0
+        assert snapshot.metrics.critical_failure_state is False
+        assert snapshot.health is WarriorCaptureHealth.RUNNING
+        assert snapshot.observability_health is WarriorObservabilityHealth.DEGRADED
+        assert snapshot.entry_authorized is True
+        assert sidecar._publications == initial_evaluations + 1
+        assert snapshot.last_observation_at is not None
+        assert snapshot.last_full_evaluation_at is not None
+
+        monkeypatch.undo()
+        deliver(scanner, sidecar, trade(4, T0 + timedelta(minutes=2), "10.30"))
+        assert (
+            sidecar.snapshot().observability_health
+            is WarriorObservabilityHealth.RUNNING
+        )
+    finally:
+        monkeypatch.undo()
+        sidecar.stop()
+
+
+def test_diagnostic_overflow_keeps_management_and_protection_reachable(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    scanner = adapter()
+    entries: list[object] = []
+    sidecar = WarriorDesktopSidecar(
+        enabled=True,
+        storage_path=tmp_path / "diagnostic-protection.sqlite3",
+        clock=lambda: T0,
+        paper_entry_submitter=lambda *args: entries.append(args) or True,
+        paper_position_quantity_source=lambda _symbol: D("10"),
+    )
+    sidecar.bind_scanner_adapter(scanner)
+    sidecar.start("PAPER")
+    reconciled: list[str] = []
+    managed: list[str] = []
+    assert sidecar._service is not None
+    monkeypatch.setattr(
+        sidecar._service,
+        "reconcile_authoritative_protection",
+        lambda symbol, _timestamp: reconciled.append(symbol) or True,
+    )
+    original_shadow = sidecar._service.observe_intraminute_shadow
+
+    def observe_shadow(value) -> None:
+        managed.append(value.symbol)
+        original_shadow(value)
+
+    monkeypatch.setattr(sidecar._service, "observe_intraminute_shadow", observe_shadow)
+    try:
+        deliver(scanner, sidecar, quote(T0))
+        deliver(scanner, sidecar, trade(2, T0, "10.20"))
+        reconciled.clear()
+        sidecar._last_protection_attempt_at.pop("XYZ", None)
+        force_diagnostic_drop(sidecar, monkeypatch)
+        deliver(scanner, sidecar, trade(3, T0 + timedelta(seconds=1), "10.20"))
+
+        assert reconciled == ["XYZ"]
+        assert managed == ["XYZ"]
+        assert entries == []
+        assert sidecar.snapshot().health is WarriorCaptureHealth.RUNNING
+    finally:
+        monkeypatch.undo()
+        sidecar.stop()
+
+
+def test_critical_capture_failure_is_fail_closed_but_protection_and_recovery_remain_reachable(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    scanner = adapter()
+    sidecar = WarriorDesktopSidecar(
+        enabled=True,
+        storage_path=tmp_path / "critical-recovery.sqlite3",
+        clock=lambda: T0 + timedelta(minutes=2),
+        paper_position_quantity_source=lambda _symbol: D("10"),
+    )
+    sidecar.bind_scanner_adapter(scanner)
+    sidecar.start("PAPER")
+    reconciled: list[str] = []
+    assert sidecar._service is not None and sidecar._writer is not None
+    monkeypatch.setattr(
+        sidecar._service,
+        "reconcile_authoritative_protection",
+        lambda symbol, _timestamp: reconciled.append(symbol) or True,
+    )
+    try:
+        sidecar._writer._record_fatal(RuntimeError("must not be serialized"))
+        deliver(scanner, sidecar, quote(T0))
+
+        failed = sidecar.snapshot()
+        assert failed.health is WarriorCaptureHealth.DEGRADED
+        assert failed.entry_authorized is False
+        assert failed.metrics is not None
+        assert failed.metrics.critical_failure_state is True
+        assert failed.metrics.critical_failure_count >= 1
+        assert failed.metrics.diagnostic_dropped_records == 0
+        assert reconciled == ["XYZ"]
+        transition = failed.last_health_transition
+        assert transition is not None
+        assert transition.category == "CRITICAL_PERSISTENCE_FAILURE"
+        assert transition.exception_class == "RuntimeError"
+        assert "must not be serialized" not in repr(transition)
+
+        sidecar._writer._fatal = None
+        deliver(scanner, sidecar, quote(T0 + timedelta(minutes=1)))
+        recovered = sidecar.snapshot()
+        assert recovered.health is WarriorCaptureHealth.RUNNING
+        assert recovered.entry_authorized is True
+        assert recovered.last_health_transition is not None
+        assert recovered.last_health_transition.category == "RECOVERY"
+    finally:
+        sidecar._writer._fatal = None
+        sidecar.stop()
+
+
+def test_health_transition_evidence_is_sanitized_and_read_model_keeps_warrior_distinct(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "health-evidence.sqlite3"
+    sidecar = WarriorDesktopSidecar(
+        enabled=True, storage_path=path, clock=lambda: T0,
+    )
+    sidecar.start("PAPER")
+    try:
+        sidecar._accept_execution = False
+        sidecar._set_strategy_health(
+            WarriorCaptureHealth.DEGRADED,
+            category="CRITICAL_STRATEGY_FAILURE",
+            reason="SYNTHETIC_TEST_FAILURE",
+            exception=RuntimeError("sensitive arbitrary message"),
+        )
+        assert sidecar._writer is not None
+        sidecar._writer.flush()
+
+        transition = sidecar.snapshot().last_health_transition
+        assert transition is not None
+        assert transition.exception_class == "RuntimeError"
+        assert "sensitive arbitrary message" not in repr(transition)
+        records = ForwardCaptureStore(path).records(
+            record_type=CaptureRecordType.HEALTH_TRANSITION,
+        )
+        assert records
+        assert records[-1].payload["exception_class"] == "RuntimeError"
+        assert "exception_message" not in records[-1].payload
+
+        atlas = HealthState(runtime_status="RUNNING", scanner_status="ACTIVE")
+        view = format_warrior_paper(sidecar.snapshot())
+        assert atlas.runtime_status == "RUNNING"
+        assert atlas.scanner_status == "ACTIVE"
+        assert view.health == "DEGRADED"
+        assert view.entry_authorized is False
+        assert view.last_health_reason == (
+            "CRITICAL_STRATEGY_FAILURE:SYNTHETIC_TEST_FAILURE"
+        )
+    finally:
+        sidecar.stop()
 
 
 def test_disabled_sidecar_is_inert_and_default_configuration_is_frozen(tmp_path: Path) -> None:

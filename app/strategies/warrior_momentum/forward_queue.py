@@ -37,7 +37,9 @@ class ForwardCaptureWriter:
         self._flush_interval = flush_interval_seconds
         self._stop = Event()
         self._lock = Lock()
-        self._written = self._batches = self._duplicates = self._dropped = 0
+        self._written = self._batches = self._duplicates = 0
+        self._diagnostic_dropped = 0
+        self._critical_failures = 0
         self._synchronous_fallback = 0
         self._latency_total = self._latency_max = 0.0
         self._gui_refreshes = 0
@@ -58,7 +60,7 @@ class ForwardCaptureWriter:
             try:
                 inserted, duplicates = self._store.append_batch((record,))
             except BaseException as failure:
-                self._fatal = failure
+                self._record_fatal(failure)
                 raise CaptureWriterError("capture fallback write failed") from failure
             with self._lock:
                 self._written += inserted
@@ -78,7 +80,7 @@ class ForwardCaptureWriter:
             self._diagnostic_queue.put_nowait(record)
         except Full:
             with self._lock:
-                self._dropped += 1
+                self._diagnostic_dropped += 1
             return False
         return True
 
@@ -113,15 +115,28 @@ class ForwardCaptureWriter:
                 batches_written=self._batches,
                 average_write_latency_ms=Decimal(str(average * 1000)),
                 maximum_write_latency_ms=Decimal(str(self._latency_max * 1000)),
-                dropped_records=self._dropped, duplicate_records=self._duplicates,
+                # Critical records are never intentionally dropped.  Preserve
+                # the legacy field as the critical-loss count while reporting
+                # intentionally lossy diagnostics independently.
+                dropped_records=0, duplicate_records=self._duplicates,
                 gui_refresh_count=self._gui_refreshes,
                 gui_refresh_frequency_hz=Decimal(str(self._gui_refreshes / elapsed)),
                 synchronous_fallback_records=self._synchronous_fallback,
+                diagnostic_queue_depth=self._diagnostic_queue.qsize(),
+                diagnostic_dropped_records=self._diagnostic_dropped,
+                critical_failure_count=max(
+                    self._critical_failures, int(self._fatal is not None),
+                ),
+                critical_failure_state=self._fatal is not None,
             )
 
     @property
     def healthy(self) -> bool:
         return self._fatal is None
+
+    @property
+    def failure(self) -> BaseException | None:
+        return self._fatal
 
     def _run(self) -> None:
         while (
@@ -153,7 +168,7 @@ class ForwardCaptureWriter:
                     self._latency_total += latency
                     self._latency_max = max(self._latency_max, latency)
             except BaseException as exc:
-                self._fatal = exc
+                self._record_fatal(exc)
             finally:
                 for _record, record_source in batch:
                     record_source.task_done()
@@ -162,11 +177,21 @@ class ForwardCaptureWriter:
         self, *, nowait: bool = False
     ) -> tuple[CaptureRecord, Queue[CaptureRecord]]:
         try:
-            return self._diagnostic_queue.get_nowait(), self._diagnostic_queue
+            return self._queue.get_nowait(), self._queue
         except Empty:
             if nowait:
-                return self._queue.get_nowait(), self._queue
-            return self._queue.get(timeout=self._flush_interval), self._queue
+                return self._diagnostic_queue.get_nowait(), self._diagnostic_queue
+            try:
+                return self._diagnostic_queue.get_nowait(), self._diagnostic_queue
+            except Empty:
+                return self._queue.get(timeout=self._flush_interval), self._queue
+
+    def _record_fatal(self, failure: BaseException) -> None:
+        """Latch one observable critical persistence failure."""
+        with self._lock:
+            if self._fatal is None:
+                self._critical_failures += 1
+            self._fatal = failure
 
 
 __all__ = [

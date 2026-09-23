@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
-from queue import Empty, Queue
+from collections import deque
+from queue import Empty, Full, Queue
 from threading import Event, Lock
 from time import monotonic, sleep
 from typing import Callable, Protocol
@@ -66,6 +67,7 @@ class OfficialSdkStreamBackend:
         sleeper: Callable[[float], None] = sleep,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         sdk_client_factory: SdkClientFactory | None = None,
+        ingestion_capacity: int = 4096,
     ) -> None:
         if receive_timeout_seconds < 0:
             raise ValueError("receive_timeout_seconds must be non-negative")
@@ -75,6 +77,8 @@ class OfficialSdkStreamBackend:
             raise ValueError("registration waits must be non-negative")
         if maximum_registration_retries < 0:
             raise ValueError("registration retries must be non-negative")
+        if ingestion_capacity <= 0:
+            raise ValueError("ingestion capacity must be positive")
 
         self.client = sdk_client
         self._subscription_mapper = subscription_mapper
@@ -86,15 +90,18 @@ class OfficialSdkStreamBackend:
         self._sleeper = sleeper
         self._clock = clock
         self._sdk_client_factory = sdk_client_factory
-        self._messages: Queue[object] = Queue()
+        self._ingestion_capacity = int(ingestion_capacity)
+        self._messages: Queue[object] = Queue(maxsize=self._ingestion_capacity)
         self._message_metrics_lock = Lock()
         self._message_queue_depth = 0
         self._messages_enqueued = 0
         self._messages_dequeued = 0
         self._message_queue_high_water = 0
+        self._message_ingestion_overflow = 0
         self._startup_buffered_count = 0
         self._oldest_buffered_age_ms = 0.0
         self._oldest_buffered_age_high_water_ms = 0.0
+        self._dequeue_residence_ms: deque[float] = deque(maxlen=2048)
         self._connected = Event()
         self._registration_ready = Event()
         self._identity_mismatch = Event()
@@ -143,6 +150,28 @@ class OfficialSdkStreamBackend:
                 "startup_buffered_count": self._startup_buffered_count,
                 "oldest_buffered_age_ms": self._oldest_buffered_age_ms,
                 "oldest_buffered_age_high_water_ms": self._oldest_buffered_age_high_water_ms,
+            }
+
+    def latency_metrics(self) -> dict[str, float]:
+        """Return bounded callback-residence percentiles separately from
+        the stable queue-cardinality contract."""
+        with self._message_metrics_lock:
+            ordered = sorted(self._dequeue_residence_ms)
+        return {
+            "dequeue_residence_p50_ms": _percentile(ordered, 0.50),
+            "dequeue_residence_p90_ms": _percentile(ordered, 0.90),
+            "dequeue_residence_p95_ms": _percentile(ordered, 0.95),
+            "dequeue_residence_p99_ms": _percentile(ordered, 0.99),
+            "dequeue_residence_max_ms": max(ordered, default=0.0),
+        }
+
+    def ingestion_metrics(self) -> dict[str, int]:
+        with self._message_metrics_lock:
+            return {
+                "ingestion_queue_capacity": self._ingestion_capacity,
+                "ingestion_queue_overflow": self._message_ingestion_overflow,
+                "ingestion_queue_depth": self._message_queue_depth,
+                "ingestion_queue_high_water": self._message_queue_high_water,
             }
 
     @property
@@ -210,6 +239,7 @@ class OfficialSdkStreamBackend:
         if client is not self.client:
             self._emit_diagnostic("CROSS_CLIENT_MESSAGE_REJECTED")
             return
+        overflow = False
         with self._message_metrics_lock:
             if not self._accepting_callbacks.is_set():
                 self._emit_diagnostic("CALLBACK_INGESTION_HALTED")
@@ -218,20 +248,34 @@ class OfficialSdkStreamBackend:
             self._last_raw_callback_at = self._clock()
             if self._generation_first_raw_at is None:
                 self._generation_first_raw_at = self._last_raw_callback_at
-            self._messages.put(
-                _ReceivedStreamPayload(
-                    topic, quotes, self._clock(), self._generation
+            message = _ReceivedStreamPayload(
+                topic, quotes, self._clock(), self._generation
+            )
+            try:
+                self._messages.put_nowait(message)
+            except Full:
+                self._message_ingestion_overflow += 1
+                self._accepting_callbacks.clear()
+                overflow = True
+            if overflow:
+                callback_timestamp = self._last_raw_callback_at
+                generation = self._generation
+            else:
+                self._message_queue_depth += 1
+                self._messages_enqueued += 1
+                depth = self._message_queue_depth
+                self._message_queue_high_water = max(
+                    self._message_queue_high_water,
+                    depth,
                 )
+                callback_timestamp = self._last_raw_callback_at
+                generation = self._generation
+        if overflow:
+            self._emit_diagnostic(
+                "CALLBACK_INGESTION_OVERFLOW",
+                capacity=self._ingestion_capacity,
             )
-            self._message_queue_depth += 1
-            self._messages_enqueued += 1
-            depth = self._message_queue_depth
-            self._message_queue_high_water = max(
-                self._message_queue_high_water,
-                depth,
-            )
-            callback_timestamp = self._last_raw_callback_at
-            generation = self._generation
+            return
         performance_diagnostics.record_stream_raw_callback(
             timestamp=callback_timestamp,
             generation=generation,
@@ -545,6 +589,10 @@ class OfficialSdkStreamBackend:
                     self._oldest_buffered_age_high_water_ms = max(
                         self._oldest_buffered_age_high_water_ms, age_ms,
                     )
+                    self._dequeue_residence_ms.append(age_ms)
+                    performance_diagnostics.record_component_duration(
+                        "callback_queue_residence", age_ms,
+                    )
             performance_diagnostics.increment_startup_counter("callbacks_dequeued")
             performance_diagnostics.record_startup_stage("first_callback_dequeued")
             if not self._consumption_started:
@@ -584,6 +632,10 @@ class OfficialSdkStreamBackend:
                     self._oldest_buffered_age_ms = age_ms
                     self._oldest_buffered_age_high_water_ms = max(
                         self._oldest_buffered_age_high_water_ms, age_ms,
+                    )
+                    self._dequeue_residence_ms.append(age_ms)
+                    performance_diagnostics.record_component_duration(
+                        "callback_queue_residence", age_ms,
                     )
             performance_diagnostics.increment_startup_counter("callbacks_dequeued")
             performance_diagnostics.record_startup_stage("first_callback_dequeued")
@@ -1133,6 +1185,13 @@ def _timestamp_channel(event: object) -> str:
     if event_type == MarketEventType.TRADE.value and trade_id.startswith("snapshot"):
         return "SNAPSHOT"
     return str(event_type)
+
+
+def _percentile(values: list[float], fraction: float) -> float:
+    if not values:
+        return 0.0
+    index = min(len(values) - 1, int((len(values) - 1) * fraction))
+    return float(values[index])
 
 
 def _timestamp_ordering_key(event: object) -> tuple[str, str, str]:

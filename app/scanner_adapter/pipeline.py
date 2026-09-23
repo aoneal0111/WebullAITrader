@@ -15,7 +15,8 @@ from app.momentum_scanner.rules import (
     evaluate_candidate,
 )
 from app.scanner_adapter.adapter import MarketEventScannerAdapter
-from app.scanner_adapter.models import QualificationDiagnostics
+from app.scanner_adapter.evaluation_mailbox import LatestEvaluationMailbox
+from app.scanner_adapter.models import AdapterResult, QualificationDiagnostics
 from app.performance_diagnostics import performance_diagnostics
 
 
@@ -46,6 +47,8 @@ class MomentumScannerPipeline:
         decision_sink: Callable[[ScannerDecision], object] | None = None,
         clock: Callable[[], datetime] | None = None,
         candidate_retention_seconds: float = DEFAULT_CANDIDATE_RETENTION_SECONDS,
+        coalesce_observational: bool = False,
+        evaluation_mailbox_capacity: int = 256,
     ) -> None:
         if candidate_retention_seconds <= 0:
             raise ValueError("candidate retention seconds must be positive")
@@ -54,6 +57,14 @@ class MomentumScannerPipeline:
         self._latest: dict[str, ScannerDecision] = {}
         self._clock = clock or (lambda: datetime.now(UTC))
         self._candidate_retention_seconds = float(candidate_retention_seconds)
+        self._coalesce_observational = bool(coalesce_observational)
+        self._evaluation_mailbox = LatestEvaluationMailbox(
+            capacity=evaluation_mailbox_capacity,
+        ) if self._coalesce_observational else None
+        self._symbol_versions: dict[str, int] = {}
+        self._raw_callbacks_received = 0
+        self._superseded_evaluations_skipped = 0
+        self._result_version_rejections = 0
         if decision_sink is not None and not callable(decision_sink):
             raise TypeError("decision_sink must be callable or None")
         self._decision_sink = decision_sink
@@ -64,12 +75,45 @@ class MomentumScannerPipeline:
         self,
         event: MarketEvent,
     ) -> ScannerDecision | None:
-        scanner_started = perf_counter()
         result = self.adapter.consume(event)
-
+        self._raw_callbacks_received += 1
+        reduced_at = self._clock()
+        performance_diagnostics.mark_latency_trace_timestamp(
+            "canonical_reduction_completed_at", reduced_at,
+        )
+        self._record_stage_age(
+            "dequeue_to_canonical_reduction", event.dequeued_timestamp,
+            reduced_at,
+        )
         if result is None or result.observation is None:
             return None
+        if self._evaluation_mailbox is not None:
+            symbol = result.state.symbol
+            version = self._symbol_versions.get(symbol, 0) + 1
+            self._symbol_versions[symbol] = version
+            admitted_at = self._clock()
+            self._evaluation_mailbox.enqueue(symbol, version, admitted_at, event)
+            performance_diagnostics.mark_latency_trace_timestamp(
+                "evaluation_mailbox_admitted_at", admitted_at,
+            )
+            self._record_stage_age(
+                "reduction_to_evaluation_admission", reduced_at, admitted_at,
+            )
+            return None
+        return self._evaluate_result(event, result)
 
+    def _evaluate_result(
+        self,
+        event: MarketEvent,
+        result,
+        *,
+        publish: bool = True,
+    ) -> ScannerDecision | None:
+        scanner_started = perf_counter()
+        scanner_started_at = self._clock()
+        performance_diagnostics.mark_latency_trace_timestamp(
+            "scanner_evaluation_started_at", scanner_started_at,
+        )
         decision = evaluate_candidate(
             result.observation,
             self.config,
@@ -144,10 +188,18 @@ class MomentumScannerPipeline:
                 if item.symbol == decision.symbol
             ),
         )
-        self._latest[decision.symbol] = decision
         performance_diagnostics.record_scanner_duration(
             (perf_counter() - scanner_started) * 1000.0
         )
+        performance_diagnostics.mark_latency_trace_timestamp(
+            "scanner_evaluation_completed_at", observed_at,
+        )
+        if publish:
+            self._publish_decision(decision)
+        return decision
+
+    def _publish_decision(self, decision: ScannerDecision) -> None:
+        self._latest[decision.symbol] = decision
         if self._decision_sink is not None:
             capture_started = perf_counter()
             performance_diagnostics.mark_latency_trace_timestamp(
@@ -163,7 +215,58 @@ class MomentumScannerPipeline:
                     (perf_counter() - capture_started) * 1000.0
                 )
 
-        return decision
+
+    def drain_evaluations(
+        self,
+        *,
+        maximum: int | None = None,
+    ) -> tuple[ScannerDecision, ...]:
+        """Evaluate current canonical state in fair symbol order."""
+        mailbox = self._evaluation_mailbox
+        if mailbox is None:
+            return ()
+        if maximum is not None and maximum <= 0:
+            raise ValueError("maximum evaluations must be positive")
+        decisions: list[ScannerDecision] = []
+        evaluated = 0
+        while maximum is None or evaluated < maximum:
+            work = mailbox.pop()
+            if work is None:
+                break
+            current_version = self._symbol_versions.get(work.symbol, 0)
+            if work.version != current_version:
+                self._superseded_evaluations_skipped += 1
+                continue
+            # Retrieve the already-reduced immutable state and rebuild its
+            # observation without applying the event a second time.
+            state = self.adapter.state_for(work.symbol)
+            if state is None:
+                self._superseded_evaluations_skipped += 1
+                continue
+            observation, missing = self.adapter.observation_for(work.symbol), ()
+            if observation is None:
+                self._superseded_evaluations_skipped += 1
+                continue
+            result = AdapterResult(
+                state=state, observation=observation, missing_fields=missing,
+            )
+            evaluation_started_at = self._clock()
+            self._record_stage_age(
+                "evaluation_mailbox_residence", work.enqueued_at,
+                evaluation_started_at,
+            )
+            performance_diagnostics.mark_latency_trace_timestamp(
+                "evaluation_started_at", evaluation_started_at,
+            )
+            decision = self._evaluate_result(work.event, result, publish=False)
+            evaluated += 1
+            if self._symbol_versions.get(work.symbol, 0) != work.version:
+                self._result_version_rejections += 1
+                continue
+            if decision is not None:
+                self._publish_decision(decision)
+                decisions.append(decision)
+        return tuple(decisions)
 
     def consume_many(
         self,
@@ -176,6 +279,7 @@ class MomentumScannerPipeline:
             if decision is not None:
                 decisions.append(decision)
 
+        decisions.extend(self.drain_evaluations())
         return tuple(decisions)
 
     def reset_symbol(self, symbol: str) -> None:
@@ -183,6 +287,7 @@ class MomentumScannerPipeline:
         normalized = symbol.strip().upper()
         self.adapter.reset_symbol(normalized)
         self._latest.pop(normalized, None)
+        self._symbol_versions.pop(normalized, None)
         reset = getattr(self._decision_sink, "reset_symbol", None)
         if callable(reset):
             reset(normalized)
@@ -194,13 +299,42 @@ class MomentumScannerPipeline:
         self._prune_stale(self._clock())
         return self._latest.get(symbol.strip().upper())
 
-    def memory_metrics(self) -> dict[str, int]:
+    def memory_metrics(self) -> dict[str, object]:
         adapter_metrics = self.adapter.memory_metrics()
-        return {
+        metrics = {
+            "raw_callbacks_received": self._raw_callbacks_received,
             "latest_decision_count": len(self._latest),
             "processing_delay_count": self._processing_delay_count,
+            "superseded_evaluations_skipped": self._superseded_evaluations_skipped,
+            "result_version_rejections": self._result_version_rejections,
             **adapter_metrics,
         }
+        component_timings = performance_diagnostics.snapshot().component_timings
+        for name in (
+            "dequeue_to_canonical_reduction",
+            "reduction_to_evaluation_admission",
+            "evaluation_mailbox_residence",
+            "callback_to_warrior_observation",
+        ):
+            timing = component_timings.get(name)
+            if timing is not None:
+                metrics[f"{name}_p99_ms"] = timing["p99_ms"]
+        if self._evaluation_mailbox is not None:
+            metrics.update(self._evaluation_mailbox.metrics(now=self._clock()))
+        return metrics
+
+    @staticmethod
+    def _record_stage_age(
+        name: str,
+        started_at: datetime | None,
+        ended_at: datetime,
+    ) -> None:
+        if started_at is None:
+            return
+        performance_diagnostics.record_component_duration(
+            name,
+            max(0.0, (ended_at - started_at).total_seconds() * 1000.0),
+        )
 
     def population_metrics(
         self,

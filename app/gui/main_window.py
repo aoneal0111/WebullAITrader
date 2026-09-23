@@ -160,8 +160,17 @@ class MainWindow(QMainWindow):
         sidecar = self._warrior_forward_sidecar
         if sidecar is None:
             return
-        self.dashboard.market_workspace.render_warrior(
-            format_warrior_paper(sidecar.snapshot())
+        view = format_warrior_paper(sidecar.snapshot())
+        self.dashboard.market_workspace.render_warrior(view)
+        self.dashboard.workstation_footer.set_value("Warrior", view.health)
+        self.dashboard.workstation_footer.set_tooltip(
+            "Warrior",
+            f"Strategy: {view.health}\n"
+            f"Observability: {view.observability_health}\n"
+            f"New-entry authority: {'ENABLED' if view.entry_authorized else 'DISABLED'}\n"
+            f"Last observation: {view.last_observation}\n"
+            f"Last full evaluation: {view.last_full_evaluation}\n"
+            f"Last transition: {view.last_health_reason}",
         )
         sidecar.mark_gui_refresh()
 

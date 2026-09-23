@@ -17,6 +17,11 @@ class WarriorPaperView:
     research: str
     enabled: bool
     health: str
+    observability_health: str = "DISABLED"
+    entry_authorized: bool = False
+    last_observation: str = "--"
+    last_full_evaluation: str = "--"
+    last_health_reason: str = "--"
 
 
 def format_warrior_paper(snapshot: WarriorPaperSnapshot) -> WarriorPaperView:
@@ -42,6 +47,23 @@ def format_warrior_paper(snapshot: WarriorPaperSnapshot) -> WarriorPaperView:
         f"Tracked counterfactuals: {summary.tracked_counterfactuals}",
         snapshot.enabled,
         snapshot.health.value,
+        snapshot.observability_health.value,
+        snapshot.entry_authorized,
+        (
+            "--" if snapshot.last_observation_at is None
+            else snapshot.last_observation_at.isoformat()
+        ),
+        (
+            "--" if snapshot.last_full_evaluation_at is None
+            else snapshot.last_full_evaluation_at.isoformat()
+        ),
+        (
+            "--" if snapshot.last_health_transition is None
+            else (
+                f"{snapshot.last_health_transition.category}:"
+                f"{snapshot.last_health_transition.reason}"
+            )
+        ),
     )
 
 

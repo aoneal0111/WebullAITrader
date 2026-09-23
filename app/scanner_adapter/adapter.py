@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
+from threading import RLock
 
 from app.market_data.models import (
     MarketEvent,
@@ -42,6 +43,7 @@ class MarketEventScannerAdapter:
         self._price_observer = price_observer
         self._completeness_transitions: dict[str, dict[str, object]] = {}
         self._session_cache: OrderedDict[date, object] = OrderedDict()
+        self._state_lock = RLock()
 
     def consume(self, event: MarketEvent) -> AdapterResult | None:
         if event.symbol is None:
@@ -128,7 +130,8 @@ class MarketEventScannerAdapter:
         )
 
     def state_for(self, symbol: str) -> SymbolScannerState | None:
-        return self._states.get(symbol.strip().upper())
+        with self._state_lock:
+            return self._states.get(symbol.strip().upper())
 
     def memory_metrics(self) -> dict[str, int]:
         return {
@@ -327,11 +330,12 @@ class MarketEventScannerAdapter:
         return tuple(completed)
 
     def observation_for(self, symbol: str) -> ScannerObservation | None:
-        state = self._states.get(symbol.strip().upper())
-        if state is None:
-            return None
-        observation, _missing = self._build_observation(state)
-        return observation
+        with self._state_lock:
+            state = self._states.get(symbol.strip().upper())
+            if state is None:
+                return None
+            observation, _missing = self._build_observation(state)
+            return observation
 
     def diagnostic_results(self, *, limit: int = 3) -> tuple[AdapterResult, ...]:
         """Return a bounded, immutable view of real per-symbol scanner inputs."""

@@ -63,6 +63,10 @@ def create_desktop_scanner_infrastructure(
     maximum_events_per_cycle: int = 1000,
     scanner_decision_sink: Callable[[Any], object] | None = None,
     scanner_universe_admission_observer: object | None = None,
+    coalesce_observational: bool = True,
+    evaluation_mailbox_capacity: int = 256,
+    asynchronous_authoritative: bool = True,
+    authoritative_lane_capacity: int = 4096,
 ) -> DesktopScannerInfrastructure:
     """Assemble the live scanner infrastructure used by the desktop runtime."""
 
@@ -77,6 +81,8 @@ def create_desktop_scanner_infrastructure(
         scanner_config,
         decision_sink=scanner_decision_sink,
         clock=clock,
+        coalesce_observational=coalesce_observational,
+        evaluation_mailbox_capacity=evaluation_mailbox_capacity,
     )
 
     engine = RealtimeScannerEngine(
@@ -93,6 +99,8 @@ def create_desktop_scanner_infrastructure(
         engine,
         default_channels=default_channels,
         maximum_events_per_cycle=maximum_events_per_cycle,
+        asynchronous_authoritative=asynchronous_authoritative,
+        authoritative_lane_capacity=authoritative_lane_capacity,
     )
 
     return DesktopScannerInfrastructure(

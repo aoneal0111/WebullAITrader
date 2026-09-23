@@ -10,6 +10,7 @@ from app.live_scanner.models import (
     LiveScannerCycle,
     LiveScannerStatus,
 )
+from app.live_scanner.authoritative_lane import AuthoritativeEventLane
 from app.live_scanner.protocols import (
     LiveScannerEngine,
     SubscribableMarketDataTransport,
@@ -43,6 +44,8 @@ class LiveScannerCoordinator:
         retained_channels_source: Callable[[], Iterable[str]] | None = None,
         universe_refresh_interval_seconds: float = 60.0,
         maximum_subscription_channels: int = 100,
+        asynchronous_authoritative: bool = False,
+        authoritative_lane_capacity: int = 4096,
     ) -> None:
         if maximum_events_per_cycle <= 0:
             raise ValueError(
@@ -59,7 +62,17 @@ class LiveScannerCoordinator:
         )
         if event_observer is not None and not callable(event_observer):
             raise TypeError("event_observer must be callable or None")
+        self._asynchronous_authoritative = bool(asynchronous_authoritative)
+        if authoritative_lane_capacity <= 0:
+            raise ValueError("authoritative lane capacity must be positive")
+        self._authoritative_lane_capacity = int(authoritative_lane_capacity)
+        self._authoritative_lane: AuthoritativeEventLane | None = None
         self._event_observer = event_observer
+        if self._asynchronous_authoritative and event_observer is not None:
+            self._authoritative_lane = AuthoritativeEventLane(
+                self._dispatch_authoritative,
+                capacity=self._authoritative_lane_capacity,
+            )
         if retained_channels_source is not None and not callable(retained_channels_source):
             raise TypeError("retained channels source must be callable or None")
         self._retained_channels_source = retained_channels_source
@@ -69,6 +82,8 @@ class LiveScannerCoordinator:
         if maximum_subscription_channels <= 0:
             raise ValueError("maximum subscription channels must be positive")
         self._maximum_subscription_channels = int(maximum_subscription_channels)
+        self._evaluation_stop = Event()
+        self._evaluation_thread: Thread | None = None
 
         self._channels: tuple[str, ...] = ()
         self._scanner_channels: tuple[str, ...] = self._default_channels
@@ -91,6 +106,7 @@ class LiveScannerCoordinator:
 
         self._transport.connect()
         self._connected = True
+        self._start_background_workers()
 
     def disconnect(self) -> None:
         if not self._connected:
@@ -98,6 +114,7 @@ class LiveScannerCoordinator:
             return
 
         try:
+            self._stop_background_workers()
             self._transport.disconnect()
         finally:
             self._stop_universe_refresh()
@@ -213,6 +230,7 @@ class LiveScannerCoordinator:
         self._running = False
         self._reference_stop.set()
         self._stop_universe_refresh()
+        self._stop_background_workers()
         thread = self._reference_thread
         if thread is not None:
             thread.join(2.0)
@@ -275,12 +293,13 @@ class LiveScannerCoordinator:
             )
 
         decision = self._consume(event)
+        drained = self._drain_evaluations()
         self._sync_subscription()
 
         self._events_read += 1
         self._cycles_completed += 1
 
-        decisions_created = int(decision is not None)
+        decisions_created = int(decision is not None) + len(drained)
         self._decisions_created += decisions_created
 
         return LiveScannerCycle(
@@ -339,6 +358,9 @@ class LiveScannerCoordinator:
             if decision is not None:
                 decisions_created += 1
 
+        drained = self._drain_evaluations()
+        decisions_created += len(drained)
+
         self._events_read += events_read
         self._decisions_created += decisions_created
         self._cycles_completed += 1
@@ -349,6 +371,14 @@ class LiveScannerCoordinator:
             stream_exhausted=stream_exhausted,
             running=self._running,
         )
+
+    def _drain_evaluations(self) -> tuple[Any, ...]:
+        if self._asynchronous_authoritative:
+            return ()
+        drain = getattr(self._engine, "drain_evaluations", None)
+        if not callable(drain):
+            return ()
+        return tuple(drain())
 
     def snapshot(
         self,
@@ -378,6 +408,44 @@ class LiveScannerCoordinator:
             events_read=self._events_read,
             decisions_created=self._decisions_created,
         )
+
+    def memory_metrics(self) -> dict[str, object]:
+        """Expose bounded transport, reducer, and mailbox diagnostics."""
+        transport_metrics = getattr(self._transport, "memory_metrics", None)
+        transport_latency = getattr(self._transport, "latency_metrics", None)
+        transport_ingestion = getattr(self._transport, "ingestion_metrics", None)
+        engine_metrics = getattr(self._engine, "memory_metrics", None)
+        metrics = {
+            **({} if not callable(transport_metrics) else {
+                f"transport_{key}": value
+                for key, value in transport_metrics().items()
+            }),
+            **({} if not callable(engine_metrics) else {
+                f"engine_{key}": value
+                for key, value in engine_metrics().items()
+            }),
+        }
+        if callable(transport_latency):
+            metrics.update({
+                f"transport_{key}": value
+                for key, value in transport_latency().items()
+            })
+        if callable(transport_ingestion):
+            metrics.update({
+                f"transport_{key}": value
+                for key, value in transport_ingestion().items()
+            })
+        if "transport_messages_enqueued" in metrics:
+            metrics["raw_callbacks_received"] = metrics["transport_messages_enqueued"]
+        if "transport_messages_dequeued" in metrics:
+            metrics["raw_callbacks_dequeued"] = metrics["transport_messages_dequeued"]
+        if "transport_current_depth" in metrics:
+            metrics["ingestion_queue_depth"] = metrics["transport_current_depth"]
+        if "transport_high_water_depth" in metrics:
+            metrics["ingestion_high_water"] = metrics["transport_high_water_depth"]
+        if self._authoritative_lane is not None:
+            metrics.update(self._authoritative_lane.metrics())
+        return metrics
 
     def close(self) -> None:
         self.stop()
@@ -463,6 +531,15 @@ class LiveScannerCoordinator:
         if observer is not None and not callable(observer):
             raise TypeError("event observer must be callable or None")
         self._event_observer = observer
+        if (
+            self._asynchronous_authoritative
+            and observer is not None
+            and self._authoritative_lane is None
+        ):
+            self._authoritative_lane = AuthoritativeEventLane(
+                self._dispatch_authoritative,
+                capacity=self._authoritative_lane_capacity,
+            )
 
     def set_retained_channels_source(
         self, source: Callable[[], Iterable[str]] | None,
@@ -616,7 +693,9 @@ class LiveScannerCoordinator:
             performance_diagnostics.mark_latency_trace_timestamp(
                 "scanner_ended_at", datetime.now(UTC)
             )
-            if self._event_observer is not None:
+            if self._authoritative_lane is not None:
+                self._authoritative_lane.publish(event)
+            elif self._event_observer is not None:
                 observer_started_at = datetime.now(UTC)
                 performance_diagnostics.mark_latency_trace_timestamp(
                     "observer_started_at", observer_started_at
@@ -626,6 +705,21 @@ class LiveScannerCoordinator:
                     self._event_observer(event)
                 finally:
                     observer_ended_at = datetime.now(UTC)
+                    performance_diagnostics.mark_latency_trace_timestamp(
+                        "warrior_observation_completed_at", observer_ended_at,
+                    )
+                    if getattr(event, "received_timestamp", None) is not None:
+                        performance_diagnostics.record_component_duration(
+                            "callback_to_warrior_observation",
+                            max(0.0, (
+                                observer_ended_at - event.received_timestamp
+                            ).total_seconds() * 1000.0),
+                        )
+                    performance_diagnostics.record_component_duration(
+                        "canonical_state_to_warrior_observation",
+                        (observer_started_at - scanner_started_at).total_seconds()
+                        * 1000.0,
+                    )
                     performance_diagnostics.record_observer_duration(
                         (perf_counter() - observer_started) * 1000.0
                     )
@@ -635,6 +729,71 @@ class LiveScannerCoordinator:
             return decision
         finally:
             performance_diagnostics.finish_latency_trace(datetime.now(UTC))
+
+    def _dispatch_authoritative(self, event: Any) -> object:
+        started_at = datetime.now(UTC)
+        performance_diagnostics.mark_latency_trace_timestamp(
+            "warrior_observation_started_at", started_at,
+        )
+        observer = self._event_observer
+        if observer is None:
+            return None
+        result = observer(event)
+        ended_at = datetime.now(UTC)
+        received_at = getattr(event, "received_timestamp", None)
+        if received_at is not None:
+            performance_diagnostics.record_component_duration(
+                "callback_to_warrior_observation",
+                max(0.0, (ended_at - received_at).total_seconds() * 1000.0),
+            )
+        performance_diagnostics.mark_latency_trace_timestamp(
+            "warrior_observation_completed_at", ended_at,
+        )
+        return result
+
+    def _start_background_workers(self) -> None:
+        lane = self._authoritative_lane
+        if lane is not None:
+            lane.start()
+        if not self._asynchronous_authoritative:
+            return
+        drain = getattr(self._engine, "drain_evaluations", None)
+        if not callable(drain) or (
+            self._evaluation_thread is not None
+            and self._evaluation_thread.is_alive()
+        ):
+            return
+        self._evaluation_stop.clear()
+        self._evaluation_thread = Thread(
+            target=self._evaluation_loop,
+            name="atlas-observational-evaluations",
+            daemon=True,
+        )
+        self._evaluation_thread.start()
+
+    def _stop_background_workers(self) -> None:
+        self._evaluation_stop.set()
+        thread = self._evaluation_thread
+        if thread is not None:
+            thread.join(5.0)
+            if thread.is_alive():
+                raise RuntimeError("observational evaluation shutdown timed out")
+            self._evaluation_thread = None
+        lane = self._authoritative_lane
+        if lane is not None:
+            lane.stop()
+
+    def _evaluation_loop(self) -> None:
+        while not self._evaluation_stop.wait(0.001):
+            drain = getattr(self._engine, "drain_evaluations", None)
+            if not callable(drain):
+                return
+            try:
+                drain(maximum=16)
+            except Exception:
+                # Observational failure must not mutate authoritative state;
+                # the next iteration may recover after transient pressure.
+                continue
 
 
 def _normalize_channels(

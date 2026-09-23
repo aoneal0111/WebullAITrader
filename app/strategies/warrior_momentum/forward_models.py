@@ -46,6 +46,7 @@ class CaptureRecordType(StrEnum):
     SHADOW_LATCHED_OUTCOME = "SHADOW_LATCHED_OUTCOME"
     LATENCY_DIAGNOSTIC = "LATENCY_DIAGNOSTIC"
     CALLBACK_QUEUE_THRESHOLD = "CALLBACK_QUEUE_THRESHOLD"
+    HEALTH_TRANSITION = "HEALTH_TRANSITION"
     EXECUTION_GATE_DECISION = "EXECUTION_GATE_DECISION"
     DI_ENTRY_DIAGNOSTIC = "DI_ENTRY_DIAGNOSTIC"
     EXECUTION_PRICE_PATH = "EXECUTION_PRICE_PATH"
@@ -274,6 +275,10 @@ class CaptureMetrics:
     gui_refresh_count: int
     gui_refresh_frequency_hz: Decimal
     synchronous_fallback_records: int = 0
+    diagnostic_queue_depth: int = 0
+    diagnostic_dropped_records: int = 0
+    critical_failure_count: int = 0
+    critical_failure_state: bool = False
 
 
 def canonical_json(value: Any) -> str:

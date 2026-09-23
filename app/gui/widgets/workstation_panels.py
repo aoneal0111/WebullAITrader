@@ -124,7 +124,7 @@ class WorkstationFooter(QFrame):
         layout.setContentsMargins(10, 4, 10, 4)
         layout.setSpacing(18)
         self._labels: dict[str, QLabel] = {}
-        for key, value in (("Mode", "--"), ("Strategy", "--"), ("Universe", "--"), ("Scan Interval", "--"), ("Uptime", "--"), ("Version", "--")):
+        for key, value in (("Mode", "--"), ("Strategy", "--"), ("Warrior", "--"), ("Universe", "--"), ("Scan Interval", "--"), ("Uptime", "--"), ("Version", "--")):
             label = QLabel(f"{key}: {value}")
             label.setObjectName("muted")
             layout.addWidget(label)
@@ -137,6 +137,11 @@ class WorkstationFooter(QFrame):
         label = self._labels.get(key)
         if label is not None:
             label.setText(f"{key}: {value}")
+
+    def set_tooltip(self, key: str, value: str) -> None:
+        label = self._labels.get(key)
+        if label is not None:
+            label.setToolTip(value)
 
 
 __all__ = ["MarketOverviewPanel", "RuntimeControlsPanel", "WorkstationFooter"]

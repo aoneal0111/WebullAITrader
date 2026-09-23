@@ -116,6 +116,29 @@ class WarriorCaptureHealth(StrEnum):
     STOPPED = "STOPPED"
 
 
+class WarriorObservabilityHealth(StrEnum):
+    DISABLED = "DISABLED"
+    RUNNING = "RUNNING"
+    DEGRADED = "DEGRADED"
+
+
+@dataclass(frozen=True, slots=True)
+class WarriorHealthTransition:
+    timestamp: datetime
+    previous_state: str
+    new_state: str
+    category: str
+    reason: str
+    exception_class: str | None = None
+    diagnostic_dropped_records: int = 0
+    critical_failure_state: bool = False
+    critical_failure_count: int = 0
+    capture_queue_depth: int = 0
+    diagnostic_queue_depth: int = 0
+    last_observation_at: datetime | None = None
+    last_full_evaluation_at: datetime | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class WarriorPaperSummary:
     discovered: int = 0
@@ -159,6 +182,11 @@ class WarriorPaperSnapshot:
     last_error_type: str | None = None
     publication_rate_hz: Decimal = Decimal("0")
     capture_path: str | None = None
+    observability_health: WarriorObservabilityHealth = WarriorObservabilityHealth.DISABLED
+    entry_authorized: bool = False
+    last_observation_at: datetime | None = None
+    last_full_evaluation_at: datetime | None = None
+    last_health_transition: WarriorHealthTransition | None = None
 
 
 @dataclass(slots=True)
@@ -271,7 +299,12 @@ class WarriorDesktopSidecar:
         self._di_entry_diagnostic_key_set: set[tuple[str, str]] = set()
         self._last_report_metrics: ReportWorkerMetrics | None = None
         self._health = WarriorCaptureHealth.DISABLED if not enabled else WarriorCaptureHealth.STOPPED
+        self._observability_health = WarriorObservabilityHealth.DISABLED
         self._last_error_type: str | None = None
+        self._last_observation_at: datetime | None = None
+        self._last_full_evaluation_at: datetime | None = None
+        self._last_health_transition: WarriorHealthTransition | None = None
+        self._last_diagnostic_drop_count = 0
         self._bars: dict[str, list[MinuteBar]] = {}
         self._accumulators: dict[str, _BarAccumulator] = {}
         self._last_volume: dict[str, Decimal] = {}
@@ -551,12 +584,24 @@ class WarriorDesktopSidecar:
                 performance_diagnostics.set_diagnostic_sink(
                     self._persist_latency_diagnostic
                 )
-                self._health = WarriorCaptureHealth.RUNNING
+                self._set_strategy_health(
+                    WarriorCaptureHealth.RUNNING,
+                    category="LIFECYCLE", reason="STARTED",
+                )
+                self._set_observability_health(
+                    WarriorObservabilityHealth.RUNNING,
+                    reason="DIAGNOSTIC_QUEUE_AVAILABLE",
+                )
                 self._accept_execution = True
                 self._order_flow.start()
             except Exception as exc:
                 self._last_error_type = type(exc).__name__
-                self._health = WarriorCaptureHealth.DEGRADED
+                self._accept_execution = False
+                self._set_strategy_health(
+                    WarriorCaptureHealth.DEGRADED,
+                    category="CRITICAL_STARTUP_FAILURE",
+                    reason="START_FAILED", exception=exc,
+                )
                 entry_value_stop = getattr(
                     self._entry_value_observer, "close", None,
                 )
@@ -584,6 +629,7 @@ class WarriorDesktopSidecar:
             writer, store = self._writer, self._store
             if writer is None or store is None:
                 self._health = WarriorCaptureHealth.STOPPED
+                self._observability_health = WarriorObservabilityHealth.DISABLED
                 entry_value_stop = getattr(
                     self._entry_value_observer, "close", None,
                 )
@@ -624,6 +670,7 @@ class WarriorDesktopSidecar:
                 lifecycle_phase = "Warrior runtime finalization"
                 self._last_metrics = writer.metrics()
                 self._health = WarriorCaptureHealth.STOPPED
+                self._observability_health = WarriorObservabilityHealth.DISABLED
             except Exception as exc:
                 self._last_error_type = type(exc).__name__
                 self._health = WarriorCaptureHealth.DEGRADED
@@ -670,21 +717,34 @@ class WarriorDesktopSidecar:
         reconcile_service = None
         reconcile_symbol: str | None = None
         try:
-            if self._health is not WarriorCaptureHealth.RUNNING:
+            if self._health in {
+                WarriorCaptureHealth.DISABLED,
+                WarriorCaptureHealth.STARTING,
+                WarriorCaptureHealth.STOPPED,
+            }:
                 return
+            self._last_observation_at = self._aware_now()
+            self._update_health(allow_recovery=False)
             try:
                 self._apply_session_policy(event.timestamp)
-                self._consume(event)
                 if event.symbol is not None and self._service is not None:
                     normalized = event.symbol.strip().upper()
                     if self._protection_reconciliation_due(normalized):
                         reconcile_service = self._service
                         reconcile_symbol = normalized
-                self._update_health()
+                # Strategy processing remains reachable while new-entry
+                # authority is fail-closed.  The first successful callback is
+                # therefore a recovery/protection pass, not a new-risk pass.
+                self._consume(event)
+                self._update_health(allow_recovery=True)
             except Exception as exc:
-                # Capture health is deliberately isolated from stream health.
                 self._last_error_type = type(exc).__name__
-                self._health = WarriorCaptureHealth.DEGRADED
+                self._accept_execution = False
+                self._set_strategy_health(
+                    WarriorCaptureHealth.DEGRADED,
+                    category="CRITICAL_STRATEGY_FAILURE",
+                    reason="MARKET_PROCESSING_FAILED", exception=exc,
+                )
         finally:
             self._lock.release()
 
@@ -704,7 +764,12 @@ class WarriorDesktopSidecar:
             with self._lock:
                 self._protection_dirty.add(reconcile_symbol)
                 self._last_error_type = type(exc).__name__
-                self._health = WarriorCaptureHealth.DEGRADED
+                self._accept_execution = False
+                self._set_strategy_health(
+                    WarriorCaptureHealth.DEGRADED,
+                    category="PROTECTION_FAILURE",
+                    reason="PROTECTION_RECONCILIATION_FAILED", exception=exc,
+                )
         finally:
             performance_diagnostics.increment_reconciliation_counter(
                 "successes" if protection_success else "failures"
@@ -743,7 +808,7 @@ class WarriorDesktopSidecar:
         if not self.enabled:
             return
         with self._lock:
-            if self._health is WarriorCaptureHealth.RUNNING:
+            if self._service is not None:
                 self._apply_session_policy(observed_at or self._aware_now())
 
     def overnight_capability_lost(self, observed_at: datetime | None = None) -> None:
@@ -816,6 +881,11 @@ class WarriorDesktopSidecar:
             )
             health = self._health
             last_error = self._last_error_type
+            observability_health = self._observability_health
+            entry_authorized = self._accept_execution
+            last_observation_at = self._last_observation_at
+            last_full_evaluation_at = self._last_full_evaluation_at
+            last_health_transition = self._last_health_transition
             enabled = self.enabled
             configuration_fingerprint = self.configuration_fingerprint
             report = self._daily_report
@@ -876,6 +946,11 @@ class WarriorDesktopSidecar:
             metrics, last_error,
             Decimal(str(self._publications / elapsed)),
             str(self.storage_path.resolve()),
+            observability_health,
+            entry_authorized,
+            last_observation_at,
+            last_full_evaluation_at,
+            last_health_transition,
         )
 
     def set_research_observer(self, observer: object | None) -> None:
@@ -1248,6 +1323,7 @@ class WarriorDesktopSidecar:
                     point_in_time,
                     account=self._account_source(),
                 )
+                self._last_full_evaluation_at = evaluated_at
                 service_success = True
                 _safe_warrior_observe(
                     self._observability, "WARRIOR_EVALUATOR_INVOKED", symbol,
@@ -1560,6 +1636,10 @@ class WarriorDesktopSidecar:
                     "average_write_latency_ms": metrics.average_write_latency_ms,
                     "maximum_write_latency_ms": metrics.maximum_write_latency_ms,
                     "dropped_records": metrics.dropped_records,
+                    "diagnostic_queue_depth": metrics.diagnostic_queue_depth,
+                    "diagnostic_dropped_records": metrics.diagnostic_dropped_records,
+                    "critical_failure_state": metrics.critical_failure_state,
+                    "critical_failure_count": metrics.critical_failure_count,
                     "duplicate_records": metrics.duplicate_records,
                     "synchronous_fallback_records": metrics.synchronous_fallback_records,
                     "gui_refresh_frequency_hz": metrics.gui_refresh_frequency_hz,
@@ -1568,13 +1648,143 @@ class WarriorDesktopSidecar:
             identity_parts=(action, self._run_key or "unstarted"),
         )
 
-    def _update_health(self) -> None:
+    def _update_health(self, *, allow_recovery: bool) -> None:
         assert self._writer is not None
         metrics = self._writer.metrics()
-        if not self._writer.healthy or metrics.dropped_records:
-            self._health = WarriorCaptureHealth.DEGRADED
-        elif metrics.queue_depth > self.capture_config.queue_capacity * 3 // 4:
-            self._health = WarriorCaptureHealth.DEGRADED
+        # Observe this lane once per callback (before processing).  The
+        # cumulative drop counter is evidence, while health reflects whether
+        # loss/pressure is still occurring and can therefore recover.
+        if not allow_recovery:
+            new_diagnostic_loss = (
+                metrics.diagnostic_dropped_records
+                > self._last_diagnostic_drop_count
+            )
+            diagnostic_degraded = bool(
+                new_diagnostic_loss or metrics.diagnostic_queue_depth > 96
+            )
+            self._set_observability_health(
+                WarriorObservabilityHealth.DEGRADED
+                if diagnostic_degraded else WarriorObservabilityHealth.RUNNING,
+                reason=(
+                    "DIAGNOSTIC_RECORDS_DROPPED"
+                    if new_diagnostic_loss
+                    else "DIAGNOSTIC_QUEUE_PRESSURE"
+                    if diagnostic_degraded
+                    else "DIAGNOSTIC_QUEUE_HEALTHY"
+                ),
+                metrics=metrics,
+            )
+            # A transition record is itself best-effort diagnostic traffic;
+            # include any loss it encountered in the new baseline.
+            self._last_diagnostic_drop_count = self._writer.metrics().diagnostic_dropped_records
+        if not self._writer.healthy or metrics.critical_failure_state:
+            self._accept_execution = False
+            self._set_strategy_health(
+                WarriorCaptureHealth.DEGRADED,
+                category="CRITICAL_PERSISTENCE_FAILURE",
+                reason="CAPTURE_WRITER_FAILED",
+                exception=self._writer.failure,
+                metrics=metrics,
+            )
+        elif self._health is WarriorCaptureHealth.RUNNING:
+            self._accept_execution = True
+        elif allow_recovery:
+            self._set_strategy_health(
+                WarriorCaptureHealth.RUNNING,
+                category="RECOVERY", reason="HEALTH_CHECK_PASSED",
+                metrics=metrics,
+            )
+            self._accept_execution = True
+
+    def _set_strategy_health(
+        self, health: WarriorCaptureHealth, *, category: str, reason: str,
+        exception: BaseException | None = None,
+        metrics: CaptureMetrics | None = None,
+    ) -> None:
+        previous = self._health
+        self._health = health
+        if previous is health:
+            return
+        self._record_health_transition(
+            previous.value, health.value, category, reason,
+            exception=exception, metrics=metrics,
+        )
+
+    def _set_observability_health(
+        self, health: WarriorObservabilityHealth, *, reason: str,
+        metrics: CaptureMetrics | None = None,
+    ) -> None:
+        previous = self._observability_health
+        self._observability_health = health
+        if previous is health:
+            return
+        self._record_health_transition(
+            previous.value, health.value, "NONCRITICAL_OBSERVABILITY", reason,
+            metrics=metrics,
+        )
+
+    def _record_health_transition(
+        self, previous: str, new: str, category: str, reason: str, *,
+        exception: BaseException | None = None,
+        metrics: CaptureMetrics | None = None,
+    ) -> None:
+        """Publish sanitized, best-effort health evidence without authority."""
+        try:
+            metrics = metrics or (
+                None if self._writer is None else self._writer.metrics()
+            )
+            transition = WarriorHealthTransition(
+                # Observability must not advance or fail a strategy clock.
+                timestamp=(
+                    self._last_observation_at
+                    or self._started_at
+                    or datetime.now(UTC)
+                ),
+                previous_state=previous,
+                new_state=new,
+                category=category,
+                reason=reason,
+                exception_class=(
+                    None if exception is None else type(exception).__name__
+                ),
+                diagnostic_dropped_records=(
+                    0 if metrics is None else metrics.diagnostic_dropped_records
+                ),
+                critical_failure_state=(
+                    False if metrics is None else metrics.critical_failure_state
+                ),
+                critical_failure_count=(
+                    0 if metrics is None else metrics.critical_failure_count
+                ),
+                capture_queue_depth=(
+                    0 if metrics is None else metrics.queue_depth
+                ),
+                diagnostic_queue_depth=(
+                    0 if metrics is None else metrics.diagnostic_queue_depth
+                ),
+                last_observation_at=self._last_observation_at,
+                last_full_evaluation_at=self._last_full_evaluation_at,
+            )
+            self._last_health_transition = transition
+            _safe_warrior_observe(
+                self._observability, "HEALTH_TRANSITION", "WARRIOR",
+                **asdict(transition),
+            )
+            writer = self._writer
+            if writer is not None and writer.healthy:
+                writer.submit_diagnostic(CaptureRecord.create(
+                    CaptureRecordType.HEALTH_TRANSITION,
+                    STRATEGY_VERSION,
+                    transition.timestamp,
+                    asdict(transition),
+                    identity_parts=(
+                        transition.timestamp.isoformat(), previous, new,
+                        category, reason,
+                    ),
+                ))
+        except Exception:
+            # Health observability is non-authoritative by definition.
+            return
 
     def _flush_capture_writer(self, writer: ForwardCaptureWriter) -> None:
         started = perf_counter()
@@ -2022,6 +2232,7 @@ def _scanner_classification(decision: object, ranked: bool) -> str | None:
 
 __all__ = [
     "CompositeMarketEventObserver", "STRATEGY_VERSION", "WarriorCaptureHealth",
-    "WarriorDesktopSidecar", "WarriorFocusItem", "WarriorPaperSnapshot",
-    "WarriorPaperSummary", "strategy_configuration_fingerprint",
+    "WarriorDesktopSidecar", "WarriorFocusItem", "WarriorHealthTransition",
+    "WarriorObservabilityHealth", "WarriorPaperSnapshot", "WarriorPaperSummary",
+    "strategy_configuration_fingerprint",
 ]

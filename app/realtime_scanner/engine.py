@@ -424,23 +424,36 @@ class RealtimeScannerEngine:
 
         decision = self._pipeline.consume(event)
         self._processed_events += 1
-
-        if decision is not None:
-            normalized_symbol = decision.symbol.strip().upper()
-
-            if normalized_symbol in self._active_symbols:
-                self._decisions[normalized_symbol] = decision
-                # Retain quality misses for adaptive Warrior observation;
-                # formally qualified symbols continue to follow the normal
-                # provider universe lifecycle.
-                if not bool(getattr(decision, "qualified", True)):
-                    with self._state_lock:
-                        self._recent_interest[normalized_symbol] = self._clock()
-                        self._recent_interest.move_to_end(normalized_symbol)
-                        while len(self._recent_interest) > self._recent_interest_limit:
-                            self._recent_interest.popitem(last=False)
-
+        self._record_decision(decision)
         return decision
+
+    def drain_evaluations(
+        self, *, maximum: int | None = None,
+    ) -> tuple[ScannerDecision, ...]:
+        """Drain the bounded observational mailbox into current decisions."""
+        drain = getattr(self._pipeline, "drain_evaluations", None)
+        if not callable(drain):
+            return ()
+        decisions = tuple(drain(maximum=maximum))
+        for decision in decisions:
+            self._record_decision(decision)
+        return decisions
+
+    def _record_decision(self, decision: ScannerDecision | None) -> None:
+        if decision is None:
+            return
+        normalized_symbol = decision.symbol.strip().upper()
+        if normalized_symbol not in self._active_symbols:
+            return
+        self._decisions[normalized_symbol] = decision
+        # Retain quality misses for adaptive Warrior observation; formally
+        # qualified symbols continue to follow the normal provider lifecycle.
+        if not bool(getattr(decision, "qualified", True)):
+            with self._state_lock:
+                self._recent_interest[normalized_symbol] = self._clock()
+                self._recent_interest.move_to_end(normalized_symbol)
+                while len(self._recent_interest) > self._recent_interest_limit:
+                    self._recent_interest.popitem(last=False)
 
     def consume_many(
         self,
@@ -588,7 +601,7 @@ class RealtimeScannerEngine:
     def ignored_events(self) -> int:
         return self._ignored_events
 
-    def memory_metrics(self) -> dict[str, int]:
+    def memory_metrics(self) -> dict[str, object]:
         pipeline_metrics = getattr(self._pipeline, "memory_metrics", None)
         nested = {} if not callable(pipeline_metrics) else pipeline_metrics()
         return {
