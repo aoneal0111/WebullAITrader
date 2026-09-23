@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
-from app.gui.presenters.application_state_presenter import RuntimeStatusPresenter
+from app.gui.presenters.application_state_presenter import (
+    PresentationCoordinator,
+    RuntimeStatusPresenter,
+)
 
 
 class _LabelStub:
@@ -55,3 +58,28 @@ def test_runtime_status_presenter_falls_back_to_runtime_feed_status() -> None:
     assert label.text == (
         "PAPER  |  Runtime RUNNING  |  Feed REST_ONLY  |  Cycles 3"
     )
+
+
+def test_presentation_coordinator_skips_hidden_expensive_routes() -> None:
+    calls: list[str] = []
+
+    class Presenter:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def render(self, _state) -> None:
+            calls.append(self.name)
+
+    dashboard = Presenter("dashboard")
+    timeline = Presenter("timeline")
+    health = Presenter("health")
+    coordinator = PresentationCoordinator(
+        (dashboard, timeline, health),
+        active_routes=({0}, {5}, None),
+    )
+
+    coordinator.render(object(), active_route=0)
+    assert calls == ["dashboard", "health"]
+    calls.clear()
+    coordinator.render(object(), active_route=5)
+    assert calls == ["timeline", "health"]

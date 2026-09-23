@@ -277,7 +277,18 @@ class DesktopBrokerRuntimeDriver:
             )
             for lifecycle_phase, cleanup in cleanup_phases:
                 try:
-                    cleanup()
+                    started = perf_counter()
+                    success = False
+                    try:
+                        cleanup()
+                        success = True
+                    finally:
+                        performance_diagnostics.record_component_duration(
+                            "shutdown.stage." + lifecycle_phase.replace(" ", "_"),
+                            (perf_counter() - started) * 1000.0,
+                            event_type="SHUTDOWN",
+                            success=success,
+                        )
                 except Exception as exc:
                     is_primary = primary_error is None
                     log_runtime_exception(
@@ -413,14 +424,20 @@ class DesktopBrokerRuntimeDriver:
                     if not result.scanner_ready:
                         self._scanner.disconnect()
                         return
+                # Create the guarded consumer before reference warmup and
+                # subscription bookkeeping finish.  It waits while the
+                # coordinator is not runnable, then drains callbacks as soon
+                # as scanner.start() establishes the valid receive state.
+                if callable(getattr(self._scanner, "run_available", None)):
+                    self._start_market_data_consumer(stop_event)
                 observation_ready = self._start_scanner()
                 if observation_ready and getattr(
                     self._scanner, "qualification_ready", False
                 ):
                     performance_diagnostics.record_startup_stage("scanner_active")
                 self._start_dynamic_momentum_discovery()
-                if observation_ready:
-                    self._start_market_data_consumer(stop_event)
+                if not observation_ready:
+                    self._market_data_stop.set()
                 return
             self._market_data.connect()
             self._market_data_connected = True

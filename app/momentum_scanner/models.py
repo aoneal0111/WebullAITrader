@@ -126,4 +126,9 @@ class ScannerDecision:
     # episode; it is never consulted by scanner or execution policy.
     source_event_identity: str | None = None
     source_event_type: str | None = None
+    # Observation admission is intentionally separate from scanner
+    # qualification.  A symbol may remain useful to observe while a
+    # temporary quality/execution rule (for example spread or RVOL) fails.
+    observation_eligible: bool | None = None
+    observation_failed_rules: tuple[str, ...] = ()
 

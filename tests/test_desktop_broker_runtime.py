@@ -304,13 +304,16 @@ def test_dynamic_shadow_starts_after_production_universe_and_stops_first() -> No
         ),
         event_sink=lambda event: None,
         account_snapshot_sink=lambda snapshot: None,
-        scanner_coordinator=object(),
+        scanner_coordinator=SimpleNamespace(run_available=lambda: None),
         dynamic_momentum_discovery_runtime=ResearchRuntime(),
         clock=lambda: NOW,
     )
     driver._start_scanner = lambda: calls.append("production-start") or False
+    driver._start_market_data_consumer = lambda _stop_event: calls.append(
+        "consumer-create"
+    )
     driver._start_market_data(Event())
-    assert calls == ["production-start", "shadow-start"]
+    assert calls == ["consumer-create", "production-start", "shadow-start"]
 
     driver._stop_market_data = lambda: calls.append("production-stop")
     driver._stop_observer = lambda: calls.append("observer-stop")

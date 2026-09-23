@@ -158,6 +158,20 @@ class WarriorMomentumRuntime:
             policy_version=self.config.policy_version,
             bid=observation.bid, ask=observation.ask,
             setup_evidence=evidence,
+            observation_eligible=(
+                observation.price >= self.config.discovery.minimum_price
+                and observation.price <= self.config.discovery.maximum_price
+                and observation.tradable
+                and not observation.halted
+            ),
+            observation_blockers=tuple(
+                code for code, failed in (
+                    (ReasonCode.PRICE_TOO_LOW, observation.price < self.config.discovery.minimum_price),
+                    (ReasonCode.PRICE_TOO_HIGH, observation.price > self.config.discovery.maximum_price),
+                    (ReasonCode.NOT_TRADABLE, not observation.tradable),
+                    (ReasonCode.HALTED, observation.halted),
+                ) if failed
+            ),
         )
         candidate = replace(candidate, explanations=_explanations(candidate))
         if self._adaptive_context is not None:

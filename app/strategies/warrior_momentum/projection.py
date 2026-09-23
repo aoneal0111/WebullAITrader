@@ -67,6 +67,8 @@ def watchlist_metadata(candidate: MomentumCandidate) -> tuple[tuple[str, str], .
         ("warrior_status", candidate.status.value),
         ("warrior_policy_version", candidate.policy_version),
         ("warrior_discovery_status", "PASSED" if candidate.discovery_qualified else "BLOCKED"),
+        ("warrior_observation_status", "ELIGIBLE" if candidate.observation_eligible else "REMOVED"),
+        ("warrior_observation_blockers", " | ".join(code.value for code in candidate.observation_blockers)),
         ("warrior_entry_status", "READY" if candidate.status.value == "ENTRY_READY" else "BLOCKED"),
         ("warrior_explanations", " | ".join(candidate.explanations)),
     )

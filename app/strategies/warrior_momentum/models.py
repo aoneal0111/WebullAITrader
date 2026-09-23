@@ -198,6 +198,9 @@ class MomentumCandidate:
     bid: Decimal | None = None
     ask: Decimal | None = None
     setup_evidence: WarriorSetupEvidence | None = None
+    # Observation admission is deliberately independent of execution gates.
+    observation_eligible: bool = True
+    observation_blockers: tuple[ReasonCode, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

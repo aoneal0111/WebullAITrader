@@ -246,7 +246,7 @@ class MainWindow(QMainWindow):
         self.asset_surface.addWidget(self.pages)
         content_layout.addWidget(self.asset_surface, 1)
         self.asset_navigation.asset_selected.connect(self._select_asset)
-        self.pages.currentChanged.connect(lambda _: self._select_asset(self._selected_asset))
+        self.pages.currentChanged.connect(self._on_page_changed)
         self.dashboard.market_workspace.crypto_scanner_section.hide()
         self.dashboard.market_workspace.crypto_research._timer.stop()
         outer.addWidget(content, 1)
@@ -353,7 +353,23 @@ class MainWindow(QMainWindow):
                 ),
                 RuntimeStatusPresenter(self.status_label),
                 RuntimeErrorPresenter(self),
-            )
+            ),
+            # Expensive projections are rendered only for their visible route.
+            # Health/control/status presenters remain live on every route.
+            active_routes=(
+                {0},       # Dashboard
+                {2},       # Orders
+                {1},       # Positions
+                {0, 5},    # Timeline + dashboard activity panel
+                {0, 6},    # Decisions + dashboard decisions panel
+                {0, 9},    # Portfolio + operator workspace
+                None,      # Health/global status
+                {0, 7},    # Watchlist + scanner
+                {0, 8},    # Replay + dashboard replay panel
+                None,      # Runtime controls
+                None,      # Runtime status
+                None,      # Runtime errors
+            ),
         )
         for activity in (self.activity, self.dashboard.operations_activity_panel):
             activity.filters_changed.connect(
@@ -523,7 +539,15 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Runtime stopped. Stop did not close positions.", 5000)
         if self._asset_modules is None:
             self.crypto_research.set_runtime_phase(state.runtime.phase)
-        self._presentation.render(state)
+        self._presentation.render(state, active_route=self.pages.currentIndex())
+
+    def _on_page_changed(self, index: int) -> None:
+        self._select_asset(self._selected_asset)
+        presentation = getattr(self, "_presentation", None)
+        if presentation is not None:
+            presentation.render(
+                self._state_store.snapshot(), active_route=index,
+            )
 
     def _select_asset(self, asset) -> None:
         self._selected_asset = asset

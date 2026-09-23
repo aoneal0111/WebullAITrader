@@ -331,6 +331,61 @@ def test_retained_symbols_nonblocking_does_not_wait_for_gui_lock(
         holder.join(1.0)
 
 
+def test_gui_snapshot_does_not_wait_for_slow_observational_evaluation(
+    tmp_path: Path,
+) -> None:
+    sidecar = WarriorDesktopSidecar(
+        enabled=True, storage_path=tmp_path / "snapshot-latency.sqlite3",
+    )
+    sidecar._health = WarriorCaptureHealth.RUNNING
+    sidecar._update_health = lambda **_kwargs: None
+    entered = Event()
+    release = Event()
+
+    def slow_consume(_event) -> None:
+        entered.set()
+        release.wait(2.0)
+
+    sidecar._consume = slow_consume
+    worker = Thread(target=sidecar, args=(_quote(1, NOW),))
+    worker.start()
+    assert entered.wait(1.0)
+    started = perf_counter()
+    snapshot = sidecar.snapshot()
+    elapsed = perf_counter() - started
+    release.set()
+    worker.join(1.0)
+    assert snapshot.health is WarriorCaptureHealth.RUNNING
+    assert elapsed < 0.25
+
+
+def test_gui_snapshot_does_not_wait_for_shutdown_writer_drain(
+    tmp_path: Path,
+) -> None:
+    sidecar = WarriorDesktopSidecar(
+        enabled=True, storage_path=tmp_path / "shutdown-latency.sqlite3",
+    )
+    sidecar.start("TEST")
+    entered = Event()
+    release = Event()
+
+    def slow_flush(_writer) -> None:
+        entered.set()
+        release.wait(2.0)
+
+    sidecar._flush_capture_writer = slow_flush
+    stopper = Thread(target=sidecar.stop)
+    stopper.start()
+    assert entered.wait(1.0)
+    started = perf_counter()
+    snapshot = sidecar.snapshot()
+    elapsed = perf_counter() - started
+    release.set()
+    stopper.join(2.0)
+    assert snapshot.health is WarriorCaptureHealth.RUNNING
+    assert elapsed < 0.25
+
+
 def test_sparse_latency_and_queue_diagnostics_use_existing_capture_writer(
     tmp_path: Path,
 ) -> None:

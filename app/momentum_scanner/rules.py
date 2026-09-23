@@ -161,6 +161,14 @@ def evaluate_candidate(
     technical_passed = tuple(rule for rule in passed if rule != "news_catalyst")
     technical_failed = tuple(rule for rule in failed if rule != "news_catalyst")
     technical_qualifies = not technical_failed
+    observation_failed = tuple(
+        rule for rule, passed_rule in (
+            ("price_range", config.minimum_price <= observation.price <= config.maximum_price),
+            ("tradable", observation.tradable),
+            ("not_halted", not observation.halted),
+        )
+        if not passed_rule
+    )
     cohorts: list[str] = []
     strict_catalyst_qualifies = (
         technical_qualifies
@@ -241,6 +249,8 @@ def evaluate_candidate(
         trade_timestamp=observation.trade_timestamp,
         last_price_received_timestamp=observation.last_price_received_timestamp,
         quote_received_timestamp=observation.quote_received_timestamp,
+        observation_eligible=not observation_failed,
+        observation_failed_rules=observation_failed,
     )
 
 

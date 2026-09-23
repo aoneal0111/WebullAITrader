@@ -519,9 +519,18 @@ class WarriorForwardCaptureService:
                             if not self._execution_permitted():
                                 signal = None
                     else:
+                        rejection_reason = "STALE_OR_MISMATCHED"
+                        if refreshed.symbol != symbol:
+                            rejection_reason = "SYMBOL_MISMATCH"
+                        elif not (Decimal("0") <= quote_age <= self.capture_config.quote_stale_after_seconds):
+                            rejection_reason = "BID_TIMESTAMP_STALE"
+                        elif not (Decimal("0") <= last_age <= self.capture_config.quote_stale_after_seconds):
+                            rejection_reason = "LAST_TIMESTAMP_STALE"
+                        elif evaluated_at.replace(second=0, microsecond=0) != technical_minute:
+                            rejection_reason = "TECHNICAL_MINUTE_MISMATCH"
                         performance_diagnostics.record_entry_funnel(
                             symbol, stage="EXECUTION_QUOTE_REJECTED",
-                            outcome="STALE_OR_MISMATCHED",
+                            outcome=rejection_reason,
                             timestamp=evaluated_at,
                         )
         taxonomy_bridge = self._taxonomy_execution_bridge
@@ -3729,6 +3738,8 @@ def _decision_record(value, candidate, completed, features) -> CaptureRecord:
     payload = {
         "policy_version": candidate.policy_version,
         "discovery_status": "PASSED" if candidate.discovery_qualified else "BLOCKED",
+        "observation_status": "ELIGIBLE" if candidate.observation_eligible else "REMOVED",
+        "observation_blockers": tuple(code.value for code in candidate.observation_blockers),
         "entry_status": "READY" if candidate.status is CandidateStatus.ENTRY_READY else "BLOCKED",
         "decision_timestamp": candidate.timestamp,
         "evaluation_timestamp": value.evaluation_timestamp,

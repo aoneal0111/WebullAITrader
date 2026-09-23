@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import replace
 from time import perf_counter
 from typing import Protocol
@@ -37,11 +37,28 @@ class ApplicationStatePresenter(Protocol):
 class PresentationCoordinator:
     """Fan one application-state update out to focused presenters."""
 
-    def __init__(self, presenters: Sequence[ApplicationStatePresenter]) -> None:
+    def __init__(
+        self,
+        presenters: Sequence[ApplicationStatePresenter],
+        *,
+        active_routes: Sequence[Collection[int] | None] | None = None,
+    ) -> None:
         self._presenters = tuple(presenters)
+        if active_routes is not None and len(active_routes) != len(self._presenters):
+            raise ValueError("active_routes must match presenters")
+        self._active_routes = (
+            None if active_routes is None
+            else tuple(
+                None if routes is None else frozenset(routes)
+                for routes in active_routes
+            )
+        )
 
-    def render(self, state: ApplicationState) -> None:
-        for presenter in self._presenters:
+    def render(self, state: ApplicationState, *, active_route: int | None = None) -> None:
+        for index, presenter in enumerate(self._presenters):
+            routes = None if self._active_routes is None else self._active_routes[index]
+            if active_route is not None and routes is not None and active_route not in routes:
+                continue
             started = perf_counter()
             success = False
             name = type(presenter).__name__

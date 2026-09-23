@@ -347,12 +347,12 @@ class PaperOrderGateway:
                 decision=RuntimeDecision(
                     decision_id=order.request_id,
                     timestamp=paper_order.updated_at,
-                    strategy_id="operator-order-entry",
+                    strategy_id=_decision_strategy_id(order),
                     symbol=order.symbol,
                     action=order.side.value,
                     confidence=100,
                     reasoning_summary=(
-                        "Operator submitted a validated paper order."
+                        _decision_reasoning(order)
                     ),
                     risk_assessment=(
                         "Authenticated paper session and placement "
@@ -1247,6 +1247,26 @@ def _structural_stop_from_placement(order: object) -> Decimal | None:
     except Exception:
         return None
     return stop if stop.is_finite() and stop > 0 else None
+
+
+def _decision_strategy_id(order: object) -> str:
+    """Preserve autonomous strategy identity in the PAPER read model.
+
+    Operator-created orders retain the historical operator label.  Warrior
+    orders carry an explicit lifecycle prefix, so the gateway can attribute
+    the authoritative order event without changing execution semantics.
+    """
+    lifecycle = str(getattr(order, "strategy_lifecycle_id", "") or "").strip()
+    if lifecycle.startswith("WARRIOR_MOMENTUM_V1|"):
+        return "WARRIOR_MOMENTUM_V1"
+    return "operator-order-entry"
+
+
+def _decision_reasoning(order: object) -> str:
+    lifecycle = str(getattr(order, "strategy_lifecycle_id", "") or "").strip()
+    if lifecycle.startswith("WARRIOR_MOMENTUM_V1|"):
+        return "Warrior Momentum autonomous PAPER authorization."
+    return "Operator submitted a validated paper order."
 
 
 def _execution_reason_from_placement(order: object) -> str | None:

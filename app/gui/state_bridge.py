@@ -85,6 +85,15 @@ class QtStateBridge(QObject):
 
         started = perf_counter()
         interval = started - self._last_flush_at
+        # This interval is the operator-visible Qt event-loop heartbeat.  It
+        # is intentionally diagnostic-only and records scheduling delay, not
+        # widget work, so tab-switch starvation is distinguishable from a
+        # slow presenter.
+        self._diagnostics.record_component_duration(
+            "gui.event_loop_heartbeat",
+            interval * 1000.0,
+            event_type="GUI_REFRESH",
+        )
         self.state_changed.emit(state)
         duration_ms = (perf_counter() - started) * 1000.0
         self._last_flush_at = started

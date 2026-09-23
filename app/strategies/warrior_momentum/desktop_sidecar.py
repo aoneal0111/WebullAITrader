@@ -11,7 +11,7 @@ from hashlib import sha256
 import logging
 from pathlib import Path
 import re
-from threading import RLock
+from threading import Lock, RLock
 from time import monotonic, perf_counter
 from typing import Callable, Iterable
 
@@ -288,6 +288,11 @@ class WarriorDesktopSidecar:
         self._accept_execution = False
         self._clock = clock
         self._lock = RLock()
+        # Serializes full observational evaluations without making the GUI
+        # snapshot/read-model lock a gate for market processing.  The
+        # evaluation worker is the sole writer of the mutable candidate
+        # projection; GUI readers take only short copy-out sections.
+        self._processing_lock = Lock()
         self._adapter: MarketEventScannerAdapter | None = None
         self._scanner_decision_source: Callable[[str], object | None] | None = None
         self._scanner_ranked_source: Callable[[str], bool] | None = None
@@ -624,6 +629,18 @@ class WarriorDesktopSidecar:
                         pass
 
     def stop(self) -> None:
+        # Serialize teardown with the observational worker.  This keeps the
+        # service/writer alive until an in-flight evaluation has completed,
+        # while the GUI snapshot remains independent of this lock.
+        acquired = self._processing_lock.acquire(timeout=5.0)
+        if not acquired:
+            raise TimeoutError("Warrior observational worker shutdown timed out")
+        try:
+            self._stop_impl()
+        finally:
+            self._processing_lock.release()
+
+    def _stop_impl(self) -> None:
         if not self.enabled:
             return
         # Publish shutdown intent before waiting for an in-flight confirmation.
@@ -631,165 +648,109 @@ class WarriorDesktopSidecar:
         self._order_flow.stop()
         with self._lock:
             writer, store = self._writer, self._store
-            if writer is None or store is None:
+            report_worker = self._report_worker
+            service = self._service
+
+        if writer is None or store is None:
+            with self._lock:
                 self._health = WarriorCaptureHealth.STOPPED
                 self._observability_health = WarriorObservabilityHealth.DISABLED
-                entry_value_stop = getattr(
-                    self._entry_value_observer, "close", None,
+            self._close_auxiliary_observers()
+            return
+
+        lifecycle_phase = "shadow outcome finalization"
+        try:
+            now = self._aware_now()
+            if service is not None:
+                service.shutdown_intraminute_shadow(now)
+                service.finalize_shadow_outcomes(now)
+            lifecycle_phase = "shadow/capture writer drain"
+            self._flush_capture_writer(writer)
+            lifecycle_phase = "shadow daily report finalization"
+            if report_worker is not None:
+                self._request_report_refresh(
+                    now.astimezone(EASTERN).date(), persist=True
                 )
-                if callable(entry_value_stop):
-                    try:
-                        entry_value_stop()
-                    except Exception:
-                        pass
-                intelligence_stop = getattr(
-                    self._decision_intelligence_observer, "close", None,
-                )
-                if callable(intelligence_stop):
-                    try:
-                        intelligence_stop()
-                    except Exception:
-                        pass
-                return
-            lifecycle_phase = "shadow outcome finalization"
-            try:
-                now = self._aware_now()
-                if self._service is not None:
-                    self._service.shutdown_intraminute_shadow(now)
-                    self._service.finalize_shadow_outcomes(now)
-                lifecycle_phase = "shadow/capture writer drain"
-                self._flush_capture_writer(writer)
-                lifecycle_phase = "shadow daily report finalization"
-                report_worker = self._report_worker
-                if report_worker is not None:
-                    self._request_report_refresh(
-                        now.astimezone(EASTERN).date(), persist=True
-                    )
-                    report_worker.close(timeout_seconds=5.0)
-                    self._last_report_metrics = report_worker.metrics()
-                lifecycle_phase = "shadow session finalization"
-                writer.submit(self._session_record("END", now))
-                lifecycle_phase = "shadow/capture writer close"
-                writer.close()
-                lifecycle_phase = "Warrior runtime finalization"
-                self._last_metrics = writer.metrics()
+                report_worker.close(timeout_seconds=5.0)
+                report_metrics = report_worker.metrics()
+            else:
+                report_metrics = None
+            lifecycle_phase = "shadow session finalization"
+            writer.submit(self._session_record("END", now))
+            lifecycle_phase = "shadow/capture writer close"
+            writer.close()
+            lifecycle_phase = "Warrior runtime finalization"
+            metrics = writer.metrics()
+            with self._lock:
+                self._last_report_metrics = report_metrics
+                self._last_metrics = metrics
                 self._health = WarriorCaptureHealth.STOPPED
                 self._observability_health = WarriorObservabilityHealth.DISABLED
-            except Exception as exc:
+        except Exception as exc:
+            with self._lock:
                 self._last_error_type = type(exc).__name__
                 self._health = WarriorCaptureHealth.DEGRADED
-                log_runtime_exception(
-                    _RUNTIME_LOGGER,
-                    exc,
-                    event_type="runtime_cleanup_exception",
-                    lifecycle_phase=lifecycle_phase,
-                    shutdown_requested=True,
-                )
-                raise
-            finally:
-                entry_value_stop = getattr(
-                    self._entry_value_observer, "close", None,
-                )
-                if callable(entry_value_stop):
-                    try:
-                        entry_value_stop()
-                    except Exception:
-                        pass
-                intelligence_stop = getattr(
-                    self._decision_intelligence_observer, "close", None,
-                )
-                if callable(intelligence_stop):
-                    try:
-                        intelligence_stop()
-                    except Exception:
-                        pass
+            log_runtime_exception(
+                _RUNTIME_LOGGER,
+                exc,
+                event_type="runtime_cleanup_exception",
+                lifecycle_phase=lifecycle_phase,
+                shutdown_requested=True,
+            )
+            raise
+        finally:
+            self._close_auxiliary_observers()
+            with self._lock:
                 performance_diagnostics.set_diagnostic_sink(None)
                 self._report_worker = None
                 self._writer = None
                 self._service = None
 
+    def _close_auxiliary_observers(self) -> None:
+        entry_value_stop = getattr(self._entry_value_observer, "close", None)
+        if callable(entry_value_stop):
+            try:
+                entry_value_stop()
+            except Exception:
+                pass
+        intelligence_stop = getattr(
+            self._decision_intelligence_observer, "close", None,
+        )
+        if callable(intelligence_stop):
+            try:
+                intelligence_stop()
+            except Exception:
+                pass
+
     def __call__(self, event: MarketEvent) -> None:
         if not self.enabled:
             return
-        lock_started = perf_counter()
-        self._lock.acquire()
-        performance_diagnostics.record_component_duration(
-            "warrior.event_lock_wait",
-            (perf_counter() - lock_started) * 1000.0,
-            event_type="GUI_REFRESH",
-        )
-        reconcile_service = None
-        reconcile_symbol: str | None = None
-        try:
-            if self._health in {
-                WarriorCaptureHealth.DISABLED,
-                WarriorCaptureHealth.STARTING,
-                WarriorCaptureHealth.STOPPED,
-            }:
-                return
-            self._last_observation_at = self._aware_now()
-            self._update_health(allow_recovery=False)
+        # Do not hold the GUI/read-model lock while a full Warrior evaluation
+        # runs.  Report requests and Qt snapshots are observational and must
+        # never stall the evaluation worker or strict PAPER processing.
+        with self._processing_lock:
+            with self._lock:
+                if self._health in {
+                    WarriorCaptureHealth.DISABLED,
+                    WarriorCaptureHealth.STARTING,
+                    WarriorCaptureHealth.STOPPED,
+                }:
+                    return
+                self._last_observation_at = self._aware_now()
+                self._update_health(allow_recovery=False)
             try:
-                self._apply_session_policy(event.timestamp)
-                if event.symbol is not None and self._service is not None:
-                    normalized = event.symbol.strip().upper()
-                    if self._protection_reconciliation_due(normalized):
-                        reconcile_service = self._service
-                        reconcile_symbol = normalized
-                # Strategy processing remains reachable while new-entry
-                # authority is fail-closed.  The first successful callback is
-                # therefore a recovery/protection pass, not a new-risk pass.
                 self._consume(event)
-                self._update_health(allow_recovery=True)
+                with self._lock:
+                    self._update_health(allow_recovery=True)
             except Exception as exc:
-                self._last_error_type = type(exc).__name__
-                self._accept_execution = False
-                self._set_strategy_health(
-                    WarriorCaptureHealth.DEGRADED,
-                    category="CRITICAL_STRATEGY_FAILURE",
-                    reason="MARKET_PROCESSING_FAILED", exception=exc,
-                )
-        finally:
-            self._lock.release()
-
-        if reconcile_service is None or reconcile_symbol is None:
-            return
-        protection_started = perf_counter()
-        protection_success = False
-        performance_diagnostics.increment_reconciliation_counter("executions")
-        try:
-            protection_success = bool(
-                reconcile_service.reconcile_authoritative_protection(
-                    reconcile_symbol, event.timestamp,
-                )
-            )
-
-        except Exception as exc:
-            with self._lock:
-                self._protection_dirty.add(reconcile_symbol)
-                self._last_error_type = type(exc).__name__
-                self._accept_execution = False
-                self._set_strategy_health(
-                    WarriorCaptureHealth.DEGRADED,
-                    category="PROTECTION_FAILURE",
-                    reason="PROTECTION_RECONCILIATION_FAILED", exception=exc,
-                )
-        finally:
-            performance_diagnostics.increment_reconciliation_counter(
-                "successes" if protection_success else "failures"
-            )
-            with self._lock:
-                if protection_success:
-                    self._protection_dirty.discard(reconcile_symbol)
-                else:
-                    self._protection_dirty.add(reconcile_symbol)
-            performance_diagnostics.record_component_duration(
-                "warrior.protection_reconciliation",
-                (perf_counter() - protection_started) * 1000.0,
-                event_type=getattr(getattr(event, "event_type", None), "value", None),
-                symbol=reconcile_symbol,
-                success=protection_success,
-            )
+                with self._lock:
+                    self._last_error_type = type(exc).__name__
+                    self._accept_execution = False
+                    self._set_strategy_health(
+                        WarriorCaptureHealth.DEGRADED,
+                        category="CRITICAL_STRATEGY_FAILURE",
+                        reason="MARKET_PROCESSING_FAILED", exception=exc,
+                    )
 
     def authoritative_observe(self, event: MarketEvent) -> None:
         """Keep risk-reducing protection reconciliation on the strict lane."""
@@ -2183,8 +2144,16 @@ class CompositeMarketEventObserver:
         if self._warrior_handoff is not None:
             authoritative = getattr(self.warrior, "authoritative_observe", None)
             if callable(authoritative):
-                authoritative(event)
-            self._warrior_handoff.submit(_projection_key(event), event)
+                self._timed(
+                    "authoritative.warrior_protection", authoritative, event,
+                )
+            self._timed(
+                "authoritative.warrior_handoff",
+                lambda current: self._warrior_handoff.submit(
+                    _projection_key(current), current,
+                ),
+                event,
+            )
         else:
             self._timed("warrior.desktop_sidecar", self.warrior, event)
         if self._research_handoff is not None:

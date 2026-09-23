@@ -446,9 +446,18 @@ class RealtimeScannerEngine:
         if normalized_symbol not in self._active_symbols:
             return
         self._decisions[normalized_symbol] = decision
-        # Retain quality misses for adaptive Warrior observation; formally
-        # qualified symbols continue to follow the normal provider lifecycle.
-        if not bool(getattr(decision, "qualified", True)):
+        # Retention is an observation concern, not an execution/qualification
+        # concern.  Keep an observation-eligible symbol through a transient
+        # spread/RVOL/liquidity miss, and through NO_SETUP, so its canonical
+        # and structural state can continue developing.  Hard observation
+        # failures (halted/non-tradable/out-of-domain) remain removable.
+        observation_eligible = getattr(decision, "observation_eligible", None)
+        retain_for_observation = (
+            bool(observation_eligible)
+            if observation_eligible is not None
+            else not bool(getattr(decision, "qualified", True))
+        )
+        if retain_for_observation:
             with self._state_lock:
                 self._recent_interest[normalized_symbol] = self._clock()
                 self._recent_interest.move_to_end(normalized_symbol)
