@@ -99,6 +99,7 @@ class LiveScannerCoordinator:
         self._universe_refresh_asset_classes: tuple[AssetClass, ...] = ()
         self._universe_refresh_call_lock = Lock()
         self._readiness_observer: Callable[[], object] | None = None
+        self._last_failure_stage = "IDLE"
 
     def connect(self) -> None:
         if self._connected:
@@ -333,6 +334,7 @@ class LiveScannerCoordinator:
 
         while self._running and events_read < limit:
             if events_read == 0:
+                self._last_failure_stage = "RAW_RECEIVE"
                 event = self._transport.read_event()
             else:
                 read_nowait = getattr(
@@ -352,6 +354,7 @@ class LiveScannerCoordinator:
                 break
 
             decision = self._consume(event)
+            self._last_failure_stage = "SUBSCRIPTION_SYNC"
             self._sync_subscription()
             events_read += 1
 
@@ -416,6 +419,7 @@ class LiveScannerCoordinator:
         transport_ingestion = getattr(self._transport, "ingestion_metrics", None)
         engine_metrics = getattr(self._engine, "memory_metrics", None)
         metrics = {
+            "last_failure_stage": self._last_failure_stage,
             **({} if not callable(transport_metrics) else {
                 f"transport_{key}": value
                 for key, value in transport_metrics().items()
@@ -565,6 +569,10 @@ class LiveScannerCoordinator:
         return self._connected
 
     @property
+    def last_failure_stage(self) -> str:
+        return self._last_failure_stage
+
+    @property
     def running(self) -> bool:
         return self._running
 
@@ -686,6 +694,7 @@ class LiveScannerCoordinator:
             )
 
     def _consume(self, event: Any) -> Any:
+        self._last_failure_stage = "CANONICAL_REDUCTION"
         scanner_started_at = datetime.now(UTC)
         performance_diagnostics.begin_latency_trace(event, scanner_started_at)
         try:
@@ -694,8 +703,10 @@ class LiveScannerCoordinator:
                 "scanner_ended_at", datetime.now(UTC)
             )
             if self._authoritative_lane is not None:
+                self._last_failure_stage = "AUTHORITATIVE_ADMISSION"
                 self._authoritative_lane.publish(event)
             elif self._event_observer is not None:
+                self._last_failure_stage = "DOWNSTREAM_MARKET_EVENT"
                 observer_started_at = datetime.now(UTC)
                 performance_diagnostics.mark_latency_trace_timestamp(
                     "observer_started_at", observer_started_at

@@ -125,6 +125,9 @@ class DesktopBrokerRuntimeDriver:
         self._market_data_thread: Thread | None = None
         self._market_data_stop = Event()
         self._terminal_stream_failure_published = False
+        self._market_data_consumer_state = "STOPPED"
+        self._market_data_failure_stage = None
+        self._market_data_failure_exception_class = None
         self._scanner_pause_session: MarketDataSession | None = None
         self._last_capability_session = current_market_data_session(self._clock)
         self._scanner_configuration_changed = False
@@ -174,6 +177,22 @@ class DesktopBrokerRuntimeDriver:
     @property
     def cycles_completed(self) -> int:
         return self._cycles_completed
+
+    def market_data_consumer_metrics(self) -> dict[str, object]:
+        transport = self._market_data_transport()
+        metrics = {}
+        provider = getattr(transport, "memory_metrics", None)
+        if callable(provider):
+            try:
+                metrics.update(provider())
+            except Exception:
+                pass
+        return {
+            "consumer_state": self._market_data_consumer_state,
+            "failure_stage": self._market_data_failure_stage,
+            "exception_class": self._market_data_failure_exception_class,
+            **metrics,
+        }
 
     def run(
         self,
@@ -467,6 +486,9 @@ class DesktopBrokerRuntimeDriver:
         if existing is not None and existing.is_alive():
             return
         self._market_data_stop.clear()
+        self._market_data_consumer_state = "RUNNING"
+        self._market_data_failure_stage = None
+        self._market_data_failure_exception_class = None
         performance_diagnostics.record_startup_stage(
             "consumer_create_requested"
         )
@@ -931,6 +953,7 @@ class DesktopBrokerRuntimeDriver:
                 not stop_event.is_set()
                 and not self._market_data_stop.is_set()
             ):
+                self._market_data_failure_stage = "WATCHDOG"
                 self._run_feed_watchdog()
                 self._reconcile_temporal_orders()
                 if self._scanner is not None:
@@ -1008,6 +1031,15 @@ class DesktopBrokerRuntimeDriver:
                     )
         except Exception as exc:
             transport = self._market_data_transport()
+            scanner_stage = getattr(self._scanner, "last_failure_stage", None)
+            self._market_data_failure_stage = (
+                scanner_stage if scanner_stage in {
+                    "RAW_RECEIVE", "CANONICAL_REDUCTION", "SUBSCRIPTION_SYNC",
+                    "AUTHORITATIVE_ADMISSION", "DOWNSTREAM_MARKET_EVENT",
+                } else "WATCHDOG"
+            )
+            self._market_data_failure_exception_class = type(exc).__name__
+            self._market_data_consumer_state = "TERMINAL_FAILED"
             halt_ingestion = getattr(transport, "halt_callback_ingestion", None)
             if callable(halt_ingestion):
                 halt_ingestion()
@@ -1245,9 +1277,7 @@ class DesktopBrokerRuntimeDriver:
                 streaming_status=_stream_failure_classification(error),
                 scanner_status="STOPPED",
                 last_warning=(
-                    f"{type(error).__name__}: {error}"
-                    if str(error)
-                    else type(error).__name__
+                    f"Market-data consumer terminal failure ({type(error).__name__})."
                 ),
             ),
         )
@@ -1264,6 +1294,8 @@ class DesktopBrokerRuntimeDriver:
                     "market-data receive worker did not stop cooperatively"
                 )
             self._market_data_thread = None
+            if self._market_data_consumer_state != "TERMINAL_FAILED":
+                self._market_data_consumer_state = "STOPPED"
             performance_diagnostics.record_startup_stage("consumer_stopped")
             performance_diagnostics.record_stream_boundary("consumer_stopped")
 
@@ -1280,6 +1312,8 @@ class DesktopBrokerRuntimeDriver:
             else:
                 self._market_data.disconnect()
         except Exception as exc:
+            self._market_data_failure_stage = "TRANSPORT_SHUTDOWN"
+            self._market_data_failure_exception_class = type(exc).__name__
             self._publish_terminal_market_data_failure(exc)
             raise
         finally:

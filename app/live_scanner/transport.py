@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from threading import Thread
 
 
 class ReceiveTransportAdapter:
@@ -21,8 +22,38 @@ class ReceiveTransportAdapter:
     def connect(self) -> None:
         self._client.connect()
 
-    def disconnect(self) -> None:
-        self._client.disconnect()
+    def disconnect(self, *, timeout_seconds: float = 5.0) -> None:
+        """Disconnect without allowing an SDK stop call to hang Atlas."""
+        disconnect = getattr(self._client, "disconnect", None)
+        if not callable(disconnect):
+            raise TypeError("wrapped market-data client has no disconnect method")
+        completed: list[BaseException | None] = []
+
+        def invoke() -> None:
+            try:
+                disconnect()
+            except BaseException as exc:
+                completed.append(exc)
+
+        thread = Thread(target=invoke, name="atlas-market-data-disconnect", daemon=True)
+        thread.start()
+        thread.join(max(0.0, float(timeout_seconds)))
+        if thread.is_alive():
+            raise TimeoutError("market-data disconnect timed out")
+        if completed:
+            raise completed[0]
+
+    def halt_callback_ingestion(self) -> bool:
+        """Forward terminal callback admission closure to the wrapped client."""
+        halt = getattr(self._client, "halt_callback_ingestion", None)
+        if not callable(halt):
+            return False
+        try:
+            halt()
+        except Exception:
+            # Do not replace the original consumer failure during containment.
+            return False
+        return True
 
     def subscribe(
         self,

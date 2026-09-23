@@ -98,6 +98,8 @@ class OfficialSdkStreamBackend:
         self._messages_dequeued = 0
         self._message_queue_high_water = 0
         self._message_ingestion_overflow = 0
+        self._callbacks_rejected_after_halt = 0
+        self._halt_diagnostic_emitted = False
         self._startup_buffered_count = 0
         self._oldest_buffered_age_ms = 0.0
         self._oldest_buffered_age_high_water_ms = 0.0
@@ -172,6 +174,7 @@ class OfficialSdkStreamBackend:
                 "ingestion_queue_overflow": self._message_ingestion_overflow,
                 "ingestion_queue_depth": self._message_queue_depth,
                 "ingestion_queue_high_water": self._message_queue_high_water,
+                "callbacks_rejected_after_halt": self._callbacks_rejected_after_halt,
             }
 
     @property
@@ -242,7 +245,10 @@ class OfficialSdkStreamBackend:
         overflow = False
         with self._message_metrics_lock:
             if not self._accepting_callbacks.is_set():
-                self._emit_diagnostic("CALLBACK_INGESTION_HALTED")
+                self._callbacks_rejected_after_halt += 1
+                if not self._halt_diagnostic_emitted:
+                    self._halt_diagnostic_emitted = True
+                    self._emit_diagnostic("CALLBACK_INGESTION_HALTED")
                 return
             self._last_raw_callback_monotonic = monotonic()
             self._last_raw_callback_at = self._clock()
@@ -425,6 +431,7 @@ class OfficialSdkStreamBackend:
         is terminal, however, retaining producer payloads is unsafe, so the
         ingress gate closes and queued payloads are released.
         """
+        was_accepting = self._accepting_callbacks.is_set()
         self._accepting_callbacks.clear()
         drained = 0
         while True:
@@ -437,7 +444,9 @@ class OfficialSdkStreamBackend:
             with self._message_metrics_lock:
                 self._message_queue_depth = max(0, self._message_queue_depth - drained)
         performance_diagnostics.record_stream_boundary("callback_ingestion_halted")
-        self._emit_diagnostic("CALLBACK_INGESTION_HALTED", drained=drained)
+        if was_accepting and not self._halt_diagnostic_emitted:
+            self._halt_diagnostic_emitted = True
+            self._emit_diagnostic("CALLBACK_INGESTION_HALTED", drained=drained)
 
     def subscribe(self, channels: tuple[str, ...]) -> None:
         if not self._connected.is_set() or not self._registration_ready.is_set():
