@@ -25,6 +25,7 @@ from app.dynamic_momentum_discovery import (
     UniverseAdmissionObserverFanout,
     WebullBroadDiscoveryProvider,
 )
+from app.momentum_radar import MomentumRadar
 from app.live_execution.account_polling import (
     BrokerAccountSnapshot,
     poll_broker_account,
@@ -280,6 +281,7 @@ def create_configured_desktop_broker_driver(
         universe_provider = WebullScannerUniverseProvider(
             data_client,
             clock=clock,
+            radar=MomentumRadar(),
             # Discovery breadth is expanded independently from the existing
             # bounded real-time promotion/subscription budget.
             maximum_breadth=250,
@@ -415,6 +417,7 @@ def create_configured_desktop_broker_driver(
             market_data_client=broker_runtime.market_data,
             universe_service=UniverseService(
                 universe_provider,
+                ordering_source=universe_provider,
                 admission_observer=universe_admission_observer,
             ),
             reference_data_service=ReferenceDataService(

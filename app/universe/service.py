@@ -26,6 +26,7 @@ class UniverseService:
         *,
         config: UniverseFilterConfig | None = None,
         admission_observer: object | None = None,
+        ordering_source: object | None = None,
     ) -> None:
         self._provider = provider
         self._config = (
@@ -34,6 +35,7 @@ class UniverseService:
             else UniverseFilterConfig()
         )
         self._admission_observer = admission_observer
+        self._ordering_source = ordering_source
 
     def select(
         self,
@@ -112,7 +114,16 @@ class UniverseService:
                 if key not in included:
                     excluded[key] = item
 
+        priority = tuple()
+        if self._ordering_source is not None:
+            try:
+                priority = tuple(self._ordering_source.priority_order())
+            except Exception:
+                priority = tuple()
+        priority_index = {symbol: index for index, symbol in enumerate(priority)}
         sort_key = lambda item: (
+            0 if item.symbol in priority_index else 1,
+            priority_index.get(item.symbol, 0),
             item.asset_class.value,
             item.symbol,
         )

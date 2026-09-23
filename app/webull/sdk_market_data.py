@@ -22,6 +22,7 @@ from app.scanner_universe_observability import (
     UniverseAdmissionStage,
 )
 from app.universe.models import SecurityType, UniverseSymbol
+from app.momentum_radar import MomentumRadar, RadarSnapshot
 
 
 class WebullMarketDataPermissionError(PermissionError):
@@ -253,6 +254,7 @@ class WebullScannerUniverseProvider:
         maximum_breadth: int = 50,
         sources: tuple[str, ...] = ("SESSION_GAINERS", "RELATIVE_VOLUME_10D"),
         retention_seconds: int = 300,
+        radar: MomentumRadar | None = None,
         admission_observer: object | None = None,
     ) -> None:
         if page_size < 1 or page_size > 100:
@@ -274,6 +276,8 @@ class WebullScannerUniverseProvider:
         self._instruments: dict[str, UniverseSymbol] = {}
         self._row_seen_at: dict[str, datetime] = {}
         self._provenance: dict[str, list[tuple[str, int]]] = {}
+        self._radar = radar
+        self._priority_order: tuple[str, ...] = ()
         self._metrics: dict[str, int] = {
             "refresh_count": 0, "raw_symbols": 0, "unique_symbols": 0,
             "retained_symbols": 0, "expired_symbols": 0, "pages": 0,
@@ -403,6 +407,31 @@ class WebullScannerUniverseProvider:
             "expired_symbols": len(previous_symbols - set(rows) - fresh_symbols),
             "pages": pages,
         })
+        if self._radar is not None:
+            radar_rows = tuple(
+                RadarSnapshot(
+                    symbol=symbol, observed_at=now,
+                    price=_decimal_value(row, "price", "close"),
+                    change_percent=_percent_value(row),
+                    volume=_decimal_value(row, "volume"),
+                    relative_volume=_decimal_value(row, "relative_volume_10d"),
+                    turnover=_decimal_value(row, "turnover"),
+                    sources=tuple(sorted({source for source, _ in provenance.get(symbol, ())})),
+                    rank=min((rank for _, rank in provenance.get(symbol, ())), default=None),
+                    hod=_decimal_value(row, "high"),
+            ) for symbol, row in rows.items()
+            )
+            self._radar.observe(radar_rows)
+            prior_promoted = set(self._radar.promoted_symbols())
+            promoted = self._radar.promote(capacity=500)
+            remainder = tuple(symbol for symbol in self._radar.priority_order() if symbol not in promoted)
+            self._priority_order = (*promoted, *remainder)
+            for symbol in set(promoted) - prior_promoted:
+                _observe_admission(
+                    self._admission_observer, "record",
+                    stage="RADAR_PROMOTED", outcome="PROMOTED",
+                    reason="BOUNDED_MOMENTUM_PRIORITY", normalized_symbol=symbol,
+                )
         instrument_rows, instrument_error = _instrument_rows_with_error(
             client, tuple(sorted(rows))
         )
@@ -415,7 +444,8 @@ class WebullScannerUniverseProvider:
                 upstream_fields={"symbol_count": len(rows)},
             )
         instruments_list: list[UniverseSymbol] = []
-        for symbol in sorted(rows):
+        ordered_symbols = self._priority_order or tuple(sorted(rows))
+        for symbol in ordered_symbols:
             sources = provenance[symbol]
             _observe_admission(
                 self._admission_observer, "record",
@@ -472,6 +502,9 @@ class WebullScannerUniverseProvider:
 
     def instrument_for(self, symbol: str) -> UniverseSymbol | None:
         return self._instruments.get(symbol.strip().upper())
+
+    def priority_order(self) -> tuple[str, ...]:
+        return self._priority_order
 
 
 class WebullScannerReferenceProvider:
@@ -719,6 +752,21 @@ def _response_rows(response: object) -> tuple[Mapping[str, object], ...]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         raise ValueError("Webull market-data response did not contain rows")
     return tuple(row for row in value if isinstance(row, Mapping))
+
+
+def _decimal_value(row: Mapping[str, object], *names: str) -> Decimal | None:
+    for name in names:
+        value = row.get(name)
+        if value not in (None, ""):
+            try:
+                return Decimal(str(value))
+            except (InvalidOperation, ValueError):
+                return None
+    return None
+
+
+def _percent_value(row: Mapping[str, object]) -> Decimal | None:
+    return _decimal_value(row, "change_percent", "change_ratio", "change")
 
 
 def _screener_page(
