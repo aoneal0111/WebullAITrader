@@ -49,6 +49,22 @@ class AuthoritativeEventLane:
             )
             self._thread.start()
 
+    @property
+    def running(self) -> bool:
+        with self._lock:
+            return bool(
+                self._started
+                and self._accepting
+                and self._failure is None
+                and self._thread is not None
+                and self._thread.is_alive()
+            )
+
+    @property
+    def failed(self) -> bool:
+        with self._lock:
+            return self._failure is not None
+
     def publish(self, event: Any) -> None:
         with self._lock:
             if self._failure is not None:
@@ -81,6 +97,27 @@ class AuthoritativeEventLane:
             return
         with self._lock:
             failed = self._failure is not None
+            thread = self._thread
+        # A failed or previously joined worker cannot acknowledge any queued
+        # work.  Release only the abandoned tail and return; queue.join() here
+        # would otherwise make repeated runtime shutdown hang forever.
+        if thread is None or not thread.is_alive():
+            with self._lock:
+                abandoned = self._depth > 0
+                if abandoned and self._failure is None:
+                    self._failure = RuntimeError(
+                        "authoritative lane worker stopped before drain"
+                    )
+            while True:
+                try:
+                    self._queue.get_nowait()
+                except Exception:
+                    break
+                else:
+                    self._queue.task_done()
+            with self._lock:
+                self._depth = 0
+            return
         if failed:
             # The worker has stopped at the failing event.  Account for the
             # unreconciled tail explicitly so shutdown cannot hang forever;
@@ -96,7 +133,6 @@ class AuthoritativeEventLane:
         self._queue.join()
         self._stop.set()
         self._queue.put(None)
-        thread = self._thread
         if thread is not None:
             thread.join(timeout)
             if thread.is_alive():
@@ -136,7 +172,6 @@ class AuthoritativeEventLane:
                     self._accepting = False
                 # Fail-safe: stop consuming later authoritative events rather
                 # than silently skipping them after an observer failure.
-                self._queue.task_done()
                 return
             finally:
                 with self._lock:

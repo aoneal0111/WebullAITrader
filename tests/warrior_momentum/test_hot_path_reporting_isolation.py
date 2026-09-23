@@ -4,7 +4,8 @@ import gc
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from threading import Event, current_thread
+from threading import Event, Thread, current_thread
+from time import perf_counter
 import weakref
 
 import pytest
@@ -300,6 +301,34 @@ def test_report_failure_leaves_warrior_running_and_non_authoritative(
     sidecar.stop()
     assert sidecar._last_report_metrics is not None
     assert sidecar._last_report_metrics.failures >= 1
+
+
+def test_retained_symbols_nonblocking_does_not_wait_for_gui_lock(
+    tmp_path: Path,
+) -> None:
+    sidecar = WarriorDesktopSidecar(
+        enabled=False,
+        storage_path=tmp_path / "nonblocking-retained.sqlite3",
+    )
+    sidecar._retained_symbols_cache = ("XYZ",)
+    locked = Event()
+    release = Event()
+
+    def hold_lock() -> None:
+        with sidecar._lock:
+            locked.set()
+            release.wait(1.0)
+
+    holder = Thread(target=hold_lock)
+    holder.start()
+    assert locked.wait(1.0)
+    try:
+        started = perf_counter()
+        assert sidecar.retained_symbols_nonblocking() == ("XYZ",)
+        assert perf_counter() - started < 0.1
+    finally:
+        release.set()
+        holder.join(1.0)
 
 
 def test_sparse_latency_and_queue_diagnostics_use_existing_capture_writer(

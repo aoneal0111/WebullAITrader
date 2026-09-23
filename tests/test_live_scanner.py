@@ -469,6 +469,62 @@ def test_recover_stream_reconnects_without_refreshing_universe() -> None:
     assert coordinator.running is True
 
 
+def test_recover_stream_preserves_authoritative_lane_continuity() -> None:
+    observed: list[FakeEvent] = []
+    transport = FakeTransport([FakeEvent("AAA")])
+    engine = FakeEngine()
+    coordinator = LiveScannerCoordinator(
+        transport,
+        engine,
+        default_channels=("quotes",),
+        asynchronous_authoritative=True,
+        event_observer=observed.append,
+    )
+    coordinator.start()
+    coordinator.run_available()
+    coordinator.recover_stream()
+
+    transport.events.append(FakeEvent("AAA"))
+    cycle = coordinator.run_available()
+
+    assert cycle.events_read == 1
+    deadline = monotonic() + 1.0
+    while len(observed) < 2 and monotonic() < deadline:
+        sleep(0.001)
+    assert len(observed) == 2
+    assert coordinator.memory_metrics()["authoritative_lane_failure"] is None
+    coordinator.stop()
+
+
+def test_recover_stream_fails_closed_when_authoritative_worker_failed() -> None:
+    transport = FakeTransport([FakeEvent("AAA")])
+    engine = FakeEngine()
+
+    def fail(_event: FakeEvent) -> None:
+        raise RuntimeError("observer failed")
+
+    coordinator = LiveScannerCoordinator(
+        transport,
+        engine,
+        default_channels=("quotes",),
+        asynchronous_authoritative=True,
+        event_observer=fail,
+    )
+    coordinator.start()
+    coordinator.run_available()
+    deadline = monotonic() + 1.0
+    while coordinator.memory_metrics()["authoritative_lane_failure"] is None:
+        if monotonic() >= deadline:
+            raise AssertionError("authoritative worker did not fail")
+        sleep(0.001)
+
+    with pytest.raises(RuntimeError, match="authoritative lane worker failed"):
+        coordinator.recover_stream()
+
+    assert coordinator.connected is False
+    assert coordinator.running is False
+
+
 def test_recover_stream_requires_existing_subscription() -> None:
     coordinator = LiveScannerCoordinator(
         FakeTransport(),

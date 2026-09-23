@@ -98,6 +98,14 @@ def test_authoritative_lane_overflow_is_visible_and_never_drops_silently():
     assert received == [1, 2]
 
 
+def test_repeated_stop_after_worker_exit_does_not_block():
+    lane = AuthoritativeEventLane(lambda event: None, capacity=2)
+    lane.start()
+    lane.stop()
+    lane.stop()
+    assert lane.metrics()["authoritative_lane_depth"] == 0
+
+
 def test_slow_authoritative_observer_does_not_block_raw_ingestion_loop():
     events = list(range(3000))
     transport = _Transport(events)

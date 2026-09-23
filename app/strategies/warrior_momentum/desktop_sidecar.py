@@ -341,6 +341,10 @@ class WarriorDesktopSidecar:
         self._last_intraminute_evaluation_at: dict[str, datetime] = {}
         self._last_session_policy_minute: datetime | None = None
         self._execution_recovery_orders: tuple[object, ...] = ()
+        # Subscription reconciliation runs on the raw market-data consumer.
+        # Keep the last safe management-symbol view available without waiting
+        # behind GUI/reporting work that holds the Warrior lock.
+        self._retained_symbols_cache: tuple[str, ...] = ()
 
     def bind_scanner_adapter(self, adapter: MarketEventScannerAdapter) -> None:
         if not isinstance(adapter, MarketEventScannerAdapter):
@@ -1023,7 +1027,29 @@ class WarriorDesktopSidecar:
 
     def retained_symbols(self) -> tuple[str, ...]:
         with self._lock:
-            return () if self._service is None else self._service.open_paper_symbols
+            values = (
+                () if self._service is None else self._service.open_paper_symbols
+            )
+            self._retained_symbols_cache = tuple(values)
+            return self._retained_symbols_cache
+
+    def retained_symbols_nonblocking(self) -> tuple[str, ...]:
+        """Return a cached management-symbol view without stalling ingress.
+
+        A subscription refresh is advisory relative to the already accepted
+        market event.  If GUI/report generation owns the Warrior lock, the
+        previous view remains safe until the next successful refresh.
+        """
+        if not self._lock.acquire(blocking=False):
+            return self._retained_symbols_cache
+        try:
+            values = (
+                () if self._service is None else self._service.open_paper_symbols
+            )
+            self._retained_symbols_cache = tuple(values)
+            return self._retained_symbols_cache
+        finally:
+            self._lock.release()
 
     def _consume(self, event: MarketEvent) -> None:
         adapter, service = self._adapter, self._service
@@ -2165,6 +2191,14 @@ class CompositeMarketEventObserver:
 
     def retained_symbols(self) -> tuple[str, ...]:
         values = set(self.warrior.retained_symbols())
+        research_values = getattr(self.research, "retained_symbols", None)
+        if callable(research_values):
+            values.update(research_values())
+        return tuple(sorted(values))
+
+    def retained_symbols_nonblocking(self) -> tuple[str, ...]:
+        source = getattr(self.warrior, "retained_symbols_nonblocking", None)
+        values = set(source() if callable(source) else self.warrior.retained_symbols())
         research_values = getattr(self.research, "retained_symbols", None)
         if callable(research_values):
             values.update(research_values())

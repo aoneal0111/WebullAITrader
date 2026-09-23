@@ -443,7 +443,13 @@ def create_configured_desktop_broker_driver(
                     for item in scanner_infrastructure.pipeline.ranked()
                 ),
             )
-        retained = getattr(market_event_observer, "retained_symbols", None)
+        retained = getattr(
+            market_event_observer,
+            "retained_symbols_nonblocking",
+            None,
+        )
+        if not callable(retained):
+            retained = getattr(market_event_observer, "retained_symbols", None)
         if callable(retained) or catalyst_discovery_runtime is not None:
             def retained_and_discovered_symbols() -> tuple[str, ...]:
                 managed = tuple(retained()) if callable(retained) else ()

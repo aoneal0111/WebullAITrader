@@ -69,10 +69,7 @@ class LiveScannerCoordinator:
         self._authoritative_lane: AuthoritativeEventLane | None = None
         self._event_observer = event_observer
         if self._asynchronous_authoritative and event_observer is not None:
-            self._authoritative_lane = AuthoritativeEventLane(
-                self._dispatch_authoritative,
-                capacity=self._authoritative_lane_capacity,
-            )
+            self._authoritative_lane = self._new_authoritative_lane()
         if retained_channels_source is not None and not callable(retained_channels_source):
             raise TypeError("retained channels source must be callable or None")
         self._retained_channels_source = retained_channels_source
@@ -109,13 +106,17 @@ class LiveScannerCoordinator:
         self._connected = True
         self._start_background_workers()
 
-    def disconnect(self) -> None:
+    def disconnect(self, *, preserve_authoritative_lane: bool = False) -> None:
         if not self._connected:
             self._running = False
+            if not preserve_authoritative_lane:
+                self._stop_background_workers()
             return
 
         try:
-            self._stop_background_workers()
+            self._stop_background_workers(
+                stop_authoritative=not preserve_authoritative_lane,
+            )
             self._transport.disconnect()
         finally:
             self._stop_universe_refresh()
@@ -258,7 +259,12 @@ class LiveScannerCoordinator:
                 "scanner stream recovery requires an active subscription"
             )
 
-        self.disconnect()
+        # A stream reconnect is recoverable transport churn, not an
+        # authoritative-session shutdown.  Keep the ordered lane alive so
+        # accepted events retain one continuous delivery path and so its
+        # worker's drain cannot stall the market-data consumer for tens of
+        # seconds while the feed is being re-established.
+        self.disconnect(preserve_authoritative_lane=True)
 
         reset_stream_state = getattr(
             self._engine,
@@ -354,12 +360,19 @@ class LiveScannerCoordinator:
                 break
 
             decision = self._consume(event)
-            self._last_failure_stage = "SUBSCRIPTION_SYNC"
-            self._sync_subscription()
             events_read += 1
 
             if decision is not None:
                 decisions_created += 1
+
+        # Subscription reconciliation is batch-scoped.  Calling the retained
+        # position source for every raw event puts unrelated GUI/report locks
+        # directly on the ingress hot path.  The bounded batch still checks
+        # management channels before the next receive cycle, while every
+        # accepted event has already passed canonical reduction and
+        # authoritative admission.
+        self._last_failure_stage = "SUBSCRIPTION_SYNC"
+        self._sync_subscription()
 
         drained = self._drain_evaluations()
         decisions_created += len(drained)
@@ -540,10 +553,13 @@ class LiveScannerCoordinator:
             and observer is not None
             and self._authoritative_lane is None
         ):
-            self._authoritative_lane = AuthoritativeEventLane(
-                self._dispatch_authoritative,
-                capacity=self._authoritative_lane_capacity,
-            )
+            self._authoritative_lane = self._new_authoritative_lane()
+
+    def _new_authoritative_lane(self) -> AuthoritativeEventLane:
+        return AuthoritativeEventLane(
+            self._dispatch_authoritative,
+            capacity=self._authoritative_lane_capacity,
+        )
 
     def set_retained_channels_source(
         self, source: Callable[[], Iterable[str]] | None,
@@ -765,6 +781,10 @@ class LiveScannerCoordinator:
     def _start_background_workers(self) -> None:
         lane = self._authoritative_lane
         if lane is not None:
+            if lane.failed:
+                raise RuntimeError("authoritative lane worker failed")
+            if not lane.running:
+                self._authoritative_lane = lane = self._new_authoritative_lane()
             lane.start()
         if not self._asynchronous_authoritative:
             return
@@ -782,7 +802,7 @@ class LiveScannerCoordinator:
         )
         self._evaluation_thread.start()
 
-    def _stop_background_workers(self) -> None:
+    def _stop_background_workers(self, *, stop_authoritative: bool = True) -> None:
         self._evaluation_stop.set()
         thread = self._evaluation_thread
         if thread is not None:
@@ -791,7 +811,7 @@ class LiveScannerCoordinator:
                 raise RuntimeError("observational evaluation shutdown timed out")
             self._evaluation_thread = None
         lane = self._authoritative_lane
-        if lane is not None:
+        if stop_authoritative and lane is not None:
             lane.stop()
 
     def _evaluation_loop(self) -> None:
