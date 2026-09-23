@@ -315,6 +315,7 @@ def composition_snapshot(composition: object) -> dict[str, object]:
         consumer_metrics = _call(driver, "market_data_consumer_metrics")
     warrior = getattr(composition, "warrior_forward_sidecar", None)
     warrior_snapshot = _call(warrior, "snapshot")
+    warrior_projection_metrics = _call(warrior, "projection_metrics")
     scanner = getattr(driver, "_scanner", None)
     scanner_metrics = _metrics(scanner)
     transport = getattr(driver, "_market_data", None)
@@ -328,6 +329,10 @@ def composition_snapshot(composition: object) -> dict[str, object]:
     positions = () if state is None else getattr(state, "paper_positions", ())
     orders = () if state is None else getattr(state, "paper_orders", ())
     warrior_data = _warrior_snapshot(warrior_snapshot)
+    warrior_data["projection_metrics"] = _sanitize(warrior_projection_metrics or {})
+    warrior_data["entry_funnel"] = _sanitize(
+        performance_diagnostics.entry_conversion_metrics()
+    )
     return {
         "session": {
             "environment": "PAPER",

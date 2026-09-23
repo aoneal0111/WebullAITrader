@@ -399,6 +399,7 @@ def create_desktop_composition(
             market_event_observer, warrior_forward_sidecar,
             trade_intelligence_observer, adaptive_entry_research_observer,
             async_projections=True,
+            async_warrior_observation=True,
         )
 
     # Markets are activated explicitly from the desktop market controls.

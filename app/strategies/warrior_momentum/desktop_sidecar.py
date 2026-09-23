@@ -791,6 +791,54 @@ class WarriorDesktopSidecar:
                 success=protection_success,
             )
 
+    def authoritative_observe(self, event: MarketEvent) -> None:
+        """Keep risk-reducing protection reconciliation on the strict lane."""
+        if not self.enabled or event.symbol is None:
+            return
+        symbol = event.symbol.strip().upper()
+        with self._lock:
+            service = self._service
+            if service is None or self._health in {
+                WarriorCaptureHealth.DISABLED,
+                WarriorCaptureHealth.STARTING,
+                WarriorCaptureHealth.STOPPED,
+            }:
+                return
+            self._apply_session_policy(event.timestamp)
+            due = self._protection_reconciliation_due(symbol)
+        if not due:
+            return
+        started = perf_counter()
+        success = False
+        try:
+            success = bool(service.reconcile_authoritative_protection(symbol, event.timestamp))
+        except Exception as exc:
+            with self._lock:
+                self._protection_dirty.add(symbol)
+                self._last_error_type = type(exc).__name__
+                self._accept_execution = False
+                self._set_strategy_health(
+                    WarriorCaptureHealth.DEGRADED,
+                    category="PROTECTION_FAILURE",
+                    reason="PROTECTION_RECONCILIATION_FAILED", exception=exc,
+                )
+        finally:
+            performance_diagnostics.increment_reconciliation_counter(
+                "successes" if success else "failures"
+            )
+            with self._lock:
+                if success:
+                    self._protection_dirty.discard(symbol)
+                else:
+                    self._protection_dirty.add(symbol)
+            performance_diagnostics.record_component_duration(
+                "warrior.protection_reconciliation",
+                (perf_counter() - started) * 1000.0,
+                event_type=getattr(getattr(event, "event_type", None), "value", None),
+                symbol=symbol,
+                success=success,
+            )
+
     def _apply_session_policy(self, observed_at: datetime) -> None:
         config = self.strategy_config.session_management
         if not config.enabled or self._service is None:
@@ -1109,8 +1157,6 @@ class WarriorDesktopSidecar:
                     service.observe_market_bar(
                         symbol, management_bar, observed_at,
                     )
-                    if self._writer is not None:
-                        self._flush_capture_writer(self._writer)
                     self._request_report_refresh(
                         event.timestamp.astimezone(EASTERN).date()
                     )
@@ -1432,8 +1478,6 @@ class WarriorDesktopSidecar:
             self._first_observed.add(symbol)
             self._publications += 1
             if signal is not None or completed:
-                assert self._writer is not None
-                self._flush_capture_writer(self._writer)
                 self._request_report_refresh(
                     observation.timestamp.astimezone(EASTERN).date()
                 )
@@ -2030,13 +2074,16 @@ class CompositeMarketEventObserver:
                  research: object | None = None,
                  adaptive_entry: object | None = None,
                  *, async_projections: bool = False,
-                 projection_capacity: int = 512) -> None:
+                 projection_capacity: int = 512,
+                 async_warrior_observation: bool = False) -> None:
         self.primary = primary
         self.warrior = warrior
         self.research = research
         self.adaptive_entry = adaptive_entry
         self.adaptive_entry_failures = 0
         self.async_projections = bool(async_projections)
+        self.async_warrior_observation = bool(async_warrior_observation)
+        self._warrior_handoff = None
         self._research_handoff = None
         self._adaptive_handoff = None
         if self.async_projections:
@@ -2049,6 +2096,10 @@ class CompositeMarketEventObserver:
             setter = getattr(self.warrior, "set_research_observer", None)
             if research is not None and callable(setter):
                 setter(_ResearchHandoffProxy(self._research_handoff))
+        if self.async_warrior_observation:
+            self._warrior_handoff = BoundedProjectionHandoff(
+                self._dispatch_warrior, maximum_keys=projection_capacity,
+            )
 
     def start(self, _environment: str | None = None) -> None:
         if self._research_handoff is not None:
@@ -2062,8 +2113,12 @@ class CompositeMarketEventObserver:
         if callable(adaptive_start):
             adaptive_start(_environment)
         self.warrior.start(_environment)
+        if self._warrior_handoff is not None:
+            self._warrior_handoff.start()
 
     def stop(self) -> None:
+        if self._warrior_handoff is not None:
+            self._warrior_handoff.stop(drain=False)
         if self._research_handoff is not None:
             self._research_handoff.stop(drain=False)
         if self._adaptive_handoff is not None:
@@ -2090,6 +2145,7 @@ class CompositeMarketEventObserver:
 
     def projection_metrics(self) -> dict[str, dict[str, int | float]]:
         return {
+            "warrior": {} if self._warrior_handoff is None else self._warrior_handoff.memory_metrics(),
             "research": {} if self._research_handoff is None else self._research_handoff.memory_metrics(),
             "adaptive": {} if self._adaptive_handoff is None else self._adaptive_handoff.memory_metrics(),
         }
@@ -2110,6 +2166,9 @@ class CompositeMarketEventObserver:
             if callable(callback):
                 callback(point, candidate, signal)
 
+    def _dispatch_warrior(self, event: object) -> None:
+        self.warrior(event)
+
     def _dispatch_adaptive(self, event: object) -> None:
         if not callable(self.adaptive_entry):
             return
@@ -2121,7 +2180,13 @@ class CompositeMarketEventObserver:
     def __call__(self, event: MarketEvent) -> None:
         if self.primary is not None:
             self._timed("paper.market_event", self.primary, event)
-        self._timed("warrior.desktop_sidecar", self.warrior, event)
+        if self._warrior_handoff is not None:
+            authoritative = getattr(self.warrior, "authoritative_observe", None)
+            if callable(authoritative):
+                authoritative(event)
+            self._warrior_handoff.submit(_projection_key(event), event)
+        else:
+            self._timed("warrior.desktop_sidecar", self.warrior, event)
         if self._research_handoff is not None:
             self._research_handoff.submit(
                 _projection_key(event), ("event", event),

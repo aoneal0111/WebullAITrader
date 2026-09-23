@@ -352,9 +352,26 @@ class WarriorForwardCaptureService:
         candidate = self.runtime.discover(
             observation, completed, session=value.session,
         )
+        if candidate.discovery_qualified:
+            performance_diagnostics.record_entry_funnel(
+                symbol, stage="SCANNER_QUALIFIED", timestamp=value.evaluation_timestamp or observation.timestamp,
+            )
+        if candidate.setup is not None:
+            if candidate.setup.state.value == "FORMING":
+                performance_diagnostics.record_entry_funnel(
+                    symbol, stage="SETUP_FORMING", timestamp=value.evaluation_timestamp or observation.timestamp,
+                )
+            elif candidate.setup.state.value == "TRIGGERED":
+                performance_diagnostics.record_entry_funnel(
+                    symbol, stage="SETUP_TRIGGERED", timestamp=value.evaluation_timestamp or observation.timestamp,
+                )
         legacy_candidate = candidate
         assessed, signal = self.runtime.assess_entry(candidate)
         technical_signal = self.runtime.technical_entry_signal(candidate)
+        if technical_signal is not None:
+            performance_diagnostics.record_entry_funnel(
+                symbol, stage="TECHNICAL_SIGNAL", timestamp=value.evaluation_timestamp or observation.timestamp,
+            )
         setup = candidate.setup
         setup_state = "ENTRY_READY" if signal is not None else (
             "NO_SETUP" if setup is None else str(setup.state.value).upper()
@@ -392,6 +409,22 @@ class WarriorForwardCaptureService:
         if processing_delayed:
             performance_diagnostics.increment("processing_delayed_events")
         if market_data_stale or processing_delayed:
+            performance_diagnostics.record_entry_funnel(
+                symbol, stage="FRESHNESS_CHECK", outcome="REJECTED",
+                timestamp=value.evaluation_timestamp or observation.timestamp,
+                reason="STALE_MARKET_DATA" if market_data_stale else "FRESHNESS_OK_PROCESSING_DELAYED",
+            )
+        else:
+            performance_diagnostics.record_entry_funnel(
+                symbol, stage="FRESHNESS_CHECK", timestamp=value.evaluation_timestamp or observation.timestamp,
+            )
+        performance_diagnostics.record_entry_funnel(
+            symbol, stage="PROCESSING_AGE_CHECK",
+            outcome="REJECTED" if processing_delayed else "ACCEPTED",
+            timestamp=value.evaluation_timestamp or observation.timestamp,
+            reason="PROCESSING_DELAYED" if processing_delayed else None,
+        )
+        if market_data_stale or processing_delayed:
             assessed = replace(
                 assessed,
                 status=(CandidateStatus.AWAITING_EXECUTION_DATA
@@ -411,6 +444,10 @@ class WarriorForwardCaptureService:
                 and not processing_delayed
                 and self._execution_quote_source is not None
             ):
+                performance_diagnostics.record_entry_funnel(
+                    symbol, stage="EXECUTION_QUOTE_REQUESTED",
+                    timestamp=value.evaluation_timestamp or observation.timestamp,
+                )
                 performance_diagnostics.mark_latency_trace_stage(
                     "execution_quote_requested", True
                 )
@@ -418,6 +455,11 @@ class WarriorForwardCaptureService:
                     refreshed = self._execution_quote_source(symbol)
                 except Exception:
                     refreshed = None
+                performance_diagnostics.record_entry_funnel(
+                    symbol, stage="EXECUTION_QUOTE_RETURNED",
+                    outcome="AVAILABLE" if refreshed is not None else "UNAVAILABLE",
+                    timestamp=value.evaluation_timestamp or observation.timestamp,
+                )
                 evaluated_at = (
                     (None if refreshed is None else refreshed.confirmed_at)
                     or value.evaluation_timestamp
@@ -437,6 +479,10 @@ class WarriorForwardCaptureService:
                         # have completed while the bounded request was open.
                         and evaluated_at.replace(second=0, microsecond=0) == technical_minute
                     ):
+                        performance_diagnostics.record_entry_funnel(
+                            symbol, stage="EXECUTION_QUOTE_ACCEPTED",
+                            timestamp=evaluated_at,
+                        )
                         refreshed_observation = replace(
                             observation, price=refreshed.last,
                             bid=refreshed.bid, ask=refreshed.ask,
@@ -472,6 +518,12 @@ class WarriorForwardCaptureService:
                                 account = self._account_refresh_source()
                             if not self._execution_permitted():
                                 signal = None
+                    else:
+                        performance_diagnostics.record_entry_funnel(
+                            symbol, stage="EXECUTION_QUOTE_REJECTED",
+                            outcome="STALE_OR_MISMATCHED",
+                            timestamp=evaluated_at,
+                        )
         taxonomy_bridge = self._taxonomy_execution_bridge
         taxonomy_candidate, taxonomy_signal = (
             (None, None)
@@ -489,6 +541,11 @@ class WarriorForwardCaptureService:
             if self._account_refresh_source is not None:
                 account = self._account_refresh_source()
             if not self._execution_permitted():
+                performance_diagnostics.record_entry_funnel(
+                    symbol, stage="EXECUTION_PERMISSION", outcome="REJECTED",
+                    reason="EXECUTION_NOT_ALLOWED",
+                    timestamp=value.evaluation_timestamp or observation.timestamp,
+                )
                 assessed = replace(
                     assessed, status=CandidateStatus.INELIGIBLE_FOR_EXECUTION,
                     reason_codes=tuple(dict.fromkeys((
@@ -496,6 +553,11 @@ class WarriorForwardCaptureService:
                     ))),
                 )
                 signal = None
+            else:
+                performance_diagnostics.record_entry_funnel(
+                    symbol, stage="EXECUTION_PERMISSION", outcome="ACCEPTED",
+                    timestamp=value.evaluation_timestamp or observation.timestamp,
+                )
         # The symbol cache is only a continuity hint.  Once a terminal,
         # unfilled lifecycle has been removed, a changed structural geometry
         # is a new opportunity and must not inherit the old executable
@@ -718,6 +780,11 @@ class WarriorForwardCaptureService:
                       "limit": self.config.session_management.after_hours_entry_cutoff_minutes},),
                 ))
                 signal = None
+                performance_diagnostics.record_entry_funnel(
+                    symbol, stage="HALT_SESSION_GATE", outcome="REJECTED",
+                    reason="SESSION_ENTRY_CUTOFF",
+                    timestamp=value.evaluation_timestamp or observation.timestamp,
+                )
         if signal is not None:
             symbol_authorization = _paper_symbol_authorization(signal, account)
             if signal.symbol in self._paper:
@@ -730,6 +797,11 @@ class WarriorForwardCaptureService:
                 ))
                 signal = None
             elif not value.halt_state_known:
+                performance_diagnostics.record_entry_funnel(
+                    symbol, stage="HALT_SESSION_GATE", outcome="REJECTED",
+                    reason="HALT_UNKNOWN",
+                    timestamp=value.evaluation_timestamp or observation.timestamp,
+                )
                 shadow_reasons.append(ReasonCode.HALT_UNKNOWN.value)
                 blocked = _transition_record(
                     assessed, ForwardTransition.ENTRY_BLOCKED,
@@ -741,6 +813,11 @@ class WarriorForwardCaptureService:
                 records.append(blocked)
                 signal = None
             elif account is None:
+                performance_diagnostics.record_entry_funnel(
+                    symbol, stage="ACCOUNT_GATE", outcome="REJECTED",
+                    reason="ACCOUNT_UNAVAILABLE",
+                    timestamp=value.evaluation_timestamp or observation.timestamp,
+                )
                 shadow_reasons.append(ReasonCode.EXECUTION_NOT_ALLOWED.value)
                 blocked = _transition_record(
                     assessed, ForwardTransition.ENTRY_BLOCKED,
@@ -750,6 +827,10 @@ class WarriorForwardCaptureService:
                 records.append(blocked)
                 signal = None
             else:
+                performance_diagnostics.record_entry_funnel(
+                    symbol, stage="ACCOUNT_GATE", outcome="ACCEPTED",
+                    timestamp=value.evaluation_timestamp or observation.timestamp,
+                )
                 # Establish the volatility-adjusted plan before paying up.
                 # Execution displacement cannot move that plan's targets.
                 signal = adapt_initial_stop(
@@ -763,6 +844,11 @@ class WarriorForwardCaptureService:
                     else signal
                 )
                 if executable_signal is None:
+                    performance_diagnostics.record_entry_funnel(
+                        symbol, stage="ADAPTIVE_PRICE_GATE", outcome="REJECTED",
+                        reason="ENTRY_PRICE_DISPLACED",
+                        timestamp=value.evaluation_timestamp or observation.timestamp,
+                    )
                     shadow_reasons.append(ReasonCode.ENTRY_PRICE_DISPLACED.value)
                     records.append(_transition_record(
                         assessed, ForwardTransition.ENTRY_BLOCKED,
@@ -775,6 +861,10 @@ class WarriorForwardCaptureService:
                     signal = None
                     position = None
                 else:
+                    performance_diagnostics.record_entry_funnel(
+                        symbol, stage="ADAPTIVE_PRICE_GATE", outcome="ACCEPTED",
+                        timestamp=value.evaluation_timestamp or observation.timestamp,
+                    )
                     signal = executable_signal
                     position = size_position(
                     signal, account_equity=account.equity,
@@ -788,6 +878,10 @@ class WarriorForwardCaptureService:
                     symbol_authorized=symbol_authorization.authorized,
                     )
                 if signal is not None and position is not None and position.approved:
+                    performance_diagnostics.record_entry_funnel(
+                        symbol, stage="RISK_AUTHORIZATION", outcome="ACCEPTED",
+                        timestamp=value.evaluation_timestamp or observation.timestamp,
+                    )
                     bid, ask = value.observation.bid, value.observation.ask
                     economics_ok = bool(bid is not None and ask is not None and ask >= bid
                         and remaining_reward_ok(
@@ -796,6 +890,11 @@ class WarriorForwardCaptureService:
                             minimum_first_r=self.config.entry.minimum_remaining_first_target_r,
                             minimum_final_r=self.config.entry.minimum_remaining_final_target_r))
                     if not economics_ok:
+                        performance_diagnostics.record_entry_funnel(
+                            symbol, stage="REWARD_GATE", outcome="REJECTED",
+                            reason="INSUFFICIENT_REMAINING_REWARD",
+                            timestamp=value.evaluation_timestamp or observation.timestamp,
+                        )
                         records.append(_transition_record(
                             assessed, ForwardTransition.ENTRY_BLOCKED,
                             ("INSUFFICIENT_REMAINING_REWARD",),
@@ -811,6 +910,17 @@ class WarriorForwardCaptureService:
                         )
                         signal = None
                         position = None
+                    else:
+                        performance_diagnostics.record_entry_funnel(
+                            symbol, stage="REWARD_GATE", outcome="ACCEPTED",
+                            timestamp=value.evaluation_timestamp or observation.timestamp,
+                        )
+                elif position is not None:
+                    performance_diagnostics.record_entry_funnel(
+                        symbol, stage="RISK_AUTHORIZATION", outcome="REJECTED",
+                        reason=(position.reason_codes[-1].value if position.reason_codes else "RISK_REJECTED"),
+                        timestamp=value.evaluation_timestamp or observation.timestamp,
+                    )
                 if position is not None and position.approved:
                     entry_value_quantity = position.shares
                     entry_records, execution_record, authorization_decision = self._open_paper(
@@ -827,6 +937,16 @@ class WarriorForwardCaptureService:
                     records.extend(entry_records)
                     if execution_record is not None:
                         records.append(execution_record)
+                    performance_diagnostics.record_entry_funnel(
+                        symbol, stage="PAPER_AUTHORIZATION",
+                        outcome="ACCEPTED" if entry_records else "REJECTED",
+                        timestamp=value.evaluation_timestamp or observation.timestamp,
+                        reason=(None if entry_records else "PAPER_SUBMITTER_REJECTED"),
+                    )
+                    if entry_records:
+                        performance_diagnostics.record_entry_funnel(
+                            symbol, stage="ORDER_INTENT", timestamp=value.evaluation_timestamp or observation.timestamp,
+                        )
                     if entry_records:
                         from app.trade_intelligence.opportunity_memory import EntryAttemptSummary
                         self.opportunity_memory.record_entry_attempt(
@@ -851,6 +971,11 @@ class WarriorForwardCaptureService:
                     if self._paper_entry_submitter is not None and not entry_records:
                         shadow_reasons.append(ReasonCode.EXECUTION_NOT_ALLOWED.value)
                         signal = None
+                        performance_diagnostics.record_entry_funnel(
+                            symbol, stage="ORDER_REJECTED", outcome="REJECTED",
+                            reason="EXECUTION_NOT_ALLOWED",
+                            timestamp=value.evaluation_timestamp or observation.timestamp,
+                        )
                 elif position is not None:
                     shadow_reasons.extend(code.value for code in position.reason_codes)
                     records.append(_transition_record(
@@ -924,6 +1049,12 @@ class WarriorForwardCaptureService:
                 # decision, record publication, or order outcome.
                 pass
         self._submit_records(tuple(records))
+        if technical_signal is not None and signal is None:
+            performance_diagnostics.record_entry_funnel(
+                symbol, stage="TECHNICAL_SIGNAL_CLEARED", outcome="REJECTED",
+                reason=(assessed.reason_codes[-1].value if assessed.reason_codes else "DOWNSTREAM_GATE"),
+                timestamp=value.evaluation_timestamp or observation.timestamp,
+            )
         return assessed, signal
 
     def observe_paper_event(self, event: object) -> None:

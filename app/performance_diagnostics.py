@@ -25,6 +25,18 @@ _MAX_ENTRY_PURSUIT_RECORDS = 512
 _MAX_SETUP_TRANSITION_RECORDS = 512
 _MAX_PROTECTION_EVENTS = 256
 _MAX_STRATEGY_SELECTION_RECORDS = 256
+_MAX_ENTRY_FUNNEL_RECORDS = 512
+_ENTRY_FUNNEL_STAGES = (
+    "SCANNER_QUALIFIED", "SETUP_FORMING", "SETUP_TRIGGERED",
+    "TECHNICAL_SIGNAL", "TECHNICAL_SIGNAL_CLEARED", "FRESHNESS_CHECK",
+    "PROCESSING_AGE_CHECK", "EXECUTION_QUOTE_REQUESTED",
+    "EXECUTION_QUOTE_RETURNED", "EXECUTION_QUOTE_REJECTED",
+    "EXECUTION_QUOTE_ACCEPTED", "EXECUTION_PERMISSION",
+    "HALT_SESSION_GATE", "ACCOUNT_GATE", "ADAPTIVE_PRICE_GATE",
+    "RISK_AUTHORIZATION", "REWARD_GATE", "PAPER_AUTHORIZATION",
+    "ORDER_INTENT", "ORDER_SUBMITTED", "ORDER_ACKNOWLEDGED",
+    "ORDER_REJECTED", "FILL", "PARTIAL_FILL",
+)
 _ENTRY_COUNTERS = (
     "entry_authorizations", "entry_orders_submitted", "pursuit_evaluations",
     "pursuit_not_invoked_due_to_state", "replacement_candidates",
@@ -445,6 +457,8 @@ class PerformanceDiagnostics:
         self._entry_lifecycle_records: OrderedDict[str, dict[str, object]] = OrderedDict()
         self._entry_pursuit_records: deque[dict[str, object]] = deque(maxlen=_MAX_ENTRY_PURSUIT_RECORDS)
         self._entry_setup_records: deque[dict[str, object]] = deque(maxlen=_MAX_SETUP_TRANSITION_RECORDS)
+        self._entry_funnel_counts = {name: 0 for name in _ENTRY_FUNNEL_STAGES}
+        self._entry_funnel_records: deque[dict[str, object]] = deque(maxlen=_MAX_ENTRY_FUNNEL_RECORDS)
         self._protection_events: deque[dict[str, object]] = deque(maxlen=_MAX_PROTECTION_EVENTS)
         self._strategy_selection_records: deque[dict[str, object]] = deque(maxlen=_MAX_STRATEGY_SELECTION_RECORDS)
         self._entry_last_setup_state: OrderedDict[str, str] = OrderedDict()
@@ -662,6 +676,39 @@ class PerformanceDiagnostics:
         except Exception:
             return
 
+    def record_entry_funnel(self, symbol: str, stage: str,
+                            outcome: str = "OBSERVED", timestamp: object | None = None,
+                            reason: str | None = None, **values: object) -> None:
+        """Record bounded, sanitized entry-funnel evidence.
+
+        This is diagnostic-only. Unknown stages/reasons are normalized and no
+        exception or provider payload is retained.
+        """
+        try:
+            normalized_symbol = str(symbol).strip().upper()
+            normalized_stage = str(stage).strip().upper()
+            if not normalized_symbol or normalized_stage not in _ENTRY_FUNNEL_STAGES:
+                return
+            normalized_outcome = str(outcome).strip().upper()[:64] or "OBSERVED"
+            record = {
+                "symbol": normalized_symbol,
+                "stage": normalized_stage,
+                "outcome": normalized_outcome,
+            }
+            if timestamp is not None:
+                record["timestamp"] = _json_safe(timestamp)
+            if reason is not None:
+                record["reason"] = str(reason).strip().upper()[:64]
+            for key, value in values.items():
+                if key in {"price", "quantity", "account", "response", "exception", "message"}:
+                    continue
+                record[str(key)] = _json_safe(value)
+            with self._lock:
+                self._entry_funnel_counts[normalized_stage] += 1
+                self._entry_funnel_records.append(record)
+        except Exception:
+            return
+
     def record_pursuit_evaluation(self, *, reason: str, **values: object) -> None:
         """Append a bounded, payload-free structured pursuit decision."""
         try:
@@ -740,10 +787,13 @@ class PerformanceDiagnostics:
                 "lifecycle_records": tuple(self._entry_lifecycle_records.values()),
                 "pursuit_evaluations": tuple(self._entry_pursuit_records),
                 "setup_transitions": tuple(self._entry_setup_records),
+                "funnel_counts": dict(self._entry_funnel_counts),
+                "funnel_records": tuple(self._entry_funnel_records),
                 "bounds": {
                     "lifecycle_records": _MAX_ENTRY_LIFECYCLE_RECORDS,
                     "pursuit_evaluations": _MAX_ENTRY_PURSUIT_RECORDS,
                     "setup_transitions": _MAX_SETUP_TRANSITION_RECORDS,
+                    "funnel_records": _MAX_ENTRY_FUNNEL_RECORDS,
                 },
             }
 

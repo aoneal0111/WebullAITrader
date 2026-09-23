@@ -649,6 +649,10 @@ class AutonomousPaperExecutionBridge:
             reason: PaperEntryAuthorizationReason, *, constructed: bool = False,
             attempted: bool = False, placement: str | None = None,
         ) -> PaperEntryAuthorizationDecision:
+            performance_diagnostics.record_entry_funnel(
+                symbol=symbol, stage="PAPER_AUTHORIZATION", outcome="REJECTED",
+                reason=reason.value, timestamp=datetime.now(UTC),
+            )
             if reason is PaperEntryAuthorizationReason.DUPLICATE_LIFECYCLE:
                 performance_diagnostics.record_entry_counter(
                     "same_lifecycle_suppression_after_expiry"
@@ -776,6 +780,13 @@ class AutonomousPaperExecutionBridge:
                     constructed=True, attempted=True,
                 )
             gate("submission", result.success, result.decision.value, "SUCCESS")
+            performance_diagnostics.record_entry_funnel(
+                symbol=symbol,
+                stage="ORDER_ACKNOWLEDGED" if result.success else "ORDER_REJECTED",
+                outcome="ACCEPTED" if result.success else "REJECTED",
+                reason=None if result.success else result.decision.value,
+                timestamp=datetime.now(UTC),
+            )
             if not result.success:
                 reasons = {
                     OrderPlacementDecision.DISABLED: PaperEntryAuthorizationReason.ORDER_PLACEMENT_DISABLED,
@@ -795,6 +806,14 @@ class AutonomousPaperExecutionBridge:
             self._active_by_symbol[symbol] = identity
             self._entry_orders[identity] = result.broker_order_id
             performance_diagnostics.record_entry_counter("entry_orders_submitted")
+            performance_diagnostics.record_entry_funnel(
+                symbol=symbol, stage="PAPER_AUTHORIZATION", outcome="ACCEPTED",
+                timestamp=datetime.now(UTC),
+            )
+            performance_diagnostics.record_entry_funnel(
+                symbol=symbol, stage="ORDER_SUBMITTED", outcome="ACCEPTED",
+                timestamp=datetime.now(UTC),
+            )
             performance_diagnostics.record_entry_lifecycle(
                 identity,
                 risk_approved=True,
