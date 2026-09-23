@@ -126,6 +126,7 @@ class DesktopBrokerRuntimeDriver:
         self._market_data_stop = Event()
         self._terminal_stream_failure_published = False
         self._market_data_consumer_state = "STOPPED"
+        self._shutdown_requested = False
         self._market_data_consumer_attempted = False
         self._market_data_first_event_consumed = False
         self._market_data_failure_stage = None
@@ -206,6 +207,7 @@ class DesktopBrokerRuntimeDriver:
             raise TypeError("stop_event must be a threading Event")
         if not callable(cycle_sink):
             raise TypeError("cycle_sink must be callable")
+        self._shutdown_requested = stop_event.is_set()
 
         performance_diagnostics.record_startup_stage("process_started")
 
@@ -266,6 +268,7 @@ class DesktopBrokerRuntimeDriver:
         except Exception as exc:
             primary_error = (exc, exc.__traceback__)
         finally:
+            self._shutdown_requested = stop_event.is_set()
             cleanup_phases = (
                 ("dynamic momentum research stop", self._stop_dynamic_momentum_discovery),
                 ("market-data stop", self._stop_market_data),
@@ -1306,6 +1309,14 @@ class DesktopBrokerRuntimeDriver:
         if self._market_data is None:
             return
         self._market_data_stop.set()
+        # Close callback admission before joining the consumer.  Raw market
+        # observations left after an intentional consumer stop are
+        # observational and may be discarded; authoritative lane events are
+        # drained by their own shutdown protocol.
+        transport = self._market_data_transport()
+        halt_ingestion = getattr(transport, "halt_callback_ingestion", None)
+        if callable(halt_ingestion):
+            halt_ingestion()
         thread = self._market_data_thread
         if thread is not None:
             thread.join(timeout=5.0)
@@ -1334,6 +1345,10 @@ class DesktopBrokerRuntimeDriver:
         except Exception as exc:
             self._market_data_failure_stage = "TRANSPORT_SHUTDOWN"
             self._market_data_failure_exception_class = type(exc).__name__
+            if self._shutdown_requested and isinstance(exc, TimeoutError):
+                self._market_data_consumer_state = "STOPPED"
+                self._market_data_connected = False
+                return
             self._publish_terminal_market_data_failure(exc)
             raise
         finally:

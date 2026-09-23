@@ -77,3 +77,38 @@ def test_consumer_waits_for_scanner_runnable_state_during_reconnect():
 
     assert scanner.run_calls == 0
     assert driver._market_data_consumer_state == "RUNNING"
+
+
+def test_normal_shutdown_halts_raw_admission_before_transport_close_timeout():
+    calls = []
+
+    class Transport:
+        def halt_callback_ingestion(self):
+            calls.append("halt")
+
+    class Scanner:
+        def stop(self):
+            calls.append("scanner_stop")
+
+        def disconnect(self):
+            calls.append("disconnect")
+            raise TimeoutError("SDK close exceeded bound")
+
+    driver = object.__new__(DesktopBrokerRuntimeDriver)
+    driver._market_data = object()
+    driver._market_data_stop = Event()
+    driver._market_data_thread = None
+    driver._market_data_connected = True
+    driver._scanner = Scanner()
+    driver._market_data_consumer_state = "STOPPED"
+    driver._market_data_failure_stage = None
+    driver._market_data_failure_exception_class = None
+    driver._shutdown_requested = True
+    driver._market_data_transport = lambda: Transport()
+    driver._publish_health = lambda *args, **kwargs: None
+
+    driver._stop_market_data()
+
+    assert calls == ["halt", "scanner_stop", "disconnect"]
+    assert driver._market_data_connected is False
+    assert driver._market_data_failure_stage == "TRANSPORT_SHUTDOWN"
