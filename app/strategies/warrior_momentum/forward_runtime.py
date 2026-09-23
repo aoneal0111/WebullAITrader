@@ -23,6 +23,7 @@ from .forward_models import (
 from .autonomous_paper import lifecycle_identity
 from .execution_quote import ExecutionQuoteSource
 from .entry_economics import remaining_reward_ok
+from .entry_extension import assess_entry_extension
 from .execution_pursuit import (
     ExecutionPursuitAssessment, ExecutionPursuitDecision,
     assess_top_of_book_pursuit, depth_features, depth_transition,
@@ -1206,8 +1207,9 @@ class WarriorForwardCaptureService:
             "first_scanner_qualified_at": "price_at_first_qualification",
             "first_setup_forming_at": "price_at_first_forming",
             "first_setup_triggered_at": "price_at_first_trigger",
-            "first_entry_authorized_at": "price_at_entry_authorization",
             "first_order_submitted_at": "price_at_order_submission",
+            "first_execution_eligible_at": "price_at_execution_eligibility",
+            "first_entry_authorized_at": "price_at_entry_authorization",
         }
 
         def first(field: str, field_price: Decimal | None = price) -> None:
@@ -1236,12 +1238,17 @@ class WarriorForwardCaptureService:
             first("first_setup_forming_at")
         elif normalized_state == SetupState.TRIGGERED.value:
             first("first_setup_triggered_at")
+            if hod is not None and "hod_at_trigger" not in record:
+                record["hod_at_trigger"] = hod
         if technical_signal is not None:
             first("first_technical_signal_at")
         if signal is not None:
             first("first_execution_eligible_at")
         if lifecycle_stage in {"ENTRY_AUTHORIZED", "ORDER_SUBMITTED"}:
             first("first_entry_authorized_at")
+            if hod is not None and "hod_at_entry" not in record:
+                record["hod_at_entry"] = hod
+            record["actual_order_price"] = price
         if lifecycle_stage == "ORDER_SUBMITTED":
             first("first_order_submitted_at")
         for field, field_value in (
@@ -1592,11 +1599,6 @@ class WarriorForwardCaptureService:
         if ask is None or ask <= ZERO:
             return None
         structural = signal.structural_entry_trigger or signal.entry_trigger
-        # If the live ask is already at/below the canonical trigger, preserve
-        # the detector-owned limit.  The bounded displacement policy applies
-        # only when execution would require paying above that trigger.
-        if Decimal(ask) <= structural:
-            return signal
         maximum = min(
             structural * (
                 Decimal("1")
@@ -1604,6 +1606,15 @@ class WarriorForwardCaptureService:
             ),
             structural + self.config.adaptive_entry.max_displacement_absolute,
         )
+        self._record_entry_extension(
+            value, candidate, signal, entry_price=Decimal(ask),
+            displacement_limit=maximum,
+        )
+        # If the live ask is already at/below the canonical trigger, preserve
+        # the detector-owned limit.  The bounded displacement policy applies
+        # only when execution would require paying above that trigger.
+        if Decimal(ask) <= structural:
+            return signal
         executable = max(structural, Decimal(ask))
         if executable > maximum or executable <= signal.stop_price:
             return None
@@ -1628,6 +1639,71 @@ class WarriorForwardCaptureService:
             target_levels=signal.target_levels,
             structural_entry_trigger=structural,
         )
+
+    def _record_entry_extension(
+        self,
+        value: PointInTimeObservation,
+        candidate: MomentumCandidate,
+        signal: MomentumEntrySignal,
+        *,
+        entry_price: Decimal,
+        displacement_limit: Decimal,
+    ) -> None:
+        """Publish bounded extension evidence without affecting authority."""
+        try:
+            lifecycle = self._setup_lifecycles.get(candidate.symbol.strip().upper(), {})
+            bars = tuple(value.bars[-20:])
+            vwap = None
+            volume = sum((bar.volume for bar in bars), ZERO)
+            if volume > ZERO:
+                vwap = sum((bar.close * bar.volume for bar in bars), ZERO) / volume
+            hod = None
+            if candidate.distance_from_hod_percent is not None and candidate.price > ZERO:
+                hod = candidate.price / (
+                    Decimal("1") - candidate.distance_from_hod_percent / HUNDRED
+                )
+            assessment = assess_entry_extension(
+                entry_price=entry_price,
+                trigger_price=signal.structural_entry_trigger or signal.entry_trigger,
+                structural_stop=signal.stop_price,
+                first_observation_price=lifecycle.get("price_at_first_observation"),
+                forming_price=lifecycle.get("price_at_first_forming"),
+                hod=hod, vwap=vwap,
+                trigger_at=lifecycle.get("first_setup_triggered_at"),
+                evaluated_at=value.evaluation_timestamp or value.observation.timestamp,
+                displacement_limit=displacement_limit,
+            )
+            signature = (assessment.classification, assessment.trigger_extension_percent,
+                         assessment.risk_normalized_extension)
+            prior = lifecycle.get("entry_extension_signature")
+            lifecycle["entry_extension_signature"] = signature
+            lifecycle["entry_extension"] = assessment
+            if prior == signature or self.writer is None:
+                return
+            timestamp = value.evaluation_timestamp or value.observation.timestamp
+            payload = {
+                "classification": assessment.classification,
+                "trigger_price": signal.structural_entry_trigger or signal.entry_trigger,
+                "structural_stop": signal.stop_price,
+                "entry_price": entry_price,
+                "trigger_extension_percent": assessment.trigger_extension_percent,
+                "risk_normalized_extension": assessment.risk_normalized_extension,
+                "hod_distance_percent": assessment.hod_distance_percent,
+                "at_hod": assessment.at_hod,
+                "vwap_extension_percent": assessment.vwap_extension_percent,
+                "move_since_first_observation_percent": assessment.move_since_observation_percent,
+                "move_since_forming_percent": assessment.move_since_forming_percent,
+                "move_since_trigger_percent": assessment.move_since_trigger_percent,
+                "seconds_since_trigger": assessment.seconds_since_trigger,
+                "setup_type": signal.setup_type.value,
+            }
+            self.writer.submit_diagnostic(CaptureRecord.create(
+                CaptureRecordType.ENTRY_EXTENSION, candidate.symbol, timestamp,
+                payload, identity_parts=(assessment.classification, str(entry_price)),
+            ))
+        except Exception:
+            # Extension evidence is diagnostic only and cannot affect entry.
+            return
 
     def _consider_adaptive_entry_replacement(
         self,
