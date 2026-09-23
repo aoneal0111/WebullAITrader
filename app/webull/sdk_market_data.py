@@ -250,16 +250,38 @@ class WebullScannerUniverseProvider:
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         page_size: int = 50,
+        maximum_breadth: int = 50,
+        sources: tuple[str, ...] = ("SESSION_GAINERS", "RELATIVE_VOLUME_10D"),
+        retention_seconds: int = 300,
         admission_observer: object | None = None,
     ) -> None:
         if page_size < 1 or page_size > 100:
             raise ValueError("scanner screener page_size must be 1..100")
+        if maximum_breadth < page_size or maximum_breadth > 500:
+            raise ValueError("scanner screener maximum_breadth must be page_size..500")
+        if retention_seconds < 0:
+            raise ValueError("scanner screener retention_seconds cannot be negative")
+        if not sources:
+            raise ValueError("scanner screener requires at least one source")
         self._client = client
         self._clock = clock
         self._page_size = page_size
+        self._maximum_breadth = maximum_breadth
+        self._sources = tuple(dict.fromkeys(str(source).strip().upper() for source in sources))
+        self._retention = timedelta(seconds=retention_seconds)
         self._admission_observer = admission_observer
         self._rows: dict[str, Mapping[str, object]] = {}
         self._instruments: dict[str, UniverseSymbol] = {}
+        self._row_seen_at: dict[str, datetime] = {}
+        self._provenance: dict[str, list[tuple[str, int]]] = {}
+        self._metrics: dict[str, int] = {
+            "refresh_count": 0, "raw_symbols": 0, "unique_symbols": 0,
+            "retained_symbols": 0, "expired_symbols": 0, "pages": 0,
+        }
+
+    def metrics(self) -> dict[str, int]:
+        """Return bounded discovery-pool counters for read-only observability."""
+        return dict(self._metrics)
 
     def list_symbols(
         self,
@@ -282,68 +304,105 @@ class WebullScannerUniverseProvider:
             timestamp=observed_at, session=session.value,
             page_size=self._page_size,
         )
-        responses = (
-            ("PREMARKET_GAINERS" if session is ScannerSession.PREMARKET else
-             "AFTER_HOURS_GAINERS" if session is ScannerSession.AFTER_HOURS else
-             "DAY_GAINERS", screener.get_gainers_losers(
-                rank_type,
-                "US_STOCK",
-                "CHANGE_RATIO",
-                page_index=1,
-                page_size=self._page_size,
-                direction="DESC",
-            )),
-            ("RELATIVE_VOLUME_10D", screener.get_most_active(
-                "US_STOCK",
-                sort_by="RELATIVE_VOLUME_10D",
-                page_index=1,
-                page_size=self._page_size,
-                direction="DESC",
-            )),
-        )
         rows: dict[str, Mapping[str, object]] = {}
         provenance: dict[str, list[tuple[str, int]]] = {}
-        for source_identity, response in responses:
-            for source_rank, row in enumerate(_response_rows(response), 1):
-                symbol = str(row.get("symbol", "")).strip().upper()
-                _observe_admission(
-                    self._admission_observer, "record",
-                    stage=UniverseAdmissionStage.SCREENER_RETURNED,
-                    outcome=UniverseAdmissionOutcome.OBSERVED,
-                    reason="UPSTREAM_RESPONSE_ROW",
-                    screener_identity=source_identity,
-                    source_rank=source_rank,
-                    raw_symbol=str(row.get("symbol", "")),
-                    upstream_fields=row,
-                )
-                _observe_admission(
-                    self._admission_observer, "record",
-                    stage=UniverseAdmissionStage.REQUEST_WINDOW_INCLUDED,
-                    outcome=UniverseAdmissionOutcome.INCLUDED,
-                    reason="PAGE_INDEX_1_PAGE_SIZE_REQUEST_NO_LOCAL_TRUNCATION",
-                    screener_identity=source_identity,
-                    source_rank=source_rank,
-                    raw_symbol=str(row.get("symbol", "")),
-                    upstream_fields={
-                        "page_index": 1, "page_size": self._page_size,
-                    },
-                )
-                if not symbol:
+        pages = 0
+        for source in self._sources:
+            source_identity = (
+                "PREMARKET_GAINERS" if source == "SESSION_GAINERS" and session is ScannerSession.PREMARKET
+                else "AFTER_HOURS_GAINERS" if source == "SESSION_GAINERS" and session is ScannerSession.AFTER_HOURS
+                else "DAY_GAINERS" if source == "SESSION_GAINERS" else source
+            )
+            source_rank = 0
+            for page_index in range(1, (self._maximum_breadth + self._page_size - 1) // self._page_size + 1):
+                try:
+                    pages += 1
+                    response = _screener_page(
+                        screener, source, rank_type,
+                        page_index=page_index, page_size=self._page_size,
+                    )
+                    page_rows = _response_rows(response)
+                except Exception as exc:
                     _observe_admission(
                         self._admission_observer, "record",
-                        stage=UniverseAdmissionStage.NORMALIZATION_REJECTED,
-                        outcome=UniverseAdmissionOutcome.REJECTED,
-                        reason="MISSING_SYMBOL",
+                        stage="DISCOVERY_SOURCE_FAILED",
+                        outcome="FAILED", reason=type(exc).__name__,
+                        screener_identity=source_identity,
+                        upstream_fields={"page_index": page_index},
+                    )
+                    break
+                for row in page_rows:
+                    source_rank += 1
+                    if source_rank > self._maximum_breadth:
+                        break
+                    symbol = str(row.get("symbol", "")).strip().upper()
+                    _observe_admission(
+                        self._admission_observer, "record",
+                        stage=UniverseAdmissionStage.SCREENER_RETURNED,
+                        outcome=UniverseAdmissionOutcome.OBSERVED,
+                        reason="UPSTREAM_RESPONSE_ROW",
                         screener_identity=source_identity,
                         source_rank=source_rank,
                         raw_symbol=str(row.get("symbol", "")),
+                        upstream_fields=row,
                     )
-                    continue
+                    _observe_admission(
+                        self._admission_observer, "record",
+                        stage=UniverseAdmissionStage.REQUEST_WINDOW_INCLUDED,
+                        outcome=UniverseAdmissionOutcome.INCLUDED,
+                        reason="PAGINATED_BOUNDED_REQUEST_WINDOW",
+                        screener_identity=source_identity,
+                        source_rank=source_rank,
+                        raw_symbol=str(row.get("symbol", "")),
+                        upstream_fields={
+                            "page_index": page_index, "page_size": self._page_size,
+                        },
+                    )
+                    if not symbol:
+                        _observe_admission(
+                            self._admission_observer, "record",
+                            stage=UniverseAdmissionStage.NORMALIZATION_REJECTED,
+                            outcome=UniverseAdmissionOutcome.REJECTED,
+                            reason="MISSING_SYMBOL",
+                            screener_identity=source_identity,
+                            source_rank=source_rank,
+                            raw_symbol=str(row.get("symbol", "")),
+                        )
+                        continue
+                    rows[symbol] = row
+                    provenance.setdefault(symbol, []).append(
+                        (source_identity, source_rank)
+                    )
+                if len(page_rows) < self._page_size or source_rank >= self._maximum_breadth:
+                    break
+        now = observed_at
+        fresh_symbols = set(rows)
+        previous_symbols = set(self._rows)
+        for symbol, row in self._rows.items():
+            seen = self._row_seen_at.get(symbol)
+            if seen is not None and now - seen <= self._retention and symbol not in rows:
                 rows[symbol] = row
-                provenance.setdefault(symbol, []).append(
-                    (source_identity, source_rank)
+                provenance[symbol] = list(self._provenance.get(symbol, ()))
+                _observe_admission(
+                    self._admission_observer, "record",
+                    stage="DISCOVERY_RETAINED", outcome="RETAINED",
+                    reason="WITHIN_DISCOVERY_TTL", normalized_symbol=symbol,
                 )
         self._rows = rows
+        self._provenance = provenance
+        self._row_seen_at.update({symbol: now for symbol in fresh_symbols})
+        self._row_seen_at = {
+            symbol: seen for symbol, seen in self._row_seen_at.items()
+            if symbol in rows and now - seen <= self._retention
+        }
+        self._metrics.update({
+            "refresh_count": self._metrics["refresh_count"] + 1,
+            "raw_symbols": sum(len(values) for values in provenance.values()),
+            "unique_symbols": len(rows),
+            "retained_symbols": len(set(rows) - fresh_symbols),
+            "expired_symbols": len(previous_symbols - set(rows) - fresh_symbols),
+            "pages": pages,
+        })
         instrument_rows, instrument_error = _instrument_rows_with_error(
             client, tuple(sorted(rows))
         )
@@ -660,6 +719,29 @@ def _response_rows(response: object) -> tuple[Mapping[str, object], ...]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         raise ValueError("Webull market-data response did not contain rows")
     return tuple(row for row in value if isinstance(row, Mapping))
+
+
+def _screener_page(
+    screener: object, source: str, rank_type: str, *,
+    page_index: int, page_size: int,
+) -> object:
+    """Request one bounded page using locally proven screener APIs."""
+    if source == "SESSION_GAINERS":
+        return screener.get_gainers_losers(
+            rank_type, "US_STOCK", "CHANGE_RATIO",
+            page_index=page_index, page_size=page_size, direction="DESC",
+        )
+    sort_by = {
+        "RELATIVE_VOLUME_10D": "RELATIVE_VOLUME_10D",
+        "VOLUME_LEADERS": "VOLUME",
+        "TURNOVER_LEADERS": "TURNOVER",
+    }.get(source)
+    if sort_by is None:
+        raise ValueError(f"unsupported scanner discovery source: {source}")
+    return screener.get_most_active(
+        "US_STOCK", sort_by=sort_by,
+        page_index=page_index, page_size=page_size, direction="DESC",
+    )
 
 
 def _catalyst_response_rows(

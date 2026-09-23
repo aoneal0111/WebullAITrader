@@ -280,6 +280,14 @@ def create_configured_desktop_broker_driver(
         universe_provider = WebullScannerUniverseProvider(
             data_client,
             clock=clock,
+            # Discovery breadth is expanded independently from the existing
+            # bounded real-time promotion/subscription budget.
+            maximum_breadth=250,
+            sources=(
+                "SESSION_GAINERS", "RELATIVE_VOLUME_10D",
+                "VOLUME_LEADERS", "TURNOVER_LEADERS",
+            ),
+            retention_seconds=300,
             admission_observer=universe_admission_observer,
         )
         catalyst_providers = build_catalyst_providers(
