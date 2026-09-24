@@ -102,6 +102,20 @@ class MomentumScannerPipeline:
             return None
         return self._evaluate_result(event, result)
 
+    def reduce_transport_only(self, event: MarketEvent) -> bool:
+        """Reduce canonical state without admitting scanner evaluation."""
+        result = self.adapter.consume(event)
+        self._raw_callbacks_received += 1
+        reduced_at = self._clock()
+        performance_diagnostics.mark_latency_trace_timestamp(
+            "canonical_reduction_completed_at", reduced_at,
+        )
+        self._record_stage_age(
+            "dequeue_to_canonical_reduction", event.dequeued_timestamp,
+            reduced_at,
+        )
+        return result is not None and result.observation is not None
+
     def _evaluate_result(
         self,
         event: MarketEvent,

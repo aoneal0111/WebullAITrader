@@ -434,6 +434,17 @@ class RealtimeScannerEngine:
         self._record_decision(decision)
         return decision
 
+    def consume_transport_only(self, event: Any) -> bool:
+        """Advance canonical state without scanner or entry admission."""
+        symbol = _event_symbol(event)
+        if symbol is None or symbol not in self._known_symbols:
+            self._ignored_events += 1
+            return False
+        reducer = getattr(self._pipeline, "reduce_transport_only", None)
+        if not callable(reducer):
+            return False
+        return bool(reducer(event))
+
     def drain_evaluations(
         self, *, maximum: int | None = None,
     ) -> tuple[ScannerDecision, ...]:

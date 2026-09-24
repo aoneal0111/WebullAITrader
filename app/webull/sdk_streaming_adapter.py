@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from os import environ
+from threading import Lock
 from typing import Callable, Mapping, Sequence
 from uuid import uuid4
 
@@ -27,6 +28,16 @@ MQTT_V311 = 4
 
 SDKClientFactory = Callable[..., object]
 SessionIdFactory = Callable[[], str]
+
+_PROCESS_GENERATION_LOCK = Lock()
+_PROCESS_GENERATION = 0
+
+
+def _next_process_generation() -> int:
+    global _PROCESS_GENERATION
+    with _PROCESS_GENERATION_LOCK:
+        _PROCESS_GENERATION += 1
+        return _PROCESS_GENERATION
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,6 +221,7 @@ def create_official_stream_backend(
         subscription_mapper=subscription.sdk_arguments,
         receive_timeout_seconds=receive_timeout_seconds,
         sdk_client_factory=lambda: build_client(f"atlas-{uuid4().hex}"),
+        generation_allocator=_next_process_generation,
     )
 
 

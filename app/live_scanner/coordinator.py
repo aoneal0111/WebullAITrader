@@ -388,6 +388,40 @@ class LiveScannerCoordinator:
             running=self._running,
         )
 
+    def run_transport_available(
+        self,
+        *,
+        maximum_events: int | None = None,
+    ) -> LiveScannerCycle:
+        """Drain transport callbacks before scanner admission is ready."""
+        if not self._connected:
+            raise RuntimeError("live scanner is not connected")
+        limit = self._maximum_events_per_cycle if maximum_events is None else maximum_events
+        if limit <= 0:
+            raise ValueError("maximum_events must be positive")
+        events_read = 0
+        while events_read < limit:
+            read_nowait = getattr(self._transport, "read_event_nowait", None)
+            event = read_nowait() if callable(read_nowait) else self._transport.read_event()
+            if event is None:
+                break
+            reducer = getattr(self._engine, "consume_transport_only", None)
+            if callable(reducer):
+                reducer(event)
+            if self._authoritative_lane is not None:
+                self._authoritative_lane.publish(event)
+            elif self._event_observer is not None:
+                self._event_observer(event)
+            events_read += 1
+        self._events_read += events_read
+        self._cycles_completed += 1
+        return LiveScannerCycle(
+            events_read=events_read,
+            decisions_created=0,
+            stream_exhausted=events_read < limit,
+            running=self._running,
+        )
+
     def _drain_evaluations(self) -> tuple[Any, ...]:
         if self._asynchronous_authoritative:
             return ()

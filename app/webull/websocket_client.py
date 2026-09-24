@@ -26,6 +26,7 @@ class StreamBackend(Protocol):
 
 SubscriptionMapper = Callable[[tuple[str, ...]], object]
 SdkClientFactory = Callable[[], object]
+GenerationAllocator = Callable[[], int]
 DiagnosticSink = Callable[[dict[str, object]], None]
 StreamLifecycleSink = Callable[
     [str, int, Exception | None],
@@ -67,6 +68,7 @@ class OfficialSdkStreamBackend:
         sleeper: Callable[[float], None] = sleep,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         sdk_client_factory: SdkClientFactory | None = None,
+        generation_allocator: GenerationAllocator | None = None,
         ingestion_capacity: int = 4096,
     ) -> None:
         if receive_timeout_seconds < 0:
@@ -90,6 +92,7 @@ class OfficialSdkStreamBackend:
         self._sleeper = sleeper
         self._clock = clock
         self._sdk_client_factory = sdk_client_factory
+        self._generation_allocator = generation_allocator
         self._ingestion_capacity = int(ingestion_capacity)
         self._messages: Queue[object] = Queue(maxsize=self._ingestion_capacity)
         self._message_metrics_lock = Lock()
@@ -129,6 +132,7 @@ class OfficialSdkStreamBackend:
         self._consumption_started = False
         self._has_connected = False
         self._active_subscription: tuple[str, ...] | None = None
+        self._active_subscription_generation: int | None = None
         self._identity_lock = Lock()
         self._expected_session_id = ""
         self._owner_api_client: object | None = None
@@ -346,6 +350,7 @@ class OfficialSdkStreamBackend:
         self._registration_ready.clear()
         self._subscription_acknowledged.clear()
         self._active_subscription = None
+        self._active_subscription_generation = None
         self._emit_diagnostic("SESSION_IDENTITY_INVALIDATED")
         self._expected_session_id = ""
         self._notify(
@@ -360,7 +365,11 @@ class OfficialSdkStreamBackend:
         performance_diagnostics.record_stream_observability(
             "CONNECT_REQUESTED", generation=self._generation + 1,
         )
-        self._generation += 1
+        self._generation = (
+            int(self._generation_allocator())
+            if self._generation_allocator is not None
+            else self._generation + 1
+        )
         performance_diagnostics.record_stream_observability(
             "CONNECT_STARTED", generation=self._generation,
         )
@@ -449,6 +458,7 @@ class OfficialSdkStreamBackend:
         self._registration_ready.clear()
         self._subscription_acknowledged.clear()
         self._active_subscription = None
+        self._active_subscription_generation = None
         self._emit_diagnostic("SESSION_IDENTITY_INVALIDATED")
         self._expected_session_id = ""
         loop_stop = getattr(self.client, "loop_stop", None)
@@ -504,7 +514,11 @@ class OfficialSdkStreamBackend:
             raise ValueError(
                 "Webull market-data subscriptions are limited to 100 symbols"
             )
-        if self._subscription_acknowledged.is_set() and self._active_subscription == normalized_channels:
+        if (
+            self._subscription_acknowledged.is_set()
+            and self._active_subscription == normalized_channels
+            and self._active_subscription_generation == self._generation
+        ):
             performance_diagnostics.record_stream_observability(
                 "SUBSCRIPTION_NO_CHANGE", generation=self._generation,
                 desired_count=len(normalized_channels), desired_fingerprint=desired_fp,
@@ -533,6 +547,7 @@ class OfficialSdkStreamBackend:
                 )
             unsubscribe(unsubscribe_all=True)
             self._active_subscription = None
+            self._active_subscription_generation = None
             self._subscription_acknowledged.clear()
             self._emit_diagnostic("ACTIVE_SUBSCRIPTION_RELEASED")
             performance_diagnostics.record_stream_observability(
@@ -615,6 +630,7 @@ class OfficialSdkStreamBackend:
                 continue
             self._subscription_acknowledged.set()
             self._active_subscription = normalized_channels
+            self._active_subscription_generation = self._generation
             performance_diagnostics.record_startup_stage("subscription_completed")
             performance_diagnostics.increment_startup_counter(
                 "subscription_completed_symbols", len(normalized_channels)
@@ -824,6 +840,8 @@ class WebullWebSocketClient:
         self.consecutive_decode_failures = 0
         self._receive_loop_observed = False
         self._recovery_attempt_sequence = 0
+        self._recovery_lock = Lock()
+        self._recovery_owner: str | None = None
         self.decoder_health = "STREAM_CONNECTED"
         diagnostic_setter = getattr(self.backend, "set_diagnostic_sink", None)
         if callable(diagnostic_setter):
@@ -841,6 +859,32 @@ class WebullWebSocketClient:
         backend_setter = getattr(self.backend, "set_lifecycle_sink", None)
         if callable(backend_setter):
             backend_setter(sink)
+
+    @property
+    def recovery_active(self) -> bool:
+        with self._recovery_lock:
+            return self._recovery_owner is not None
+
+    def begin_recovery(self, owner: str) -> bool:
+        """Claim the single transport replacement lifecycle."""
+        owner = str(owner).strip().upper() or "UNKNOWN"
+        with self._recovery_lock:
+            if self._recovery_owner is not None:
+                performance_diagnostics.record_stream_observability(
+                    "RECOVERY_COALESCED",
+                    controller=owner,
+                    active_controller=self._recovery_owner,
+                    reason_category="RECOVERY_ALREADY_ACTIVE",
+                )
+                return False
+            self._recovery_owner = owner
+            return True
+
+    def end_recovery(self, owner: str) -> None:
+        owner = str(owner).strip().upper() or "UNKNOWN"
+        with self._recovery_lock:
+            if self._recovery_owner == owner:
+                self._recovery_owner = None
 
     @property
     def log(self) -> MarketEventLog:
@@ -1248,6 +1292,13 @@ class WebullWebSocketClient:
                     raise
                 continue
             except Exception as exc:
+                if self.recovery_active:
+                    performance_diagnostics.record_stream_observability(
+                        "RECOVERY_COALESCED",
+                        controller="TRANSPORT",
+                        reason_category="EXTERNAL_RECOVERY_ACTIVE",
+                    )
+                    return None
                 if network_attempt >= self.policy.maximum_attempts:
                     terminal = NetworkError(
                         "Webull stream reconnect exhausted",
@@ -1272,6 +1323,8 @@ class WebullWebSocketClient:
                     generation=getattr(self.backend, "generation_metrics", {}).get("generation"),
                     trigger_category=type(exc).__name__,
                 )
+                if not self.begin_recovery("TRANSPORT"):
+                    return None
                 try:
                     self.sleeper(self.policy.backoff_seconds)
                     self.backend.connect()
@@ -1294,6 +1347,8 @@ class WebullWebSocketClient:
                         reconnect_error,
                     )
                     raise
+                finally:
+                    self.end_recovery("TRANSPORT")
                 network_attempt += 1
                 self.health = update_health(self.health, websocket_connected=True, reconnect_count=self.health.reconnect_count + 1)
                 self._notify(

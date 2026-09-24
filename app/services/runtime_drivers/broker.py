@@ -149,6 +149,7 @@ class DesktopBrokerRuntimeDriver:
         self._feed_recovery_pending = False
         self._last_feed_recovery_at = 0.0
         self._feed_recovery_started_monotonic: float | None = None
+        self._feed_recovery_owner_claimed = False
         self._diagnostic_recovery_attempt_sequence = 0
         self._last_watchdog_payload_monotonic: float | None = None
         observer_owner = getattr(market_event_observer, "__self__", None)
@@ -990,6 +991,17 @@ class DesktopBrokerRuntimeDriver:
                     if not bool(getattr(self._scanner, "connected", True)) or not bool(
                         getattr(self._scanner, "running", True)
                     ):
+                        drain_startup = getattr(
+                            self._scanner, "run_transport_available", None
+                        )
+                        if callable(drain_startup) and bool(
+                            getattr(self._scanner, "connected", True)
+                        ):
+                            cycle = drain_startup()
+                            if cycle.events_read:
+                                self._market_data_consumer_attempted = True
+                                self._scanner_events_since_observation += cycle.events_read
+                                continue
                         # Reconnect transitions are deliberate.  Do not turn
                         # the coordinator's temporary non-running state into
                         # a terminal consumer exception.
@@ -1606,6 +1618,16 @@ class DesktopBrokerRuntimeDriver:
         recovery_id = self._diagnostic_recovery_attempt_sequence
         self._feed_recovery_started_monotonic = now
         transport = self._market_data_transport()
+        begin_recovery = getattr(transport, "begin_recovery", None)
+        if callable(begin_recovery) and not begin_recovery("WATCHDOG"):
+            self._feed_recovery_pending = False
+            performance_diagnostics.record_stream_observability(
+                "RECOVERY_COALESCED",
+                controller="WATCHDOG",
+                reason_category="TRANSPORT_RECOVERY_ACTIVE",
+            )
+            return
+        self._feed_recovery_owner_claimed = callable(begin_recovery)
         generation_metrics = getattr(transport, "generation_metrics", {}) or {}
         performance_diagnostics.record_stream_observability(
             "RECOVERY_STARTED", controller="WATCHDOG",
@@ -1663,6 +1685,12 @@ class DesktopBrokerRuntimeDriver:
                     last_error=type(exc).__name__,
                 ),
             )
+        finally:
+            if self._feed_recovery_owner_claimed:
+                end_recovery = getattr(transport, "end_recovery", None)
+                if callable(end_recovery):
+                    end_recovery("WATCHDOG")
+                self._feed_recovery_owner_claimed = False
 
     def _complete_feed_recovery(self) -> None:
         self._feed_recovery_pending = False

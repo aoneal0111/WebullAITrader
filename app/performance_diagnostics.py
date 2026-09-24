@@ -28,6 +28,15 @@ _MAX_PROTECTION_EVENTS = 256
 _MAX_STRATEGY_SELECTION_RECORDS = 256
 _MAX_ENTRY_FUNNEL_RECORDS = 512
 _MAX_STREAM_OBSERVABILITY_EVENTS = 512
+_MAX_RADAR_OBSERVABILITY_EVENTS = 128
+_CRITICAL_STREAM_EVENTS = frozenset({
+    "PAYLOAD_STALE_CONTEXT", "RECOVERY_STARTED", "RECOVERY_SUCCEEDED",
+    "RECOVERY_FAILED", "RECOVERY_COALESCED", "CONNECT_REQUESTED",
+    "CONNECT_STARTED", "CONNECT_SUCCEEDED", "DISCONNECT_REQUESTED",
+    "GENERATION_RETIRED", "RECEIVE_LOOP_STARTED", "SUBSCRIBE_REQUESTED",
+    "SUBSCRIBE_COMPLETED", "SUBSCRIBE_FAILED", "UNSUBSCRIBE_REQUESTED",
+    "UNSUBSCRIBE_COMPLETED", "CALLBACK_REJECTED",
+})
 _ENTRY_FUNNEL_STAGES = (
     "SCANNER_QUALIFIED", "SETUP_FORMING", "SETUP_TRIGGERED",
     "TECHNICAL_SIGNAL", "TECHNICAL_SIGNAL_CLEARED", "FRESHNESS_CHECK",
@@ -439,6 +448,9 @@ class PerformanceDiagnostics:
         }
         self._stream_observability_events: deque[dict[str, object]] = deque(
             maxlen=_MAX_STREAM_OBSERVABILITY_EVENTS
+        )
+        self._stream_radar_events: deque[dict[str, object]] = deque(
+            maxlen=_MAX_RADAR_OBSERVABILITY_EVENTS
         )
         self._stream_observability_counts: dict[str, int] = {}
         self._active_recovery_controllers: set[str] = set()
@@ -1070,7 +1082,29 @@ class PerformanceDiagnostics:
                     else:
                         value = str(value)[:128]
                     record[key_text] = value
-                self._stream_observability_events.append(record)
+                if name == "RADAR_PROMOTED":
+                    # Per-symbol promotion evidence is intentionally kept out
+                    # of the critical lifecycle ring.  The separate bounded
+                    # ring preserves samples without evicting stale/recovery
+                    # evidence needed to explain transport outages.
+                    self._stream_radar_events.append(record)
+                else:
+                    if len(self._stream_observability_events) >= _MAX_STREAM_OBSERVABILITY_EVENTS:
+                        if name not in _CRITICAL_STREAM_EVENTS:
+                            return
+                        replacement = next(
+                            (
+                                index
+                                for index, existing in enumerate(self._stream_observability_events)
+                                if existing.get("event") not in _CRITICAL_STREAM_EVENTS
+                            ),
+                            None,
+                        )
+                        if replacement is None:
+                            self._stream_observability_events.popleft()
+                        else:
+                            del self._stream_observability_events[replacement]
+                    self._stream_observability_events.append(record)
         except Exception:
             # Diagnostics are strictly non-authoritative.
             return
@@ -1080,6 +1114,7 @@ class PerformanceDiagnostics:
             return {
                 "counts": dict(self._stream_observability_counts),
                 "events": tuple(dict(item) for item in self._stream_observability_events),
+                "radar_events": tuple(dict(item) for item in self._stream_radar_events),
             }
 
     def record_stream_raw_callback(
