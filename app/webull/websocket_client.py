@@ -130,7 +130,7 @@ class OfficialSdkStreamBackend:
         self._generation_first_dequeued_at: datetime | None = None
         self._generation_callback_sequence = 0
         self._generation_accounting: dict[str, object] = {}
-        self._generation_summaries: deque[dict[str, object]] = deque(maxlen=8)
+        self._generation_summaries: deque[dict[str, object]] = deque(maxlen=16)
         self._first_callback_generation: int | None = None
         self._first_dequeue_generation: int | None = None
         self._first_current_generation_callback_at: datetime | None = None
@@ -266,9 +266,7 @@ class OfficialSdkStreamBackend:
             if "remaining_depth_at_retirement" in record or "queue_depth_at_retirement" in record:
                 depth = max(
                     0,
-                    int(record.get("remaining_depth_at_retirement", record.get("queue_depth_at_retirement", 0)) or 0)
-                    - int(record.get("callbacks_dequeued_retired_generation", 0) or 0)
-                    - int(record.get("callbacks_purged", 0) or 0),
+                    int(record.get("remaining_depth_at_retirement", record.get("queue_depth_at_retirement", 0)) or 0),
                 )
             elif record.get("generation") == self._generation:
                 depth = self._message_queue_depth
@@ -467,9 +465,19 @@ class OfficialSdkStreamBackend:
         performance_diagnostics.record_stream_observability(
             "CONNECT_REQUESTED", generation=next_generation,
         )
+        replacing_generation = self._has_connected
         if self._generation_accounting:
+            pending_before = self._message_queue_depth
+            if replacing_generation:
+                self.halt_callback_ingestion()
+                pending_before = self._message_queue_depth + int(
+                    self._generation_accounting.get("callbacks_purged", 0) or 0
+                )
             self._generation_accounting["remaining_depth_at_retirement"] = self._message_queue_depth
             self._generation_accounting["retirement_reason"] = "REPLACED_ON_CONNECT"
+            self._generation_accounting["retirement_disposition"] = (
+                "PURGED" if pending_before else "NO_PENDING_CALLBACKS"
+            )
             self._generation_summaries.append(dict(self._generation_accounting))
         self._generation = next_generation
         self._generation_accounting = {
@@ -489,6 +497,7 @@ class OfficialSdkStreamBackend:
             "decode_failed": 0,
             "normalized": 0,
             "retirement_reason": None,
+            "retirement_disposition": None,
         }
         performance_diagnostics.record_stream_observability(
             "CONNECT_STARTED", generation=self._generation,
@@ -504,7 +513,7 @@ class OfficialSdkStreamBackend:
         self._last_raw_callback_monotonic = None
         self._last_raw_callback_at = None
         performance_diagnostics.record_startup_stage("stream_connect_started")
-        if self._has_connected:
+        if replacing_generation:
             self._replace_client()
         self._has_connected = True
         self._connected.clear()
@@ -593,6 +602,9 @@ class OfficialSdkStreamBackend:
         if self._generation_accounting:
             self._generation_accounting["remaining_depth_at_retirement"] = self._message_queue_depth
             self._generation_accounting["retirement_reason"] = "DISCONNECT"
+            self._generation_accounting["retirement_disposition"] = (
+                "PURGED" if self._generation_accounting.get("callbacks_purged") else "NO_PENDING_CALLBACKS"
+            )
             self._generation_summaries.append(dict(self._generation_accounting))
             self._generation_accounting = {}
         performance_diagnostics.record_stream_observability(

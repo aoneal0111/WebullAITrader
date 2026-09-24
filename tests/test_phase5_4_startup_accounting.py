@@ -113,19 +113,18 @@ def test_overflow_is_received_but_not_enqueued():
     assert accounting["callbacks_enqueued"] == 1
 
 
-def test_retired_generation_is_dequeued_and_separately_classified():
+def test_retired_generation_pending_queue_is_purged_and_accounted():
     backend = OfficialSdkStreamBackend(
         _Sdk(), registration_grace_seconds=0, sdk_client_factory=_Sdk
     )
     backend.connect()
     backend._on_quotes_message(backend.client, "quotes", {"symbol": "A"})
     backend.connect()
-    backend.receive_nowait()
     summary = [item for item in backend.generation_accounting() if item["generation"] == 1][0]
     assert summary["callbacks_enqueued"] == 1
-    assert summary["callbacks_dequeued_total"] == 1
-    assert summary["callbacks_dequeued_retired_generation"] == 1
-    assert summary["callbacks_purged"] == 0
+    assert summary["callbacks_dequeued_total"] == 0
+    assert summary["callbacks_purged"] == 1
+    assert summary["retirement_disposition"] == "PURGED"
 
 
 def test_generation_accounting_reports_separate_domain_statuses():
@@ -136,7 +135,7 @@ def test_generation_accounting_reports_separate_domain_statuses():
     accounting = backend.generation_accounting()[-1]
     assert accounting["received_domain_status"] == "ACCOUNTING_COMPLETE"
     assert accounting["queue_domain_status"] == "ACCOUNTING_COMPLETE"
-    assert len(backend.generation_accounting()) <= 8
+    assert len(backend.generation_accounting()) <= 16
 
 
 def test_cross_generation_startup_metric_is_explicit():

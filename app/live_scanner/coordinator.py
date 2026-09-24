@@ -157,6 +157,14 @@ class LiveScannerCoordinator:
             else _normalize_channels(channels)
         )
         self._scanner_channels = scanner_channels
+        if (
+            self._subscription_bootstrap_pending
+            and self._channels
+            and len(scanner_channels) <= 1
+        ):
+            return self._channels
+        if len(scanner_channels) > 1:
+            self._subscription_bootstrap_pending = False
         return self._subscribe_effective(scanner_channels)
 
     def refresh_universe(
