@@ -467,6 +467,9 @@ class PerformanceDiagnostics:
             "hidden_rejected_count": 0,
             "missing_field_counts": {},
             "completeness_transitions": {},
+            "readiness_counts": {},
+            "missing_state_counts": {},
+            "missing_state_examples": {},
             "rejection_counts": {},
             "failed_rule_distribution": {"0": 0, "1": 0, "2": 0, "3_plus": 0},
             "all_decision_rank_count": 0,
@@ -1189,6 +1192,9 @@ class PerformanceDiagnostics:
         adapter_state_count: int,
         missing_field_counts: object,
         completeness_transitions: object = None,
+        readiness_counts: object = None,
+        missing_state_counts: object = None,
+        missing_state_examples: object = None,
     ) -> None:
         """Record current adapter population without retaining symbol history."""
         with self._lock:
@@ -1201,6 +1207,18 @@ class PerformanceDiagnostics:
             self._scanner_population["completeness_transitions"] = {
                 str(key): dict(value)
                 for key, value in dict(completeness_transitions or {}).items()
+            }
+            self._scanner_population["readiness_counts"] = {
+                str(key): max(0, int(value)) if value is not None else None
+                for key, value in dict(readiness_counts or {}).items()
+            }
+            self._scanner_population["missing_state_counts"] = {
+                str(key): max(0, int(value))
+                for key, value in dict(missing_state_counts or {}).items()
+            }
+            self._scanner_population["missing_state_examples"] = {
+                str(key): tuple(str(symbol) for symbol in values)[:3]
+                for key, values in dict(missing_state_examples or {}).items()
             }
 
     def record_scanner_population_display(self, values: dict[str, object]) -> None:

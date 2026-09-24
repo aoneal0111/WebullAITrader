@@ -470,7 +470,16 @@ class LiveScannerCoordinator:
         *,
         limit: int = 25,
     ) -> Any:
-        return self._engine.snapshot(limit=limit)
+        snapshot = getattr(self._engine, "snapshot")
+        try:
+            return snapshot(
+                limit=limit,
+                streamed_symbols=self._channels,
+            )
+        except TypeError:
+            # Compatibility with narrow test/dynamic engines that predate
+            # completeness-aware streaming coverage diagnostics.
+            return snapshot(limit=limit)
 
     def diagnostic_results(self, *, limit: int = 3):
         diagnostics = getattr(self._engine, "diagnostic_results", None)
@@ -684,7 +693,16 @@ class LiveScannerCoordinator:
 
     @property
     def qualification_ready(self) -> bool:
+        engine_value = getattr(self._engine, "qualification_ready", None)
+        if engine_value is not None:
+            return bool(engine_value)
         return bool(self.active_symbols)
+
+    @property
+    def pending_evaluation_symbols(self) -> tuple[str, ...]:
+        return tuple(
+            getattr(self._engine, "pending_evaluation_symbols", ())
+        )
 
     @property
     def observation_ready(self) -> bool:

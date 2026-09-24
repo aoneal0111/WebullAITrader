@@ -1194,6 +1194,24 @@ class DesktopBrokerRuntimeDriver:
                 )
                 continue
             if decision is None:
+                pending_symbols = tuple(
+                    str(symbol).strip().upper()
+                    for symbol in getattr(
+                        self._scanner, "pending_evaluation_symbols", ()
+                    )
+                )
+                if state.symbol in pending_symbols:
+                    _SCANNER_LOGGER.info(
+                        "event_type=scanner_qualification symbol=%s "
+                        "status=evaluation_pending missing=qualification_decision "
+                        "quote_timestamp=%s trade_timestamp=%s "
+                        "snapshot_timestamp=%s",
+                        state.symbol,
+                        _iso_or_dash(state.quote_timestamp),
+                        _iso_or_dash(state.trade_timestamp),
+                        _iso_or_dash(state.snapshot_timestamp),
+                    )
+                    continue
                 _SCANNER_LOGGER.info(
                     "event_type=scanner_qualification symbol=%s "
                     "status=incomplete missing=qualification_decision "

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from threading import RLock
 
 from app.scanner_adapter.models import ScannerReferenceData
 
@@ -11,10 +12,12 @@ class ScannerReferenceStore:
         values: Iterable[ScannerReferenceData] = (),
     ) -> None:
         self._values: dict[str, ScannerReferenceData] = {}
+        self._lock = RLock()
         self.update_many(values)
 
     def put(self, value: ScannerReferenceData) -> None:
-        self._values[value.symbol] = value
+        with self._lock:
+            self._values[value.symbol] = value
 
     def update_many(
         self,
@@ -24,16 +27,20 @@ class ScannerReferenceStore:
             self.put(value)
 
     def get(self, symbol: str) -> ScannerReferenceData | None:
-        return self._values.get(symbol.strip().upper())
+        with self._lock:
+            return self._values.get(symbol.strip().upper())
 
     def remove(self, symbol: str) -> None:
-        self._values.pop(symbol.strip().upper(), None)
+        with self._lock:
+            self._values.pop(symbol.strip().upper(), None)
 
     def symbols(self) -> tuple[str, ...]:
-        return tuple(sorted(self._values))
+        with self._lock:
+            return tuple(sorted(self._values))
 
     def __len__(self) -> int:
-        return len(self._values)
+        with self._lock:
+            return len(self._values)
 
     def memory_metrics(self) -> dict[str, int]:
         return {"reference_count": len(self._values)}

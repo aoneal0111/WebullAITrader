@@ -56,23 +56,27 @@ class MarketEventScannerAdapter:
         trading_date = _effective_trading_date(event.timestamp)
         if trading_date is None:
             return None
-        if self._active_trading_date is not None and trading_date < self._active_trading_date:
-            return None
-        if self._active_trading_date is None:
-            self._active_trading_date = trading_date
-        elif trading_date > self._active_trading_date:
-            self._advance_trading_date(trading_date)
+        with self._state_lock:
+            if (
+                self._active_trading_date is not None
+                and trading_date < self._active_trading_date
+            ):
+                return None
+            if self._active_trading_date is None:
+                self._active_trading_date = trading_date
+            elif trading_date > self._active_trading_date:
+                self._advance_trading_date(trading_date)
 
-        previous = self._states.get(symbol)
-        if previous is None:
-            previous = self._new_state(symbol, trading_date)
-        elif previous.trading_date != trading_date:
-            previous = self._new_state(symbol, trading_date)
-        else:
-            previous = self._seed_existing_state(previous, trading_date)
+            previous = self._states.get(symbol)
+            if previous is None:
+                previous = self._new_state(symbol, trading_date)
+            elif previous.trading_date != trading_date:
+                previous = self._new_state(symbol, trading_date)
+            else:
+                previous = self._seed_existing_state(previous, trading_date)
 
-        state = self._apply(previous, event)
-        self._states[symbol] = state
+            state = self._apply(previous, event)
+            self._states[symbol] = state
 
         if (
             self._price_observer is not None
@@ -143,7 +147,9 @@ class MarketEventScannerAdapter:
         self,
         *,
         active_symbols: tuple[str, ...] | None = None,
+        streamed_symbols: tuple[str, ...] | None = None,
         now: datetime | None = None,
+        stale_after_seconds: float = 10.0,
     ) -> dict[str, object]:
         """Return bounded aggregate completeness diagnostics for current states."""
         observed_at = now or datetime.now(UTC)
@@ -154,7 +160,70 @@ class MarketEventScannerAdapter:
                 "catalyst", "tradable", "other",
             )
         }
-        for state in self._states.values():
+        with self._state_lock:
+            state_values = tuple(self._states.values())
+        selected = (
+            {symbol.strip().upper() for symbol in active_symbols}
+            if active_symbols is not None else None
+        )
+        streamed = (
+            {symbol.strip().upper() for symbol in streamed_symbols}
+            if streamed_symbols is not None else None
+        )
+        selected_states = tuple(
+            state for state in state_values
+            if selected is None or state.symbol in selected
+        )
+        readiness = {
+            "discovered": len(selected_states),
+            "reference_ready": 0,
+            "observation_ready": 0,
+            "qualification_ready": 0,
+            "streamed": 0 if streamed is not None else None,
+        }
+        missing_state_counts = {
+            "NOT_STREAMED": 0,
+            "NO_LIVE_PRICE": 0,
+            "NO_BID_ASK": 0,
+            "NO_CURRENT_VOLUME": 0,
+            "NO_PREVIOUS_CLOSE": 0,
+            "NO_AVERAGE_VOLUME": 0,
+            "NO_FLOAT": 0,
+            "NO_TRADABILITY": 0,
+            "CATALYST_PENDING": 0,
+            "STALE_LIVE_DATA": 0,
+            "OTHER": 0,
+        }
+        missing_examples: dict[str, list[str]] = {
+            key: [] for key in missing_state_counts
+        }
+        for state in selected_states:
+            reference = self.reference_store.get(state.symbol)
+            if reference is not None:
+                readiness["reference_ready"] += 1
+            if streamed is not None and state.symbol in streamed:
+                readiness["streamed"] += 1
+            live_seen = (
+                state.quote_timestamp is not None
+                or state.trade_timestamp is not None
+                or state.snapshot_timestamp is not None
+            )
+            if live_seen:
+                readiness["observation_ready"] += 1
+            observation, missing = self._build_observation(state)
+            if observation is not None:
+                readiness["qualification_ready"] += 1
+            categories = _missing_state_categories(
+                state, reference, missing,
+                now=observed_at,
+                stale_after_seconds=stale_after_seconds,
+                streamed=streamed,
+            )
+            for category in categories:
+                missing_state_counts[category] += 1
+                _bounded_missing_example(
+                    missing_examples, category, state.symbol,
+                )
             _observation, missing = self._build_observation(state)
             for field in missing:
                 missing_counts[field if field in missing_counts else "other"] += 1
@@ -164,7 +233,6 @@ class MarketEventScannerAdapter:
                 missing,
                 state.timestamp or observed_at,
             )
-        selected = set(active_symbols) if active_symbols is not None else None
         transitions = {
             symbol: dict(values)
             for symbol, values in self._completeness_transitions.items()
@@ -183,6 +251,12 @@ class MarketEventScannerAdapter:
             )
         return {
             "adapter_state_count": len(self._states),
+            "readiness_counts": readiness,
+            "missing_state_counts": missing_state_counts,
+            "missing_state_examples": {
+                key: tuple(values) for key, values in missing_examples.items()
+                if values
+            },
             "missing_field_counts": missing_counts,
             "completeness_transitions": transitions,
         }
@@ -231,23 +305,49 @@ class MarketEventScannerAdapter:
 
     def reset_symbol(self, symbol: str) -> None:
         normalized = symbol.strip().upper()
-        self._states.pop(normalized, None)
-        self._completeness_transitions.pop(normalized, None)
+        with self._state_lock:
+            self._states.pop(normalized, None)
+            self._completeness_transitions.pop(normalized, None)
 
     def reset_volume(self, symbol: str) -> None:
         normalized = symbol.strip().upper()
-        current = self._states.get(normalized)
+        with self._state_lock:
+            current = self._states.get(normalized)
 
-        if current is not None:
-            self._states[normalized] = replace(
-                current,
-                cumulative_volume=Decimal("0"),
-                authoritative_volume=None,
-                local_trade_volume=Decimal("0"),
-                extended_volume=None,
-                overnight_volume=None,
-                volume_semantics=None,
+            if current is not None:
+                self._states[normalized] = replace(
+                    current,
+                    cumulative_volume=Decimal("0"),
+                    authoritative_volume=None,
+                    local_trade_volume=Decimal("0"),
+                    extended_volume=None,
+                    overnight_volume=None,
+                    volume_semantics=None,
+                )
+
+    def reference_updated(self, symbol: str) -> AdapterResult | None:
+        """Merge a newly available reference seed into existing live state.
+
+        This is intentionally limited to the existing same-session seed
+        semantics used on the next live event.  Local pre-seed trade sizes are
+        not added to the provider cumulative seed because doing so could
+        double-count trades already represented by that seed.
+        """
+        normalized = symbol.strip().upper()
+        with self._state_lock:
+            state = self._states.get(normalized)
+            if state is None:
+                return None
+            merged = self._seed_existing_state(state, state.trading_date)
+            self._states[normalized] = merged
+            observation, missing = self._build_observation(merged)
+            self._update_completeness_transition(
+                normalized,
+                observation is not None,
+                missing,
+                merged.timestamp or datetime.now(UTC),
             )
+            return AdapterResult(merged, observation, missing)
 
     def _new_state(self, symbol: str, trading_date: date) -> SymbolScannerState:
         reference = self.reference_store.get(symbol)
@@ -716,4 +816,53 @@ def _select_snapshot_volume(
             if value is not None
         )
     return max(candidates)
+
+
+def _bounded_missing_example(
+    examples: dict[str, list[str]], category: str, symbol: str,
+    *, limit: int = 3,
+) -> None:
+    values = examples.setdefault(category, [])
+    if symbol not in values and len(values) < limit:
+        values.append(symbol)
+
+
+def _missing_state_categories(
+    state: SymbolScannerState,
+    reference: ScannerReferenceData | None,
+    missing: tuple[str, ...],
+    *,
+    now: datetime,
+    stale_after_seconds: float,
+    streamed: set[str] | None,
+) -> tuple[str, ...]:
+    """Classify incomplete state without changing qualification policy."""
+    if streamed is not None and state.symbol not in streamed:
+        return ("NOT_STREAMED",)
+    categories: list[str] = []
+    if state.last_price is None:
+        categories.append("NO_LIVE_PRICE")
+    if state.bid is None or state.ask is None:
+        categories.append("NO_BID_ASK")
+    if state.authoritative_volume is None:
+        categories.append("NO_CURRENT_VOLUME")
+    if reference is None or "previous_close" in missing:
+        categories.append("NO_PREVIOUS_CLOSE")
+    if reference is None or "average_30_day_volume" in missing:
+        categories.append("NO_AVERAGE_VOLUME")
+    if reference is None or reference.float_shares is None:
+        categories.append("NO_FLOAT")
+    if reference is not None and reference.catalyst_status.value == "UNKNOWN":
+        categories.append("CATALYST_PENDING")
+    latest_live = _latest_timestamp(
+        state.quote_timestamp,
+        _latest_timestamp(state.trade_timestamp, state.snapshot_timestamp),
+    )
+    if latest_live is not None and (
+        now - latest_live
+    ).total_seconds() > max(0.0, float(stale_after_seconds)):
+        categories.append("STALE_LIVE_DATA")
+    if not categories and missing:
+        categories.append("OTHER")
+    return tuple(dict.fromkeys(categories))
 

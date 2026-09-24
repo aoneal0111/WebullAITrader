@@ -305,6 +305,12 @@ class RealtimeScannerEngine:
 
             if self._reference_sink is not None:
                 self._reference_sink(record)
+            schedule_reference = getattr(self._pipeline, "reference_ready", None)
+            if callable(schedule_reference):
+                # The reference sink updates canonical reference storage before
+                # this call.  Scheduling is observational only and remains
+                # subject to the pipeline's normal completeness gates.
+                schedule_reference(symbol)
             performance_diagnostics.record_reference_result(
                 (perf_counter() - reference_started) * 1000.0,
                 success=reference_success,
@@ -529,6 +535,7 @@ class RealtimeScannerEngine:
         self,
         *,
         limit: int = 25,
+        streamed_symbols: tuple[str, ...] | None = None,
     ) -> ScannerSnapshot:
         timestamp = self._clock()
 
@@ -539,16 +546,28 @@ class RealtimeScannerEngine:
 
         population_metrics = getattr(self._pipeline, "population_metrics", None)
         if callable(population_metrics):
-            values = population_metrics(
-                active_symbols=tuple(sorted(self._active_symbols)),
-                now=timestamp,
-            )
+            try:
+                values = population_metrics(
+                    active_symbols=tuple(sorted(self._active_symbols)),
+                    streamed_symbols=streamed_symbols,
+                    now=timestamp,
+                )
+            except TypeError:
+                values = population_metrics(
+                    active_symbols=tuple(sorted(self._active_symbols)),
+                    now=timestamp,
+                )
             performance_diagnostics.record_scanner_population_base(
                 active_symbols=len(self._active_symbols),
                 adapter_state_count=int(values.get("adapter_state_count", 0)),
                 missing_field_counts=values.get("missing_field_counts", {}),
                 completeness_transitions=values.get(
                     "completeness_transitions", {}
+                ),
+                readiness_counts=values.get("readiness_counts", {}),
+                missing_state_counts=values.get("missing_state_counts", {}),
+                missing_state_examples=values.get(
+                    "missing_state_examples", {}
                 ),
             )
 
@@ -597,6 +616,26 @@ class RealtimeScannerEngine:
             if not callable(diagnostics)
             else diagnostics(example_limit=example_limit)
         )
+
+    @property
+    def qualification_ready(self) -> bool:
+        """Whether at least one canonical state is complete for evaluation."""
+        metrics = getattr(self._pipeline, "population_metrics", None)
+        if not callable(metrics):
+            return False
+        try:
+            values = metrics(active_symbols=tuple(sorted(self._active_symbols)))
+        except TypeError:
+            values = metrics()
+        readiness = values.get("readiness_counts", {})
+        return int(readiness.get("qualification_ready", 0) or 0) > 0
+
+    @property
+    def pending_evaluation_symbols(self) -> tuple[str, ...]:
+        pending = getattr(self._pipeline, "pending_evaluation_symbols", None)
+        if not callable(pending):
+            return ()
+        return tuple(pending())
 
     @property
     def active_symbols(self) -> tuple[str, ...]:

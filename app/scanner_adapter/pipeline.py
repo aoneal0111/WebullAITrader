@@ -62,6 +62,11 @@ class MomentumScannerPipeline:
             capacity=evaluation_mailbox_capacity,
         ) if self._coalesce_observational else None
         self._symbol_versions: dict[str, int] = {}
+        # The latest accepted event is retained only as a bounded evaluation
+        # cursor.  It lets a reference-warmup completion schedule evaluation
+        # when live state arrived first, without replaying or fabricating a
+        # market event.
+        self._latest_events: dict[str, MarketEvent] = {}
         self._raw_callbacks_received = 0
         self._superseded_evaluations_skipped = 0
         self._result_version_rejections = 0
@@ -76,6 +81,7 @@ class MomentumScannerPipeline:
         event: MarketEvent,
     ) -> ScannerDecision | None:
         result = self.adapter.consume(event)
+        self._latest_events[event.symbol.strip().upper()] = event
         self._raw_callbacks_received += 1
         reduced_at = self._clock()
         performance_diagnostics.mark_latency_trace_timestamp(
@@ -105,6 +111,7 @@ class MomentumScannerPipeline:
     def reduce_transport_only(self, event: MarketEvent) -> bool:
         """Reduce canonical state without admitting scanner evaluation."""
         result = self.adapter.consume(event)
+        self._latest_events[event.symbol.strip().upper()] = event
         self._raw_callbacks_received += 1
         reduced_at = self._clock()
         performance_diagnostics.mark_latency_trace_timestamp(
@@ -115,6 +122,32 @@ class MomentumScannerPipeline:
             reduced_at,
         )
         return result is not None and result.observation is not None
+
+    def reference_ready(self, symbol: str) -> bool:
+        """Schedule the latest coherent state after reference completion.
+
+        Reference warmup runs outside the market-event consumer.  When live
+        state arrived first, waiting for another tick would leave a complete
+        symbol permanently absent from the asynchronous evaluation mailbox.
+        This method only schedules existing canonical state; it does not
+        bypass observation, qualification, freshness, or execution gates.
+        """
+        mailbox = self._evaluation_mailbox
+        normalized = symbol.strip().upper()
+        event = self._latest_events.get(normalized)
+        if mailbox is None or event is None:
+            return False
+        refresh_reference = getattr(self.adapter, "reference_updated", None)
+        if callable(refresh_reference):
+            result = refresh_reference(normalized)
+            observation_ready = result is not None and result.observation is not None
+        else:
+            observation_ready = self.adapter.observation_for(normalized) is not None
+        if not observation_ready:
+            return False
+        version = self._symbol_versions.get(normalized, 0) + 1
+        self._symbol_versions[normalized] = version
+        return mailbox.enqueue(normalized, version, self._clock(), event)
 
     def _evaluate_result(
         self,
@@ -300,6 +333,7 @@ class MomentumScannerPipeline:
         """Discard stream-derived state for one symbol."""
         normalized = symbol.strip().upper()
         self.adapter.reset_symbol(normalized)
+        self._latest_events.pop(normalized, None)
         self._latest.pop(normalized, None)
         self._symbol_versions.pop(normalized, None)
         reset = getattr(self._decision_sink, "reset_symbol", None)
@@ -354,14 +388,26 @@ class MomentumScannerPipeline:
         self,
         *,
         active_symbols: tuple[str, ...] | None = None,
+        streamed_symbols: tuple[str, ...] | None = None,
         now=None,
     ) -> dict[str, object]:
         metrics = getattr(self.adapter, "population_metrics", None)
         return (
             {}
             if not callable(metrics)
-            else metrics(active_symbols=active_symbols, now=now)
+            else metrics(
+                active_symbols=active_symbols,
+                streamed_symbols=streamed_symbols,
+                now=now,
+            )
         )
+
+    def pending_evaluation_symbols(self) -> tuple[str, ...]:
+        mailbox = self._evaluation_mailbox
+        if mailbox is None:
+            return ()
+        metrics = mailbox.metrics()
+        return tuple(str(symbol) for symbol in metrics.get("pending_symbols", ()))
 
     def ranked(
         self,
