@@ -492,6 +492,7 @@ class LiveScannerCoordinator:
         transport_latency = getattr(self._transport, "latency_metrics", None)
         transport_ingestion = getattr(self._transport, "ingestion_metrics", None)
         transport_discard = getattr(self._transport, "discard_metrics", None)
+        transport_generation_accounting = getattr(self._transport, "generation_accounting", None)
         engine_metrics = getattr(self._engine, "memory_metrics", None)
         metrics = {
             "last_failure_stage": self._last_failure_stage,
@@ -519,6 +520,8 @@ class LiveScannerCoordinator:
                 f"transport_{key}": value
                 for key, value in transport_discard().items()
             })
+        if callable(transport_generation_accounting):
+            metrics["transport_generation_accounting"] = transport_generation_accounting()
         if "transport_messages_enqueued" in metrics:
             metrics["raw_callbacks_received"] = metrics["transport_messages_enqueued"]
         if "transport_messages_dequeued" in metrics:
@@ -749,7 +752,9 @@ class LiveScannerCoordinator:
             self._subscription_bootstrap_pending
             and self._channels
             and selected
-            and len(selected) <= 1
+            # Bootstrap size is a property of discovery input, not the
+            # effective union, which may include required retained symbols.
+            and len(_normalize_channels(self._scanner_channels)) <= 1
         ):
             return self._channels
         if len(selected) > 1:

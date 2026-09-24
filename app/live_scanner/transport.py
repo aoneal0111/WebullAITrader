@@ -90,6 +90,19 @@ class ReceiveTransportAdapter:
         provider = getattr(self._client, "discard_metrics", None)
         return {} if not callable(provider) else dict(provider())
 
+    @property
+    def subscription_state(self) -> dict[str, object]:
+        return dict(getattr(self._client, "subscription_state", {}))
+
+    def record_generation_outcome(self, outcome: str) -> None:
+        recorder = getattr(self._client, "record_generation_outcome", None)
+        if callable(recorder):
+            recorder(outcome)
+
+    def generation_accounting(self):
+        provider = getattr(self._client, "generation_accounting", None)
+        return () if not callable(provider) else tuple(provider())
+
     def set_lifecycle_sink(self, sink) -> None:
         setter = getattr(self._client, "set_lifecycle_sink", None)
         if not callable(setter):

@@ -11,7 +11,7 @@ import os
 import re
 from hashlib import sha256
 from pathlib import Path
-from threading import Event, Thread, local, RLock
+from threading import Event, Thread, local, RLock, current_thread
 from time import monotonic
 from typing import Any, Callable
 from uuid import uuid4
@@ -416,6 +416,9 @@ class PerformanceDiagnostics:
             "cache_misses": 0,
             "concurrency_high_water": 1,
             "latest_failure": None,
+            "long_operation_count": 0,
+            "long_operation_max_ms": 0.0,
+            "last_long_operation_at": None,
         }
         self._stream_failure_samples: deque[dict[str, object]] = deque(
             maxlen=_MAX_STREAM_FAILURE_SAMPLES
@@ -903,6 +906,10 @@ class PerformanceDiagnostics:
             self._reference_samples.append(duration_ms)
             metrics = self._reference_metrics
             metrics["requests"] = int(metrics["requests"]) + 1
+            if duration_ms >= 250.0:
+                metrics["long_operation_count"] = int(metrics["long_operation_count"]) + 1
+                metrics["long_operation_max_ms"] = max(float(metrics["long_operation_max_ms"]), duration_ms)
+                metrics["last_long_operation_at"] = datetime.now(UTC).isoformat()
             if success:
                 metrics["successes"] = int(metrics["successes"]) + 1
             else:
@@ -1469,7 +1476,7 @@ class PerformanceDiagnostics:
             if duration_ms >= slow_threshold_ms:
                 self._component_slow[key] = self._component_slow.get(key, 0) + 1
                 last = self._component_last_diagnostic.get(key, 0.0)
-                if now - last >= 5.0:
+                if key not in self._component_last_diagnostic or now - last >= 5.0:
                     self._component_last_diagnostic[key] = now
                     diagnostic = {
                         "component": key,
@@ -1477,6 +1484,8 @@ class PerformanceDiagnostics:
                         "symbol": symbol,
                         "duration_ms": round(duration_ms, 3),
                         "success": bool(success),
+                        "timestamp": datetime.now(UTC).isoformat(),
+                        "thread_category": current_thread().name[:64],
                     }
         if diagnostic is not None:
             self._emit_diagnostic("slow_component", diagnostic)

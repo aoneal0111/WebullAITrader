@@ -129,12 +129,21 @@ class OfficialSdkStreamBackend:
         self._generation_first_raw_at: datetime | None = None
         self._generation_first_dequeued_at: datetime | None = None
         self._generation_callback_sequence = 0
+        self._generation_accounting: dict[str, object] = {}
+        self._generation_summaries: deque[dict[str, object]] = deque(maxlen=8)
+        self._first_callback_generation: int | None = None
+        self._first_dequeue_generation: int | None = None
+        self._first_current_generation_callback_at: datetime | None = None
+        self._first_current_generation_dequeue_at: datetime | None = None
         self._receive_loop_observed = False
 
         self._consumption_started = False
         self._has_connected = False
         self._active_subscription: tuple[str, ...] | None = None
         self._active_subscription_generation: int | None = None
+        self._desired_subscription: tuple[str, ...] = ()
+        self._last_subscription_operation = "NONE"
+        self._last_subscription_completed_at: datetime | None = None
         self._identity_lock = Lock()
         self._expected_session_id = ""
         self._owner_api_client: object | None = None
@@ -202,7 +211,72 @@ class OfficialSdkStreamBackend:
             "started_at": self._generation_started_at,
             "first_raw_callback_at": self._generation_first_raw_at,
             "first_callback_dequeued_at": self._generation_first_dequeued_at,
+            "first_callback_generation": self._first_callback_generation,
+            "first_dequeue_generation": self._first_dequeue_generation,
+            "first_current_generation_callback_at": self._first_current_generation_callback_at,
+            "first_current_generation_dequeue_at": self._first_current_generation_dequeue_at,
+            "startup_latency_crossed_generations": (
+                self._first_callback_generation is not None
+                and self._first_dequeue_generation is not None
+                and self._first_callback_generation != self._first_dequeue_generation
+            ),
+            "current_generation_callback_to_dequeue_ms": (
+                None if self._first_current_generation_callback_at is None or self._first_current_generation_dequeue_at is None
+                else max(0.0, (self._first_current_generation_dequeue_at - self._first_current_generation_callback_at).total_seconds() * 1000.0)
+            ),
         }
+
+    @property
+    def subscription_state(self) -> dict[str, object]:
+        active = self._active_subscription or ()
+        return {
+            "generation": self._active_subscription_generation,
+            "active_count": len(active),
+            "active_fingerprint": subscription_fingerprint(active),
+            "desired_count": len(self._desired_subscription),
+            "desired_fingerprint": subscription_fingerprint(self._desired_subscription),
+            "last_operation": self._last_subscription_operation,
+            "last_completed_at": self._last_subscription_completed_at,
+            "acknowledged": self._subscription_acknowledged.is_set(),
+        }
+
+    def record_generation_outcome(self, outcome: str) -> None:
+        if outcome not in {"decode_ignored", "decode_failed", "normalized"}:
+            return
+        if self._generation_accounting:
+            self._generation_accounting[outcome] = int(self._generation_accounting.get(outcome, 0) or 0) + 1
+
+    def generation_accounting(self) -> tuple[dict[str, object], ...]:
+        records = tuple(dict(item) for item in self._generation_summaries) + (
+            (dict(self._generation_accounting),) if self._generation_accounting else ()
+        )
+        for record in records:
+            received = int(record.get("callbacks_received", 0) or 0)
+            enqueued = int(record.get("callbacks_enqueued", 0) or 0)
+            pre_rejected = sum(
+                int(record.get(name, 0) or 0)
+                for name in (
+                    "callbacks_rejected_ingestion_halted",
+                    "callbacks_rejected_overflow",
+                    "callbacks_rejected_other",
+                )
+            )
+            dequeued = int(record.get("callbacks_dequeued_total", 0) or 0)
+            purged = int(record.get("callbacks_purged", 0) or 0)
+            if "remaining_depth_at_retirement" in record or "queue_depth_at_retirement" in record:
+                depth = max(
+                    0,
+                    int(record.get("remaining_depth_at_retirement", record.get("queue_depth_at_retirement", 0)) or 0)
+                    - int(record.get("callbacks_dequeued_retired_generation", 0) or 0)
+                    - int(record.get("callbacks_purged", 0) or 0),
+                )
+            elif record.get("generation") == self._generation:
+                depth = self._message_queue_depth
+            else:
+                depth = 0
+            record["received_domain_status"] = "ACCOUNTING_COMPLETE" if received == enqueued + pre_rejected else "ACCOUNTING_PARTIAL"
+            record["queue_domain_status"] = "ACCOUNTING_COMPLETE" if enqueued == dequeued + purged + depth else "ACCOUNTING_PARTIAL"
+        return records
 
     @property
     def session_identity_hash(self) -> str:
@@ -266,8 +340,12 @@ class OfficialSdkStreamBackend:
         overflow = False
         with self._message_metrics_lock:
             self._generation_callback_sequence += 1
+            if self._generation_accounting:
+                self._generation_accounting["callbacks_received"] = int(self._generation_accounting.get("callbacks_received", 0) or 0) + 1
             if not self._accepting_callbacks.is_set():
                 self._callbacks_rejected_after_halt += 1
+                if self._generation_accounting:
+                    self._generation_accounting["callbacks_rejected_ingestion_halted"] = int(self._generation_accounting.get("callbacks_rejected_ingestion_halted", 0) or 0) + 1
                 performance_diagnostics.record_stream_observability(
                     "CALLBACK_REJECTED", reason_category="INGESTION_HALTED",
                     generation=self._generation, callback_sequence=self._generation_callback_sequence,
@@ -287,6 +365,8 @@ class OfficialSdkStreamBackend:
                 self._messages.put_nowait(message)
             except Full:
                 self._message_ingestion_overflow += 1
+                if self._generation_accounting:
+                    self._generation_accounting["callbacks_rejected_overflow"] = int(self._generation_accounting.get("callbacks_rejected_overflow", 0) or 0) + 1
                 self._accepting_callbacks.clear()
                 overflow = True
             if overflow:
@@ -295,6 +375,8 @@ class OfficialSdkStreamBackend:
             else:
                 self._message_queue_depth += 1
                 self._messages_enqueued += 1
+                if self._generation_accounting:
+                    self._generation_accounting["callbacks_enqueued"] = int(self._generation_accounting.get("callbacks_enqueued", 0) or 0) + 1
                 depth = self._message_queue_depth
                 self._message_queue_high_water = max(
                     self._message_queue_high_water,
@@ -316,6 +398,9 @@ class OfficialSdkStreamBackend:
             timestamp=callback_timestamp,
             generation=generation,
         )
+        if self._first_callback_generation is None:
+            self._first_callback_generation = generation
+            self._first_current_generation_callback_at = callback_timestamp
         if self._generation_callback_sequence == 1 or self._generation_callback_sequence % 1000 == 0:
             performance_diagnostics.record_stream_observability(
                 "CALLBACK_ACCEPTED", generation=generation,
@@ -382,7 +467,29 @@ class OfficialSdkStreamBackend:
         performance_diagnostics.record_stream_observability(
             "CONNECT_REQUESTED", generation=next_generation,
         )
+        if self._generation_accounting:
+            self._generation_accounting["remaining_depth_at_retirement"] = self._message_queue_depth
+            self._generation_accounting["retirement_reason"] = "REPLACED_ON_CONNECT"
+            self._generation_summaries.append(dict(self._generation_accounting))
         self._generation = next_generation
+        self._generation_accounting = {
+            "generation": self._generation,
+            "callbacks_received": 0,
+            "callbacks_enqueued": 0,
+            "callbacks_dequeued": 0,
+            "callbacks_purged": 0,
+            "callbacks_retired_discarded": 0,
+            "callbacks_rejected_ingestion_halted": 0,
+            "callbacks_rejected_overflow": 0,
+            "callbacks_rejected_other": 0,
+            "callbacks_dequeued_total": 0,
+            "callbacks_dequeued_current_generation": 0,
+            "callbacks_dequeued_retired_generation": 0,
+            "decode_ignored": 0,
+            "decode_failed": 0,
+            "normalized": 0,
+            "retirement_reason": None,
+        }
         performance_diagnostics.record_stream_observability(
             "CONNECT_STARTED", generation=self._generation,
         )
@@ -483,6 +590,11 @@ class OfficialSdkStreamBackend:
             raise TypeError("official SDK streaming client has no disconnect method")
         disconnect()
         performance_diagnostics.record_stream_boundary("transport_disconnected")
+        if self._generation_accounting:
+            self._generation_accounting["remaining_depth_at_retirement"] = self._message_queue_depth
+            self._generation_accounting["retirement_reason"] = "DISCONNECT"
+            self._generation_summaries.append(dict(self._generation_accounting))
+            self._generation_accounting = {}
         performance_diagnostics.record_stream_observability(
             "GENERATION_RETIRED", generation=retiring_generation,
         )
@@ -508,6 +620,8 @@ class OfficialSdkStreamBackend:
             with self._message_metrics_lock:
                 self._message_queue_depth = max(0, self._message_queue_depth - drained)
                 self._messages_purged_on_disconnect += drained
+                if self._generation_accounting:
+                    self._generation_accounting["callbacks_purged"] = int(self._generation_accounting.get("callbacks_purged", 0) or 0) + drained
         performance_diagnostics.record_stream_boundary("callback_ingestion_halted")
         if was_accepting and not self._halt_diagnostic_emitted:
             self._halt_diagnostic_emitted = True
@@ -517,6 +631,7 @@ class OfficialSdkStreamBackend:
         if not self._connected.is_set() or not self._registration_ready.is_set():
             raise RuntimeError("streaming session registration is not ready")
         normalized_channels = tuple(sorted(set(channels)))
+        self._desired_subscription = normalized_channels
         prior_channels = self._active_subscription or ()
         desired_fp = subscription_fingerprint(normalized_channels)
         prior_fp = subscription_fingerprint(prior_channels)
@@ -645,6 +760,8 @@ class OfficialSdkStreamBackend:
             self._subscription_acknowledged.set()
             self._active_subscription = normalized_channels
             self._active_subscription_generation = self._generation
+            self._last_subscription_operation = subscription_operation
+            self._last_subscription_completed_at = self._clock()
             performance_diagnostics.record_startup_stage("subscription_completed")
             performance_diagnostics.increment_startup_counter(
                 "subscription_completed_symbols", len(normalized_channels)
@@ -701,15 +818,30 @@ class OfficialSdkStreamBackend:
                 with self._message_metrics_lock:
                     self._messages_dequeued += 1
                     self._messages_discarded_retired_generation += 1
+                    for summary in reversed(self._generation_summaries):
+                        if summary.get("generation") == message.generation:
+                            summary["callbacks_dequeued_total"] = int(summary.get("callbacks_dequeued_total", 0) or 0) + 1
+                            summary["callbacks_dequeued_retired_generation"] = int(summary.get("callbacks_dequeued_retired_generation", 0) or 0) + 1
+                            break
+                    for summary in reversed(self._generation_summaries):
+                        if summary.get("generation") == message.generation:
+                            summary["callbacks_retired_discarded"] = int(summary.get("callbacks_retired_discarded", 0) or 0) + 1
+                            break
                     self._message_queue_depth = max(
                         0, self._message_queue_depth - 1
                     )
                 continue
             with self._message_metrics_lock:
                 self._messages_dequeued += 1
+                if self._generation_accounting:
+                    self._generation_accounting["callbacks_dequeued"] = int(self._generation_accounting.get("callbacks_dequeued", 0) or 0) + 1
+                    self._generation_accounting["callbacks_dequeued_total"] = int(self._generation_accounting.get("callbacks_dequeued_total", 0) or 0) + 1
+                    self._generation_accounting["callbacks_dequeued_current_generation"] = int(self._generation_accounting.get("callbacks_dequeued_current_generation", 0) or 0) + 1
                 self._message_queue_depth -= 1
                 if self._generation_first_dequeued_at is None:
                     self._generation_first_dequeued_at = self._clock()
+                    self._first_dequeue_generation = self._generation
+                    self._first_current_generation_dequeue_at = self._generation_first_dequeued_at
                     self._startup_buffered_count = self._message_queue_depth + 1
                 if isinstance(message, _ReceivedStreamPayload):
                     age_ms = max(
@@ -746,15 +878,30 @@ class OfficialSdkStreamBackend:
                 with self._message_metrics_lock:
                     self._messages_dequeued += 1
                     self._messages_discarded_retired_generation += 1
+                    for summary in reversed(self._generation_summaries):
+                        if summary.get("generation") == message.generation:
+                            summary["callbacks_dequeued_total"] = int(summary.get("callbacks_dequeued_total", 0) or 0) + 1
+                            summary["callbacks_dequeued_retired_generation"] = int(summary.get("callbacks_dequeued_retired_generation", 0) or 0) + 1
+                            break
+                    for summary in reversed(self._generation_summaries):
+                        if summary.get("generation") == message.generation:
+                            summary["callbacks_retired_discarded"] = int(summary.get("callbacks_retired_discarded", 0) or 0) + 1
+                            break
                     self._message_queue_depth = max(
                         0, self._message_queue_depth - 1
                     )
                 continue
             with self._message_metrics_lock:
                 self._messages_dequeued += 1
+                if self._generation_accounting:
+                    self._generation_accounting["callbacks_dequeued"] = int(self._generation_accounting.get("callbacks_dequeued", 0) or 0) + 1
+                    self._generation_accounting["callbacks_dequeued_total"] = int(self._generation_accounting.get("callbacks_dequeued_total", 0) or 0) + 1
+                    self._generation_accounting["callbacks_dequeued_current_generation"] = int(self._generation_accounting.get("callbacks_dequeued_current_generation", 0) or 0) + 1
                 self._message_queue_depth -= 1
                 if self._generation_first_dequeued_at is None:
                     self._generation_first_dequeued_at = self._clock()
+                    self._first_dequeue_generation = self._generation
+                    self._first_current_generation_dequeue_at = self._generation_first_dequeued_at
                     self._startup_buffered_count = self._message_queue_depth + 1
                 if isinstance(message, _ReceivedStreamPayload):
                     age_ms = max(
@@ -1035,6 +1182,10 @@ class WebullWebSocketClient:
         return dict(getattr(self.backend, "generation_metrics", {}))
 
     @property
+    def subscription_state(self) -> dict[str, object]:
+        return dict(getattr(self.backend, "subscription_state", {}))
+
+    @property
     def last_normalized_event_monotonic(self) -> float | None:
         return getattr(self, "_last_normalized_event_monotonic", None)
 
@@ -1095,6 +1246,9 @@ class WebullWebSocketClient:
                     )
                 event = self.parser(message)
                 if event is None:
+                    recorder = getattr(self.backend, "record_generation_outcome", None)
+                    if callable(recorder):
+                        recorder("decode_ignored")
                     performance_diagnostics.increment_startup_counter("decode_ignored")
                     recognized = classification != "UNKNOWN"
                     recovered = recognized and self.consecutive_decode_failures > 0
@@ -1245,6 +1399,9 @@ class WebullWebSocketClient:
                     self.health = update_health(self.health, last_successful_heartbeat=event.timestamp)
                 self._successful_receive_count += 1
                 performance_diagnostics.record_stream_normalized_event()
+                recorder = getattr(self.backend, "record_generation_outcome", None)
+                if callable(recorder):
+                    recorder("normalized")
                 performance_diagnostics.increment_startup_counter(
                     "normalized_market_events_emitted"
                 )
@@ -1262,6 +1419,9 @@ class WebullWebSocketClient:
             except _StreamSequenceError:
                 raise
             except SerializationError as exc:
+                recorder = getattr(self.backend, "record_generation_outcome", None)
+                if callable(recorder):
+                    recorder("decode_failed")
                 performance_diagnostics.increment_startup_counter("decode_failures")
                 self.consecutive_decode_failures += 1
                 failure_metadata = decoder_failure_metadata(message, exc)

@@ -1581,6 +1581,7 @@ class DesktopBrokerRuntimeDriver:
             reason = "SUSPEND_OR_RUNTIME_GAP" if discontinuity else "PAYLOAD_STALE"
             transport = self._market_data_transport()
             generation_metrics = getattr(transport, "generation_metrics", {}) or {}
+            subscription_state = getattr(transport, "subscription_state", {}) or {}
             queue_metrics = {}
             memory_metrics = getattr(transport, "memory_metrics", None)
             if callable(memory_metrics):
@@ -1597,8 +1598,12 @@ class DesktopBrokerRuntimeDriver:
                 consumer_state=self._market_data_consumer_state,
                 callbacks_enqueued_total=queue_metrics.get("messages_enqueued", 0),
                 callbacks_dequeued_total=queue_metrics.get("messages_dequeued", 0),
-                subscription_count=len(getattr(transport, "channels", ()) or ()),
-                subscription_fingerprint=subscription_fingerprint(getattr(transport, "channels", ()) or ()),
+                subscription_count=subscription_state.get("active_count", 0),
+                subscription_fingerprint=subscription_state.get("active_fingerprint", ""),
+                subscription_generation=subscription_state.get("generation"),
+                desired_subscription_fingerprint=subscription_state.get("desired_fingerprint", ""),
+                desired_subscription_count=subscription_state.get("desired_count", 0),
+                subscription_acknowledged=subscription_state.get("acknowledged", False),
             )
             self._publish_health(
                 "MARKET_DATA_STALE",
