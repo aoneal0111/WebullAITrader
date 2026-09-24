@@ -11,7 +11,7 @@ from typing import Callable, Protocol
 
 from app.market_data.models import HeartbeatPayload, MarketEventLog, MarketEventType
 from app.market_data.validation import validate_event
-from app.performance_diagnostics import performance_diagnostics
+from app.performance_diagnostics import performance_diagnostics, subscription_fingerprint
 from app.webull.errors import NetworkError, SerializationError
 from app.webull.health import ConnectionHealth, update_health
 from app.webull.market_event_parser import decoder_failure_metadata, payload_metadata
@@ -123,6 +123,8 @@ class OfficialSdkStreamBackend:
         self._generation_started_at: datetime | None = None
         self._generation_first_raw_at: datetime | None = None
         self._generation_first_dequeued_at: datetime | None = None
+        self._generation_callback_sequence = 0
+        self._receive_loop_observed = False
 
         self._consumption_started = False
         self._has_connected = False
@@ -240,12 +242,20 @@ class OfficialSdkStreamBackend:
 
     def _on_quotes_message(self, client: object, topic: object, quotes: object) -> None:
         if client is not self.client:
+            performance_diagnostics.record_stream_observability(
+                "CALLBACK_REJECTED", reason_category="STALE_CLIENT", current_generation=self._generation
+            )
             self._emit_diagnostic("CROSS_CLIENT_MESSAGE_REJECTED")
             return
         overflow = False
         with self._message_metrics_lock:
+            self._generation_callback_sequence += 1
             if not self._accepting_callbacks.is_set():
                 self._callbacks_rejected_after_halt += 1
+                performance_diagnostics.record_stream_observability(
+                    "CALLBACK_REJECTED", reason_category="INGESTION_HALTED",
+                    generation=self._generation, callback_sequence=self._generation_callback_sequence,
+                )
                 if not self._halt_diagnostic_emitted:
                     self._halt_diagnostic_emitted = True
                     self._emit_diagnostic("CALLBACK_INGESTION_HALTED")
@@ -277,6 +287,10 @@ class OfficialSdkStreamBackend:
                 callback_timestamp = self._last_raw_callback_at
                 generation = self._generation
         if overflow:
+            performance_diagnostics.record_stream_observability(
+                "CALLBACK_REJECTED", reason_category="INGESTION_OVERFLOW",
+                generation=generation, callback_sequence=self._generation_callback_sequence,
+            )
             self._emit_diagnostic(
                 "CALLBACK_INGESTION_OVERFLOW",
                 capacity=self._ingestion_capacity,
@@ -286,6 +300,12 @@ class OfficialSdkStreamBackend:
             timestamp=callback_timestamp,
             generation=generation,
         )
+        if self._generation_callback_sequence == 1 or self._generation_callback_sequence % 1000 == 0:
+            performance_diagnostics.record_stream_observability(
+                "CALLBACK_ACCEPTED", generation=generation,
+                callback_sequence=self._generation_callback_sequence,
+                queue_depth=depth, current_generation=True,
+            )
         performance_diagnostics.increment_startup_counter("raw_callbacks_received")
         performance_diagnostics.increment_startup_counter("callbacks_enqueued")
         performance_diagnostics.record_startup_stage("first_raw_callback")
@@ -337,10 +357,18 @@ class OfficialSdkStreamBackend:
             self._original_on_disconnect(*args, **kwargs)
 
     def connect(self) -> None:
+        performance_diagnostics.record_stream_observability(
+            "CONNECT_REQUESTED", generation=self._generation + 1,
+        )
         self._generation += 1
+        performance_diagnostics.record_stream_observability(
+            "CONNECT_STARTED", generation=self._generation,
+        )
         self._generation_started_at = self._clock()
         self._generation_first_raw_at = None
         self._generation_first_dequeued_at = None
+        self._generation_callback_sequence = 0
+        self._receive_loop_observed = False
         self._startup_buffered_count = 0
         self._oldest_buffered_age_ms = 0.0
         self._oldest_buffered_age_high_water_ms = 0.0
@@ -384,6 +412,9 @@ class OfficialSdkStreamBackend:
             if not self._connected.is_set():
                 raise RuntimeError("MQTT disconnected before session registration became ready")
             self._registration_ready.set()
+            performance_diagnostics.record_stream_observability(
+                "CONNECT_SUCCEEDED", generation=self._generation,
+            )
             performance_diagnostics.record_startup_stage("registration_ready")
             self._emit_diagnostic(
                 "REGISTRATION_READY",
@@ -398,6 +429,9 @@ class OfficialSdkStreamBackend:
         self._connected.set()
         self._sleeper(self._registration_grace_seconds)
         self._registration_ready.set()
+        performance_diagnostics.record_stream_observability(
+            "CONNECT_SUCCEEDED", generation=self._generation,
+        )
         performance_diagnostics.record_startup_stage("registration_ready")
         self._emit_diagnostic(
             "REGISTRATION_READY",
@@ -405,6 +439,10 @@ class OfficialSdkStreamBackend:
         )
 
     def disconnect(self) -> None:
+        retiring_generation = self._generation
+        performance_diagnostics.record_stream_observability(
+            "DISCONNECT_REQUESTED", generation=retiring_generation,
+        )
         self._deliberate_shutdown = True
         self.halt_callback_ingestion()
         self._connected.clear()
@@ -422,6 +460,9 @@ class OfficialSdkStreamBackend:
             raise TypeError("official SDK streaming client has no disconnect method")
         disconnect()
         performance_diagnostics.record_stream_boundary("transport_disconnected")
+        performance_diagnostics.record_stream_observability(
+            "GENERATION_RETIRED", generation=retiring_generation,
+        )
 
     def halt_callback_ingestion(self) -> None:
         """Stop accepting callbacks after the sole consumer is gone.
@@ -452,11 +493,25 @@ class OfficialSdkStreamBackend:
         if not self._connected.is_set() or not self._registration_ready.is_set():
             raise RuntimeError("streaming session registration is not ready")
         normalized_channels = tuple(sorted(set(channels)))
+        prior_channels = self._active_subscription or ()
+        desired_fp = subscription_fingerprint(normalized_channels)
+        prior_fp = subscription_fingerprint(prior_channels)
+        subscription_operation = (
+            "RECONNECT_REISSUE" if self._generation > 1 and not prior_channels
+            else "STARTUP_SUBSCRIBE" if not prior_channels else "FULL_REPLACE"
+        )
         if len(normalized_channels) > 100:
             raise ValueError(
                 "Webull market-data subscriptions are limited to 100 symbols"
             )
         if self._subscription_acknowledged.is_set() and self._active_subscription == normalized_channels:
+            performance_diagnostics.record_stream_observability(
+                "SUBSCRIPTION_NO_CHANGE", generation=self._generation,
+                desired_count=len(normalized_channels), desired_fingerprint=desired_fp,
+                active_count=len(prior_channels), active_fingerprint=prior_fp,
+                unchanged_count=len(normalized_channels), added_count=0, removed_count=0,
+                operation="NO_CHANGE",
+            )
             self._emit_diagnostic("DUPLICATE_SUBSCRIPTION_SKIPPED")
             return
 
@@ -465,6 +520,12 @@ class OfficialSdkStreamBackend:
         # tickers across universe rotations and eventually trips Webull's
         # TOO_MANY_SYMBOLS_SUBSCRIPTION terminal error.
         if self._active_subscription:
+            unsubscribe_started = monotonic()
+            performance_diagnostics.record_stream_observability(
+                "UNSUBSCRIBE_REQUESTED", generation=self._generation,
+                active_count=len(prior_channels), active_fingerprint=prior_fp,
+                operation="FULL_REPLACE",
+            )
             unsubscribe = getattr(self.client, "unsubscribe", None)
             if not callable(unsubscribe):
                 raise TypeError(
@@ -474,6 +535,12 @@ class OfficialSdkStreamBackend:
             self._active_subscription = None
             self._subscription_acknowledged.clear()
             self._emit_diagnostic("ACTIVE_SUBSCRIPTION_RELEASED")
+            performance_diagnostics.record_stream_observability(
+                "UNSUBSCRIBE_COMPLETED", generation=self._generation,
+                active_count=0, active_fingerprint=subscription_fingerprint(()),
+                operation="FULL_REPLACE",
+                duration_ms=(monotonic() - unsubscribe_started) * 1000.0,
+            )
 
         if not normalized_channels:
             self._active_subscription = ()
@@ -486,6 +553,13 @@ class OfficialSdkStreamBackend:
 
         self._subscription_acknowledged.clear()
         performance_diagnostics.record_startup_stage("subscription_requested")
+        performance_diagnostics.record_stream_observability(
+            "SUBSCRIBE_REQUESTED", generation=self._generation,
+            desired_count=len(normalized_channels), desired_fingerprint=desired_fp,
+            added_count=len(set(normalized_channels) - set(prior_channels)),
+            removed_count=len(set(prior_channels) - set(normalized_channels)),
+            operation=subscription_operation,
+        )
         performance_diagnostics.increment_startup_counter(
             "subscription_requested_symbols", len(normalized_channels)
         )
@@ -493,6 +567,7 @@ class OfficialSdkStreamBackend:
             "subscription_batch_count"
         )
         mapped = normalized_channels if self._subscription_mapper is None else self._subscription_mapper(normalized_channels)
+        subscribe_started = monotonic()
         for retry_count in range(self._maximum_registration_retries + 1):
             self._notify("rest_subscription_requested")
             self._emit_diagnostic(
@@ -511,6 +586,12 @@ class OfficialSdkStreamBackend:
                 else:
                     raise TypeError("subscription_mapper must return a tuple or dict")
             except Exception as exc:
+                performance_diagnostics.record_stream_observability(
+                    "SUBSCRIBE_FAILED", generation=self._generation,
+                    desired_count=len(normalized_channels), desired_fingerprint=desired_fp,
+                    operation=subscription_operation, exception_class=type(exc).__name__,
+                    duration_ms=(monotonic() - subscribe_started) * 1000.0,
+                )
                 code = str(getattr(exc, "error_code", type(exc).__name__))
                 request_id = getattr(exc, "request_id", None)
                 self._emit_diagnostic(
@@ -539,6 +620,12 @@ class OfficialSdkStreamBackend:
                 "subscription_completed_symbols", len(normalized_channels)
             )
             self._notify("rest_subscription_active")
+            performance_diagnostics.record_stream_observability(
+                "SUBSCRIBE_COMPLETED", generation=self._generation,
+                active_count=len(normalized_channels), active_fingerprint=desired_fp,
+                operation=subscription_operation,
+                duration_ms=(monotonic() - subscribe_started) * 1000.0,
+            )
             self._emit_diagnostic(
                 "REGISTRATION_REQUEST_SUCCEEDED",
                 retry_count=retry_count,
@@ -575,6 +662,11 @@ class OfficialSdkStreamBackend:
                 isinstance(message, _ReceivedStreamPayload)
                 and message.generation != self._generation
             ):
+                performance_diagnostics.record_stream_observability(
+                    "CALLBACK_RETIRED_GENERATION", generation=message.generation,
+                    current_generation=self._generation,
+                    reason_category="RETIRED_GENERATION",
+                )
                 performance_diagnostics.record_stream_stale_generation_rejection()
                 with self._message_metrics_lock:
                     self._messages_dequeued += 1
@@ -730,6 +822,8 @@ class WebullWebSocketClient:
         self.lifecycle_sink = lifecycle_sink
         self.consecutive_decode_failure_threshold = consecutive_decode_failure_threshold
         self.consecutive_decode_failures = 0
+        self._receive_loop_observed = False
+        self._recovery_attempt_sequence = 0
         self.decoder_health = "STREAM_CONNECTED"
         diagnostic_setter = getattr(self.backend, "set_diagnostic_sink", None)
         if callable(diagnostic_setter):
@@ -833,6 +927,7 @@ class WebullWebSocketClient:
         )
 
     def connect(self):
+        self._receive_loop_observed = False
         try:
             self.logger.log(
                 "paho_transport_selected",
@@ -888,6 +983,12 @@ class WebullWebSocketClient:
         return getattr(self, "_last_normalized_event_at", None)
 
     def receive(self):
+        if not self._receive_loop_observed:
+            self._receive_loop_observed = True
+            performance_diagnostics.record_stream_observability(
+                "RECEIVE_LOOP_STARTED",
+                generation=getattr(self.backend, "generation_metrics", {}).get("generation"),
+            )
         return self._receive_from(self.backend.receive)
 
     def receive_nowait(self):
@@ -1163,11 +1264,25 @@ class WebullWebSocketClient:
                     self.health.reconnect_count + 1,
                     exc,
                 )
+                self._recovery_attempt_sequence += 1
+                recovery_id = self._recovery_attempt_sequence
+                performance_diagnostics.record_stream_observability(
+                    "RECOVERY_STARTED", controller="TRANSPORT",
+                    recovery_attempt_id=recovery_id,
+                    generation=getattr(self.backend, "generation_metrics", {}).get("generation"),
+                    trigger_category=type(exc).__name__,
+                )
                 try:
                     self.sleeper(self.policy.backoff_seconds)
                     self.backend.connect()
                     self.backend.subscribe(self.channels)
                 except Exception as reconnect_error:
+                    performance_diagnostics.record_stream_observability(
+                        "RECOVERY_FAILED", controller="TRANSPORT",
+                        recovery_attempt_id=recovery_id,
+                        generation=getattr(self.backend, "generation_metrics", {}).get("generation"),
+                        exception_class=type(reconnect_error).__name__,
+                    )
                     self._notify(
                         "reconnect_failed",
                         self.health.reconnect_count + 1,
@@ -1184,6 +1299,11 @@ class WebullWebSocketClient:
                 self._notify(
                     "reconnected",
                     self.health.reconnect_count,
+                )
+                performance_diagnostics.record_stream_observability(
+                    "RECOVERY_SUCCEEDED", controller="TRANSPORT",
+                    recovery_attempt_id=recovery_id,
+                    generation=getattr(self.backend, "generation_metrics", {}).get("generation"),
                 )
                 self.logger.log("stream_reconnect", "succeeded", reconnect_count=self.health.reconnect_count)
 

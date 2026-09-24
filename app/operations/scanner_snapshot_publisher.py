@@ -185,6 +185,13 @@ class ScannerSnapshotPublisher:
         self._publish_experiment_candidates(decisions, cycle=cycle, now=now)
 
         for symbol in sorted(self._displayed_symbols - current):
+            performance_diagnostics.record_stream_observability(
+                "CANDIDATE_DISPLAY_REMOVED",
+                symbol=symbol,
+                removal_category=(
+                    "STALE_INPUT" if symbol in stale_symbol_set else "RANKING_ONLY"
+                ),
+            )
             self._emit(
                 now,
                 cycle,

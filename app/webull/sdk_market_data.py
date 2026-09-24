@@ -23,6 +23,7 @@ from app.scanner_universe_observability import (
 )
 from app.universe.models import SecurityType, UniverseSymbol
 from app.momentum_radar import MomentumRadar, RadarSnapshot
+from app.performance_diagnostics import performance_diagnostics
 
 
 class WebullMarketDataPermissionError(PermissionError):
@@ -277,6 +278,7 @@ class WebullScannerUniverseProvider:
         self._row_seen_at: dict[str, datetime] = {}
         self._provenance: dict[str, list[tuple[str, int]]] = {}
         self._radar = radar
+        self._radar_states: dict[str, str] = {}
         self._priority_order: tuple[str, ...] = ()
         self._metrics: dict[str, int] = {
             "refresh_count": 0, "raw_symbols": 0, "unique_symbols": 0,
@@ -421,16 +423,51 @@ class WebullScannerUniverseProvider:
                     hod=_decimal_value(row, "high"),
             ) for symbol, row in rows.items()
             )
-            self._radar.observe(radar_rows)
+            assessments = self._radar.observe(radar_rows)
+            for assessment in assessments:
+                prior_state = self._radar_states.get(assessment.symbol)
+                if prior_state != assessment.state and assessment.state == "MOMENTUM_EMERGING":
+                    performance_diagnostics.record_stream_observability(
+                        "RADAR_MOMENTUM_EMERGING",
+                        symbol=assessment.symbol,
+                        score=float(assessment.score),
+                        source_diversity=len(set(next((row.sources for row in radar_rows if row.symbol == assessment.symbol), ()))),
+                    )
+                self._radar_states[assessment.symbol] = assessment.state
+            self._radar_states = {
+                symbol: state for symbol, state in self._radar_states.items()
+                if self._radar.assessment(symbol) is not None
+            }
             prior_promoted = set(self._radar.promoted_symbols())
             promoted = self._radar.promote(capacity=500)
             remainder = tuple(symbol for symbol in self._radar.priority_order() if symbol not in promoted)
             self._priority_order = (*promoted, *remainder)
             for symbol in set(promoted) - prior_promoted:
+                assessment = self._radar.assessment(symbol)
+                source_count = len(set(next((row.sources for row in radar_rows if row.symbol == symbol), ())))
+                performance_diagnostics.record_stream_observability(
+                    "RADAR_PROMOTED", symbol=symbol,
+                    score=float(assessment.score) if assessment is not None else 0.0,
+                    source_diversity=source_count,
+                    desired_count=len(promoted),
+                )
                 _observe_admission(
                     self._admission_observer, "record",
                     stage="RADAR_PROMOTED", outcome="PROMOTED",
                     reason="BOUNDED_MOMENTUM_PRIORITY", normalized_symbol=symbol,
+                )
+            if set(promoted) != prior_promoted:
+                radar_metrics = self._radar.metrics()
+                performance_diagnostics.record_stream_observability(
+                    "RADAR_DESIRED_SET_CHANGED",
+                    added_count=len(set(promoted) - prior_promoted),
+                    removed_count=len(prior_promoted - set(promoted)),
+                    desired_count=len(promoted),
+                    evaluated=radar_metrics.get("evaluated", 0),
+                    emerging=radar_metrics.get("emerging", 0),
+                    promotions=radar_metrics.get("promotions", 0),
+                    demotions=radar_metrics.get("demotions", 0),
+                    replacements=radar_metrics.get("replacements", 0),
                 )
         instrument_rows, instrument_error = _instrument_rows_with_error(
             client, tuple(sorted(rows))

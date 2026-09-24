@@ -9,6 +9,7 @@ from contextlib import contextmanager
 import json
 import os
 import re
+from hashlib import sha256
 from pathlib import Path
 from threading import Event, Thread, local, RLock
 from time import monotonic
@@ -26,6 +27,7 @@ _MAX_SETUP_TRANSITION_RECORDS = 512
 _MAX_PROTECTION_EVENTS = 256
 _MAX_STRATEGY_SELECTION_RECORDS = 256
 _MAX_ENTRY_FUNNEL_RECORDS = 512
+_MAX_STREAM_OBSERVABILITY_EVENTS = 512
 _ENTRY_FUNNEL_STAGES = (
     "SCANNER_QUALIFIED", "SETUP_FORMING", "SETUP_TRIGGERED",
     "TECHNICAL_SIGNAL", "TECHNICAL_SIGNAL_CLEARED", "FRESHNESS_CHECK",
@@ -232,6 +234,7 @@ class PerformanceSnapshot:
     discovery_callback_build_max_ms: float = 0.0
     discovery_strategy_coverage: tuple[str, ...] = ()
     component_timings: dict[str, dict[str, object]] = field(default_factory=dict)
+    stream_observability: dict[str, object] = field(default_factory=dict)
 
 
 class PerformanceDiagnostics:
@@ -434,6 +437,11 @@ class PerformanceDiagnostics:
             "latest_failure": None,
             "failure_samples": (),
         }
+        self._stream_observability_events: deque[dict[str, object]] = deque(
+            maxlen=_MAX_STREAM_OBSERVABILITY_EVENTS
+        )
+        self._stream_observability_counts: dict[str, int] = {}
+        self._active_recovery_controllers: set[str] = set()
         self._scanner_population: dict[str, object] = {
             "active_symbols": 0,
             "adapter_state_count": 0,
@@ -1014,6 +1022,66 @@ class PerformanceDiagnostics:
                     dict(item) for item in self._stream_failure_samples
                 )
 
+    def record_stream_observability(
+        self,
+        event: str,
+        *,
+        sample: bool = True,
+        timestamp: datetime | None = None,
+        **fields: object,
+    ) -> None:
+        """Record bounded, sanitized stream evidence without affecting runtime behavior."""
+        try:
+            name = re.sub(r"[^A-Z0-9_.-]", "_", str(event).upper())[:80] or "UNKNOWN"
+            with self._lock:
+                if name not in self._stream_observability_counts and len(self._stream_observability_counts) >= 128:
+                    name = "OTHER"
+                self._stream_observability_counts[name] = (
+                    self._stream_observability_counts.get(name, 0) + 1
+                )
+                if not sample:
+                    return
+                record: dict[str, object] = {
+                    "event": name,
+                    "timestamp": (timestamp or datetime.now(UTC)).isoformat(),
+                }
+                controller = str(fields.get("controller", "")).upper()
+                if name == "RECOVERY_STARTED" and controller:
+                    record["overlap_category"] = (
+                        "RECOVERY_OVERLAP_DETECTED"
+                        if self._active_recovery_controllers
+                        else "RECOVERY_NO_OVERLAP"
+                    )
+                    self._active_recovery_controllers.add(controller)
+                elif name in {"RECOVERY_SUCCEEDED", "RECOVERY_FAILED"} and controller:
+                    self._active_recovery_controllers.discard(controller)
+                for key, value in fields.items():
+                    key_text = re.sub(r"[^a-zA-Z0-9_.-]", "_", str(key))[:64]
+                    if any(token in key_text.lower() for token in ("token", "secret", "password", "header", "body", "message", "authorization")):
+                        continue
+                    if isinstance(value, Exception):
+                        value = type(value).__name__
+                    if key_text in {"symbol", "normalized_symbol"} and isinstance(value, str):
+                        value = value.strip().upper()[:24]
+                    elif isinstance(value, str):
+                        value = value[:128]
+                    elif isinstance(value, (int, float, bool)) or value is None:
+                        pass
+                    else:
+                        value = str(value)[:128]
+                    record[key_text] = value
+                self._stream_observability_events.append(record)
+        except Exception:
+            # Diagnostics are strictly non-authoritative.
+            return
+
+    def stream_observability(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "counts": dict(self._stream_observability_counts),
+                "events": tuple(dict(item) for item in self._stream_observability_events),
+            }
+
     def record_stream_raw_callback(
         self,
         *,
@@ -1096,11 +1164,22 @@ class PerformanceDiagnostics:
     def record_scanner_population_display(self, values: dict[str, object]) -> None:
         """Replace bounded decision/display aggregates for the latest snapshot."""
         with self._lock:
+            prior_displayed = int(self._scanner_population.get("displayed_candidate_count", 0) or 0)
             for key, value in values.items():
                 if key == "top_sample":
                     self._scanner_population[key] = tuple(value)[:25]
                 else:
                     self._scanner_population[key] = value
+            displayed = int(self._scanner_population.get("displayed_candidate_count", 0) or 0)
+            if displayed == 0 and prior_displayed != 0:
+                self.record_stream_observability(
+                    "SCANNER_ZERO_CANDIDATES",
+                    sample=True,
+                    active_symbols=self._scanner_population.get("active_symbols", 0),
+                    evaluated=self._scanner_population.get("complete_decision_count", 0),
+                    qualified=self._scanner_population.get("qualified_count", 0),
+                    scanner_state="IDLE",
+                )
 
     def scanner_population_metrics(self) -> dict[str, object]:
         with self._lock:
@@ -1728,6 +1807,12 @@ class PerformanceDiagnostics:
                 research_queue_high_water=self._research_queue_high_water,
                 research_worker_lag_max_ms=self._research_worker_lag_max_ms,
                 component_timings=component_timings,
+                stream_observability={
+                    "counts": dict(self._stream_observability_counts),
+                    "events": tuple(
+                        dict(item) for item in self._stream_observability_events
+                    ),
+                },
             )
 
 
@@ -1766,6 +1851,15 @@ def _json_safe(value: object) -> object:
     return str(value)
 
 
+def subscription_fingerprint(symbols: object) -> str:
+    """Return a deterministic, non-reversible identity for a symbol set."""
+    try:
+        normalized = sorted({str(item).strip().upper() for item in symbols if str(item).strip()})
+    except Exception:
+        normalized = []
+    return sha256("|".join(normalized).encode("utf-8")).hexdigest()[:16]
+
+
 performance_diagnostics = PerformanceDiagnostics()
 
 
@@ -1796,4 +1890,5 @@ __all__ = [
     "PerformanceDiagnostics",
     "PerformanceSnapshot",
     "performance_diagnostics",
+    "subscription_fingerprint",
 ]

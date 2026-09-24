@@ -25,7 +25,7 @@ from app.operations.runtime import (
     RuntimeWatchlistUpdate,
 )
 from app.operations.scanner_snapshot_publisher import ScannerSnapshotPublisher
-from app.performance_diagnostics import performance_diagnostics
+from app.performance_diagnostics import performance_diagnostics, subscription_fingerprint
 from app.services.market_event_translation import translate_market_event
 from app.services.runtime_diagnostics import log_runtime_exception
 from app.webull.client_factories import market_data_configuration
@@ -149,6 +149,7 @@ class DesktopBrokerRuntimeDriver:
         self._feed_recovery_pending = False
         self._last_feed_recovery_at = 0.0
         self._feed_recovery_started_monotonic: float | None = None
+        self._diagnostic_recovery_attempt_sequence = 0
         self._last_watchdog_payload_monotonic: float | None = None
         observer_owner = getattr(market_event_observer, "__self__", None)
         if observer_owner is None:
@@ -1557,6 +1558,27 @@ class DesktopBrokerRuntimeDriver:
             self._feed_stale = True
             performance_diagnostics.record_startup_stage("stale_detected")
             reason = "SUSPEND_OR_RUNTIME_GAP" if discontinuity else "PAYLOAD_STALE"
+            transport = self._market_data_transport()
+            generation_metrics = getattr(transport, "generation_metrics", {}) or {}
+            queue_metrics = {}
+            memory_metrics = getattr(transport, "memory_metrics", None)
+            if callable(memory_metrics):
+                try:
+                    queue_metrics = dict(memory_metrics())
+                except Exception:
+                    queue_metrics = {}
+            performance_diagnostics.record_stream_observability(
+                "PAYLOAD_STALE_CONTEXT",
+                reason_category=reason,
+                generation=generation_metrics.get("generation"),
+                last_callback_age_ms=max(0.0, age * 1000.0),
+                queue_depth=queue_metrics.get("current_depth", queue_metrics.get("ingestion_queue_depth", 0)),
+                consumer_state=self._market_data_consumer_state,
+                callbacks_enqueued_total=queue_metrics.get("messages_enqueued", 0),
+                callbacks_dequeued_total=queue_metrics.get("messages_dequeued", 0),
+                subscription_count=len(getattr(transport, "channels", ()) or ()),
+                subscription_fingerprint=subscription_fingerprint(getattr(transport, "channels", ()) or ()),
+            )
             self._publish_health(
                 "MARKET_DATA_STALE",
                 f"Market-data payload age is {age:.1f}s ({reason}).",
@@ -1580,7 +1602,17 @@ class DesktopBrokerRuntimeDriver:
             return
         self._last_feed_recovery_at = now
         self._feed_recovery_pending = True
+        self._diagnostic_recovery_attempt_sequence += 1
+        recovery_id = self._diagnostic_recovery_attempt_sequence
         self._feed_recovery_started_monotonic = now
+        transport = self._market_data_transport()
+        generation_metrics = getattr(transport, "generation_metrics", {}) or {}
+        performance_diagnostics.record_stream_observability(
+            "RECOVERY_STARTED", controller="WATCHDOG",
+            recovery_attempt_id=recovery_id,
+            generation=generation_metrics.get("generation"),
+            stale_age_seconds=age,
+        )
         performance_diagnostics.record_startup_stage("reconnect_started")
         self._publish_health(
             "MARKET_DATA_RECONNECTING",
@@ -1605,8 +1637,20 @@ class DesktopBrokerRuntimeDriver:
             else:
                 raise RuntimeError("market-data transport is unavailable")
             performance_diagnostics.record_startup_stage("reconnect_completed")
+            new_generation = getattr(transport, "generation_metrics", {}).get("generation")
+            performance_diagnostics.record_stream_observability(
+                "RECOVERY_SUCCEEDED", controller="WATCHDOG",
+                recovery_attempt_id=recovery_id,
+                generation=new_generation,
+            )
         except Exception as exc:
             self._feed_recovery_pending = False
+            performance_diagnostics.record_stream_observability(
+                "RECOVERY_FAILED", controller="WATCHDOG",
+                recovery_attempt_id=recovery_id,
+                generation=generation_metrics.get("generation"),
+                exception_class=type(exc).__name__,
+            )
             self._publish_health(
                 "MARKET_DATA_RECOVERY_FAILED",
                 "Market-data recovery failed; execution remains blocked.",

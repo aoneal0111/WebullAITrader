@@ -380,6 +380,13 @@ class RealtimeScannerEngine:
         performance_diagnostics.record_startup_stage("all_references_terminal")
         performance_diagnostics.record_startup_stage("reference_warmup_completed")
         performance_diagnostics.record_startup_stage("universe_refresh_completed")
+        performance_diagnostics.record_stream_observability(
+            "REFERENCE_WARMUP_COMPLETED",
+            requested_symbol_count=len(included),
+            ready_count=len(active_symbols),
+            failed_count=len(failures),
+            cached_ready_count=0,
+        )
 
         return self.active_symbols
 
