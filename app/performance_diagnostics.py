@@ -1847,6 +1847,9 @@ class PerformanceDiagnostics:
                     "events": tuple(
                         dict(item) for item in self._stream_observability_events
                     ),
+                    "radar_events": tuple(
+                        dict(item) for item in self._stream_radar_events
+                    ),
                 },
             )
 

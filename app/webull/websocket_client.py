@@ -102,6 +102,8 @@ class OfficialSdkStreamBackend:
         self._message_queue_high_water = 0
         self._message_ingestion_overflow = 0
         self._callbacks_rejected_after_halt = 0
+        self._messages_purged_on_disconnect = 0
+        self._messages_discarded_retired_generation = 0
         self._halt_diagnostic_emitted = False
         self._startup_buffered_count = 0
         self._oldest_buffered_age_ms = 0.0
@@ -180,6 +182,16 @@ class OfficialSdkStreamBackend:
                 "ingestion_queue_overflow": self._message_ingestion_overflow,
                 "ingestion_queue_depth": self._message_queue_depth,
                 "ingestion_queue_high_water": self._message_queue_high_water,
+                "callbacks_rejected_after_halt": self._callbacks_rejected_after_halt,
+                "messages_purged_on_disconnect": self._messages_purged_on_disconnect,
+                "messages_discarded_retired_generation": self._messages_discarded_retired_generation,
+            }
+
+    def discard_metrics(self) -> dict[str, int]:
+        with self._message_metrics_lock:
+            return {
+                "messages_purged_on_disconnect": self._messages_purged_on_disconnect,
+                "messages_discarded_retired_generation": self._messages_discarded_retired_generation,
                 "callbacks_rejected_after_halt": self._callbacks_rejected_after_halt,
             }
 
@@ -362,14 +374,15 @@ class OfficialSdkStreamBackend:
             self._original_on_disconnect(*args, **kwargs)
 
     def connect(self) -> None:
-        performance_diagnostics.record_stream_observability(
-            "CONNECT_REQUESTED", generation=self._generation + 1,
-        )
-        self._generation = (
+        next_generation = (
             int(self._generation_allocator())
             if self._generation_allocator is not None
             else self._generation + 1
         )
+        performance_diagnostics.record_stream_observability(
+            "CONNECT_REQUESTED", generation=next_generation,
+        )
+        self._generation = next_generation
         performance_diagnostics.record_stream_observability(
             "CONNECT_STARTED", generation=self._generation,
         )
@@ -494,6 +507,7 @@ class OfficialSdkStreamBackend:
         if drained:
             with self._message_metrics_lock:
                 self._message_queue_depth = max(0, self._message_queue_depth - drained)
+                self._messages_purged_on_disconnect += drained
         performance_diagnostics.record_stream_boundary("callback_ingestion_halted")
         if was_accepting and not self._halt_diagnostic_emitted:
             self._halt_diagnostic_emitted = True
@@ -686,6 +700,7 @@ class OfficialSdkStreamBackend:
                 performance_diagnostics.record_stream_stale_generation_rejection()
                 with self._message_metrics_lock:
                     self._messages_dequeued += 1
+                    self._messages_discarded_retired_generation += 1
                     self._message_queue_depth = max(
                         0, self._message_queue_depth - 1
                     )
@@ -730,6 +745,7 @@ class OfficialSdkStreamBackend:
                 performance_diagnostics.record_stream_stale_generation_rejection()
                 with self._message_metrics_lock:
                     self._messages_dequeued += 1
+                    self._messages_discarded_retired_generation += 1
                     self._message_queue_depth = max(
                         0, self._message_queue_depth - 1
                     )

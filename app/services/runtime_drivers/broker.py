@@ -431,6 +431,15 @@ class DesktopBrokerRuntimeDriver:
                 # coordinator is not runnable, then drains callbacks as soon
                 # as scanner.start() establishes the valid receive state.
                 if callable(getattr(self._scanner, "run_available", None)):
+                    # Attach the coordinator to its transport before the
+                    # consumer starts so buffered callbacks can take the
+                    # transport-only path during scanner warmup.
+                    scanner_connect = getattr(self._scanner, "connect", None)
+                    if (
+                        callable(scanner_connect)
+                        and not bool(getattr(self._scanner, "connected", False))
+                    ):
+                        scanner_connect()
                     self._start_market_data_consumer(stop_event)
                 observation_ready = self._start_scanner()
                 if observation_ready and getattr(

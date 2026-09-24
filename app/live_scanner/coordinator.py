@@ -19,6 +19,12 @@ from app.momentum_scanner import AssetClass
 from app.performance_diagnostics import performance_diagnostics
 
 
+# Official SDK connection is bounded at 10 seconds, followed by bounded
+# registration/subscription work. Recovery gets one composed bounded window so
+# a normal slow disconnect is not misclassified as an immediate retry.
+RECOVERY_TRANSPORT_TIMEOUT_SECONDS = 15.0
+
+
 class LiveScannerCoordinator:
     """
     Coordinates stream lifecycle and incremental event delivery.
@@ -97,6 +103,7 @@ class LiveScannerCoordinator:
         self._universe_refresh_call_lock = Lock()
         self._readiness_observer: Callable[[], object] | None = None
         self._last_failure_stage = "IDLE"
+        self._subscription_bootstrap_pending = True
 
     def connect(self) -> None:
         if self._connected:
@@ -106,22 +113,37 @@ class LiveScannerCoordinator:
         self._connected = True
         self._start_background_workers()
 
-    def disconnect(self, *, preserve_authoritative_lane: bool = False) -> None:
+    def disconnect(
+        self,
+        *,
+        preserve_authoritative_lane: bool = False,
+        transport_timeout_seconds: float | None = None,
+    ) -> None:
         if not self._connected:
             self._running = False
             if not preserve_authoritative_lane:
                 self._stop_background_workers()
+                self._subscription_bootstrap_pending = True
             return
 
         try:
             self._stop_background_workers(
                 stop_authoritative=not preserve_authoritative_lane,
             )
-            self._transport.disconnect()
+            disconnect = getattr(self._transport, "disconnect")
+            if transport_timeout_seconds is None:
+                disconnect()
+            else:
+                try:
+                    disconnect(timeout_seconds=transport_timeout_seconds)
+                except TypeError:
+                    disconnect()
         finally:
             self._stop_universe_refresh()
             self._connected = False
             self._running = False
+            if not preserve_authoritative_lane:
+                self._subscription_bootstrap_pending = True
 
     def subscribe(
         self,
@@ -186,6 +208,7 @@ class LiveScannerCoordinator:
                 return pending_channels
             self._scanner_channels = pending_channels
             self._subscribe_effective(pending_channels)
+            self._subscription_bootstrap_pending = len(self._channels) <= 1
             self._running = True
             self._reference_stop.clear()
             self._reference_thread = Thread(
@@ -222,6 +245,7 @@ class LiveScannerCoordinator:
             self._running = True
             return ()
         self.subscribe(selected_channels)
+        self._subscription_bootstrap_pending = len(self._channels) <= 1
 
         self._running = True
         if channels is None:
@@ -264,7 +288,10 @@ class LiveScannerCoordinator:
         # accepted events retain one continuous delivery path and so its
         # worker's drain cannot stall the market-data consumer for tens of
         # seconds while the feed is being re-established.
-        self.disconnect(preserve_authoritative_lane=True)
+        self.disconnect(
+            preserve_authoritative_lane=True,
+            transport_timeout_seconds=RECOVERY_TRANSPORT_TIMEOUT_SECONDS,
+        )
 
         reset_stream_state = getattr(
             self._engine,
@@ -464,6 +491,7 @@ class LiveScannerCoordinator:
         transport_metrics = getattr(self._transport, "memory_metrics", None)
         transport_latency = getattr(self._transport, "latency_metrics", None)
         transport_ingestion = getattr(self._transport, "ingestion_metrics", None)
+        transport_discard = getattr(self._transport, "discard_metrics", None)
         engine_metrics = getattr(self._engine, "memory_metrics", None)
         metrics = {
             "last_failure_stage": self._last_failure_stage,
@@ -485,6 +513,11 @@ class LiveScannerCoordinator:
             metrics.update({
                 f"transport_{key}": value
                 for key, value in transport_ingestion().items()
+            })
+        if callable(transport_discard):
+            metrics.update({
+                f"transport_{key}": value
+                for key, value in transport_discard().items()
             })
         if "transport_messages_enqueued" in metrics:
             metrics["raw_callbacks_received"] = metrics["transport_messages_enqueued"]
@@ -708,6 +741,19 @@ class LiveScannerCoordinator:
         selected = self._effective_channels(self._scanner_channels)
         if selected == self._channels:
             return selected
+        # Discovery can expose successive one-symbol bootstrap results while
+        # the stable bounded observation set is assembled. Retain a valid
+        # active set through that transient phase instead of repeatedly
+        # creating an unsubscribe-all gap.
+        if (
+            self._subscription_bootstrap_pending
+            and self._channels
+            and selected
+            and len(selected) <= 1
+        ):
+            return self._channels
+        if len(selected) > 1:
+            self._subscription_bootstrap_pending = False
         if not selected:
             self._transport.subscribe(())
             self._channels = ()
