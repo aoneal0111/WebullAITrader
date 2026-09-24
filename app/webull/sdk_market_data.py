@@ -375,7 +375,11 @@ class WebullScannerUniverseProvider:
                             raw_symbol=str(row.get("symbol", "")),
                         )
                         continue
-                    rows[symbol] = row
+                    # Multiple screeners may return the same symbol.  Keep
+                    # the first complete value when a later source supplies a
+                    # sparse row, while allowing later non-empty fields to
+                    # refresh the union deterministically.
+                    rows[symbol] = _merge_discovery_row(rows.get(symbol), row)
                     provenance.setdefault(symbol, []).append(
                         (source_identity, source_rank)
                     )
@@ -800,6 +804,20 @@ def _decimal_value(row: Mapping[str, object], *names: str) -> Decimal | None:
             except (InvalidOperation, ValueError):
                 return None
     return None
+
+
+def _merge_discovery_row(
+    previous: Mapping[str, object] | None,
+    current: Mapping[str, object],
+) -> Mapping[str, object]:
+    """Merge duplicate screener rows without erasing valid earlier fields."""
+    if previous is None:
+        return dict(current)
+    merged = dict(previous)
+    for key, value in current.items():
+        if value not in (None, ""):
+            merged[key] = value
+    return merged
 
 
 def _percent_value(row: Mapping[str, object]) -> Decimal | None:

@@ -144,6 +144,7 @@ def test_diagnostic_overflow_keeps_management_and_protection_reachable(
         sidecar._last_protection_attempt_at.pop("XYZ", None)
         force_diagnostic_drop(sidecar, monkeypatch)
         deliver(scanner, sidecar, trade(3, T0 + timedelta(seconds=1), "10.20"))
+        sidecar.authoritative_observe(trade(4, T0 + timedelta(seconds=1), "10.20"))
 
         assert reconciled == ["XYZ"]
         assert managed == ["XYZ"]
@@ -176,6 +177,7 @@ def test_critical_capture_failure_is_fail_closed_but_protection_and_recovery_rem
     try:
         sidecar._writer._record_fatal(RuntimeError("must not be serialized"))
         deliver(scanner, sidecar, quote(T0))
+        sidecar.authoritative_observe(quote(T0))
 
         failed = sidecar.snapshot()
         assert failed.health is WarriorCaptureHealth.DEGRADED

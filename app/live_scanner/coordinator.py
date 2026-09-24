@@ -154,7 +154,7 @@ class LiveScannerCoordinator:
         scanner_channels = (
             self._default_channels
             if channels is None
-            else _normalize_channels(channels)
+            else _normalize_channels_ordered(channels)
         )
         self._scanner_channels = scanner_channels
         if (
@@ -185,7 +185,7 @@ class LiveScannerCoordinator:
                     force_reference_refresh
                 ),
             )
-            self._scanner_channels = _normalize_channels(
+            self._scanner_channels = _normalize_channels_ordered(
                 getattr(self._engine, "subscription_symbols", active_symbols)
             )
             if self._running:
@@ -205,7 +205,7 @@ class LiveScannerCoordinator:
         self.connect()
         prepare = getattr(self._engine, "prepare_universe", None)
         if callable(prepare) and channels is None:
-            pending_channels = _normalize_channels(prepare(asset_classes))
+            pending_channels = _normalize_channels_ordered(prepare(asset_classes))
             selected_channels = pending_channels or self._effective_channels(
                 self._default_channels
             )
@@ -244,7 +244,7 @@ class LiveScannerCoordinator:
             if channels is None
             else channels
         )
-        selected_channels = _normalize_channels(selected_channels)
+        selected_channels = _normalize_channels_ordered(selected_channels)
         if not self._effective_channels(selected_channels):
             # Keep the connected runtime responsive when neither the scanner
             # nor an active management lifecycle requires a subscription.
@@ -635,12 +635,28 @@ class LiveScannerCoordinator:
         if observer is not None and not callable(observer):
             raise TypeError("event observer must be callable or None")
         self._event_observer = observer
+        created_lane = False
         if (
             self._asynchronous_authoritative
             and observer is not None
             and self._authoritative_lane is None
         ):
             self._authoritative_lane = self._new_authoritative_lane()
+            created_lane = True
+
+        # The broker binds its authoritative observer after the transport
+        # connection has already started.  In that ordering the lane is
+        # created after _start_background_workers() has run, so it has no
+        # worker unless this late-binding path starts it explicitly.  A lane
+        # created before connect is still started by connect() as before;
+        # existing lanes are left alone so observer replacement remains
+        # idempotent and does not create duplicate workers.
+        if (
+            created_lane
+            and self._connected
+            and self._authoritative_lane is not None
+        ):
+            self._authoritative_lane.start()
 
     def _new_authoritative_lane(self) -> AuthoritativeEventLane:
         return AuthoritativeEventLane(
@@ -729,7 +745,7 @@ class LiveScannerCoordinator:
     def _retained_channels(self) -> tuple[str, ...]:
         if self._retained_channels_source is None:
             return ()
-        return _normalize_channels(self._retained_channels_source())
+        return _normalize_channels_ordered(self._retained_channels_source())
 
     def _effective_channels(
         self,
@@ -738,7 +754,7 @@ class LiveScannerCoordinator:
         # Webull permits at most 100 concurrently subscribed tickers.  Position
         # management channels are risk-critical, so reserve their capacity
         # first and fill the remaining bounded set from the scanner universe.
-        retained = _normalize_channels_case_insensitive(
+        retained = _normalize_channels_case_insensitive_ordered(
             self._retained_channels()
         )
         if len(retained) > self._maximum_subscription_channels:
@@ -749,11 +765,11 @@ class LiveScannerCoordinator:
         retained_keys = {channel.casefold() for channel in retained}
         scanner = tuple(
             channel
-            for channel in _normalize_channels_case_insensitive(scanner_channels)
+            for channel in _normalize_channels_case_insensitive_ordered(scanner_channels)
             if channel.casefold() not in retained_keys
         )
         available = self._maximum_subscription_channels - len(retained)
-        return tuple(sorted((*retained, *scanner[:available])))
+        return (*retained, *scanner[:available])
 
     def _subscribe_effective(
         self,
@@ -876,7 +892,12 @@ class LiveScannerCoordinator:
         observer = self._event_observer
         if observer is None:
             return None
-        result = observer(event)
+        with performance_diagnostics.authoritative_stage(
+            "authoritative_worker_event",
+            symbol=getattr(event, "symbol", None),
+            event_type=getattr(getattr(event, "event_type", None), "value", None),
+        ):
+            result = observer(event)
         ended_at = datetime.now(UTC)
         received_at = getattr(event, "received_timestamp", None)
         if received_at is not None:
@@ -959,3 +980,32 @@ def _normalize_channels_case_insensitive(
         if value:
             normalized.setdefault(value.casefold(), value)
     return tuple(sorted(normalized.values()))
+
+
+def _normalize_channels_ordered(
+    channels: Iterable[str],
+) -> tuple[str, ...]:
+    """Normalize channels while retaining the producer's priority order."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for channel in channels:
+        value = str(channel).strip()
+        if value and value not in seen:
+            seen.add(value)
+            normalized.append(value)
+    return tuple(normalized)
+
+
+def _normalize_channels_case_insensitive_ordered(
+    channels: Iterable[str],
+) -> tuple[str, ...]:
+    """Deduplicate channels case-insensitively, retaining first occurrence."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for channel in channels:
+        value = str(channel).strip()
+        key = value.casefold()
+        if value and key not in seen:
+            seen.add(key)
+            normalized.append(value)
+    return tuple(normalized)

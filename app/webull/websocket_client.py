@@ -619,17 +619,20 @@ class OfficialSdkStreamBackend:
         is terminal, however, retaining producer payloads is unsafe, so the
         ingress gate closes and queued payloads are released.
         """
-        was_accepting = self._accepting_callbacks.is_set()
-        self._accepting_callbacks.clear()
-        drained = 0
-        while True:
-            try:
-                self._messages.get_nowait()
-                drained += 1
-            except Empty:
-                break
-        if drained:
-            with self._message_metrics_lock:
+        # Serialize the admission transition with callback enqueue.  This
+        # closes the gate and purges the bounded FIFO as one lifecycle step,
+        # preventing a producer from appending between the clear and drain.
+        with self._message_metrics_lock:
+            was_accepting = self._accepting_callbacks.is_set()
+            self._accepting_callbacks.clear()
+            drained = 0
+            while True:
+                try:
+                    self._messages.get_nowait()
+                    drained += 1
+                except Empty:
+                    break
+            if drained:
                 self._message_queue_depth = max(0, self._message_queue_depth - drained)
                 self._messages_purged_on_disconnect += drained
                 if self._generation_accounting:

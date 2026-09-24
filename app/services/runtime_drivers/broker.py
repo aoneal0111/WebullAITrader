@@ -6,8 +6,9 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import logging
+from queue import Empty, Full, Queue
 from threading import Event, RLock, Thread
-from time import monotonic, perf_counter
+from time import monotonic, perf_counter, sleep
 
 from app.broker_plugins import BrokerRuntime
 from app.broker_plugins.webull.capabilities import map_webull_capabilities
@@ -120,6 +121,13 @@ class DesktopBrokerRuntimeDriver:
         self._source = source.strip()
         self._sequence = 0
         self._event_lock = RLock()
+        # Runtime/UI projection is deliberately isolated from the strict
+        # market-event observer.  The queue is bounded so a slow projection
+        # consumer can never stall PAPER matching or protection.
+        self._projection_queue: Queue[PaperRuntimeEvent | None] = Queue(maxsize=1024)
+        self._projection_stop = Event()
+        self._projection_thread: Thread | None = None
+        self._projection_async_enabled = False
         self._connected = False
         self._market_data_connected = False
         self._market_data_thread: Thread | None = None
@@ -262,6 +270,8 @@ class DesktopBrokerRuntimeDriver:
 
         primary_error: tuple[Exception, object] | None = None
         try:
+            self._start_projection_worker()
+            self._projection_async_enabled = True
             self._start_market_data(stop_event)
             self._poll_accounts(
                 stop_event=stop_event,
@@ -275,6 +285,7 @@ class DesktopBrokerRuntimeDriver:
                 ("dynamic momentum research stop", self._stop_dynamic_momentum_discovery),
                 ("market-data stop", self._stop_market_data),
                 ("observer/Warrior sidecar stop", self._stop_observer),
+                ("runtime projection stop", self._stop_projection_worker),
                 ("broker disconnect", self._disconnect),
             )
             for lifecycle_phase, cleanup in cleanup_phases:
@@ -312,6 +323,48 @@ class DesktopBrokerRuntimeDriver:
         observer_stop = getattr(self._market_event_observer, "stop", None)
         if callable(observer_stop):
             observer_stop()
+
+    def _start_projection_worker(self) -> None:
+        if self._projection_thread is not None and self._projection_thread.is_alive():
+            return
+        self._projection_stop.clear()
+        self._projection_thread = Thread(
+            target=self._projection_loop,
+            name="atlas-runtime-projection",
+            daemon=True,
+        )
+        self._projection_thread.start()
+
+    def _projection_loop(self) -> None:
+        while not self._projection_stop.is_set() or not self._projection_queue.empty():
+            try:
+                event = self._projection_queue.get(timeout=0.1)
+            except Empty:
+                continue
+            try:
+                if event is not None:
+                    self._event_sink(event)
+            except Exception as exc:
+                log_runtime_exception(
+                    _RUNTIME_LOGGER,
+                    exc,
+                    event_type="runtime_projection_exception",
+                )
+            finally:
+                self._projection_queue.task_done()
+
+    def _stop_projection_worker(self) -> None:
+        thread = self._projection_thread
+        if thread is None:
+            return
+        self._projection_stop.set()
+        deadline = monotonic() + 5.0
+        while self._projection_queue.unfinished_tasks and monotonic() < deadline:
+            sleep(0.01)
+        thread.join(timeout=5.0)
+        if thread.is_alive():
+            _RUNTIME_LOGGER.warning("runtime projection worker did not stop cooperatively")
+        self._projection_thread = None
 
     def _start_market_data(self, stop_event: Event) -> None:
         self._market_data_started_monotonic = monotonic()
@@ -1105,6 +1158,12 @@ class DesktopBrokerRuntimeDriver:
             halt_ingestion = getattr(transport, "halt_callback_ingestion", None)
             if callable(halt_ingestion):
                 halt_ingestion()
+            fail_closed = getattr(self._market_event_observer, "fail_closed_market_data", None)
+            if callable(fail_closed):
+                try:
+                    fail_closed("MARKET_DATA_TERMINAL_FAILURE")
+                except Exception:
+                    pass
             self._publish_terminal_market_data_failure(exc)
             self._market_data_stop.set()
             if not stop_event.is_set():
@@ -1393,6 +1452,7 @@ class DesktopBrokerRuntimeDriver:
             self._scanner.stop()
 
         if not self._market_data_connected:
+            self._projection_async_enabled = False
             return
         try:
             if self._scanner is not None:
@@ -1424,12 +1484,16 @@ class DesktopBrokerRuntimeDriver:
         performance_diagnostics.record_startup_symbol(event.symbol)
         performance_diagnostics.record_startup_stage("feed_healthy")
         self._last_driver_market_event_monotonic = monotonic()
-        translated = self._market_event_translator(
-            event,
-            sequence=self._next_sequence(),
-            source=self._source,
-            cycle=self._cycles_completed,
-        )
+        with performance_diagnostics.authoritative_stage(
+            "broker_translation", symbol=event.symbol,
+            event_type=getattr(event.event_type, "value", event.event_type),
+        ):
+            translated = self._market_event_translator(
+                event,
+                sequence=self._next_sequence(),
+                source=self._source,
+                cycle=self._cycles_completed,
+            )
         if translated is not None and event.event_type is MarketEventType.QUOTE:
             translated = replace(
                 translated,
@@ -1495,7 +1559,11 @@ class DesktopBrokerRuntimeDriver:
             self._observe_probe_success("SESSION_TRANSITION")
             self._capability_refresh_requested = True
         if translated is not None:
-            self._emit(translated)
+            with performance_diagnostics.authoritative_stage(
+                "broker_emit", symbol=event.symbol,
+                event_type=getattr(event.event_type, "value", event.event_type),
+            ):
+                self._emit(translated)
         if self._market_event_observer is not None:
             self._market_event_observer(event)
         if getattr(self, "_feed_recovery_pending", False):
@@ -2152,8 +2220,25 @@ class DesktopBrokerRuntimeDriver:
             return self._sequence
 
     def _emit(self, event: PaperRuntimeEvent) -> None:
-        with self._event_lock:
+        # Sequence allocation remains locked, but downstream projection sinks
+        # never run while the broker event lock is held and never block the
+        # authoritative market-event worker.
+        if (
+            not getattr(self, "_projection_async_enabled", False)
+            or self._projection_thread is None
+            or not self._projection_thread.is_alive()
+        ):
             self._event_sink(event)
+            return
+        try:
+            with performance_diagnostics.authoritative_stage(
+                "runtime_projection_fanout",
+                symbol=getattr(event, "symbol", None),
+                event_type=getattr(event, "event_type", None),
+            ):
+                self._projection_queue.put_nowait(event)
+        except Full:
+            performance_diagnostics.increment("runtime_projection_events_rejected")
 
 
 __all__ = ["DesktopBrokerRuntimeDriver", "utc_now"]

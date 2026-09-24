@@ -772,7 +772,11 @@ class WarriorDesktopSidecar:
         started = perf_counter()
         success = False
         try:
-            success = bool(service.reconcile_authoritative_protection(symbol, event.timestamp))
+            with performance_diagnostics.authoritative_stage(
+                "protection_reconciliation", symbol=symbol,
+                event_type=getattr(getattr(event, "event_type", None), "value", None),
+            ):
+                success = bool(service.reconcile_authoritative_protection(symbol, event.timestamp))
         except Exception as exc:
             with self._lock:
                 self._protection_dirty.add(symbol)
@@ -799,6 +803,20 @@ class WarriorDesktopSidecar:
                 symbol=symbol,
                 success=success,
             )
+
+    def fail_closed_market_data(self, reason: str = "MARKET_DATA_TERMINAL_FAILURE") -> None:
+        """Revoke only new-entry authority after terminal stream failure."""
+        try:
+            with self._lock:
+                self._accept_execution = False
+                self._set_strategy_health(
+                    WarriorCaptureHealth.DEGRADED,
+                    category="CRITICAL_MARKET_DATA_FAILURE",
+                    reason=str(reason)[:128],
+                )
+        except Exception:
+            # Diagnostics/health propagation must never unwind shutdown.
+            self._accept_execution = False
 
     def _apply_session_policy(self, observed_at: datetime) -> None:
         config = self.strategy_config.session_management
@@ -883,15 +901,9 @@ class WarriorDesktopSidecar:
         )
         try:
             writer = self._writer
-            metrics = self._last_metrics if writer is None else writer.metrics()
-            if metrics is not None:
-                self._last_metrics = metrics
+            last_metrics = self._last_metrics
+            service = self._service
             candidates = tuple(self._latest.values())
-            runtime = (
-                self._service.runtime
-                if self._service is not None
-                else WarriorMomentumRuntime(self.strategy_config)
-            )
             health = self._health
             last_error = self._last_error_type
             observability_health = self._observability_health
@@ -902,20 +914,33 @@ class WarriorDesktopSidecar:
             enabled = self.enabled
             configuration_fingerprint = self.configuration_fingerprint
             report = self._daily_report
+            strategy_config = self.strategy_config
             stage_counts = {
                 name: len(values) for name, values in self._stage_symbols.items()
             }
             open_paper_trades = (
                 (0 if report is None else report.open_paper_positions)
-                if self._service is None else len(self._service.open_paper_symbols)
+                if service is None else len(service.open_paper_symbols)
             )
             counterfactuals = (
-                0 if self._service is None else len(self._service.counterfactual_symbols)
+                0 if service is None else len(service.counterfactual_symbols)
             )
             prior_focus_symbols = self._diagnostic_focus_symbols
         finally:
             self._lock.release()
 
+        # Expensive writer/runtime/report work happens after the coherent state
+        # copy.  It must not hold the sidecar lock needed by authoritative
+        # protection reconciliation.
+        metrics = last_metrics if writer is None else writer.metrics()
+        if metrics is not None:
+            with self._lock:
+                self._last_metrics = metrics
+        runtime = (
+            service.runtime
+            if service is not None
+            else WarriorMomentumRuntime(strategy_config)
+        )
         ranked = tuple(runtime.rank(candidates))
         ranked_symbols = {item.symbol.strip().upper() for item in ranked}
         if prior_focus_symbols is not None:
@@ -2157,13 +2182,25 @@ class CompositeMarketEventObserver:
 
     def __call__(self, event: MarketEvent) -> None:
         if self.primary is not None:
-            self._timed("paper.market_event", self.primary, event)
+            with performance_diagnostics.authoritative_stage(
+                "paper_gateway_process", symbol=event.symbol,
+                event_type=getattr(getattr(event, "event_type", None), "value", None),
+            ):
+                with performance_diagnostics.authoritative_stage(
+                    "paper_position_protection", symbol=event.symbol,
+                    event_type=getattr(getattr(event, "event_type", None), "value", None),
+                ):
+                    self._timed("paper.market_event", self.primary, event)
         if self._warrior_handoff is not None:
             authoritative = getattr(self.warrior, "authoritative_observe", None)
             if callable(authoritative):
-                self._timed(
-                    "authoritative.warrior_protection", authoritative, event,
-                )
+                with performance_diagnostics.authoritative_stage(
+                    "warrior_authoritative_observe", symbol=event.symbol,
+                    event_type=getattr(getattr(event, "event_type", None), "value", None),
+                ):
+                    self._timed(
+                        "authoritative.warrior_protection", authoritative, event,
+                    )
             self._timed(
                 "authoritative.warrior_handoff",
                 lambda current: self._warrior_handoff.submit(
@@ -2188,6 +2225,14 @@ class CompositeMarketEventObserver:
                 # Defense in depth: adaptive research runs last and can never
                 # unwind the authoritative PAPER/Warrior event pipeline.
                 self.adaptive_entry_failures += 1
+
+    def fail_closed_market_data(self, reason: str = "MARKET_DATA_TERMINAL_FAILURE") -> None:
+        callback = getattr(self.warrior, "fail_closed_market_data", None)
+        if callable(callback):
+            try:
+                callback(reason)
+            except Exception:
+                pass
 
     @staticmethod
     def _timed(component: str, observer: Callable[[MarketEvent], object], event: MarketEvent) -> object:

@@ -68,7 +68,7 @@ def test_direct_bootstrap_subscribe_does_not_replace_active_set():
     assert transport.subscriptions == [("A",)]
     stable = tuple(f"S{i}" for i in range(100))
     coordinator.subscribe(stable)
-    assert transport.subscriptions[-1] == tuple(sorted(stable))
+    assert transport.subscriptions[-1] == stable
     assert len(transport.subscriptions) == 2
 
 

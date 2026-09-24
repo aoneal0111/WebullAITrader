@@ -655,9 +655,17 @@ class RealtimeScannerEngine:
 
     @property
     def subscription_symbols(self) -> tuple[str, ...]:
-        return tuple(
-            sorted(set(self._subscription_symbols.values()))
-        )
+        # Preserve provider/Radar priority through the bounded stream
+        # selection; sorting here would make the 100-symbol cap alphabetical.
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for value in self._subscription_symbols.values():
+            symbol = str(value).strip()
+            key = symbol.casefold()
+            if symbol and key not in seen:
+                seen.add(key)
+                ordered.append(symbol)
+        return tuple(ordered)
 
     @property
     def processed_events(self) -> int:

@@ -204,6 +204,7 @@ class PerformanceSnapshot:
     report_refresh_failures: int = 0
     latency_diagnostics_persisted: int = 0
     callback_threshold_events: int = 0
+    runtime_projection_events_rejected: int = 0
     trade_intelligence_enabled: bool = False
     trade_intelligence_experiences_created: int = 0
     trade_intelligence_decisions_recorded: int = 0
@@ -243,6 +244,7 @@ class PerformanceSnapshot:
     discovery_callback_build_max_ms: float = 0.0
     discovery_strategy_coverage: tuple[str, ...] = ()
     component_timings: dict[str, dict[str, object]] = field(default_factory=dict)
+    authoritative_stage: dict[str, object] = field(default_factory=dict)
     stream_observability: dict[str, object] = field(default_factory=dict)
 
 
@@ -271,6 +273,7 @@ class PerformanceDiagnostics:
             "report_refresh_failures": 0,
             "latency_diagnostics_persisted": 0,
             "callback_threshold_events": 0,
+            "runtime_projection_events_rejected": 0,
         }
         self._pending_gui_updates = 0
         self._maximum_pending_gui_updates = 0
@@ -312,6 +315,14 @@ class PerformanceDiagnostics:
         self._component_slow: dict[str, int] = {}
         self._component_failures: dict[str, int] = {}
         self._component_last_diagnostic: dict[str, float] = {}
+        self._authoritative_stage: dict[str, object] = {
+            "stage": None,
+            "symbol": None,
+            "event_type": None,
+            "started_at": None,
+            "started_monotonic": None,
+            "age_ms": 0.0,
+        }
         self._queue_thresholds_above: set[int] = set()
         self._diagnostic_sink: DiagnosticSink | None = None
         self._trace_local = local()
@@ -1508,6 +1519,50 @@ class PerformanceDiagnostics:
         if diagnostic is not None:
             self._emit_diagnostic("slow_component", diagnostic)
 
+    @contextmanager
+    def authoritative_stage(
+        self,
+        stage: str,
+        *,
+        symbol: str | None = None,
+        event_type: str | None = None,
+    ):
+        """Bounded, exception-contained timing for strict market-event stages."""
+        started = monotonic()
+        with self._lock:
+            previous_stage = dict(self._authoritative_stage)
+            self._authoritative_stage = {
+                "stage": str(stage),
+                "symbol": symbol,
+                "event_type": event_type,
+                "started_at": datetime.now(UTC).isoformat(),
+                "started_monotonic": started,
+                "age_ms": 0.0,
+            }
+        success = False
+        try:
+            yield
+            success = True
+        finally:
+            elapsed_ms = max(0.0, (monotonic() - started) * 1000.0)
+            try:
+                self.record_component_duration(
+                    f"authoritative.{stage}", elapsed_ms,
+                    event_type=event_type,
+                    symbol=symbol,
+                    success=success,
+                )
+                if str(stage) == "authoritative_worker_event":
+                    self.record_component_duration(
+                        "authoritative_worker_event_complete", elapsed_ms,
+                        event_type=event_type,
+                        symbol=symbol,
+                        success=success,
+                    )
+            finally:
+                with self._lock:
+                    self._authoritative_stage = previous_stage
+
     def record_completed_bar_flush_duration(self, duration_ms: float) -> None:
         self._record_latest_and_maximum(
             "_completed_bar_flush_duration_ms",
@@ -1810,6 +1865,12 @@ class PerformanceDiagnostics:
                     "slow_calls": self._component_slow.get(name, 0),
                     "failures": self._component_failures.get(name, 0),
                 }
+            authoritative_stage = dict(self._authoritative_stage)
+            started_monotonic = authoritative_stage.get("started_monotonic")
+            if isinstance(started_monotonic, (int, float)):
+                authoritative_stage["age_ms"] = round(
+                    max(0.0, (monotonic() - float(started_monotonic)) * 1000.0), 3
+                )
             return PerformanceSnapshot(
                 **values,
                 **self._trade_intelligence,
@@ -1841,6 +1902,7 @@ class PerformanceDiagnostics:
                 event_processing_age_p90_ms=_percentile(ages, 0.90),
                 event_processing_age_p99_ms=_percentile(ages, 0.99),
                 event_processing_age_max_ms=self._processing_age_max_ms,
+                authoritative_stage=authoritative_stage,
                 scanner_duration_max_ms=self._scanner_duration_max_ms,
                 scanner_duration_ms=self._scanner_duration_ms,
                 experiment_capture_duration_max_ms=(

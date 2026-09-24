@@ -91,7 +91,7 @@ def test_broad_discovery_does_not_expand_subscription_budget():
     coordinator._maximum_subscription_channels = 3
     coordinator._retained_channels_source = lambda: ("POS",)
     selected = coordinator._effective_channels(("G", "R", "T", "X"))
-    assert selected == ("G", "POS", "R")
+    assert selected == ("POS", "G", "R")
     assert len(selected) == 3
 
 

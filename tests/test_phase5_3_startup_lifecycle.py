@@ -125,7 +125,7 @@ def test_provisional_bootstrap_symbols_do_not_replace_active_stream():
     assert transport.subscriptions == []
     coordinator._scanner_channels = tuple(f"S{i}" for i in range(100))
     coordinator._sync_subscription()
-    assert transport.subscriptions == [tuple(sorted(f"S{i}" for i in range(100)))]
+    assert transport.subscriptions == [tuple(f"S{i}" for i in range(100))]
 
 
 def test_recovery_uses_one_composed_bounded_disconnect_window():

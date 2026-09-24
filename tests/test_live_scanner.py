@@ -12,6 +12,7 @@ from app.live_scanner import (
 )
 from app.market_data.stream import iter_available
 from app.momentum_scanner import AssetClass
+from app.performance_diagnostics import performance_diagnostics
 
 
 @dataclass(frozen=True)
@@ -199,8 +200,8 @@ def test_start_unions_retained_open_position_with_scanner_symbols() -> None:
 
     coordinator.start()
 
-    assert coordinator.channels == ("AAA", "BTCUSD", "WYHG")
-    assert transport.subscriptions == [("AAA", "BTCUSD", "WYHG")]
+    assert coordinator.channels == ("WYHG", "AAA", "BTCUSD")
+    assert transport.subscriptions == [("WYHG", "AAA", "BTCUSD")]
 
 
 def test_scanner_refresh_does_not_remove_retained_symbol() -> None:
@@ -284,7 +285,7 @@ def test_reconnect_recomputes_current_retained_union() -> None:
 
     recovered = coordinator.recover_stream()
 
-    assert recovered == ("AAA", "BTCUSD", "SUNE", "WYHG")
+    assert recovered == ("WYHG", "SUNE", "AAA", "BTCUSD")
     assert transport.subscriptions[-1] == recovered
 
 
@@ -298,7 +299,7 @@ def test_scanner_and_retained_overlap_is_subscribed_once() -> None:
 
     coordinator.start()
 
-    assert coordinator.channels == ("AAA", "BTCUSD", "WYHG")
+    assert coordinator.channels == ("AAA", "WYHG", "BTCUSD")
     assert len(coordinator.channels) == len(set(coordinator.channels))
 
 
@@ -494,6 +495,86 @@ def test_recover_stream_preserves_authoritative_lane_continuity() -> None:
     assert len(observed) == 2
     assert coordinator.memory_metrics()["authoritative_lane_failure"] is None
     coordinator.stop()
+
+
+def test_late_observer_binding_starts_authoritative_lane_after_connect() -> None:
+    observed: list[FakeEvent] = []
+    stage_started: list[bool] = []
+
+    def observe(event: FakeEvent) -> None:
+        stage_started.append(
+            performance_diagnostics.snapshot().authoritative_stage.get("stage")
+            == "authoritative_worker_event"
+        )
+        observed.append(event)
+
+    events = [FakeEvent(f"SYM{index:03d}") for index in range(500)]
+    transport = FakeTransport(events)
+    coordinator = LiveScannerCoordinator(
+        transport,
+        FakeEngine(),
+        default_channels=("quotes",),
+        asynchronous_authoritative=True,
+    )
+
+    # Match production composition: the transport/coordinator connects before
+    # the broker binds its authoritative observer.
+    coordinator.connect()
+    coordinator.set_event_observer(observe)
+
+    cycle = coordinator.run_transport_available(maximum_events=500)
+    assert cycle.events_read == 500
+
+    deadline = monotonic() + 5.0
+    while len(observed) < 500 and monotonic() < deadline:
+        sleep(0.001)
+
+    metrics = coordinator.memory_metrics()
+    assert len(observed) == 500
+    assert any(stage_started)
+    timing = performance_diagnostics.snapshot().component_timings
+    assert timing["authoritative.authoritative_worker_event"]["calls"] >= 500
+    assert timing["authoritative_worker_event_complete"]["calls"] >= 500
+    assert metrics["authoritative_events_enqueued"] == 500
+    assert metrics["authoritative_events_dequeued"] == 500
+    assert metrics["authoritative_lane_depth"] == 0
+    assert metrics["authoritative_lane_overflow"] == 0
+    assert [event.symbol for event in observed] == [
+        f"SYM{index:03d}" for index in range(500)
+    ]
+    coordinator.disconnect()
+
+
+def test_late_observer_binding_reconnects_without_duplicate_lane_workers() -> None:
+    first: list[FakeEvent] = []
+    second: list[FakeEvent] = []
+    transport = FakeTransport([FakeEvent("FIRST"), FakeEvent("SECOND")])
+    coordinator = LiveScannerCoordinator(
+        transport,
+        FakeEngine(),
+        default_channels=("quotes",),
+        asynchronous_authoritative=True,
+    )
+
+    coordinator.connect()
+    coordinator.set_event_observer(first.append)
+    coordinator.set_event_observer(second.append)
+    coordinator.run_transport_available(maximum_events=1)
+    deadline = monotonic() + 2.0
+    while len(second) < 1 and monotonic() < deadline:
+        sleep(0.001)
+    assert first == []
+    assert [event.symbol for event in second] == ["FIRST"]
+
+    coordinator.disconnect()
+    coordinator.connect()
+    coordinator.run_transport_available(maximum_events=1)
+    deadline = monotonic() + 2.0
+    while len(second) < 2 and monotonic() < deadline:
+        sleep(0.001)
+    assert [event.symbol for event in second] == ["FIRST", "SECOND"]
+    assert coordinator.memory_metrics()["authoritative_lane_overflow"] == 0
+    coordinator.disconnect()
 
 
 def test_recover_stream_fails_closed_when_authoritative_worker_failed() -> None:
