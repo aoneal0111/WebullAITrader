@@ -21,7 +21,11 @@ from app.scanner_universe_observability import (
     UniverseAdmissionOutcome,
     UniverseAdmissionStage,
 )
-from app.universe.models import SecurityType, UniverseSymbol
+from app.universe.models import (
+    SecurityType,
+    UniversePriorityLanes,
+    UniverseSymbol,
+)
 from app.momentum_radar import MomentumRadar, RadarSnapshot
 from app.performance_diagnostics import performance_diagnostics
 
@@ -255,6 +259,9 @@ class WebullScannerUniverseProvider:
         maximum_breadth: int = 50,
         sources: tuple[str, ...] = ("SESSION_GAINERS", "RELATIVE_VOLUME_10D"),
         retention_seconds: int = 300,
+        legacy_source_limit: int = 50,
+        accelerator_capacity: int = 10,
+        production_symbol_capacity: int = 100,
         radar: MomentumRadar | None = None,
         admission_observer: object | None = None,
     ) -> None:
@@ -264,6 +271,12 @@ class WebullScannerUniverseProvider:
             raise ValueError("scanner screener maximum_breadth must be page_size..500")
         if retention_seconds < 0:
             raise ValueError("scanner screener retention_seconds cannot be negative")
+        if legacy_source_limit <= 0:
+            raise ValueError("legacy scanner source limit must be positive")
+        if accelerator_capacity <= 0:
+            raise ValueError("scanner accelerator capacity must be positive")
+        if production_symbol_capacity <= 0:
+            raise ValueError("production scanner symbol capacity must be positive")
         if not sources:
             raise ValueError("scanner screener requires at least one source")
         self._client = client
@@ -272,14 +285,19 @@ class WebullScannerUniverseProvider:
         self._maximum_breadth = maximum_breadth
         self._sources = tuple(dict.fromkeys(str(source).strip().upper() for source in sources))
         self._retention = timedelta(seconds=retention_seconds)
+        self._legacy_source_limit = int(legacy_source_limit)
+        self._accelerator_capacity = int(accelerator_capacity)
+        self._production_symbol_capacity = int(production_symbol_capacity)
         self._admission_observer = admission_observer
         self._rows: dict[str, Mapping[str, object]] = {}
         self._instruments: dict[str, UniverseSymbol] = {}
         self._row_seen_at: dict[str, datetime] = {}
         self._provenance: dict[str, list[tuple[str, int]]] = {}
         self._radar = radar
+        self._external_accelerator_source: Callable[[], Sequence[str]] | None = None
         self._radar_states: dict[str, str] = {}
         self._priority_order: tuple[str, ...] = ()
+        self._priority_lanes = UniversePriorityLanes()
         self._metrics: dict[str, int] = {
             "refresh_count": 0, "raw_symbols": 0, "unique_symbols": 0,
             "retained_symbols": 0, "expired_symbols": 0, "pages": 0,
@@ -375,11 +393,12 @@ class WebullScannerUniverseProvider:
                             raw_symbol=str(row.get("symbol", "")),
                         )
                         continue
-                    # Multiple screeners may return the same symbol.  Keep
-                    # the first complete value when a later source supplies a
-                    # sparse row, while allowing later non-empty fields to
-                    # refresh the union deterministically.
-                    rows[symbol] = _merge_discovery_row(rows.get(symbol), row)
+                    # Multiple screeners may return the same symbol. Preserve
+                    # the first-priority source's usable values and fill only
+                    # fields it did not supply from later broad sources.
+                    rows[symbol] = _merge_discovery_row(
+                        rows.get(symbol), row, preserve_existing=True,
+                    )
                     provenance.setdefault(symbol, []).append(
                         (source_identity, source_rank)
                     )
@@ -413,6 +432,12 @@ class WebullScannerUniverseProvider:
             "expired_symbols": len(previous_symbols - set(rows) - fresh_symbols),
             "pages": pages,
         })
+        legacy_primary = _legacy_priority_order(
+            provenance,
+            session=session,
+            maximum_per_source=self._legacy_source_limit,
+        )
+        accelerator: tuple[str, ...] = ()
         if self._radar is not None:
             radar_rows = tuple(
                 RadarSnapshot(
@@ -442,39 +467,85 @@ class WebullScannerUniverseProvider:
                 symbol: state for symbol, state in self._radar_states.items()
                 if self._radar.assessment(symbol) is not None
             }
-            prior_promoted = set(self._radar.promoted_symbols())
-            promoted = self._radar.promote(capacity=500)
-            remainder = tuple(symbol for symbol in self._radar.priority_order() if symbol not in promoted)
-            self._priority_order = (*promoted, *remainder)
-            for symbol in set(promoted) - prior_promoted:
+            prior_accelerator = set(self._priority_lanes.accelerator)
+            promoted = self._radar.promote(
+                capacity=len(legacy_primary) + self._accelerator_capacity,
+                required=legacy_primary,
+            )
+            legacy_set = set(legacy_primary)
+            accelerator = tuple(
+                symbol for symbol in promoted
+                if symbol not in legacy_set and symbol in rows
+            )[:self._accelerator_capacity]
+            for symbol in set(accelerator) - prior_accelerator:
                 assessment = self._radar.assessment(symbol)
                 source_count = len(set(next((row.sources for row in radar_rows if row.symbol == symbol), ())))
                 performance_diagnostics.record_stream_observability(
                     "RADAR_PROMOTED", symbol=symbol,
                     score=float(assessment.score) if assessment is not None else 0.0,
                     source_diversity=source_count,
-                    desired_count=len(promoted),
+                    desired_count=len(accelerator),
                 )
                 _observe_admission(
                     self._admission_observer, "record",
                     stage="RADAR_PROMOTED", outcome="PROMOTED",
                     reason="BOUNDED_MOMENTUM_PRIORITY", normalized_symbol=symbol,
                 )
-            if set(promoted) != prior_promoted:
+            if set(accelerator) != prior_accelerator:
                 radar_metrics = self._radar.metrics()
                 performance_diagnostics.record_stream_observability(
                     "RADAR_DESIRED_SET_CHANGED",
-                    added_count=len(set(promoted) - prior_promoted),
-                    removed_count=len(prior_promoted - set(promoted)),
-                    desired_count=len(promoted),
+                    added_count=len(set(accelerator) - prior_accelerator),
+                    removed_count=len(prior_accelerator - set(accelerator)),
+                    desired_count=len(accelerator),
                     evaluated=radar_metrics.get("evaluated", 0),
                     emerging=radar_metrics.get("emerging", 0),
                     promotions=radar_metrics.get("promotions", 0),
                     demotions=radar_metrics.get("demotions", 0),
                     replacements=radar_metrics.get("replacements", 0),
                 )
+        external_accelerator: tuple[str, ...] = ()
+        if self._external_accelerator_source is not None:
+            try:
+                external_accelerator = tuple(
+                    dict.fromkeys(
+                        str(symbol).strip().upper()
+                        for symbol in self._external_accelerator_source()
+                        if str(symbol).strip().upper() in rows
+                    )
+                )
+            except Exception:
+                external_accelerator = ()
+        legacy_set = set(legacy_primary)
+        accelerator = tuple(dict.fromkeys((
+            *(symbol for symbol in external_accelerator if symbol not in legacy_set),
+            *accelerator,
+        )))[:self._accelerator_capacity]
+        priority_symbols = set((*legacy_primary, *accelerator))
+        background = tuple(
+            symbol for symbol in rows if symbol not in priority_symbols
+        )
+        self._priority_lanes = UniversePriorityLanes(
+            legacy_primary=legacy_primary,
+            accelerator=accelerator,
+            background=background,
+        )
+        self._priority_order = self._priority_lanes.ordered
+        self._metrics.update({
+            "legacy_primary_symbols": len(legacy_primary),
+            "accelerator_symbols": len(accelerator),
+            "background_symbols": len(background),
+        })
+        critical = (*legacy_primary, *accelerator)
+        background_capacity = max(
+            0, self._production_symbol_capacity - len(critical),
+        )
+        production_order = (
+            *critical,
+            *background[:background_capacity],
+        )
         instrument_rows, instrument_error = _instrument_rows_with_error(
-            client, tuple(sorted(rows))
+            client, tuple(production_order)
         )
         if instrument_error is not None:
             _observe_admission(
@@ -485,7 +556,7 @@ class WebullScannerUniverseProvider:
                 upstream_fields={"symbol_count": len(rows)},
             )
         instruments_list: list[UniverseSymbol] = []
-        ordered_symbols = self._priority_order or tuple(sorted(rows))
+        ordered_symbols = tuple(production_order)
         for symbol in ordered_symbols:
             sources = provenance[symbol]
             _observe_admission(
@@ -546,6 +617,17 @@ class WebullScannerUniverseProvider:
 
     def priority_order(self) -> tuple[str, ...]:
         return self._priority_order
+
+    def priority_lanes(self) -> UniversePriorityLanes:
+        return self._priority_lanes
+
+    def set_accelerator_symbols_source(
+        self,
+        source: Callable[[], Sequence[str]] | None,
+    ) -> None:
+        if source is not None and not callable(source):
+            raise TypeError("accelerator symbols source must be callable or None")
+        self._external_accelerator_source = source
 
 
 class WebullScannerReferenceProvider:
@@ -809,15 +891,52 @@ def _decimal_value(row: Mapping[str, object], *names: str) -> Decimal | None:
 def _merge_discovery_row(
     previous: Mapping[str, object] | None,
     current: Mapping[str, object],
+    *,
+    preserve_existing: bool = False,
 ) -> Mapping[str, object]:
     """Merge duplicate screener rows without erasing valid earlier fields."""
     if previous is None:
         return dict(current)
     merged = dict(previous)
     for key, value in current.items():
-        if value not in (None, ""):
+        if value not in (None, "") and (
+            not preserve_existing or merged.get(key) in (None, "")
+        ):
             merged[key] = value
     return merged
+
+
+def _legacy_priority_order(
+    provenance: Mapping[str, Sequence[tuple[str, int]]],
+    *,
+    session: ScannerSession,
+    maximum_per_source: int,
+) -> tuple[str, ...]:
+    gainer_source = (
+        "PREMARKET_GAINERS"
+        if session is ScannerSession.PREMARKET
+        else "AFTER_HOURS_GAINERS"
+        if session is ScannerSession.AFTER_HOURS
+        else "DAY_GAINERS"
+    )
+    ordered: list[str] = []
+    seen: set[str] = set()
+    discovery_index = {symbol: index for index, symbol in enumerate(provenance)}
+    for source in (gainer_source, "RELATIVE_VOLUME_10D"):
+        ranked = sorted(
+            (
+                (rank, discovery_index[symbol], symbol)
+                for symbol, memberships in provenance.items()
+                for identity, rank in memberships
+                if identity == source and rank <= maximum_per_source
+            ),
+            key=lambda value: (value[0], value[1]),
+        )
+        for _rank, _index, symbol in ranked:
+            if symbol not in seen:
+                seen.add(symbol)
+                ordered.append(symbol)
+    return tuple(ordered)
 
 
 def _percent_value(row: Mapping[str, object]) -> Decimal | None:

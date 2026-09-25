@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from statistics import median
+from threading import RLock
 from typing import Mapping, Protocol
 
 from app.live_scanner.session import scanner_session
@@ -108,6 +109,7 @@ class ShadowOpportunityAnalyzer:
         self.store = store
         self.config = config
         self.configuration_fingerprint = configuration_fingerprint
+        self._lock = RLock()
         self._active: dict[str, _TrackedEvaluation] = {}
         self._by_symbol: dict[str, set[str]] = {}
         self._recover()
@@ -179,29 +181,45 @@ class ShadowOpportunityAnalyzer:
             payload,
             identity_parts=(decision.record_id,),
         )
-        if record.record_id not in self._active:
-            tracked = _TrackedEvaluation(record, record.payload)
-            self._active[record.record_id] = tracked
-            self._by_symbol.setdefault(record.symbol, set()).add(record.record_id)
+        with self._lock:
+            if record.record_id not in self._active:
+                tracked = _TrackedEvaluation(record, record.payload)
+                self._active[record.record_id] = tracked
+                self._by_symbol.setdefault(record.symbol, set()).add(record.record_id)
         return record
 
+    def active_evaluation_ids(self, symbol: str) -> tuple[str, ...]:
+        """Snapshot the cohort eligible to receive a subsequently queued bar."""
+        with self._lock:
+            return tuple(self._by_symbol.get(symbol.strip().upper(), ()))
+
     def observe_bar(self, bar: MinuteBar) -> tuple[CaptureRecord, ...]:
+        return self.observe_bar_for_evaluations(
+            bar, self.active_evaluation_ids(bar.symbol),
+        )
+
+    def observe_bar_for_evaluations(
+        self, bar: MinuteBar, evaluation_ids: tuple[str, ...],
+    ) -> tuple[CaptureRecord, ...]:
+        """Apply a bar only to the cohort active when async work was queued."""
         records: list[CaptureRecord] = []
-        for evaluation_id in tuple(self._by_symbol.get(bar.symbol.strip().upper(), ())):
-            tracked = self._active.get(evaluation_id)
-            if tracked is None or bar.timestamp < _first_future_minute(tracked.timestamp):
-                continue
-            tracked.bars[bar.timestamp] = bar
-            records.extend(self._resolve_due(tracked, bar.timestamp + ONE_MINUTE))
+        for evaluation_id in evaluation_ids:
+            with self._lock:
+                tracked = self._active.get(evaluation_id)
+                if tracked is None or bar.timestamp < _first_future_minute(tracked.timestamp):
+                    continue
+                tracked.bars[bar.timestamp] = bar
+                records.extend(self._resolve_due(tracked, bar.timestamp + ONE_MINUTE))
         return tuple(records)
 
     def finalize_due(self, observed_at: datetime) -> tuple[CaptureRecord, ...]:
         if observed_at.tzinfo is None:
             raise ValueError("shadow finalization timestamp must be timezone-aware")
-        records: list[CaptureRecord] = []
-        for tracked in tuple(self._active.values()):
-            records.extend(self._resolve_due(tracked, observed_at, final=True))
-        return tuple(records)
+        with self._lock:
+            records: list[CaptureRecord] = []
+            for tracked in tuple(self._active.values()):
+                records.extend(self._resolve_due(tracked, observed_at, final=True))
+            return tuple(records)
 
     def policy_record(
         self, evaluation_record_id: str, symbol: str, timestamp: datetime,

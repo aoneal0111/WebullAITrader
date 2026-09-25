@@ -6,7 +6,7 @@ from decimal import Decimal, Decimal as D
 from pathlib import Path
 from queue import Full
 from threading import Event
-from time import sleep
+from time import perf_counter, sleep
 from types import SimpleNamespace
 
 import pytest
@@ -148,6 +148,36 @@ def test_authoritative_fill_path_is_prospective_bounded_and_flags_gaps(
     writer.close()
 
 
+def test_observational_capture_handoff_does_not_block_strategy_evaluation(
+    tmp_path: Path,
+) -> None:
+    """Slow evidence persistence must not hold up the decision path."""
+    store = ForwardCaptureStore(tmp_path / "async-observation.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(
+        store, writer, async_observation_records=True,
+    )
+    original_submit_many = writer.submit_many
+    entered = Event()
+
+    def slow_submit(records, *, timeout_seconds=1.0):
+        entered.set()
+        sleep(0.5)
+        original_submit_many(records, timeout_seconds=timeout_seconds)
+
+    writer.submit_many = slow_submit
+    started = perf_counter()
+    service.observe(
+        point(observation=scanner(previous_close=D("10"))),
+        account=account(),
+    )
+    elapsed = perf_counter() - started
+    assert elapsed < 0.25
+    assert entered.wait(1.0)
+    service.close_observation_records()
+    writer.close()
+
+
 def test_execution_path_restart_labels_pre_restart_interval_unavailable(
     tmp_path: Path,
 ) -> None:
@@ -194,6 +224,238 @@ def test_point_in_time_capture_persists_evidence_and_excludes_future_bar(capture
     evidence = decision["canonical_setup_evidence"]
     assert evidence["completed_bar_cutoff"] == (T0 + timedelta(minutes=20)).isoformat()
     assert evidence["bar_timestamps"] == [item.timestamp.isoformat() for item in bars()]
+
+
+def test_completed_bar_delivery_is_revision_cached_and_research_delta_only(
+    capture,
+) -> None:
+    store, writer, service = capture
+    underlying = service._shadow
+    assert underlying is not None
+    observed: list[datetime] = []
+
+    class ShadowProbe:
+        def active_evaluation_ids(self, symbol: str) -> tuple[str, ...]:
+            assert symbol == "XYZ"
+            return ("existing-evaluation",)
+
+        def observe_bar_for_evaluations(
+            self, value: MinuteBar, evaluation_ids: tuple[str, ...],
+        ) -> tuple:
+            assert evaluation_ids == ("existing-evaluation",)
+            observed.append(value.timestamp)
+            return ()
+
+        def observe_rejection(self, *args, **kwargs):
+            return underlying.observe_rejection(*args, **kwargs)
+
+        def observe_bar(self, value: MinuteBar):
+            return underlying.observe_bar(value)
+
+        def finalize_due(self, timestamp: datetime):
+            return underlying.finalize_due(timestamp)
+
+    service._shadow = ShadowProbe()
+    first_candidate, first_signal = service.observe(point())
+    second_candidate, second_signal = service.observe(point())
+    added = bar(5, "10.1", "10.25", "10.0", "10.2", "400")
+    service.observe(point(bars=(*bars(), added)))
+
+    assert service.wait_for_completed_bar_research(timeout_seconds=2.0)
+    writer.flush()
+    assert observed == [item.timestamp for item in (*bars(), added)]
+    assert len(set(observed)) == len(observed)
+    assert len(store.records(record_type=CaptureRecordType.MINUTE_BAR)) == 6
+    assert first_candidate == second_candidate
+    assert first_signal == second_signal
+    metrics = service.completed_bar_metrics()
+    assert metrics.cache_hit >= 1
+    assert metrics.cache_miss >= 2
+    assert metrics.new_bars_processed == 6
+    assert metrics.research_submit == 6
+    assert metrics.research_worker.completed == 6
+    assert service.close_completed_bar_research(timeout_seconds=2.0)
+
+
+def test_paper_lifecycle_delta_matches_legacy_full_history_replay(
+    tmp_path: Path,
+) -> None:
+    services = []
+    for name in ("legacy", "delta"):
+        store = ForwardCaptureStore(tmp_path / f"{name}.sqlite3")
+        writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+        service = WarriorForwardCaptureService(store, writer)
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        assert "XYZ" in service.open_paper_symbols
+        services.append((store, writer, service, signal))
+
+    legacy_store, legacy_writer, legacy, signal = services[0]
+    delta_store, delta_writer, delta, delta_signal = services[1]
+    assert signal == delta_signal
+    first = MinuteBar(
+        "XYZ", signal.timestamp + timedelta(minutes=1),
+        signal.entry_trigger,
+        signal.target_levels[0],
+        signal.stop_price + D("0.01"),
+        signal.target_levels[0],
+        D("1000"),
+    )
+    stopped = MinuteBar(
+        "XYZ", signal.timestamp + timedelta(minutes=2),
+        signal.entry_trigger,
+        signal.entry_trigger + D("0.01"),
+        signal.entry_trigger - D("0.01"),
+        signal.entry_trigger,
+        D("1000"),
+    )
+    event_times = (
+        first.timestamp + timedelta(minutes=1),
+        stopped.timestamp + timedelta(minutes=1),
+    )
+
+    for observed_at, history in zip(
+        event_times, ((first,), (first, stopped)), strict=True,
+    ):
+        for value in history:
+            legacy.observe_market_bar("XYZ", value, observed_at)
+        delta_value = point(
+            observation=scanner(timestamp=observed_at),
+            bars=history,
+            quote_observed_at=observed_at,
+            last_price_observed_at=observed_at,
+        )
+        snapshot = delta._completed_bar_snapshot(delta_value)
+        delta._deliver_completed_bar_deltas("XYZ", snapshot, observed_at)
+
+    legacy_writer.flush()
+    delta_writer.flush()
+    assert legacy.open_paper_symbols == delta.open_paper_symbols == ()
+    for record_type in (
+        CaptureRecordType.PAPER_FILL,
+        CaptureRecordType.MANAGEMENT_CONTEXT,
+        CaptureRecordType.STATE_TRANSITION,
+    ):
+        legacy_payloads = [
+            record.payload_json
+            for record in legacy_store.records(record_type=record_type)
+        ]
+        delta_payloads = [
+            record.payload_json
+            for record in delta_store.records(record_type=record_type)
+        ]
+        assert delta_payloads == legacy_payloads
+
+    assert legacy.close_completed_bar_research(timeout_seconds=2.0)
+    assert delta.close_completed_bar_research(timeout_seconds=2.0)
+    legacy_writer.close()
+    delta_writer.close()
+
+
+def test_production_shaped_completed_bar_fast_path_latency(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "completed-bar-latency.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(
+        store, writer, async_observation_records=True,
+    )
+    history = tuple(
+        bar(
+            index,
+            str(D("9.70") + D(index % 5) / D("100")),
+            str(D("9.80") + D(index % 5) / D("100")),
+            str(D("9.60") + D(index % 5) / D("100")),
+            str(D("9.75") + D(index % 5) / D("100")),
+            "1000",
+        )
+        for index in range(120)
+    )
+
+    # Build multiple real, active shadow evaluations without adding any new
+    # completed bar. Their research work must not run on these quote updates.
+    for offset in range(24):
+        timestamp = T0 + timedelta(minutes=130, seconds=offset)
+        service.observe(point(
+            observation=scanner(
+                timestamp=timestamp, previous_close=D("10"),
+            ),
+            bars=history,
+            quote_observed_at=timestamp,
+            last_price_observed_at=timestamp,
+        ))
+
+    entry_at = T0 + timedelta(minutes=130, seconds=30)
+    _entry_candidate, entry_signal = service.observe(
+        point(
+            observation=scanner(timestamp=entry_at),
+            quote_observed_at=entry_at,
+            last_price_observed_at=entry_at,
+        ),
+        account=account(),
+    )
+    assert entry_signal is not None
+    assert "XYZ" in service.open_paper_symbols
+
+    boundary_bar = bar(131, "10.18", "10.24", "10.12", "10.20", "1200")
+    boundary_at = T0 + timedelta(minutes=133)
+    latest = point(
+        observation=scanner(
+            timestamp=boundary_at, previous_close=D("10"),
+        ),
+        bars=(*history, boundary_bar),
+        quote_observed_at=boundary_at,
+        last_price_observed_at=boundary_at,
+    )
+    service.observe(latest)
+    assert "XYZ" in service.open_paper_symbols
+    assert service.wait_for_completed_bar_research(timeout_seconds=5.0)
+
+    completed_samples: list[float] = []
+    for _ in range(200):
+        started = perf_counter()
+        snapshot = service._completed_bar_snapshot(latest)
+        service._deliver_completed_bar_deltas("XYZ", snapshot, boundary_at)
+        completed_samples.append((perf_counter() - started) * 1000.0)
+
+    observe_samples: list[float] = []
+    for _ in range(100):
+        started = perf_counter()
+        service.observe(latest)
+        observe_samples.append((perf_counter() - started) * 1000.0)
+
+    def percentile(samples: list[float], quantile: float) -> float:
+        ordered = sorted(samples)
+        return ordered[round((len(ordered) - 1) * quantile)]
+
+    completed_result = (
+        percentile(completed_samples, 0.50),
+        percentile(completed_samples, 0.90),
+        percentile(completed_samples, 0.99),
+        max(completed_samples),
+    )
+    observe_result = (
+        percentile(observe_samples, 0.50),
+        percentile(observe_samples, 0.90),
+        percentile(observe_samples, 0.99),
+        max(observe_samples),
+    )
+    print(
+        "completed_bar_ms="
+        f"p50={completed_result[0]:.3f},p90={completed_result[1]:.3f},"
+        f"p99={completed_result[2]:.3f},max={completed_result[3]:.3f}; "
+        "service_observe_ms="
+        f"p50={observe_result[0]:.3f},p90={observe_result[1]:.3f},"
+        f"p99={observe_result[2]:.3f},max={observe_result[3]:.3f}"
+    )
+    assert completed_result[0] < 1.0
+    assert completed_result[1] < 5.0
+    assert completed_result[2] < 15.0
+    assert observe_result[0] < 5.0
+    assert observe_result[1] < 15.0
+    assert observe_result[2] < 50.0
+
+    assert service.close_completed_bar_research(timeout_seconds=5.0)
+    service.close_observation_records()
+    writer.close()
 
 
 def test_quality_preserves_unknown_unavailable_and_missing_provenance(capture) -> None:

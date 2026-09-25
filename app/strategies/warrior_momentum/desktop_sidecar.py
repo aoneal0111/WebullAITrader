@@ -257,6 +257,8 @@ class WarriorDesktopSidecar:
         decision_intelligence_observer: object | None = None,
         paper_entry_intelligence: object | None = None,
         observability: object | None = None,
+        async_observation_records: bool = False,
+        async_decision_intelligence: bool = False,
         report_worker_factory: Callable[..., WarriorReportWorker] = WarriorReportWorker,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -284,6 +286,8 @@ class WarriorDesktopSidecar:
         self._decision_intelligence_observer = decision_intelligence_observer
         self._paper_entry_intelligence = paper_entry_intelligence
         self._observability = observability
+        self._async_observation_records = bool(async_observation_records)
+        self._async_decision_intelligence = bool(async_decision_intelligence)
         self._report_worker_factory = report_worker_factory
         self._accept_execution = False
         self._clock = clock
@@ -296,6 +300,7 @@ class WarriorDesktopSidecar:
         self._adapter: MarketEventScannerAdapter | None = None
         self._scanner_decision_source: Callable[[str], object | None] | None = None
         self._scanner_ranked_source: Callable[[str], bool] | None = None
+        self._premarket_volume_profile: object | None = None
         self._store: ForwardCaptureStore | None = None
         self._writer: ForwardCaptureWriter | None = None
         self._service: WarriorForwardCaptureService | None = None
@@ -382,6 +387,15 @@ class WarriorDesktopSidecar:
         with self._lock:
             self._scanner_decision_source = source
             self._scanner_ranked_source = ranked_source
+
+    def bind_premarket_volume_profile(self, profile: object) -> None:
+        """Bind a research-only profile observer; it has no authority port."""
+        if not callable(getattr(profile, "observe_completed_bar", None)):
+            raise TypeError("profile must observe completed bars")
+        if not callable(getattr(profile, "lookup", None)):
+            raise TypeError("profile must support shadow lookup")
+        with self._lock:
+            self._premarket_volume_profile = profile
 
     def needs_historical_preload(self, symbol: str) -> bool:
         """Return whether this process still needs a REST history attempt."""
@@ -572,6 +586,8 @@ class WarriorDesktopSidecar:
                     paper_entry_intelligence=getattr(
                         self._paper_entry_intelligence, "assess", None,
                     ) if self.environment.upper() == "PAPER" else None,
+                    async_observation_records=self._async_observation_records,
+                    async_decision_intelligence=self._async_decision_intelligence,
                 )
                 if self._execution_recovery_orders:
                     self._service.restore_execution_lifecycles(
@@ -611,6 +627,15 @@ class WarriorDesktopSidecar:
                     category="CRITICAL_STARTUP_FAILURE",
                     reason="START_FAILED", exception=exc,
                 )
+                if self._service is not None:
+                    try:
+                        self._service.close_completed_bar_research(
+                            timeout_seconds=2.0,
+                        )
+                        self._service.close_intelligence_worker(timeout_seconds=2.0)
+                        self._service.close_observation_records()
+                    except Exception:
+                        pass
                 entry_value_stop = getattr(
                     self._entry_value_observer, "close", None,
                 )
@@ -663,7 +688,14 @@ class WarriorDesktopSidecar:
             now = self._aware_now()
             if service is not None:
                 service.shutdown_intraminute_shadow(now)
+                if not service.close_completed_bar_research(timeout_seconds=5.0):
+                    raise TimeoutError(
+                        "Warrior completed-bar research worker shutdown timed out"
+                    )
                 service.finalize_shadow_outcomes(now)
+                if not service.close_intelligence_worker(timeout_seconds=5.0):
+                    raise TimeoutError("Warrior intelligence worker shutdown timed out")
+                service.close_observation_records()
             lifecycle_phase = "shadow/capture writer drain"
             self._flush_capture_writer(writer)
             lifecycle_phase = "shadow daily report finalization"
@@ -1150,6 +1182,9 @@ class WarriorDesktopSidecar:
                     # Aggregators return a completion flag and append
                     # the authoritative immutable bar to the completed store.
                     management_bar = self._bars[symbol][-1]
+                    self._observe_premarket_completed_bar(
+                        management_bar, observed_at,
+                    )
                     service.observe_market_bar(
                         symbol, management_bar, observed_at,
                     )
@@ -1194,6 +1229,9 @@ class WarriorDesktopSidecar:
                 or completed
             )
         if completed:
+            self._observe_premarket_completed_bar(
+                self._bars[symbol][-1], self._aware_now(),
+            )
             service.invalidate_intraminute_shadow(
                 symbol,
                 observation.timestamp,
@@ -1320,6 +1358,7 @@ class WarriorDesktopSidecar:
                 None if self._scanner_decision_source is None
                 else self._scanner_decision_source(symbol)
             )
+            self._observe_premarket_shadow(scanner_decision, evaluated_at)
             scanner_classification = None
             if scanner_decision is not None:
                 scanner_classification = _scanner_classification(
@@ -1560,6 +1599,34 @@ class WarriorDesktopSidecar:
         else:
             priority = OrderFlowPriority.LOW
         self._order_flow.update_symbol(symbol, priority)
+
+    def _observe_premarket_completed_bar(
+        self, bar: MinuteBar, observed_at: datetime,
+    ) -> None:
+        profile = self._premarket_volume_profile
+        observer = getattr(profile, "observe_completed_bar", None)
+        if callable(observer):
+            try:
+                observer(bar, observed_at=observed_at)
+            except Exception:
+                pass
+
+    def _observe_premarket_shadow(
+        self, decision: object | None, observed_at: datetime,
+    ) -> None:
+        profile = self._premarket_volume_profile
+        lookup = getattr(profile, "lookup", None)
+        metrics = getattr(decision, "metrics", None)
+        if decision is None or not callable(lookup) or metrics is None:
+            return
+        try:
+            lookup(
+                getattr(decision, "symbol"),
+                timestamp=observed_at,
+                legacy_rvol=getattr(metrics, "relative_volume", None),
+            )
+        except Exception:
+            pass
 
     def _complete_elapsed_bar(self, event: MarketEvent) -> bool:
         """Finalize a prior trade bar when any later event crosses its minute."""
@@ -1933,7 +2000,7 @@ class WarriorDesktopSidecar:
                                     signal: object | None = None,
                                     taxonomy_candidate: object | None = None,
                                     legacy_candidate: object | None = None,
-                                    decision_timestamp: object | None = None) -> tuple[object | None, object | None]:
+                                    decision_timestamp: object | None = None) -> tuple[object, ...]:
         """Run production DI-2 and DI-ENTRY as one owned callback boundary."""
         observer = self._decision_intelligence_observer
         policy = self._paper_entry_intelligence
@@ -2021,7 +2088,7 @@ class WarriorDesktopSidecar:
                     opportunity_id=opportunity_id,
                     reason=str(_decision.assignment_persistence_reason),
                 )
-            return result, treatment_signal
+            return result, treatment_signal, _decision
         except Exception as exc:
             self._record_di_entry_diagnostic(
                 "POLICY_ASSESS_EXCEPTION", symbol=symbol, timestamp=timestamp,
@@ -2274,6 +2341,9 @@ class CompositeMarketEventObserver:
         ranked_source: Callable[[str], bool] | None = None,
     ) -> None:
         self.warrior.bind_scanner_decision_source(source, ranked_source)
+
+    def bind_premarket_volume_profile(self, profile: object) -> None:
+        self.warrior.bind_premarket_volume_profile(profile)
 
     def needs_historical_preload(self, symbol: str) -> bool:
         return self.warrior.needs_historical_preload(symbol)

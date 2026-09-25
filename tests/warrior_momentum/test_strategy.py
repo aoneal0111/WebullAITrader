@@ -286,6 +286,101 @@ def test_entry_rejects_execution_quality_and_state(change, reason) -> None:
     assert assessed.status is CandidateStatus.INELIGIBLE_FOR_EXECUTION
 
 
+def _forming_hod_bars() -> tuple[MinuteBar, ...]:
+    return (*hod_bars()[:-1], replace(
+        hod_bars()[-1], high=D("10.00"), close=D("9.98"), volume=D("100"),
+    ))
+
+
+def test_temporary_spread_failure_preserves_forming_setup_and_episode() -> None:
+    runtime = WarriorMomentumRuntime()
+    first = runtime.discover(
+        observation(timestamp=T0 + timedelta(minutes=20)),
+        _forming_hod_bars(), session="REGULAR",
+    )
+    wide = runtime.discover(
+        observation(
+            timestamp=T0 + timedelta(minutes=21), bid=D("9"), ask=D("11"),
+        ),
+        _forming_hod_bars(), session="REGULAR",
+    )
+    recovered = runtime.discover(
+        observation(timestamp=T0 + timedelta(minutes=22)),
+        _forming_hod_bars(), session="REGULAR",
+    )
+
+    assert first.setup is not None and first.setup.state is SetupState.FORMING
+    assert wide.setup is not None and recovered.setup is not None
+    assert wide.setup.state is recovered.setup.state is SetupState.FORMING
+    assert wide.setup.structural_episode_id == first.setup.structural_episode_id
+    assert recovered.setup.structural_episode_id == first.setup.structural_episode_id
+    assessed, signal_value = runtime.assess_entry(wide)
+    assert signal_value is None
+    assert ReasonCode.SPREAD_WIDE in assessed.reason_codes
+
+
+def test_temporary_rvol_failure_preserves_forming_setup_and_episode() -> None:
+    runtime = WarriorMomentumRuntime()
+    first = runtime.discover(
+        observation(timestamp=T0 + timedelta(minutes=20)),
+        _forming_hod_bars(), session="REGULAR",
+    )
+    low_rvol = runtime.discover(
+        observation(
+            timestamp=T0 + timedelta(minutes=21),
+            current_volume=D("150000"), average_30_day_volume=D("100000"),
+        ),
+        _forming_hod_bars(), session="REGULAR",
+    )
+    recovered = runtime.discover(
+        observation(timestamp=T0 + timedelta(minutes=22)),
+        _forming_hod_bars(), session="REGULAR",
+    )
+
+    assert first.setup is not None and low_rvol.setup is not None
+    assert recovered.setup is not None
+    assert low_rvol.setup.state is recovered.setup.state is SetupState.FORMING
+    assert low_rvol.setup.structural_episode_id == first.setup.structural_episode_id
+    assert recovered.setup.structural_episode_id == first.setup.structural_episode_id
+    assert ReasonCode.RVOL_LOW in low_rvol.reason_codes
+    assert runtime.entry_signal(low_rvol) is None
+
+
+def test_setup_continuity_expires_normally_after_structural_loss() -> None:
+    runtime = WarriorMomentumRuntime()
+    forming = runtime.discover(
+        observation(timestamp=T0 + timedelta(minutes=20)),
+        _forming_hod_bars(), session="REGULAR",
+    )
+    assert forming.setup is not None and forming.setup.state is SetupState.FORMING
+    # One completed bar cannot satisfy any setup detector.  After the bounded
+    # continuity interval it must not resurrect the earlier forming episode.
+    non_structural = (bar(10, "9.5", "9.7", "9.0", "9.2", "100"),)
+    expired = runtime.discover(
+        observation(
+            timestamp=T0 + timedelta(minutes=23), bid=D("9"), ask=D("11"),
+        ),
+        non_structural, session="REGULAR",
+    )
+
+    assert expired.setup is None
+    assert runtime.entry_signal(expired) is None
+
+
+def test_stale_market_data_still_blocks_entry_after_setup_detection() -> None:
+    runtime = WarriorMomentumRuntime()
+    candidate = runtime.discover(observation(), hod_bars(), session="REGULAR")
+    stale = replace(
+        candidate,
+        reason_codes=tuple(dict.fromkeys((*candidate.reason_codes, ReasonCode.STALE_MARKET_DATA))),
+    )
+
+    assessed, signal_value = runtime.assess_entry(stale)
+
+    assert signal_value is None
+    assert ReasonCode.STALE_MARKET_DATA in assessed.reason_codes
+
+
 def test_default_entry_sessions_explicitly_allow_after_hours_but_not_overnight() -> None:
     assert WARRIOR_ENTRY_ALLOWED_SESSIONS == frozenset({
         "PREMARKET", "REGULAR", "AFTER_HOURS",

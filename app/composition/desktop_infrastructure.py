@@ -67,6 +67,7 @@ def create_desktop_scanner_infrastructure(
     evaluation_mailbox_capacity: int = 256,
     asynchronous_authoritative: bool = True,
     authoritative_lane_capacity: int = 4096,
+    maximum_scanner_reference_symbols: int = 100,
 ) -> DesktopScannerInfrastructure:
     """Assemble the live scanner infrastructure used by the desktop runtime."""
 
@@ -92,6 +93,7 @@ def create_desktop_scanner_infrastructure(
         reference_sink=reference_sink,
         clock=clock,
         admission_observer=scanner_universe_admission_observer,
+        maximum_active_symbols=maximum_scanner_reference_symbols,
     )
 
     coordinator = LiveScannerCoordinator(

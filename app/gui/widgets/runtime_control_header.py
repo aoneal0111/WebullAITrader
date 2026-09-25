@@ -161,7 +161,14 @@ class RuntimeControlHeader(QFrame):
         if self._runtime_phase is RuntimeState.STOPPED and not self._runtime_started:
             self._set("Scanner", "NOT STARTED", "neutral")
             return
-        self._set("Scanner", "Active" if snapshot.candidate_count else "Idle", "good" if snapshot.candidate_count else "info")
+        scanner = snapshot.scanner_status or "UNKNOWN"
+        self._set(
+            "Scanner",
+            scanner,
+            "info"
+            if scanner.upper() in {"IDLE", "UNKNOWN", "WARMING"}
+            else _status_level(scanner),
+        )
 
     def set_runtime_phase(self, phase: RuntimeState) -> None:
         if not isinstance(phase, RuntimeState):

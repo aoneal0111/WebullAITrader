@@ -68,6 +68,7 @@ class DesktopBrokerRuntimeDriver:
         market_event_observer: MarketEventObserver | None = None,
         scanner_coordinator: object | None = None,
         dynamic_momentum_discovery_runtime: object | None = None,
+        background_research_runtime: object | None = None,
         market_data_probe: object | None = None,
         startup_validator: object | None = None,
         clock: Clock = utc_now,
@@ -113,6 +114,7 @@ class DesktopBrokerRuntimeDriver:
         self._market_event_observer = market_event_observer
         self._scanner = scanner_coordinator
         self._dynamic_momentum_discovery = dynamic_momentum_discovery_runtime
+        self._background_research = background_research_runtime
         self._market_data_probe = market_data_probe
         self._startup_validator = startup_validator
         self._startup_validation = None
@@ -282,6 +284,7 @@ class DesktopBrokerRuntimeDriver:
         finally:
             self._shutdown_requested = stop_event.is_set()
             cleanup_phases = (
+                ("background research stop", self._stop_background_research),
                 ("dynamic momentum research stop", self._stop_dynamic_momentum_discovery),
                 ("market-data stop", self._stop_market_data),
                 ("observer/Warrior sidecar stop", self._stop_observer),
@@ -500,6 +503,7 @@ class DesktopBrokerRuntimeDriver:
                 ):
                     performance_diagnostics.record_startup_stage("scanner_active")
                 self._start_dynamic_momentum_discovery()
+                self._start_background_research()
                 if not observation_ready:
                     self._market_data_stop.set()
                 return
@@ -620,6 +624,34 @@ class DesktopBrokerRuntimeDriver:
                 lifecycle_phase="dynamic momentum research stop",
                 shutdown_requested=True,
                 primary=False,
+            )
+
+    def _start_background_research(self) -> None:
+        starter = getattr(self._background_research, "start", None)
+        if not callable(starter):
+            return
+        try:
+            starter()
+        except Exception as exc:
+            log_runtime_exception(
+                _RUNTIME_LOGGER, exc,
+                event_type="background_research_start_exception",
+                lifecycle_phase="background research start",
+                shutdown_requested=False, primary=False,
+            )
+
+    def _stop_background_research(self) -> None:
+        closer = getattr(self._background_research, "close", None)
+        if not callable(closer):
+            return
+        try:
+            closer()
+        except Exception as exc:
+            log_runtime_exception(
+                _RUNTIME_LOGGER, exc,
+                event_type="background_research_stop_exception",
+                lifecycle_phase="background research stop",
+                shutdown_requested=True, primary=False,
             )
 
     def _publish_startup_validation(self, result: object) -> None:

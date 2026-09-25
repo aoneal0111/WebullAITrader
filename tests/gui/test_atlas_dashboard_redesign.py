@@ -250,6 +250,17 @@ def test_running_scanner_with_zero_candidates_stays_truthful(application) -> Non
     assert "Atlas is scanning" in workspace.watchlist._table._empty_state.text()
 
 
+def test_runtime_header_does_not_map_zero_candidates_to_idle(application) -> None:
+    del application
+    header = RuntimeControlHeader()
+    header.set_runtime_phase(RuntimeState.RUNNING)
+    header.render_watchlist(WatchlistSnapshot(
+        scanner_status="RUNNING", candidate_count=0,
+    ))
+
+    assert header._metrics["Scanner"].text() == "RUNNING"
+
+
 def test_trade_intelligence_preserves_honest_empty_state_without_candidate(
     application,
 ) -> None:

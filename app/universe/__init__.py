@@ -5,6 +5,7 @@
 )
 from app.universe.models import (
     SecurityType,
+    UniversePriorityLanes,
     UniverseSelection,
     UniverseSymbol,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "UniverseFilterConfig",
     "UniverseProvider",
     "UniverseProviderError",
+    "UniversePriorityLanes",
     "UniverseSelection",
     "UniverseService",
     "UniverseSymbol",

@@ -167,6 +167,7 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
         )
         assert candidate.setup is not None
         assert signal is not None
+        assert sidecar._service.wait_for_intelligence(timeout_seconds=2.0)
         paper = composition.paper_order_book
         assert paper is not None and len(paper.history()) == 1
         order = paper.history()[0]

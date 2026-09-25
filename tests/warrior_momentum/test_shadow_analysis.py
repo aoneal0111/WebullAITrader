@@ -17,6 +17,11 @@ from app.strategies.warrior_momentum import (
     WarriorForwardCaptureService, build_rejection_attribution,
 )
 from app.strategies.warrior_momentum.shadow_analysis import ShadowOpportunityAnalyzer
+from app.strategies.warrior_momentum.completed_bar_handoff import (
+    BoundedCompletedBarResearchHandoff,
+    CompletedBarResearchWork,
+    CompletedBarSubmitResult,
+)
 
 
 T0 = datetime(2026, 8, 27, 15, 0, tzinfo=UTC)
@@ -215,6 +220,51 @@ def test_restart_idempotency_and_duplicate_evaluation_protection(tmp_path: Path)
     restarted = ShadowOpportunityAnalyzer(store)
     assert restarted.observe_bar(bar(9, "10", "10.1", "9.9", "10")) == ()
     assert restarted.finalize_due(T0 + timedelta(minutes=20)) == ()
+
+
+def test_async_bar_delivery_matches_synchronous_shadow_outcomes(tmp_path: Path) -> None:
+    synchronous_store = ForwardCaptureStore(tmp_path / "sync.sqlite3")
+    asynchronous_store = ForwardCaptureStore(tmp_path / "async.sqlite3")
+    synchronous = ShadowOpportunityAnalyzer(synchronous_store)
+    asynchronous = ShadowOpportunityAnalyzer(asynchronous_store)
+    register(synchronous_store, synchronous, point(), candidate())
+    register(asynchronous_store, asynchronous, point(), candidate())
+    values = tuple(
+        bar(index, "10", str(10.1 + index / 100), "9.9", str(10 + index / 100))
+        for index in range(10)
+    )
+    expected: list[CaptureRecord] = []
+    actual: list[CaptureRecord] = []
+    delivered: list[datetime] = []
+    evaluation_ids = asynchronous.active_evaluation_ids("XYZ")
+
+    def handle(work: CompletedBarResearchWork) -> None:
+        delivered.append(work.bar.timestamp)
+        actual.extend(asynchronous.observe_bar_for_evaluations(
+            work.bar, work.shadow_evaluation_ids,
+        ))
+
+    handoff = BoundedCompletedBarResearchHandoff(handle, capacity=16)
+    for revision, value in enumerate(values, start=1):
+        expected.extend(synchronous.observe_bar(value))
+        result = handoff.submit(CompletedBarResearchWork(
+            symbol="XYZ",
+            session="REGULAR",
+            revision=revision,
+            bar=value,
+            shadow_evaluation_ids=evaluation_ids,
+        ))
+        assert result is CompletedBarSubmitResult.ACCEPTED
+
+    assert handoff.stop(drain=True, timeout_seconds=2.0)
+    assert delivered == [value.timestamp for value in values]
+    assert len(set(delivered)) == len(delivered)
+    assert [record.payload_json for record in actual] == [
+        record.payload_json for record in expected
+    ]
+    assert [record.record_id for record in actual] == [
+        record.record_id for record in expected
+    ]
 
 
 def test_legacy_shadow_recovery_skips_phase_a_and_malformed_payloads(tmp_path: Path) -> None:

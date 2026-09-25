@@ -352,6 +352,8 @@ def create_desktop_composition(
         taxonomy_execution_bridge=taxonomy_execution_bridge,
         decision_intelligence_observer=decision_intelligence_observer,
         paper_entry_intelligence=paper_entry_intelligence,
+        async_observation_records=True,
+        async_decision_intelligence=True,
         observability=warrior_observability,
     )
     if paper_trading_commands is not None:

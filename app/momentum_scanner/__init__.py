@@ -8,6 +8,29 @@ from app.momentum_scanner.models import (
     ScannerObservation,
 )
 from app.momentum_scanner.ranking import rank_candidates
+from app.momentum_scanner.premarket_rvol_shadow import (
+    DEFAULT_MINIMUM_HISTORICAL_SESSIONS,
+    PREMARKET_PROFILE_VERSION,
+    PremarketRvolShadow,
+    PremarketRvolShadowResult,
+    PremarketRvolShadowStatus,
+    PremarketVolumeProfile,
+    PremarketVolumeProfileStatus,
+)
+from app.momentum_scanner.premarket_volume_profile import (
+    ChartPremarketHistorySource,
+    CurrentPremarketVolumeAccumulator,
+    PremarketHistoryCapability,
+    PremarketHistoryCapabilityMetrics,
+    PremarketHistoryAcquisition,
+    PremarketHistoryPage,
+    PremarketProfilePriority,
+    PremarketProfilePrioritySnapshot,
+    PremarketProfileRuntime,
+    PremarketProfileWorker,
+    PremarketProfileWorkerMetrics,
+    PremarketVolumeProfilePipeline,
+)
 from app.momentum_scanner.rules import (
     MomentumScannerConfig,
     calculate_metrics,
@@ -20,6 +43,25 @@ __all__ = [
     "CatalystType",
     "FloatProvenance",
     "MomentumScannerConfig",
+    "DEFAULT_MINIMUM_HISTORICAL_SESSIONS",
+    "PREMARKET_PROFILE_VERSION",
+    "ChartPremarketHistorySource",
+    "CurrentPremarketVolumeAccumulator",
+    "PremarketHistoryCapability",
+    "PremarketHistoryCapabilityMetrics",
+    "PremarketHistoryAcquisition",
+    "PremarketHistoryPage",
+    "PremarketRvolShadow",
+    "PremarketRvolShadowResult",
+    "PremarketRvolShadowStatus",
+    "PremarketProfilePriority",
+    "PremarketProfilePrioritySnapshot",
+    "PremarketProfileRuntime",
+    "PremarketProfileWorker",
+    "PremarketProfileWorkerMetrics",
+    "PremarketVolumeProfile",
+    "PremarketVolumeProfilePipeline",
+    "PremarketVolumeProfileStatus",
     "ScannerDecision",
     "ScannerMetrics",
     "ScannerObservation",
@@ -27,4 +69,3 @@ __all__ = [
     "evaluate_candidate",
     "rank_candidates",
 ]
-

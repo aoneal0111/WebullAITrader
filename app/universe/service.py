@@ -13,6 +13,7 @@ from app.scanner_universe_observability import (
     UniverseAdmissionStage,
 )
 from app.universe.models import (
+    UniversePriorityLanes,
     UniverseSelection,
     UniverseSymbol,
 )
@@ -136,6 +137,27 @@ class UniverseService:
                 sorted(excluded.values(), key=sort_key)
             ),
         )
+
+    def priority_lanes(self) -> UniversePriorityLanes:
+        source = self._ordering_source or self._provider
+        getter = getattr(source, "priority_lanes", None)
+        if not callable(getter):
+            return UniversePriorityLanes()
+        try:
+            value = getter()
+        except Exception:
+            return UniversePriorityLanes()
+        return (
+            value
+            if isinstance(value, UniversePriorityLanes)
+            else UniversePriorityLanes()
+        )
+
+    def set_accelerator_symbols_source(self, source) -> None:
+        target = self._ordering_source or self._provider
+        setter = getattr(target, "set_accelerator_symbols_source", None)
+        if callable(setter):
+            setter(source)
 
 
 def _observe_admission(observer: object | None, **values) -> None:

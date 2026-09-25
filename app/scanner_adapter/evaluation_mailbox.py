@@ -14,6 +14,7 @@ class EvaluationWork:
     version: int
     enqueued_at: datetime
     event: object
+    admission_reason: str = "REALTIME_CALLBACK"
 
 
 class LatestEvaluationMailbox:
@@ -44,6 +45,8 @@ class LatestEvaluationMailbox:
         version: int,
         enqueued_at: datetime,
         event: object,
+        *,
+        admission_reason: str = "REALTIME_CALLBACK",
     ) -> bool:
         normalized = symbol.strip().upper()
         if not normalized:
@@ -56,7 +59,7 @@ class LatestEvaluationMailbox:
                 # Assignment replaces the latest immutable work while the
                 # OrderedDict position remains stable for fairness.
                 self._pending[normalized] = EvaluationWork(
-                    normalized, version, enqueued_at, event,
+                    normalized, version, enqueued_at, event, admission_reason,
                 )
                 self._produced += 1
                 return True
@@ -64,7 +67,7 @@ class LatestEvaluationMailbox:
                 self._overflow += 1
                 return False
             self._pending[normalized] = EvaluationWork(
-                normalized, version, enqueued_at, event,
+                normalized, version, enqueued_at, event, admission_reason,
             )
             self._produced += 1
             self._high_water = max(self._high_water, len(self._pending))

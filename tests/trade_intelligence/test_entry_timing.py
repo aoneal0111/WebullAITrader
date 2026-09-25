@@ -112,6 +112,28 @@ def test_trigger_ready_treatment_uses_existing_signal_factory_and_structural_sto
     journal.close()
 
 
+def test_cached_treatment_relinks_fresh_lifecycle_to_persisted_assignment(tmp_path: Path):
+    journal = PaperExperimentJournal(tmp_path / "experiment.sqlite3")
+    policy = HistoricalPaperEntryTimingPolicy(
+        config=EntryIntelligenceConfig(
+            enabled=True, mode=PAPER_TREATMENT, allocation_percent=0,
+        ),
+        journal=journal,
+    )
+    decision, old_signal = policy.assess(
+        _result(), _candidate(), environment="PAPER",
+        signal_factory=lambda _candidate: SimpleNamespace(lifecycle_id="old-life"),
+    )
+    assert old_signal is not None
+    assert decision.assignment_id is not None
+    fresh_signal = SimpleNamespace(lifecycle_id="fresh-life")
+    assert policy.link_cached_treatment(decision, fresh_signal)
+    linked = journal.assignment_for_lifecycle("fresh-life")
+    assert linked is not None and linked["assignment_id"] == decision.assignment_id
+    assert journal.assignment_for_lifecycle("old-life") is None
+    journal.close()
+
+
 def test_extended_or_weak_evidence_falls_back_to_control(tmp_path: Path):
     journal = PaperExperimentJournal(tmp_path / "experiment.sqlite3")
     policy = HistoricalPaperEntryTimingPolicy(

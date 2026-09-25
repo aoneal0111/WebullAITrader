@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
-from threading import Event, Lock, Thread
+from threading import Event, Thread
 from time import perf_counter
 from typing import Any
 
@@ -17,6 +17,7 @@ from app.live_scanner.protocols import (
 )
 from app.momentum_scanner import AssetClass
 from app.performance_diagnostics import performance_diagnostics
+from app.universe.models import UniversePriorityLanes
 
 
 # Official SDK connection is bounded at 10 seconds, followed by bounded
@@ -79,6 +80,7 @@ class LiveScannerCoordinator:
         if retained_channels_source is not None and not callable(retained_channels_source):
             raise TypeError("retained channels source must be callable or None")
         self._retained_channels_source = retained_channels_source
+        self._accelerator_channels_source: Callable[[], Iterable[str]] | None = None
         if universe_refresh_interval_seconds < 0:
             raise ValueError("universe refresh interval cannot be negative")
         self._universe_refresh_interval_seconds = float(universe_refresh_interval_seconds)
@@ -100,10 +102,15 @@ class LiveScannerCoordinator:
         self._universe_refresh_stop = Event()
         self._universe_refresh_thread: Thread | None = None
         self._universe_refresh_asset_classes: tuple[AssetClass, ...] = ()
-        self._universe_refresh_call_lock = Lock()
         self._readiness_observer: Callable[[], object] | None = None
         self._last_failure_stage = "IDLE"
         self._subscription_bootstrap_pending = True
+        if retained_channels_source is not None:
+            setter = getattr(
+                self._engine, "set_authoritative_symbols_source", None,
+            )
+            if callable(setter):
+                setter(retained_channels_source)
 
     def connect(self) -> None:
         if self._connected:
@@ -176,21 +183,18 @@ class LiveScannerCoordinator:
         *,
         force_reference_refresh: bool = False,
     ) -> tuple[str, ...]:
-        # Manual maintenance calls and the periodic worker share one bounded
-        # critical section; a slow provider cannot spawn overlapping warmups.
-        with self._universe_refresh_call_lock:
-            active_symbols = self._engine.refresh_universe(
-                asset_classes,
-                force_reference_refresh=(
-                    force_reference_refresh
-                ),
-            )
-            self._scanner_channels = _normalize_channels_ordered(
-                getattr(self._engine, "subscription_symbols", active_symbols)
-            )
-            if self._running:
-                self._sync_subscription()
-            return active_symbols
+        # The engine owns nonblocking single-flight state shared by startup,
+        # periodic, manual, and future reconnect-triggered refresh paths.
+        active_symbols = self._engine.refresh_universe(
+            asset_classes,
+            force_reference_refresh=force_reference_refresh,
+        )
+        self._scanner_channels = _normalize_channels_ordered(
+            getattr(self._engine, "subscription_symbols", active_symbols)
+        )
+        if self._running:
+            self._sync_subscription()
+        return active_symbols
 
     def start(
         self,
@@ -263,6 +267,9 @@ class LiveScannerCoordinator:
     def stop(self) -> None:
         self._running = False
         self._reference_stop.set()
+        stop_refresh = getattr(self._engine, "stop_reference_refresh", None)
+        if callable(stop_refresh):
+            stop_refresh()
         self._stop_universe_refresh()
         self._stop_background_workers()
         thread = self._reference_thread
@@ -563,7 +570,7 @@ class LiveScannerCoordinator:
         if self._reference_stop.is_set():
             return
         try:
-            getattr(self._engine, "refresh_universe")(
+            self.refresh_universe(
                 asset_classes,
                 force_reference_refresh=force_reference_refresh,
             )
@@ -670,6 +677,20 @@ class LiveScannerCoordinator:
         if source is not None and not callable(source):
             raise TypeError("retained channels source must be callable or None")
         self._retained_channels_source = source
+        setter = getattr(self._engine, "set_authoritative_symbols_source", None)
+        if callable(setter):
+            setter(source)
+
+    def set_accelerator_channels_source(
+        self,
+        source: Callable[[], Iterable[str]] | None,
+    ) -> None:
+        if source is not None and not callable(source):
+            raise TypeError("accelerator channels source must be callable or None")
+        self._accelerator_channels_source = source
+        setter = getattr(self._engine, "set_accelerator_symbols_source", None)
+        if callable(setter):
+            setter(source)
 
     def __enter__(self) -> LiveScannerCoordinator:
         self.connect()
@@ -747,6 +768,15 @@ class LiveScannerCoordinator:
             return ()
         return _normalize_channels_ordered(self._retained_channels_source())
 
+    def _accelerator_channels(self) -> tuple[str, ...]:
+        source = getattr(self, "_accelerator_channels_source", None)
+        if source is None:
+            return ()
+        try:
+            return _normalize_channels_ordered(source())
+        except Exception:
+            return ()
+
     def _effective_channels(
         self,
         scanner_channels: Iterable[str],
@@ -768,6 +798,38 @@ class LiveScannerCoordinator:
             for channel in _normalize_channels_case_insensitive_ordered(scanner_channels)
             if channel.casefold() not in retained_keys
         )
+        lanes = getattr(
+            getattr(self, "_engine", None),
+            "subscription_priority_lanes",
+            None,
+        )
+        if isinstance(lanes, UniversePriorityLanes) and lanes.ordered:
+            scanner_keys = {channel.casefold() for channel in scanner}
+            legacy = tuple(
+                channel for channel in lanes.legacy_primary
+                if channel.casefold() in scanner_keys
+            )
+            accelerator_candidates = _normalize_channels_case_insensitive_ordered((
+                *lanes.accelerator,
+                *self._accelerator_channels(),
+            ))
+            excluded_keys = retained_keys | {
+                channel.casefold() for channel in legacy
+            }
+            accelerator = tuple(
+                channel for channel in accelerator_candidates
+                if channel.casefold() not in excluded_keys
+            )
+            protected_keys = {
+                channel.casefold() for channel in (*legacy, *accelerator)
+            }
+            background = tuple(
+                channel for channel in scanner
+                if channel.casefold() not in protected_keys
+            )
+            scanner = _normalize_channels_case_insensitive_ordered((
+                *legacy, *accelerator, *background,
+            ))
         available = self._maximum_subscription_channels - len(retained)
         return (*retained, *scanner[:available])
 

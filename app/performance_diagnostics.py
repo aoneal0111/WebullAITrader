@@ -1249,7 +1249,7 @@ class PerformanceDiagnostics:
                     active_symbols=self._scanner_population.get("active_symbols", 0),
                     evaluated=self._scanner_population.get("complete_decision_count", 0),
                     qualified=self._scanner_population.get("qualified_count", 0),
-                    scanner_state="IDLE",
+                    scanner_state="RUNNING",
                 )
 
     def scanner_population_metrics(self) -> dict[str, object]:

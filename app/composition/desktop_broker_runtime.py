@@ -26,6 +26,15 @@ from app.dynamic_momentum_discovery import (
     WebullBroadDiscoveryProvider,
 )
 from app.momentum_radar import MomentumRadar
+from app.momentum_scanner import (
+    ChartPremarketHistorySource,
+    CurrentPremarketVolumeAccumulator,
+    PremarketProfilePrioritySnapshot,
+    PremarketProfileRuntime,
+    PremarketProfileWorker,
+    PremarketRvolShadow,
+    PremarketVolumeProfilePipeline,
+)
 from app.live_execution.account_polling import (
     BrokerAccountSnapshot,
     poll_broker_account,
@@ -198,6 +207,7 @@ def create_configured_desktop_broker_driver(
 
     scanner_coordinator = None
     dynamic_momentum_runtime = None
+    premarket_profile_runtime = None
     if broker_runtime.market_data is not None:
         universe_admission_observer = ScannerUniverseAdmissionObserver(
             enabled=configuration.scanner_universe_observability_enabled,
@@ -285,6 +295,9 @@ def create_configured_desktop_broker_driver(
             # Discovery breadth is expanded independently from the existing
             # bounded real-time promotion/subscription budget.
             maximum_breadth=250,
+            legacy_source_limit=50,
+            accelerator_capacity=10,
+            production_symbol_capacity=100,
             sources=(
                 "SESSION_GAINERS", "RELATIVE_VOLUME_10D",
                 "VOLUME_LEADERS", "TURNOVER_LEADERS",
@@ -461,19 +474,87 @@ def create_configured_desktop_broker_driver(
         )
         if not callable(retained):
             retained = getattr(market_event_observer, "retained_symbols", None)
-        if callable(retained) or catalyst_discovery_runtime is not None:
-            def retained_and_discovered_symbols() -> tuple[str, ...]:
-                managed = tuple(retained()) if callable(retained) else ()
-                discovered = (
-                    catalyst_discovery_runtime.symbols()
-                    if catalyst_discovery_runtime is not None
-                    else ()
-                )
-                return tuple(dict.fromkeys((*managed, *discovered)))
-
-            scanner_coordinator.set_retained_channels_source(
-                retained_and_discovered_symbols
+        if callable(retained):
+            scanner_coordinator.set_retained_channels_source(retained)
+        if catalyst_discovery_runtime is not None:
+            accelerator_setter = getattr(
+                scanner_coordinator,
+                "set_accelerator_channels_source",
+                None,
             )
+            if callable(accelerator_setter):
+                accelerator_setter(catalyst_discovery_runtime.symbols)
+
+        profile_shadow = PremarketRvolShadow(
+            telemetry_sink=lambda payload: _SCANNER_LOGGER.info(
+                "event=rvol_shadow symbol=%s legacy=%s normalized=%s status=%s samples=%s legacy_pass=%s shadow_pass=%s",
+                payload.get("rvol_shadow.symbol"),
+                payload.get("rvol_shadow.legacy_value"),
+                payload.get("rvol_shadow.normalized_value"),
+                payload.get("rvol_shadow.profile_status"),
+                payload.get("rvol_shadow.sample_count"),
+                payload.get("rvol_shadow.legacy_pass"),
+                payload.get("rvol_shadow.shadow_pass"),
+            ),
+        )
+        profile_numerator = CurrentPremarketVolumeAccumulator(maximum_symbols=256)
+        profile_worker = PremarketProfileWorker(
+            ChartPremarketHistorySource(ChartMarketDataService(
+                data_client,
+                bar_count=120,
+            ), clock=clock, telemetry_sink=lambda payload: _SCANNER_LOGGER.info(
+                "event=%s symbol=%s requested=%s succeeded=%s failed=%s chunks=%s bars=%s sessions=%s extended_hours=%s ready=%s status=%s capability_provider=%s capability_reason=%s probes=%s capability_latched=%s requests_suppressed=%s profiles_unavailable=%s",
+                payload.get("event"),
+                payload.get("symbol"),
+                payload.get("profile_history.requested"),
+                payload.get("profile_history.succeeded"),
+                payload.get("profile_history.failed"),
+                payload.get("profile_history.chunk_count"),
+                payload.get("profile_history.bar_count"),
+                payload.get("profile_history.session_count"),
+                payload.get("profile_history.extended_hours_detected"),
+                payload.get("profile_history.profile_ready"),
+                payload.get("profile_history.status"),
+                payload.get("profile_history_capability.provider"),
+                payload.get("profile_history_capability.reason"),
+                payload.get("capability_probe_attempts"),
+                payload.get("capability_unavailable_latched"),
+                payload.get("requests_suppressed_due_to_capability"),
+                payload.get("profiles_unavailable"),
+            )),
+            profile_shadow,
+            profile_numerator,
+            capacity=32,
+            clock=clock,
+        )
+        profile_pipeline = PremarketVolumeProfilePipeline(
+            profile_worker, profile_shadow, profile_numerator,
+        )
+
+        def profile_priorities() -> PremarketProfilePrioritySnapshot:
+            lanes = scanner_infrastructure.engine.subscription_priority_lanes
+            retained_values = () if not callable(retained) else tuple(retained())
+            discovered_accelerators = (
+                ()
+                if catalyst_discovery_runtime is None
+                else tuple(catalyst_discovery_runtime.symbols())
+            )
+            return PremarketProfilePrioritySnapshot(
+                retained=retained_values,
+                legacy_primary=lanes.legacy_primary,
+                accelerator=tuple(dict.fromkeys((
+                    *lanes.accelerator, *discovered_accelerators,
+                ))),
+            )
+
+        premarket_profile_runtime = PremarketProfileRuntime(
+            profile_pipeline, profile_priorities, clock=clock,
+        )
+        profile_binder = getattr(
+            market_event_observer, "bind_premarket_volume_profile", None,
+        )
+        if callable(profile_binder):
+            profile_binder(profile_pipeline)
 
     # Capability probing must not mutate the scanner's live subscription
     # session. Use an independent stream for startup capability checks.
@@ -501,6 +582,7 @@ def create_configured_desktop_broker_driver(
         market_event_observer=market_event_observer,
         scanner_coordinator=scanner_coordinator,
         dynamic_momentum_discovery_runtime=dynamic_momentum_runtime,
+        background_research_runtime=premarket_profile_runtime,
         market_data_probe=market_data_probe,
         startup_validator=startup_validator,
         clock=clock,

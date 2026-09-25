@@ -70,6 +70,7 @@ class MomentumScannerPipeline:
         self._raw_callbacks_received = 0
         self._superseded_evaluations_skipped = 0
         self._result_version_rejections = 0
+        self._reference_ready_reevaluations = 0
         if decision_sink is not None and not callable(decision_sink):
             raise TypeError("decision_sink must be callable or None")
         self._decision_sink = decision_sink
@@ -147,7 +148,20 @@ class MomentumScannerPipeline:
             return False
         version = self._symbol_versions.get(normalized, 0) + 1
         self._symbol_versions[normalized] = version
-        return mailbox.enqueue(normalized, version, self._clock(), event)
+        admitted_at = self._clock()
+        accepted = mailbox.enqueue(
+            normalized,
+            version,
+            admitted_at,
+            event,
+            admission_reason="REFERENCE_READY",
+        )
+        if accepted:
+            self._reference_ready_reevaluations += 1
+            self._record_reevaluation_metric(
+                "scanner.reference_ready_reevaluation", 0.0,
+            )
+        return accepted
 
     def _evaluate_result(
         self,
@@ -155,6 +169,8 @@ class MomentumScannerPipeline:
         result,
         *,
         publish: bool = True,
+        processing_admitted_at: datetime | None = None,
+        reevaluation_reason: str = "REALTIME_CALLBACK",
     ) -> ScannerDecision | None:
         scanner_started = perf_counter()
         scanner_started_at = self._clock()
@@ -176,10 +192,29 @@ class MomentumScannerPipeline:
             source_event_type=event.event_type.value,
         )
         if event.received_timestamp is not None:
-            age_seconds = max(
+            source_age_seconds = max(
                 0.0,
-                (observed_at - event.received_timestamp).total_seconds(),
+                (scanner_started_at - event.received_timestamp).total_seconds(),
             )
+            retained_reevaluation = reevaluation_reason == "REFERENCE_READY"
+            if retained_reevaluation:
+                age_seconds = max(
+                    0.0,
+                    (
+                        scanner_started_at
+                        - (processing_admitted_at or scanner_started_at)
+                    ).total_seconds(),
+                )
+                self._record_reevaluation_metric(
+                    "scanner.retained_event_source_age",
+                    source_age_seconds * 1000.0,
+                )
+                self._record_reevaluation_metric(
+                    "scanner.reevaluation_mailbox_age",
+                    age_seconds * 1000.0,
+                )
+            else:
+                age_seconds = source_age_seconds
             performance_diagnostics.record_event_processing_age(
                 age_seconds * 1000.0
             )
@@ -203,8 +238,12 @@ class MomentumScannerPipeline:
                         event.event_type.value,
                         event.symbol,
                         event.timestamp.isoformat(),
-                        event.received_timestamp.isoformat(),
-                        observed_at.isoformat(),
+                        (
+                            processing_admitted_at
+                            if retained_reevaluation
+                            else event.received_timestamp
+                        ).isoformat(),
+                        scanner_started_at.isoformat(),
                         age_seconds,
                     )
             elif self._processing_delay_active:
@@ -305,7 +344,13 @@ class MomentumScannerPipeline:
             performance_diagnostics.mark_latency_trace_timestamp(
                 "evaluation_started_at", evaluation_started_at,
             )
-            decision = self._evaluate_result(work.event, result, publish=False)
+            decision = self._evaluate_result(
+                work.event,
+                result,
+                publish=False,
+                processing_admitted_at=work.enqueued_at,
+                reevaluation_reason=work.admission_reason,
+            )
             evaluated += 1
             if self._symbol_versions.get(work.symbol, 0) != work.version:
                 self._result_version_rejections += 1
@@ -355,6 +400,7 @@ class MomentumScannerPipeline:
             "processing_delay_count": self._processing_delay_count,
             "superseded_evaluations_skipped": self._superseded_evaluations_skipped,
             "result_version_rejections": self._result_version_rejections,
+            "reference_ready_reevaluations": self._reference_ready_reevaluations,
             **adapter_metrics,
         }
         component_timings = performance_diagnostics.snapshot().component_timings
@@ -383,6 +429,15 @@ class MomentumScannerPipeline:
             name,
             max(0.0, (ended_at - started_at).total_seconds() * 1000.0),
         )
+
+    @staticmethod
+    def _record_reevaluation_metric(name: str, duration_ms: float) -> None:
+        try:
+            performance_diagnostics.record_component_duration(
+                name, max(0.0, duration_ms), success=True,
+            )
+        except Exception:
+            pass
 
     def population_metrics(
         self,

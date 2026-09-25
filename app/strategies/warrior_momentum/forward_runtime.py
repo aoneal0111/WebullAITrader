@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_FLOOR
+from time import perf_counter
 from typing import Callable, Iterable
 
 from app.performance_diagnostics import performance_diagnostics
@@ -34,6 +36,16 @@ from .adaptive_exit import (
 )
 from .forward_queue import ForwardCaptureWriter
 from .forward_store import ForwardCaptureStore
+from .projection_handoff import BoundedProjectionHandoff
+from .completed_bar_handoff import (
+    BoundedCompletedBarResearchHandoff,
+    CompletedBarResearchMetrics,
+    CompletedBarResearchWork,
+    CompletedBarSubmitResult,
+)
+from .intelligence_handoff import (
+    BoundedIntelligenceHandoff, IntelligenceWorkerMetrics,
+)
 from .autonomous_paper import (
     PaperEntryAuthorizationDecision, PaperEntryAuthorizationReason,
     PaperEntryAuthorizationResult, PaperEntryGateDecision,
@@ -59,6 +71,81 @@ from .shadow_latched import (
 
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
+
+
+@contextmanager
+def _service_stage(name: str, *, symbol: str | None = None):
+    """Bounded timing for observational evaluation sub-stages.
+
+    This is deliberately diagnostic-only: failures and return values remain
+    owned by the caller, while timing failures can never alter the decision.
+    """
+    started = perf_counter()
+    success = False
+    try:
+        yield
+        success = True
+    finally:
+        try:
+            performance_diagnostics.record_component_duration(
+                f"warrior.service.{name}",
+                (perf_counter() - started) * 1000.0,
+                symbol=symbol,
+                success=success,
+            )
+        except Exception:
+            pass
+
+
+@dataclass(frozen=True, slots=True)
+class _IntelligenceIdentity:
+    symbol: str
+    trading_date: object
+    session: str
+    completed_bar_version: tuple[object, ...]
+    setup_version: tuple[object, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _IntelligenceRequest:
+    identity: _IntelligenceIdentity
+    value: object
+    candidate: MomentumCandidate
+    signal: MomentumEntrySignal | None
+    legacy_candidate: MomentumCandidate
+    stale: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _IntelligenceResult:
+    intelligence_result: object | None
+    treatment_signal: object | None
+    treatment_setup: object | None
+    taxonomy_candidate: object | None
+    treatment_decision: object | None = None
+    treatment_lifecycle_id: str | None = None
+    canonical_signal_present: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _CompletedBarSnapshot:
+    source_bars: tuple[MinuteBar, ...]
+    session: str
+    cutoff_minute: datetime
+    revision: int
+    completed: tuple[MinuteBar, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedBarProcessingMetrics:
+    cache_hit: int = 0
+    cache_miss: int = 0
+    new_bars_processed: int = 0
+    duplicate_bars_suppressed: int = 0
+    lifecycle_catchup_bars: int = 0
+    research_submit: int = 0
+    research_duplicate_suppressed: int = 0
+    research_worker: CompletedBarResearchMetrics = CompletedBarResearchMetrics()
 
 def management_context_available(
     storage_path, symbol: str, lifecycle_id: str | None = None,
@@ -239,6 +326,8 @@ class WarriorForwardCaptureService:
         decision_intelligence_observer: Callable[..., None] | None = None,
         decision_intelligence_entry_observer: Callable[..., tuple[object | None, object | None]] | None = None,
         paper_entry_intelligence: Callable[..., object] | None = None,
+        async_observation_records: bool = False,
+        async_decision_intelligence: bool = False,
     ) -> None:
         self.store = store
         self.writer = writer
@@ -267,6 +356,31 @@ class WarriorForwardCaptureService:
         self._decision_intelligence_observer = decision_intelligence_observer
         self._decision_intelligence_entry_observer = decision_intelligence_entry_observer
         self._paper_entry_intelligence = paper_entry_intelligence
+        self._async_decision_intelligence = bool(async_decision_intelligence)
+        # Worker-published immutable snapshot.  Event reads never acquire the
+        # intelligence worker/SQLite lock.
+        self._linked_treatment_lifecycles: tuple[str, ...] = ()
+        self._intelligence_handoff = (
+            BoundedIntelligenceHandoff(
+                self._evaluate_intelligence_serialized,
+                maximum_keys=128,
+                autostart=True,
+            )
+            if async_decision_intelligence and (
+                taxonomy_execution_bridge is not None
+                or decision_intelligence_observer is not None
+                or decision_intelligence_entry_observer is not None
+            )
+            else None
+        )
+        self._observation_record_handoff = (
+            BoundedProjectionHandoff(
+                self._dispatch_observation_records,
+                maximum_keys=512,
+                autostart=True,
+            )
+            if async_observation_records else None
+        )
         self._pretrigger_shadow = None
         if (
             capture_config.shadow_analysis_enabled
@@ -294,6 +408,17 @@ class WarriorForwardCaptureService:
         self._memory_opportunity_ids: OrderedDict[str, str] = OrderedDict()
         self._memory_geometry_keys: OrderedDict[str, str] = OrderedDict()
         self.runtime = WarriorMomentumRuntime(config)
+        self._completed_bar_cache: OrderedDict[str, _CompletedBarSnapshot] = OrderedDict()
+        self._completed_bar_cache_hits = 0
+        self._completed_bar_cache_misses = 0
+        self._completed_bar_new_bars_processed = 0
+        self._completed_bar_duplicate_bars_suppressed = 0
+        self._completed_bar_lifecycle_catchup_bars = 0
+        self._completed_bar_research_submits = 0
+        self._completed_bar_research_duplicate_suppressed = 0
+        self._completed_bar_capture_cursor: dict[str, datetime] = {}
+        self._completed_bar_capture_revision: dict[str, tuple[str, int]] = {}
+        self._completed_bar_research_cursor: dict[str, datetime] = {}
         self._last_transition: dict[str, ForwardTransition] = {}
         # Bounded, transition-only setup timing evidence. This is a
         # diagnostic/read-model aid and never participates in authorization.
@@ -324,6 +449,18 @@ class WarriorForwardCaptureService:
             if capture_config.shadow_analysis_enabled else None
         )
         self._recover()
+        self._completed_bar_research_handoff = (
+            BoundedCompletedBarResearchHandoff(
+                self._process_completed_bar_research,
+                capacity=4096,
+                autostart=False,
+            )
+            if self._shadow is not None else None
+        )
+        for seen_symbol, seen_timestamp in self._seen_bars:
+            current = self._completed_bar_capture_cursor.get(seen_symbol)
+            if current is None or seen_timestamp > current:
+                self._completed_bar_capture_cursor[seen_symbol] = seen_timestamp
 
     def observe(
         self, value: PointInTimeObservation,
@@ -331,7 +468,8 @@ class WarriorForwardCaptureService:
     ) -> tuple[MomentumCandidate, MomentumEntrySignal | None]:
         observation = value.observation
         symbol = observation.symbol.strip().upper()
-        self._observe_execution_price_path(value)
+        with _service_stage("execution_price_path", symbol=symbol):
+            self._observe_execution_price_path(value)
         live_state = self._paper.get(symbol)
         if (
             live_state is not None
@@ -349,14 +487,21 @@ class WarriorForwardCaptureService:
                 ) / live_state.signal.risk_per_share
                 self._update_peak(live_state)
             self._capture_exit_evidence(live_state, value)
-        completed = canonical_completed_history(
-            value.bars, observation.timestamp, session=value.session,
-        )
-        for bar in completed:
-            self.observe_market_bar(symbol, bar, observation.timestamp)
-        candidate = self.runtime.discover(
-            observation, completed, session=value.session,
-        )
+        with _service_stage("completed_bar_handling", symbol=symbol):
+            completed_snapshot = self._completed_bar_snapshot(value)
+            completed = completed_snapshot.completed
+            completed_version = (
+                completed_snapshot.session,
+                completed_snapshot.cutoff_minute,
+                completed_snapshot.revision,
+            )
+            self._deliver_completed_bar_deltas(
+                symbol, completed_snapshot, observation.timestamp,
+            )
+        with _service_stage("runtime_discover", symbol=symbol):
+            candidate = self.runtime.discover(
+                observation, completed, session=value.session,
+            )
         if candidate.discovery_qualified:
             performance_diagnostics.record_entry_funnel(
                 symbol, stage="SCANNER_QUALIFIED", timestamp=value.evaluation_timestamp or observation.timestamp,
@@ -371,8 +516,9 @@ class WarriorForwardCaptureService:
                     symbol, stage="SETUP_TRIGGERED", timestamp=value.evaluation_timestamp or observation.timestamp,
                 )
         legacy_candidate = candidate
-        assessed, signal = self.runtime.assess_entry(candidate)
-        technical_signal = self.runtime.technical_entry_signal(candidate)
+        with _service_stage("entry_assessment", symbol=symbol):
+            assessed, signal = self.runtime.assess_entry(candidate)
+            technical_signal = self.runtime.technical_entry_signal(candidate)
         if technical_signal is not None:
             performance_diagnostics.record_entry_funnel(
                 symbol, stage="TECHNICAL_SIGNAL", timestamp=value.evaluation_timestamp or observation.timestamp,
@@ -545,15 +691,31 @@ class WarriorForwardCaptureService:
                             timestamp=evaluated_at,
                         )
         taxonomy_bridge = self._taxonomy_execution_bridge
-        taxonomy_candidate, taxonomy_signal = (
-            (None, None)
-            if taxonomy_bridge is None
-            else taxonomy_bridge.evaluate(
-                value, candidate, signal,
-                market_data_stale or processing_delayed,
-                self.runtime, self.capture_config.quote_stale_after_seconds,
-            )
+        intelligence_identity = self._intelligence_identity(
+            value, assessed, completed_version,
         )
+        cached_intelligence = None
+        if self._intelligence_handoff is not None:
+            with _service_stage("taxonomy_fast_path", symbol=symbol):
+                publication = self._intelligence_handoff.lookup(symbol)
+                if (
+                    publication is not None
+                    and publication.identity == intelligence_identity
+                    and isinstance(publication.value, _IntelligenceResult)
+                ):
+                    cached_intelligence = publication.value
+            taxonomy_candidate, taxonomy_signal = None, None
+        else:
+            with _service_stage("taxonomy_assessment", symbol=symbol):
+                taxonomy_candidate, taxonomy_signal = (
+                    (None, None)
+                    if taxonomy_bridge is None
+                    else taxonomy_bridge.evaluate(
+                        value, candidate, signal,
+                        market_data_stale or processing_delayed,
+                        self.runtime, self.capture_config.quote_stale_after_seconds,
+                    )
+                )
         # Taxonomy output is advisory.  Only the canonical forward Warrior
         # result can create execution authority; a raw research trigger must
         # never overwrite a canonical NO_SETUP result.
@@ -598,39 +760,87 @@ class WarriorForwardCaptureService:
             if taxonomy_candidate is not None and signal is None
             else assessed
         )
-        if self._decision_intelligence_entry_observer is not None:
-            try:
-                intelligence_result, treatment_signal = self._decision_intelligence_entry_observer(
-                    value=value, candidate=intelligence_candidate, signal=signal,
-                    taxonomy_candidate=taxonomy_candidate,
-                    legacy_candidate=legacy_candidate,
-                    decision_timestamp=value.evaluation_timestamp or observation.timestamp,
-                )
-            except Exception:
-                # Research must never affect the production/PAPER path.
-                pass
-        elif self._decision_intelligence_observer is not None:
-            try:
-                intelligence_result = self._decision_intelligence_observer(
-                    value=value, candidate=intelligence_candidate, signal=signal,
-                    taxonomy_candidate=taxonomy_candidate,
-                    legacy_candidate=legacy_candidate,
-                )
-            except Exception:
-                # Research must never affect the production/PAPER path.
-                pass
-            if self._paper_entry_intelligence is not None:
-                try:
-                    _entry_intelligence_decision, treatment_signal = self._paper_entry_intelligence(
-                        result=intelligence_result, candidate=intelligence_candidate, environment="PAPER",
-                        signal_factory=self.runtime.entry_signal,
-                        decision_timestamp=value.evaluation_timestamp or observation.timestamp,
-                        existing_signal=signal,
+        intelligence_request = _IntelligenceRequest(
+            identity=intelligence_identity,
+            value=value,
+            candidate=assessed,
+            signal=signal,
+            legacy_candidate=legacy_candidate,
+            stale=market_data_stale or processing_delayed,
+        )
+        if self._intelligence_handoff is not None:
+            treatment_policy_pending = False
+            with _service_stage("treatment_lookup", symbol=symbol):
+                if (
+                    cached_intelligence is not None
+                    and (
+                        signal is None
+                        or cached_intelligence.canonical_signal_present
+                        or (
+                            cached_intelligence.treatment_lifecycle_id
+                            == lifecycle_identity(signal)
+                        )
+                        or (
+                            lifecycle_identity(signal)
+                            in self._linked_treatment_lifecycles
+                        )
                     )
-                except Exception:
-                    # Entry intelligence is advisory and fail-closed to the
-                    # existing signal path.
-                    pass
+                ):
+                    intelligence_result = cached_intelligence.intelligence_result
+                    if signal is None:
+                        treatment_signal = self._current_treatment_signal(
+                            cached_intelligence, assessed,
+                            stale=market_data_stale or processing_delayed,
+                        )
+                elif signal is not None:
+                    # A canonical entry cannot outrun its durable treatment
+                    # assignment/link.  Return fail-closed for this event;
+                    # the exact immutable publication enables the next event.
+                    treatment_policy_pending = True
+            if cached_intelligence is None or treatment_policy_pending:
+                with _service_stage("decision_intelligence_async_submit", symbol=symbol):
+                    self._intelligence_handoff.submit(
+                        symbol, intelligence_identity, intelligence_request,
+                    )
+            if treatment_policy_pending:
+                signal = None
+        else:
+            with _service_stage("decision_intelligence", symbol=symbol):
+                if self._decision_intelligence_entry_observer is not None:
+                    try:
+                        observed = self._decision_intelligence_entry_observer(
+                            value=value, candidate=intelligence_candidate, signal=signal,
+                            taxonomy_candidate=taxonomy_candidate,
+                            legacy_candidate=legacy_candidate,
+                            decision_timestamp=value.evaluation_timestamp or observation.timestamp,
+                        )
+                        intelligence_result = observed[0]
+                        treatment_signal = observed[1]
+                    except Exception:
+                        # Research must never affect the production/PAPER path.
+                        pass
+                elif self._decision_intelligence_observer is not None:
+                    try:
+                        intelligence_result = self._decision_intelligence_observer(
+                            value=value, candidate=intelligence_candidate, signal=signal,
+                            taxonomy_candidate=taxonomy_candidate,
+                            legacy_candidate=legacy_candidate,
+                        )
+                    except Exception:
+                        # Research must never affect the production/PAPER path.
+                        pass
+                    if self._paper_entry_intelligence is not None:
+                        try:
+                            _entry_intelligence_decision, treatment_signal = self._paper_entry_intelligence(
+                                result=intelligence_result, candidate=intelligence_candidate, environment="PAPER",
+                                signal_factory=self.runtime.entry_signal,
+                                decision_timestamp=value.evaluation_timestamp or observation.timestamp,
+                                existing_signal=signal,
+                            )
+                        except Exception:
+                            # Entry intelligence is advisory and fail-closed to the
+                            # existing signal path.
+                            pass
         if treatment_signal is not None and (
             signal is not None
             or self._decision_intelligence_entry_observer is not None
@@ -1085,7 +1295,8 @@ class WarriorForwardCaptureService:
                 # EOV is a one-way research consumer. It cannot change this
                 # decision, record publication, or order outcome.
                 pass
-        self._submit_records(tuple(records))
+        with _service_stage("capture_record_submission", symbol=symbol):
+            self._submit_records(tuple(records))
         if technical_signal is not None and signal is None:
             performance_diagnostics.record_entry_funnel(
                 symbol, stage="TECHNICAL_SIGNAL_CLEARED", outcome="REJECTED",
@@ -2429,6 +2640,531 @@ class WarriorForwardCaptureService:
         if records:
             self._submit_records(records)
 
+    def _completed_bar_snapshot(self, value: object) -> _CompletedBarSnapshot:
+        observation = value.observation
+        symbol = str(observation.symbol).strip().upper()
+        session = str(value.session).upper()
+        cutoff_minute = observation.timestamp.replace(second=0, microsecond=0)
+        source_bars = (
+            value.bars if isinstance(value.bars, tuple) else tuple(value.bars)
+        )
+        cached = self._completed_bar_cache.get(symbol)
+        same_source = (
+            cached is not None
+            and cached.session == session
+            and cached.source_bars == source_bars
+        )
+        if same_source and (
+            cached.cutoff_minute == cutoff_minute
+            or cached.completed == source_bars
+        ):
+            snapshot = cached
+            if cached.cutoff_minute != cutoff_minute:
+                snapshot = _CompletedBarSnapshot(
+                    source_bars=source_bars,
+                    session=session,
+                    cutoff_minute=cutoff_minute,
+                    revision=cached.revision,
+                    completed=cached.completed,
+                )
+                self._completed_bar_cache[symbol] = snapshot
+            self._completed_bar_cache.move_to_end(symbol)
+            self._completed_bar_cache_hits += 1
+            self._completed_bar_duplicate_bars_suppressed += len(snapshot.completed)
+            self._record_completed_bar_metric("completed_bar.cache_hit")
+            if snapshot.completed:
+                self._record_completed_bar_metric(
+                    "completed_bar.duplicate_bars_suppressed",
+                    count=len(snapshot.completed),
+                )
+            return snapshot
+
+        completed = canonical_completed_history(
+            source_bars, observation.timestamp, session=value.session,
+        )
+        revision = 1
+        if cached is not None and cached.session == session:
+            revision = cached.revision + (completed != cached.completed)
+        snapshot = _CompletedBarSnapshot(
+            source_bars=source_bars,
+            session=session,
+            cutoff_minute=cutoff_minute,
+            revision=revision,
+            completed=completed,
+        )
+        self._completed_bar_cache[symbol] = snapshot
+        self._completed_bar_cache.move_to_end(symbol)
+        while len(self._completed_bar_cache) > 512:
+            self._completed_bar_cache.popitem(last=False)
+        self._completed_bar_cache_misses += 1
+        self._record_completed_bar_metric("completed_bar.cache_miss")
+        return snapshot
+
+    def _deliver_completed_bar_deltas(
+        self,
+        symbol: str,
+        snapshot: _CompletedBarSnapshot,
+        observed_at: datetime,
+    ) -> None:
+        completed = snapshot.completed
+
+        capture_revision = (snapshot.session, snapshot.revision)
+        if self._completed_bar_capture_revision.get(symbol) != capture_revision:
+            capture_delta = tuple(
+                bar for bar in completed
+                if (symbol, bar.timestamp) not in self._seen_bars
+            )
+            if capture_delta:
+                self._submit_records(tuple(
+                    _bar_record(bar, observed_at) for bar in capture_delta
+                ))
+                for bar in capture_delta:
+                    self._seen_bars.add((symbol, bar.timestamp))
+                self._completed_bar_capture_cursor[symbol] = (
+                    capture_delta[-1].timestamp
+                )
+                self._completed_bar_new_bars_processed += len(capture_delta)
+                self._record_completed_bar_metric(
+                    "completed_bar.new_bars_processed",
+                    count=len(capture_delta),
+                )
+            self._completed_bar_capture_revision[symbol] = capture_revision
+
+        state = self._paper.get(symbol)
+        if (
+            state is not None
+            and completed
+            and (
+                state.last_bar_timestamp is None
+                or completed[-1].timestamp > state.last_bar_timestamp
+            )
+        ):
+            lifecycle_delta = tuple(
+                bar for bar in completed
+                if bar.timestamp >= state.signal.timestamp
+                and (
+                    state.last_bar_timestamp is None
+                    or bar.timestamp > state.last_bar_timestamp
+                )
+            )
+            if lifecycle_delta:
+                self._completed_bar_lifecycle_catchup_bars += len(lifecycle_delta)
+                self._record_completed_bar_metric(
+                    "completed_bar.lifecycle_catchup_bars",
+                    count=len(lifecycle_delta),
+                )
+            for bar in lifecycle_delta:
+                current = self._paper.get(symbol)
+                if current is not state:
+                    break
+                records = self._advance_paper(state, bar, observed_at)
+                if records:
+                    self._submit_records(records)
+
+        counter = self._counterfactual.get(symbol)
+        if (
+            counter is not None
+            and completed
+            and (
+                counter.last_bar_timestamp is None
+                or completed[-1].timestamp > counter.last_bar_timestamp
+            )
+        ):
+            counter_delta = tuple(
+                bar for bar in completed
+                if (
+                    counter.last_bar_timestamp is None
+                    or bar.timestamp > counter.last_bar_timestamp
+                )
+            )
+            for bar in counter_delta:
+                current = self._counterfactual.get(symbol)
+                if current is not counter:
+                    break
+                records = self._advance_counterfactual(counter, bar, observed_at)
+                if records:
+                    self._submit_records(records)
+
+        handoff = self._completed_bar_research_handoff
+        if handoff is None or self._shadow is None:
+            return
+        research_cursor = self._completed_bar_research_cursor.get(symbol)
+        if (
+            not completed
+            or (
+                research_cursor is not None
+                and completed[-1].timestamp <= research_cursor
+            )
+        ):
+            return
+        research_delta = tuple(
+            bar for bar in completed
+            if research_cursor is None or bar.timestamp > research_cursor
+        )
+        for bar in research_delta:
+            evaluation_ids = self._shadow.active_evaluation_ids(symbol)
+            if not evaluation_ids:
+                self._completed_bar_research_cursor[symbol] = bar.timestamp
+                continue
+            handoff.start()
+            work = CompletedBarResearchWork(
+                symbol=symbol,
+                session=snapshot.session,
+                revision=snapshot.revision,
+                bar=bar,
+                shadow_evaluation_ids=evaluation_ids,
+            )
+            started = perf_counter()
+            result = handoff.submit(work)
+            self._record_completed_bar_duration(
+                "completed_bar.research_submit",
+                started,
+                symbol=symbol,
+                success=result is not CompletedBarSubmitResult.REJECTED,
+            )
+            if result is CompletedBarSubmitResult.REJECTED:
+                break
+            self._completed_bar_research_cursor[symbol] = bar.timestamp
+            if result is CompletedBarSubmitResult.ACCEPTED:
+                self._completed_bar_research_submits += 1
+            else:
+                self._completed_bar_research_duplicate_suppressed += 1
+                self._record_completed_bar_metric(
+                    "completed_bar.research_duplicate_suppressed",
+                )
+
+    def _process_completed_bar_research(
+        self, work: CompletedBarResearchWork,
+    ) -> None:
+        started = perf_counter()
+        success = False
+        try:
+            if self._shadow is None:
+                return
+            records = self._shadow.observe_bar_for_evaluations(
+                work.bar, work.shadow_evaluation_ids,
+            )
+            if records:
+                self._submit_records(records)
+            success = True
+        finally:
+            self._record_completed_bar_duration(
+                "completed_bar.research_worker",
+                started,
+                symbol=work.symbol,
+                success=success,
+            )
+
+    @staticmethod
+    def _record_completed_bar_metric(name: str, *, count: int = 1) -> None:
+        if count <= 0:
+            return
+        try:
+            performance_diagnostics.record_component_duration(
+                name, 0.0, success=True,
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _record_completed_bar_duration(
+        name: str,
+        started: float,
+        *,
+        symbol: str,
+        success: bool,
+    ) -> None:
+        try:
+            performance_diagnostics.record_component_duration(
+                name,
+                (perf_counter() - started) * 1000.0,
+                symbol=symbol,
+                success=success,
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _completed_bar_version(value: object) -> tuple[object, ...]:
+        observation = value.observation
+        symbol = str(observation.symbol).strip().upper()
+        cutoff = observation.timestamp
+        bars = tuple(
+            (
+                bar.timestamp, bar.open, bar.high, bar.low, bar.close, bar.volume,
+            )
+            for bar in value.bars
+            if str(bar.symbol).strip().upper() == symbol
+            and bar.timestamp + timedelta(minutes=1) <= cutoff
+        )
+        return str(value.session).upper(), cutoff.replace(second=0, microsecond=0), bars
+
+    @staticmethod
+    def _intelligence_identity(
+        value: object, candidate: MomentumCandidate,
+        completed_bar_version: tuple[object, ...],
+    ) -> _IntelligenceIdentity:
+        setup = candidate.setup
+        setup_version = () if setup is None else (
+            setup.setup_type.value,
+            setup.state.value,
+            setup.taxonomy_strategy_id,
+            setup.taxonomy_opportunity_id,
+            setup.taxonomy_opportunity_anchor,
+            setup.structural_episode_id,
+            setup.structural_anchor,
+            setup.trigger,
+            setup.stop_price,
+        )
+        observation = value.observation
+        return _IntelligenceIdentity(
+            symbol=str(observation.symbol).strip().upper(),
+            trading_date=observation.timestamp.date(),
+            session=str(value.session).upper(),
+            completed_bar_version=completed_bar_version,
+            setup_version=setup_version,
+        )
+
+    def _evaluate_intelligence_serialized(
+        self, request: _IntelligenceRequest,
+    ) -> _IntelligenceResult:
+        symbol = request.identity.symbol
+        taxonomy_candidate = None
+        taxonomy_signal = None
+        bridge = self._taxonomy_execution_bridge
+        with _service_stage("taxonomy_async", symbol=symbol):
+            if bridge is not None:
+                taxonomy_candidate, taxonomy_signal = bridge.evaluate(
+                    request.value,
+                    request.candidate,
+                    request.signal,
+                    request.stale,
+                    self.runtime,
+                    self.capture_config.quote_stale_after_seconds,
+                )
+        del taxonomy_signal
+        intelligence_candidate = (
+            taxonomy_candidate
+            if taxonomy_candidate is not None and request.signal is None
+            else request.candidate
+        )
+        intelligence_result = None
+        treatment_signal = None
+        treatment_decision = None
+        policy_completed = False
+        with _service_stage("decision_intelligence_async", symbol=symbol):
+            if self._decision_intelligence_entry_observer is not None:
+                try:
+                    observed = self._decision_intelligence_entry_observer(
+                        value=request.value,
+                        candidate=intelligence_candidate,
+                        signal=request.signal,
+                        taxonomy_candidate=taxonomy_candidate,
+                        legacy_candidate=request.legacy_candidate,
+                        decision_timestamp=(
+                            request.value.evaluation_timestamp
+                            or request.value.observation.timestamp
+                        ),
+                    )
+                    intelligence_result = observed[0]
+                    treatment_signal = observed[1]
+                    treatment_decision = observed[2] if len(observed) > 2 else None
+                    policy_completed = True
+                except Exception:
+                    intelligence_result, treatment_signal, treatment_decision = None, None, None
+            elif self._decision_intelligence_observer is not None:
+                try:
+                    intelligence_result = self._decision_intelligence_observer(
+                        value=request.value,
+                        candidate=intelligence_candidate,
+                        signal=request.signal,
+                        taxonomy_candidate=taxonomy_candidate,
+                        legacy_candidate=request.legacy_candidate,
+                    )
+                except Exception:
+                    intelligence_result = None
+                if self._paper_entry_intelligence is not None:
+                    try:
+                        treatment_decision, treatment_signal = self._paper_entry_intelligence(
+                            result=intelligence_result,
+                            candidate=intelligence_candidate,
+                            environment="PAPER",
+                            signal_factory=self.runtime.entry_signal,
+                            decision_timestamp=(
+                                request.value.evaluation_timestamp
+                                or request.value.observation.timestamp
+                            ),
+                            existing_signal=request.signal,
+                        )
+                        policy_completed = True
+                    except Exception:
+                        treatment_signal = None
+        linked_signal = (
+            treatment_signal
+            if treatment_signal is not None
+            else request.signal if policy_completed else None
+        )
+        if (
+            linked_signal is None
+            and treatment_decision is not None
+            and request.candidate.setup is not None
+        ):
+            try:
+                linked_signal = self.runtime.entry_signal(replace(
+                    request.candidate,
+                    setup=replace(
+                        request.candidate.setup, state=SetupState.TRIGGERED,
+                    ),
+                ))
+            except Exception:
+                linked_signal = None
+        if (
+            linked_signal is not None
+            and treatment_decision is not None
+            and not self._link_assignment_background(
+                treatment_decision, linked_signal,
+            )
+        ):
+            linked_signal = None
+        linked_lifecycle = (
+            None if linked_signal is None else lifecycle_identity(linked_signal)
+        )
+        if linked_lifecycle is not None:
+            current = tuple(
+                value for value in self._linked_treatment_lifecycles
+                if value != linked_lifecycle
+            )
+            self._linked_treatment_lifecycles = (
+                *current[-127:], linked_lifecycle,
+            )
+        return _IntelligenceResult(
+            intelligence_result=intelligence_result,
+            treatment_signal=treatment_signal,
+            treatment_setup=(
+                None if treatment_signal is None
+                else getattr(intelligence_candidate, "setup", None)
+            ),
+            taxonomy_candidate=taxonomy_candidate,
+            treatment_decision=treatment_decision,
+            treatment_lifecycle_id=linked_lifecycle,
+            canonical_signal_present=request.signal is not None,
+        )
+
+    def _link_assignment_background(
+        self, decision: object, signal: object,
+    ) -> bool:
+        policy = getattr(self._paper_entry_intelligence, "__self__", None)
+        if policy is None:
+            callback_owner = getattr(
+                self._decision_intelligence_entry_observer, "__self__", None,
+            )
+            policy = getattr(callback_owner, "_paper_entry_intelligence", None)
+        linker = getattr(policy, "link_assignment_lifecycle", None)
+        if not callable(linker):
+            return False
+        try:
+            return bool(linker(decision, signal))
+        except Exception:
+            return False
+
+    def _current_treatment_signal(
+        self, result: _IntelligenceResult, candidate: MomentumCandidate,
+        *, stale: bool,
+    ) -> MomentumEntrySignal | None:
+        cached_signal = result.treatment_signal
+        cached_setup = result.treatment_setup
+        if stale or cached_signal is None or cached_setup is None:
+            return None
+        trigger = getattr(cached_setup, "trigger", None)
+        stop = getattr(cached_setup, "stop_price", None)
+        if trigger is None or stop is None or stop >= trigger or candidate.price <= ZERO:
+            return None
+        # Price-sensitive entry quality is always recomputed from this event;
+        # no price, quote, spread, or freshness value is reused from the cache.
+        if candidate.price > trigger or (trigger - candidate.price) / candidate.price > Decimal("0.01"):
+            return None
+        current_setup = candidate.setup
+        if current_setup is not None:
+            if current_setup.setup_type != cached_setup.setup_type:
+                return None
+            for name in ("taxonomy_opportunity_id", "structural_episode_id"):
+                current_id = getattr(current_setup, name, None)
+                cached_id = getattr(cached_setup, name, None)
+                if current_id is not None and cached_id is not None and current_id != cached_id:
+                    return None
+            if (
+                current_setup.trigger not in (None, trigger)
+                or current_setup.stop_price not in (None, stop)
+            ):
+                return None
+            cached_setup = current_setup
+        try:
+            projected = replace(
+                candidate,
+                setup=replace(cached_setup, state=SetupState.TRIGGERED),
+            )
+            fresh_signal = self.runtime.entry_signal(projected)
+            if fresh_signal is None:
+                return None
+            decision = result.treatment_decision
+            if (
+                decision is not None
+                and result.treatment_lifecycle_id
+                != lifecycle_identity(fresh_signal)
+            ):
+                return None
+            return fresh_signal
+        except Exception:
+            return None
+
+    def intelligence_worker_metrics(self) -> IntelligenceWorkerMetrics:
+        handoff = self._intelligence_handoff
+        return IntelligenceWorkerMetrics() if handoff is None else handoff.metrics()
+
+    def wait_for_intelligence(self, *, timeout_seconds: float = 5.0) -> bool:
+        handoff = self._intelligence_handoff
+        return True if handoff is None else handoff.wait_idle(timeout_seconds)
+
+    def close_intelligence_worker(self, *, timeout_seconds: float = 5.0) -> bool:
+        handoff = self._intelligence_handoff
+        if handoff is None:
+            return True
+        return handoff.stop(drain=True, timeout_seconds=timeout_seconds)
+
+    def completed_bar_metrics(self) -> CompletedBarProcessingMetrics:
+        handoff = self._completed_bar_research_handoff
+        return CompletedBarProcessingMetrics(
+            cache_hit=self._completed_bar_cache_hits,
+            cache_miss=self._completed_bar_cache_misses,
+            new_bars_processed=self._completed_bar_new_bars_processed,
+            duplicate_bars_suppressed=(
+                self._completed_bar_duplicate_bars_suppressed
+            ),
+            lifecycle_catchup_bars=self._completed_bar_lifecycle_catchup_bars,
+            research_submit=self._completed_bar_research_submits,
+            research_duplicate_suppressed=(
+                self._completed_bar_research_duplicate_suppressed
+            ),
+            research_worker=(
+                CompletedBarResearchMetrics()
+                if handoff is None else handoff.metrics()
+            ),
+        )
+
+    def wait_for_completed_bar_research(
+        self, *, timeout_seconds: float = 5.0,
+    ) -> bool:
+        handoff = self._completed_bar_research_handoff
+        return True if handoff is None else handoff.wait_idle(timeout_seconds)
+
+    def close_completed_bar_research(
+        self, *, timeout_seconds: float = 5.0,
+    ) -> bool:
+        handoff = self._completed_bar_research_handoff
+        if handoff is None:
+            return True
+        return handoff.stop(drain=True, timeout_seconds=timeout_seconds)
+
     def observe_market_bar(self, symbol: str, bar: MinuteBar, observed_at) -> None:
         """Advance retained paper/counterfactual state independent of ranking."""
         normalized = symbol.strip().upper()
@@ -2444,30 +3180,38 @@ class WarriorForwardCaptureService:
         counter = self._counterfactual.get(normalized)
         if counter is not None:
             if counter.last_bar_timestamp is None or bar.timestamp > counter.last_bar_timestamp:
-                counter.bars_observed += 1
-                counter.last_bar_timestamp = bar.timestamp
-                risk = counter.trigger - counter.stop
-                records.append(CaptureRecord.create(
-                    CaptureRecordType.COUNTERFACTUAL, normalized, observed_at,
-                    {"action": "PATH", "source_bar_timestamp": bar.timestamp,
-                     "open": bar.open, "high": bar.high, "low": bar.low,
-                     "close": bar.close, "volume": bar.volume,
-                     "high_r": None if risk <= 0 else (bar.high - counter.trigger) / risk,
-                     "low_r": None if risk <= 0 else (bar.low - counter.trigger) / risk,
-                     "bars_observed": counter.bars_observed},
-                    identity_parts=(bar.timestamp.isoformat(),),
-                ))
-                if counter.bars_observed >= self.capture_config.counterfactual_bars:
-                    records.append(CaptureRecord.create(
-                        CaptureRecordType.COUNTERFACTUAL, normalized, observed_at,
-                        {"action": "END", "bars_observed": counter.bars_observed},
-                        identity_parts=("END", str(counter.started_at)),
-                    ))
-                    self._counterfactual.pop(normalized, None)
+                records.extend(
+                    self._advance_counterfactual(counter, bar, observed_at),
+                )
         if self._shadow is not None:
             records.extend(self._shadow.observe_bar(bar))
         if records:
             self._submit_records(tuple(records))
+
+    def _advance_counterfactual(
+        self, counter: _CounterState, bar: MinuteBar, observed_at: datetime,
+    ) -> tuple[CaptureRecord, ...]:
+        counter.bars_observed += 1
+        counter.last_bar_timestamp = bar.timestamp
+        risk = counter.trigger - counter.stop
+        records = [CaptureRecord.create(
+            CaptureRecordType.COUNTERFACTUAL, counter.symbol, observed_at,
+            {"action": "PATH", "source_bar_timestamp": bar.timestamp,
+             "open": bar.open, "high": bar.high, "low": bar.low,
+             "close": bar.close, "volume": bar.volume,
+             "high_r": None if risk <= 0 else (bar.high - counter.trigger) / risk,
+             "low_r": None if risk <= 0 else (bar.low - counter.trigger) / risk,
+             "bars_observed": counter.bars_observed},
+            identity_parts=(bar.timestamp.isoformat(),),
+        )]
+        if counter.bars_observed >= self.capture_config.counterfactual_bars:
+            records.append(CaptureRecord.create(
+                CaptureRecordType.COUNTERFACTUAL, counter.symbol, observed_at,
+                {"action": "END", "bars_observed": counter.bars_observed},
+                identity_parts=("END", str(counter.started_at)),
+            ))
+            self._counterfactual.pop(counter.symbol, None)
+        return tuple(records)
 
     def finalize_shadow_outcomes(self, observed_at: datetime) -> None:
         """Persist due incomplete windows without granting execution authority."""
@@ -2493,8 +3237,53 @@ class WarriorForwardCaptureService:
                     identity_parts=(record.record_id, "paper-campaign"),
                 )
             prepared.append(record)
-        if prepared:
+        if not prepared:
+            return
+        handoff = self._observation_record_handoff
+        if handoff is None:
             self.writer.submit_many(tuple(prepared))
+            return
+        critical_types = {
+            CaptureRecordType.PAPER_FILL,
+            CaptureRecordType.MANAGEMENT_CONTEXT,
+            CaptureRecordType.EXECUTION_PRICE_PATH,
+        }
+        critical = tuple(
+            record for record in prepared if record.record_type in critical_types
+        )
+        observational = tuple(
+            record for record in prepared if record.record_type not in critical_types
+        )
+        if critical:
+            self.writer.submit_many(critical)
+        if observational:
+            # Latest state per symbol/type is sufficient for observational
+            # evidence and prevents capture I/O from delaying strategy work.
+            keys = {f"{record.symbol}:{record.record_type.value}" for record in observational}
+            for key in keys:
+                values = tuple(
+                    record for record in observational
+                    if f"{record.symbol}:{record.record_type.value}" == key
+                )
+                if not handoff.submit(key, values):
+                    # A saturated diagnostic handoff is explicitly
+                    # observational; retain correctness by falling back to
+                    # the existing bounded writer path.
+                    self.writer.submit_many(values)
+
+    def _dispatch_observation_records(self, value: object) -> None:
+        try:
+            records = tuple(value) if isinstance(value, tuple) else ()
+            if records:
+                self.writer.submit_many(records)
+        except Exception:
+            # Capture failure must not affect strategy or execution state.
+            return
+
+    def close_observation_records(self) -> None:
+        handoff = self._observation_record_handoff
+        if handoff is not None:
+            handoff.stop(drain=True)
 
     def _evidence_records(self, value: PointInTimeObservation) -> tuple[CaptureRecord, ...]:
         observation = value.observation

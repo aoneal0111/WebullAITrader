@@ -119,6 +119,23 @@ class UniverseSelection:
         return tuple(item.symbol for item in self.excluded)
 
 
+@dataclass(frozen=True, slots=True)
+class UniversePriorityLanes:
+    """Stable non-authoritative discovery priority for production attention."""
+
+    legacy_primary: tuple[str, ...] = ()
+    accelerator: tuple[str, ...] = ()
+    background: tuple[str, ...] = ()
+
+    @property
+    def ordered(self) -> tuple[str, ...]:
+        return _unique_ordered((
+            *self.legacy_primary,
+            *self.accelerator,
+            *self.background,
+        ))
+
+
 def _optional_text(value: str | None) -> str | None:
     if value is None:
         return None
@@ -134,3 +151,14 @@ def _optional_upper(value: str | None) -> str | None:
 def _optional_lower(value: str | None) -> str | None:
     normalized = _optional_text(value)
     return normalized.lower() if normalized is not None else None
+
+
+def _unique_ordered(values: tuple[str, ...]) -> tuple[str, ...]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        symbol = str(value).strip().upper()
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            ordered.append(symbol)
+    return tuple(ordered)

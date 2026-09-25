@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
+from time import monotonic, sleep
 from types import SimpleNamespace
 
 from app.configuration import load_configuration
@@ -70,9 +71,20 @@ def test_composed_market_event_ingress_reaches_experiment_journal(monkeypatch, t
                             MarketEventType.TRADE, TradePayload(D("10.20"), D("100"), "trade-2"))
         scanner.consume(event)
         observer(event)
+        handoff = observer._warrior_handoff
+        assert handoff is not None
+        deadline = monotonic() + 2.0
+        while handoff.metrics().processed < handoff.metrics().submitted:
+            assert monotonic() < deadline
+            sleep(0.01)
+        assert sidecar._service is not None
+        assert sidecar._service.wait_for_intelligence(timeout_seconds=2.0)
         journal = composition.paper_entry_intelligence._journal
         assert journal is not None
-        assert journal._connection.execute("SELECT COUNT(*) FROM experiment_assignments").fetchone()[0] > 0
+        assignment_count = journal._connection.execute(
+            "SELECT COUNT(*) FROM experiment_assignments"
+        ).fetchone()[0]
+        assert assignment_count > 0, sidecar._service.intelligence_worker_metrics()
         assert journal._connection.execute("SELECT COUNT(*) FROM experiment_decisions").fetchone()[0] > 0
         marker = journal._connection.execute(
             "SELECT historical_entry_experiment_mode, historical_entry_experiment_path "

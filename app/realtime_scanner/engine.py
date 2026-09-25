@@ -2,6 +2,7 @@
 
 from collections import OrderedDict
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from threading import RLock
 from time import perf_counter
@@ -30,6 +31,19 @@ from app.realtime_scanner.protocols import (
     ReferenceSink,
     UniverseSelector,
 )
+from app.universe.models import UniversePriorityLanes
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceRefreshMetrics:
+    state: str = "IDLE"
+    generation: int = 0
+    symbols_unique: int = 0
+    symbols_inflight: int = 0
+    symbols_completed: int = 0
+    symbols_failed: int = 0
+    symbols_duplicate_suppressed: int = 0
+    refresh_skipped_due_to_inflight: int = 0
 
 
 class RealtimeScannerEngine:
@@ -77,6 +91,20 @@ class RealtimeScannerEngine:
         self._state_lock = RLock()
         self._prepared_selection = None
         self._reference_ready_observer: Callable[[], object] | None = None
+        self._authoritative_symbols_source: Callable[[], Iterable[str]] | None = None
+        self._accelerator_symbols_source: Callable[[], Iterable[str]] | None = None
+        self._priority_lanes = UniversePriorityLanes()
+        # Refresh ownership is held only while state is inspected or
+        # published. Provider calls never run under this lock.
+        self._refresh_state = "IDLE"
+        self._refresh_generation = 0
+        self._active_refresh_generation: int | None = None
+        self._refresh_symbol_states: dict[str, tuple[int, str]] = {}
+        self._refresh_symbols_unique = 0
+        self._refresh_symbols_completed = 0
+        self._refresh_symbols_failed = 0
+        self._refresh_symbols_duplicate_suppressed = 0
+        self._refresh_skipped_due_to_inflight = 0
         # A bounded, same-session grace window prevents a currently active
         # mover from disappearing on the next provider refresh merely because
         # one scanner-quality rule briefly failed. Formal scanner qualification
@@ -101,7 +129,7 @@ class RealtimeScannerEngine:
         performance_diagnostics.record_startup_stage("universe_refresh_started")
         performance_diagnostics.record_startup_stage("reference_warmup_started")
         selection = self._universe_service.select_all(asset_classes)
-        included = _unique_symbols(selection.included)[:self._maximum_active_symbols]
+        included, lanes = self._prioritized_items(selection.included)
         symbols = tuple(item.symbol.strip().upper() for item in included)
         with self._state_lock:
             self._prepared_selection = selection
@@ -117,7 +145,8 @@ class RealtimeScannerEngine:
                 symbol: item.api_symbol or symbol
                 for symbol, item in zip(symbols, included)
             }
-        performance_diagnostics.increment_startup_counter(
+            self._priority_lanes = lanes
+        performance_diagnostics.set_startup_counter(
             "reference_warmup_symbols_total", len(included)
         )
         performance_diagnostics.set_startup_counter(
@@ -140,18 +169,42 @@ class RealtimeScannerEngine:
         *,
         force_reference_refresh: bool = False,
     ) -> tuple[str, ...]:
+        generation = self._begin_reference_refresh()
+        if generation is None:
+            return self.active_symbols
+        try:
+            return self._refresh_universe_generation(
+                generation,
+                asset_classes,
+                force_reference_refresh=force_reference_refresh,
+            )
+        finally:
+            self._finish_reference_refresh(generation)
+
+    def _refresh_universe_generation(
+        self,
+        generation: int,
+        asset_classes: tuple[AssetClass, ...] = (
+            AssetClass.STOCK,
+            AssetClass.CRYPTO,
+        ),
+        *,
+        force_reference_refresh: bool = False,
+    ) -> tuple[str, ...]:
         performance_diagnostics.record_startup_stage("universe_refresh_started")
         performance_diagnostics.record_startup_stage("reference_warmup_started")
         selection = getattr(self, "_prepared_selection", None)
-        selected_directly = selection is None
         if selection is None:
             selection = self._universe_service.select_all(asset_classes)
         self._prepared_selection = None
-        included = _unique_symbols(selection.included)[:self._maximum_active_symbols]
-        if selected_directly:
-            performance_diagnostics.increment_startup_counter(
-                "reference_warmup_symbols_total", len(included)
-            )
+        unique_included = _unique_symbols(selection.included)
+        included, lanes = self._prioritized_items(unique_included)
+        duplicate_count = max(0, len(selection.included) - len(unique_included))
+        self._schedule_reference_symbols(
+            generation, included, duplicate_count=duplicate_count,
+        )
+        with self._state_lock:
+            self._priority_lanes = lanes
         self._universe_size = len(selection.included) + len(selection.excluded)
         self._eligible_symbol_count = len(included)
         performance_diagnostics.set_startup_counter(
@@ -174,10 +227,14 @@ class RealtimeScannerEngine:
         successful_records = []
 
         for item in included:
+            if not self._reference_generation_current(generation):
+                break
             reference_started = perf_counter()
             reference_success = False
             reference_failure: str | None = None
             symbol = item.symbol.strip().upper()
+            if not self._mark_reference_symbol_inflight(generation, symbol):
+                continue
             performance_diagnostics.set_startup_reference_symbol(symbol)
             _observe_admission(
                 self._admission_observer,
@@ -207,6 +264,10 @@ class RealtimeScannerEngine:
                         force_refresh=force_reference_refresh,
                     )
             except Exception as exc:
+                if not self._mark_reference_symbol_terminal(
+                    generation, symbol, failed=True,
+                ):
+                    continue
                 reference_failure = type(exc).__name__
                 performance_diagnostics.increment_startup_counter(
                     "reference_warmup_symbols_completed"
@@ -259,6 +320,10 @@ class RealtimeScannerEngine:
                 )
                 continue
 
+            if not self._mark_reference_symbol_terminal(
+                generation, symbol, failed=False,
+            ):
+                continue
             successful_records.append(record)
             reference_success = True
             performance_diagnostics.increment_startup_counter(
@@ -328,6 +393,9 @@ class RealtimeScannerEngine:
             if self._reference_ready_observer is not None:
                 self._reference_ready_observer()
 
+        if not self._reference_generation_current(generation):
+            return self.active_symbols
+
         self._warmup_result = ReferenceWarmupResult(
             active_symbols=tuple(sorted(active_symbols)),
             unsupported_rejections=tuple(unsupported),
@@ -395,6 +463,156 @@ class RealtimeScannerEngine:
         )
 
         return self.active_symbols
+
+    def _begin_reference_refresh(self) -> int | None:
+        with self._state_lock:
+            if self._refresh_state != "IDLE":
+                self._refresh_skipped_due_to_inflight += 1
+                self._record_refresh_event("reference_refresh.generation_skipped")
+                return None
+            self._refresh_generation += 1
+            generation = self._refresh_generation
+            self._refresh_state = "RUNNING"
+            self._active_refresh_generation = generation
+            self._refresh_symbol_states = {}
+            self._refresh_symbols_unique = 0
+            self._refresh_symbols_completed = 0
+            self._refresh_symbols_failed = 0
+            self._refresh_symbols_duplicate_suppressed = 0
+        self._record_refresh_event("reference_refresh.generation_started")
+        return generation
+
+    def _schedule_reference_symbols(
+        self,
+        generation: int,
+        items: tuple[object, ...],
+        *,
+        duplicate_count: int,
+    ) -> None:
+        symbols = tuple(str(item.symbol).strip().upper() for item in items)
+        with self._state_lock:
+            if not self._reference_generation_current_locked(generation):
+                return
+            self._refresh_symbol_states = {
+                symbol: (generation, "SCHEDULED") for symbol in symbols
+            }
+            self._refresh_symbols_unique = len(symbols)
+            self._refresh_symbols_duplicate_suppressed = duplicate_count
+        performance_diagnostics.set_startup_counter(
+            "reference_warmup_symbols_total", len(symbols),
+        )
+        for name in (
+            "reference_warmup_symbols_completed",
+            "reference_warmup_symbols_accepted",
+            "reference_warmup_symbols_rejected",
+        ):
+            performance_diagnostics.set_startup_counter(name, 0)
+        for _symbol in symbols:
+            self._record_refresh_event("reference_refresh.symbol_scheduled")
+        for _duplicate in range(duplicate_count):
+            self._record_refresh_event(
+                "reference_refresh.symbol_duplicate_suppressed",
+            )
+
+    def _mark_reference_symbol_inflight(
+        self, generation: int, symbol: str,
+    ) -> bool:
+        with self._state_lock:
+            current = self._refresh_symbol_states.get(symbol)
+            if not self._reference_generation_current_locked(generation):
+                accepted = False
+            elif current != (generation, "SCHEDULED"):
+                self._refresh_symbols_duplicate_suppressed += 1
+                accepted = False
+            else:
+                self._refresh_symbol_states[symbol] = (generation, "INFLIGHT")
+                accepted = True
+        if not accepted:
+            self._record_refresh_event(
+                "reference_refresh.symbol_duplicate_suppressed",
+            )
+        else:
+            self._record_refresh_event("reference_refresh.inflight")
+        return accepted
+
+    def _mark_reference_symbol_terminal(
+        self, generation: int, symbol: str, *, failed: bool,
+    ) -> bool:
+        with self._state_lock:
+            if (
+                not self._reference_generation_current_locked(generation)
+                or self._refresh_symbol_states.get(symbol)
+                != (generation, "INFLIGHT")
+            ):
+                return False
+            state = "FAILED" if failed else "COMPLETED"
+            self._refresh_symbol_states[symbol] = (generation, state)
+            if failed:
+                self._refresh_symbols_failed += 1
+            else:
+                self._refresh_symbols_completed += 1
+        self._record_refresh_event(
+            "reference_refresh.symbol_failed"
+            if failed else "reference_refresh.symbol_completed"
+        )
+        return True
+
+    def _finish_reference_refresh(self, generation: int) -> None:
+        completed = False
+        with self._state_lock:
+            if self._active_refresh_generation == generation:
+                self._active_refresh_generation = None
+                self._refresh_state = "IDLE"
+                completed = True
+        if completed:
+            self._record_refresh_event("reference_refresh.generation_completed")
+
+    def stop_reference_refresh(self) -> None:
+        """Invalidate active publication without waiting on provider I/O."""
+        with self._state_lock:
+            if self._refresh_state == "RUNNING":
+                self._refresh_state = "STOPPING"
+
+    def reference_refresh_metrics(self) -> ReferenceRefreshMetrics:
+        with self._state_lock:
+            inflight = sum(
+                state == "INFLIGHT"
+                and generation == self._active_refresh_generation
+                for generation, state in self._refresh_symbol_states.values()
+            )
+            return ReferenceRefreshMetrics(
+                state=self._refresh_state,
+                generation=self._refresh_generation,
+                symbols_unique=self._refresh_symbols_unique,
+                symbols_inflight=inflight,
+                symbols_completed=self._refresh_symbols_completed,
+                symbols_failed=self._refresh_symbols_failed,
+                symbols_duplicate_suppressed=(
+                    self._refresh_symbols_duplicate_suppressed
+                ),
+                refresh_skipped_due_to_inflight=(
+                    self._refresh_skipped_due_to_inflight
+                ),
+            )
+
+    def _reference_generation_current(self, generation: int) -> bool:
+        with self._state_lock:
+            return self._reference_generation_current_locked(generation)
+
+    def _reference_generation_current_locked(self, generation: int) -> bool:
+        return (
+            self._refresh_state == "RUNNING"
+            and self._active_refresh_generation == generation
+        )
+
+    @staticmethod
+    def _record_refresh_event(name: str) -> None:
+        try:
+            performance_diagnostics.record_component_duration(
+                name, 0.0, success=True,
+            )
+        except Exception:
+            pass
 
     def reset_stream_state(self) -> tuple[str, ...]:
         """Reset stream-derived state after a transport session replacement."""
@@ -503,6 +721,7 @@ class RealtimeScannerEngine:
         return tuple(updated)
 
     def close(self) -> None:
+        self.stop_reference_refresh()
         close = getattr(self._pipeline, "close", None)
         if callable(close):
             close()
@@ -520,6 +739,91 @@ class RealtimeScannerEngine:
         if observer is not None and not callable(observer):
             raise TypeError("reference-ready observer must be callable or None")
         self._reference_ready_observer = observer
+
+    def set_authoritative_symbols_source(
+        self,
+        source: Callable[[], Iterable[str]] | None,
+    ) -> None:
+        if source is not None and not callable(source):
+            raise TypeError("authoritative symbols source must be callable or None")
+        self._authoritative_symbols_source = source
+
+    def set_accelerator_symbols_source(
+        self,
+        source: Callable[[], Iterable[str]] | None,
+    ) -> None:
+        if source is not None and not callable(source):
+            raise TypeError("accelerator symbols source must be callable or None")
+        self._accelerator_symbols_source = source
+        setter = getattr(
+            self._universe_service, "set_accelerator_symbols_source", None,
+        )
+        if callable(setter):
+            setter(source)
+
+    def _prioritized_items(
+        self,
+        values: Iterable[Any],
+    ) -> tuple[tuple[Any, ...], UniversePriorityLanes]:
+        items = _unique_symbols(values)
+        by_symbol = {
+            str(item.symbol).strip().upper(): item for item in items
+        }
+        provider_lanes = UniversePriorityLanes()
+        lane_source = getattr(self._universe_service, "priority_lanes", None)
+        if callable(lane_source):
+            try:
+                candidate = lane_source()
+                if isinstance(candidate, UniversePriorityLanes):
+                    provider_lanes = candidate
+            except Exception:
+                pass
+        authoritative = _source_symbols(self._authoritative_symbols_source)
+        external_accelerator = _source_symbols(self._accelerator_symbols_source)
+        authoritative = _only_available(authoritative, by_symbol)
+        legacy = _only_available(provider_lanes.legacy_primary, by_symbol)
+        accelerator = _only_available(
+            (*external_accelerator, *provider_lanes.accelerator), by_symbol,
+        )
+        authoritative_set = set(authoritative)
+        legacy = tuple(symbol for symbol in legacy if symbol not in authoritative_set)
+        protected = authoritative_set | set(legacy)
+        accelerator = tuple(
+            symbol for symbol in accelerator if symbol not in protected
+        )
+        protected.update(accelerator)
+        background = _only_available(provider_lanes.background, by_symbol)
+        background = tuple(
+            symbol for symbol in background if symbol not in protected
+        )
+        declared = set((*authoritative, *legacy, *accelerator, *background))
+        background = (*background, *(
+            symbol for symbol in by_symbol if symbol not in declared
+        ))
+        has_explicit_lanes = bool(
+            authoritative or external_accelerator or provider_lanes.ordered
+        )
+        if not has_explicit_lanes:
+            selected_symbols = tuple(by_symbol)[:self._maximum_active_symbols]
+            selected_lanes = UniversePriorityLanes(
+                background=selected_symbols,
+            )
+        else:
+            critical = (*authoritative, *legacy, *accelerator)
+            background_capacity = max(
+                0, self._maximum_active_symbols - len(critical),
+            )
+            selected_background = tuple(background[:background_capacity])
+            selected_symbols = (*critical, *selected_background)
+            selected_lanes = UniversePriorityLanes(
+                legacy_primary=legacy,
+                accelerator=accelerator,
+                background=selected_background,
+            )
+        return (
+            tuple(by_symbol[symbol] for symbol in selected_symbols),
+            selected_lanes,
+        )
 
     def ranked_candidates(
         self,
@@ -668,6 +972,30 @@ class RealtimeScannerEngine:
         return tuple(ordered)
 
     @property
+    def subscription_priority_lanes(self) -> UniversePriorityLanes:
+        channels = {
+            symbol: api_symbol
+            for symbol, api_symbol in self._subscription_symbols.items()
+        }
+        return UniversePriorityLanes(
+            legacy_primary=tuple(
+                channels[symbol]
+                for symbol in self._priority_lanes.legacy_primary
+                if symbol in channels
+            ),
+            accelerator=tuple(
+                channels[symbol]
+                for symbol in self._priority_lanes.accelerator
+                if symbol in channels
+            ),
+            background=tuple(
+                channels[symbol]
+                for symbol in self._priority_lanes.background
+                if symbol in channels
+            ),
+        )
+
+    @property
     def processed_events(self) -> int:
         return self._processed_events
 
@@ -678,12 +1006,34 @@ class RealtimeScannerEngine:
     def memory_metrics(self) -> dict[str, object]:
         pipeline_metrics = getattr(self._pipeline, "memory_metrics", None)
         nested = {} if not callable(pipeline_metrics) else pipeline_metrics()
+        refresh = self.reference_refresh_metrics()
         return {
             "candidate_count": len(self._decisions),
             "subscription_count": len(self._subscription_symbols),
             "current_quote_symbol_count": len(self._active_symbols),
             "active_asset_class_count": len(self._active_asset_classes),
             "reference_failure_count": len(self._reference_failures),
+            "reference_refresh_state": refresh.state,
+            "reference_refresh_generation": refresh.generation,
+            "reference_refresh_symbols_unique": refresh.symbols_unique,
+            "reference_refresh_symbols_inflight": refresh.symbols_inflight,
+            "reference_refresh_symbols_completed": refresh.symbols_completed,
+            "reference_refresh_symbols_failed": refresh.symbols_failed,
+            "reference_refresh_symbols_duplicate_suppressed": (
+                refresh.symbols_duplicate_suppressed
+            ),
+            "reference_refresh_skipped_due_to_inflight": (
+                refresh.refresh_skipped_due_to_inflight
+            ),
+            "legacy_primary_symbol_count": len(
+                self._priority_lanes.legacy_primary
+            ),
+            "accelerator_symbol_count": len(
+                self._priority_lanes.accelerator
+            ),
+            "background_symbol_count": len(
+                self._priority_lanes.background
+            ),
             **{
                 f"pipeline_{key}": value
                 for key, value in nested.items()
@@ -719,6 +1069,39 @@ def _unique_symbols(items: Iterable[Any]) -> tuple[Any, ...]:
         seen.add(symbol)
         unique.append(item)
     return tuple(unique)
+
+
+def _source_symbols(
+    source: Callable[[], Iterable[str]] | None,
+) -> tuple[str, ...]:
+    if source is None:
+        return ()
+    try:
+        values = source()
+    except Exception:
+        return ()
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        symbol = str(value).strip().upper()
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            ordered.append(symbol)
+    return tuple(ordered)
+
+
+def _only_available(
+    symbols: Iterable[str],
+    available: dict[str, Any],
+) -> tuple[str, ...]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in symbols:
+        symbol = str(value).strip().upper()
+        if symbol in available and symbol not in seen:
+            seen.add(symbol)
+            ordered.append(symbol)
+    return tuple(ordered)
 
 
 def _utc_now() -> datetime:

@@ -121,6 +121,52 @@ class ChartMarketDataService:
 
         return bars
 
+    def load_historical_bars_strict(
+        self,
+        symbol: str,
+        timeframe: str = "1M",
+        *,
+        count: int,
+    ) -> tuple[HistoricalBar, ...]:
+        """Load one explicit bounded history window and expose failure.
+
+        This is reserved for the isolated research profile worker.  Existing
+        chart and Warrior preload callers retain the fail-soft method above.
+        """
+        normalized = symbol.strip().upper() if isinstance(symbol, str) else ""
+        timespan = _timespan(timeframe)
+        if not normalized:
+            raise ValueError("symbol is required")
+        if timespan is None:
+            raise ValueError("unsupported timeframe")
+        if count <= 0:
+            raise ValueError("count must be positive")
+        market_data = getattr(self._client.get(), "market_data")
+        _LOGGER.info(
+            "operation=profile_history_request status=started symbol=%s timespan=%s count=%s",
+            normalized, timespan, count,
+        )
+        try:
+            response = market_data.get_history_bar(
+                normalized, self._category, timespan,
+                count=str(count), real_time_required=False,
+            )
+        except Exception as exc:
+            _LOGGER.warning(
+                "operation=profile_history_request status=failed symbol=%s count=%s error_type=%s",
+                normalized, count, type(exc).__name__,
+            )
+            raise
+        bars = tuple(sorted(
+            filter(None, (_bar(row) for row in _rows(response))),
+            key=lambda item: item.timestamp,
+        ))
+        _LOGGER.info(
+            "operation=profile_history_request status=succeeded symbol=%s count=%s bars=%s",
+            normalized, count, len(bars),
+        )
+        return bars
+
 
     def load(self, symbol: str, timeframe: str = "1D") -> ChartMarketData:
         normalized = symbol.strip().upper() if isinstance(symbol, str) else ""

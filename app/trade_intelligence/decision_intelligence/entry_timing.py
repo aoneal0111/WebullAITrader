@@ -72,6 +72,7 @@ class PaperEntryIntelligenceDecision:
     authorizing_memberships: tuple[str, ...] = ()
     assignment_persisted: bool = False
     assignment_persistence_reason: str | None = None
+    assignment_id: str | None = None
 
 
 def entry_experiment_definition(strategy: str) -> ExperimentDefinition:
@@ -176,6 +177,7 @@ class HistoricalPaperEntryTimingPolicy:
         treatment_ok = self._eligible(result, setup, entry, candidate)
         decision = replace(
             base, arm=assignment.arm,
+            assignment_id=assignment.assignment_id,
             assignment_persisted=assignment.persisted,
             assignment_persistence_reason=(None if assignment.persisted else assignment.reason),
             treatment_decision=("ELIGIBLE" if treatment_ok else "CONTROL_FALLBACK"),
@@ -252,6 +254,40 @@ class HistoricalPaperEntryTimingPolicy:
             return decision, treatment_signal
         except Exception:
             return replace(decision, treatment_decision="CONTROL_FALLBACK"), None
+
+    def link_cached_treatment(
+        self, decision: PaperEntryIntelligenceDecision, signal: object,
+    ) -> bool:
+        """Relink a fresh live signal to a previously persisted assignment."""
+        if (
+            self._journal is None
+            or not decision.assignment_persisted
+            or decision.assignment_id is None
+            or decision.arm != TREATMENT_ARM
+            or decision.treatment_decision != "ELIGIBLE"
+        ):
+            return False
+        try:
+            return self.link_assignment_lifecycle(decision, signal)
+        except Exception:
+            return False
+
+    def link_assignment_lifecycle(
+        self, decision: PaperEntryIntelligenceDecision, signal: object,
+    ) -> bool:
+        """Durably prelink an already-persisted assignment off the event path."""
+        if (
+            self._journal is None
+            or not decision.assignment_persisted
+            or decision.assignment_id is None
+        ):
+            return False
+        try:
+            return bool(self._journal.link_lifecycle(
+                decision.assignment_id, lifecycle_identity(signal),
+            ))
+        except Exception:
+            return False
 
     def observe_paper_event(self, event: object) -> None:
         """Link authoritative PAPER events to an existing assignment only."""
