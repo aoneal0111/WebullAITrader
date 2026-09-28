@@ -98,8 +98,11 @@ class MainWindow(QMainWindow):
         self._settings = settings or QSettings("Atlas", "WebullAITrader")
         self._sidebar_user_compact = False
         self._close_requested = False
+        self._pending_render_state: ApplicationState | None = None
+        self._pending_render_route: int | None = None
+        self._render_scheduled = False
         self._state_bridge = QtStateBridge(state_store, self)
-        self._state_bridge.state_changed.connect(self._render_state)
+        self._state_bridge.state_changed.connect(self._schedule_state_render)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setWindowTitle("Atlas \u2014 WebullAITrader")
         # The dashboard owns vertical overflow, so laptop-height windows do not
@@ -533,21 +536,87 @@ class MainWindow(QMainWindow):
             5000,
         )
 
-    def _render_state(self, state: ApplicationState) -> None:
-        if (state.runtime.phase.value == "STOPPED"
-                and self.statusBar().currentMessage().startswith("Stop requested.")):
-            self.statusBar().showMessage("Runtime stopped. Stop did not close positions.", 5000)
+    def _schedule_state_render(
+        self,
+        state: ApplicationState,
+        *,
+        route: int | None = None,
+    ) -> None:
+        # Coalesce high-frequency state updates so Qt renders only the newest
+        # immutable snapshot. Heavy presenters must never run inline with the
+        # state-bridge signal or a navigation click.
+        self._pending_render_state = state
+        if route is not None:
+            self._pending_render_route = route
+        elif self._pending_render_route is None:
+            self._pending_render_route = self.pages.currentIndex()
+
+        if self._render_scheduled:
+            return
+
+        self._render_scheduled = True
+        QTimer.singleShot(0, self._flush_state_render)
+
+    def _flush_state_render(self) -> None:
+        self._render_scheduled = False
+
+        state = self._pending_render_state
+        route = self._pending_render_route
+        self._pending_render_state = None
+        self._pending_render_route = None
+
+        if state is None:
+            return
+
+        # If navigation changed again before this callback ran, render only
+        # the currently visible route rather than doing stale hidden work.
+        active_route = (
+            self.pages.currentIndex()
+            if route is None or route != self.pages.currentIndex()
+            else route
+        )
+        self._render_state(state, active_route=active_route)
+
+        # A state update may have arrived while the render was in progress.
+        # Schedule one more turn for the newest state rather than recursively
+        # rendering inline and starving the Qt event loop.
+        if self._pending_render_state is not None and not self._render_scheduled:
+            self._render_scheduled = True
+            QTimer.singleShot(0, self._flush_state_render)
+
+    def _render_state(
+        self,
+        state: ApplicationState,
+        *,
+        active_route: int | None = None,
+    ) -> None:
+        if (
+            state.runtime.phase.value == "STOPPED"
+            and self.statusBar().currentMessage().startswith("Stop requested.")
+        ):
+            self.statusBar().showMessage(
+                "Runtime stopped. Stop did not close positions.", 5000
+            )
         if self._asset_modules is None:
             self.crypto_research.set_runtime_phase(state.runtime.phase)
-        self._presentation.render(state, active_route=self.pages.currentIndex())
+        self._presentation.render(
+            state,
+            active_route=(
+                self.pages.currentIndex()
+                if active_route is None
+                else active_route
+            ),
+        )
 
     def _on_page_changed(self, index: int) -> None:
         self._select_asset(self._selected_asset)
-        presentation = getattr(self, "_presentation", None)
-        if presentation is not None:
-            presentation.render(
-                self._state_store.snapshot(), active_route=index,
-            )
+
+        # The QStackedWidget has already changed pages at this point. Defer the
+        # expensive presenter work so Qt can repaint the selected page first.
+        self._schedule_state_render(
+            self._state_store.snapshot(),
+            route=index,
+        )
 
     def _select_asset(self, asset) -> None:
         self._selected_asset = asset

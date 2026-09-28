@@ -226,6 +226,16 @@ class PerformanceSnapshot:
     trade_intelligence_rejections: int = 0
     trade_intelligence_failures: int = 0
     trade_intelligence_outstanding: int = 0
+    trade_intelligence_queue_discovery_depth: int = 0
+    trade_intelligence_queue_discovery_oldest_ms: int = 0
+    trade_intelligence_queue_bar_depth: int = 0
+    trade_intelligence_queue_bar_oldest_ms: int = 0
+    trade_intelligence_queue_decision_depth: int = 0
+    trade_intelligence_queue_decision_oldest_ms: int = 0
+    trade_intelligence_queue_experience_depth: int = 0
+    trade_intelligence_queue_experience_oldest_ms: int = 0
+    trade_intelligence_queue_paper_observation_depth: int = 0
+    trade_intelligence_queue_paper_observation_oldest_ms: int = 0
     discovery_cycles: int = 0
     discovery_detector_evaluations: int = 0
     discovery_raw_firings: int = 0
@@ -374,6 +384,16 @@ class PerformanceDiagnostics:
             "trade_intelligence_rejections": 0,
             "trade_intelligence_failures": 0,
             "trade_intelligence_outstanding": 0,
+            "trade_intelligence_queue_discovery_depth": 0,
+            "trade_intelligence_queue_discovery_oldest_ms": 0,
+            "trade_intelligence_queue_bar_depth": 0,
+            "trade_intelligence_queue_bar_oldest_ms": 0,
+            "trade_intelligence_queue_decision_depth": 0,
+            "trade_intelligence_queue_decision_oldest_ms": 0,
+            "trade_intelligence_queue_experience_depth": 0,
+            "trade_intelligence_queue_experience_oldest_ms": 0,
+            "trade_intelligence_queue_paper_observation_depth": 0,
+            "trade_intelligence_queue_paper_observation_oldest_ms": 0,
             "discovery_cycles": 0,
             "discovery_detector_evaluations": 0,
             "discovery_raw_firings": 0,
@@ -1638,6 +1658,30 @@ class PerformanceDiagnostics:
         values = {name: int(getattr(metrics, field, 0)) for name, field in mapping.items()}
         with self._lock:
             self._trade_intelligence.update(values)
+
+    def update_trade_intelligence_queue_composition(
+        self,
+        values: dict[str, int],
+    ) -> None:
+        allowed = {
+            "trade_intelligence_queue_discovery_depth",
+            "trade_intelligence_queue_discovery_oldest_ms",
+            "trade_intelligence_queue_bar_depth",
+            "trade_intelligence_queue_bar_oldest_ms",
+            "trade_intelligence_queue_decision_depth",
+            "trade_intelligence_queue_decision_oldest_ms",
+            "trade_intelligence_queue_experience_depth",
+            "trade_intelligence_queue_experience_oldest_ms",
+            "trade_intelligence_queue_paper_observation_depth",
+            "trade_intelligence_queue_paper_observation_oldest_ms",
+        }
+        sanitized = {
+            key: max(0, int(value))
+            for key, value in values.items()
+            if key in allowed
+        }
+        with self._lock:
+            self._trade_intelligence.update(sanitized)
 
     def set_trade_intelligence_enabled(self, enabled: bool) -> None:
         with self._lock:

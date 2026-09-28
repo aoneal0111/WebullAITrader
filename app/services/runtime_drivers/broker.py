@@ -589,6 +589,7 @@ class DesktopBrokerRuntimeDriver:
             args=(stop_event,),
             name="desktop-market-data",
         )
+        self._market_data_consumer_launch_started = perf_counter()
         self._market_data_thread.start()
         performance_diagnostics.record_startup_stage("consumer_started")
 
@@ -715,11 +716,14 @@ class DesktopBrokerRuntimeDriver:
             "Autonomous scanner universe discovery started.",
         )
         performance_diagnostics.record_startup_stage("universe_refresh_started")
+        scanner_start_started = perf_counter()
+        scanner_start_succeeded = False
         try:
             active_symbols = scanner.start(
                 asset_classes=(AssetClass.STOCK,),
                 force_reference_refresh=True,
             )
+            scanner_start_succeeded = True
         except Exception as exc:
             try:
                 scanner.disconnect()
@@ -733,6 +737,15 @@ class DesktopBrokerRuntimeDriver:
                     exc,
                 )
             raise
+        finally:
+            try:
+                performance_diagnostics.record_component_duration(
+                    "startup.scanner_start_total",
+                    (perf_counter() - scanner_start_started) * 1000.0,
+                    success=scanner_start_succeeded,
+                )
+            except Exception:
+                pass
 
         self._market_data_connected = True
         warmup_snapshot = scanner.snapshot()
@@ -1068,6 +1081,21 @@ class DesktopBrokerRuntimeDriver:
         )
 
     def _receive_market_data(self, stop_event: Event) -> None:
+        worker_entered = perf_counter()
+        consumer_launch_started = getattr(
+            self, "_market_data_consumer_launch_started", None
+        )
+        self._market_data_consumer_launch_started = None
+        if isinstance(consumer_launch_started, (int, float)):
+            try:
+                performance_diagnostics.record_component_duration(
+                    "startup.consumer_launch_to_thread_entry",
+                    (worker_entered - consumer_launch_started) * 1000.0,
+                )
+            except Exception:
+                pass
+        first_temporal_reconcile_pending = True
+        first_transport_drain_pending = True
         try:
             while (
                 not stop_event.is_set()
@@ -1080,7 +1108,21 @@ class DesktopBrokerRuntimeDriver:
                 if getattr(self, "_market_data_consumer_attempted", False):
                     self._market_data_failure_stage = "WATCHDOG"
                     self._run_feed_watchdog()
-                self._reconcile_temporal_orders()
+                if first_temporal_reconcile_pending:
+                    first_temporal_reconcile_pending = False
+                    reconcile_started = perf_counter()
+                    try:
+                        self._reconcile_temporal_orders()
+                    finally:
+                        try:
+                            performance_diagnostics.record_component_duration(
+                                "startup.first_temporal_reconcile",
+                                (perf_counter() - reconcile_started) * 1000.0,
+                            )
+                        except Exception:
+                            pass
+                else:
+                    self._reconcile_temporal_orders()
                 if self._scanner is not None:
                     if not bool(getattr(self._scanner, "connected", True)) or not bool(
                         getattr(self._scanner, "running", True)
@@ -1091,6 +1133,15 @@ class DesktopBrokerRuntimeDriver:
                         if callable(drain_startup) and bool(
                             getattr(self._scanner, "connected", True)
                         ):
+                            if first_transport_drain_pending:
+                                first_transport_drain_pending = False
+                                try:
+                                    performance_diagnostics.record_component_duration(
+                                        "startup.thread_entry_to_transport_drain",
+                                        (perf_counter() - worker_entered) * 1000.0,
+                                    )
+                                except Exception:
+                                    pass
                             cycle = drain_startup()
                             if cycle.events_read:
                                 self._market_data_consumer_attempted = True

@@ -38,6 +38,7 @@ class _Work:
     work_type: str
     payload_json: str
     accepted_at: datetime
+    coalesce_key: str | None = None
 
 
 class TradeIntelligenceService:
@@ -52,11 +53,17 @@ class TradeIntelligenceService:
         clock: Callable[[], datetime] | None = None,
         store_factory=ExperienceStore,
         observability: object | None = None,
+        discovery_coalesce_threshold: int = 64,
     ) -> None:
         if capacity <= 0:
             raise ValueError("capacity must be positive")
+        if discovery_coalesce_threshold <= 0:
+            raise ValueError("discovery coalesce threshold must be positive")
         self._path = Path(path)
         self._capacity = capacity
+        self._discovery_coalesce_threshold = min(
+            capacity, discovery_coalesce_threshold,
+        )
         self._clock = clock or (lambda: datetime.now(UTC))
         self._store_factory = store_factory
         self._observability = observability
@@ -69,6 +76,11 @@ class TradeIntelligenceService:
         self._hwm = self._pressure_episodes = self._pressure_recoveries = 0
         self._pressure_active = False
         self._recent: OrderedDict[str, None] = OrderedDict()
+        # Under sustained research pressure, DISCOVERY is latest-state,
+        # advisory work. Keep one replaceable pending slot per symbol rather
+        # than executing minutes-old intermediate discovery projections.
+        # Durable EXPERIENCE / DECISION / PAPER / BAR facts remain FIFO.
+        self._pending_discovery: dict[str, tuple[str, _Work]] = {}
         self._active_count = 0
         self._lag_max_ms = 0
         self._lag_samples: deque[int] = deque(maxlen=2048)
@@ -124,7 +136,13 @@ class TradeIntelligenceService:
         identity = sha256(
             f"discovery|{value.context.symbol.upper()}|{value.context.decision_cutoff.isoformat()}".encode()
         ).hexdigest()
-        return self._submit(_Work(identity, "DISCOVERY", payload, self._now()))
+        return self._submit(_Work(
+            identity,
+            "DISCOVERY",
+            payload,
+            self._now(),
+            value.context.symbol.strip().upper(),
+        ))
 
     def _submit(self, work: _Work) -> bool:
         with self._lock:
@@ -135,14 +153,49 @@ class TradeIntelligenceService:
             if work.work_id in self._recent:
                 self._suppressed += 1
                 return True
+
+            discovery_key = (
+                work.coalesce_key
+                if work.work_type == "DISCOVERY"
+                else None
+            )
+            under_discovery_pressure = bool(
+                discovery_key is not None
+                and self._queue.qsize() >= self._discovery_coalesce_threshold
+            )
+
+            if under_discovery_pressure:
+                pending = self._pending_discovery.get(discovery_key)
+                if pending is not None:
+                    placeholder_id, _previous = pending
+                    self._pending_discovery[discovery_key] = (
+                        placeholder_id,
+                        work,
+                    )
+                    self._suppressed += 1
+                    self._remember(work.work_id)
+                    return True
+                self._pending_discovery[discovery_key] = (
+                    work.work_id,
+                    work,
+                )
+
             try:
                 self._queue.put_nowait(work)
             except Full:
+                if discovery_key is not None:
+                    pending = self._pending_discovery.get(discovery_key)
+                    if (
+                        pending is not None
+                        and pending[0] == work.work_id
+                    ):
+                        self._pending_discovery.pop(discovery_key, None)
                 self._rejected += 1
                 if not self._pressure_active:
                     self._pressure_active = True
                     self._pressure_episodes += 1
                 return False
+
             self._accepted += 1
             self._remember(work.work_id)
             if self._pressure_active:
@@ -150,6 +203,17 @@ class TradeIntelligenceService:
                 self._pressure_recoveries += 1
             self._hwm = max(self._hwm, self._queue.qsize())
             return True
+
+    def _resolve_coalesced_work(self, work: _Work) -> _Work:
+        key = work.coalesce_key
+        if work.work_type != "DISCOVERY" or key is None:
+            return work
+        with self._lock:
+            pending = self._pending_discovery.get(key)
+            if pending is None or pending[0] != work.work_id:
+                return work
+            self._pending_discovery.pop(key, None)
+            return pending[1]
 
     def _safe_observe(self, event: str, symbol: object, **fields: object) -> None:
         try:
@@ -197,6 +261,48 @@ class TradeIntelligenceService:
                 self._discovery_snapshot.thesis_observations,
                 self._discovery_snapshot.add_on_candidates,
             )
+
+    def queue_composition_metrics(self) -> dict[str, int]:
+        """Return bounded in-memory queue composition without consuming work.
+
+        Diagnostic-only: reads the Queue's protected deque while holding its
+        mutex. No SQLite access, mutation, dequeue, or execution dependency.
+        """
+        work_types = (
+            "DISCOVERY",
+            "BAR",
+            "DECISION",
+            "EXPERIENCE",
+            "PAPER_OBSERVATION",
+        )
+        counts = {name: 0 for name in work_types}
+        oldest_ms = {name: 0 for name in work_types}
+        now = self._now()
+
+        with self._queue.mutex:
+            queued = tuple(self._queue.queue)
+
+        first_seen: set[str] = set()
+        for work in queued:
+            work_type = str(getattr(work, "work_type", "UNKNOWN"))
+            if work_type not in counts:
+                continue
+            counts[work_type] += 1
+            if work_type not in first_seen:
+                accepted_at = getattr(work, "accepted_at", None)
+                if isinstance(accepted_at, datetime):
+                    oldest_ms[work_type] = max(
+                        0,
+                        int((now - accepted_at).total_seconds() * 1000),
+                    )
+                first_seen.add(work_type)
+
+        result: dict[str, int] = {}
+        for name in work_types:
+            key = name.lower()
+            result[f"trade_intelligence_queue_{key}_depth"] = counts[name]
+            result[f"trade_intelligence_queue_{key}_oldest_ms"] = oldest_ms[name]
+        return result
 
     def discovery_telemetry(self) -> DiscoveryTelemetry:
         with self._lock:
@@ -259,6 +365,7 @@ class TradeIntelligenceService:
                 except Empty:
                     continue
                 try:
+                    work = self._resolve_coalesced_work(work)
                     self._process(store, active, completed_horizons, deferred, work)
                 finally:
                     self._queue.task_done()

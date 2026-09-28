@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from enum import StrEnum
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -41,11 +42,10 @@ def _eastern_datetime(value: datetime | None = None) -> datetime:
     return current.astimezone(EASTERN)
 
 
-def trading_day_schedule(
-    value: datetime | date,
+@lru_cache(maxsize=64)
+def _trading_day_schedule_for_date(
+    trading_date: date,
 ) -> TradingDaySchedule | None:
-    trading_date = value.date() if isinstance(value, datetime) else value
-
     schedule = NYSE.schedule(
         start_date=trading_date.isoformat(),
         end_date=trading_date.isoformat(),
@@ -64,6 +64,13 @@ def trading_day_schedule(
         market_open=market_open.astimezone(EASTERN),
         market_close=market_close.astimezone(EASTERN),
     )
+
+
+def trading_day_schedule(
+    value: datetime | date,
+) -> TradingDaySchedule | None:
+    trading_date = value.date() if isinstance(value, datetime) else value
+    return _trading_day_schedule_for_date(trading_date)
 
 
 def is_trading_day(value: datetime | date) -> bool:

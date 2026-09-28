@@ -144,6 +144,10 @@ class OpportunityQualityAssessment:
             and self.opportunity_age_minutes is not None
             and self.opportunity_age_minutes < Decimal("45")
             and "LATE_SESSION_DECAY" not in self.reasons
+            and not (
+                "PRIOR_EXPANSION_CONSUMED" in self.reasons
+                and "REMAINING_REWARD_UNAVAILABLE" in self.reasons
+            )
             and (
                 "REMAINING_REWARD_WEAK" not in self.reasons
                 or (

@@ -202,3 +202,42 @@ def test_three_hour_tick_cardinality_and_burst_headroom(tmp_path):
         "peak_traced_memory_bytes": peak_memory,
         "rejected": metrics.rejected, "failed": metrics.failed,
     })
+
+
+def test_queue_composition_metrics_are_read_only_and_type_specific(tmp_path):
+    from datetime import UTC, datetime
+    from app.trade_intelligence.service import TradeIntelligenceService, _Work
+
+    service = TradeIntelligenceService(
+        tmp_path / "queue-composition.sqlite3",
+        capacity=16,
+    )
+
+    now = datetime.now(UTC)
+
+    with service._queue.mutex:
+        service._queue.queue.clear()
+        service._queue.queue.extend((
+            _Work("d1", "DISCOVERY", "{}", now),
+            _Work("d2", "DISCOVERY", "{}", now),
+            _Work("b1", "BAR", "{}", now),
+            _Work("x1", "DECISION", "{}", now),
+            _Work("e1", "EXPERIENCE", "{}", now),
+            _Work("p1", "PAPER_OBSERVATION", "{}", now),
+        ))
+
+    before = tuple(service._queue.queue)
+    metrics = service.queue_composition_metrics()
+    after = tuple(service._queue.queue)
+
+    assert before == after
+    assert metrics["trade_intelligence_queue_discovery_depth"] == 2
+    assert metrics["trade_intelligence_queue_bar_depth"] == 1
+    assert metrics["trade_intelligence_queue_decision_depth"] == 1
+    assert metrics["trade_intelligence_queue_experience_depth"] == 1
+    assert metrics["trade_intelligence_queue_paper_observation_depth"] == 1
+
+    assert metrics["trade_intelligence_queue_discovery_oldest_ms"] >= 0
+    assert metrics["trade_intelligence_queue_bar_oldest_ms"] >= 0
+
+    service.close(timeout_seconds=5)

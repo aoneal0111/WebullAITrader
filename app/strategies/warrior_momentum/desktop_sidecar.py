@@ -1,4 +1,4 @@
-"""Desktop-owned, stream-sharing Warrior V1 forward-paper observer."""
+﻿"""Desktop-owned, stream-sharing Warrior V1 forward-paper observer."""
 
 from __future__ import annotations
 
@@ -537,6 +537,7 @@ class WarriorDesktopSidecar:
             self._health = WarriorCaptureHealth.STARTING
             if environment:
                 self.environment = environment.strip().upper()
+        with self._processing_lock:
             try:
                 entry_value_start = getattr(
                     self._entry_value_observer, "start", None,
@@ -620,13 +621,14 @@ class WarriorDesktopSidecar:
                 self._accept_execution = True
                 self._order_flow.start()
             except Exception as exc:
-                self._last_error_type = type(exc).__name__
-                self._accept_execution = False
-                self._set_strategy_health(
-                    WarriorCaptureHealth.DEGRADED,
-                    category="CRITICAL_STARTUP_FAILURE",
-                    reason="START_FAILED", exception=exc,
-                )
+                with self._lock:
+                    self._last_error_type = type(exc).__name__
+                    self._accept_execution = False
+                    self._set_strategy_health(
+                        WarriorCaptureHealth.DEGRADED,
+                        category="CRITICAL_STARTUP_FAILURE",
+                        reason="START_FAILED", exception=exc,
+                    )
                 if self._service is not None:
                     try:
                         self._service.close_completed_bar_research(
@@ -1088,8 +1090,9 @@ class WarriorDesktopSidecar:
 
     def mark_gui_refresh(self) -> None:
         with self._lock:
-            if self._writer is not None:
-                self._writer.record_gui_refresh()
+            writer = self._writer
+        if writer is not None:
+            writer.record_gui_refresh()
 
     def retained_symbols(self) -> tuple[str, ...]:
         with self._lock:

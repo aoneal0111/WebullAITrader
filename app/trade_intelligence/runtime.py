@@ -793,6 +793,13 @@ class TradeIntelligenceRuntimeObserver:
         service = self._service
         if service is not None:
             performance_diagnostics.update_trade_intelligence(service.metrics())
+            try:
+                performance_diagnostics.update_trade_intelligence_queue_composition(
+                    service.queue_composition_metrics()
+                )
+            except Exception:
+                # Diagnostics must never alter research or runtime behavior.
+                pass
             performance_diagnostics.update_discovery(self._combined_discovery_telemetry(service))
 
 

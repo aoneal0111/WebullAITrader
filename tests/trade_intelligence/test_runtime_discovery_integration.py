@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from threading import Event
 
 from app.opportunity_discovery import PositionFocusTier
 from app.strategies.warrior_momentum import MinuteBar
@@ -225,3 +226,80 @@ def test_runtime_discovery_has_no_execution_authority_or_dependencies():
             for name in imports
             for token in ("broker", "order_placement", "account_mutation", "execution_gateway")
         )
+
+
+def test_discovery_pressure_coalesces_only_pending_latest_symbol_state(
+    tmp_path: Path,
+):
+    entered = Event()
+    release = Event()
+    processed = []
+
+    class BlockingDiscoveryWorker:
+        def process(self, store, observation):
+            processed.append(observation)
+            if len(processed) == 1:
+                entered.set()
+                release.wait(5)
+
+        def telemetry(self):
+            return DiscoveryTelemetry(discovery_cycles=len(processed))
+
+        def context_for(self, symbol):
+            return None
+
+    service = TradeIntelligenceService(
+        tmp_path / "coalesced.sqlite3",
+        capacity=16,
+        discovery_coalesce_threshold=1,
+    )
+    worker = BlockingDiscoveryWorker()
+    service._discovery_worker = worker
+    service._discovery_snapshot = worker.telemetry()
+
+    observer = TradeIntelligenceRuntimeObserver(
+        enabled=True,
+        environment="TEST",
+        service_factory=lambda _path, *, capacity: service,
+    )
+    observer.start()
+
+    observer.observe_completed_bar(_bar(0))
+    assert entered.wait(5)
+
+    # The second observation occupies the ordinary queued slot. Once that
+    # queue is under pressure, the third creates the replaceable discovery
+    # slot and the fourth replaces that slot rather than adding another job.
+    observer.observe_completed_bar(_bar(1))
+    observer.observe_completed_bar(_bar(2))
+    observer.observe_completed_bar(_bar(3))
+
+    before_release = service.metrics()
+
+    # Each completed bar also submits a durable BAR work item. Those BAR facts
+    # must remain FIFO and are intentionally not coalesced. While the first
+    # DISCOVERY job is blocked, the queue therefore contains the durable BAR
+    # items plus exactly one replaceable DISCOVERY slot.
+    assert before_release.queue_depth == 5
+    assert before_release.suppressed_duplicate >= 1
+
+    release.set()
+    assert observer.stop(timeout_seconds=10)
+
+    # The first discovery was already active. The later pending discovery
+    # slot is repeatedly replaced, so only the newest pressured observation
+    # for the symbol is ultimately processed.
+    cutoffs = [
+        item.context.decision_cutoff
+        for item in processed
+    ]
+    assert cutoffs == [
+        T0 + timedelta(minutes=1),
+        T0 + timedelta(minutes=4),
+    ]
+
+    metrics = service.metrics()
+    assert metrics.queue_depth == 0
+    assert metrics.outstanding == 0
+    assert metrics.failed == 0
+    assert metrics.accepted == metrics.completed

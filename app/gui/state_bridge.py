@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 from threading import Lock
@@ -130,6 +130,16 @@ class QtStateBridge(QObject):
                 "trade_intelligence_failed=%d "
                 "trade_intelligence_rejected=%d "
                 "trade_intelligence_outstanding=%d "
+                "trade_intelligence_queue_discovery_depth=%d "
+                "trade_intelligence_queue_discovery_oldest_ms=%d "
+                "trade_intelligence_queue_bar_depth=%d "
+                "trade_intelligence_queue_bar_oldest_ms=%d "
+                "trade_intelligence_queue_decision_depth=%d "
+                "trade_intelligence_queue_decision_oldest_ms=%d "
+                "trade_intelligence_queue_experience_depth=%d "
+                "trade_intelligence_queue_experience_oldest_ms=%d "
+                "trade_intelligence_queue_paper_observation_depth=%d "
+                "trade_intelligence_queue_paper_observation_oldest_ms=%d "
                 "trade_intelligence_worker_lag_p50_ms=%d "
                 "trade_intelligence_worker_lag_p90_ms=%d "
                 "trade_intelligence_worker_lag_p99_ms=%d "
@@ -194,6 +204,16 @@ class QtStateBridge(QObject):
                 metrics.trade_intelligence_failed,
                 metrics.trade_intelligence_rejected,
                 metrics.trade_intelligence_outstanding,
+                metrics.trade_intelligence_queue_discovery_depth,
+                metrics.trade_intelligence_queue_discovery_oldest_ms,
+                metrics.trade_intelligence_queue_bar_depth,
+                metrics.trade_intelligence_queue_bar_oldest_ms,
+                metrics.trade_intelligence_queue_decision_depth,
+                metrics.trade_intelligence_queue_decision_oldest_ms,
+                metrics.trade_intelligence_queue_experience_depth,
+                metrics.trade_intelligence_queue_experience_oldest_ms,
+                metrics.trade_intelligence_queue_paper_observation_depth,
+                metrics.trade_intelligence_queue_paper_observation_oldest_ms,
                 metrics.trade_intelligence_worker_lag_p50_ms,
                 metrics.trade_intelligence_worker_lag_p90_ms,
                 metrics.trade_intelligence_worker_lag_p99_ms,

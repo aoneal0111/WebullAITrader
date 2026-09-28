@@ -121,3 +121,21 @@ def test_vwap_and_session_context_are_reported_without_changing_hard_gates():
     assert "LATE_SESSION_DECAY" not in result.reasons
     assert result.authorization_allowed is True
 
+
+
+def test_consumed_expansion_without_remaining_reward_is_not_authorized():
+    memory = _memory(peak="17.48")
+    result = memory.assess_quality(
+        DAY, "XYZ", "OPP",
+        proposed_entry=D("17.50"),
+        structural_stop=D("17.24"),
+        evaluated_at=START + timedelta(minutes=20),
+        session="REGULAR",
+        lifecycle_count=0,
+    )
+
+    assert result.classification is OpportunityQuality.DEGRADED
+    assert "PRIOR_EXPANSION_CONSUMED" in result.reasons
+    assert "REMAINING_REWARD_UNAVAILABLE" in result.reasons
+    assert result.reward_risk_ratio is None
+    assert result.authorization_allowed is False

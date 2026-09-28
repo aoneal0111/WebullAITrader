@@ -74,6 +74,11 @@ class ScannerSnapshotPublisher:
         self._published_symbols: set[str] = set()
         self._displayed_symbols: set[str] = set()
         self._published_decisions: dict[str, ScannerDecision] = {}
+        # Candidate entry/exit logging has its own edge-triggered baseline.
+        # It must advance even when the GUI/watchlist projection is suppressed
+        # as unchanged; otherwise the same transition is logged repeatedly.
+        self._transition_symbols: set[str] = set()
+        self._transition_decisions: dict[str, ScannerDecision] = {}
         self._last_decisions: dict[str, ScannerDecision] = {}
         self._last_fingerprint: object | None = None
         self._published_display_fingerprints: dict[str, object] = {}
@@ -541,11 +546,11 @@ class ScannerSnapshotPublisher:
         decisions: dict[str, ScannerDecision],
     ) -> None:
         current = {candidate.symbol for candidate in ranked}
-        entered = current - self._published_symbols
-        exited = self._published_symbols - current
+        entered = current - self._transition_symbols
+        exited = self._transition_symbols - current
 
         for symbol in sorted(entered):
-            prior = self._last_decisions.get(symbol)
+            prior = self._transition_decisions.get(symbol)
             candidate = decisions.get(symbol) or next(
                 item for item in ranked if item.symbol == symbol
             )
@@ -558,7 +563,7 @@ class ScannerSnapshotPublisher:
             )
 
         for symbol in sorted(exited):
-            previous = self._published_decisions[symbol]
+            previous = self._transition_decisions[symbol]
             current_decision = decisions.get(symbol)
             if current_decision is None:
                 failed_rule = "missing_decision"
@@ -580,6 +585,14 @@ class ScannerSnapshotPublisher:
                 previous_value,
                 current_value,
             )
+
+        # Advance the transition baseline immediately. This is deliberately
+        # independent of GUI/watchlist publication, which may be suppressed
+        # later in publish() when its projection fingerprint is unchanged.
+        self._transition_symbols = current
+        self._transition_decisions = {
+            candidate.symbol: candidate for candidate in ranked
+        }
 
     def _emit(
         self,
