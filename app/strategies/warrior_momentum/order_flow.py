@@ -117,6 +117,18 @@ def _rows(response: object) -> list[Mapping[str, object]]:
     return []
 
 
+def _capital_flow_rows(response: object) -> list[Mapping[str, object]]:
+    if isinstance(response, (Mapping, list)):
+        return _rows(response)
+    json_loader = getattr(response, "json", None)
+    if not callable(json_loader):
+        return []
+    try:
+        return _rows(json_loader())
+    except Exception:
+        return []
+
+
 def normalize_footprint_response(
     response: object, *, symbol: str, observed_at: datetime,
 ) -> tuple[OrderFlowSnapshot, ...]:
@@ -155,7 +167,15 @@ def normalize_capital_flow_response(
 ) -> tuple[CapitalFlowSnapshot, ...]:
     """Normalize provider capital-flow tiers separately from footprint delta."""
     snapshots: list[CapitalFlowSnapshot] = []
-    for row in _rows(response):
+    field_names = {
+        "net_inflow", "netInflow", "inflow", "total_inflow", "totalInflow",
+        "outflow", "total_outflow", "totalOutflow", "large_inflow",
+        "largeInflow", "large_outflow", "largeOutflow", "extra_large_inflow",
+        "extraLargeInflow", "extra_large_outflow", "extraLargeOutflow",
+    }
+    for row in _capital_flow_rows(response):
+        if not any(name in row for name in field_names):
+            continue
         snapshots.append(CapitalFlowSnapshot(
             observed_at=observed_at,
             symbol=symbol.strip().upper(),

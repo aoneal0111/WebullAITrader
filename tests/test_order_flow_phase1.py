@@ -52,6 +52,79 @@ def test_capital_flow_is_normalized_separately_from_footprint_delta():
     assert result[0].large_outflow == D("800")
 
 
+class JsonResponse:
+    def __init__(self, payload=None, error=None):
+        self.payload = payload
+        self.error = error
+
+    def json(self):
+        if self.error is not None:
+            raise self.error
+        return self.payload
+
+
+def test_capital_flow_normalizes_response_like_data_wrapper():
+    result = normalize_capital_flow_response(
+        JsonResponse({"data": [{"netInflow": "1200", "largeInflow": "200"}]}),
+        symbol="dbgi", observed_at=NOW,
+    )
+    assert result[0].symbol == "DBGI"
+    assert result[0].net_inflow == D("1200")
+    assert result[0].large_inflow == D("200")
+
+
+def test_capital_flow_normalizes_response_like_top_level_list():
+    result = normalize_capital_flow_response(
+        JsonResponse([{"net_inflow": "1200", "large_outflow": "80"}]),
+        symbol="dbgi", observed_at=NOW,
+    )
+    assert result[0].net_inflow == D("1200")
+    assert result[0].large_outflow == D("80")
+
+
+def test_capital_flow_preserves_existing_mapping_and_list_inputs():
+    mapping = normalize_capital_flow_response(
+        {"net_inflow": "1200"}, symbol="dbgi", observed_at=NOW,
+    )
+    rows = normalize_capital_flow_response(
+        [{"net_inflow": "800"}], symbol="dbgi", observed_at=NOW,
+    )
+    assert mapping[0].net_inflow == D("1200")
+    assert rows[0].net_inflow == D("800")
+
+
+def test_capital_flow_preserves_zero_values_from_response_like_payload():
+    result = normalize_capital_flow_response(
+        JsonResponse({"data": [{
+            "netInflow": "0", "inflow": "0", "outflow": "0",
+            "largeInflow": "0", "largeOutflow": "0",
+        }]}),
+        symbol="dbgi", observed_at=NOW,
+    )
+    assert result[0].net_inflow == D("0")
+    assert result[0].inflow == D("0")
+    assert result[0].outflow == D("0")
+    assert result[0].large_inflow == D("0")
+    assert result[0].large_outflow == D("0")
+
+
+def test_capital_flow_response_json_failure_or_unsupported_shape_is_empty():
+    assert normalize_capital_flow_response(
+        JsonResponse(error=ValueError("invalid JSON")),
+        symbol="dbgi", observed_at=NOW,
+    ) == ()
+    assert normalize_capital_flow_response(
+        JsonResponse({"unexpected": "shape"}),
+        symbol="dbgi", observed_at=NOW,
+    ) == ()
+    assert normalize_capital_flow_response(
+        JsonResponse({"data": []}), symbol="dbgi", observed_at=NOW,
+    ) == ()
+    assert normalize_capital_flow_response(
+        [], symbol="dbgi", observed_at=NOW,
+    ) == ()
+
+
 def test_capability_detection_is_local_and_does_not_call_provider():
     class Namespace:
         get_footprint = lambda self, *args: None
