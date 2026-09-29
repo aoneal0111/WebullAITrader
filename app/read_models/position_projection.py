@@ -23,6 +23,7 @@ from app.read_models.runtime_event_identity import projection_event_id
 
 ZERO = Decimal("0")
 _LATEST_MARK_CACHE_LIMIT = 256
+_PAPER_REPLAY_SOURCE = "paper-execution-replay"
 
 
 class PositionProjection:
@@ -242,6 +243,20 @@ class PositionProjection:
                 0,
             )
             if event.sequence <= last_sequence:
+                return
+
+            # Durable startup replay is an observational history stream.  It
+            # can be an incomplete window (for example, containing a legacy
+            # SELL without the earlier BUY), while authoritative PAPER order
+            # reconciliation runs separately from the order book.  Do not let
+            # that non-authoritative stream mutate or degrade the live
+            # position projection.  Other runtime sinks still receive the
+            # event through CompositeRuntimeEventSink.
+            if (
+                event.source == _PAPER_REPLAY_SOURCE
+                and event.fill is not None
+            ):
+                self._last_sequence_by_source[event.source] = event.sequence
                 return
 
             fill = event.fill

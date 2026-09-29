@@ -123,6 +123,9 @@ def test_replay_rehydrates_authoritative_position_projection(tmp_path) -> None:
         position_average_cost_source=lambda _symbol: Decimal("10"),
         position_quantity_source=lambda _symbol: Decimal("100"),
     )
+    pipeline_b.position_projection.reconcile_from_paper_orders(
+        second.order_book.history()
+    )
     positions = pipeline_b.position_projection.snapshot.positions
     assert len(positions) == 1
     assert positions[0].symbol == "PMI"
@@ -224,9 +227,12 @@ def test_two_same_symbol_trades_restore_once_with_aggregate_pnl(tmp_path) -> Non
     pipeline = create_runtime_projection_pipeline(operations_bus=bus, account_id=PAPER_ACCOUNT_ID)
     for event in second.durable_store.events():
         pipeline.sink(event)
-    position = pipeline.position_projection.snapshot.positions[0]
-    assert Decimal(position.quantity) == Decimal("0")
-    assert Decimal(position.realized_gain_loss) == Decimal("25")
+    pipeline.position_projection.reconcile_from_paper_orders(
+        second.order_book.history()
+    )
+    # Both trades are terminal and net-flat.  Position state is restored from
+    # authoritative orders, not reconstructed from the replay event window.
+    assert pipeline.position_projection.snapshot.positions == ()
     second.close()
 
 

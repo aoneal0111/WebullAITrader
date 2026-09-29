@@ -1,5 +1,8 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+
+import pytest
 
 from app.operations.runtime import PaperRuntimeEvent
 from app.operations_core import ApplicationStateStore, OperationsBus
@@ -8,6 +11,10 @@ from app.read_models.position_projection import PositionProjection
 
 
 NOW = datetime(2026, 7, 30, 15, 0, tzinfo=UTC)
+
+
+def replace_event_source(event: PaperRuntimeEvent, source: str) -> PaperRuntimeEvent:
+    return replace(event, source=source)
 
 
 def fill_event(
@@ -219,6 +226,83 @@ def test_mark_before_authority_reconciliation_is_replayed() -> None:
     assert position.market_value == "1042.50"
     assert position.unrealized_gain_loss == "191.820"
     assert position.exposure == "1042.50"
+
+
+def test_incomplete_paper_replay_fill_does_not_degrade_projection() -> None:
+    projection = PositionProjection(OperationsBus())
+    historical_sell = fill_event(
+        sequence=1,
+        request_id="legacy-sell",
+        symbol="GDC",
+        side="SELL",
+        quantity="1100",
+        fill_price="1.39",
+    )
+    historical_sell = replace_event_source(
+        historical_sell,
+        "paper-execution-replay",
+    )
+
+    projection(historical_sell)
+
+    assert projection.health == "HEALTHY"
+    assert projection.snapshot.positions == ()
+
+
+def test_reconciliation_remains_authoritative_after_incomplete_replay() -> None:
+    projection = PositionProjection(OperationsBus())
+    historical_sell = replace_event_source(
+        fill_event(
+            sequence=1,
+            request_id="legacy-sell",
+            symbol="GDC",
+            side="SELL",
+            quantity="1100",
+            fill_price="1.39",
+        ),
+        "paper-execution-replay",
+    )
+    projection(historical_sell)
+
+    buy_fill = type("Fill", (), {
+        "quantity": Decimal("1100"),
+        "price": Decimal("1.50"),
+        "timestamp": NOW,
+    })()
+    sell_fill = type("Fill", (), {
+        "quantity": Decimal("1100"),
+        "price": Decimal("1.39"),
+        "timestamp": NOW + timedelta(seconds=1),
+    })()
+    order_factory = lambda side, fills: type("Order", (), {
+        "symbol": "GDC",
+        "request": type("Request", (), {"side": side})(),
+        "fills": fills,
+    })()
+    projection.reconcile_from_paper_orders((
+        order_factory("BUY", (buy_fill,)),
+        order_factory("SELL", (sell_fill,)),
+    ))
+
+    assert projection.health == "HEALTHY"
+    assert projection.snapshot.positions == ()
+
+
+def test_live_malformed_sell_still_raises_strict_invariant() -> None:
+    projection = PositionProjection(OperationsBus())
+
+    with pytest.raises(
+        ValueError,
+        match="sell fill cannot exceed the projected long position",
+    ):
+        projection(fill_event(
+            sequence=1,
+            request_id="live-sell",
+            side="SELL",
+            quantity="1",
+            fill_price="100",
+            mark_price=None,
+        ))
 
 
 def test_duplicate_and_out_of_order_events_are_ignored() -> None:
