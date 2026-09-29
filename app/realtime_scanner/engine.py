@@ -31,7 +31,7 @@ from app.realtime_scanner.protocols import (
     ReferenceSink,
     UniverseSelector,
 )
-from app.universe.models import UniversePriorityLanes
+from app.universe.models import UniversePriorityLanes, UniverseSelection
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +44,13 @@ class ReferenceRefreshMetrics:
     symbols_failed: int = 0
     symbols_duplicate_suppressed: int = 0
     refresh_skipped_due_to_inflight: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class UniverseDiscoverySnapshot:
+    selection: UniverseSelection
+    priority_lanes: UniversePriorityLanes
+    startup_seed: bool = False
 
 
 class RealtimeScannerEngine:
@@ -89,7 +96,8 @@ class RealtimeScannerEngine:
         self._processed_events = 0
         self._ignored_events = 0
         self._state_lock = RLock()
-        self._prepared_selection = None
+        self._prepared_discovery: UniverseDiscoverySnapshot | None = None
+        self._startup_seed_used = False
         self._reference_ready_observer: Callable[[], object] | None = None
         self._authoritative_symbols_source: Callable[[], Iterable[str]] | None = None
         self._accelerator_symbols_source: Callable[[], Iterable[str]] | None = None
@@ -128,11 +136,26 @@ class RealtimeScannerEngine:
         """
         performance_diagnostics.record_startup_stage("universe_refresh_started")
         performance_diagnostics.record_startup_stage("reference_warmup_started")
-        selection = self._universe_service.select_all(asset_classes)
-        included, lanes = self._prioritized_items(selection.included)
+        discovery = self._select_universe_snapshot(
+            asset_classes, startup=True,
+        )
+        selection = discovery.selection
+        self._startup_seed_used = discovery.startup_seed
+        prioritized_started = perf_counter()
+        try:
+            included, lanes = self._prioritized_items(
+                selection.included,
+                provider_lanes=discovery.priority_lanes,
+            )
+        finally:
+            _record_prepare_universe_duration(
+                "scanner_start.prepare_universe.prioritized_items",
+                prioritized_started,
+            )
         symbols = tuple(item.symbol.strip().upper() for item in included)
+        publication_started = perf_counter()
         with self._state_lock:
-            self._prepared_selection = selection
+            self._prepared_discovery = discovery
             self._universe_size = len(selection.included) + len(selection.excluded)
             self._eligible_symbol_count = len(included)
             self._known_symbols = set(symbols)
@@ -146,6 +169,10 @@ class RealtimeScannerEngine:
                 for symbol, item in zip(symbols, included)
             }
             self._priority_lanes = lanes
+        _record_prepare_universe_duration(
+            "scanner_start.prepare_universe.state_publication",
+            publication_started,
+        )
         performance_diagnostics.set_startup_counter(
             "reference_warmup_symbols_total", len(included)
         )
@@ -181,6 +208,43 @@ class RealtimeScannerEngine:
         finally:
             self._finish_reference_refresh(generation)
 
+    def discover_full_universe(
+        self,
+        asset_classes: tuple[AssetClass, ...] = (
+            AssetClass.STOCK,
+            AssetClass.CRYPTO,
+        ),
+    ) -> UniverseDiscoverySnapshot:
+        """Discover a coherent full selection without publishing it."""
+        return self._select_universe_snapshot(asset_classes, startup=False)
+
+    @property
+    def startup_seed_used(self) -> bool:
+        return self._startup_seed_used
+
+    def apply_discovered_universe(
+        self,
+        discovery: UniverseDiscoverySnapshot,
+        *,
+        reuse_active_references: bool = False,
+        force_reference_refresh: bool = False,
+    ) -> tuple[str, ...]:
+        """Apply one immutable discovery snapshot through normal gates."""
+        if not isinstance(discovery, UniverseDiscoverySnapshot):
+            raise TypeError("discovery must be a UniverseDiscoverySnapshot")
+        generation = self._begin_reference_refresh()
+        if generation is None:
+            return self.active_symbols
+        try:
+            return self._refresh_universe_generation(
+                generation,
+                force_reference_refresh=force_reference_refresh,
+                discovery=discovery,
+                reuse_active_references=reuse_active_references,
+            )
+        finally:
+            self._finish_reference_refresh(generation)
+
     def _refresh_universe_generation(
         self,
         generation: int,
@@ -190,25 +254,62 @@ class RealtimeScannerEngine:
         ),
         *,
         force_reference_refresh: bool = False,
+        discovery: UniverseDiscoverySnapshot | None = None,
+        reuse_active_references: bool = False,
     ) -> tuple[str, ...]:
         performance_diagnostics.record_startup_stage("universe_refresh_started")
         performance_diagnostics.record_startup_stage("reference_warmup_started")
-        selection = getattr(self, "_prepared_selection", None)
-        if selection is None:
-            selection = self._universe_service.select_all(asset_classes)
-        self._prepared_selection = None
+        prepared = self._prepared_discovery
+        if discovery is None:
+            discovery = prepared
+        if discovery is None:
+            discovery = self._select_universe_snapshot(
+                asset_classes, startup=False,
+            )
+        if prepared is discovery:
+            self._prepared_discovery = None
+        selection = discovery.selection
         unique_included = _unique_symbols(selection.included)
-        included, lanes = self._prioritized_items(unique_included)
+        included, lanes = self._prioritized_items(
+            unique_included,
+            provider_lanes=discovery.priority_lanes,
+        )
         duplicate_count = max(0, len(selection.included) - len(unique_included))
+        included_symbols = {
+            str(item.symbol).strip().upper() for item in included
+        }
+        with self._state_lock:
+            reusable_symbols = (
+                set(self._active_symbols) & included_symbols
+                if reuse_active_references
+                else set()
+            )
+            reusable_asset_classes = {
+                symbol: self._active_asset_classes[symbol]
+                for symbol in reusable_symbols
+                if symbol in self._active_asset_classes
+            }
+            reusable_subscriptions = {
+                symbol: self._subscription_symbols[symbol]
+                for symbol in reusable_symbols
+                if symbol in self._subscription_symbols
+            }
+        refresh_items = tuple(
+            item for item in included
+            if str(item.symbol).strip().upper() not in reusable_symbols
+        )
         self._schedule_reference_symbols(
-            generation, included, duplicate_count=duplicate_count,
+            generation, refresh_items, duplicate_count=duplicate_count,
         )
         with self._state_lock:
             self._priority_lanes = lanes
+            self._pending_reference_symbols = {
+                str(item.symbol).strip().upper() for item in refresh_items
+            }
         self._universe_size = len(selection.included) + len(selection.excluded)
         self._eligible_symbol_count = len(included)
         performance_diagnostics.set_startup_counter(
-            "reference_warmup_symbols_pending", len(included)
+            "reference_warmup_symbols_pending", len(refresh_items)
         )
         performance_diagnostics.set_startup_counter(
             "reference_warmup_symbols_ready", 0
@@ -217,16 +318,18 @@ class RealtimeScannerEngine:
             "reference_warmup_symbols_failed", 0
         )
 
-        active_symbols: set[str] = set()
-        active_asset_classes: dict[str, AssetClass] = {}
-        subscription_symbols: dict[str, str] = {}
+        active_symbols: set[str] = set(reusable_symbols)
+        active_asset_classes: dict[str, AssetClass] = dict(
+            reusable_asset_classes
+        )
+        subscription_symbols: dict[str, str] = dict(reusable_subscriptions)
         failures: list[ReferenceWarmupFailure] = []
         unsupported: list[ReferenceWarmupFailure] = []
         temporary: list[ReferenceWarmupFailure] = []
         missing: list[ReferenceWarmupFailure] = []
         successful_records = []
 
-        for item in included:
+        for item in refresh_items:
             if not self._reference_generation_current(generation):
                 break
             reference_started = perf_counter()
@@ -761,25 +864,72 @@ class RealtimeScannerEngine:
         if callable(setter):
             setter(source)
 
-    def _prioritized_items(
+    def _select_universe_snapshot(
         self,
-        values: Iterable[Any],
-    ) -> tuple[tuple[Any, ...], UniversePriorityLanes]:
-        items = _unique_symbols(values)
-        by_symbol = {
-            str(item.symbol).strip().upper(): item for item in items
-        }
-        provider_lanes = UniversePriorityLanes()
+        asset_classes: tuple[AssetClass, ...],
+        *,
+        startup: bool,
+    ) -> UniverseDiscoverySnapshot:
+        startup_selector = getattr(
+            self._universe_service, "select_startup_all", None,
+        )
+        used_startup = startup and callable(startup_selector)
+        selection = (
+            startup_selector(asset_classes)
+            if used_startup
+            else self._universe_service.select_all(asset_classes)
+        )
+        lanes = UniversePriorityLanes()
         lane_source = getattr(self._universe_service, "priority_lanes", None)
         if callable(lane_source):
             try:
                 candidate = lane_source()
                 if isinstance(candidate, UniversePriorityLanes):
-                    provider_lanes = candidate
+                    lanes = candidate
             except Exception:
                 pass
-        authoritative = _source_symbols(self._authoritative_symbols_source)
-        external_accelerator = _source_symbols(self._accelerator_symbols_source)
+        return UniverseDiscoverySnapshot(
+            selection=selection,
+            priority_lanes=lanes,
+            startup_seed=used_startup,
+        )
+
+    def _prioritized_items(
+        self,
+        values: Iterable[Any],
+        *,
+        provider_lanes: UniversePriorityLanes | None = None,
+    ) -> tuple[tuple[Any, ...], UniversePriorityLanes]:
+        items = _unique_symbols(values)
+        by_symbol = {
+            str(item.symbol).strip().upper(): item for item in items
+        }
+        if provider_lanes is None:
+            provider_lanes = UniversePriorityLanes()
+            lane_source = getattr(self._universe_service, "priority_lanes", None)
+            if callable(lane_source):
+                try:
+                    candidate = lane_source()
+                    if isinstance(candidate, UniversePriorityLanes):
+                        provider_lanes = candidate
+                except Exception:
+                    pass
+        authoritative_started = perf_counter()
+        try:
+            authoritative = _source_symbols(self._authoritative_symbols_source)
+        finally:
+            _record_prepare_universe_duration(
+                "scanner_start.prepare_universe.retained_symbols_source",
+                authoritative_started,
+            )
+        accelerator_started = perf_counter()
+        try:
+            external_accelerator = _source_symbols(self._accelerator_symbols_source)
+        finally:
+            _record_prepare_universe_duration(
+                "scanner_start.prepare_universe.accelerator_symbols_source",
+                accelerator_started,
+            )
         authoritative = _only_available(authoritative, by_symbol)
         legacy = _only_available(provider_lanes.legacy_primary, by_symbol)
         accelerator = _only_available(
@@ -1088,6 +1238,20 @@ def _source_symbols(
             seen.add(symbol)
             ordered.append(symbol)
     return tuple(ordered)
+
+
+def _record_prepare_universe_duration(
+    name: str,
+    started: float,
+) -> None:
+    try:
+        performance_diagnostics.record_component_duration(
+            name,
+            max(0.0, (perf_counter() - started) * 1000.0),
+        )
+    except Exception:
+        # Diagnostics must never affect universe selection or startup policy.
+        pass
 
 
 def _only_available(

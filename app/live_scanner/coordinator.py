@@ -10,7 +10,10 @@ from app.live_scanner.models import (
     LiveScannerCycle,
     LiveScannerStatus,
 )
-from app.live_scanner.authoritative_lane import AuthoritativeEventLane
+from app.live_scanner.authoritative_lane import (
+    AuthoritativeEventLane,
+    AuthoritativeLaneFailure,
+)
 from app.live_scanner.protocols import (
     LiveScannerEngine,
     SubscribableMarketDataTransport,
@@ -99,9 +102,11 @@ class LiveScannerCoordinator:
         self._decisions_created = 0
         self._reference_stop = Event()
         self._reference_thread: Thread | None = None
+        self._initial_reference_complete = Event()
         self._universe_refresh_stop = Event()
         self._universe_refresh_thread: Thread | None = None
         self._universe_refresh_asset_classes: tuple[AssetClass, ...] = ()
+        self._universe_refresh_lifecycle = 0
         self._readiness_observer: Callable[[], object] | None = None
         self._last_failure_stage = "IDLE"
         self._subscription_bootstrap_pending = True
@@ -206,10 +211,26 @@ class LiveScannerCoordinator:
         ),
         force_reference_refresh: bool = False,
     ) -> tuple[str, ...]:
-        self.connect()
+        stage_started = perf_counter()
+        try:
+            self.connect()
+        finally:
+            performance_diagnostics.record_component_duration(
+                "scanner_start.connect",
+                max(0.0, (perf_counter() - stage_started) * 1000.0),
+            )
         prepare = getattr(self._engine, "prepare_universe", None)
         if callable(prepare) and channels is None:
-            pending_channels = _normalize_channels_ordered(prepare(asset_classes))
+            stage_started = perf_counter()
+            try:
+                pending_channels = _normalize_channels_ordered(
+                    prepare(asset_classes)
+                )
+            finally:
+                performance_diagnostics.record_component_duration(
+                    "scanner_start.prepare_universe",
+                    max(0.0, (perf_counter() - stage_started) * 1000.0),
+                )
             selected_channels = pending_channels or self._effective_channels(
                 self._default_channels
             )
@@ -219,18 +240,41 @@ class LiveScannerCoordinator:
                 self._running = True
                 return pending_channels
             self._scanner_channels = pending_channels
-            self._subscribe_effective(pending_channels)
+            stage_started = perf_counter()
+            try:
+                self._subscribe_effective(pending_channels)
+            finally:
+                performance_diagnostics.record_component_duration(
+                    "scanner_start.subscribe",
+                    max(0.0, (perf_counter() - stage_started) * 1000.0),
+                )
             self._subscription_bootstrap_pending = len(self._channels) <= 1
             self._running = True
             self._reference_stop.clear()
+            self._initial_reference_complete.clear()
             self._reference_thread = Thread(
                 target=self._complete_reference_warmup,
                 args=(asset_classes, force_reference_refresh),
                 name="realtime-reference-warmup",
                 daemon=True,
             )
-            self._reference_thread.start()
-            self._start_universe_refresh(asset_classes)
+            stage_started = perf_counter()
+            try:
+                self._reference_thread.start()
+            finally:
+                performance_diagnostics.record_component_duration(
+                    "scanner_start.reference_thread_launch",
+                    max(0.0, (perf_counter() - stage_started) * 1000.0),
+                )
+
+            stage_started = perf_counter()
+            try:
+                self._start_universe_refresh(asset_classes)
+            finally:
+                performance_diagnostics.record_component_duration(
+                    "scanner_start.universe_refresh_thread_launch",
+                    max(0.0, (perf_counter() - stage_started) * 1000.0),
+                )
             return pending_channels
         active_symbols = self.refresh_universe(
             asset_classes,
@@ -267,6 +311,7 @@ class LiveScannerCoordinator:
     def stop(self) -> None:
         self._running = False
         self._reference_stop.set()
+        self._initial_reference_complete.set()
         stop_refresh = getattr(self._engine, "stop_reference_refresh", None)
         if callable(stop_refresh):
             stop_refresh()
@@ -567,9 +612,9 @@ class LiveScannerCoordinator:
         asset_classes: tuple[AssetClass, ...],
         force_reference_refresh: bool,
     ) -> None:
-        if self._reference_stop.is_set():
-            return
         try:
+            if self._reference_stop.is_set():
+                return
             self.refresh_universe(
                 asset_classes,
                 force_reference_refresh=force_reference_refresh,
@@ -580,6 +625,8 @@ class LiveScannerCoordinator:
             # The runtime consumer remains alive; the existing scanner
             # qualification failure path owns reporting of warmup errors.
             return
+        finally:
+            self._initial_reference_complete.set()
 
     def _start_universe_refresh(
         self, asset_classes: tuple[AssetClass, ...],
@@ -598,24 +645,69 @@ class LiveScannerCoordinator:
             return
         self._universe_refresh_asset_classes = tuple(asset_classes)
         self._universe_refresh_stop.clear()
+        self._universe_refresh_lifecycle += 1
+        lifecycle = self._universe_refresh_lifecycle
         self._universe_refresh_thread = Thread(
             target=self._refresh_universe_loop,
+            args=(lifecycle,),
             name="realtime-universe-refresh",
             daemon=True,
         )
         self._universe_refresh_thread.start()
 
     def _stop_universe_refresh(self) -> None:
+        self._universe_refresh_lifecycle += 1
         self._universe_refresh_stop.set()
+        self._initial_reference_complete.set()
         thread = self._universe_refresh_thread
         if thread is not None:
             thread.join(2.0)
-            self._universe_refresh_thread = None
+            if not thread.is_alive():
+                self._universe_refresh_thread = None
 
-    def _refresh_universe_loop(self) -> None:
+    def _refresh_universe_loop(self, lifecycle: int) -> None:
+        discover = getattr(self._engine, "discover_full_universe", None)
+        apply_discovery = getattr(
+            self._engine, "apply_discovered_universe", None,
+        )
+        if (
+            bool(getattr(self._engine, "startup_seed_used", False))
+            and callable(discover)
+            and callable(apply_discovery)
+        ):
+            try:
+                discovery = discover(self._universe_refresh_asset_classes)
+            except Exception:
+                discovery = None
+            if discovery is not None:
+                self._initial_reference_complete.wait()
+                if not self._universe_refresh_current(lifecycle):
+                    return
+                try:
+                    active_symbols = apply_discovery(
+                        discovery,
+                        reuse_active_references=True,
+                    )
+                    if not self._universe_refresh_current(lifecycle):
+                        return
+                    self._scanner_channels = _normalize_channels_ordered(
+                        getattr(
+                            self._engine,
+                            "subscription_symbols",
+                            active_symbols,
+                        )
+                    )
+                    if self._running:
+                        self._sync_subscription()
+                except Exception:
+                    # Preserve the operational startup seed. The existing
+                    # periodic cadence owns the next full-discovery retry.
+                    pass
         while not self._universe_refresh_stop.wait(
             self._universe_refresh_interval_seconds
         ):
+            if not self._universe_refresh_current(lifecycle):
+                return
             if not self._running:
                 continue
             try:
@@ -624,6 +716,13 @@ class LiveScannerCoordinator:
                 # Discovery refresh is best effort; the active stream and its
                 # last known universe remain authoritative until the next tick.
                 continue
+
+    def _universe_refresh_current(self, lifecycle: int) -> bool:
+        return (
+            lifecycle == self._universe_refresh_lifecycle
+            and not self._universe_refresh_stop.is_set()
+            and self._running
+        )
 
     def _notify_readiness(self) -> None:
         observer = self._readiness_observer
@@ -691,6 +790,17 @@ class LiveScannerCoordinator:
         setter = getattr(self._engine, "set_accelerator_symbols_source", None)
         if callable(setter):
             setter(source)
+
+    def refresh_accelerator_channels(
+        self, _symbols: Iterable[str] = (),
+    ) -> tuple[str, ...]:
+        """Apply an updated advisory accelerator snapshot to active channels."""
+        if not self._running:
+            return self._channels
+        try:
+            return self._sync_subscription()
+        except Exception:
+            return self._channels
 
     def __enter__(self) -> LiveScannerCoordinator:
         self.connect()
@@ -976,7 +1086,9 @@ class LiveScannerCoordinator:
         lane = self._authoritative_lane
         if lane is not None:
             if lane.failed:
-                raise RuntimeError("authoritative lane worker failed")
+                raise AuthoritativeLaneFailure(
+                    "authoritative lane worker failed"
+                )
             if not lane.running:
                 self._authoritative_lane = lane = self._new_authoritative_lane()
             lane.start()

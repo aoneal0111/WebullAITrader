@@ -17,6 +17,7 @@ from app.live_execution.account_polling import (
     BrokerAccountSnapshot,
     poll_broker_account,
 )
+from app.live_scanner.authoritative_lane import AuthoritativeLaneFailure
 from app.market_data.models import MarketEvent, MarketEventType
 from app.momentum_scanner import AssetClass
 from app.operations.runtime import (
@@ -1241,10 +1242,19 @@ class DesktopBrokerRuntimeDriver:
             halt_ingestion = getattr(transport, "halt_callback_ingestion", None)
             if callable(halt_ingestion):
                 halt_ingestion()
-            fail_closed = getattr(self._market_event_observer, "fail_closed_market_data", None)
+            authoritative_failure = isinstance(exc, AuthoritativeLaneFailure)
+            fail_closed = getattr(
+                getattr(self, "_market_event_observer", None),
+                "fail_closed_market_data",
+                None,
+            )
             if callable(fail_closed):
                 try:
-                    fail_closed("MARKET_DATA_TERMINAL_FAILURE")
+                    fail_closed(
+                        "AUTHORITATIVE_PROCESSING_FAILURE"
+                        if authoritative_failure
+                        else "MARKET_DATA_TERMINAL_FAILURE"
+                    )
                 except Exception:
                     pass
             self._publish_terminal_market_data_failure(exc)
@@ -1475,6 +1485,9 @@ class DesktopBrokerRuntimeDriver:
         self,
         error: Exception,
     ) -> None:
+        if isinstance(error, AuthoritativeLaneFailure):
+            self._publish_authoritative_processing_failure(error)
+            return
         with self._event_lock:
             if self._terminal_stream_failure_published:
                 return
@@ -1500,6 +1513,40 @@ class DesktopBrokerRuntimeDriver:
                 scanner_status="STOPPED",
                 last_warning=(
                     f"Market-data consumer terminal failure ({type(error).__name__})."
+                ),
+            ),
+        )
+
+    def _publish_authoritative_processing_failure(
+        self,
+        error: Exception,
+    ) -> None:
+        with self._event_lock:
+            if self._terminal_stream_failure_published:
+                return
+            self._terminal_stream_failure_published = True
+        _SCANNER_LOGGER.error(
+            "event_type=authoritative_processing_terminal_exception error_type=%s",
+            type(error.__cause__ or error).__name__,
+            exc_info=(
+                type(error),
+                error,
+                error.__traceback__,
+            ),
+        )
+        self._publish_health(
+            "AUTHORITATIVE_PROCESSING_FAILURE",
+            "Authoritative market-event processing failed; scanner stopped and PAPER entries remain fail-closed.",
+            RuntimeHealthUpdate(
+                runtime_status="DEGRADED",
+                market_data_status="CONNECTED",
+                market_data_rest_status="AVAILABLE",
+                streaming_status="CONNECTED",
+                scanner_status="STOPPED",
+                execution_status="BLOCKED - AUTHORITATIVE FAILURE",
+                last_warning=(
+                    "Authoritative processing failure "
+                    f"({type(error.__cause__ or error).__name__})."
                 ),
             ),
         )

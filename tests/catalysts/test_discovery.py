@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from threading import Event, Lock
+import time
 
 from app.catalysts.discovery import (
     CatalystDiscoveryRuntime,
@@ -26,6 +28,15 @@ class Source:
 
     def recent_stories(self, as_of=None):
         return self._stories
+
+
+def _service(tmp_path, source):
+    return CatalystDiscoveryService(
+        (source,),
+        lambda: ("ABCD", "EFGH"),
+        path=tmp_path / "watch-seeds.json",
+        clock=lambda: NOW,
+    )
 
 
 def test_startup_backfill_creates_only_strict_authoritative_ticker_seeds(tmp_path):
@@ -154,3 +165,112 @@ def test_runtime_refreshes_once_per_interval_and_preserves_watch_set(tmp_path):
     assert runtime.symbols() == ("ABCD",)
     assert runtime.symbols() == ("ABCD",)
     assert runtime.symbols() == ("ABCD",)
+
+
+def test_nonblocking_runtime_returns_cached_snapshot_and_refreshes_async(tmp_path):
+    started = Event()
+    release = Event()
+
+    class BlockingSource(Source):
+        def recent_stories(self, as_of=None):
+            started.set()
+            release.wait(2.0)
+            return self._stories
+
+    source = BlockingSource((Story(
+        "ABCD announces results", NOW - timedelta(minutes=5),
+        "https://example.test/one", "one",
+    ),))
+    runtime = CatalystDiscoveryRuntime(
+        _service(tmp_path, source), monotonic=lambda: 10.0,
+    )
+    runtime._symbols = ("CACHED",)
+
+    assert runtime.symbols_nonblocking() == ("CACHED",)
+    assert started.wait(1.0)
+    assert runtime.symbols_nonblocking() == ("CACHED",)
+    release.set()
+    for _ in range(40):
+        if runtime.symbols_nonblocking() == ("ABCD",):
+            break
+        time.sleep(0.01)
+    assert runtime.symbols_nonblocking() == ("ABCD",)
+
+
+def test_nonblocking_runtime_creates_one_worker_and_publishes_once(tmp_path):
+    started = Event()
+    release = Event()
+    calls = 0
+    calls_lock = Lock()
+
+    class BlockingSource(Source):
+        def recent_stories(self, as_of=None):
+            nonlocal calls
+            with calls_lock:
+                calls += 1
+            started.set()
+            release.wait(2.0)
+            return self._stories
+
+    source = BlockingSource((Story(
+        "ABCD announces results", NOW - timedelta(minutes=5),
+        "https://example.test/one", "one",
+    ),))
+    runtime = CatalystDiscoveryRuntime(_service(tmp_path, source), monotonic=lambda: 10.0)
+    published = []
+    runtime.set_refresh_callback(published.append)
+
+    for _ in range(10):
+        assert runtime.symbols_nonblocking() == ()
+    assert started.wait(1.0)
+    release.set()
+    for _ in range(40):
+        if published:
+            break
+        time.sleep(0.01)
+    assert calls == 1
+    assert published == [("ABCD",)]
+
+
+def test_nonblocking_runtime_failure_preserves_snapshot_and_retries_on_due_gate(tmp_path):
+    class FailingService(CatalystDiscoveryService):
+        def symbols_after_refresh(self, as_of=None):
+            raise RuntimeError("provider unavailable")
+
+    runtime = CatalystDiscoveryRuntime(
+        FailingService((Source(()),), lambda: (), path=tmp_path / "x.json"),
+        monotonic=lambda: 10.0,
+    )
+    runtime._symbols = ("CACHED",)
+    assert runtime.symbols_nonblocking() == ("CACHED",)
+    for _ in range(40):
+        if runtime._refresh_thread is not None and not runtime._refresh_thread.is_alive():
+            break
+        time.sleep(0.01)
+    assert runtime.symbols_nonblocking() == ("CACHED",)
+
+
+def test_nonblocking_runtime_stale_worker_cannot_publish_after_stop(tmp_path):
+    started = Event()
+    release = Event()
+
+    class BlockingSource(Source):
+        def recent_stories(self, as_of=None):
+            started.set()
+            release.wait(2.0)
+            return self._stories
+
+    source = BlockingSource((Story(
+        "ABCD announces results", NOW - timedelta(minutes=5),
+        "https://example.test/one", "one",
+    ),))
+    runtime = CatalystDiscoveryRuntime(_service(tmp_path, source), monotonic=lambda: 10.0)
+    published = []
+    runtime.set_refresh_callback(published.append)
+    assert runtime.symbols_nonblocking() == ()
+    assert started.wait(1.0)
+    runtime.stop()
+    release.set()
+    time.sleep(0.05)
+    assert published == []
+    assert runtime.symbols_nonblocking() == ()

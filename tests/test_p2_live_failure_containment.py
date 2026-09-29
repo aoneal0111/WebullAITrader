@@ -1,8 +1,9 @@
-from threading import Event
+from threading import Event, RLock
 
 import pytest
 
 from app.live_scanner.transport import ReceiveTransportAdapter
+from app.live_scanner.authoritative_lane import AuthoritativeLaneFailure
 from app.services.runtime_drivers.broker import DesktopBrokerRuntimeDriver
 from app.webull.websocket_client import OfficialSdkStreamBackend
 
@@ -92,6 +93,41 @@ def test_consumer_exception_records_stage_and_terminal_state():
     assert driver._market_data_failure_stage == "CANONICAL_REDUCTION"
     assert driver._market_data_failure_exception_class == "ValueError"
     assert len(failures) == 1
+
+
+def test_authoritative_lane_failure_is_not_classified_as_stream_failure():
+    driver = object.__new__(DesktopBrokerRuntimeDriver)
+    driver._event_lock = RLock()
+    driver._terminal_stream_failure_published = False
+    published = []
+    driver._publish_health = lambda event_type, message, health: published.append(
+        (event_type, message, health)
+    )
+    error = AuthoritativeLaneFailure("authoritative lane worker failed")
+    error.__cause__ = ValueError("paper invariant")
+
+    driver._publish_terminal_market_data_failure(error)
+
+    assert published[0][0] == "AUTHORITATIVE_PROCESSING_FAILURE"
+    assert "Webull market-data streaming failed" not in published[0][1]
+    assert published[0][2].streaming_status == "CONNECTED"
+    assert published[0][2].execution_status == "BLOCKED - AUTHORITATIVE FAILURE"
+
+
+def test_transport_failure_remains_market_data_terminal_failure():
+    driver = object.__new__(DesktopBrokerRuntimeDriver)
+    driver._event_lock = RLock()
+    driver._terminal_stream_failure_published = False
+    published = []
+    driver._publish_health = lambda event_type, message, health: published.append(
+        (event_type, message, health)
+    )
+
+    driver._publish_terminal_market_data_failure(RuntimeError("socket closed"))
+
+    assert published[0][0] == "MARKET_DATA_TERMINAL_FAILURE"
+    assert "Webull market-data streaming failed" in published[0][1]
+    assert published[0][2].market_data_status == "REST_ONLY"
 
 
 def test_transport_disconnect_is_bounded():

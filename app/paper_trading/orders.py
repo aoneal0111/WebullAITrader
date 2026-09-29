@@ -12,6 +12,7 @@ from app.paper_trading.order_models import (
     OrderStatus,
     OrderTerminalReason,
     PaperOrder,
+    average_fill_price_for_fills,
 )
 
 ZERO = Decimal("0")
@@ -220,22 +221,11 @@ def apply_fill(
         liquidity_flag=liquidity_flag,
     )
 
-    previous_notional = (
-        order.filled_quantity
-        * (
-            order.average_fill_price
-            if order.average_fill_price is not None
-            else ZERO
-        )
-    )
-
-    fill_notional = quantity * price
     new_filled_quantity = (
         order.filled_quantity + quantity
     )
-    average_fill_price = (
-        previous_notional + fill_notional
-    ) / new_filled_quantity
+    resulting_fills = order.fills + (fill,)
+    average_fill_price = average_fill_price_for_fills(resulting_fills)
 
     status = (
         OrderStatus.FILLED
@@ -249,7 +239,7 @@ def apply_fill(
         updated_at=timestamp,
         filled_quantity=new_filled_quantity,
         average_fill_price=average_fill_price,
-        fills=order.fills + (fill,),
+        fills=resulting_fills,
     )
 
 

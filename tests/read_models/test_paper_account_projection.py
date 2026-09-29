@@ -188,3 +188,33 @@ def test_durable_fill_reconciliation_restores_cash_and_realized_pnl():
     assert snapshot.active_position_count == 1
     assert snapshot.buying_power == Decimal("9304.20")
     assert snapshot.current_equity is None
+
+
+def test_reconciled_position_mark_populates_valuation_without_changing_cash():
+    positions, orders, account = _projection(Decimal("10000"))
+    buy_fill = SimpleNamespace(
+        order_id="buy", quantity=Decimal("100"), price=Decimal("10"),
+        commission=Decimal("0"), timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    durable_orders = (
+        SimpleNamespace(
+            symbol="BNKK", request=SimpleNamespace(side="BUY"),
+            fills=(buy_fill,),
+        ),
+    )
+    positions.reconcile_from_paper_orders(durable_orders)
+    account.reconcile_from_paper_orders(durable_orders)
+    before = account.snapshot
+    assert before.current_equity is None
+
+    mark = _mark(1, "BNKK", "12")
+    positions(mark)
+    account(mark)
+    after = account.snapshot
+    assert after.current_cash == before.current_cash
+    assert after.realized_pnl == before.realized_pnl
+    assert after.current_equity == Decimal("10200")
+    assert after.open_position_market_value == Decimal("1200")
+    assert after.unrealized_pnl == Decimal("200")
+    assert after.gross_exposure == Decimal("1200")
+    assert after.net_exposure == Decimal("1200")

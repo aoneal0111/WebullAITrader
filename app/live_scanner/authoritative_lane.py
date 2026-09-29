@@ -13,6 +13,10 @@ class AuthoritativeLaneOverflow(RuntimeError):
     """The lossless lane cannot accept another event safely."""
 
 
+class AuthoritativeLaneFailure(RuntimeError):
+    """An authoritative downstream observer stopped the lossless lane."""
+
+
 class AuthoritativeEventLane:
     """Ordered, bounded event delivery with explicit fail-safe overflow."""
 
@@ -68,7 +72,9 @@ class AuthoritativeEventLane:
     def publish(self, event: Any) -> None:
         with self._lock:
             if self._failure is not None:
-                raise RuntimeError("authoritative lane worker failed") from self._failure
+                raise AuthoritativeLaneFailure(
+                    "authoritative lane worker failed"
+                ) from self._failure
             if not self._accepting:
                 raise RuntimeError("authoritative lane is stopped")
         item = (monotonic(), event)
@@ -180,4 +186,8 @@ class AuthoritativeEventLane:
                 self._queue.task_done()
 
 
-__all__ = ["AuthoritativeEventLane", "AuthoritativeLaneOverflow"]
+__all__ = [
+    "AuthoritativeEventLane",
+    "AuthoritativeLaneFailure",
+    "AuthoritativeLaneOverflow",
+]

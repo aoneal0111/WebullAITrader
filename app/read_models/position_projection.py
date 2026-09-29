@@ -22,6 +22,7 @@ from app.read_models.runtime_event_identity import projection_event_id
 
 
 ZERO = Decimal("0")
+_LATEST_MARK_CACHE_LIMIT = 256
 
 
 class PositionProjection:
@@ -46,6 +47,11 @@ class PositionProjection:
         self._snapshot = PositionsReadModelSnapshot.initial()
         self._processed_fill_ids: frozenset[str] = frozenset()
         self._last_sequence_by_source: dict[str, int] = {}
+        # Market data can legitimately arrive while durable PAPER authority is
+        # still being restored. Keep only a bounded, in-memory latest mark so
+        # reconciliation can value a position immediately without changing
+        # fill/order authority.
+        self._latest_marks: dict[str, tuple[datetime, Decimal]] = {}
         self._health = "HEALTHY"
         self._last_reconciliation_source: str | None = None
 
@@ -144,7 +150,7 @@ class PositionProjection:
                     average_cost = ZERO
                     break
             if quantity > ZERO:
-                positions.append(PositionReadModel(
+                position = PositionReadModel(
                     account_id=self._account_id,
                     symbol=symbol,
                     asset_type=self._asset_type,
@@ -156,12 +162,34 @@ class PositionProjection:
                     currency=self._currency,
                     updated_at=updated_at,
                     exposure=None,
-                ))
+                )
+                cached = self._latest_marks.get(symbol.upper())
+                if cached is not None:
+                    mark_at, mark_price = cached
+                    market_value, unrealized, exposure = _valuation(
+                        quantity=quantity,
+                        average_cost=average_cost,
+                        mark_price=mark_price,
+                    )
+                    position = replace(
+                        position,
+                        market_value=_optional_decimal_text(market_value),
+                        unrealized_gain_loss=_optional_decimal_text(unrealized),
+                        exposure=_optional_decimal_text(exposure),
+                        updated_at=max(updated_at, mark_at),
+                    )
+                positions.append(position)
 
         with self._lock:
             self._snapshot = PositionsReadModelSnapshot(
                 positions=tuple(sorted(positions, key=lambda item: item.symbol))
             )
+            active_symbols = {position.symbol for position in positions}
+            self._latest_marks = {
+                symbol: value
+                for symbol, value in self._latest_marks.items()
+                if symbol in active_symbols
+            }
             self._last_reconciliation_source = source.strip()
             self._health = "HEALTHY"
             projected = self._snapshot
@@ -233,6 +261,11 @@ class PositionProjection:
                 )
                 occurred_at = fill.timestamp
             elif event.mark_price is not None and event.symbol is not None:
+                self._remember_mark(
+                    event.symbol,
+                    event.timestamp,
+                    event.mark_price,
+                )
                 projected = _reduce_mark(
                     self._snapshot,
                     symbol=event.symbol,
@@ -260,6 +293,26 @@ class PositionProjection:
                 projection_authority=ProjectionAuthority.PAPER_EXECUTION,
             )
         )
+
+    def _remember_mark(
+        self,
+        symbol: str,
+        timestamp: datetime,
+        mark_price: Decimal,
+    ) -> None:
+        """Retain a bounded latest mark for pre-reconciliation replay."""
+
+        normalized = symbol.strip().upper()
+        previous = self._latest_marks.get(normalized)
+        if previous is not None and timestamp < previous[0]:
+            return
+        self._latest_marks[normalized] = (timestamp, mark_price)
+        if len(self._latest_marks) > _LATEST_MARK_CACHE_LIMIT:
+            oldest = min(
+                self._latest_marks.items(),
+                key=lambda item: item[1][0],
+            )[0]
+            self._latest_marks.pop(oldest, None)
 
 
 def _reduce_mark(

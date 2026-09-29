@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from time import perf_counter
+
 import logging
 import atexit
 from collections.abc import Callable, Mapping, Sequence
@@ -289,10 +291,16 @@ class WebullScannerUniverseProvider:
         self._accelerator_capacity = int(accelerator_capacity)
         self._production_symbol_capacity = int(production_symbol_capacity)
         self._admission_observer = admission_observer
+        self._state_lock = RLock()
         self._rows: dict[str, Mapping[str, object]] = {}
         self._instruments: dict[str, UniverseSymbol] = {}
         self._row_seen_at: dict[str, datetime] = {}
         self._provenance: dict[str, list[tuple[str, int]]] = {}
+        self._full_rows: dict[str, Mapping[str, object]] = {}
+        self._full_row_seen_at: dict[str, datetime] = {}
+        self._full_provenance: dict[str, list[tuple[str, int]]] = {}
+        self._full_radar_states: dict[str, str] = {}
+        self._full_priority_lanes = UniversePriorityLanes()
         self._radar = radar
         self._external_accelerator_source: Callable[[], Sequence[str]] | None = None
         self._radar_states: dict[str, str] = {}
@@ -305,11 +313,46 @@ class WebullScannerUniverseProvider:
 
     def metrics(self) -> dict[str, int]:
         """Return bounded discovery-pool counters for read-only observability."""
-        return dict(self._metrics)
+        with self._state_lock:
+            return dict(self._metrics)
 
     def list_symbols(
         self,
         asset_class: AssetClass,
+    ) -> tuple[UniverseSymbol, ...]:
+        return self._list_symbols(
+            asset_class,
+            sources=self._sources,
+            maximum_breadth=self._maximum_breadth,
+            startup_seed=False,
+        )
+
+    def list_startup_symbols(
+        self,
+        asset_class: AssetClass,
+    ) -> tuple[UniverseSymbol, ...]:
+        """Return the existing first-page legacy-priority startup seed."""
+        startup_sources = tuple(
+            source
+            for source in ("SESSION_GAINERS", "RELATIVE_VOLUME_10D")
+            if source in self._sources
+        )
+        if not startup_sources:
+            return self.list_symbols(asset_class)
+        return self._list_symbols(
+            asset_class,
+            sources=startup_sources,
+            maximum_breadth=self._page_size,
+            startup_seed=True,
+        )
+
+    def _list_symbols(
+        self,
+        asset_class: AssetClass,
+        *,
+        sources: tuple[str, ...],
+        maximum_breadth: int,
+        startup_seed: bool,
     ) -> tuple[UniverseSymbol, ...]:
         if asset_class is not AssetClass.STOCK:
             return ()
@@ -331,20 +374,33 @@ class WebullScannerUniverseProvider:
         rows: dict[str, Mapping[str, object]] = {}
         provenance: dict[str, list[tuple[str, int]]] = {}
         pages = 0
-        for source in self._sources:
+        for source in sources:
             source_identity = (
                 "PREMARKET_GAINERS" if source == "SESSION_GAINERS" and session is ScannerSession.PREMARKET
                 else "AFTER_HOURS_GAINERS" if source == "SESSION_GAINERS" and session is ScannerSession.AFTER_HOURS
                 else "DAY_GAINERS" if source == "SESSION_GAINERS" else source
             )
             source_rank = 0
-            for page_index in range(1, (self._maximum_breadth + self._page_size - 1) // self._page_size + 1):
+            for page_index in range(1, (maximum_breadth + self._page_size - 1) // self._page_size + 1):
                 try:
                     pages += 1
-                    response = _screener_page(
-                        screener, source, rank_type,
-                        page_index=page_index, page_size=self._page_size,
-                    )
+                    request_started = perf_counter()
+                    request_success = False
+                    try:
+                        response = _screener_page(
+                            screener, source, rank_type,
+                            page_index=page_index, page_size=self._page_size,
+                        )
+                        request_success = True
+                    finally:
+                        performance_diagnostics.record_component_duration(
+                            f"scanner_start.webull_screener.{source}.page_{page_index}",
+                            max(
+                                0.0,
+                                (perf_counter() - request_started) * 1000.0,
+                            ),
+                            success=request_success,
+                        )
                     page_rows = _response_rows(response)
                 except Exception as exc:
                     _observe_admission(
@@ -357,7 +413,7 @@ class WebullScannerUniverseProvider:
                     break
                 for row in page_rows:
                     source_rank += 1
-                    if source_rank > self._maximum_breadth:
+                    if source_rank > maximum_breadth:
                         break
                     symbol = str(row.get("symbol", "")).strip().upper()
                     _observe_admission(
@@ -402,43 +458,71 @@ class WebullScannerUniverseProvider:
                     provenance.setdefault(symbol, []).append(
                         (source_identity, source_rank)
                     )
-                if len(page_rows) < self._page_size or source_rank >= self._maximum_breadth:
+                if len(page_rows) < self._page_size or source_rank >= maximum_breadth:
                     break
         now = observed_at
         fresh_symbols = set(rows)
-        previous_symbols = set(self._rows)
-        for symbol, row in self._rows.items():
-            seen = self._row_seen_at.get(symbol)
-            if seen is not None and now - seen <= self._retention and symbol not in rows:
-                rows[symbol] = row
-                provenance[symbol] = list(self._provenance.get(symbol, ()))
-                _observe_admission(
-                    self._admission_observer, "record",
-                    stage="DISCOVERY_RETAINED", outcome="RETAINED",
-                    reason="WITHIN_DISCOVERY_TTL", normalized_symbol=symbol,
-                )
-        self._rows = rows
-        self._provenance = provenance
-        self._row_seen_at.update({symbol: now for symbol in fresh_symbols})
-        self._row_seen_at = {
-            symbol: seen for symbol, seen in self._row_seen_at.items()
+        with self._state_lock:
+            state_rows = self._rows if startup_seed else self._full_rows
+            state_seen_at = (
+                self._row_seen_at
+                if startup_seed
+                else self._full_row_seen_at
+            )
+            state_provenance = (
+                self._provenance
+                if startup_seed
+                else self._full_provenance
+            )
+            previous_rows = dict(state_rows)
+            previous_seen_at = dict(state_seen_at)
+            previous_provenance = {
+                symbol: list(values)
+                for symbol, values in state_provenance.items()
+            }
+            radar_states = dict(
+                self._radar_states
+                if startup_seed
+                else self._full_radar_states
+            )
+            prior_accelerator = set(
+                (
+                    self._priority_lanes
+                    if startup_seed
+                    else self._full_priority_lanes
+                ).accelerator
+            )
+        previous_symbols = set(previous_rows)
+        if not startup_seed:
+            for symbol, row in previous_rows.items():
+                seen = previous_seen_at.get(symbol)
+                if (
+                    seen is not None
+                    and now - seen <= self._retention
+                    and symbol not in rows
+                ):
+                    rows[symbol] = row
+                    provenance[symbol] = list(
+                        previous_provenance.get(symbol, ())
+                    )
+                    _observe_admission(
+                        self._admission_observer, "record",
+                        stage="DISCOVERY_RETAINED", outcome="RETAINED",
+                        reason="WITHIN_DISCOVERY_TTL", normalized_symbol=symbol,
+                    )
+        row_seen_at = {} if startup_seed else dict(previous_seen_at)
+        row_seen_at.update({symbol: now for symbol in fresh_symbols})
+        row_seen_at = {
+            symbol: seen for symbol, seen in row_seen_at.items()
             if symbol in rows and now - seen <= self._retention
         }
-        self._metrics.update({
-            "refresh_count": self._metrics["refresh_count"] + 1,
-            "raw_symbols": sum(len(values) for values in provenance.values()),
-            "unique_symbols": len(rows),
-            "retained_symbols": len(set(rows) - fresh_symbols),
-            "expired_symbols": len(previous_symbols - set(rows) - fresh_symbols),
-            "pages": pages,
-        })
         legacy_primary = _legacy_priority_order(
             provenance,
             session=session,
             maximum_per_source=self._legacy_source_limit,
         )
         accelerator: tuple[str, ...] = ()
-        if self._radar is not None:
+        if self._radar is not None and not startup_seed:
             radar_rows = tuple(
                 RadarSnapshot(
                     symbol=symbol, observed_at=now,
@@ -454,7 +538,7 @@ class WebullScannerUniverseProvider:
             )
             assessments = self._radar.observe(radar_rows)
             for assessment in assessments:
-                prior_state = self._radar_states.get(assessment.symbol)
+                prior_state = radar_states.get(assessment.symbol)
                 if prior_state != assessment.state and assessment.state == "MOMENTUM_EMERGING":
                     performance_diagnostics.record_stream_observability(
                         "RADAR_MOMENTUM_EMERGING",
@@ -462,12 +546,11 @@ class WebullScannerUniverseProvider:
                         score=float(assessment.score),
                         source_diversity=len(set(next((row.sources for row in radar_rows if row.symbol == assessment.symbol), ()))),
                     )
-                self._radar_states[assessment.symbol] = assessment.state
-            self._radar_states = {
-                symbol: state for symbol, state in self._radar_states.items()
+                radar_states[assessment.symbol] = assessment.state
+            radar_states = {
+                symbol: state for symbol, state in radar_states.items()
                 if self._radar.assessment(symbol) is not None
             }
-            prior_accelerator = set(self._priority_lanes.accelerator)
             promoted = self._radar.promote(
                 capacity=len(legacy_primary) + self._accelerator_capacity,
                 required=legacy_primary,
@@ -505,7 +588,7 @@ class WebullScannerUniverseProvider:
                     replacements=radar_metrics.get("replacements", 0),
                 )
         external_accelerator: tuple[str, ...] = ()
-        if self._external_accelerator_source is not None:
+        if self._external_accelerator_source is not None and not startup_seed:
             try:
                 external_accelerator = tuple(
                     dict.fromkeys(
@@ -525,17 +608,12 @@ class WebullScannerUniverseProvider:
         background = tuple(
             symbol for symbol in rows if symbol not in priority_symbols
         )
-        self._priority_lanes = UniversePriorityLanes(
+        priority_lanes = UniversePriorityLanes(
             legacy_primary=legacy_primary,
             accelerator=accelerator,
             background=background,
         )
-        self._priority_order = self._priority_lanes.ordered
-        self._metrics.update({
-            "legacy_primary_symbols": len(legacy_primary),
-            "accelerator_symbols": len(accelerator),
-            "background_symbols": len(background),
-        })
+        priority_order = priority_lanes.ordered
         critical = (*legacy_primary, *accelerator)
         background_capacity = max(
             0, self._production_symbol_capacity - len(critical),
@@ -606,20 +684,67 @@ class WebullScannerUniverseProvider:
                 },
             )
         instruments = tuple(instruments_list)
-        self._instruments = {item.display_symbol: item for item in instruments}
+        with self._state_lock:
+            self._rows = rows
+            self._provenance = provenance
+            self._row_seen_at = row_seen_at
+            self._radar_states = radar_states
+            self._priority_lanes = priority_lanes
+            self._priority_order = priority_order
+            self._instruments = {
+                item.display_symbol: item for item in instruments
+            }
+            if not startup_seed:
+                self._full_rows = dict(rows)
+                self._full_provenance = {
+                    symbol: list(values)
+                    for symbol, values in provenance.items()
+                }
+                self._full_row_seen_at = dict(row_seen_at)
+                self._full_radar_states = dict(radar_states)
+                self._full_priority_lanes = priority_lanes
+            self._metrics.update({
+                "refresh_count": self._metrics["refresh_count"] + 1,
+                "raw_symbols": sum(
+                    len(values) for values in provenance.values()
+                ),
+                "unique_symbols": len(rows),
+                "retained_symbols": len(set(rows) - fresh_symbols),
+                "expired_symbols": len(
+                    previous_symbols - set(rows) - fresh_symbols
+                ),
+                "pages": pages,
+                "legacy_primary_symbols": len(legacy_primary),
+                "accelerator_symbols": len(accelerator),
+                "background_symbols": len(background),
+            })
         return instruments
 
     def row_for(self, symbol: str) -> Mapping[str, object] | None:
-        return self._rows.get(symbol.strip().upper())
+        with self._state_lock:
+            return self._rows.get(symbol.strip().upper())
 
     def instrument_for(self, symbol: str) -> UniverseSymbol | None:
-        return self._instruments.get(symbol.strip().upper())
+        with self._state_lock:
+            return self._instruments.get(symbol.strip().upper())
+
+    def reference_context(
+        self, symbol: str,
+    ) -> tuple[UniverseSymbol | None, Mapping[str, object] | None]:
+        normalized = symbol.strip().upper()
+        with self._state_lock:
+            return (
+                self._instruments.get(normalized),
+                self._rows.get(normalized),
+            )
 
     def priority_order(self) -> tuple[str, ...]:
-        return self._priority_order
+        with self._state_lock:
+            return self._priority_order
 
     def priority_lanes(self) -> UniversePriorityLanes:
-        return self._priority_lanes
+        with self._state_lock:
+            return self._priority_lanes
 
     def set_accelerator_symbols_source(
         self,
@@ -675,10 +800,12 @@ class WebullScannerReferenceProvider:
         if asset_class is not AssetClass.STOCK:
             raise LookupError("production scanner supports US stocks only")
         normalized = symbol.strip().upper()
-        instrument = self._universe.instrument_for(normalized)
+        instrument, row = self._universe.reference_context(normalized)
         if instrument is None:
             raise LookupError(f"scanner instrument not found: {normalized}")
-        return self.get_reference_data_for_instrument(instrument)
+        if row is None:
+            raise LookupError(f"scanner reference row not found: {normalized}")
+        return self._reference_data_from_context(instrument, row)
 
     def get_reference_data_for_instrument(
         self,
@@ -689,9 +816,23 @@ class WebullScannerReferenceProvider:
         if instrument.asset_class is not AssetClass.STOCK:
             raise LookupError("production scanner supports US stocks only")
         normalized = instrument.display_symbol
-        row = self._universe.row_for(normalized)
+        _published_instrument, row = self._universe.reference_context(normalized)
         if row is None:
             raise LookupError(f"scanner reference row not found: {normalized}")
+        return self._reference_data_from_context(
+            instrument,
+            row,
+            force_validation_refresh=force_validation_refresh,
+        )
+
+    def _reference_data_from_context(
+        self,
+        instrument: UniverseSymbol,
+        row: Mapping[str, object],
+        *,
+        force_validation_refresh: bool = False,
+    ) -> ReferenceRecord:
+        normalized = instrument.display_symbol
 
         price = _positive(row, "price", "close")
         previous_close = _positive(row, "pre_close")

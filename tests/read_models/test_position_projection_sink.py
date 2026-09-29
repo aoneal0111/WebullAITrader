@@ -186,6 +186,41 @@ def test_unknown_mark_leaves_valuation_and_exposure_unknown() -> None:
     assert position.exposure is None
 
 
+def test_mark_before_authority_reconciliation_is_replayed() -> None:
+    projection = PositionProjection(OperationsBus())
+    mark = PaperRuntimeEvent(
+        sequence=1,
+        timestamp=NOW,
+        event_type="MARK_UPDATED",
+        message="early mark",
+        cycle=0,
+        symbol="BNKK",
+        source="market-data",
+        mark_price=Decimal("2.50"),
+    )
+    projection(mark)
+
+    restored_fill = type("Fill", (), {
+        "quantity": Decimal("417"),
+        "price": Decimal("2.040"),
+        "timestamp": NOW,
+    })()
+    restored_order = type("Order", (), {
+        "symbol": "BNKK",
+        "request": type("Request", (), {"side": "BUY"})(),
+        "fills": (restored_fill,),
+    })()
+    projection.reconcile_from_paper_orders((restored_order,))
+
+    position = projection.position_for_symbol("BNKK")
+    assert position is not None
+    assert position.quantity == "417"
+    assert position.average_cost == "2.040"
+    assert position.market_value == "1042.50"
+    assert position.unrealized_gain_loss == "191.820"
+    assert position.exposure == "1042.50"
+
+
 def test_duplicate_and_out_of_order_events_are_ignored() -> None:
     bus = OperationsBus()
     store = ApplicationStateStore(bus)

@@ -199,17 +199,12 @@ class PaperOrder:
                 (fill.quantity for fill in self.fills),
                 start=ZERO,
             )
-            fills_notional = sum(
-                (fill.notional for fill in self.fills),
-                start=ZERO,
-            )
-
             if fills_quantity != self.filled_quantity:
                 raise ValueError(
                     "fills quantity must equal filled_quantity"
                 )
 
-            fills_average = fills_notional / fills_quantity
+            fills_average = average_fill_price_for_fills(self.fills)
             if fills_average != self.average_fill_price:
                 raise ValueError(
                     "fills must match average_fill_price"
@@ -314,6 +309,18 @@ class PaperOrder:
             (fill.slippage for fill in self.fills),
             start=ZERO,
         )
+
+
+def average_fill_price_for_fills(fills: tuple[Fill, ...]) -> Decimal:
+    """Return the canonical average price for a complete immutable fill tuple."""
+
+    if not fills:
+        raise ValueError("at least one fill is required")
+    quantity = sum((fill.quantity for fill in fills), start=ZERO)
+    if quantity <= ZERO:
+        raise ValueError("fill quantity must be positive")
+    notional = sum((fill.notional for fill in fills), start=ZERO)
+    return notional / quantity
 
 
 def _validate_order_prices(

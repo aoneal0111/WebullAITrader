@@ -483,7 +483,12 @@ def create_configured_desktop_broker_driver(
                 None,
             )
             if callable(accelerator_setter):
-                accelerator_setter(catalyst_discovery_runtime.symbols)
+                accelerator_setter(
+                    catalyst_discovery_runtime.symbols_nonblocking
+                )
+                catalyst_discovery_runtime.set_refresh_callback(
+                    scanner_coordinator.refresh_accelerator_channels
+                )
 
         profile_shadow = PremarketRvolShadow(
             telemetry_sink=lambda payload: _SCANNER_LOGGER.info(
@@ -537,7 +542,7 @@ def create_configured_desktop_broker_driver(
             discovered_accelerators = (
                 ()
                 if catalyst_discovery_runtime is None
-                else tuple(catalyst_discovery_runtime.symbols())
+                else tuple(catalyst_discovery_runtime.symbols_nonblocking())
             )
             return PremarketProfilePrioritySnapshot(
                 retained=retained_values,

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 import re
-from threading import RLock
+from threading import RLock, Thread
 import time
 from typing import Protocol
 
@@ -85,8 +85,14 @@ class CatalystDiscoveryRuntime:
         self._refresh_seconds = float(refresh_seconds)
         self._monotonic = monotonic
         self._next_refresh = 0.0
-        self._symbols: tuple[str, ...] = ()
+        # Loading the persisted service snapshot is local-only and keeps
+        # already-known advisory symbols available during a deferred refresh.
+        self._symbols: tuple[str, ...] = tuple(service.symbols())
         self._lock = RLock()
+        self._refresh_thread: Thread | None = None
+        self._lifecycle = 0
+        self._stopped = False
+        self._refresh_callback: Callable[[tuple[str, ...]], None] | None = None
 
     def symbols(self) -> tuple[str, ...]:
         now = self._monotonic()
@@ -100,6 +106,70 @@ class CatalystDiscoveryRuntime:
                     self._symbols = self._service.symbols()
             self._next_refresh = now + self._refresh_seconds
             return self._symbols
+
+    def set_refresh_callback(
+        self, callback: Callable[[tuple[str, ...]], None] | None,
+    ) -> None:
+        if callback is not None and not callable(callback):
+            raise TypeError("refresh callback must be callable or None")
+        with self._lock:
+            self._refresh_callback = callback
+
+    def symbols_nonblocking(self) -> tuple[str, ...]:
+        """Return the cached accelerator snapshot and refresh it off-thread."""
+        now = self._monotonic()
+        with self._lock:
+            snapshot = self._symbols
+            if self._stopped or now < self._next_refresh:
+                return snapshot
+            thread = self._refresh_thread
+            if thread is not None and thread.is_alive():
+                return snapshot
+            self._next_refresh = now + self._refresh_seconds
+            self._lifecycle += 1
+            lifecycle = self._lifecycle
+            self._refresh_thread = Thread(
+                target=self._refresh_worker,
+                args=(lifecycle,),
+                name="catalyst-discovery-refresh",
+                daemon=True,
+            )
+            self._refresh_thread.start()
+            return snapshot
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stopped = True
+            self._lifecycle += 1
+            thread = self._refresh_thread
+        if thread is not None:
+            thread.join(2.0)
+        with self._lock:
+            if self._refresh_thread is thread and (
+                thread is None or not thread.is_alive()
+            ):
+                self._refresh_thread = None
+
+    def restart(self) -> None:
+        with self._lock:
+            self._stopped = False
+            self._lifecycle += 1
+
+    def _refresh_worker(self, lifecycle: int) -> None:
+        try:
+            refreshed = tuple(self._service.symbols_after_refresh())
+        except Exception:
+            return
+        with self._lock:
+            if self._stopped or lifecycle != self._lifecycle:
+                return
+            self._symbols = refreshed
+            callback = self._refresh_callback
+        if callback is not None:
+            try:
+                callback(refreshed)
+            except Exception:
+                pass
 
 
 class CatalystDiscoveryService:

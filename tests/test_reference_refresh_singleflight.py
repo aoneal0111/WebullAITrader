@@ -73,6 +73,13 @@ class _Universe:
             excluded=(),
         )
 
+    def priority_lanes(self):
+        from app.universe.models import UniversePriorityLanes
+
+        return UniversePriorityLanes(
+            legacy_primary=tuple(item.symbol for item in self.symbols),
+        )
+
 
 class _Pipeline:
     def __init__(self) -> None:
@@ -174,6 +181,151 @@ def test_initial_and_periodic_refresh_share_one_single_flight() -> None:
     assert performance_diagnostics.startup_metrics()[
         "reference_warmup_symbols_total"
     ] == 2
+
+
+class _SeedThenBlockingUniverse:
+    def __init__(
+        self,
+        seed: tuple[UniverseSymbol, ...],
+        full: tuple[UniverseSymbol, ...],
+        *,
+        fail_full: bool = False,
+    ) -> None:
+        self.seed = seed
+        self.full = full
+        self.fail_full = fail_full
+        self.full_entered = Event()
+        self.release_full = Event()
+        self.full_calls = 0
+        self._lanes = ()
+
+    def select_startup_all(self, asset_classes=()) -> UniverseSelection:
+        self._lanes = tuple(item.symbol for item in self.seed)
+        return UniverseSelection(included=self.seed, excluded=())
+
+    def select_all(self, asset_classes=()) -> UniverseSelection:
+        self.full_calls += 1
+        self.full_entered.set()
+        assert self.release_full.wait(3.0)
+        if self.fail_full:
+            raise RuntimeError("full discovery unavailable")
+        self._lanes = tuple(item.symbol for item in self.full)
+        return UniverseSelection(included=self.full, excluded=())
+
+    def priority_lanes(self):
+        from app.universe.models import UniversePriorityLanes
+
+        return UniversePriorityLanes(legacy_primary=self._lanes)
+
+
+class _ImmediateReferences:
+    def __init__(self, *, fail_first: set[str] | None = None) -> None:
+        self.calls: list[str] = []
+        self.fail_first = set(fail_first or ())
+
+    def get(self, symbol, asset_class=AssetClass.STOCK, *, force_refresh=False):
+        self.calls.append(symbol)
+        if symbol in self.fail_first:
+            self.fail_first.remove(symbol)
+            raise TimeoutError("temporary reference failure")
+        return _record(symbol)
+
+
+def _seed_full_coordinator(universe, references, *, retained=()):
+    engine = RealtimeScannerEngine(
+        universe, references, _Pipeline(), clock=lambda: NOW,
+    )
+    transport = _Transport()
+    coordinator = LiveScannerCoordinator(
+        transport,
+        engine,
+        retained_channels_source=lambda: retained,
+        universe_refresh_interval_seconds=0.01,
+        maximum_subscription_channels=3,
+    )
+    return coordinator, engine, transport
+
+
+def test_start_returns_with_seed_while_full_discovery_runs_immediately() -> None:
+    universe = _SeedThenBlockingUniverse(
+        (_symbol("SEED"),), (_symbol("SEED"), _symbol("DEEP")),
+    )
+    references = _ImmediateReferences()
+    coordinator, engine, transport = _seed_full_coordinator(
+        universe, references, retained=("RISK",),
+    )
+
+    assert coordinator.start(asset_classes=(AssetClass.STOCK,)) == ("SEED",)
+    assert universe.full_entered.wait(1.0)
+    assert transport.subscriptions[0] == ("RISK", "SEED")
+    assert universe.full_calls == 1
+
+    universe.release_full.set()
+    assert _wait_until(lambda: engine.reference_refresh_metrics().generation >= 2)
+    assert _wait_until(lambda: transport.subscriptions[-1] == ("RISK", "SEED", "DEEP"))
+    coordinator.stop()
+
+    assert references.calls.count("SEED") == 1
+    assert references.calls.count("DEEP") == 1
+    assert universe.full_calls >= 1
+
+
+def test_failed_seed_reference_is_retried_during_full_promotion() -> None:
+    universe = _SeedThenBlockingUniverse(
+        (_symbol("SEED"),), (_symbol("SEED"), _symbol("DEEP")),
+    )
+    references = _ImmediateReferences(fail_first={"SEED"})
+    coordinator, engine, _transport = _seed_full_coordinator(universe, references)
+
+    coordinator.start(asset_classes=(AssetClass.STOCK,))
+    assert universe.full_entered.wait(1.0)
+    universe.release_full.set()
+    assert _wait_until(lambda: engine.reference_refresh_metrics().generation >= 2)
+    assert _wait_until(lambda: "SEED" in engine.active_symbols)
+    coordinator.stop()
+
+    assert references.calls.count("SEED") == 2
+
+
+def test_full_discovery_failure_preserves_seed_scanner() -> None:
+    universe = _SeedThenBlockingUniverse(
+        (_symbol("SEED"),), (_symbol("SEED"), _symbol("DEEP")), fail_full=True,
+    )
+    references = _ImmediateReferences()
+    coordinator, engine, transport = _seed_full_coordinator(universe, references)
+
+    coordinator.start(asset_classes=(AssetClass.STOCK,))
+    assert universe.full_entered.wait(1.0)
+    universe.release_full.set()
+    assert _wait_until(lambda: universe.full_calls >= 1)
+    sleep(0.05)
+
+    assert coordinator.running is True
+    assert coordinator.channels == ("SEED",)
+    assert engine.active_symbols == ("SEED",)
+    assert transport.subscriptions == [("SEED",)]
+    coordinator.stop()
+
+
+def test_stop_rejects_blocked_full_discovery_result() -> None:
+    universe = _SeedThenBlockingUniverse(
+        (_symbol("SEED"),), (_symbol("SEED"), _symbol("LATE")),
+    )
+    references = _ImmediateReferences()
+    coordinator, _engine, transport = _seed_full_coordinator(universe, references)
+
+    coordinator.start(asset_classes=(AssetClass.STOCK,))
+    assert universe.full_entered.wait(1.0)
+    started = monotonic()
+    coordinator.stop()
+    elapsed = monotonic() - started
+    subscriptions_at_stop = tuple(transport.subscriptions)
+    universe.release_full.set()
+    sleep(0.05)
+
+    assert elapsed < 2.5
+    assert tuple(transport.subscriptions) == subscriptions_at_stop
+    assert all("LATE" not in channels for channels in transport.subscriptions)
 
 
 def test_duplicate_discovery_membership_is_one_request_per_generation() -> None:

@@ -113,6 +113,20 @@ def test_legacy_selection_is_first_and_premarket_request_shape_is_preserved() ->
     assert len(lanes.background) >= 290
 
 
+def test_seeded_then_full_discovery_matches_direct_full_result_and_lanes() -> None:
+    seeded = _provider(_Screener(), MomentumRadar())
+    seeded.list_startup_symbols(AssetClass.STOCK)
+    seeded_result = seeded.list_symbols(AssetClass.STOCK)
+
+    direct = _provider(_Screener(), MomentumRadar())
+    direct_result = direct.list_symbols(AssetClass.STOCK)
+
+    assert tuple(item.symbol for item in seeded_result) == tuple(
+        item.symbol for item in direct_result
+    )
+    assert seeded.priority_lanes() == direct.priority_lanes()
+
+
 def test_accelerator_is_additive_after_legacy_and_row_merge_is_nondestructive() -> None:
     screener = _Screener()
     screener.volume = [

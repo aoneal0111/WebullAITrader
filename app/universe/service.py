@@ -1,7 +1,10 @@
 ﻿from __future__ import annotations
 
+from time import perf_counter
+
 from collections.abc import Iterable
 
+from app.performance_diagnostics import performance_diagnostics
 from app.momentum_scanner.models import AssetClass
 from app.universe.filters import (
     UniverseFilterConfig,
@@ -42,9 +45,26 @@ class UniverseService:
         self,
         asset_class: AssetClass,
     ) -> UniverseSelection:
-        candidates = self._provider.list_symbols(
-            asset_class
+        return self._select_candidates(
+            self._provider.list_symbols(asset_class)
         )
+
+    def select_startup(
+        self,
+        asset_class: AssetClass,
+    ) -> UniverseSelection:
+        startup = getattr(self._provider, "list_startup_symbols", None)
+        candidates = (
+            startup(asset_class)
+            if callable(startup)
+            else self._provider.list_symbols(asset_class)
+        )
+        return self._select_candidates(candidates)
+
+    def _select_candidates(
+        self,
+        candidates: Iterable[UniverseSymbol],
+    ) -> UniverseSelection:
 
         included: list[UniverseSymbol] = []
         excluded: list[UniverseSymbol] = []
@@ -92,6 +112,22 @@ class UniverseService:
             AssetClass.CRYPTO,
         ),
     ) -> UniverseSelection:
+        return self._select_all_with(asset_classes, self.select)
+
+    def select_startup_all(
+        self,
+        asset_classes: Iterable[AssetClass] = (
+            AssetClass.STOCK,
+            AssetClass.CRYPTO,
+        ),
+    ) -> UniverseSelection:
+        return self._select_all_with(asset_classes, self.select_startup)
+
+    def _select_all_with(
+        self,
+        asset_classes: Iterable[AssetClass],
+        selector,
+    ) -> UniverseSelection:
         included: dict[
             tuple[AssetClass, str],
             UniverseSymbol,
@@ -102,7 +138,17 @@ class UniverseService:
         ] = {}
 
         for asset_class in asset_classes:
-            selection = self.select(asset_class)
+            stage_started = perf_counter()
+            selection_success = False
+            try:
+                selection = selector(asset_class)
+                selection_success = True
+            finally:
+                performance_diagnostics.record_component_duration(
+                    f"scanner_start.universe_select.{asset_class.value}",
+                    max(0.0, (perf_counter() - stage_started) * 1000.0),
+                    success=selection_success,
+                )
 
             for item in selection.included:
                 key = (item.asset_class, item.symbol)
@@ -117,10 +163,19 @@ class UniverseService:
 
         priority = tuple()
         if self._ordering_source is not None:
+            stage_started = perf_counter()
+            priority_success = False
             try:
                 priority = tuple(self._ordering_source.priority_order())
+                priority_success = True
             except Exception:
                 priority = tuple()
+            finally:
+                performance_diagnostics.record_component_duration(
+                    "scanner_start.universe_priority_order",
+                    max(0.0, (perf_counter() - stage_started) * 1000.0),
+                    success=priority_success,
+                )
         priority_index = {symbol: index for index, symbol in enumerate(priority)}
         sort_key = lambda item: (
             0 if item.symbol in priority_index else 1,

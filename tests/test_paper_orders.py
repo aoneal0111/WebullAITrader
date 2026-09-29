@@ -12,7 +12,9 @@ from app.paper_trading.order_models import (
     OrderStatus,
     OrderType,
     TimeInForce,
+    average_fill_price_for_fills,
 )
+from app.paper_gateway.durable_store import _order_from_payload, _order_payload
 from app.paper_trading.orders import (
     InvalidOrderTransitionError,
     OrderValidationError,
@@ -390,6 +392,93 @@ def test_multiple_fills_preserve_ordered_history() -> None:
     assert order.average_fill_price == D("6")
     assert order.total_commission == D("0.50")
     assert order.total_slippage == D("0.01")
+
+
+def test_many_partial_fills_use_complete_tuple_average_without_decimal_drift() -> None:
+    fills = (
+        ("332", "1.26018159"), ("60", "1.83016613"),
+        ("93", "1.86091390"), ("591", "1.96030824"),
+        ("430", "1.28194821"), ("596", "1.93518190"),
+        ("634", "1.37865797"), ("371", "1.43231948"),
+        ("507", "1.57491186"), ("169", "1.52760189"),
+        ("809", "1.55597971"), ("861", "1.14710497"),
+        ("292", "1.65075291"), ("506", "1.03423667"),
+        ("83", "1.27684268"),
+    )
+    incremental_quantity = D("0")
+    incremental_average = None
+    total_notional = D("0")
+    for quantity, price in fills:
+        quantity_decimal = D(quantity)
+        price_decimal = D(price)
+        previous_notional = (
+            D("0") if incremental_average is None
+            else incremental_quantity * incremental_average
+        )
+        incremental_quantity += quantity_decimal
+        incremental_average = (
+            previous_notional + quantity_decimal * price_decimal
+        ) / incremental_quantity
+        total_notional += quantity_decimal * price_decimal
+    assert incremental_average != total_notional / incremental_quantity
+
+    order = accepted_order(quantity=D("10000"))
+    for index, (quantity, price) in enumerate(fills, 1):
+        order = apply_fill(
+            order,
+            D(quantity),
+            D(price),
+            at=NOW + timedelta(seconds=index + 1),
+            fill_id_factory=lambda index=index: f"FILL-{index}",
+        )
+
+    assert order.average_fill_price == average_fill_price_for_fills(order.fills)
+    assert order.filled_quantity == sum((D(quantity) for quantity, _ in fills), D("0"))
+
+
+def test_reloaded_partial_order_accepts_next_fill_with_canonical_average() -> None:
+    order = accepted_order(quantity=D("10000"))
+    for index, (quantity, price) in enumerate(
+        (("332", "1.26018159"), ("60", "1.83016613"),
+         ("93", "1.86091390"), ("591", "1.96030824"),
+         ("430", "1.28194821"), ("596", "1.93518190"),
+         ("634", "1.37865797"), ("371", "1.43231948"),
+         ("507", "1.57491186"), ("169", "1.52760189"),
+         ("809", "1.55597971"), ("861", "1.14710497"),
+         ("292", "1.65075291"), ("506", "1.03423667")),
+        1,
+    ):
+        order = apply_fill(
+            order, D(quantity), D(price),
+            at=NOW + timedelta(seconds=index + 1),
+            fill_id_factory=lambda index=index: f"FILL-{index}",
+        )
+    reloaded = _order_from_payload(_order_payload(order, "paper-test"))
+    updated = apply_fill(
+        reloaded, D("83"), D("1.27684268"),
+        at=NOW + timedelta(seconds=20), fill_id_factory=lambda: "FILL-NEXT",
+    )
+    assert updated.average_fill_price == average_fill_price_for_fills(updated.fills)
+
+
+def test_invalid_external_average_remains_rejected() -> None:
+    order = apply_fill(
+        accepted_order(), D("40"), D("5"),
+        at=NOW + timedelta(seconds=2), fill_id_factory=lambda: "FILL-1",
+    )
+    with pytest.raises(ValueError, match="fills must match average_fill_price"):
+        type(order)(
+            order_id=order.order_id,
+            request=order.request,
+            status=order.status,
+            created_at=order.created_at,
+            updated_at=order.updated_at,
+            filled_quantity=order.filled_quantity,
+            average_fill_price=order.average_fill_price + D("0.01"),
+            rejection_reason=order.rejection_reason,
+            fills=order.fills,
+            terminal_reason=order.terminal_reason,
+        )
 
 
 def test_fill_rejects_negative_commission() -> None:

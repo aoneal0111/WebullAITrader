@@ -64,6 +64,48 @@ def test_sources_pages_are_unioned_and_deduplicated():
     assert max(call[1]["page_index"] for call in screener.calls) == 2
 
 
+def test_startup_seed_requests_only_first_page_of_legacy_priority_sources():
+    screener = PagedScreener()
+    selected = provider(
+        screener, page_size=2, maximum_breadth=4,
+        sources=(
+            "SESSION_GAINERS", "RELATIVE_VOLUME_10D",
+            "VOLUME_LEADERS", "TURNOVER_LEADERS",
+        ),
+    )
+
+    result = selected.list_startup_symbols(AssetClass.STOCK)
+
+    assert [(source, call["page_index"], call["page_size"]) for source, call in screener.calls] == [
+        ("GAINERS", 1, 2),
+        ("RELATIVE_VOLUME_10D", 1, 2),
+    ]
+    assert tuple(item.symbol for item in result) == ("G000", "G001", "R000")
+    assert selected.priority_lanes().legacy_primary == ("G000", "G001", "R000")
+
+
+def test_full_discovery_pagination_is_unchanged_after_startup_seed():
+    screener = PagedScreener()
+    selected = provider(
+        screener, page_size=2, maximum_breadth=4,
+        sources=(
+            "SESSION_GAINERS", "RELATIVE_VOLUME_10D",
+            "VOLUME_LEADERS", "TURNOVER_LEADERS",
+        ),
+    )
+    selected.list_startup_symbols(AssetClass.STOCK)
+    screener.calls.clear()
+
+    selected.list_symbols(AssetClass.STOCK)
+
+    assert [(source, call["page_index"]) for source, call in screener.calls] == [
+        ("GAINERS", 1), ("GAINERS", 2),
+        ("RELATIVE_VOLUME_10D", 1), ("RELATIVE_VOLUME_10D", 2),
+        ("VOLUME", 1), ("VOLUME", 2),
+        ("TURNOVER", 1), ("TURNOVER", 2),
+    ]
+
+
 def test_falling_off_source_is_retained_then_expires():
     now = [NOW]
 
