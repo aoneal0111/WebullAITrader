@@ -21,6 +21,10 @@ from .order_flow import (
 )
 
 
+_FOOTPRINT_CAPABILITY_UNAVAILABLE = "FOOTPRINT_CAPABILITY_UNAVAILABLE"
+_CAPABILITY_DISABLED_AT = datetime.max.replace(tzinfo=UTC)
+
+
 class OrderFlowPriority(IntEnum):
     LOW = 1
     MEDIUM = 2
@@ -125,6 +129,11 @@ class OrderFlowPollingService:
         self._circuit_open_until: dict[str, datetime | None] = {
             "FOOTPRINT": None, "CAPITAL_FLOW": None,
         }
+        # This is intentionally process/lifecycle scoped.  A deterministic
+        # entitlement response disables only footprint polling until this
+        # service is recreated; capital-flow polling remains independent.
+        self._footprint_capability_unavailable = False
+        self._footprint_capability_event_emitted = False
 
     @property
     def running(self) -> bool:
@@ -378,6 +387,28 @@ class OrderFlowPollingService:
                 return
             count = tracked.failure_counts[endpoint] + 1
             tracked.failure_counts[endpoint] = count
+            if (
+                endpoint == "FOOTPRINT"
+                and _is_footprint_entitlement_error(error)
+            ):
+                self._footprint_capability_unavailable = True
+                tracked.footprint_due = _CAPABILITY_DISABLED_AT
+                target = self._footprint
+                target[symbol] = OrderFlowCacheEntry(
+                    symbol, endpoint, now, None,
+                    OrderFlowFreshness.UNAVAILABLE,
+                    _FOOTPRINT_CAPABILITY_UNAVAILABLE,
+                    count, _CAPABILITY_DISABLED_AT,
+                )
+                if not self._footprint_capability_event_emitted:
+                    self._diagnostics.append(OrderFlowDiagnostic(
+                        _FOOTPRINT_CAPABILITY_UNAVAILABLE,
+                        symbol, endpoint, priority, now,
+                        OrderFlowFreshness.UNAVAILABLE,
+                        _FOOTPRINT_CAPABILITY_UNAVAILABLE,
+                    ))
+                    self._footprint_capability_event_emitted = True
+                return
             delay = min(
                 float(self._config.maximum_backoff_seconds),
                 2.0 ** min(count, 8),
@@ -433,6 +464,22 @@ class OrderFlowPollingService:
         now: datetime,
     ) -> bool:
         with self._lock:
+            if (
+                endpoint == "FOOTPRINT"
+                and self._footprint_capability_unavailable
+            ):
+                tracked = self._tracked.get(symbol)
+                if tracked is None:
+                    return True
+                tracked.footprint_due = _CAPABILITY_DISABLED_AT
+                self._footprint[symbol] = OrderFlowCacheEntry(
+                    symbol, endpoint, None, None,
+                    OrderFlowFreshness.UNAVAILABLE,
+                    _FOOTPRINT_CAPABILITY_UNAVAILABLE,
+                    tracked.failure_counts[endpoint],
+                    _CAPABILITY_DISABLED_AT,
+                )
+                return True
             probe_at = self._circuit_open_until[endpoint]
             if probe_at is None or now >= probe_at:
                 return False
@@ -470,3 +517,19 @@ __all__ = [
     "OrderFlowCacheEntry", "OrderFlowDiagnostic", "OrderFlowFreshness",
     "OrderFlowPollingConfig", "OrderFlowPollingService", "OrderFlowPriority",
 ]
+
+
+def _is_footprint_entitlement_error(error: Exception) -> bool:
+    """Recognize only Webull's structured footprint entitlement response."""
+
+    status = getattr(error, "http_status", None)
+    if callable(getattr(error, "get_http_status", None)):
+        status = error.get_http_status()
+    code = getattr(error, "error_code", None)
+    if callable(getattr(error, "get_error_code", None)):
+        code = error.get_error_code()
+    return (
+        status == 403
+        and str(code or "").strip().upper()
+        == "MARKET_DATA_NOT_SUBSCRIBED"
+    )

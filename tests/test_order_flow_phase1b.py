@@ -43,6 +43,13 @@ class Provider:
         return [{"net_inflow": "1000"}]
 
 
+class FootprintEntitlementError(Exception):
+    def __init__(self, code="MARKET_DATA_NOT_SUBSCRIBED", status=403):
+        super().__init__(code)
+        self.error_code = code
+        self.http_status = status
+
+
 def service(clock, provider, **kwargs):
     config = OrderFlowPollingConfig(
         high_footprint_seconds=D("12"), medium_footprint_seconds=D("24"),
@@ -229,3 +236,82 @@ def test_repeated_endpoint_failures_open_shared_circuit_and_probe_later():
     polling.poll_once()
     assert provider.footprint_calls == ["A", "B", "C", "A", "B", "C", "D"]
     assert polling.cache_entry("A", "FOOTPRINT").freshness is OrderFlowFreshness.FRESH
+
+
+def test_footprint_entitlement_disables_only_footprint_for_service_lifecycle():
+    clock, provider = Clock(), Provider()
+    def denied(symbol):
+        provider.footprint_calls.append(symbol)
+        raise FootprintEntitlementError()
+    provider.footprint = denied
+    polling = service(clock, provider)
+    polling.update_symbol("A", OrderFlowPriority.HIGH)
+    polling.update_symbol("B", OrderFlowPriority.HIGH)
+
+    assert polling.poll_once() == 4
+    assert len(provider.footprint_calls) == 1
+    assert provider.capital_calls == ["A", "B"]
+    assert all(
+        polling.cache_entry(symbol, "FOOTPRINT").freshness
+        is OrderFlowFreshness.UNAVAILABLE
+        for symbol in ("A", "B")
+    )
+    assert sum(
+        item.event == "FOOTPRINT_CAPABILITY_UNAVAILABLE"
+        for item in polling.diagnostics
+    ) == 1
+
+    polling.poll_once(now=clock.value + timedelta(seconds=301))
+    assert len(provider.footprint_calls) == 1
+
+
+def test_capital_flow_continues_after_footprint_entitlement_loss():
+    clock, provider = Clock(), Provider()
+    def denied(symbol):
+        provider.footprint_calls.append(symbol)
+        raise FootprintEntitlementError()
+    provider.footprint = denied
+    polling = service(clock, provider)
+    polling.update_symbol("A", OrderFlowPriority.HIGH)
+    polling.poll_once()
+
+    clock.value += timedelta(seconds=46)
+    polling.poll_once()
+    assert provider.footprint_calls == ["A"]
+    assert provider.capital_calls == ["A", "A"]
+
+
+def test_different_forbidden_code_remains_transient():
+    clock, provider = Clock(), Provider()
+    def denied(symbol):
+        provider.footprint_calls.append(symbol)
+        raise FootprintEntitlementError("OTHER_FORBIDDEN")
+    provider.footprint = denied
+    polling = service(clock, provider)
+    polling.update_symbol("A", OrderFlowPriority.HIGH)
+    polling.poll_once()
+    clock.value += timedelta(seconds=2)
+    polling.poll_once()
+    assert provider.footprint_calls == ["A", "A"]
+    assert polling.cache_entry("A", "FOOTPRINT").freshness is OrderFlowFreshness.ERROR
+
+
+def test_service_restart_allows_fresh_footprint_entitlement_probe():
+    clock, provider = Clock(), Provider()
+    def denied(symbol):
+        provider.footprint_calls.append(symbol)
+        raise FootprintEntitlementError()
+    provider.footprint = denied
+    first = service(clock, provider)
+    first.update_symbol("A", OrderFlowPriority.HIGH)
+    first.poll_once()
+    provider.footprint = lambda symbol: (
+        provider.footprint_calls.append(symbol)
+        or [{"buy_volume": "100", "sell_volume": "20", "time": NOW}]
+    )
+
+    restarted = service(clock, provider)
+    restarted.update_symbol("A", OrderFlowPriority.HIGH)
+    restarted.poll_once()
+    assert provider.footprint_calls == ["A", "A"]
+    assert restarted.cache_entry("A", "FOOTPRINT").freshness is OrderFlowFreshness.FRESH
