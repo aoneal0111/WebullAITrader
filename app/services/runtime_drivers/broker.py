@@ -136,6 +136,7 @@ class DesktopBrokerRuntimeDriver:
         self._market_data_thread: Thread | None = None
         self._market_data_stop = Event()
         self._terminal_stream_failure_published = False
+        self._reference_warmup_completion_published = False
         self._market_data_consumer_state = "STOPPED"
         self._shutdown_requested = False
         self._market_data_consumer_attempted = False
@@ -372,6 +373,10 @@ class DesktopBrokerRuntimeDriver:
 
     def _start_market_data(self, stop_event: Event) -> None:
         self._market_data_started_monotonic = monotonic()
+        # Readiness observers are invoked once per newly-ready symbol.  This
+        # flag is scoped to one runtime lifecycle so the completion event is a
+        # transition signal rather than a per-symbol notification.
+        self._reference_warmup_completion_published = False
         self._last_runtime_iteration_monotonic = self._market_data_started_monotonic
         self._last_driver_market_event_monotonic = None
         self._feed_stale = False
@@ -923,7 +928,13 @@ class DesktopBrokerRuntimeDriver:
         snapshot = scanner.snapshot()
         ready_symbols = tuple(getattr(snapshot, "active_symbols", ()))
         if not ready_symbols:
+            # Permit a later genuine completion if this lifecycle regresses to
+            # a pending state before becoming ready again.
+            self._reference_warmup_completion_published = False
             return
+        if self._reference_warmup_completion_published:
+            return
+        self._reference_warmup_completion_published = True
         performance_diagnostics.record_startup_stage("scanner_active")
         self._scanner_log(
             "reference_warmup_completed",

@@ -1170,3 +1170,55 @@ def test_market_data_receive_survives_incomplete_scanner_diagnostic() -> None:
     driver._receive_market_data(stop_event)
 
     assert scanner.calls == 2
+
+
+def test_reference_warmup_completion_is_published_once_per_ready_transition() -> None:
+    class Scanner:
+        channels = ("A", "B")
+
+        def __init__(self) -> None:
+            self.active_symbols = ()
+
+        def snapshot(self):
+            return SimpleNamespace(active_symbols=self.active_symbols)
+
+    scanner = Scanner()
+    driver = object.__new__(DesktopBrokerRuntimeDriver)
+    driver._scanner = scanner
+    driver._reference_warmup_completion_published = False
+    events: list[str] = []
+    driver._scanner_log = lambda event_type, *_args, **_kwargs: events.append(event_type)
+
+    # Pending callbacks do not publish completion, while repeated callbacks
+    # after qualification readiness remain idempotent.
+    driver._on_scanner_readiness_changed()
+    scanner.active_symbols = ("A",)
+    driver._on_scanner_readiness_changed()
+    driver._on_scanner_readiness_changed()
+    assert events == ["reference_warmup_completed"]
+
+    # A valid regression to pending permits a later genuine completion.
+    scanner.active_symbols = ()
+    driver._on_scanner_readiness_changed()
+    scanner.active_symbols = ("A", "B")
+    driver._on_scanner_readiness_changed()
+    assert events == [
+        "reference_warmup_completed",
+        "reference_warmup_completed",
+    ]
+
+
+def test_reference_warmup_completion_dedupe_resets_for_new_runtime_lifecycle() -> None:
+    driver = DesktopBrokerRuntimeDriver(
+        configuration=configuration(),
+        broker_runtime=broker_runtime(FakeBroker()),
+        event_sink=lambda _event: None,
+        account_snapshot_sink=lambda _snapshot: None,
+        scanner_coordinator=SimpleNamespace(run_available=lambda: None),
+        clock=lambda: NOW,
+    )
+    driver._reference_warmup_completion_published = True
+
+    driver._start_market_data(Event())
+
+    assert driver._reference_warmup_completion_published is False
