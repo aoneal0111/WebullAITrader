@@ -328,7 +328,7 @@ class OrderFlowPollingService:
                 raise LookupError("ORDER_FLOW_CAPABILITY_UNAVAILABLE")
             return client.market_data.get_footprint(
                 [symbol], "US_STOCK", "M1", count=1,
-                real_time_required=True, trading_sessions=["PRE", "RTH", "ATH"],
+                real_time_required=True, trading_sessions="PRE,RTH,ATH",
             )
         if not capabilities.capital_flow:
             raise LookupError("ORDER_FLOW_CAPABILITY_UNAVAILABLE")

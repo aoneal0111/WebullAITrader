@@ -164,6 +164,47 @@ def test_missing_provider_capability_is_explicit_and_isolated():
     ) == 2
 
 
+def test_sdk_footprint_request_uses_scalar_trading_sessions():
+    class MarketData:
+        def __init__(self):
+            self.calls = []
+
+        def get_footprint(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return []
+
+    market_data = MarketData()
+    client = type("Client", (), {"market_data": market_data})()
+    polling = OrderFlowPollingService(client, clock=Clock())
+    polling.update_symbol("AAPL", OrderFlowPriority.HIGH)
+
+    assert polling.poll_once() == 2
+    args, kwargs = market_data.calls[0]
+    assert args == (["AAPL"], "US_STOCK", "M1")
+    assert kwargs == {
+        "count": 1,
+        "real_time_required": True,
+        "trading_sessions": "PRE,RTH,ATH",
+    }
+
+
+def test_sdk_footprint_request_serializes_sessions_without_list_repr():
+    from webull.data.request.get_footprint_request import GetFootprintRequest
+
+    request = GetFootprintRequest()
+    request.set_symbols(["AAPL"])
+    request.set_category("US_STOCK")
+    request.set_timespan("M1")
+    request.set_count(1)
+    request.set_real_time_required(True)
+    request.set_trading_sessions("PRE,RTH,ATH")
+
+    url = request.get_url()
+    assert "trading_sessions=PRE%2CRTH%2CATH" in url
+    assert "%5B" not in url
+    assert "%27" not in url
+
+
 def test_repeated_endpoint_failures_open_shared_circuit_and_probe_later():
     clock, provider = Clock(), Provider()
     provider.footprint_fail.update({"A", "B", "C", "D"})
