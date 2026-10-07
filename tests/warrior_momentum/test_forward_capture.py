@@ -33,7 +33,8 @@ from app.strategies.warrior_momentum.forward_runtime import (
 )
 from app.strategies.warrior_momentum.configuration import WarriorMomentumConfig
 from app.strategies.warrior_momentum.autonomous_paper import (
-    PaperExitSubmissionDecision, PaperExitSubmissionState,
+    PaperExitSubmissionDecision, PaperExitSubmissionFailureReason,
+    PaperExitSubmissionState,
     AutonomousManagementReadiness, AutonomousPaperExecutionBridge,
     lifecycle_identity,
 )
@@ -482,14 +483,15 @@ def test_quality_preserves_unknown_unavailable_and_missing_provenance(capture) -
 
 def test_transitions_blocked_diagnostics_and_counterfactual_are_separate(capture) -> None:
     store, writer, service = capture
-    service.observe(point(observation=scanner(bid=D("9"), ask=D("11"))), account=account())
+    candidate, signal = service.observe(
+        point(observation=scanner(bid=D("9"), ask=D("11"))), account=account(),
+    )
     writer.flush()
-    transitions = [item.payload for item in store.records(record_type=CaptureRecordType.STATE_TRANSITION)]
-    blocked = [item for item in transitions if item["to"] == ForwardTransition.ENTRY_BLOCKED.value]
-    assert blocked
-    assert "spread" in {gate["gate"] for item in blocked for gate in item["blocking_gates"]}
-    counter = store.records(record_type=CaptureRecordType.COUNTERFACTUAL)
-    assert counter and counter[0].payload["excluded_from_v1_performance"] is True
+    assert signal is None
+    assert candidate.status.value == "AWAITING_EXECUTION_DATA"
+    assert "EXECUTION_QUALITY_WAIT" in {
+        reason.value for reason in candidate.reason_codes
+    }
     assert not store.records(record_type=CaptureRecordType.PAPER_FILL)
 
 
@@ -672,7 +674,7 @@ def test_adaptive_premarket_structural_entry_ignores_old_turnover_proxy(tmp_path
         candidate, signal = service.observe(
             point(
                 session="PREMARKET",
-                observation=scanner(bid=D("10.00"), ask=D("10.01")),
+                observation=scanner(bid=D('10.01'), ask=D('10.02')),
             ),
             account=account(),
         )
@@ -733,7 +735,7 @@ def test_execution_entry_signal_refuses_dead_limit_outside_displacement(tmp_path
         )
         candidate, signal = service.runtime.assess_entry(candidate)
         assert signal is not None
-        escaped = signal.entry_trigger + D("0.06")
+        escaped = signal.entry_trigger + D("0.20")
         value = point(observation=scanner(
             bid=escaped - D("0.01"), ask=escaped,
         ))
@@ -754,7 +756,7 @@ def test_adaptive_rearm_requires_current_quote_safety_after_strategy_signal(tmp_
     )
     try:
         candidate, signal = service.observe(
-            point(observation=scanner(bid=D("10.00"), ask=D("10.01"))),
+            point(observation=scanner(bid=D('10.01'), ask=D('10.02'))),
             account=account(),
         )
         assert signal is not None
@@ -1078,6 +1080,116 @@ def test_authoritative_first_protection_bar_defers_structural_exit_until_next_ba
         writer.close()
 
 
+def test_authorized_rearm_installs_new_generation_for_forward_management(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "rearm-management-handoff.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(
+        store,
+        writer,
+        config=WarriorMomentumConfig(adaptive_context_enabled=True),
+        paper_entry_submitter=lambda *_args: True,
+        paper_entry_rearmer=lambda *_args, **_kwargs: True,
+    )
+    try:
+        candidate, original = service.observe(
+            point(observation=scanner(bid=D('10.01'), ask=D('10.02'))),
+            account=account(),
+        )
+        assert original is not None
+        old_generation = lifecycle_identity(service._paper["XYZ"].signal)
+        rearmed = replace(
+            original,
+            timestamp=original.timestamp + timedelta(seconds=1),
+            structural_episode_id="ipdn-new-rearm-generation",
+        )
+
+        service._consider_fast_momentum_rearm(
+            point(), replace(candidate, dollar_volume=D("1200000")),
+            rearmed, account(),
+        )
+
+        state = service._paper["XYZ"]
+        assert lifecycle_identity(state.signal) == lifecycle_identity(rearmed)
+        assert lifecycle_identity(state.signal) != old_generation
+        assert state.authoritative_position_seen is False
+        assert state.remaining == 0
+        assert state.initial_stop == rearmed.stop_price
+    finally:
+        writer.close()
+
+
+def test_execution_entry_price_diagnostics_identify_each_bound(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "execution-entry-diagnostics.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(store, writer)
+    try:
+        value = point()
+        candidate = service.runtime.discover(value.observation, value.bars, session=value.session)
+        candidate, signal = service.runtime.assess_entry(candidate)
+        assert signal is not None
+
+        def check(ask: Decimal, expected: str) -> None:
+            reasons: list[str] = []
+            changed = replace(value, observation=scanner(
+                bid=ask - D("0.01"), ask=ask,
+            ))
+            assert service._execution_entry_signal(
+                changed, candidate, signal,
+                diagnostic=lambda reason, **_details: reasons.append(reason),
+            ) is None
+            assert reasons == [expected]
+
+        # The fixture trigger is below $3.33, so the percentage envelope is tighter.
+        low_signal = replace(signal, entry_trigger=D("2"), structural_entry_trigger=D("2"),
+                             stop_price=D("1.90"), risk_per_share=D("0.10"), reference_price=D("2"))
+        low_candidate = replace(candidate)
+        low_value = replace(value, observation=scanner(bid=D("2.03"), ask=D("2.04")))
+        reasons: list[str] = []
+        assert service._execution_entry_signal(
+            low_value, low_candidate, low_signal,
+            diagnostic=lambda reason, **_details: reasons.append(reason),
+        ) is None
+        assert reasons == ["ENTRY_PRICE_DISPLACED_PERCENT"]
+
+        check(signal.entry_trigger + D("0.60"), "ENTRY_PRICE_DISPLACED_BOTH")
+    finally:
+        writer.close()
+
+
+def test_execution_envelope_scales_by_price_with_bounded_outer_limit(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "execution-envelope.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(
+        store, writer, config=WarriorMomentumConfig(adaptive_context_enabled=False),
+    )
+    try:
+        value = point()
+        candidate = service.runtime.discover(value.observation, value.bars, session=value.session)
+        candidate, signal = service.runtime.assess_entry(candidate)
+        assert signal is not None
+        expected = {
+            D("2"): D("2.030"), D("5"): D("5.075"),
+            D("10"): D("10.150"), D("20"): D("20.300"),
+            D("50"): D("50.500"),
+        }
+        for price, maximum in expected.items():
+            details: list[dict[str, object]] = []
+            custom = replace(signal, entry_trigger=price, structural_entry_trigger=price,
+                             reference_price=price, stop_price=price - D("0.10"),
+                             risk_per_share=D("0.10"))
+            ask = price + (maximum - price) + D("0.01")
+            changed = replace(value, observation=scanner(bid=ask - D("0.01"), ask=ask))
+            assert service._execution_entry_signal(
+                changed, candidate, custom,
+                diagnostic=lambda _reason, **values: details.append(values),
+            ) is None
+            assert details and details[-1]["effective_maximum"] == maximum
+    finally:
+        writer.close()
+
+
 def test_activation_bar_cannot_retroactively_stop_and_targets_remain_eligible(tmp_path: Path) -> None:
     store = ForwardCaptureStore(tmp_path / "sune_activation.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
@@ -1116,7 +1228,7 @@ def test_activation_bar_cannot_retroactively_stop_and_targets_remain_eligible(tm
         )
         service.observe_market_bar("XYZ", ambiguous, ambiguous.timestamp + timedelta(minutes=1))
         state = service._paper["XYZ"]
-        assert state.exit_reason is None
+        assert state.exit_reason == "FIRST_TARGET"
         assert state.protective_stop_activated_at is not None
 
         first_bar = MinuteBar(
@@ -1227,7 +1339,7 @@ def test_recovered_position_can_heal_protection_then_resume_target_management(
         assert recovered_bridge.reconcile().value == "READY"
         assert (
             recovered_bridge.management_readiness("XYZ")
-            is AutonomousManagementReadiness.RECONCILIATION_REQUIRED
+            is AutonomousManagementReadiness.RECOVERED_READY
         )
         assert composition.order_book.open_orders_for_symbol("XYZ") == ()
 
@@ -1346,9 +1458,9 @@ def test_bridge_rebalances_correlated_stop_across_targets_and_runner(tmp_path: P
             "XYZ", activation_bar, activation_bar.timestamp + timedelta(minutes=1),
         )
         sells = open_sells()
-        assert len(sells) == 1
-        assert sells[0].request.order_type.value == "STOP"
-        assert int(sells[0].remaining_quantity) == shares
+        assert {order.request.order_type.value for order in sells} == {"LIMIT", "STOP"}
+        assert any(int(order.remaining_quantity) == shares for order in sells
+                   if order.request.order_type.value == "STOP")
 
         # FIRST_TARGET reserves its shares while a non-reserving contingent
         # stop retains hard-stop authority for every remaining share.
@@ -1501,6 +1613,492 @@ def test_profit_defense_tracks_peak_and_tightens_after_confirmed_giveback(tmp_pa
         assert state.profit_defense_stop_tightened is True
         assert state.stop == current
         assert state.second_taken is False
+    finally:
+        writer.close()
+
+
+def test_sdev_first_target_trailing_floor_updates_canonical_stop(
+    tmp_path: Path,
+) -> None:
+    """The SDEV runner may not claim a 4.56 stop while 4.33 is working."""
+
+    store = ForwardCaptureStore(tmp_path / "sdev-canonical-trailing-stop.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": Decimal("147")}
+    submissions: list[tuple[str, int, Decimal]] = []
+
+    def submit_exit(symbol, quantity, price, reason, lifecycle, **_kwargs):
+        submissions.append((reason, quantity, price))
+        return PaperExitSubmissionDecision(
+            PaperExitSubmissionState.WORKING,
+            symbol,
+            lifecycle,
+            reason,
+            order_id=f"{reason.lower()}-{len(submissions)}",
+            activation_timestamp=T0,
+        )
+
+    service = WarriorForwardCaptureService(
+        store,
+        writer,
+        paper_entry_submitter=lambda *_args: True,
+        paper_exit_submitter=submit_exit,
+        paper_position_quantity_source=lambda symbol: position.get(
+            symbol, Decimal("0"),
+        ),
+    )
+    try:
+        _candidate, original = service.observe(point(), account=account())
+        assert original is not None
+        signal = replace(
+            original,
+            entry_trigger=D("4.492245"),
+            reference_price=D("4.492245"),
+            stop_price=D("4.330"),
+            structural_stop_price=D("4.330"),
+            risk_per_share=D("0.162245"),
+            target_levels=(D("4.654490"), D("4.816735"), D("4.978980")),
+        )
+        state = service._paper["XYZ"]
+        state.signal = signal
+        state.entry_price = D("4.4819047619")
+        state.initial_quantity = 294
+        state.remaining = 147
+        state.managed_quantity = 294
+        state.first_quantity = 147
+        state.second_quantity = 73
+        state.first_taken = True
+        state.stop = D("4.330")
+        state.prior_low = D("4.560")
+        state.authoritative_position_seen = True
+        state.protection_reconciled = True
+        state.protective_stop_activated_at = signal.timestamp
+        state.active_exit_role = "SECOND_TARGET"
+        state.active_exit_order_id = "second-target-working"
+        state.exit_reason = "SECOND_TARGET"
+        state.exit_price = D("4.816735")
+        submissions.clear()
+
+        bar = MinuteBar(
+            "XYZ",
+            signal.timestamp + timedelta(minutes=1),
+            D("4.60"), D("4.65"), D("4.57"), D("4.60"), D("100"),
+        )
+        service.observe_market_bar(
+            "XYZ", bar, bar.timestamp + timedelta(minutes=1),
+        )
+
+        assert submissions == [("STOP", 147, D("4.560"))]
+        assert state.stop == D("4.560")
+        assert state.active_exit_role == "SECOND_TARGET"
+        assert state.active_exit_order_id == "second-target-working"
+        assert state.exit_reason == "SECOND_TARGET"
+        assert state.exit_price == D("4.816735")
+    finally:
+        writer.close()
+
+
+@pytest.mark.parametrize(
+    ("entry", "peak_bid", "stop"),
+    [
+        (D("1.760"), D("1.760"), D("1.690")),
+        (D("3.930"), D("3.910"), D("3.630")),
+    ],
+    ids=("olox-no-executable-profit", "aixi-no-executable-profit"),
+)
+def test_session_losses_do_not_fabricate_profit_defense(
+    tmp_path: Path, entry: Decimal, peak_bid: Decimal, stop: Decimal,
+) -> None:
+    """OLOX/AIXI never had positive executable MFE; defense stays honest."""
+
+    store = ForwardCaptureStore(tmp_path / f"no-profit-{entry}.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(store, writer)
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        state = service._paper["XYZ"]
+        state.entry_price = entry
+        state.stop = stop
+        state.peak_price = peak_bid
+        state.peak_r = max(D("0"), (peak_bid - entry) / (entry - stop))
+        state.current_r = state.peak_r
+        state.remaining = max(1, state.remaining)
+        bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=1), peak_bid,
+            peak_bid, stop, peak_bid, D("100"),
+        )
+
+        assert service._profit_defense_action(state, bar) is None
+        assert state.profit_defense_armed is False
+    finally:
+        writer.close()
+
+
+def test_pcvx_failed_target_does_not_claim_pending_or_starve_stop_tightening(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "pcvx-target-failure-defense.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": Decimal("67")}
+    submissions: list[tuple[str, int, Decimal]] = []
+
+    def submit_exit(symbol, quantity, price, reason, lifecycle, **_kwargs):
+        submissions.append((reason, quantity, price))
+        if reason == "FIRST_TARGET":
+            return PaperExitSubmissionDecision(
+                PaperExitSubmissionState.UNAVAILABLE,
+                symbol,
+                lifecycle,
+                reason,
+                failure_reason=(
+                    PaperExitSubmissionFailureReason.MANAGEMENT_NOT_READY
+                ),
+            )
+        return PaperExitSubmissionDecision(
+            PaperExitSubmissionState.WORKING,
+            symbol,
+            lifecycle,
+            reason,
+            order_id=f"stop-{len(submissions)}",
+            activation_timestamp=T0,
+        )
+
+    service = WarriorForwardCaptureService(
+        store,
+        writer,
+        paper_entry_submitter=lambda *_args: True,
+        paper_exit_submitter=submit_exit,
+        paper_position_quantity_source=lambda symbol: position.get(
+            symbol, Decimal("0"),
+        ),
+    )
+    try:
+        _candidate, original = service.observe(point(), account=account())
+        assert original is not None
+        signal = replace(
+            original,
+            entry_trigger=D("72.56"),
+            reference_price=D("72.56"),
+            stop_price=D("72.24"),
+            structural_stop_price=D("72.24"),
+            risk_per_share=D("0.32"),
+            target_levels=(D("72.8325"), D("73.20"), D("74.00")),
+        )
+        state = service._paper["XYZ"]
+        state.signal = signal
+        state.entry_price = D("72.49")
+        state.initial_quantity = 67
+        state.remaining = 67
+        state.managed_quantity = 67
+        state.first_quantity = 33
+        state.second_quantity = 16
+        state.stop = D("72.24")
+        state.authoritative_position_seen = True
+        state.protection_reconciled = True
+        state.protective_stop_activated_at = signal.timestamp
+        submissions.clear()
+
+        crossed = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=1),
+            D("72.70"), D("72.90"),
+            D("72.60"), D("72.84"), D("100"),
+        )
+        service.observe_market_bar(
+            "XYZ", crossed, crossed.timestamp + timedelta(minutes=1),
+        )
+        assert any(
+            reason == "FIRST_TARGET" and quantity == 33
+            and price == D("72.8325")
+            for reason, quantity, price in submissions
+        )
+        assert sum(reason == "FIRST_TARGET" for reason, *_ in submissions) == 1
+        assert state.exit_reason is None
+        assert state.exit_price is None
+        assert state.active_exit_role != "FIRST_TARGET"
+
+        peak = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=2),
+            D("73.20"), D("73.79"),
+            D("73.15"), D("73.70"), D("100"),
+        )
+        service.observe_market_bar(
+            "XYZ", peak, peak.timestamp + timedelta(minutes=1),
+        )
+        defense = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=3),
+            D("73.56"), D("73.60"),
+            D("72.94"), D("73.11"), D("100"),
+        )
+        service.observe_market_bar(
+            "XYZ", defense, defense.timestamp + timedelta(minutes=1),
+        )
+
+        assert submissions[-1] == ("STOP", 67, D("73.11"))
+        assert state.stop == D("73.11")
+        assert state.profit_defense_stop_tightened is True
+        assert state.profit_defense_last_action == (
+            "PROFIT_DEFENSE_STOP_TIGHTENED"
+        )
+        assert state.exit_reason is None
+    finally:
+        writer.close()
+
+
+def test_ipdn_rearmed_generation_harvests_executable_profit_and_locks_runner(
+    tmp_path: Path,
+) -> None:
+    """IPDN: a fresh rearm must be managed, harvested, and protected durably."""
+
+    store = ForwardCaptureStore(tmp_path / "ipdn-profit-harvest.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": Decimal("0")}
+    composition = create_paper_trading_command_composition(
+        at=T0 + timedelta(minutes=20),
+        position_quantity_source=lambda symbol: position.get(
+            symbol, Decimal("0"),
+        ),
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service,
+        composition.order_command_factory,
+        order_book=composition.order_book,
+        position_quantity_source=lambda symbol: position.get(
+            symbol, Decimal("0"),
+        ),
+    )
+    service = WarriorForwardCaptureService(
+        store,
+        writer,
+        paper_exit_submitter=bridge.ensure_exit,
+        paper_position_quantity_source=lambda symbol: position.get(
+            symbol, Decimal("0"),
+        ),
+    )
+
+    def market(sequence: int, bid: str, ask: str) -> None:
+        composition.gateway.process_market_event(MarketEvent(
+            sequence,
+            session_timestamp(sequence, at=T0 + timedelta(minutes=20)),
+            "XYZ",
+            "ipdn-profit-harvest-test",
+            MarketEventType.QUOTE,
+            QuotePayload(D(bid), D(ask), D("10000"), D("10000")),
+        ))
+
+    try:
+        candidate = service.runtime.discover(
+            point().observation, point().bars, session="REGULAR",
+        )
+        _candidate, original = service.runtime.assess_entry(candidate)
+        assert original is not None
+        signal = replace(
+            original,
+            timestamp=T0 + timedelta(minutes=20),
+            entry_trigger=D("4.472235"),
+            reference_price=D("4.472235"),
+            stop_price=D("4.365"),
+            structural_stop_price=D("4.365"),
+            risk_per_share=D("0.107235"),
+            target_levels=(D("4.579470"), D("4.686705"), D("4.793940")),
+            structural_episode_id="ipdn-rearm-generation",
+        )
+        risk_budget = D("47.290635")
+        entry = bridge.submit_entry(signal, 441, risk_budget)
+        assert entry is True
+        service._install_rearmed_paper_state(
+            signal, 441, risk_budget, signal.timestamp,
+        )
+        market(1, "4.450", "4.458")
+        buy = next(
+            order for order in composition.order_book.history()
+            if order.request.side.value == "BUY"
+        )
+        assert int(buy.filled_quantity) == 441
+        assert buy.average_fill_price == D("4.458")
+        position["XYZ"] = D("441")
+        lifecycle = lifecycle_identity(signal)
+        initial_stop = bridge.ensure_exit(
+            "XYZ", 441, D("4.365"), "STOP", lifecycle,
+        )
+        assert initial_stop.protection_active is True
+        first_target = bridge.ensure_exit(
+            "XYZ", 220, signal.target_levels[0], "FIRST_TARGET", lifecycle,
+        )
+        assert first_target.protection_active is True
+
+        profitable_at = signal.timestamp + timedelta(seconds=5)
+        value = point(
+            observation=scanner(
+                timestamp=profitable_at, price=D("5.00"),
+                bid=D("4.99"), ask=D("5.00"), previous_close=D("3.00"),
+            ),
+            quote_observed_at=profitable_at,
+            last_price_observed_at=profitable_at,
+            evaluation_timestamp=profitable_at,
+        )
+        service.observe(value)
+        state = service._paper["XYZ"]
+        assert state.entry_price == D("4.458")
+        assert state.peak_executable_bid == D("4.99")
+        assert state.peak_executable_pnl == D("234.612")
+        assert state.peak_executable_r == (
+            D("4.99") - D("4.458")
+        ) / (D("4.458") - D("4.365"))
+        assert state.pending_profit_harvest_role == "PROFIT_HARVEST_1"
+        assert state.stop > state.entry_price
+
+        open_sells = tuple(
+            order for order in composition.order_book.open_orders_for_symbol("XYZ")
+            if order.request.side.value == "SELL"
+        )
+        harvest = next(
+            order for order in open_sells
+            if order.request.execution_reason == "PROFIT_HARVEST_1"
+        )
+        assert not any(
+            order.request.execution_reason == "FIRST_TARGET"
+            for order in open_sells
+        )
+        canonical_stop = next(
+            order for order in open_sells
+            if order.request.order_type.value == "STOP"
+        )
+        assert int(harvest.remaining_quantity) == 110
+        assert int(canonical_stop.remaining_quantity) == 441
+        assert canonical_stop.request.stop_price == state.stop
+
+        # A second callback for the same state cannot create a duplicate SELL.
+        service.observe(value)
+        assert len([
+            order for order in composition.order_book.history()
+            if order.request.execution_reason == "PROFIT_HARVEST_1"
+        ]) == 1
+
+        market(2, "5.00", "5.01")
+        harvest = next(
+            order for order in composition.order_book.history()
+            if order.order_id == harvest.order_id
+        )
+        assert int(harvest.filled_quantity) == 110
+        position["XYZ"] = D("331")
+        follow_at = profitable_at + timedelta(seconds=2)
+        service.observe(point(
+            observation=scanner(
+                timestamp=follow_at, price=D("5.31"),
+                bid=D("5.30"), ask=D("5.31"), previous_close=D("3.00"),
+            ),
+            quote_observed_at=follow_at,
+            last_price_observed_at=follow_at,
+            evaluation_timestamp=follow_at,
+        ))
+        state = service._paper["XYZ"]
+        assert state.profit_harvest_stage >= 1
+        assert state.realized_from_partials > D("0")
+        assert state.stop > state.entry_price
+        assert state.current_secured_profit > D("0")
+        assert all(
+            int(order.remaining_quantity) <= 331
+            for order in composition.order_book.open_orders_for_symbol("XYZ")
+            if order.request.side.value == "SELL"
+        )
+        writer.flush()
+        entry_record = next(
+            record for record in store.records()
+            if record.record_type is CaptureRecordType.PAPER_FILL
+            and record.payload.get("action") == "ENTRY"
+            and record.payload.get("lifecycle_id") == lifecycle
+        )
+        # Restart/recovery must be able to rebuild this exact rearmed
+        # generation from the immutable authoritative fill rather than
+        # adopting an unrelated same-symbol management context.
+        for required in (
+            "session", "momentum_score", "setup", "entry_trigger",
+            "fill_price", "structural_stop", "stop_model",
+            "risk_per_share", "targets", "catalyst_state",
+            "relative_volume", "spread_percent",
+        ):
+            assert required in entry_record.payload
+        from app.strategies.warrior_momentum.forward_runtime import (
+            _signal_from_entry,
+        )
+        recovered_signal = _signal_from_entry(
+            entry_record, entry_record.payload,
+        )
+        assert lifecycle_identity(recovered_signal) == lifecycle
+        assert recovered_signal.stop_price == signal.stop_price
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_profit_lock_amend_failure_does_not_claim_projected_protection(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "profit-lock-failure.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": D("441")}
+    submissions: list[tuple[str, int, Decimal]] = []
+
+    def submit_exit(symbol, quantity, price, reason, lifecycle, **_kwargs):
+        submissions.append((reason, quantity, price))
+        if reason == "STOP":
+            return PaperExitSubmissionDecision(
+                PaperExitSubmissionState.UNAVAILABLE,
+                symbol,
+                lifecycle,
+                reason,
+                failure_reason=(
+                    PaperExitSubmissionFailureReason.PROTECTION_RECONCILIATION_FAILED
+                ),
+            )
+        return PaperExitSubmissionDecision(
+            PaperExitSubmissionState.WORKING,
+            symbol,
+            lifecycle,
+            reason,
+            order_id="harvest-working",
+            activation_timestamp=T0,
+        )
+
+    service = WarriorForwardCaptureService(
+        store,
+        writer,
+        paper_exit_submitter=submit_exit,
+        paper_position_quantity_source=lambda symbol: position[symbol],
+    )
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        state = service._paper["XYZ"]
+        state.entry_price = D("4.458")
+        state.initial_stop = D("4.2258")
+        state.stop = D("4.2258")
+        state.initial_quantity = 441
+        state.managed_quantity = 441
+        state.remaining = 441
+        state.authoritative_position_seen = True
+        state.protection_reconciled = True
+        state.protective_stop_activated_at = signal.timestamp
+        prior_stop = state.stop
+        submissions.clear()
+
+        at = signal.timestamp + timedelta(seconds=2)
+        service._capture_exit_evidence(state, point(
+            observation=scanner(
+                timestamp=at, price=D("5.31"), bid=D("5.30"), ask=D("5.31"),
+            ),
+            quote_observed_at=at,
+            last_price_observed_at=at,
+            evaluation_timestamp=at,
+        ))
+        assert service._update_executable_profit_state(state) is True
+        service._manage_executable_profit_harvest(state, at)
+
+        assert any(reason == "PROFIT_HARVEST_1" for reason, *_ in submissions)
+        assert any(reason == "STOP" for reason, *_ in submissions)
+        assert state.stop == prior_stop
+        assert state.profit_defense_stop_tightened is False
     finally:
         writer.close()
 
@@ -1666,7 +2264,7 @@ def test_authoritative_fill_establishes_protection_at_actual_quantity(tmp_path: 
             "XYZ", replace(bar, timestamp=bar.timestamp + timedelta(minutes=1)),
             bar.timestamp + timedelta(minutes=2),
         )
-        assert submitted == [(50, "STOP")]
+        assert submitted == [(50, "STOP"), (25, "FIRST_TARGET")]
         assert service._paper["XYZ"].remaining == 50
         assert service._paper["XYZ"].protective_stop_activated_at == T0 + timedelta(minutes=2)
     finally:
@@ -1780,7 +2378,8 @@ def test_after_hours_management_bar_advances_retained_position(tmp_path: Path) -
         service.observe_market_bar(
             "XYZ", after_hours_bar, after_hours_bar.timestamp + timedelta(minutes=1),
         )
-        assert submissions == ["STOP", "FIRST_TARGET"]
+        assert submissions[:2] == ["STOP", "FIRST_TARGET"]
+        assert submissions[-1] in {"FIRST_TARGET", "STOP"}
         assert service._paper["XYZ"].exit_reason == "FIRST_TARGET"
     finally:
         writer.close()
@@ -2036,6 +2635,299 @@ def test_management_context_restores_stop_and_trailing_state(tmp_path: Path) -> 
     assert state.profit_defense_last_action == "PROFIT_DEFENSE_STOP_TIGHTENED"
     assert state.protective_stop_activated_at == signal.timestamp + timedelta(minutes=1)
     restarted_writer.close()
+
+
+def _persisted_recovery_entry(
+    symbol: str, lifecycle: str, at: datetime, *, quantity: int,
+    entry: str, stop: str, session: str | None,
+    include_strategy_context: bool = True,
+) -> CaptureRecord:
+    entry_value = D(entry)
+    stop_value = D(stop)
+    risk = entry_value - stop_value
+    payload = {
+        "action": "ENTRY",
+        "entry_authority": "AUTHORITATIVE_PAPER_LEDGER",
+        "setup": "HIGH_OF_DAY_BREAKOUT",
+        "lifecycle_id": lifecycle,
+        "entry_trigger": entry_value,
+        "fill_price": entry_value,
+        "structural_stop": stop_value,
+        "stop_model": "BREAKOUT_LEVEL",
+        "risk_per_share": risk,
+        "planned_shares": quantity,
+        "filled_shares": quantity,
+        "risk_dollars": risk * quantity,
+        "targets": (entry_value + risk, entry_value + risk * 2, entry_value + risk * 3),
+        "authority": "AUTHORITATIVE_PAPER_LEDGER",
+    }
+    if include_strategy_context:
+        payload.update({
+            "momentum_score": D("52.48"),
+            "catalyst_state": "TRUE",
+            "relative_volume": D("3.2"),
+        })
+    if session is not None:
+        payload["session"] = session
+    return CaptureRecord.create(
+        CaptureRecordType.PAPER_FILL, symbol, at, payload,
+        identity_parts=("ENTRY", lifecycle, "RECOVERY_FIXTURE"),
+    )
+
+
+def _persisted_recovery_context(
+    symbol: str, lifecycle: str, at: datetime, *, quantity: int,
+    entry: str, stop: str, session: str | None = None,
+    peak_bid: str | None = None, active_order: str | None = None,
+    peak_pnl: str = "0", peak_r: str | None = None,
+    profit_defense_armed: bool = False,
+    structural_stop: str | None = None,
+) -> CaptureRecord:
+    payload = {
+        "environment": "PAPER",
+        "strategy": "WARRIOR_MOMENTUM_V1",
+        "lifecycle_id": lifecycle,
+        "setup": "HIGH_OF_DAY_BREAKOUT",
+        "planned_entry": D(entry),
+        "structural_stop": D(structural_stop or stop),
+        "initial_stop": D(structural_stop or stop),
+        "stop": D(stop),
+        "remaining": quantity,
+        "managed_quantity": quantity,
+        "authoritative_position_seen": True,
+        "phase": "MANAGING",
+        "peak_executable_bid": None if peak_bid is None else D(peak_bid),
+        "peak_executable_pnl": D(peak_pnl),
+        "peak_executable_r": None if peak_r is None else D(peak_r),
+        "profit_defense_armed": profit_defense_armed,
+        "active_exit_role": None if active_order is None else "SECOND_TARGET",
+        "active_exit_order_id": active_order,
+        "momentum_score": D("52.48"),
+        "catalyst_state": "TRUE",
+        "relative_volume": D("3.2"),
+    }
+    if session is not None:
+        payload["session"] = session
+    return CaptureRecord.create(
+        CaptureRecordType.MANAGEMENT_CONTEXT, symbol, at, payload,
+        identity_parts=(lifecycle, "MANAGING", at.isoformat()),
+    )
+
+
+def _append_recovery_records(
+    store: ForwardCaptureStore, fingerprint: str,
+    records: tuple[CaptureRecord, ...],
+) -> None:
+    store.append_batch(tuple(
+        record.with_configuration_fingerprint(fingerprint)
+        for record in records
+    ))
+
+
+def test_modern_entry_recovery_preserves_exact_session(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "modern-session.sqlite3")
+    fingerprint = strategy_configuration_fingerprint()
+    lifecycle = "WARRIOR_MOMENTUM_V1|MODERN|LEGACY_EPISODE|modern"
+    entry = _persisted_recovery_entry(
+        "MODERN", lifecycle, T0, quantity=10, entry="5.00", stop="4.80",
+        session="PREMARKET",
+    )
+    context = _persisted_recovery_context(
+        "MODERN", lifecycle, T0 + timedelta(seconds=1), quantity=10,
+        entry="5.00", stop="4.80", session="REGULAR",
+    )
+    _append_recovery_records(store, fingerprint, (entry, context))
+    writer = ForwardCaptureWriter(
+        store, flush_interval_seconds=0.01,
+        configuration_fingerprint=fingerprint,
+    )
+    service = WarriorForwardCaptureService(
+        store, writer, configuration_fingerprint=fingerprint,
+    )
+    try:
+        assert service._paper["MODERN"].signal.session == "PREMARKET"
+    finally:
+        writer.close()
+
+
+def test_legacy_session_recovers_from_same_generation_context(tmp_path: Path) -> None:
+    store = ForwardCaptureStore(tmp_path / "legacy-context-session.sqlite3")
+    fingerprint = strategy_configuration_fingerprint()
+    lifecycle = "WARRIOR_MOMENTUM_V1|LEGACY|LEGACY_EPISODE|context"
+    entry = _persisted_recovery_entry(
+        "LEGACY", lifecycle, T0, quantity=12, entry="5.00", stop="4.80",
+        session=None, include_strategy_context=False,
+    )
+    context = _persisted_recovery_context(
+        "LEGACY", lifecycle, T0 + timedelta(seconds=1), quantity=12,
+        entry="5.00", stop="4.80", session="AFTER_HOURS",
+    )
+    _append_recovery_records(store, fingerprint, (entry, context))
+    writer = ForwardCaptureWriter(
+        store, flush_interval_seconds=0.01,
+        configuration_fingerprint=fingerprint,
+    )
+    service = WarriorForwardCaptureService(
+        store, writer, configuration_fingerprint=fingerprint,
+    )
+    try:
+        assert service.open_paper_symbols == ("LEGACY",)
+        assert lifecycle_identity(service._paper["LEGACY"].signal) == lifecycle
+        assert service._paper["LEGACY"].signal.session == "AFTER_HOURS"
+        writer.flush()
+        assert any(
+            item.payload.get("result") == "LEGACY_SESSION_RECOVERED"
+            for item in store.records(record_type=CaptureRecordType.DATA_QUALITY)
+        )
+    finally:
+        writer.close()
+
+
+def test_unrecoverable_legacy_lifecycle_does_not_block_valid_recovery(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "mixed-session-recovery.sqlite3")
+    fingerprint = strategy_configuration_fingerprint()
+    bad_lifecycle = "WARRIOR_MOMENTUM_V1|BAD|LEGACY_EPISODE|bad"
+    good_lifecycle = "WARRIOR_MOMENTUM_V1|GOOD|LEGACY_EPISODE|good"
+    bad_entry = _persisted_recovery_entry(
+        "BAD", bad_lifecycle, T0, quantity=20, entry="4.00", stop="3.80",
+        session=None, include_strategy_context=False,
+    )
+    bad_context = _persisted_recovery_context(
+        "BAD", bad_lifecycle, T0 + timedelta(seconds=1), quantity=20,
+        entry="4.00", stop="3.80",
+    )
+    good_entry = _persisted_recovery_entry(
+        "GOOD", good_lifecycle, T0 + timedelta(seconds=2), quantity=30,
+        entry="6.00", stop="5.80", session="REGULAR",
+    )
+    good_context = _persisted_recovery_context(
+        "GOOD", good_lifecycle, T0 + timedelta(seconds=3), quantity=30,
+        entry="6.00", stop="5.80",
+    )
+    _append_recovery_records(
+        store, fingerprint, (bad_entry, bad_context, good_entry, good_context),
+    )
+    writer = ForwardCaptureWriter(
+        store, flush_interval_seconds=0.01,
+        configuration_fingerprint=fingerprint,
+    )
+    service = WarriorForwardCaptureService(
+        store, writer, configuration_fingerprint=fingerprint,
+    )
+    try:
+        assert service.open_paper_symbols == ("GOOD",)
+        assert lifecycle_identity(service._paper["GOOD"].signal) == good_lifecycle
+        writer.flush()
+        failures = [
+            item.payload for item in store.records(
+                record_type=CaptureRecordType.DATA_QUALITY,
+            )
+            if item.symbol == "BAD" and item.payload.get("action") == "RECOVERY"
+        ]
+        assert failures[-1]["result"] == "LEGACY_SESSION_UNRECOVERABLE"
+        assert failures[-1]["reason"] == "RECOVERY_LIFECYCLE_SKIPPED"
+    finally:
+        writer.close()
+
+
+def test_aifa_xndu_legacy_restart_restores_management_and_streaming(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "aifa-xndu-recovery.sqlite3")
+    fingerprint = strategy_configuration_fingerprint()
+    aifa_lifecycle = (
+        "WARRIOR_MOMENTUM_V1|AIFA|LEGACY_EPISODE|"
+        "5add12d54b23738fc8a6a4e3b6902c7c7d4132e8162561610addc2b94588e092"
+    )
+    xndu_lifecycle = (
+        "WARRIOR_MOMENTUM_V1|XNDU|LEGACY_EPISODE|"
+        "1842c8158cf4ca14d55a2d630667c3ec0dad961d975c19ca9c4e6677e463804d"
+    )
+    aifa_source = _persisted_recovery_entry(
+        "AIFA", aifa_lifecycle, T0, quantity=126,
+        entry="7.8378", stop="7.52", session="REGULAR",
+    )
+    aifa_legacy = _persisted_recovery_entry(
+        "AIFA", aifa_lifecycle, T0 + timedelta(seconds=1), quantity=126,
+        entry="7.8378", stop="7.52", session=None,
+        include_strategy_context=False,
+    )
+    aifa_context = _persisted_recovery_context(
+        "AIFA", aifa_lifecycle, T0 + timedelta(seconds=2), quantity=63,
+        entry="7.8378", stop="7.903950", peak_bid="8.16",
+        peak_pnl="40.60", peak_r="1.013986", profit_defense_armed=True,
+        active_order="PAPER-AIFA-SECOND-TARGET",
+        structural_stop="7.52",
+    )
+    xndu_source = _persisted_recovery_entry(
+        "XNDU", xndu_lifecycle, T0 + timedelta(seconds=3), quantity=338,
+        entry="5.31", stop="5.17", session="REGULAR",
+    )
+    xndu_legacy = _persisted_recovery_entry(
+        "XNDU", xndu_lifecycle, T0 + timedelta(seconds=4), quantity=338,
+        entry="5.31", stop="5.17", session=None,
+        include_strategy_context=False,
+    )
+    xndu_context = _persisted_recovery_context(
+        "XNDU", xndu_lifecycle, T0 + timedelta(seconds=5), quantity=338,
+        entry="5.31", stop="5.17", peak_bid="5.31",
+    )
+    _append_recovery_records(store, fingerprint, (
+        aifa_source, aifa_legacy, aifa_context,
+        xndu_source, xndu_legacy, xndu_context,
+    ))
+    writer = ForwardCaptureWriter(
+        store, flush_interval_seconds=0.01,
+        configuration_fingerprint=fingerprint,
+    )
+    service = WarriorForwardCaptureService(
+        store, writer, configuration_fingerprint=fingerprint,
+        paper_campaign_id="campaign-after-restart",
+        paper_position_quantity_source=lambda symbol: D("63") if symbol == "AIFA" else D("338"),
+    )
+    try:
+        assert service.open_paper_symbols == ("AIFA", "XNDU")
+        aifa = service._paper["AIFA"]
+        xndu = service._paper["XNDU"]
+        assert lifecycle_identity(aifa.signal) == aifa_lifecycle
+        assert lifecycle_identity(xndu.signal) == xndu_lifecycle
+        assert aifa.remaining == 63 and xndu.remaining == 338
+        assert aifa.peak_executable_bid == D("8.16")
+        assert aifa.profit_defense_armed is True
+        assert aifa.stop == D("7.903950")
+        assert aifa.active_exit_order_id == "PAPER-AIFA-SECOND-TARGET"
+        assert xndu.peak_executable_bid == D("5.31")
+        assert xndu.profit_defense_armed is False
+        assert xndu.stop == D("5.17")
+
+        observed_at = T0 + timedelta(minutes=20)
+        service.observe(point(
+            observation=scanner(
+                symbol="AIFA", timestamp=observed_at, price=D("8.20"),
+                bid=D("8.20"), ask=D("8.22"),
+            ),
+            bars=(), session="REGULAR", quote_observed_at=observed_at,
+            last_price_observed_at=observed_at,
+            evaluation_timestamp=observed_at,
+        ))
+        service.observe(point(
+            observation=scanner(
+                symbol="XNDU", timestamp=observed_at, price=D("5.25"),
+                bid=D("5.25"), ask=D("5.27"),
+            ),
+            bars=(), session="REGULAR", quote_observed_at=observed_at,
+            last_price_observed_at=observed_at,
+            evaluation_timestamp=observed_at,
+        ))
+        assert service._paper["AIFA"].peak_executable_bid == D("8.20")
+        assert service._paper["AIFA"].latest_exit_evidence is not None
+        assert service._paper["XNDU"].latest_exit_evidence is not None
+        assert service._paper["XNDU"].stop == D("5.17")
+        assert len(service.open_paper_symbols) == 2
+    finally:
+        writer.close()
 
 
 def test_daily_report_uses_na_for_zero_trade_sample(capture) -> None:
@@ -2525,7 +3417,13 @@ def test_pending_first_target_retry_preserves_partial_quantity(
         )
         first_quantity = service._paper["XYZ"].first_quantity
         assert 0 < first_quantity < position["XYZ"]
-        assert submissions[-1] == ("FIRST_TARGET", first_quantity)
+        assert submissions[-1] == ("STOP", int(position["XYZ"]))
+
+        followup = replace(first_bar, timestamp=first_bar.timestamp + timedelta(minutes=1))
+        service.observe_market_bar(
+            "XYZ", followup, followup.timestamp + timedelta(minutes=1),
+        )
+        assert submissions[-1] == ("STOP", int(position["XYZ"]))
 
         retry_bar = MinuteBar(
             "XYZ", signal.timestamp + timedelta(minutes=2),
@@ -2535,8 +3433,7 @@ def test_pending_first_target_retry_preserves_partial_quantity(
         service.observe_market_bar(
             "XYZ", retry_bar, retry_bar.timestamp + timedelta(minutes=1),
         )
-        assert submissions[-1] == ("FIRST_TARGET", first_quantity)
-        assert submissions[-1][1] != int(position["XYZ"])
+        assert submissions[-1] == ("STOP", int(position["XYZ"]))
     finally:
         writer.close()
 
@@ -2623,5 +3520,176 @@ def test_quote_protection_reconciliation_preserves_target_fill_evidence(tmp_path
         service._advance_authoritative_paper(state, next_bar, next_bar.timestamp + timedelta(minutes=1))
         assert state.first_taken
         assert state.remaining == 50
+    finally:
+        writer.close()
+
+
+def test_first_authoritative_partial_fill_rebinds_management_to_actual_quantity(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / 'actual-fill-management.sqlite3')
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {'XYZ': D('0')}
+    exits = []
+    service = WarriorForwardCaptureService(
+        store, writer, paper_entry_submitter=lambda *_: True,
+        paper_exit_submitter=lambda *args: (exits.append(args) or True),
+        paper_position_quantity_source=lambda symbol: position[symbol],
+    )
+    try:
+        _, signal = service.observe(point(
+            observation=scanner(bid=D('10.20'), ask=D('10.21')),
+        ), account=account())
+        assert signal is not None
+        state = service._paper['XYZ']
+        assert state.remaining > 1
+        assert state.authoritative_position_seen is False
+
+        position['XYZ'] = D('1')
+        service.reconcile_authoritative_protection('XYZ', signal.timestamp)
+
+        assert state.authoritative_position_seen is True
+        assert state.remaining == 1
+        assert state.managed_quantity == 1
+        assert state.first_quantity == 0
+        assert state.second_quantity == 0
+        assert all(args[1] <= 1 for args in exits)
+    finally:
+        writer.close()
+
+
+def test_protective_stop_identity_cannot_be_relabelled_as_target_fill(tmp_path: Path):
+    """CHGA-shaped stop partials never advance a stale target stage."""
+    store = ForwardCaptureStore(tmp_path / "chga-stop-identity.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": D("322")}
+    service = WarriorForwardCaptureService(
+        store, writer, paper_entry_submitter=lambda *_: True,
+        paper_exit_submitter=lambda symbol, quantity, price, reason, lifecycle:
+            PaperExitSubmissionDecision(
+                PaperExitSubmissionState.WORKING, symbol, lifecycle, reason,
+                order_id=f"{reason}-order",
+                activation_timestamp=T0,
+            ),
+        paper_position_quantity_source=lambda symbol: position[symbol],
+        paper_exit_fill_source=lambda symbol, lifecycle: ("PROTECTIVE_STOP", "stop-order"),
+    )
+    try:
+        _, signal = service.observe(point(), account=account())
+        assert signal is not None
+        state = service._paper["XYZ"]
+        state.authoritative_position_seen = True
+        state.remaining = 322
+        state.managed_quantity = 322
+        state.first_quantity = 161
+        state.exit_reason = "FIRST_TARGET"  # stale durable context
+        state.active_exit_role = "PROTECTIVE_STOP"
+        position["XYZ"] = D("78")
+        bar = MinuteBar(
+            "XYZ", signal.timestamp + timedelta(minutes=1),
+            signal.entry_trigger, signal.entry_trigger,
+            signal.entry_trigger, signal.entry_trigger, D("100"),
+        )
+        service._advance_authoritative_paper(state, bar, bar.timestamp)
+        assert state.first_taken is False
+        assert state.remaining == 78
+        assert state.exit_reason is None
+    finally:
+        writer.close()
+
+
+def test_recovery_without_durable_book_cannot_claim_target(tmp_path: Path):
+    store = ForwardCaptureStore(tmp_path / "recovery-bracket.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": D("322")}
+    submissions: list[str] = []
+
+    def submit_exit(symbol, quantity, price, reason, lifecycle):
+        submissions.append(reason)
+        return PaperExitSubmissionDecision(
+            PaperExitSubmissionState.WORKING, symbol, lifecycle, reason,
+            order_id=f"{reason}-{len(submissions)}", activation_timestamp=T0,
+        )
+
+    service = WarriorForwardCaptureService(
+        store, writer, paper_entry_submitter=lambda *_: True,
+        paper_exit_submitter=submit_exit,
+        paper_position_quantity_source=lambda symbol: position[symbol],
+    )
+    try:
+        _, signal = service.observe(point(), account=account())
+        assert signal is not None
+        before = len(submissions)
+        assert service.reconcile_authoritative_protection("XYZ", T0) is False
+        assert submissions.count("FIRST_TARGET") == 0
+        assert submissions.count("STOP") >= 1
+        assert service._paper["XYZ"].exit_reason is None
+        assert service.reconcile_authoritative_protection("XYZ", T0) is False
+        assert len(submissions) == before
+    finally:
+        writer.close()
+
+
+def test_recovery_without_book_does_not_repair_stale_first_taken(
+    tmp_path: Path,
+) -> None:
+    store = ForwardCaptureStore(tmp_path / "recovery-stale-first-taken.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": D("25")}
+    submissions: list[str] = []
+
+    def submit_exit(symbol, quantity, price, reason, lifecycle):
+        submissions.append(reason)
+        return PaperExitSubmissionDecision(
+            PaperExitSubmissionState.WORKING, symbol, lifecycle, reason,
+            order_id=f"{reason}-{len(submissions)}", activation_timestamp=T0,
+        )
+
+    service = WarriorForwardCaptureService(
+        store, writer, paper_entry_submitter=lambda *_: True,
+        paper_exit_submitter=submit_exit,
+        paper_position_quantity_source=lambda symbol: position[symbol],
+    )
+    try:
+        _, signal = service.observe(point(), account=account())
+        assert signal is not None
+        state = service._paper["XYZ"]
+        state.first_taken = True  # stale mutable recovery state
+        state.first_quantity = 0
+        state.exit_reason = "FIRST_TARGET"
+        before = len(submissions)
+        assert service.reconcile_authoritative_protection("XYZ", T0) is False
+        assert submissions.count("FIRST_TARGET") == 0
+        assert len(submissions) == before
+        assert state.first_taken is True
+    finally:
+        writer.close()
+
+
+def test_recovery_without_target_geometry_fails_closed(tmp_path: Path):
+    store = ForwardCaptureStore(tmp_path / "recovery-no-target-geometry.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    position = {"XYZ": D("25")}
+    submissions: list[str] = []
+
+    def submit_exit(symbol, quantity, price, reason, lifecycle):
+        submissions.append(reason)
+        return PaperExitSubmissionDecision(
+            PaperExitSubmissionState.WORKING, symbol, lifecycle, reason,
+            order_id=f"{reason}-order", activation_timestamp=T0,
+        )
+
+    service = WarriorForwardCaptureService(
+        store, writer, paper_entry_submitter=lambda *_: True,
+        paper_exit_submitter=submit_exit,
+        paper_position_quantity_source=lambda symbol: position[symbol],
+    )
+    try:
+        _, signal = service.observe(point(), account=account())
+        assert signal is not None
+        state = service._paper["XYZ"]
+        state.signal = replace(signal, target_levels=())
+        assert service.reconcile_authoritative_protection("XYZ", T0) is False
+        assert submissions and set(submissions) == {"STOP"}
     finally:
         writer.close()

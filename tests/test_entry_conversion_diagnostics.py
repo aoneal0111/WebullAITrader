@@ -73,3 +73,114 @@ def test_durable_artifact_contains_bounded_entry_conversion_section(tmp_path):
     assert payload["entry_conversion"]["counters"]["entry_authorizations"] == 1
     assert payload["entry_conversion"]["bounds"]["lifecycle_records"] == 256
 
+
+def test_execution_subtype_counters_and_quote_age_survive_record_eviction():
+    diagnostics = PerformanceDiagnostics()
+    for index in range(700):
+        diagnostics.record_entry_funnel(
+            "TNON", "EXECUTION_QUOTE_REJECTED", outcome="QUOTE_REJECTED_BID_STALE",
+            bid_timestamp_age=Decimal("6.5"), last_trade_timestamp_age=Decimal("1.2"),
+            processing_age=Decimal("0.3"), delivery_age=Decimal("0.4"),
+        )
+    metrics = diagnostics.entry_conversion_metrics()
+    assert metrics["execution_gate_counters"]["QUOTE_REJECTED_BID_STALE"] == 700
+    assert metrics["quote_age_summary"]["bid_age"]["count"] == 700
+    assert metrics["quote_age_summary"]["bid_age"]["p90"] == 6.5
+    assert len(metrics["funnel_records"]) == 512
+
+
+def test_all_gate_counter_families_are_independent_of_bounded_records():
+    diagnostics = PerformanceDiagnostics()
+    for reason in (
+        "ENTRY_PRICE_DISPLACED_PERCENT", "ENTRY_PRICE_DISPLACED_ABSOLUTE",
+        "ENTRY_PRICE_DISPLACED_BOTH", "ENTRY_PRICE_INVALID", "ENTRY_PRICE_BELOW_STOP",
+        "RISK_REJECTED_STOP_DISTANCE", "RISK_REJECTED_ENGINE", "RISK_REJECTED_EXPOSURE",
+        "CLEAR_PRICE_DISPLACEMENT", "CLEAR_QUOTE_FRESHNESS", "CLEAR_RISK",
+    ):
+        stage = "TECHNICAL_SIGNAL_CLEARED" if reason.startswith("CLEAR_") else "ADAPTIVE_PRICE_GATE"
+        diagnostics.record_entry_funnel("TNON", stage, outcome="REJECTED", reason=reason)
+    counters = diagnostics.entry_conversion_metrics()["execution_gate_counters"]
+    assert counters["ENTRY_PRICE_DISPLACED_PERCENT"] == 1
+    assert counters["RISK_REJECTED_EXPOSURE"] == 1
+    assert counters["CLEAR_QUOTE_FRESHNESS"] == 1
+
+
+def test_detector_diagnostics_are_exported_without_raw_payloads(tmp_path):
+    class Provider:
+        def snapshot(self):
+            return {"TNON": {"MOMENTUM_ACCELERATION": {
+                "state": "NOT_FORMED", "first_failed_predicate": "LIFETIME_EXCEEDED",
+                "summary": {"observation_count": 3, "velocity": "0.4"},
+            }}}
+        def all_transitions(self):
+            return {"TNON": ({"state": "INVALIDATED", "setup_type": "MOMENTUM_ACCELERATION"},)}
+        def unique_episode_counts(self):
+            return {"MOMENTUM_ACCELERATION": {
+                "unique_setup_episodes": 2, "unique_triggered_episodes": 1,
+            }}
+    diagnostics = PerformanceDiagnostics()
+    path = tmp_path / "detectors.json"
+    diagnostics.start_run(artifact_path=path, flush_seconds=0.05)
+    diagnostics.register_detector_diagnostics(Provider())
+    diagnostics.request_checkpoint()
+    diagnostics.finish_run()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    section = payload["entry_conversion"]
+    assert section["detector_diagnostics"]["TNON"]["MOMENTUM_ACCELERATION"]["summary"]["observation_count"] == 3
+    assert section["detector_transitions"]["TNON"][0]["state"] == "INVALIDATED"
+    assert section["unique_setup_episodes"]["MOMENTUM_ACCELERATION"] == 2
+    assert "raw_payload" not in json.dumps(section)
+
+
+def test_price_gate_samples_and_distributions_survive_eviction(tmp_path):
+    diagnostics = PerformanceDiagnostics()
+    for index in range(700):
+        diagnostics.record_price_gate_sample(
+            symbol=f"S{index}", setup_type="RECLAIM_CONTINUATION",
+            lifecycle_id=f"life-{index}", evaluation_timestamp=datetime.now(UTC),
+            structural_trigger=Decimal("1.560780"), trigger_age_seconds=Decimal("2.5"),
+            entry_ready_age_seconds=Decimal("1.2"), signal_age_seconds=Decimal("0.4"),
+            ask=Decimal("1.600"), bid=Decimal("1.590"), spread=Decimal("0.010"),
+            risk_normalized_extension=Decimal("0.8"), actual_displacement_percent=Decimal("2.5128"),
+            remaining_first_target_r=Decimal("0.7"), remaining_final_target_r=Decimal("2.1"),
+            continuation_class="RECLAIM", gate_result="ENTRY_PRICE_DISPLACED_PERCENT",
+        )
+    metrics = diagnostics.entry_conversion_metrics()
+    assert len(metrics["price_gate_samples"]) == 512
+    assert metrics["price_gate_result_counters"]["ENTRY_PRICE_DISPLACED_PERCENT"] == 700
+    assert metrics["price_gate_continuation_rejection_counters"]["RECLAIM"] == 700
+    assert metrics["price_gate_distributions"]["actual_displacement_percent"]["count"] == 700
+    assert metrics["price_gate_by_setup_type"]["RECLAIM_CONTINUATION"]["result_counters"]["ENTRY_PRICE_DISPLACED_PERCENT"] == 700
+    serialized = json.dumps(metrics)
+    assert "raw_payload" not in serialized
+
+
+def test_price_gate_diagnostic_failure_is_contained():
+    diagnostics = PerformanceDiagnostics()
+    diagnostics.record_price_gate_sample(
+        symbol="TNON", setup_type="BULL_FLAG", gate_result="ACCEPTED",
+        actual_displacement_percent=object(), lifecycle_id=object(),
+    )
+    metrics = diagnostics.entry_conversion_metrics()
+    assert metrics["price_gate_result_counters"]["ACCEPTED"] == 1
+
+
+def test_price_gate_artifact_contains_bounded_diagnostics(tmp_path):
+    diagnostics = PerformanceDiagnostics()
+    path = tmp_path / "price-gate.json"
+    diagnostics.start_run(artifact_path=path, flush_seconds=0.05)
+    diagnostics.record_price_gate_sample(
+        symbol="TGE", setup_type="RECLAIM_CONTINUATION", lifecycle_id="episode-1",
+        structural_trigger=Decimal("1.560780"), ask=Decimal("1.600"),
+        effective_max_execution_price=Decimal("1.589462"),
+        actual_displacement_percent=Decimal("2.5128"),
+        gate_result="ENTRY_PRICE_DISPLACED_PERCENT", continuation_class="RECLAIM",
+    )
+    diagnostics.request_checkpoint()
+    diagnostics.finish_run()
+    section = json.loads(path.read_text(encoding="utf-8"))["entry_conversion"]
+    sample = section["price_gate_samples"][0]
+    assert sample["structural_trigger"] == "1.560780"
+    assert sample["ask"] == "1.600"
+    assert sample["effective_max_execution_price"] == "1.589462"
+    assert sample["gate_result"] == "ENTRY_PRICE_DISPLACED_PERCENT"

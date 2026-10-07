@@ -4,8 +4,12 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from app.composition.desktop import _configured_management_context_source
 from app.strategies.warrior_momentum.configuration import WarriorMomentumConfig
-from app.strategies.warrior_momentum.desktop_sidecar import strategy_configuration_fingerprint
+from app.strategies.warrior_momentum.desktop_sidecar import (
+    WarriorDesktopSidecar,
+    strategy_configuration_fingerprint,
+)
 from app.strategies.warrior_momentum.forward_models import (
     CaptureRecord, CaptureRecordType, records_with_configuration_fingerprint,
 )
@@ -50,6 +54,94 @@ def test_configuration_fingerprint_changes_with_effective_policy(tmp_path) -> No
         ),
     )
     assert strategy_configuration_fingerprint(old) != strategy_configuration_fingerprint(new)
+
+
+def test_desktop_management_context_source_uses_configured_runtime_fingerprint(
+    monkeypatch, tmp_path,
+) -> None:
+    default = WarriorMomentumConfig()
+    configured = replace(
+        default,
+        discovery=replace(default.discovery, maximum_price=Decimal("100")),
+    )
+    configured_fingerprint = strategy_configuration_fingerprint(configured)
+    assert configured_fingerprint != strategy_configuration_fingerprint(default)
+    observed: list[tuple[object, str, str | None, bool]] = []
+
+    def available(
+        path, symbol, *, configuration_fingerprint=None,
+        allow_compatible_generation=False, **_kwargs,
+    ):
+        observed.append((
+            path, symbol, configuration_fingerprint,
+            allow_compatible_generation,
+        ))
+        return "configured-lifecycle"
+
+    monkeypatch.setattr(
+        "app.composition.desktop.management_context_available", available,
+    )
+    path = tmp_path / "configured-context.sqlite3"
+    source = _configured_management_context_source(
+        path, configured_fingerprint,
+    )
+
+    assert source("PCVX") == "configured-lifecycle"
+    assert observed == [(path, "PCVX", configured_fingerprint, True)]
+
+    sidecar = WarriorDesktopSidecar(
+        enabled=False,
+        storage_path=path,
+        strategy_config=configured,
+        configuration_fingerprint=configured_fingerprint,
+    )
+    assert sidecar.configuration_fingerprint == configured_fingerprint
+
+
+def test_configured_context_writer_and_desktop_reader_share_fingerprint(
+    tmp_path,
+) -> None:
+    default = WarriorMomentumConfig()
+    configured = replace(
+        default,
+        discovery=replace(default.discovery, maximum_price=Decimal("100")),
+    )
+    configured_fingerprint = strategy_configuration_fingerprint(configured)
+    lifecycle = "WARRIOR_MOMENTUM_V1|PCVX|configured-runtime"
+    path = tmp_path / "configured-pcvx-context.sqlite3"
+    store = ForwardCaptureStore(path)
+    entry = _record(CaptureRecordType.PAPER_FILL, {
+        **_paper_entry_payload(),
+        "lifecycle_id": lifecycle,
+        "filled_shares": 67,
+        "planned_shares": 67,
+        "configuration_fingerprint": configured_fingerprint,
+    })
+    context = _record(CaptureRecordType.MANAGEMENT_CONTEXT, {
+        "environment": "PAPER",
+        "strategy": "WARRIOR_MOMENTUM_V1",
+        "lifecycle_id": lifecycle,
+        "setup": "FLAT_TOP_BREAKOUT",
+        "entry_timestamp": NOW,
+        "planned_entry": "72.56",
+        "structural_stop": "72.24",
+        "stop": "72.24",
+        "first_taken": False,
+        "second_taken": False,
+        "remaining": 67,
+        "authoritative_position_seen": True,
+        "exit_reason": None,
+        "exit_price": None,
+        "protective_stop_activated_at": NOW,
+        "phase": "MANAGING",
+        "configuration_fingerprint": configured_fingerprint,
+    })
+    assert store.append_batch((entry, context)) == (2, 0)
+
+    source = _configured_management_context_source(
+        path, configured_fingerprint,
+    )
+    assert source("XYZ") == lifecycle
 
 
 def test_session_derived_identity_supports_legacy_research_records() -> None:

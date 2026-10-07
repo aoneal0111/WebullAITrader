@@ -7,13 +7,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_FLOOR
+from hashlib import sha256
 from time import perf_counter
 from typing import Callable, Iterable
 
 from app.performance_diagnostics import performance_diagnostics
 from app.configuration.models import PaperSymbolAuthorizationMode
+from app.momentum_scanner.models import ExecutionQuality
 
-from .configuration import WarriorMomentumConfig
+from .configuration import WARRIOR_ENTRY_ALLOWED_SESSIONS, WarriorMomentumConfig
 from .features import build_features, canonical_completed_history
 from .forward_models import (
     CaptureRecord, CaptureRecordType, FloatProvenance,
@@ -54,9 +56,15 @@ from .autonomous_paper import (
 )
 from .models import (
     CandidateStatus, MinuteBar, MomentumCandidate, MomentumEntrySignal,
-    ReasonCode, SetupState,
+    ReasonCode, SetupDetection, SetupState, SetupType,
+)
+from .opportunity_engine import (
+    AdaptiveOpportunityResult, OpportunityReason, WarriorOpportunityAssessment,
+    WarriorOpportunityEngine, WarriorOpportunityState,
+    WarriorOpportunityTransition,
 )
 from .risk import size_position
+from .quick_scalper import StrategyOwner, SymbolOwnershipRegistry
 from .session_risk import (
     assess_overnight_carry, entry_cutoff_reached, flatten_window_reached,
     overnight_session_follows,
@@ -71,6 +79,25 @@ from .shadow_latched import (
 
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
+
+
+# Every currently supported Warrior entry is a long momentum structure whose
+# trigger represents executable acceptance above a defined level. Keep this
+# list explicit so a future non-breakout setup is not silently subjected to a
+# bid-at-trigger rule without a deliberate policy decision.
+_EXECUTABLE_TRIGGER_CONFIRMATION_SETUPS = frozenset({
+    SetupType.HIGH_OF_DAY_BREAKOUT,
+    SetupType.MICRO_PULLBACK,
+    SetupType.BULL_FLAG,
+    SetupType.FLAT_TOP_BREAKOUT,
+    SetupType.MOMENTUM_ACCELERATION,
+    SetupType.MOMENTUM_REACCELERATION,
+    SetupType.RECLAIM_CONTINUATION,
+})
+
+
+def _requires_executable_trigger_confirmation(setup_type: SetupType) -> bool:
+    return setup_type in _EXECUTABLE_TRIGGER_CONFIRMATION_SETUPS
 
 
 @contextmanager
@@ -125,6 +152,17 @@ class _IntelligenceResult:
     treatment_decision: object | None = None
     treatment_lifecycle_id: str | None = None
     canonical_signal_present: bool = False
+    canonical_lifecycle_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingTreatmentSignal:
+    identity: _IntelligenceIdentity
+    symbol: str
+    lifecycle_id: str
+    value: PointInTimeObservation
+    account: PaperAccountContext | None
+    created_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +315,11 @@ class _PaperState:
     authoritative_position_seen: bool = False
     exit_reason: str | None = None
     exit_price: Decimal | None = None
+    # The mutable exit_reason is retained for compatibility with the
+    # management state model, but fill attribution must use the durable order
+    # role whenever the PAPER bridge can provide it.
+    active_exit_role: str | None = None
+    active_exit_order_id: str | None = None
     protective_stop_activated_at: datetime | None = None
     protection_reconciled: bool = False
     risk_budget: Decimal = ZERO
@@ -286,6 +329,30 @@ class _PaperState:
     recent_ranges: tuple[Decimal, ...] = ()
     prior_close: Decimal | None = None
     adaptive_exit_assessment: AdaptiveExitAssessment | None = None
+    initial_stop: Decimal | None = None
+    peak_executable_bid: Decimal | None = None
+    peak_executable_pnl: Decimal = ZERO
+    peak_executable_r: Decimal | None = None
+    realized_from_partials: Decimal = ZERO
+    current_secured_profit: Decimal = ZERO
+    peak_to_current_giveback: Decimal = ZERO
+    profit_harvest_stage: int = 0
+    pending_profit_harvest_role: str | None = None
+    entry_fill_recorded: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _DurableExitLeg:
+    """A bracket leg derived exclusively from the canonical PAPER ledger."""
+
+    role: str
+    working_quantity: int = 0
+    matching_order: object | None = None
+    active_orders: tuple[object, ...] = ()
+
+    @property
+    def is_exact(self) -> bool:
+        return self.matching_order is not None
 
 
 @dataclass(slots=True)
@@ -314,6 +381,7 @@ class WarriorForwardCaptureService:
         paper_entry_rearmer: Callable[..., object] | None = None,
         paper_position_quantity_source: Callable[[str], Decimal] | None = None,
         paper_execution_ownership_source: Callable[[str], bool] | None = None,
+        paper_exit_fill_source: Callable[[str, str | None], tuple[str | None, str | None]] | None = None,
         paper_working_entry_source: Callable[[str, str], bool] | None = None,
         execution_quote_source: ExecutionQuoteSource | None = None,
         execution_permitted: Callable[[], bool] | None = None,
@@ -326,6 +394,8 @@ class WarriorForwardCaptureService:
         decision_intelligence_observer: Callable[..., None] | None = None,
         decision_intelligence_entry_observer: Callable[..., tuple[object | None, object | None]] | None = None,
         paper_entry_intelligence: Callable[..., object] | None = None,
+        opportunity_engine: WarriorOpportunityEngine | None = None,
+        strategy_ownership: SymbolOwnershipRegistry | None = None,
         async_observation_records: bool = False,
         async_decision_intelligence: bool = False,
     ) -> None:
@@ -344,6 +414,7 @@ class WarriorForwardCaptureService:
         self._paper_entry_rearmer = paper_entry_rearmer
         self._paper_position_quantity_source = paper_position_quantity_source
         self._paper_execution_ownership_source = paper_execution_ownership_source
+        self._paper_exit_fill_source = paper_exit_fill_source
         self._paper_working_entry_source = paper_working_entry_source
         self._execution_quote_source = execution_quote_source
         self._execution_permitted = execution_permitted or (lambda: True)
@@ -356,7 +427,27 @@ class WarriorForwardCaptureService:
         self._decision_intelligence_observer = decision_intelligence_observer
         self._decision_intelligence_entry_observer = decision_intelligence_entry_observer
         self._paper_entry_intelligence = paper_entry_intelligence
+        self.opportunity_engine = opportunity_engine or WarriorOpportunityEngine(
+            observer=self._observe_opportunity_transition,
+        )
+        # Bounded generation-bound signal provenance used only to reevaluate
+        # recoverable ARMED/WAITING opportunities from later streaming events.
+        # It cannot create a new generation or survive structural mismatch.
+        self._armed_signals: OrderedDict[
+            tuple[str, str], MomentumEntrySignal
+        ] = OrderedDict()
+        self._armed_signal_capacity = 128
+        self.strategy_ownership = strategy_ownership
         self._async_decision_intelligence = bool(async_decision_intelligence)
+        self._treatment_policy_enabled = self._resolve_treatment_policy_enabled()
+        self._intelligence_redrive_enabled = True
+        self._pending_treatment: OrderedDict[str, _PendingTreatmentSignal] = OrderedDict()
+        self._pending_treatment_capacity = 64
+        self._pending_treatment_lifetime_seconds = Decimal("5")
+        self._latest_observations: OrderedDict[
+            str, tuple[PointInTimeObservation, PaperAccountContext | None]
+        ] = OrderedDict()
+        self._latest_observation_capacity = 128
         # Worker-published immutable snapshot.  Event reads never acquire the
         # intelligence worker/SQLite lock.
         self._linked_treatment_lifecycles: tuple[str, ...] = ()
@@ -365,6 +456,7 @@ class WarriorForwardCaptureService:
                 self._evaluate_intelligence_serialized,
                 maximum_keys=128,
                 autostart=True,
+                completion_callback=self._on_intelligence_publication,
             )
             if async_decision_intelligence and (
                 taxonomy_execution_bridge is not None
@@ -462,31 +554,320 @@ class WarriorForwardCaptureService:
             if current is None or seen_timestamp > current:
                 self._completed_bar_capture_cursor[seen_symbol] = seen_timestamp
 
+    @staticmethod
+    def _opportunity_generation(signal: MomentumEntrySignal) -> str:
+        return lifecycle_identity(signal)
+
+    def _remember_armed_signal(self, signal: MomentumEntrySignal) -> None:
+        key = (signal.symbol.strip().upper(), self._opportunity_generation(signal))
+        self._armed_signals[key] = signal
+        self._armed_signals.move_to_end(key)
+        while len(self._armed_signals) > self._armed_signal_capacity:
+            self._armed_signals.popitem(last=False)
+
+    def _retained_generation_signal(
+        self, candidate: MomentumCandidate,
+    ) -> MomentumEntrySignal | None:
+        """Rebuild the current event for the same recoverable generation.
+
+        A prior trigger may be represented as FORMING, or temporarily have no
+        selected setup, on a later completed-bar detector tick. The already
+        armed generation remains authoritative only for the detector's bounded
+        continuity interval, in the same session, above its structural stop,
+        and absent explicit structural invalidation. A different setup,
+        expired generation, invalidation, or stop breach cannot resurrect it.
+        """
+        current = self.opportunity_engine.get(candidate.symbol)
+        if current is None or current.state not in {
+            WarriorOpportunityState.ARMED,
+            WarriorOpportunityState.WAITING_EXECUTION,
+        }:
+            return None
+        generation = current.assessment.generation_id
+        retained = self._armed_signals.get(
+            (candidate.symbol.strip().upper(), generation)
+        )
+        setup = candidate.setup
+        if retained is None:
+            return None
+        if candidate.price <= retained.stop_price:
+            self.opportunity_engine.invalidate(
+                candidate.symbol, generation, at=candidate.timestamp,
+                reason=OpportunityReason.SETUP_INVALIDATED,
+            )
+            return None
+        age = candidate.timestamp - retained.timestamp
+        if (
+            candidate.session != retained.session
+            or age < timedelta(0)
+            or age > self.runtime.setup_continuity_age
+        ):
+            self.opportunity_engine.expire(
+                candidate.symbol, generation, at=candidate.timestamp,
+            )
+            return None
+        if setup is None:
+            evidence = candidate.setup_evidence
+            if evidence is not None and evidence.structural_invalidation:
+                self.opportunity_engine.invalidate(
+                    candidate.symbol, generation, at=candidate.timestamp,
+                    reason=OpportunityReason.SETUP_INVALIDATED,
+                )
+                return None
+            setup = SetupDetection(
+                setup_type=retained.setup_type,
+                state=SetupState.TRIGGERED,
+                score=retained.setup_score,
+                trigger=retained.entry_trigger,
+                stop_price=retained.stop_price,
+                stop_model=retained.stop_model,
+                structural_episode_id=retained.structural_episode_id,
+                structural_anchor=retained.structural_anchor,
+                structural_entry_trigger=(
+                    retained.structural_entry_trigger or retained.entry_trigger
+                ),
+            )
+        state = getattr(setup.state, "value", setup.state)
+        if state not in {SetupState.FORMING.value, SetupState.TRIGGERED.value}:
+            return None
+        retained_episode = str(retained.structural_episode_id or "").strip()
+        current_episode = str(setup.structural_episode_id or "").strip()
+        same_structure = bool(
+            retained_episode and current_episode
+            and retained_episode == current_episode
+        )
+        if not same_structure:
+            same_structure = (
+                setup.setup_type is retained.setup_type
+                and setup.trigger == retained.entry_trigger
+                and setup.stop_price == retained.stop_price
+            )
+        if not same_structure:
+            return None
+        rebound = replace(
+            candidate,
+            setup=replace(
+                setup, state=SetupState.TRIGGERED,
+                trigger=retained.entry_trigger,
+                stop_price=retained.stop_price,
+                stop_model=retained.stop_model,
+                structural_episode_id=retained.structural_episode_id,
+                structural_entry_trigger=(
+                    retained.structural_entry_trigger or retained.entry_trigger
+                ),
+            ),
+        )
+        refreshed = self.runtime.technical_entry_signal(rebound)
+        if (
+            refreshed is None
+            or self._opportunity_generation(refreshed) != generation
+        ):
+            return None
+        return refreshed
+
+    def _observe_opportunity_transition(
+        self, transition: WarriorOpportunityTransition,
+    ) -> None:
+        stage = {
+            WarriorOpportunityState.ARMED: "OPPORTUNITY_ARMED",
+            WarriorOpportunityState.WAITING_EXECUTION: "OPPORTUNITY_WAITING_EXECUTION",
+            WarriorOpportunityState.EXECUTABLE: "OPPORTUNITY_EXECUTABLE",
+            WarriorOpportunityState.AUTHORIZATION_EVALUATED: "OPPORTUNITY_AUTHORIZATION_EVALUATED",
+            WarriorOpportunityState.AUTHORIZED: "OPPORTUNITY_AUTHORIZED",
+            WarriorOpportunityState.INVALIDATED: "OPPORTUNITY_INVALIDATED",
+            WarriorOpportunityState.EXPIRED: "OPPORTUNITY_EXPIRED",
+            WarriorOpportunityState.REJECTED_HARD_SAFETY: "OPPORTUNITY_REJECTED_HARD_SAFETY",
+        }.get(transition.state)
+        if stage is None:
+            return
+        try:
+            performance_diagnostics.record_entry_funnel(
+                transition.symbol, stage=stage,
+                outcome=transition.state.value,
+                reason=transition.reason.value,
+                timestamp=transition.occurred_at,
+                lifecycle_id=transition.lifecycle_id,
+                generation_id=transition.generation_id,
+            )
+        except Exception:
+            return
+
+    @staticmethod
+    def _bind_opportunity_state(
+        candidate: MomentumCandidate, opportunity: object | None,
+    ) -> MomentumCandidate:
+        if opportunity is None:
+            return candidate
+        assessment = getattr(opportunity, "assessment", None)
+        state = getattr(opportunity, "state", None)
+        reason = getattr(opportunity, "reason", None)
+        return replace(
+            candidate,
+            opportunity_state=getattr(state, "value", None),
+            opportunity_generation_id=getattr(assessment, "generation_id", None),
+            opportunity_reason=getattr(reason, "value", None),
+        )
+
+    def _build_opportunity_assessment(
+        self, value: PointInTimeObservation, candidate: MomentumCandidate,
+        signal: MomentumEntrySignal, *,
+        adaptive_result: AdaptiveOpportunityResult,
+        executable_signal: MomentumEntrySignal | None = None,
+        hard_safety_reason: OpportunityReason | None = None,
+        reason_codes: tuple[OpportunityReason, ...] = (),
+    ) -> WarriorOpportunityAssessment:
+        observation = value.observation
+        decision_at = value.evaluation_timestamp or observation.timestamp
+        structural = signal.structural_entry_trigger or signal.entry_trigger
+        executable_entry = (
+            executable_signal.entry_trigger if executable_signal is not None
+            else observation.ask
+        )
+        spread_cost = (
+            None if observation.bid is None or observation.ask is None
+            else observation.ask - observation.bid
+        )
+        first_r = final_r = None
+        if (
+            executable_entry is not None and spread_cost is not None
+            and spread_cost >= ZERO and executable_entry > signal.stop_price
+        ):
+            risk = executable_entry - signal.stop_price + spread_cost
+            if risk > ZERO and len(signal.target_levels) >= 2:
+                first_r = (signal.target_levels[0] - executable_entry - spread_cost) / risk
+                final_r = (signal.target_levels[-1] - executable_entry - spread_cost) / risk
+        displacement = (
+            None if executable_entry is None or structural <= ZERO
+            else (executable_entry - structural) / structural * HUNDRED
+        )
+        generation = self._opportunity_generation(signal)
+        return WarriorOpportunityAssessment(
+            symbol=signal.symbol, setup_family=signal.setup_type.value,
+            generation_id=generation, lifecycle_id=generation,
+            decision_timestamp=decision_at,
+            scanner_timestamp=candidate.scanner_observation_timestamp or candidate.timestamp,
+            quote_timestamp=value.quote_observed_at,
+            last_timestamp=value.last_price_observed_at,
+            structural_trigger=structural, executable_entry=executable_entry,
+            structural_stop=signal.stop_price,
+            risk_per_share=(
+                executable_signal.risk_per_share if executable_signal is not None
+                else signal.risk_per_share
+            ),
+            target_levels=signal.target_levels,
+            remaining_first_target_r=first_r, remaining_final_target_r=final_r,
+            spread_percent=candidate.spread_percent, execution_cost=spread_cost,
+            execution_quality=candidate.execution_quality.value,
+            dollar_liquidity=candidate.dollar_volume,
+            relative_volume=candidate.relative_volume,
+            volatility_context=candidate.risk_velocity_r_per_minute,
+            catalyst_context=candidate.catalyst_status.value,
+            setup_quality=signal.setup_score,
+            momentum_priority=candidate.momentum_priority,
+            displacement_percent=displacement,
+            adaptive_result=adaptive_result,
+            momentum_score=candidate.score.total,
+            hard_safety_reason=hard_safety_reason, reason_codes=reason_codes,
+            strategy="WARRIOR_MOMENTUM",
+            executable_bid=observation.bid,
+            provider_last_timestamp=value.last_price_observed_at,
+            provider_bid_timestamp=value.quote_observed_at,
+            provider_ask_timestamp=value.quote_observed_at,
+            execution_quote_timestamp=decision_at,
+        )
+
+    def _assess_executable_opportunity(
+        self, value: PointInTimeObservation, candidate: MomentumCandidate,
+        signal: MomentumEntrySignal, *, diagnostic=None,
+    ) -> tuple[WarriorOpportunityAssessment, MomentumEntrySignal | None]:
+        executable = (
+            self._execution_entry_signal(value, candidate, signal, diagnostic=diagnostic)
+            if self.config.adaptive_context_enabled else signal
+        )
+        bid, ask = value.observation.bid, value.observation.ask
+        reward_ok = bool(
+            executable is not None and bid is not None and ask is not None
+            and ask >= bid and remaining_reward_ok(
+                entry=executable.entry_trigger, stop=executable.stop_price,
+                targets=executable.target_levels, spread=ask - bid,
+                minimum_first_r=self.config.entry.minimum_remaining_first_target_r,
+                minimum_final_r=self.config.entry.minimum_remaining_final_target_r,
+            )
+        )
+        reasons: list[OpportunityReason] = []
+        quality_wait = candidate.execution_quality in {
+            ExecutionQuality.POOR, ExecutionQuality.TEMPORARILY_BLOCKED,
+        }
+        if executable is None:
+            reasons.append(OpportunityReason.EXCESSIVE_CURRENT_STRUCTURE_DISPLACEMENT)
+        elif quality_wait:
+            reasons.append(OpportunityReason.EXECUTION_QUALITY_WAIT)
+        elif (
+            _requires_executable_trigger_confirmation(signal.setup_type)
+            and (
+                bid is None
+                or bid < (
+                    signal.structural_entry_trigger or signal.entry_trigger
+                )
+            )
+        ):
+            # A long breakout is not executable merely because the offer
+            # touches its trigger while the bid remains below it. This is a
+            # recoverable condition: preserve the armed generation and
+            # reevaluate it when a later fresh quote proves executable-side
+            # trigger acceptance.
+            reasons.append(
+                OpportunityReason.EXECUTABLE_TRIGGER_NOT_CONFIRMED
+            )
+        elif not reward_ok:
+            reasons.append(OpportunityReason.INSUFFICIENT_CURRENT_REWARD)
+        # Displacement and remaining reward are current executable-market
+        # measurements.  They forbid entry now, but a pullback/tighter market
+        # can repair them while the same technical generation remains valid.
+        # Structural invalidation is owned by the setup lifecycle, not these
+        # adaptive economic checks.
+        result = (
+            AdaptiveOpportunityResult.WAIT
+            if reasons else AdaptiveOpportunityResult.EXECUTABLE
+        )
+        assessment = self._build_opportunity_assessment(
+            value, candidate, signal, adaptive_result=result,
+            executable_signal=executable, reason_codes=tuple(reasons),
+        )
+        return assessment, executable if result is AdaptiveOpportunityResult.EXECUTABLE else None
+
     def observe(
         self, value: PointInTimeObservation,
         *, account: PaperAccountContext | None = None,
+        _treatment_redrive: bool = False,
     ) -> tuple[MomentumCandidate, MomentumEntrySignal | None]:
         observation = value.observation
         symbol = observation.symbol.strip().upper()
+        downstream_clear_reason: str | None = None
+        self._remember_latest_observation(symbol, value, account)
         with _service_stage("execution_price_path", symbol=symbol):
             self._observe_execution_price_path(value)
         live_state = self._paper.get(symbol)
         if (
             live_state is not None
-            and observation.price is not None
             and observation.timestamp >= live_state.signal.timestamp
         ):
-            live_state.maximum_high = (
-                observation.price if live_state.maximum_high is None
-                else max(live_state.maximum_high, observation.price)
-            )
-            self._update_peak(live_state)
-            if live_state.signal.risk_per_share > ZERO:
-                live_state.current_r = (
-                    observation.price - live_state.entry_price
-                ) / live_state.signal.risk_per_share
-                self._update_peak(live_state)
             self._capture_exit_evidence(live_state, value)
+            changed = self._synchronize_authoritative_position(
+                live_state, observation.timestamp,
+            )
+            changed = self._update_executable_profit_state(live_state) or changed
+            changed = self._manage_executable_profit_harvest(
+                live_state, observation.timestamp,
+            ) or changed
+            if changed:
+                self._submit_records((_management_context_record(
+                    symbol, observation.timestamp, live_state.signal, live_state,
+                    phase=(
+                        "EXIT_WORKING"
+                        if live_state.exit_reason is not None else "MANAGING"
+                    ),
+                ),))
         with _service_stage("completed_bar_handling", symbol=symbol):
             completed_snapshot = self._completed_bar_snapshot(value)
             completed = completed_snapshot.completed
@@ -502,6 +883,7 @@ class WarriorForwardCaptureService:
             candidate = self.runtime.discover(
                 observation, completed, session=value.session,
             )
+        candidate = _bind_decision_generation(candidate, value)
         if candidate.discovery_qualified:
             performance_diagnostics.record_entry_funnel(
                 symbol, stage="SCANNER_QUALIFIED", timestamp=value.evaluation_timestamp or observation.timestamp,
@@ -519,10 +901,46 @@ class WarriorForwardCaptureService:
         with _service_stage("entry_assessment", symbol=symbol):
             assessed, signal = self.runtime.assess_entry(candidate)
             technical_signal = self.runtime.technical_entry_signal(candidate)
+        retained_generation = False
+        if technical_signal is None:
+            technical_signal = self._retained_generation_signal(candidate)
+            retained_generation = technical_signal is not None
         if technical_signal is not None:
             performance_diagnostics.record_entry_funnel(
                 symbol, stage="TECHNICAL_SIGNAL", timestamp=value.evaluation_timestamp or observation.timestamp,
             )
+            generation = self._opportunity_generation(technical_signal)
+            self._remember_armed_signal(technical_signal)
+            armed = self.opportunity_engine.get(symbol, generation)
+            if armed is None:
+                armed = self.opportunity_engine.arm(
+                    self._build_opportunity_assessment(
+                        value, candidate, technical_signal,
+                        adaptive_result=AdaptiveOpportunityResult.ARMED,
+                        reason_codes=(OpportunityReason.TECHNICAL_TRIGGER,),
+                    )
+                )
+            assessed = self._bind_opportunity_state(assessed, armed)
+            if (
+                signal is None
+                and (
+                    retained_generation
+                    or self.runtime.momentum_preference_is_only_entry_rejection(
+                        candidate
+                    )
+                )
+            ):
+                # Continue through the existing executable-economics and hard
+                # safety path. The score remains in the signal/assessment and
+                # Opportunity Book rank; it no longer destroys structure.
+                signal = technical_signal
+                assessed = replace(
+                    assessed, status=CandidateStatus.ENTRY_READY,
+                    reason_codes=tuple(
+                        code for code in assessed.reason_codes
+                        if code not in {ReasonCode.RISK_REJECTED, ReasonCode.NO_SETUP}
+                    ),
+                )
         setup = candidate.setup
         setup_state = "ENTRY_READY" if signal is not None else (
             "NO_SETUP" if setup is None else str(setup.state.value).upper()
@@ -558,6 +976,8 @@ class WarriorForwardCaptureService:
                 > self.capture_config.quote_stale_after_seconds
             )
             or (
+                not value.retained_reevaluation
+                and
                 value.delivery_age_seconds is not None
                 and value.delivery_age_seconds
                 > self.capture_config.quote_stale_after_seconds
@@ -566,6 +986,7 @@ class WarriorForwardCaptureService:
         if processing_delayed:
             performance_diagnostics.increment("processing_delayed_events")
         if market_data_stale or processing_delayed:
+            downstream_clear_reason = "CLEAR_QUOTE_FRESHNESS"
             performance_diagnostics.record_entry_funnel(
                 symbol, stage="FRESHNESS_CHECK", outcome="REJECTED",
                 timestamp=value.evaluation_timestamp or observation.timestamp,
@@ -581,7 +1002,30 @@ class WarriorForwardCaptureService:
             timestamp=value.evaluation_timestamp or observation.timestamp,
             reason="PROCESSING_DELAYED" if processing_delayed else None,
         )
+        performance_diagnostics.record_entry_funnel(
+            symbol, stage="RETAINED_SOURCE_AGE",
+            outcome=("RETAINED" if value.retained_reevaluation else "CURRENT"),
+            timestamp=value.evaluation_timestamp or observation.timestamp,
+            retained_source_age=value.retained_source_age_seconds,
+            reevaluation_mailbox_age=value.reevaluation_mailbox_age_seconds,
+            processing_age=value.processing_age_seconds,
+            delivery_age=value.delivery_age_seconds,
+        )
         if market_data_stale or processing_delayed:
+            if technical_signal is not None:
+                wait_reason = (
+                    OpportunityReason.PROCESSING_DELAYED
+                    if processing_delayed else OpportunityReason.PROVIDER_DATA_STALE
+                )
+                waiting = self.opportunity_engine.apply_assessment(
+                    self._build_opportunity_assessment(
+                        value, candidate, technical_signal,
+                        adaptive_result=AdaptiveOpportunityResult.WAIT,
+                        hard_safety_reason=wait_reason,
+                        reason_codes=(wait_reason,),
+                    )
+                )
+                assessed = self._bind_opportunity_state(assessed, waiting)
             assessed = replace(
                 assessed,
                 status=(CandidateStatus.AWAITING_EXECUTION_DATA
@@ -622,12 +1066,14 @@ class WarriorForwardCaptureService:
                     or value.evaluation_timestamp
                     or observation.timestamp
                 )
+                technical_minute = (
+                    value.evaluation_timestamp or observation.timestamp
+                ).replace(second=0, microsecond=0)
+                provenance_outcome = "EXECUTION_QUOTE_REJECTED"
+                provenance_rejection_reason: str | None = "QUOTE_REJECTED_MISSING"
                 if refreshed is not None:
                     quote_age = Decimal(str((evaluated_at - refreshed.bid_timestamp).total_seconds()))
                     last_age = Decimal(str((evaluated_at - refreshed.last_timestamp).total_seconds()))
-                    technical_minute = (
-                        value.evaluation_timestamp or observation.timestamp
-                    ).replace(second=0, microsecond=0)
                     if (
                         refreshed.symbol == symbol
                         and Decimal("0") <= quote_age <= self.capture_config.quote_stale_after_seconds
@@ -636,6 +1082,8 @@ class WarriorForwardCaptureService:
                         # have completed while the bounded request was open.
                         and evaluated_at.replace(second=0, microsecond=0) == technical_minute
                     ):
+                        provenance_outcome = "EXECUTION_QUOTE_ACCEPTED"
+                        provenance_rejection_reason = None
                         performance_diagnostics.record_entry_funnel(
                             symbol, stage="EXECUTION_QUOTE_ACCEPTED",
                             timestamp=evaluated_at,
@@ -649,47 +1097,134 @@ class WarriorForwardCaptureService:
                             last_price_received_timestamp=refreshed.confirmed_at,
                             bid_size=None, ask_size=None,
                         )
+                        refreshed_value = replace(
+                            value, observation=refreshed_observation,
+                            quote_observed_at=refreshed.bid_timestamp,
+                            quote_freshness_seconds=quote_age,
+                            last_price_observed_at=refreshed.last_timestamp,
+                            last_price_freshness_seconds=last_age,
+                            evaluation_timestamp=evaluated_at,
+                            best_bid_size=None,
+                            best_ask_size=None,
+                            quote_provenance="SHARED_EXECUTION_QUOTE_CONFIRMATION",
+                            retained_reevaluation=False,
+                            retained_source_age_seconds=None,
+                            reevaluation_mailbox_age_seconds=Decimal("0"),
+                            processing_age_seconds=Decimal("0"),
+                            delivery_age_seconds=Decimal("0"),
+                        )
                         refreshed_candidate = self.runtime.discover(
                             refreshed_observation, completed, session=value.session,
+                        )
+                        refreshed_candidate = _bind_decision_generation(
+                            refreshed_candidate, refreshed_value,
                         )
                         refreshed_assessed, refreshed_signal = self.runtime.assess_entry(
                             refreshed_candidate
                         )
-                        if refreshed_signal is not None:
-                            candidate = refreshed_candidate
-                            assessed = refreshed_assessed
-                            signal = refreshed_signal
-                            observation = refreshed_observation
-                            value = replace(
-                                value, observation=refreshed_observation,
-                                quote_observed_at=refreshed.bid_timestamp,
-                                quote_freshness_seconds=quote_age,
-                                last_price_observed_at=refreshed.last_timestamp,
-                                last_price_freshness_seconds=last_age,
-                                evaluation_timestamp=evaluated_at,
-                                best_bid_size=None,
-                                best_ask_size=None,
-                                quote_provenance="SHARED_EXECUTION_QUOTE_CONFIRMATION",
+                        refreshed_technical = self.runtime.technical_entry_signal(
+                            refreshed_candidate
+                        )
+                        expected_generation = self._opportunity_generation(technical_signal)
+                        refreshed_generation = (
+                            None if refreshed_technical is None
+                            else self._opportunity_generation(refreshed_technical)
+                        )
+                        generation_matches = (
+                            refreshed_generation == expected_generation
+                            and self.opportunity_engine.quote_matches(
+                                symbol, expected_generation,
                             )
+                        )
+                        # The refreshed assessment is the current decision
+                        # generation even when a downstream gate still says
+                        # WAIT. Never display the old retained decision beside
+                        # the newly confirmed quote.
+                        candidate = refreshed_candidate
+                        assessed = refreshed_assessed
+                        signal = refreshed_signal if generation_matches else None
+                        observation = refreshed_observation
+                        value = refreshed_value
+                        if not generation_matches:
+                            downstream_clear_reason = "CLEAR_QUOTE_GENERATION"
+                            provenance_outcome = "EXECUTION_QUOTE_REJECTED"
+                            provenance_rejection_reason = "QUOTE_REJECTED_OBSOLETE_GENERATION"
+                            waiting = self.opportunity_engine.apply_assessment(
+                                self._build_opportunity_assessment(
+                                    value, refreshed_candidate, technical_signal,
+                                    adaptive_result=AdaptiveOpportunityResult.WAIT,
+                                    hard_safety_reason=OpportunityReason.OBSOLETE_QUOTE_GENERATION,
+                                    reason_codes=(OpportunityReason.OBSOLETE_QUOTE_GENERATION,),
+                                )
+                            )
+                            assessed = self._bind_opportunity_state(assessed, waiting)
+                            performance_diagnostics.record_entry_funnel(
+                                symbol, stage="EXECUTION_QUOTE_REJECTED",
+                                outcome="QUOTE_REJECTED_OBSOLETE_GENERATION",
+                                reason="QUOTE_REJECTED_OBSOLETE_GENERATION",
+                                timestamp=evaluated_at,
+                                lifecycle_id=expected_generation,
+                                returned_generation_id=refreshed_generation,
+                            )
+                        else:
+                            technical_signal = refreshed_technical
+                        if refreshed_signal is not None:
                             if self._account_refresh_source is not None:
                                 account = self._account_refresh_source()
                             if not self._execution_permitted():
                                 signal = None
                     else:
-                        rejection_reason = "STALE_OR_MISMATCHED"
-                        if refreshed.symbol != symbol:
-                            rejection_reason = "SYMBOL_MISMATCH"
-                        elif not (Decimal("0") <= quote_age <= self.capture_config.quote_stale_after_seconds):
-                            rejection_reason = "BID_TIMESTAMP_STALE"
-                        elif not (Decimal("0") <= last_age <= self.capture_config.quote_stale_after_seconds):
-                            rejection_reason = "LAST_TIMESTAMP_STALE"
-                        elif evaluated_at.replace(second=0, microsecond=0) != technical_minute:
-                            rejection_reason = "TECHNICAL_MINUTE_MISMATCH"
+                        downstream_clear_reason = "CLEAR_QUOTE_FRESHNESS"
+                        quote_timestamp = None if refreshed is None else refreshed.bid_timestamp
+                        last_timestamp = None if refreshed is None else refreshed.last_timestamp
+                        quote_age_value = None if refreshed is None else quote_age
+                        last_age_value = None if refreshed is None else last_age
+                        quote_minute = None if refreshed is None else evaluated_at.replace(second=0, microsecond=0)
+                        rejection_reason = "QUOTE_REJECTED_MISSING"
+                        if refreshed is not None and refreshed.symbol != symbol:
+                            rejection_reason = "QUOTE_REJECTED_SYMBOL_MISMATCH"
+                        elif refreshed is not None and not (Decimal("0") <= quote_age <= self.capture_config.quote_stale_after_seconds):
+                            rejection_reason = "QUOTE_REJECTED_BID_STALE"
+                        elif refreshed is not None and not (Decimal("0") <= last_age <= self.capture_config.quote_stale_after_seconds):
+                            rejection_reason = "QUOTE_REJECTED_LAST_TRADE_STALE"
+                        elif refreshed is not None and evaluated_at.replace(second=0, microsecond=0) != technical_minute:
+                            rejection_reason = "QUOTE_REJECTED_TECHNICAL_MINUTE"
+                        elif refreshed is not None and (
+                            refreshed.bid is None or refreshed.ask is None
+                            or refreshed.bid <= 0 or refreshed.ask < refreshed.bid
+                        ):
+                            rejection_reason = "QUOTE_REJECTED_INVALID"
+                        provenance_rejection_reason = rejection_reason
                         performance_diagnostics.record_entry_funnel(
                             symbol, stage="EXECUTION_QUOTE_REJECTED",
                             outcome=rejection_reason,
                             timestamp=evaluated_at,
+                            signal_timestamp=value.evaluation_timestamp or observation.timestamp,
+                            quote_timestamp=quote_timestamp,
+                            bid_timestamp_age=quote_age_value,
+                            last_trade_timestamp_age=last_age_value,
+                            processing_age=value.processing_age_seconds,
+                            delivery_age=value.delivery_age_seconds,
+                            technical_signal_minute=technical_minute,
+                            quote_minute=quote_minute,
+                            bid=(None if refreshed is None else refreshed.bid),
+                            ask=(None if refreshed is None else refreshed.ask),
+                            spread=(None if refreshed is None or refreshed.bid is None or refreshed.ask is None
+                                    else refreshed.ask - refreshed.bid),
                         )
+                try:
+                    provenance_recorder = getattr(
+                        self._execution_quote_source, "record_decision", None,
+                    )
+                    if callable(provenance_recorder):
+                        provenance_recorder(
+                            evaluated_at=evaluated_at,
+                            snapshot=refreshed,
+                            outcome=provenance_outcome,
+                            rejection_reason=provenance_rejection_reason,
+                        )
+                except Exception:
+                    pass
         taxonomy_bridge = self._taxonomy_execution_bridge
         intelligence_identity = self._intelligence_identity(
             value, assessed, completed_version,
@@ -723,6 +1258,7 @@ class WarriorForwardCaptureService:
             if self._account_refresh_source is not None:
                 account = self._account_refresh_source()
             if not self._execution_permitted():
+                downstream_clear_reason = "CLEAR_ACCOUNT"
                 performance_diagnostics.record_entry_funnel(
                     symbol, stage="EXECUTION_PERMISSION", outcome="REJECTED",
                     reason="EXECUTION_NOT_ALLOWED",
@@ -803,7 +1339,26 @@ class WarriorForwardCaptureService:
                         symbol, intelligence_identity, intelligence_request,
                     )
             if treatment_policy_pending:
-                signal = None
+                if self._treatment_policy_enabled:
+                    downstream_clear_reason = "CLEAR_TREATMENT_PENDING"
+                    self._remember_pending_treatment(
+                        intelligence_identity, signal, value, account,
+                    )
+                    performance_diagnostics.record_entry_funnel(
+                        symbol, stage="TREATMENT_PENDING", outcome="REJECTED",
+                        reason="TREATMENT_PUBLICATION_PENDING",
+                        timestamp=value.evaluation_timestamp or observation.timestamp,
+                    )
+                    signal = None
+                else:
+                    # Decision intelligence remains observational when its
+                    # treatment policy is disabled.  A missing research
+                    # publication cannot withhold a canonical PAPER signal.
+                    performance_diagnostics.record_entry_funnel(
+                        symbol, stage="TREATMENT_DISABLED_NONBLOCKING",
+                        outcome="ACCEPTED",
+                        timestamp=value.evaluation_timestamp or observation.timestamp,
+                    )
         else:
             with _service_stage("decision_intelligence", symbol=symbol):
                 if self._decision_intelligence_entry_observer is not None:
@@ -1006,6 +1561,7 @@ class WarriorForwardCaptureService:
                 self.config.session_management.enabled
                 and entry_cutoff_reached(value.observation.timestamp, self.config.session_management)
             ):
+                downstream_clear_reason = "CLEAR_SESSION"
                 shadow_reasons.append(ReasonCode.SESSION_ENTRY_CUTOFF.value)
                 records.append(_transition_record(
                     assessed, ForwardTransition.ENTRY_BLOCKED,
@@ -1023,6 +1579,7 @@ class WarriorForwardCaptureService:
         if signal is not None:
             symbol_authorization = _paper_symbol_authorization(signal, account)
             if signal.symbol in self._paper:
+                downstream_clear_reason = "CLEAR_LIFECYCLE"
                 shadow_reasons.append(ReasonCode.EXECUTION_NOT_ALLOWED.value)
                 records.append(_transition_record(
                     assessed, ForwardTransition.ENTRY_BLOCKED,
@@ -1032,6 +1589,7 @@ class WarriorForwardCaptureService:
                 ))
                 signal = None
             elif not value.halt_state_known:
+                downstream_clear_reason = "CLEAR_SESSION"
                 performance_diagnostics.record_entry_funnel(
                     symbol, stage="HALT_SESSION_GATE", outcome="REJECTED",
                     reason="HALT_UNKNOWN",
@@ -1048,6 +1606,7 @@ class WarriorForwardCaptureService:
                 records.append(blocked)
                 signal = None
             elif account is None:
+                downstream_clear_reason = "CLEAR_ACCOUNT"
                 performance_diagnostics.record_entry_funnel(
                     symbol, stage="ACCOUNT_GATE", outcome="REJECTED",
                     reason="ACCOUNT_UNAVAILABLE",
@@ -1073,12 +1632,25 @@ class WarriorForwardCaptureService:
                     config=self.config.trade_management,
                     maximum_risk_per_share=self.config.entry.maximum_risk_per_share,
                 )
-                executable_signal = (
-                    self._execution_entry_signal(value, assessed, signal)
-                    if self.config.adaptive_context_enabled
-                    else signal
+                opportunity_assessment, executable_signal = self._assess_executable_opportunity(
+                    value, assessed, signal,
+                    diagnostic=lambda reason, **details: performance_diagnostics.record_entry_funnel(
+                        symbol, stage="ADAPTIVE_PRICE_GATE", outcome="REJECTED",
+                        reason=reason, timestamp=value.evaluation_timestamp or observation.timestamp,
+                        setup_type=signal.setup_type.value,
+                        lifecycle_id=lifecycle_identity(signal), **details,
+                    ),
                 )
-                if executable_signal is None:
+                opportunity = self.opportunity_engine.apply_assessment(
+                    opportunity_assessment
+                )
+                assessed = self._bind_opportunity_state(assessed, opportunity)
+                opportunity_reasons = set(opportunity_assessment.reason_codes)
+                if (
+                    OpportunityReason.EXCESSIVE_CURRENT_STRUCTURE_DISPLACEMENT
+                    in opportunity_reasons
+                ):
+                    downstream_clear_reason = "CLEAR_PRICE_DISPLACEMENT"
                     performance_diagnostics.record_entry_funnel(
                         symbol, stage="ADAPTIVE_PRICE_GATE", outcome="REJECTED",
                         reason="ENTRY_PRICE_DISPLACED",
@@ -1095,10 +1667,97 @@ class WarriorForwardCaptureService:
                     ))
                     signal = None
                     position = None
+                elif OpportunityReason.INSUFFICIENT_CURRENT_REWARD in opportunity_reasons:
+                    downstream_clear_reason = "CLEAR_REWARD"
+                    performance_diagnostics.record_entry_funnel(
+                        symbol, stage="REWARD_GATE", outcome="REJECTED",
+                        reason="INSUFFICIENT_REMAINING_REWARD",
+                        timestamp=value.evaluation_timestamp or observation.timestamp,
+                    )
+                    records.append(_transition_record(
+                        assessed, ForwardTransition.ENTRY_BLOCKED,
+                        ("INSUFFICIENT_REMAINING_REWARD",),
+                        ({"gate": "remaining_reward", "passed": False,
+                          "entry": str(opportunity_assessment.executable_entry),
+                          "stop": str(signal.stop_price),
+                          "targets": tuple(str(t) for t in signal.target_levels)},),
+                    ))
+                    shadow_reasons.append("INSUFFICIENT_REMAINING_REWARD")
+                    assessed = replace(
+                        assessed, status=CandidateStatus.AWAITING_EXECUTION_DATA,
+                        reason_codes=tuple(dict.fromkeys((
+                            *assessed.reason_codes,
+                            ReasonCode.INSUFFICIENT_REMAINING_REWARD,
+                        ))),
+                        explanations=(
+                            *assessed.explanations,
+                            "Entry waiting: insufficient reward remains at the current executable price; the same valid generation will be reevaluated.",
+                        ),
+                    )
+                    signal = None
+                    position = None
+                elif OpportunityReason.EXECUTION_QUALITY_WAIT in opportunity_reasons:
+                    downstream_clear_reason = "WAIT_EXECUTION_QUALITY"
+                    performance_diagnostics.record_entry_funnel(
+                        symbol, stage="EXECUTION_QUALITY", outcome="WAIT",
+                        timestamp=value.evaluation_timestamp or observation.timestamp,
+                        reason=assessed.execution_block_reason or assessed.execution_quality.value,
+                        spread=assessed.spread_percent,
+                        lifecycle_id=opportunity_assessment.lifecycle_id,
+                    )
+                    assessed = replace(
+                        assessed,
+                        status=CandidateStatus.AWAITING_EXECUTION_DATA,
+                        reason_codes=tuple(dict.fromkeys((
+                            *assessed.reason_codes,
+                            ReasonCode.EXECUTION_QUALITY_WAIT,
+                        ))),
+                    )
+                    signal = None
+                    position = None
+                elif (
+                    OpportunityReason.EXECUTABLE_TRIGGER_NOT_CONFIRMED
+                    in opportunity_reasons
+                ):
+                    downstream_clear_reason = 'WAIT_EXECUTABLE_TRIGGER'
+                    performance_diagnostics.record_entry_funnel(
+                        symbol, stage='EXECUTABLE_TRIGGER_CONFIRMATION',
+                        outcome='WAIT',
+                        timestamp=value.evaluation_timestamp or observation.timestamp,
+                        reason='EXECUTABLE_TRIGGER_NOT_CONFIRMED',
+                        bid=observation.bid,
+                        trigger=(
+                            signal.structural_entry_trigger
+                            or signal.entry_trigger
+                        ),
+                        lifecycle_id=opportunity_assessment.lifecycle_id,
+                    )
+                    assessed = replace(
+                        assessed,
+                        status=CandidateStatus.AWAITING_EXECUTION_DATA,
+                        explanations=(
+                            *assessed.explanations,
+                            'Entry waiting: the offer reached the trigger but '
+                            'the executable bid has not confirmed it; the same '
+                            'generation will be reevaluated.',
+                        ),
+                    )
+                    signal = None
+                    position = None
                 else:
                     performance_diagnostics.record_entry_funnel(
                         symbol, stage="ADAPTIVE_PRICE_GATE", outcome="ACCEPTED",
                         timestamp=value.evaluation_timestamp or observation.timestamp,
+                    )
+                    performance_diagnostics.record_entry_funnel(
+                        symbol, stage="REWARD_GATE", outcome="ACCEPTED",
+                        timestamp=value.evaluation_timestamp or observation.timestamp,
+                    )
+                    performance_diagnostics.record_entry_funnel(
+                        symbol, stage="EXECUTION_QUALITY", outcome="ACCEPTED",
+                        timestamp=value.evaluation_timestamp or observation.timestamp,
+                        reason=assessed.execution_quality.value,
+                        spread=assessed.spread_percent,
                     )
                     signal = executable_signal
                     position = size_position(
@@ -1108,49 +1767,48 @@ class WarriorForwardCaptureService:
                     existing_exposure=account.existing_exposure,
                     exposure_limit=account.exposure_limit,
                     risk_engine_approved=account.risk_engine_approved,
+                    risk_rejection_reason=account.risk_rejection_reason,
+                    risk_context={
+                        "starting_equity": account.starting_equity,
+                        "current_equity": account.current_equity,
+                        "campaign_loss_fraction": account.campaign_loss_fraction,
+                        "campaign_equity_floor": account.campaign_equity_floor,
+                    },
                     broker_restriction=account.broker_restriction,
                     config=self.config.risk,
                     symbol_authorized=symbol_authorization.authorized,
+                    diagnostic=lambda reason, details: performance_diagnostics.record_entry_funnel(
+                        symbol, stage="RISK_AUTHORIZATION", outcome="REJECTED",
+                        reason=reason, timestamp=value.evaluation_timestamp or observation.timestamp,
+                        setup_type=signal.setup_type.value,
+                        lifecycle_id=lifecycle_identity(signal), **details,
+                    ),
                     )
                 if signal is not None and position is not None and position.approved:
                     performance_diagnostics.record_entry_funnel(
                         symbol, stage="RISK_AUTHORIZATION", outcome="ACCEPTED",
                         timestamp=value.evaluation_timestamp or observation.timestamp,
                     )
-                    bid, ask = value.observation.bid, value.observation.ask
-                    economics_ok = bool(bid is not None and ask is not None and ask >= bid
-                        and remaining_reward_ok(
-                            entry=signal.entry_trigger, stop=signal.stop_price,
-                            targets=signal.target_levels, spread=ask - bid,
-                            minimum_first_r=self.config.entry.minimum_remaining_first_target_r,
-                            minimum_final_r=self.config.entry.minimum_remaining_final_target_r))
-                    if not economics_ok:
-                        performance_diagnostics.record_entry_funnel(
-                            symbol, stage="REWARD_GATE", outcome="REJECTED",
-                            reason="INSUFFICIENT_REMAINING_REWARD",
-                            timestamp=value.evaluation_timestamp or observation.timestamp,
-                        )
-                        records.append(_transition_record(
-                            assessed, ForwardTransition.ENTRY_BLOCKED,
-                            ("INSUFFICIENT_REMAINING_REWARD",),
-                            ({"gate": "remaining_reward", "passed": False,
-                              "entry": str(signal.entry_trigger), "stop": str(signal.stop_price),
-                              "targets": tuple(str(t) for t in signal.target_levels)},),
-                        ))
-                        shadow_reasons.append("INSUFFICIENT_REMAINING_REWARD")
-                        assessed = replace(
-                            assessed, status=CandidateStatus.INELIGIBLE_FOR_EXECUTION,
-                            reason_codes=(*assessed.reason_codes, ReasonCode.INSUFFICIENT_REMAINING_REWARD),
-                            explanations=(*assessed.explanations, "Entry blocked: insufficient reward remaining at the proposed price after a spread allowance."),
-                        )
-                        signal = None
-                        position = None
-                    else:
-                        performance_diagnostics.record_entry_funnel(
-                            symbol, stage="REWARD_GATE", outcome="ACCEPTED",
-                            timestamp=value.evaluation_timestamp or observation.timestamp,
-                        )
                 elif position is not None:
+                    downstream_clear_reason = (
+                        "CLEAR_ACCOUNT"
+                        if ReasonCode.EXECUTION_NOT_ALLOWED in position.reason_codes
+                        else "CLEAR_RISK"
+                    )
+                    hard_reason = (
+                        OpportunityReason.ACCOUNT_NOT_AUTHORIZED
+                        if ReasonCode.EXECUTION_NOT_ALLOWED in position.reason_codes
+                        else OpportunityReason.RISK_NOT_AUTHORIZED
+                    )
+                    hard_assessment = replace(
+                        opportunity_assessment,
+                        hard_safety_reason=hard_reason,
+                        reason_codes=(hard_reason,),
+                    )
+                    assessed = self._bind_opportunity_state(
+                        assessed,
+                        self.opportunity_engine.apply_assessment(hard_assessment),
+                    )
                     performance_diagnostics.record_entry_funnel(
                         symbol, stage="RISK_AUTHORIZATION", outcome="REJECTED",
                         reason=(position.reason_codes[-1].value if position.reason_codes else "RISK_REJECTED"),
@@ -1158,6 +1816,31 @@ class WarriorForwardCaptureService:
                     )
                 if position is not None and position.approved:
                     entry_value_quantity = position.shares
+                    generation = self._opportunity_generation(signal)
+                    ownership_acquired = bool(
+                        self.strategy_ownership is None
+                        or self.strategy_ownership.acquire(
+                            symbol, StrategyOwner.WARRIOR_MOMENTUM, generation,
+                        )
+                    )
+                    if not ownership_acquired:
+                        evaluated = self.opportunity_engine.mark_authorization_evaluated(
+                            symbol, generation,
+                            at=value.evaluation_timestamp or observation.timestamp,
+                            authorized=False,
+                            reason="SYMBOL_OWNED_BY_OTHER_STRATEGY",
+                            risk_result="APPROVED",
+                            sizing_result=f"SHARES_{position.shares}",
+                        )
+                        assessed = self._bind_opportunity_state(assessed, evaluated)
+                        performance_diagnostics.record_entry_funnel(
+                            symbol, stage="PAPER_AUTHORIZATION", outcome="REJECTED",
+                            reason="SYMBOL_OWNED_BY_OTHER_STRATEGY",
+                            timestamp=value.evaluation_timestamp or observation.timestamp,
+                        )
+                        signal = None
+                        position = None
+                if position is not None and position.approved:
                     entry_records, execution_record, authorization_decision = self._open_paper(
                         signal, position.shares, position.risk_dollars,
                         value.float_provenance, symbol_authorization,
@@ -1170,8 +1853,38 @@ class WarriorForwardCaptureService:
                         else "ENTRY_AUTHORIZATION_REFUSED"
                     )
                     records.extend(entry_records)
+                    generation = self._opportunity_generation(signal)
+                    transition_at = value.evaluation_timestamp or observation.timestamp
+                    authorization_reason = (
+                        authorization_decision.reason.value
+                        if authorization_decision is not None
+                        else "ENTRY_AUTHORIZATION_ACCEPTED"
+                        if entry_records else "ENTRY_AUTHORIZATION_REFUSED"
+                    )
+                    evaluated = self.opportunity_engine.mark_authorization_evaluated(
+                        symbol, generation, at=transition_at,
+                        authorized=bool(entry_records),
+                        reason=authorization_reason,
+                        risk_result="APPROVED",
+                        sizing_result=f"SHARES_{position.shares}",
+                    )
+                    assessed = self._bind_opportunity_state(assessed, evaluated)
+                    records.append(_opportunity_authorization_record(
+                        opportunity_assessment,
+                        authorized=bool(entry_records),
+                        reason=authorization_reason,
+                        risk_result="APPROVED",
+                        sizing_result=f"SHARES_{position.shares}",
+                    ))
                     if execution_record is not None:
                         records.append(execution_record)
+                    if not entry_records:
+                        downstream_clear_reason = "CLEAR_ACCOUNT"
+                        if self.strategy_ownership is not None:
+                            self.strategy_ownership.release(
+                                symbol, StrategyOwner.WARRIOR_MOMENTUM,
+                                generation,
+                            )
                     performance_diagnostics.record_entry_funnel(
                         symbol, stage="PAPER_AUTHORIZATION",
                         outcome="ACCEPTED" if entry_records else "REJECTED",
@@ -1179,6 +1892,13 @@ class WarriorForwardCaptureService:
                         reason=(None if entry_records else "PAPER_SUBMITTER_REJECTED"),
                     )
                     if entry_records:
+                        self.opportunity_engine.mark_authorized(
+                            symbol, generation, at=transition_at,
+                        )
+                        pending = self.opportunity_engine.mark_order_intent(
+                            symbol, generation, at=transition_at, submitted=True,
+                        )
+                        assessed = self._bind_opportunity_state(assessed, pending)
                         performance_diagnostics.record_entry_funnel(
                             symbol, stage="ORDER_INTENT", timestamp=value.evaluation_timestamp or observation.timestamp,
                         )
@@ -1300,7 +2020,7 @@ class WarriorForwardCaptureService:
         if technical_signal is not None and signal is None:
             performance_diagnostics.record_entry_funnel(
                 symbol, stage="TECHNICAL_SIGNAL_CLEARED", outcome="REJECTED",
-                reason=(assessed.reason_codes[-1].value if assessed.reason_codes else "DOWNSTREAM_GATE"),
+                reason=(downstream_clear_reason or "CLEAR_LIFECYCLE"),
                 timestamp=value.evaluation_timestamp or observation.timestamp,
             )
         return assessed, signal
@@ -1321,6 +2041,8 @@ class WarriorForwardCaptureService:
         price = Decimal(str(getattr(fill, "fill_price", "0")))
         if not symbol or side not in {"BUY", "SELL"} or quantity <= 0 or timestamp is None:
             return
+        if side == "BUY":
+            self.opportunity_engine.mark_entered(symbol, lifecycle, at=timestamp)
         key = campaign, lifecycle
         state = self._execution_paths.get(key)
         if state is None and side == "BUY":
@@ -1367,6 +2089,16 @@ class WarriorForwardCaptureService:
         ),))
         if Decimal(str(state["quantity"])) <= 0:
             self._execution_paths.pop(key, None)
+            if (
+                self.strategy_ownership is not None
+                and not (
+                    self._paper_execution_ownership_source is not None
+                    and self._paper_execution_ownership_source(symbol)
+                )
+            ):
+                self.strategy_ownership.release(
+                    symbol, StrategyOwner.WARRIOR_MOMENTUM, lifecycle,
+                )
 
     def _record_setup_lifecycle(
         self,
@@ -1734,8 +2466,10 @@ class WarriorForwardCaptureService:
         )
         setup_type = candidate.setup.setup_type
         from app.trade_intelligence.opportunity_memory import PullbackClassification
-        if setup_type.value in {"MICRO_PULLBACK", "BULL_FLAG"}:
+        if setup_type.value in {"MICRO_PULLBACK", "BULL_FLAG", "MOMENTUM_REACCELERATION"}:
             higher_low, reclaim = True, False
+        elif setup_type.value == "RECLAIM_CONTINUATION":
+            higher_low, reclaim = False, True
         else:
             higher_low, reclaim = False, True
         classification = PullbackClassification.HEALTHY.value
@@ -1748,7 +2482,9 @@ class WarriorForwardCaptureService:
             trigger_price=signal.entry_trigger,
             reclaim_level=(candidate.setup.resistance if reclaim else None),
             higher_low=higher_low, reclaim=reclaim,
-            momentum_reaccelerated=False,
+            momentum_reaccelerated=setup_type.value in {
+                "MOMENTUM_ACCELERATION", "MOMENTUM_REACCELERATION",
+            },
             working_entry=False,
             freshness_ok=freshness_ok,
         )
@@ -1798,6 +2534,7 @@ class WarriorForwardCaptureService:
         value: PointInTimeObservation,
         candidate: MomentumCandidate,
         signal: MomentumEntrySignal,
+        diagnostic=None,
     ) -> MomentumEntrySignal | None:
         """Bind a structural trigger to a currently executable PAPER limit.
 
@@ -1806,17 +2543,100 @@ class WarriorForwardCaptureService:
         executable limit; an ask outside that envelope is a missed entry, not
         permission to submit a stale passive order.
         """
+        symbol = candidate.symbol.strip().upper()
+        lifecycle = self._setup_lifecycles.get(symbol, {})
+        evaluated_at = value.evaluation_timestamp or value.observation.timestamp
+        structural = signal.structural_entry_trigger or signal.entry_trigger
+        displacement_percent = self.runtime.execution_displacement_percent(candidate)
+        absolute_outer_limit = Decimal("0.50")
+        maximum_percent_price = structural * (Decimal("1") + displacement_percent / HUNDRED)
+        maximum_absolute_price = structural + absolute_outer_limit
+        maximum = min(maximum_percent_price, maximum_absolute_price)
+
+        def _age(timestamp):
+            try:
+                if timestamp is None or evaluated_at is None:
+                    return None
+                return max(Decimal("0"), Decimal(str((evaluated_at - timestamp).total_seconds())))
+            except Exception:
+                return None
+
+        def _continuation_class():
+            setup_name = signal.setup_type.value
+            if setup_name in {"MOMENTUM_REACCELERATION"}:
+                return "REACCELERATION"
+            if setup_name == "RECLAIM_CONTINUATION":
+                return "RECLAIM"
+            if setup_name in {"MICRO_PULLBACK", "BULL_FLAG"}:
+                return "CONTINUATION"
+            if setup_name in {"HIGH_OF_DAY_BREAKOUT", "FLAT_TOP_BREAKOUT", "MOMENTUM_ACCELERATION"}:
+                return "INITIAL_BREAKOUT"
+            return "OTHER"
+
+        def _actual_displacement(price):
+            try:
+                return (Decimal(price) - structural) / structural * HUNDRED
+            except Exception:
+                return None
+
+        def _publish_price_gate(result: str, *, proposed=None, displacement_percent_value=None,
+                                displacement_dollars=None, effective_maximum=None) -> None:
+            try:
+                entry_price = proposed if proposed is not None else (Decimal(ask) if ask is not None else None)
+                spread = None
+                if value.observation.bid is not None and ask is not None:
+                    spread = Decimal(ask) - Decimal(value.observation.bid)
+                risk = signal.stop_price
+                risk_per_share = signal.risk_per_share
+                first_r = final_r = None
+                if entry_price is not None and signal.target_levels and risk_per_share is not None:
+                    effective_risk = entry_price - risk
+                    if spread is not None:
+                        effective_risk += spread
+                    if effective_risk > ZERO and len(signal.target_levels) >= 2:
+                        first_r = (signal.target_levels[0] - entry_price - (spread or ZERO)) / effective_risk
+                        final_r = (signal.target_levels[-1] - entry_price - (spread or ZERO)) / effective_risk
+                assessment = lifecycle.get("entry_extension")
+                performance_diagnostics.record_price_gate_sample(
+                    symbol=symbol, setup_type=signal.setup_type.value,
+                    lifecycle_id=lifecycle_identity(signal), evaluation_timestamp=evaluated_at,
+                    structural_trigger=structural,
+                    trigger_timestamp=lifecycle.get("first_setup_triggered_at"),
+                    trigger_age_seconds=_age(lifecycle.get("first_setup_triggered_at")),
+                    entry_ready_timestamp=lifecycle.get("first_execution_eligible_at"),
+                    entry_ready_age_seconds=_age(lifecycle.get("first_execution_eligible_at")),
+                    technical_signal_timestamp=lifecycle.get("first_technical_signal_at") or evaluated_at,
+                    signal_age_seconds=_age(lifecycle.get("first_technical_signal_at") or evaluated_at),
+                    ask=ask, bid=value.observation.bid, spread=spread,
+                    reference_price=signal.reference_price, structural_stop=signal.stop_price,
+                    base_displacement_percent=self.config.adaptive_entry.max_displacement_percent,
+                    contextual_displacement_percent=displacement_percent,
+                    effective_percent_limit=maximum_percent_price,
+                    absolute_outer_limit=absolute_outer_limit,
+                    effective_max_execution_price=effective_maximum if effective_maximum is not None else maximum,
+                    actual_displacement_percent=displacement_percent_value,
+                    actual_displacement_dollars=displacement_dollars,
+                    risk_per_share=risk_per_share,
+                    risk_normalized_extension=None if assessment is None else assessment.risk_normalized_extension,
+                    remaining_first_target_r=first_r, remaining_final_target_r=final_r,
+                    continuation_class=_continuation_class(), gate_result=result,
+                )
+            except Exception:
+                return
+
         ask = value.observation.ask
         if ask is None or ask <= ZERO:
+            _publish_price_gate("ENTRY_PRICE_INVALID")
+            if diagnostic is not None:
+                diagnostic(
+                    "ENTRY_PRICE_INVALID", structural=structural,
+                    bid=value.observation.bid, ask=ask,
+                    proposed_execution_price=ask,
+                    maximum_percent_price=None, maximum_absolute_price=None,
+                    effective_maximum=None, displacement_percent=None,
+                    displacement_absolute=None,
+                )
             return None
-        structural = signal.structural_entry_trigger or signal.entry_trigger
-        maximum = min(
-            structural * (
-                Decimal("1")
-                + self.config.adaptive_entry.max_displacement_percent / HUNDRED
-            ),
-            structural + self.config.adaptive_entry.max_displacement_absolute,
-        )
         self._record_entry_extension(
             value, candidate, signal, entry_price=Decimal(ask),
             displacement_limit=maximum,
@@ -1825,11 +2645,60 @@ class WarriorForwardCaptureService:
         # the detector-owned limit.  The bounded displacement policy applies
         # only when execution would require paying above that trigger.
         if Decimal(ask) <= structural:
+            _publish_price_gate(
+                "ACCEPTED", proposed=Decimal(ask),
+                displacement_percent_value=_actual_displacement(ask),
+                displacement_dollars=Decimal(ask) - structural, effective_maximum=maximum,
+            )
             return signal
         executable = max(structural, Decimal(ask))
-        if executable > maximum or executable <= signal.stop_price:
+        if executable > maximum:
+            percent_limit = maximum_percent_price
+            absolute_limit = maximum_absolute_price
+            percent_failed = executable > percent_limit
+            absolute_failed = executable > absolute_limit
+            subtype = (
+                "ENTRY_PRICE_DISPLACED_BOTH" if percent_failed and absolute_failed
+                else "ENTRY_PRICE_DISPLACED_PERCENT" if percent_failed
+                else "ENTRY_PRICE_DISPLACED_ABSOLUTE"
+            )
+            _publish_price_gate(
+                subtype, proposed=executable,
+                displacement_percent_value=_actual_displacement(executable),
+                displacement_dollars=executable - structural, effective_maximum=maximum,
+            )
+            if diagnostic is not None:
+                diagnostic(subtype, structural=structural, bid=value.observation.bid,
+                           ask=ask, proposed_execution_price=executable,
+                           maximum_percent_price=percent_limit,
+                           maximum_absolute_price=absolute_limit, effective_maximum=maximum,
+                           displacement_percent=(executable - structural) / structural * HUNDRED,
+                           displacement_absolute=executable - structural)
+            return None
+        if executable <= signal.stop_price:
+            _publish_price_gate(
+                "ENTRY_PRICE_BELOW_STOP", proposed=executable,
+                displacement_percent_value=_actual_displacement(executable),
+                displacement_dollars=executable - structural, effective_maximum=maximum,
+            )
+            if diagnostic is not None:
+                diagnostic(
+                    "ENTRY_PRICE_BELOW_STOP", structural=structural,
+                    bid=value.observation.bid, ask=ask,
+                    proposed_execution_price=executable,
+                    maximum_percent_price=maximum_percent_price,
+                    maximum_absolute_price=maximum_absolute_price,
+                    effective_maximum=maximum,
+                    displacement_percent=(executable - structural) / structural * HUNDRED,
+                    displacement_absolute=executable - structural,
+                )
             return None
         if executable == signal.entry_trigger:
+            _publish_price_gate(
+                "ACCEPTED", proposed=executable,
+                displacement_percent_value=_actual_displacement(executable),
+                displacement_dollars=executable - structural, effective_maximum=maximum,
+            )
             return signal
         risk = executable - signal.stop_price
         if risk <= ZERO:
@@ -1841,6 +2710,11 @@ class WarriorForwardCaptureService:
         # actual executable risk, so the account risk budget remains
         # authoritative without turning a few cents of execution displacement
         # into a hidden second setup threshold.
+        _publish_price_gate(
+            "ACCEPTED", proposed=executable,
+            displacement_percent_value=_actual_displacement(executable),
+            displacement_dollars=executable - structural, effective_maximum=maximum,
+        )
         return replace(
             signal,
             entry_trigger=executable,
@@ -1964,7 +2838,7 @@ class WarriorForwardCaptureService:
             value.quote_freshness_seconds,
             value.last_price_freshness_seconds,
             value.processing_age_seconds,
-            value.delivery_age_seconds,
+            None if value.retained_reevaluation else value.delivery_age_seconds,
         )
         if (
             not value.halt_state_known
@@ -2024,7 +2898,7 @@ class WarriorForwardCaptureService:
                 best_bid=bid, best_ask=ask,
                 bid_size=value.best_bid_size, ask_size=value.best_ask_size,
                 spread_percent=spread,
-                maximum_spread_percent=self.config.entry.maximum_spread_percent,
+                maximum_spread_percent=self.runtime.execution_spread_limit(candidate),
                 quote_fresh=all(
                     age is not None and age >= ZERO and age <= stale_limit
                     for age in freshness
@@ -2059,8 +2933,6 @@ class WarriorForwardCaptureService:
                 and value.observation.tradable
                 and not value.observation.halted
                 and signal.session in self.config.entry.allowed_sessions
-                and candidate.spread_percent is not None
-                and candidate.spread_percent <= self.config.entry.maximum_spread_percent
                 and self.runtime.current_execution_liquidity_ok(
                     candidate,
                     quote_fresh=all(
@@ -2094,8 +2966,8 @@ class WarriorForwardCaptureService:
                 policy=PaperEntryReplacementPolicy(
                     max_replacements=self.config.adaptive_entry.max_replacements,
                     min_reprice_interval_seconds=self.config.adaptive_entry.min_reprice_interval_seconds,
-                    max_displacement_percent=self.config.adaptive_entry.max_displacement_percent,
-                    max_displacement_absolute=self.config.adaptive_entry.max_displacement_absolute,
+                    max_displacement_percent=self.runtime.execution_displacement_percent(candidate),
+                    max_displacement_absolute=Decimal("0.50"),
                 ),
             )
         except Exception:
@@ -2122,7 +2994,10 @@ class WarriorForwardCaptureService:
             )
         ) and all(
             age is None or ZERO <= age <= stale_limit
-            for age in (value.processing_age_seconds, value.delivery_age_seconds)
+            for age in (
+                value.processing_age_seconds,
+                None if value.retained_reevaluation else value.delivery_age_seconds,
+            )
         )
         if not self.runtime.current_execution_liquidity_ok(
             candidate, quote_fresh=quote_fresh,
@@ -2142,15 +3017,25 @@ class WarriorForwardCaptureService:
         if not position.approved:
             return
         try:
-            self._paper_entry_rearmer(
+            result = self._paper_entry_rearmer(
                 signal, position.shares, position.risk_dollars,
                 opportunity_id=opportunity_identity(signal),
                 opportunity_anchor=self._paper[signal.symbol].signal.entry_trigger,
                 max_lifecycles_per_opportunity=self.config.adaptive_entry.max_lifecycles_per_opportunity,
-                max_displacement_percent=self.config.adaptive_entry.max_displacement_percent,
-                max_displacement_absolute=self.config.adaptive_entry.max_displacement_absolute,
+                max_displacement_percent=self.runtime.execution_displacement_percent(candidate),
+                max_displacement_absolute=Decimal("0.50"),
                 now=value.evaluation_timestamp or value.observation.timestamp,
             )
+            authorized = (
+                result.authorized
+                if isinstance(result, PaperEntryAuthorizationDecision)
+                else bool(result)
+            )
+            if authorized:
+                self._install_rearmed_paper_state(
+                    signal, position.shares, position.risk_dollars,
+                    value.evaluation_timestamp or value.observation.timestamp,
+                )
         except Exception:
             return
 
@@ -2175,7 +3060,9 @@ class WarriorForwardCaptureService:
         assessment = self.opportunity_memory.assess_new_structure(
             signal.timestamp.date(), signal.symbol, opportunity_id,
             entry_anchor=signal.entry_trigger, structural_stop=signal.stop_price,
-            spread_ok=(candidate.spread_percent is not None and candidate.spread_percent <= self.config.entry.maximum_spread_percent),
+            spread_ok=self.runtime.current_execution_liquidity_ok(
+                candidate, quote_fresh=freshness_ok,
+            ),
             liquidity_ok=self.runtime.current_execution_liquidity_ok(
                 candidate, quote_fresh=freshness_ok,
             ),
@@ -2268,7 +3155,9 @@ class WarriorForwardCaptureService:
             trading_date, signal.symbol, opportunity_id,
             entry_anchor=signal.entry_trigger, structural_stop=signal.stop_price,
             trigger_price=trigger_price, live_price=live_price,
-            spread_ok=(candidate.spread_percent is not None and candidate.spread_percent <= self.config.entry.maximum_spread_percent),
+            spread_ok=self.runtime.current_execution_liquidity_ok(
+                candidate, quote_fresh=freshness_ok,
+            ),
             liquidity_ok=self.runtime.current_execution_liquidity_ok(
                 candidate, quote_fresh=freshness_ok,
             ),
@@ -2373,7 +3262,9 @@ class WarriorForwardCaptureService:
             trading_date, signal.symbol, opportunity_id,
             entry_anchor=signal.entry_trigger,
             structural_stop=signal.stop_price,
-            spread_ok=(candidate.spread_percent is not None and candidate.spread_percent <= self.config.entry.maximum_spread_percent),
+            spread_ok=self.runtime.current_execution_liquidity_ok(
+                candidate, quote_fresh=freshness_ok,
+            ),
             liquidity_ok=self.runtime.current_execution_liquidity_ok(
                 candidate, quote_fresh=freshness_ok,
             ),
@@ -2453,8 +3344,6 @@ class WarriorForwardCaptureService:
             or setup.trigger is None or setup.stop_price is None
             or candidate.status is not CandidateStatus.ENTRY_READY
             or candidate.price <= state.entry_price
-            or candidate.spread_percent is None
-            or candidate.spread_percent > self.config.entry.maximum_spread_percent
             or not self.runtime.current_execution_liquidity_ok(
                 candidate,
                 quote_fresh=(
@@ -2855,6 +3744,152 @@ class WarriorForwardCaptureService:
                 success=success,
             )
 
+    def _paper_order_book(self) -> object | None:
+        submitter = self._paper_exit_submitter
+        owner = getattr(submitter, "__self__", None)
+        return getattr(owner, "order_book", None)
+
+    def _durable_exit_leg(
+        self,
+        state: _PaperState,
+        role: str,
+        *,
+        desired_quantity: int | None = None,
+        desired_price: Decimal | None = None,
+    ) -> _DurableExitLeg:
+        """Read one active exit leg from the canonical PAPER order ledger."""
+        order_book = self._paper_order_book()
+        if order_book is None:
+            return _DurableExitLeg(role)
+        try:
+            identity = lifecycle_identity(state.signal)
+            protective = role in {"STOP", "STOP_LOSS"}
+            active = tuple(
+                order
+                for order in order_book.open_orders_for_symbol(state.signal.symbol)
+                if
+                order.request.side.value == "SELL"
+                and order.request.strategy_lifecycle_id == identity
+                and not order.is_terminal
+                and int(order.remaining_quantity) > 0
+                and (
+                    (
+                        protective
+                        and order.request.order_type.value == "STOP"
+                        and order.request.execution_reason in {"STOP", "STOP_LOSS"}
+                    )
+                    or (
+                        not protective
+                        and order.request.order_type.value == "LIMIT"
+                        and order.request.execution_reason == role
+                    )
+                )
+            )
+            working_quantity = sum(
+                int(order.remaining_quantity) for order in active
+            )
+
+            def quantity_matches(order: object) -> bool:
+                if desired_quantity is None:
+                    return True
+                remaining = int(order.remaining_quantity)
+                return (
+                    remaining >= desired_quantity
+                    if protective else remaining == desired_quantity
+                )
+
+            def price_matches(order: object) -> bool:
+                if desired_price is None:
+                    return True
+                observed = (
+                    order.request.stop_price
+                    if protective else order.request.limit_price
+                )
+                if observed is None:
+                    return False
+                return (
+                    Decimal(observed) >= desired_price
+                    if protective else Decimal(observed) == desired_price
+                )
+
+            exact = tuple(
+                order for order in active
+                if quantity_matches(order) and price_matches(order)
+            )
+            return _DurableExitLeg(
+                role=role,
+                working_quantity=working_quantity,
+                matching_order=exact[0] if len(active) == 1 and len(exact) == 1 else None,
+                active_orders=active,
+            )
+        except Exception:
+            return _DurableExitLeg(role)
+
+    def _durable_target_filled_quantity(
+        self, state: _PaperState, role: str,
+    ) -> int:
+        order_book = self._paper_order_book()
+        if order_book is None:
+            return 0
+        try:
+            identity = lifecycle_identity(state.signal)
+            return sum(
+                int(order.filled_quantity)
+                for order in order_book.history()
+                if order.symbol == state.signal.symbol
+                and order.request.side.value == "SELL"
+                and order.request.order_type.value == "LIMIT"
+                and order.request.strategy_lifecycle_id == identity
+                and order.request.execution_reason == role
+            )
+        except Exception:
+            return 0
+
+    def _has_target_lifecycle_mismatch(
+        self, state: _PaperState, role: str,
+    ) -> bool:
+        order_book = self._paper_order_book()
+        if order_book is None:
+            return False
+        try:
+            identity = lifecycle_identity(state.signal)
+            return any(
+                order.request.side.value == "SELL"
+                and order.request.order_type.value == "LIMIT"
+                and order.request.execution_reason == role
+                and order.request.strategy_lifecycle_id != identity
+                and not order.is_terminal
+                and int(order.remaining_quantity) > 0
+                for order in order_book.open_orders_for_symbol(state.signal.symbol)
+            )
+        except Exception:
+            return False
+
+    def _paper_target_is_working(self, state: _PaperState) -> bool:
+        """Return true only when the durable ledger contains an active target."""
+        return any(
+            self._durable_exit_leg(state, role).working_quantity > 0
+            for role in ("FIRST_TARGET", "SECOND_TARGET")
+        )
+
+    def _paper_exit_order_complete(
+        self, state: _PaperState, order_id: str | None,
+        role: str, filled_quantity: int,
+    ) -> bool:
+        """Use durable order completion when the bridge exposes an order book."""
+        if filled_quantity >= (
+            state.first_quantity if role == "FIRST_TARGET" else state.second_quantity
+        ):
+            return True
+        order_book = self._paper_order_book()
+        if order_book is None or not order_id:
+            return False
+        try:
+            order = order_book.get(order_id)
+            return bool(order.is_terminal and int(order.remaining_quantity) == 0)
+        except Exception:
+            return False
+
     @staticmethod
     def _record_completed_bar_metric(name: str, *, count: int = 1) -> None:
         if count <= 0:
@@ -2883,6 +3918,144 @@ class WarriorForwardCaptureService:
             )
         except Exception:
             pass
+
+    @staticmethod
+    def _resolve_treatment_policy_enabled_from_callback(callback: object) -> bool | None:
+        owner = getattr(callback, "__self__", None)
+        config = getattr(owner, "config", None)
+        if config is None:
+            return None
+        return bool(
+            getattr(config, "enabled", False)
+            and str(getattr(config, "mode", "")).strip().upper() == "PAPER_TREATMENT"
+        )
+
+    def _resolve_treatment_policy_enabled(self) -> bool:
+        explicit = self._resolve_treatment_policy_enabled_from_callback(
+            self._paper_entry_intelligence,
+        )
+        if explicit is not None:
+            return explicit
+        # A custom decision-intelligence entry callback without an explicit
+        # policy object remains execution-relevant for backwards compatibility.
+        return self._decision_intelligence_entry_observer is not None
+
+    def _remember_latest_observation(
+        self, symbol: str, value: PointInTimeObservation,
+        account: PaperAccountContext | None,
+    ) -> None:
+        self._expire_pending_treatment(value.observation.timestamp)
+        self._latest_observations[symbol] = (value, account)
+        self._latest_observations.move_to_end(symbol)
+        while len(self._latest_observations) > self._latest_observation_capacity:
+            self._latest_observations.popitem(last=False)
+
+    def _expire_pending_treatment(self, now: datetime) -> None:
+        expired = [
+            key for key, pending in self._pending_treatment.items()
+            if (
+                now - pending.created_at
+            ).total_seconds() > float(self._pending_treatment_lifetime_seconds)
+        ]
+        for key in expired:
+            pending = self._pending_treatment.pop(key)
+            performance_diagnostics.record_entry_funnel(
+                pending.symbol, stage="TREATMENT_PENDING_EXPIRED",
+                outcome="REJECTED", reason="PENDING_LIFETIME_EXPIRED",
+                timestamp=now,
+            )
+
+    def _pending_treatment_key(
+        self, symbol: str, identity: _IntelligenceIdentity,
+    ) -> str:
+        return f"{symbol}|{identity!r}"
+
+    def _remember_pending_treatment(
+        self, identity: _IntelligenceIdentity, signal: MomentumEntrySignal,
+        value: PointInTimeObservation, account: PaperAccountContext | None,
+    ) -> None:
+        key = self._pending_treatment_key(identity.symbol, identity)
+        self._pending_treatment[key] = _PendingTreatmentSignal(
+            identity=identity,
+            symbol=identity.symbol,
+            lifecycle_id=lifecycle_identity(signal),
+            value=value,
+            account=account,
+            created_at=value.observation.timestamp,
+        )
+        self._pending_treatment.move_to_end(key)
+        while len(self._pending_treatment) > self._pending_treatment_capacity:
+            self._pending_treatment.popitem(last=False)
+
+    def _on_intelligence_publication(self, publication: object) -> None:
+        if not self._intelligence_redrive_enabled or not self._treatment_policy_enabled:
+            return
+        # A capture-only service has no execution boundary to re-drive.  Keep
+        # its established publication-on-next-observation behavior; the live
+        # PAPER composition supplies the submitter and therefore owns the
+        # asynchronous execution re-drive.
+        if self._paper_entry_submitter is None:
+            return
+        identity = getattr(publication, "identity", None)
+        symbol = str(getattr(publication, "key", "")).strip().upper()
+        if not symbol or not isinstance(identity, _IntelligenceIdentity):
+            return
+        result = getattr(publication, "value", None)
+        if not isinstance(result, _IntelligenceResult):
+            return
+        key = self._pending_treatment_key(symbol, identity)
+        pending = self._pending_treatment.pop(key, None)
+        if pending is None or pending.identity != identity:
+            return
+        if not (
+            (
+                result.canonical_lifecycle_id == pending.lifecycle_id
+                or result.treatment_lifecycle_id == pending.lifecycle_id
+            )
+        ):
+            performance_diagnostics.record_entry_funnel(
+                symbol, stage="TREATMENT_MISMATCH", outcome="REJECTED",
+                reason="LIFECYCLE_OR_OPPORTUNITY_MISMATCH",
+                timestamp=pending.created_at,
+            )
+            return
+        latest = self._latest_observations.get(symbol)
+        if latest is None:
+            performance_diagnostics.record_entry_funnel(
+                symbol, stage="TREATMENT_PENDING_EXPIRED", outcome="REJECTED",
+                reason="NO_CURRENT_OBSERVATION", timestamp=pending.created_at,
+            )
+            return
+        latest_value, latest_account = latest
+        age = (
+            latest_value.observation.timestamp - pending.created_at
+        ).total_seconds()
+        if age < 0 or age > float(self._pending_treatment_lifetime_seconds):
+            performance_diagnostics.record_entry_funnel(
+                symbol, stage="TREATMENT_PENDING_EXPIRED", outcome="REJECTED",
+                reason="PENDING_LIFETIME_EXPIRED",
+                timestamp=latest_value.observation.timestamp,
+            )
+            return
+        performance_diagnostics.record_entry_funnel(
+            symbol, stage="TREATMENT_REDRIVE", outcome="STARTED",
+            timestamp=latest_value.observation.timestamp,
+        )
+        try:
+            self.observe(
+                latest_value,
+                account=(latest_account if latest_account is not None else (
+                    self._account_refresh_source()
+                    if self._account_refresh_source is not None else pending.account
+                )),
+                _treatment_redrive=True,
+            )
+        except Exception:
+            performance_diagnostics.record_entry_funnel(
+                symbol, stage="TREATMENT_REDRIVE_REJECTED", outcome="REJECTED",
+                reason="CURRENT_STATE_REVALIDATION_FAILED",
+                timestamp=latest_value.observation.timestamp,
+            )
 
     @staticmethod
     def _completed_bar_version(value: object) -> tuple[object, ...]:
@@ -3048,6 +4221,9 @@ class WarriorForwardCaptureService:
             treatment_decision=treatment_decision,
             treatment_lifecycle_id=linked_lifecycle,
             canonical_signal_present=request.signal is not None,
+            canonical_lifecycle_id=(
+                None if request.signal is None else lifecycle_identity(request.signal)
+            ),
         )
 
     def _link_assignment_background(
@@ -3126,6 +4302,8 @@ class WarriorForwardCaptureService:
         return True if handoff is None else handoff.wait_idle(timeout_seconds)
 
     def close_intelligence_worker(self, *, timeout_seconds: float = 5.0) -> bool:
+        self._intelligence_redrive_enabled = False
+        self._pending_treatment.clear()
         handoff = self._intelligence_handoff
         if handoff is None:
             return True
@@ -3175,7 +4353,20 @@ class WarriorForwardCaptureService:
             self._seen_bars.add(bar_key)
         state = self._paper.get(normalized)
         if state is not None and bar.timestamp >= state.signal.timestamp:
-            if state.last_bar_timestamp is None or bar.timestamp > state.last_bar_timestamp:
+            position_changed = False
+            if self._paper_position_quantity_source is not None:
+                try:
+                    position_changed = (
+                        int(self._paper_position_quantity_source(normalized))
+                        != int(state.remaining)
+                    )
+                except Exception:
+                    position_changed = False
+            if (
+                state.last_bar_timestamp is None
+                or bar.timestamp > state.last_bar_timestamp
+                or position_changed
+            ):
                 records.extend(self._advance_paper(state, bar, observed_at))
         counter = self._counterfactual.get(normalized)
         if counter is not None:
@@ -3367,6 +4558,8 @@ class WarriorForwardCaptureService:
         risk = state.signal.risk_per_share
         if state.maximum_high is None or risk <= ZERO:
             return
+        prior_peak = state.peak_r
+        prior_defense_armed = state.profit_defense_armed
         state.peak_price = state.maximum_high
         state.peak_r = (state.peak_price - state.entry_price) / risk
         if state.current_r is not None:
@@ -3378,6 +4571,74 @@ class WarriorForwardCaptureService:
             self.config.trade_management.profit_defense_enabled
             and state.peak_r >= self.config.trade_management.profit_defense_activation_r
         )
+        if prior_peak is None or state.peak_r > prior_peak:
+            self._record_management_event(
+                state, "PEAK_R_UPDATED", timestamp=state.last_bar_timestamp,
+            )
+        if not prior_defense_armed and state.profit_defense_armed:
+            self._record_management_event(
+                state, "PROFIT_DEFENSE_ARMED", timestamp=state.last_bar_timestamp,
+            )
+
+    def _record_management_event(
+        self, state: _PaperState, event: str, *, timestamp: datetime | None = None,
+        **values: object,
+    ) -> None:
+        """Publish bounded, sanitized exit-management observability."""
+        try:
+            target_role = (
+                "FIRST_TARGET" if not state.first_taken else
+                "SECOND_TARGET" if not state.second_taken else None
+            )
+            desired_target_qty = int(values.pop(
+                "desired_target_qty",
+                min(
+                    state.first_quantity
+                    if target_role == "FIRST_TARGET" else state.second_quantity,
+                    state.remaining,
+                ) if target_role is not None else 0,
+            ))
+            desired_target_price = values.pop("desired_target_price", None)
+            if desired_target_price is None and target_role is not None:
+                try:
+                    desired_target_price = state.signal.target_levels[
+                        0 if target_role == "FIRST_TARGET" else 1
+                    ]
+                except (AttributeError, IndexError, TypeError):
+                    desired_target_price = None
+            target_leg = (
+                self._durable_exit_leg(state, target_role)
+                if target_role is not None else _DurableExitLeg("RUNNER")
+            )
+            stop_leg = self._durable_exit_leg(state, "STOP")
+            # A caller cannot override a field named "working": those values
+            # are facts read from the canonical durable ledger only.
+            values.pop("target_working_qty", None)
+            values.pop("actual_target_working_qty", None)
+            values.pop("stop_working_qty", None)
+            performance_diagnostics.record_management_event(
+                state=event,
+                symbol=state.signal.symbol,
+                lifecycle_id=lifecycle_identity(state.signal),
+                authoritative_position_qty=state.remaining,
+                desired_target_qty=desired_target_qty,
+                desired_target_price=desired_target_price,
+                actual_target_working_qty=target_leg.working_quantity,
+                target_working_qty=target_leg.working_quantity,
+                actual_target_working_order_id=getattr(
+                    target_leg.matching_order, "order_id", None,
+                ),
+                stop_working_qty=stop_leg.working_quantity,
+                remaining_qty=state.remaining,
+                current_r=state.current_r,
+                peak_r=state.peak_r,
+                giveback_r=state.giveback_r,
+                timestamp=timestamp or state.last_bar_timestamp,
+                **values,
+            )
+        except Exception:
+            # Diagnostics are strictly observational and cannot affect exits.
+            return
 
     def _capture_exit_evidence(
         self, state: _PaperState, value: PointInTimeObservation,
@@ -3404,6 +4665,448 @@ class WarriorForwardCaptureService:
             ),
             flow_fresh=bool(flow is not None and flow.fresh),
         )
+
+    def _install_rearmed_paper_state(
+        self, signal: MomentumEntrySignal, shares: int,
+        risk_dollars: Decimal, observed_at: datetime,
+    ) -> None:
+        """Bind an authorized rearm to management before its first fill."""
+        prior = self._paper.get(signal.symbol)
+        records: list[CaptureRecord] = []
+        if prior is not None:
+            records.append(_management_context_record(
+                signal.symbol, observed_at, prior.signal, prior,
+                phase="SUPERSEDED",
+            ))
+        first = int((
+            Decimal(shares)
+            * self.config.trade_management.first_target_exit_percent
+        ).to_integral_value(rounding=ROUND_FLOOR))
+        second = int((
+            Decimal(shares)
+            * self.config.trade_management.second_target_exit_percent
+        ).to_integral_value(rounding=ROUND_FLOOR))
+        state = _PaperState(
+            signal, signal.entry_trigger, shares, 0, signal.stop_price,
+            first, second, 0, risk_budget=risk_dollars,
+            initial_stop=signal.stop_price,
+        )
+        self._paper[signal.symbol] = state
+        self._last_transition[signal.symbol] = ForwardTransition.PAPER_ENTRY
+        records.extend((
+            CaptureRecord.create(
+                CaptureRecordType.STATE_TRANSITION,
+                signal.symbol,
+                observed_at,
+                {
+                    "from": ForwardTransition.PAPER_EXIT.value,
+                    "to": ForwardTransition.PAPER_ENTRY.value,
+                    "reason_codes": ["REARMED_ENTRY_WORKING"],
+                    "lifecycle_id": lifecycle_identity(signal),
+                },
+                identity_parts=(
+                    ForwardTransition.PAPER_ENTRY.value,
+                    lifecycle_identity(signal),
+                    "REARMED",
+                ),
+            ),
+            _management_context_record(
+                signal.symbol, observed_at, signal, state,
+                phase="ENTRY_WORKING",
+            ),
+        ))
+        self._submit_records(tuple(records))
+
+    def _authoritative_average_entry(
+        self, state: _PaperState,
+    ) -> Decimal | None:
+        order_book = self._paper_order_book()
+        if order_book is None:
+            return None
+        try:
+            identity = lifecycle_identity(state.signal)
+            entries = tuple(
+                order for order in order_book.history()
+                if order.symbol == state.signal.symbol
+                and order.request.side.value == "BUY"
+                and order.request.strategy_lifecycle_id == identity
+                and order.filled_quantity > 0
+                and order.average_fill_price is not None
+            )
+            quantity = sum(
+                (Decimal(order.filled_quantity) for order in entries), ZERO,
+            )
+            if quantity <= ZERO:
+                return None
+            notional = sum((
+                Decimal(order.filled_quantity) * order.average_fill_price
+                for order in entries
+            ), ZERO)
+            return notional / quantity
+        except Exception:
+            return None
+
+    def _latest_exit_fill_price(
+        self, state: _PaperState, role: str | None,
+    ) -> Decimal | None:
+        order_book = self._paper_order_book()
+        if order_book is None:
+            return None
+        try:
+            identity = lifecycle_identity(state.signal)
+            fills = tuple(
+                order for order in order_book.history()
+                if order.symbol == state.signal.symbol
+                and order.request.side.value == "SELL"
+                and order.request.strategy_lifecycle_id == identity
+                and order.filled_quantity > 0
+                and order.average_fill_price is not None
+                and (
+                    role is None
+                    or order.request.execution_reason == role
+                    or self._exit_role_for_reason(
+                        order.request.execution_reason
+                    ) == role
+                )
+            )
+            if not fills:
+                return None
+            return max(
+                fills, key=lambda order: (order.updated_at, order.order_id)
+            ).average_fill_price
+        except Exception:
+            return None
+
+    def _synchronize_authoritative_position(
+        self, state: _PaperState, observed_at: datetime,
+    ) -> bool:
+        """Adopt fills and establish canonical protection on streaming ticks."""
+        if self._paper_position_quantity_source is None:
+            return False
+        try:
+            quantity = max(
+                0, int(self._paper_position_quantity_source(state.signal.symbol)),
+            )
+        except Exception:
+            return False
+        if quantity <= 0:
+            return False
+        changed = False
+        first_authoritative_position = not state.authoritative_position_seen
+        previous = state.remaining if state.authoritative_position_seen else 0
+        average = self._authoritative_average_entry(state)
+        if average is not None and average > ZERO and average != state.entry_price:
+            state.entry_price = average
+            changed = True
+        if state.initial_stop is None:
+            state.initial_stop = state.signal.stop_price
+        if not state.authoritative_position_seen:
+            state.authoritative_position_seen = True
+            changed = True
+        quantity_changed = quantity != state.remaining
+        if quantity_changed:
+            if quantity < previous:
+                role, order_id = self._observed_exit_role(state)
+                filled = previous - quantity
+                fill_price = self._latest_exit_fill_price(state, role)
+                if fill_price is None and state.latest_exit_evidence is not None:
+                    fill_price = state.latest_exit_evidence.best_bid
+                if fill_price is not None:
+                    realized = (fill_price - state.entry_price) * filled
+                    state.realized_pnl += realized
+                    state.realized_from_partials += realized
+                if role and role.startswith("PROFIT_HARVEST_"):
+                    try:
+                        state.profit_harvest_stage = max(
+                            state.profit_harvest_stage,
+                            int(role.rsplit("_", 1)[-1]),
+                        )
+                    except ValueError:
+                        pass
+                    state.pending_profit_harvest_role = None
+                    state.exit_reason = None
+                    state.exit_price = None
+                    self._record_management_event(
+                        state, "PROFIT_HARVEST_FILLED",
+                        timestamp=observed_at, fill_quantity=filled,
+                        order_id=order_id,
+                    )
+            state.remaining = quantity
+            changed = True
+        state.managed_quantity = (
+            quantity if first_authoritative_position
+            else max(state.managed_quantity, quantity)
+        )
+        if not state.first_taken and not state.second_taken:
+            state.first_quantity = int((
+                Decimal(quantity)
+                * self.config.trade_management.first_target_exit_percent
+            ).to_integral_value(rounding=ROUND_FLOOR))
+            state.second_quantity = int((
+                Decimal(quantity)
+                * self.config.trade_management.second_target_exit_percent
+            ).to_integral_value(rounding=ROUND_FLOOR))
+        order_book_available = self._paper_order_book() is not None
+        stop_leg = self._durable_exit_leg(
+            state, "STOP", desired_quantity=quantity,
+            desired_price=state.stop,
+        )
+        stop_already_proven = (
+            not order_book_available
+            and state.protection_reconciled
+            and not quantity_changed
+        )
+        if not stop_leg.is_exact and not stop_already_proven:
+            result = self._submit_exit(
+                state, state.stop, quantity, "STOP",
+            )
+            active = (
+                result.protection_active
+                if isinstance(result, PaperExitSubmissionDecision)
+                else bool(result)
+            )
+            state.protection_reconciled = active
+            if active:
+                state.protective_stop_activated_at = (
+                    getattr(result, "activation_timestamp", None)
+                    or observed_at
+                )
+                self._record_management_event(
+                    state, "PROTECTION_ACTIVE", timestamp=observed_at,
+                )
+                changed = True
+        else:
+            state.protection_reconciled = True
+        if not state.entry_fill_recorded:
+            state.entry_fill_recorded = True
+            self._submit_records((CaptureRecord.create(
+                CaptureRecordType.PAPER_FILL,
+                state.signal.symbol,
+                observed_at,
+                {
+                    "action": "ENTRY",
+                    "entry_authority": "AUTHORITATIVE_PAPER_LEDGER",
+                    "session": state.signal.session,
+                    "momentum_score": state.signal.momentum_score,
+                    "setup": state.signal.setup_type.value,
+                    "lifecycle_id": lifecycle_identity(state.signal),
+                    "entry_trigger": state.signal.entry_trigger,
+                    "fill_price": state.entry_price,
+                    "structural_stop": state.initial_stop,
+                    "stop_model": state.signal.stop_model.value,
+                    "risk_per_share": state.entry_price - state.initial_stop,
+                    "planned_shares": state.initial_quantity,
+                    "filled_shares": quantity,
+                    "risk_dollars": state.risk_budget,
+                    "targets": state.signal.target_levels,
+                    "catalyst_state": state.signal.catalyst_state.value,
+                    "relative_volume": state.signal.relative_volume,
+                    "float_shares": state.signal.float_shares,
+                    "spread_percent": state.signal.spread_percent,
+                    "authority": "AUTHORITATIVE_PAPER_LEDGER",
+                },
+                identity_parts=(
+                    "ENTRY", lifecycle_identity(state.signal),
+                    "AUTHORITATIVE",
+                ),
+            ),))
+            changed = True
+        return changed
+
+    def _update_executable_profit_state(self, state: _PaperState) -> bool:
+        evidence = state.latest_exit_evidence
+        if (
+            evidence is None or not evidence.quote_fresh
+            or evidence.best_bid is None or evidence.best_bid <= ZERO
+            or not state.authoritative_position_seen
+        ):
+            return False
+        bid = evidence.best_bid
+        prior = state.peak_executable_bid
+        state.peak_executable_bid = (
+            bid if prior is None else max(prior, bid)
+        )
+        risk = state.entry_price - (
+            state.initial_stop
+            if state.initial_stop is not None else state.signal.stop_price
+        )
+        if risk > ZERO:
+            state.peak_executable_r = (
+                state.peak_executable_bid - state.entry_price
+            ) / risk
+            state.current_r = (bid - state.entry_price) / risk
+            state.giveback_r = max(
+                ZERO, state.peak_executable_r - state.current_r,
+            )
+            state.giveback_fraction_of_peak = (
+                None if state.peak_executable_r <= ZERO
+                else state.giveback_r / state.peak_executable_r
+            )
+        state.peak_executable_pnl = max(
+            ZERO,
+            (state.peak_executable_bid - state.entry_price)
+            * Decimal(max(state.managed_quantity, state.remaining)),
+        )
+        current_open = max(
+            ZERO, (bid - state.entry_price) * Decimal(state.remaining),
+        )
+        state.peak_to_current_giveback = max(
+            ZERO,
+            state.peak_executable_pnl
+            - state.realized_from_partials
+            - current_open,
+        )
+        state.current_secured_profit = max(
+            ZERO,
+            state.realized_from_partials
+            + max(
+                ZERO,
+                (state.stop - state.entry_price) * Decimal(state.remaining),
+            ),
+        )
+        state.profit_defense_armed = bool(
+            self.config.trade_management.profit_defense_enabled
+            and state.peak_executable_r is not None
+            and state.peak_executable_r
+            >= self.config.trade_management.profit_defense_activation_r
+        )
+        return prior is None or state.peak_executable_bid > prior
+
+    def _profit_lock_fraction(self, peak_r: Decimal) -> Decimal:
+        config = self.config.trade_management
+        if peak_r >= config.exceptional_profit_harvest_activation_r:
+            return config.exceptional_peak_retention_fraction
+        if peak_r >= config.strong_profit_harvest_activation_r:
+            return config.strong_peak_retention_fraction
+        return config.moderate_peak_retention_fraction
+
+    def _manage_executable_profit_harvest(
+        self, state: _PaperState, observed_at: datetime,
+    ) -> bool:
+        config = self.config.trade_management
+        evidence = state.latest_exit_evidence
+        peak_r = state.peak_executable_r
+        if (
+            not config.profit_harvest_enabled
+            or not state.authoritative_position_seen
+            or not state.protection_reconciled
+            or state.remaining <= 0
+            or evidence is None or not evidence.quote_fresh
+            or evidence.best_bid is None
+            or peak_r is None
+            or peak_r < config.profit_harvest_activation_r
+        ):
+            return False
+        changed = False
+        bid = evidence.best_bid
+        stage = state.profit_harvest_stage
+        role: str | None = None
+        quantity = 0
+        if state.pending_profit_harvest_role is None:
+            if stage < 1:
+                role = "PROFIT_HARVEST_1"
+                quantity = int((
+                    Decimal(state.managed_quantity)
+                    * config.profit_harvest_fraction
+                ).to_integral_value(rounding=ROUND_FLOOR))
+            elif (
+                stage < 2
+                and peak_r >= config.strong_profit_harvest_activation_r
+            ):
+                role = "PROFIT_HARVEST_2"
+                quantity = int((
+                    Decimal(state.managed_quantity)
+                    * config.strong_profit_harvest_fraction
+                ).to_integral_value(rounding=ROUND_FLOOR))
+            elif (
+                stage < 3
+                and peak_r >= config.exceptional_profit_harvest_activation_r
+            ):
+                role = "PROFIT_HARVEST_3"
+                runner_cap = max(1, int((
+                    Decimal(state.managed_quantity)
+                    * config.exceptional_runner_max_fraction
+                ).to_integral_value(rounding=ROUND_FLOOR)))
+                quantity = max(0, state.remaining - runner_cap)
+            quantity = min(max(0, quantity), max(0, state.remaining - 1))
+        if role is not None and quantity > 0:
+            result = self._submit_exit(
+                state, bid, quantity, role,
+            )
+            active = (
+                result.state in {
+                    PaperExitSubmissionState.SUBMITTED,
+                    PaperExitSubmissionState.WORKING,
+                    PaperExitSubmissionState.COMPLETED,
+                }
+                if isinstance(result, PaperExitSubmissionDecision)
+                else bool(result)
+            )
+            if active:
+                state.pending_profit_harvest_role = role
+                state.exit_reason = role
+                state.exit_price = bid
+                self._record_management_event(
+                    state, "PROFIT_HARVEST_SUBMITTED",
+                    timestamp=observed_at, desired_target_qty=quantity,
+                    desired_target_price=bid, harvest_stage=role,
+                )
+                changed = True
+
+        initial_stop = (
+            state.initial_stop
+            if state.initial_stop is not None else state.signal.stop_price
+        )
+        risk = state.entry_price - initial_stop
+        retention = self._profit_lock_fraction(peak_r)
+        desired_stop = min(
+            bid,
+            state.entry_price
+            + (state.peak_executable_bid - state.entry_price) * retention,
+        )
+        minimum_step = max(
+            Decimal("0.01"), risk * config.profit_lock_minimum_step_r,
+        )
+        if desired_stop >= state.stop + minimum_step:
+            target_role = state.active_exit_role
+            target_order_id = state.active_exit_order_id
+            target_reason = state.exit_reason
+            target_price = state.exit_price
+            result = self._submit_exit(
+                state, desired_stop, state.remaining, "STOP",
+            )
+            active = (
+                result.protection_active
+                if isinstance(result, PaperExitSubmissionDecision)
+                else bool(result)
+            )
+            if active:
+                state.stop = max(state.stop, desired_stop)
+                state.current_secured_profit = max(
+                    state.current_secured_profit,
+                    state.realized_from_partials
+                    + max(
+                        ZERO,
+                        (state.stop - state.entry_price)
+                        * Decimal(state.remaining),
+                    ),
+                )
+                state.profit_defense_stop_tightened = True
+                state.profit_defense_last_action = "PEAK_PROFIT_LOCK"
+                if target_reason and target_reason.startswith("PROFIT_HARVEST_"):
+                    state.active_exit_role = target_role
+                    state.active_exit_order_id = target_order_id
+                    state.exit_reason = target_reason
+                    state.exit_price = target_price
+                self._record_management_event(
+                    state, "PEAK_PROFIT_LOCK_ACTIVE",
+                    timestamp=observed_at, desired_stop=desired_stop,
+                    peak_executable_bid=state.peak_executable_bid,
+                    peak_executable_pnl=state.peak_executable_pnl,
+                    peak_executable_r=state.peak_executable_r,
+                )
+                changed = True
+        return changed
 
     def _record_management_range(
         self, state: _PaperState, bar: MinuteBar,
@@ -3522,6 +5225,7 @@ class WarriorForwardCaptureService:
         state = _PaperState(
             signal, signal.entry_trigger, shares, shares, signal.stop_price,
             first, second, shares, risk_budget=risk_dollars,
+            initial_stop=signal.stop_price,
         )
         self._paper[signal.symbol] = state
         protection_records: list[CaptureRecord] = []
@@ -3777,6 +5481,22 @@ class WarriorForwardCaptureService:
         signal = state.signal
         quantity = max(0, int(self._paper_position_quantity_source(signal.symbol)))
         previous = state.remaining if state.authoritative_position_seen else 0
+        managed_quantity_before = state.managed_quantity
+        # Some embedders expose only the current position projection and do
+        # not provide durable order-fill identity.  Preserve a target-fill
+        # edge when the projection was already reconciled to the lower value;
+        # the production PAPER bridge supplies the stronger identity source.
+        if (
+            self._paper_exit_fill_source is None
+            and previous <= quantity
+            and (
+                quantity < max(state.managed_quantity, managed_quantity_before)
+                or quantity == state.first_quantity
+            )
+            and state.active_exit_role in {"FIRST_TARGET", "SECOND_TARGET"}
+            and not state.first_taken
+        ):
+            previous = max(state.managed_quantity, managed_quantity_before)
         records: list[CaptureRecord] = []
 
         if quantity <= 0:
@@ -3806,6 +5526,29 @@ class WarriorForwardCaptureService:
                 self._paper.pop(signal.symbol, None)
                 return tuple(records)
             state.remaining = 0
+            exit_role, exit_order_id = self._observed_exit_role(state)
+            final_fill_price = self._latest_exit_fill_price(
+                state, exit_role,
+            )
+            if final_fill_price is not None and previous > 0:
+                state.realized_pnl += (
+                    final_fill_price - state.entry_price
+                ) * Decimal(previous)
+            self._record_exit_fill_classification(
+                state, exit_role, exit_order_id, previous, 0, observed_at,
+            )
+            if exit_role in {"FIRST_TARGET", "SECOND_TARGET", "RUNNER_EXIT"}:
+                self._record_management_event(
+                    state, "PROFIT_TARGET_FILLED", timestamp=observed_at,
+                    target_stage=exit_role,
+                )
+            elif exit_role == "PROTECTIVE_STOP":
+                # A stop is terminal protection, never a target completion.
+                state.exit_reason = None
+                state.exit_price = None
+            self._record_management_event(
+                state, "STOP_CANCELLED_BY_POSITION_CLOSE", timestamp=observed_at,
+            )
             records.append(self._authoritative_exit_record(state, bar, observed_at))
             records.append(_management_context_record(
                 signal.symbol, observed_at, signal, state, phase="CLOSED",
@@ -3831,6 +5574,24 @@ class WarriorForwardCaptureService:
             state.first_quantity = int((Decimal(quantity) * self.config.trade_management.first_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
             state.second_quantity = int((Decimal(quantity) * self.config.trade_management.second_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
         state.remaining = quantity
+        if (
+            self._paper_exit_fill_source is None
+            and state.active_exit_role == "FIRST_TARGET"
+            and not state.first_taken
+            and quantity == state.first_quantity
+            and max(state.managed_quantity, state.initial_quantity) > quantity
+        ):
+            # Legacy test/adaptor ports expose only the already-reconciled
+            # quantity.  A half-size remainder with an active first-target
+            # identity is the unambiguous target partial-fill edge.
+            state.first_taken = True
+            state.stop = max(state.stop, state.entry_price)
+            state.exit_reason = None
+            state.exit_price = None
+            self._record_management_event(
+                state, "PROFIT_TARGET_PARTIAL_FILL", timestamp=observed_at,
+                target_stage="FIRST_TARGET",
+            )
         state.minimum_low = bar.low if state.minimum_low is None else min(state.minimum_low, bar.low)
         state.maximum_high = bar.high if state.maximum_high is None else max(state.maximum_high, bar.high)
         self._update_peak(state)
@@ -3863,6 +5624,10 @@ class WarriorForwardCaptureService:
                 else bool(result)
             )
             state.protection_reconciled = protection_active
+            if protection_active:
+                self._record_management_event(
+                    state, "PROTECTIVE_STOP_RECONCILED", timestamp=observed_at,
+                )
             if not protection_active:
                 records.append(CaptureRecord.create(
                     CaptureRecordType.STATE_TRANSITION, signal.symbol, observed_at,
@@ -3883,17 +5648,139 @@ class WarriorForwardCaptureService:
                 ))
                 return tuple(records)
 
+        # Once authoritative exposure exists, stage the first passive profit
+        # leg immediately alongside protection. Previously this was delayed
+        # until a later bar crossed the target, leaving a profitable position
+        # with only its protective stop working.
+        target_staged_this_bar = False
+        target_attempted_this_bar = False
+        if (
+            not state.first_taken
+            and state.first_quantity > 0
+            and state.exit_reason is None
+            and protection_active
+            and (
+                signal.structural_stop_price is None
+                or bar.close > signal.structural_stop_price
+            )
+        ):
+            first_price = signal.target_levels[0]
+            target_attempted_this_bar = True
+            staged = self._submit_exit(
+                state, first_price,
+                min(state.first_quantity, quantity), "FIRST_TARGET",
+                target_stage_only=True,
+            )
+            staged_state = (
+                staged.state
+                if isinstance(staged, PaperExitSubmissionDecision)
+                else None
+            )
+            if staged_state in {
+                PaperExitSubmissionState.SUBMITTED,
+                PaperExitSubmissionState.WORKING,
+            }:
+                state.exit_reason = "FIRST_TARGET"
+                state.exit_price = first_price
+                target_staged_this_bar = True
+                if (
+                    state.peak_r is not None
+                    and state.peak_r
+                    >= self.config.trade_management.move_stop_to_breakeven_after_r
+                ):
+                    state.stop = max(state.stop, state.entry_price)
+                self._record_management_event(
+                    state, "PROFIT_TARGET_STAGED", timestamp=observed_at,
+                    target_stage="FIRST_TARGET", target_price=first_price,
+                )
+
         if self._last_transition.get(signal.symbol) is ForwardTransition.PAPER_EXIT:
             records.append(self._position_contradiction_record(state, observed_at))
 
+        # A lightweight PAPER test/adapter can reconcile the position before
+        # this bar reaches the service.  The durable target role plus an exact
+        # first-target-sized remainder is still sufficient to attribute that
+        # reduction without relying on the mutable reason alone.
+        if (
+            self._paper_exit_fill_source is None
+            and state.exit_reason == "FIRST_TARGET"
+            and not state.first_taken
+            and quantity == state.first_quantity
+            and state.managed_quantity >= quantity * 2
+        ):
+            state.first_taken = True
+            state.stop = max(state.stop, state.entry_price)
+            self._record_management_event(
+                state, "PROFIT_TARGET_PARTIAL_FILL", timestamp=observed_at,
+                target_stage="FIRST_TARGET",
+            )
+
         if previous > quantity:
-            if state.exit_reason == "FIRST_TARGET":
-                state.first_taken = True
-                state.stop = max(state.stop, state.entry_price)
-            elif state.exit_reason == "SECOND_TARGET":
+            exit_role, exit_order_id = self._observed_exit_role(state)
+            fill_quantity = max(0, previous - quantity)
+            first_target_complete = (
+                exit_role == "FIRST_TARGET"
+                and self._paper_exit_order_complete(
+                    state, exit_order_id, "FIRST_TARGET", fill_quantity,
+                )
+            )
+            self._record_exit_fill_classification(
+                state, exit_role, exit_order_id, previous, quantity, observed_at,
+            )
+            if exit_role == "FIRST_TARGET":
+                if first_target_complete:
+                    state.first_taken = True
+                    state.stop = max(state.stop, state.entry_price)
+                    self._record_management_event(
+                        state, "PROFIT_TARGET_FILLED", timestamp=observed_at,
+                        target_stage="FIRST_TARGET",
+                    )
+                else:
+                    # A partial first-target fill leaves the first target
+                    # stage open for its residual allocation.  SECOND_TARGET
+                    # is not eligible until durable completion.
+                    state.first_taken = False
+                    state.exit_reason = "FIRST_TARGET"
+                    state.exit_price = signal.target_levels[0]
+                    self._record_management_event(
+                        state, "PROFIT_TARGET_PARTIAL_FILL", timestamp=observed_at,
+                        target_stage="FIRST_TARGET",
+                    )
+            elif exit_role == "SECOND_TARGET":
                 state.second_taken = True
-            state.exit_reason = None
-            state.exit_price = None
+                self._record_management_event(
+                    state, "PROFIT_TARGET_PARTIAL_FILL", timestamp=observed_at,
+                    target_stage="SECOND_TARGET",
+                )
+            elif exit_role and exit_role.startswith("PROFIT_HARVEST_"):
+                fill_price = self._latest_exit_fill_price(state, exit_role)
+                if fill_price is not None:
+                    realized = (
+                        fill_price - state.entry_price
+                    ) * Decimal(fill_quantity)
+                    state.realized_pnl += realized
+                    state.realized_from_partials += realized
+                try:
+                    state.profit_harvest_stage = max(
+                        state.profit_harvest_stage,
+                        int(exit_role.rsplit("_", 1)[-1]),
+                    )
+                except ValueError:
+                    pass
+                state.pending_profit_harvest_role = None
+                self._record_management_event(
+                    state, "PROFIT_HARVEST_FILLED", timestamp=observed_at,
+                    target_stage=exit_role, fill_quantity=fill_quantity,
+                    order_id=exit_order_id,
+                )
+            elif exit_role == "PROTECTIVE_STOP":
+                # Do not let a stale persisted FIRST_TARGET label relabel a
+                # protective-stop fill.  The target stage remains incomplete.
+                state.exit_reason = None
+                state.exit_price = None
+            if not (exit_role == "FIRST_TARGET" and not first_target_complete):
+                state.exit_reason = None
+                state.exit_price = None
             records.append(CaptureRecord.create(
                 CaptureRecordType.STATE_TRANSITION, signal.symbol, observed_at,
                 {"from": self._last_transition.get(signal.symbol, ForwardTransition.PAPER_ENTRY).value,
@@ -3904,13 +5791,108 @@ class WarriorForwardCaptureService:
             ))
             self._last_transition[signal.symbol] = ForwardTransition.PAPER_PARTIAL
 
+            if state.first_taken and quantity > 0:
+                self._record_management_event(
+                    state, "RUNNER_ACTIVE", timestamp=observed_at,
+                    runner_quantity=quantity,
+                )
+
+            # Move directly to the next configured milestone after an
+            # authoritative first-target reduction; do not wait for another
+            # bar to cross target two.
+            if (
+                state.first_taken
+                and not state.second_taken
+                and state.second_quantity > 0
+                and quantity > 0
+            ):
+                second_price = signal.target_levels[1]
+                staged = self._submit_exit(
+                    state, second_price,
+                    min(state.second_quantity, quantity), "SECOND_TARGET",
+                )
+                staged_state = (
+                    staged.state
+                    if isinstance(staged, PaperExitSubmissionDecision)
+                    else None
+                )
+                if staged_state in {
+                    PaperExitSubmissionState.SUBMITTED,
+                    PaperExitSubmissionState.WORKING,
+                }:
+                    state.exit_reason = "SECOND_TARGET"
+                    state.exit_price = second_price
+                    self._record_management_event(
+                        state, "PROFIT_TARGET_STAGED", timestamp=observed_at,
+                        target_stage="SECOND_TARGET", target_price=second_price,
+                    )
+                    if quantity > state.second_quantity:
+                        self._record_management_event(
+                            state, "RUNNER_ACTIVE", timestamp=observed_at,
+                            runner_quantity=quantity - state.second_quantity,
+                )
+
+        if (
+            state.first_taken
+            and not state.second_taken
+            and state.second_quantity > 0
+            and quantity > 0
+            and bar.high >= signal.target_levels[1]
+            and state.exit_reason is None
+        ):
+            second_price = signal.target_levels[1]
+            staged = self._submit_exit(
+                state, second_price, min(state.second_quantity, quantity),
+                "SECOND_TARGET",
+            )
+            staged_state = (
+                staged.state
+                if isinstance(staged, PaperExitSubmissionDecision) else None
+            )
+            if staged_state in {
+                PaperExitSubmissionState.SUBMITTED,
+                PaperExitSubmissionState.WORKING,
+            }:
+                state.exit_reason = "SECOND_TARGET"
+                state.exit_price = second_price
+                self._record_management_event(
+                    state, "PROFIT_TARGET_STAGED", timestamp=observed_at,
+                    target_stage="SECOND_TARGET", target_price=second_price,
+                )
+
+        # The target is staged immediately after entry, but the stop promotion
+        # still occurs only when price actually reaches the first milestone.
+        if (
+            not state.first_taken
+            and state.exit_reason == "FIRST_TARGET"
+            and bar.high >= signal.target_levels[0]
+            and state.peak_r is not None
+            and state.peak_r >= self.config.trade_management.move_stop_to_breakeven_after_r
+        ):
+            state.stop = max(state.stop, state.entry_price)
+            self._submit_exit(state, state.stop, quantity, "STOP")
+            # The target remains the active fill identity; the stop call only
+            # amends correlated protection.
+            state.active_exit_role = "FIRST_TARGET"
+            state.exit_reason = "FIRST_TARGET"
+
         requested: tuple[Decimal, int, str] | None = None
         stop_breach = bar.low <= state.stop
         stop_eligible = stop_breach and (
             not protection_activated_this_bar
+            and not target_staged_this_bar
             and
             state.protective_stop_activated_at is not None
             and state.protective_stop_activated_at <= bar.timestamp
+            # An already-working target owns this bar's upside/downside
+            # ambiguity.  Do not let a single OHLC low overwrite the target
+            # lifecycle when the same bar also reaches its target level.
+            and not (
+                state.exit_reason in {"FIRST_TARGET", "SECOND_TARGET"}
+                and state.exit_price is not None
+                and bar.high >= state.exit_price
+                and self._paper_target_is_working(state)
+            )
         )
         if stop_breach and not stop_eligible:
             # Establish protection, but do not infer that an OHLC extreme
@@ -3943,7 +5925,12 @@ class WarriorForwardCaptureService:
                 return tuple(records)
         if stop_eligible:
             requested = (state.stop, quantity, "STOP")
-        elif state.exit_reason is not None and state.exit_price is not None:
+        elif (
+            state.exit_reason is not None
+            and state.exit_price is not None
+            and state.exit_reason not in {"FIRST_TARGET", "SECOND_TARGET"}
+            and not target_staged_this_bar
+        ):
             # A working partial target remains reserved at its original
             # milestone size until the authoritative position decreases.
             # Retrying it with the full remaining position would destroy the
@@ -3956,11 +5943,21 @@ class WarriorForwardCaptureService:
             requested = (
                 state.exit_price, pending_quantity, state.exit_reason,
             )
-        elif not state.first_taken and bar.high >= signal.target_levels[0]:
+        elif (not target_staged_this_bar
+              and not target_attempted_this_bar
+              and not state.first_taken
+              and bar.high >= signal.target_levels[0]):
             requested = (signal.target_levels[0], min(state.first_quantity, quantity), "FIRST_TARGET")
-        elif not state.second_taken and bar.high >= signal.target_levels[1]:
+        elif (not target_staged_this_bar
+              and not target_attempted_this_bar
+              and state.first_taken
+              and not state.second_taken
+              and bar.high >= signal.target_levels[1]):
             requested = (signal.target_levels[1], min(state.second_quantity, quantity), "SECOND_TARGET")
-        elif bar.high >= signal.target_levels[2]:
+        elif (not target_staged_this_bar
+              and not target_attempted_this_bar
+              and state.second_taken
+              and bar.high >= signal.target_levels[2]):
             requested = (signal.target_levels[2], quantity, "RUNNER_TARGET")
         # The first protection-reconciliation bar is ambiguous.
         # Do not bypass that safeguard through profit-defense exits.
@@ -3969,16 +5966,25 @@ class WarriorForwardCaptureService:
 
         if requested is not None:
             price, requested_quantity, reason = requested
-            if reason != "PROFIT_DEFENSE_STOP_TIGHTENED":
-                state.exit_reason = reason
-                state.exit_price = price
-            result = self._submit_exit(state, price, requested_quantity, reason)
+            submission_reason = (
+                "STOP"
+                if reason == "PROFIT_DEFENSE_STOP_TIGHTENED"
+                else reason
+            )
+            result = self._submit_exit(
+                state, price, requested_quantity, submission_reason,
+            )
             if (isinstance(result, PaperExitSubmissionDecision)
                     and result.state is PaperExitSubmissionState.COMPLETED):
                 if reason == "FIRST_TARGET":
                     state.first_taken = True
                 elif reason == "SECOND_TARGET":
                     state.second_taken = True
+                if reason in {"FIRST_TARGET", "SECOND_TARGET", "RUNNER_TARGET"}:
+                    self._record_management_event(
+                        state, "PROFIT_TARGET_FILLED", timestamp=observed_at,
+                        target_stage=reason,
+                    )
                 state.exit_reason = None
                 state.exit_price = None
                 state.prior_low = bar.low
@@ -3992,6 +5998,24 @@ class WarriorForwardCaptureService:
                 if isinstance(result, PaperExitSubmissionDecision)
                 else bool(result)
             )
+            if active and reason != "PROFIT_DEFENSE_STOP_TIGHTENED":
+                # Pending means the submission boundary proved a real order,
+                # not merely that management intended to submit one.
+                state.exit_reason = reason
+                state.exit_price = price
+            elif (
+                not active
+                and reason in {"FIRST_TARGET", "SECOND_TARGET"}
+                and not self._paper_target_is_working(state)
+            ):
+                # A pre-gateway/non-durable failure remains retryable without
+                # masquerading as a working target.
+                if state.exit_reason == reason:
+                    state.exit_reason = None
+                    state.exit_price = None
+                if state.active_exit_role == reason:
+                    state.active_exit_role = None
+                    state.active_exit_order_id = None
             transition = (
                 ForwardTransition.PAPER_EXIT_WORKING
                 if active else ForwardTransition.PAPER_EXIT_REQUIRED
@@ -4015,6 +6039,9 @@ class WarriorForwardCaptureService:
                 state.stop = max(state.stop, price)
                 state.profit_defense_stop_tightened = True
                 state.profit_defense_last_action = reason
+                self._record_management_event(
+                    state, "PROFIT_DEFENSE_PARTIAL_EXIT", timestamp=observed_at,
+                )
             elif (
                 reason == "FIRST_TARGET"
                 and state.peak_r is not None
@@ -4029,9 +6056,89 @@ class WarriorForwardCaptureService:
             elif reason == "PROFIT_DEFENSE_RUNNER_EXIT":
                 state.profit_defense_runner_exit = True
                 state.profit_defense_last_action = reason
+                self._record_management_event(
+                    state, "PROFIT_DEFENSE_RUNNER_EXIT", timestamp=observed_at,
+                )
 
-        if state.first_taken and state.prior_low is not None and state.prior_low < bar.close:
-            state.stop = max(state.stop, state.prior_low)
+            # A failed target retry must not monopolize the management cycle.
+            # Independently protect the same authoritative exposure while the
+            # target remains eligible for a bounded later retry.
+            if (
+                not active
+                and reason in {"FIRST_TARGET", "SECOND_TARGET"}
+                and not protection_activated_this_bar
+            ):
+                defense = self._profit_defense_action(state, bar)
+                if defense is not None:
+                    defense_price, defense_quantity, defense_reason = defense
+                    defense_submission_reason = (
+                        "STOP"
+                        if defense_reason == "PROFIT_DEFENSE_STOP_TIGHTENED"
+                        else defense_reason
+                    )
+                    defense_result = self._submit_exit(
+                        state,
+                        defense_price,
+                        defense_quantity,
+                        defense_submission_reason,
+                    )
+                    defense_active = (
+                        defense_result.protection_active
+                        if isinstance(
+                            defense_result, PaperExitSubmissionDecision
+                        )
+                        else bool(defense_result)
+                    )
+                    if (
+                        defense_active
+                        and defense_reason
+                        == "PROFIT_DEFENSE_STOP_TIGHTENED"
+                    ):
+                        state.stop = max(state.stop, defense_price)
+                        state.profit_defense_stop_tightened = True
+                        state.profit_defense_last_action = defense_reason
+                        self._record_management_event(
+                            state,
+                            "PROFIT_DEFENSE_PARTIAL_EXIT",
+                            timestamp=observed_at,
+                        )
+                    elif defense_active:
+                        state.exit_reason = defense_reason
+                        state.exit_price = defense_price
+
+        if (
+            state.first_taken
+            and state.exit_reason != "RUNNER_TARGET"
+            and state.prior_low is not None
+            and state.prior_low < bar.close
+        ):
+            # ``state.stop`` is a projection of canonical protection, not a
+            # substitute for it. Raising only the projection can make later
+            # profit-defense evaluation believe the tighter stop is already
+            # working while the gateway still owns the original-loss stop.
+            trailing_stop = max(state.stop, state.prior_low)
+            if trailing_stop > state.stop:
+                target_role = state.active_exit_role
+                target_order_id = state.active_exit_order_id
+                target_reason = state.exit_reason
+                target_price = state.exit_price
+                result = self._submit_exit(
+                    state, trailing_stop, quantity, "STOP",
+                )
+                active = (
+                    result.protection_active
+                    if isinstance(result, PaperExitSubmissionDecision)
+                    else bool(result)
+                )
+                if active:
+                    state.stop = trailing_stop
+                # A stop amendment must not steal durable fill attribution
+                # from a concurrently working target.
+                if target_reason in {"FIRST_TARGET", "SECOND_TARGET"}:
+                    state.active_exit_role = target_role
+                    state.active_exit_order_id = target_order_id
+                    state.exit_reason = target_reason
+                    state.exit_price = target_price
         state.prior_low = bar.low
         records.append(_management_context_record(
             signal.symbol, observed_at, signal, state,
@@ -4065,7 +6172,20 @@ class WarriorForwardCaptureService:
             {"from": self._last_transition.get(state.signal.symbol, ForwardTransition.PAPER_ENTRY).value,
              "to": ForwardTransition.PAPER_EXIT.value, "reason_codes": [],
              "authoritative_remaining": 0,
-             "authority": "AUTHORITATIVE_POSITION_PROJECTION"},
+             "authority": "AUTHORITATIVE_POSITION_PROJECTION",
+             "peak_executable_bid": state.peak_executable_bid,
+             "peak_executable_pnl": state.peak_executable_pnl,
+             "peak_executable_r": state.peak_executable_r,
+             "realized_lifecycle_profit": state.realized_pnl,
+             "realized_from_partials": state.realized_from_partials,
+             "peak_to_exit_giveback": max(
+                 ZERO, state.peak_executable_pnl - state.realized_pnl,
+             ),
+             "peak_profit_retention_percent": (
+                 None
+                 if state.peak_executable_pnl <= ZERO
+                 else state.realized_pnl / state.peak_executable_pnl * HUNDRED
+             )},
             identity_parts=(ForwardTransition.PAPER_EXIT.value,
                             bar.timestamp.isoformat(), "AUTHORITATIVE"),
         )
@@ -4084,13 +6204,77 @@ class WarriorForwardCaptureService:
                             reason, str(state.last_bar_timestamp)),
         )
 
-    def _submit_exit(self, state: _PaperState, price: Decimal, quantity: int, reason: str) -> object:
+    def _submit_exit(
+        self, state: _PaperState, price: Decimal, quantity: int, reason: str,
+        *, target_stage_only: bool = False,
+    ) -> object:
         if self._paper_exit_submitter is not None:
-            return self._paper_exit_submitter(
-                state.signal.symbol, quantity, price, reason,
-                lifecycle_identity(state.signal),
-            )
+            try:
+                result = self._paper_exit_submitter(
+                    state.signal.symbol, quantity, price, reason,
+                    lifecycle_identity(state.signal),
+                    target_stage_only=target_stage_only,
+                )
+            except TypeError:
+                result = self._paper_exit_submitter(
+                    state.signal.symbol, quantity, price, reason,
+                    lifecycle_identity(state.signal),
+                )
+            role = self._exit_role_for_reason(reason)
+            if role is not None and (
+                not isinstance(result, PaperExitSubmissionDecision)
+                or result.state in {
+                    PaperExitSubmissionState.SUBMITTED,
+                    PaperExitSubmissionState.WORKING,
+                    PaperExitSubmissionState.COMPLETED,
+                }
+            ):
+                state.active_exit_role = role
+                state.active_exit_order_id = getattr(result, "order_id", None)
+            return result
         return False
+
+    @staticmethod
+    def _exit_role_for_reason(reason: str | None) -> str | None:
+        key = str(reason or "").strip().upper()
+        return {
+            "STOP": "PROTECTIVE_STOP", "STOP_LOSS": "PROTECTIVE_STOP",
+            "FIRST_TARGET": "FIRST_TARGET", "SECOND_TARGET": "SECOND_TARGET",
+            "RUNNER_TARGET": "RUNNER_EXIT",
+            "PROFIT_DEFENSE_RUNNER_EXIT": "PROFIT_DEFENSE",
+            "PROFIT_DEFENSE_STOP_TIGHTENED": "PROFIT_DEFENSE",
+            "PROFIT_HARVEST_1": "PROFIT_HARVEST_1",
+            "PROFIT_HARVEST_2": "PROFIT_HARVEST_2",
+            "PROFIT_HARVEST_3": "PROFIT_HARVEST_3",
+        }.get(key)
+
+    def _observed_exit_role(
+        self, state: _PaperState,
+    ) -> tuple[str | None, str | None]:
+        """Use actual PAPER order identity when a position reduction is seen."""
+        if self._paper_exit_fill_source is not None:
+            try:
+                role, order_id = self._paper_exit_fill_source(
+                    state.signal.symbol, lifecycle_identity(state.signal),
+                )
+                if role:
+                    return str(role).strip().upper(), order_id
+            except Exception:
+                pass
+        return state.active_exit_role or self._exit_role_for_reason(state.exit_reason), state.active_exit_order_id
+
+    def _record_exit_fill_classification(
+        self, state: _PaperState, role: str | None, order_id: str | None,
+        before: int, after: int, timestamp: datetime,
+    ) -> None:
+        self._record_management_event(
+            state, "EXIT_FILL_CLASSIFIED", timestamp=timestamp,
+            order_role=role or "UNKNOWN",
+            order_id=(str(order_id)[-32:] if order_id else None),
+            fill_quantity=max(0, int(before) - int(after)),
+            authoritative_qty_before=int(before),
+            authoritative_qty_after=int(after),
+        )
 
     def manage_session_boundary(self, observed_at: datetime) -> tuple[tuple[str, str], ...]:
         """Flatten or explicitly approve carry for each authoritative PAPER position."""
@@ -4174,41 +6358,291 @@ class WarriorForwardCaptureService:
     def reconcile_authoritative_protection(
         self, symbol: str, observed_at: datetime,
     ) -> bool:
-        """Protect a nonzero PAPER position as soon as its fill is visible.
-
-        Entry remainder is deliberately independent from this quantity.  The
-        position projection is the only authority used for the protective
-        order, so a partial entry cannot leave an unprotected gap until the
-        next completed bar.
-        """
+        """Prove every required PAPER bracket leg in the durable order ledger."""
         state = self._paper.get(symbol.strip().upper())
         if state is None or self._paper_position_quantity_source is None:
             return False
         quantity = max(0, int(self._paper_position_quantity_source(symbol)))
         if quantity <= 0:
             return False
+        self._record_management_event(
+            state, "BRACKET_RECONCILIATION_STARTED", timestamp=observed_at,
+        )
         # Preserve a decrease until bar management acknowledges the target fill.
         # Overwriting remaining here erased the only completion evidence and
         # caused FIRST_TARGET to be issued repeatedly down to a one-share runner.
-        if not state.authoritative_position_seen or quantity > state.remaining:
+        first_authoritative_position = not state.authoritative_position_seen
+        if first_authoritative_position or quantity > state.remaining:
             state.remaining = quantity
+        if first_authoritative_position:
+            # Reconciliation can be the first callback to observe a partial
+            # entry fill. Bind milestones to actual filled exposure before
+            # marking the lifecycle authoritative; otherwise a later tick
+            # preserves planned order quantity in peak-PnL/harvest sizing.
+            state.managed_quantity = quantity
+            if not state.first_taken and not state.second_taken:
+                state.first_quantity = int((
+                    Decimal(quantity)
+                    * self.config.trade_management.first_target_exit_percent
+                ).to_integral_value(rounding=ROUND_FLOOR))
+                state.second_quantity = int((
+                    Decimal(quantity)
+                    * self.config.trade_management.second_target_exit_percent
+                ).to_integral_value(rounding=ROUND_FLOOR))
         state.authoritative_position_seen = True
-        result = self._submit_exit(state, state.stop, quantity, "STOP")
-        active = (
-            result.protection_active
-            if isinstance(result, PaperExitSubmissionDecision)
-            else bool(result)
-        )
-        if not active:
-            state.protection_reconciled = False
+        desired_target_quantity = 0
+        desired_target_price: Decimal | None = None
+        target_role: str | None = None
+
+        def incomplete(reason: str, **details: object) -> bool:
+            self._record_management_event(
+                state,
+                "BRACKET_RECONCILIATION_INCOMPLETE",
+                timestamp=observed_at,
+                reason=reason,
+                target_stage=target_role,
+                desired_target_qty=desired_target_quantity,
+                desired_target_price=desired_target_price,
+                **details,
+            )
             return False
-        activation = getattr(result, "activation_timestamp", None) or observed_at
+
+        # Without the canonical ledger no submission result can prove that a
+        # bracket leg became durable.  Fail closed before creating an
+        # unverifiable duplicate on every reconciliation pass.
+        if self._paper_order_book() is None:
+            state.protection_reconciled = False
+            return incomplete("TARGET_NOT_DURABLE")
+
+        stop_leg = self._durable_exit_leg(
+            state, "STOP", desired_quantity=quantity, desired_price=state.stop,
+        )
+        stop_result: object | None = None
+        if not stop_leg.is_exact:
+            stop_result = self._submit_exit(state, state.stop, quantity, "STOP")
+            stop_leg = self._durable_exit_leg(
+                state, "STOP", desired_quantity=quantity,
+                desired_price=state.stop,
+            )
+        if not stop_leg.is_exact:
+            state.protection_reconciled = False
+            return incomplete("STOP_NOT_DURABLE")
+
+        activation = (
+            getattr(stop_leg.matching_order, "updated_at", None)
+            or getattr(stop_result, "activation_timestamp", None)
+            or observed_at
+        )
         if (
             state.protective_stop_activated_at is None
             or activation > state.protective_stop_activated_at
         ):
             state.protective_stop_activated_at = activation
         state.protection_reconciled = True
+        self._record_management_event(
+            state, "PROTECTIVE_STOP_RESTORED", timestamp=observed_at,
+            order_id=getattr(stop_leg.matching_order, "order_id", None),
+        )
+
+        first_filled = self._durable_target_filled_quantity(
+            state, "FIRST_TARGET",
+        )
+        configured_target = int(
+            (
+                Decimal(quantity)
+                * self.config.trade_management.first_target_exit_percent
+            ).to_integral_value(rounding=ROUND_FLOOR)
+        )
+        state.first_quantity = max(state.first_quantity, configured_target)
+        durable_first_complete = (
+            state.first_quantity > 0
+            and first_filled >= state.first_quantity
+        )
+        if state.first_taken and not durable_first_complete:
+            self._record_management_event(
+                state,
+                "RECOVERED_FIRST_TARGET_STATE_CORRECTED",
+                timestamp=observed_at,
+                target_stage="FIRST_TARGET",
+            )
+        state.first_taken = durable_first_complete
+
+        target_filled = first_filled
+        target_allocation = state.first_quantity
+        if not state.first_taken:
+            target_role = "FIRST_TARGET"
+        else:
+            second_filled = self._durable_target_filled_quantity(
+                state, "SECOND_TARGET",
+            )
+            durable_second_complete = (
+                state.second_quantity > 0
+                and second_filled >= state.second_quantity
+            )
+            state.second_taken = durable_second_complete
+            if state.second_quantity > 0 and not state.second_taken:
+                target_role = "SECOND_TARGET"
+                target_filled = second_filled
+                target_allocation = state.second_quantity
+
+        if target_role is not None:
+            desired_target_quantity = min(
+                max(0, target_allocation - target_filled), quantity,
+            )
+            if desired_target_quantity <= 0:
+                return incomplete("TARGET_QUANTITY_INVALID")
+            try:
+                desired_target_price = state.signal.target_levels[
+                    0 if target_role == "FIRST_TARGET" else 1
+                ]
+            except (AttributeError, IndexError, TypeError):
+                desired_target_price = None
+            if desired_target_price is None or desired_target_price <= 0:
+                return incomplete("TARGET_PRICE_UNAVAILABLE")
+            if self._has_target_lifecycle_mismatch(state, target_role):
+                return incomplete("TARGET_LIFECYCLE_MISMATCH")
+
+            prior_target = self._durable_exit_leg(
+                state,
+                target_role,
+                desired_quantity=desired_target_quantity,
+                desired_price=desired_target_price,
+            )
+            target_result: object | None = None
+            if not prior_target.is_exact:
+                target_result = self._submit_exit(
+                    state,
+                    desired_target_price,
+                    desired_target_quantity,
+                    target_role,
+                    target_stage_only=target_role == "FIRST_TARGET",
+                )
+            durable_target = self._durable_exit_leg(
+                state,
+                target_role,
+                desired_quantity=desired_target_quantity,
+                desired_price=desired_target_price,
+            )
+            if not durable_target.is_exact:
+                if self._has_target_lifecycle_mismatch(state, target_role):
+                    return incomplete("TARGET_LIFECYCLE_MISMATCH")
+                # Recovery must not preserve an intention-only target as a
+                # working lifecycle. A later pass remains free to retry it.
+                if state.exit_reason == target_role:
+                    state.exit_reason = None
+                    state.exit_price = None
+                if state.active_exit_role == target_role:
+                    state.active_exit_role = None
+                    state.active_exit_order_id = None
+                submitted = (
+                    target_result.state in {
+                        PaperExitSubmissionState.SUBMITTED,
+                        PaperExitSubmissionState.WORKING,
+                    }
+                    if isinstance(target_result, PaperExitSubmissionDecision)
+                    else bool(target_result)
+                )
+                failure_reason = (
+                    target_result.failure_reason.value
+                    if isinstance(target_result, PaperExitSubmissionDecision)
+                    and target_result.failure_reason is not None
+                    else None
+                )
+                submission_state = (
+                    target_result.state.value
+                    if isinstance(target_result, PaperExitSubmissionDecision)
+                    else None
+                )
+                return incomplete(
+                    "TARGET_NOT_DURABLE"
+                    if submitted else "TARGET_SUBMISSION_FAILED",
+                    target_submission_failure_reason=failure_reason,
+                    target_submission_state=submission_state,
+                    target_submission_role=target_role,
+                )
+
+            # Target creation can atomically replace its correlated stop.
+            # Re-read both legs and only repair the stop when the durable
+            # bracket does not already contain valid protection.
+            stop_leg = self._durable_exit_leg(
+                state, "STOP", desired_quantity=quantity,
+                desired_price=state.stop,
+            )
+            if not stop_leg.is_exact:
+                self._submit_exit(state, state.stop, quantity, "STOP")
+                stop_leg = self._durable_exit_leg(
+                    state, "STOP", desired_quantity=quantity,
+                    desired_price=state.stop,
+                )
+                durable_target = self._durable_exit_leg(
+                    state,
+                    target_role,
+                    desired_quantity=desired_target_quantity,
+                    desired_price=desired_target_price,
+                )
+            if not stop_leg.is_exact:
+                state.protection_reconciled = False
+                return incomplete("STOP_NOT_DURABLE")
+            if not durable_target.is_exact:
+                return incomplete("TARGET_NOT_DURABLE")
+
+            state.active_exit_role = target_role
+            state.active_exit_order_id = getattr(
+                durable_target.matching_order, "order_id", None,
+            )
+            state.exit_reason = target_role
+            state.exit_price = desired_target_price
+            if prior_target.working_quantity == 0:
+                self._record_management_event(
+                    state,
+                    "PROFIT_TARGET_RESTORED",
+                    timestamp=observed_at,
+                    target_stage=target_role,
+                    desired_target_qty=desired_target_quantity,
+                    desired_target_price=desired_target_price,
+                    target_price=desired_target_price,
+                    order_id=state.active_exit_order_id,
+                )
+                self._record_management_event(
+                    state, "RECOVERED_PROFIT_TARGET_STAGED",
+                    timestamp=observed_at,
+                    target_stage=target_role,
+                    desired_target_qty=desired_target_quantity,
+                    desired_target_price=desired_target_price,
+                    target_price=desired_target_price,
+                    order_id=state.active_exit_order_id,
+                )
+            self._record_management_event(
+                state,
+                "PROFIT_TARGET_RECONCILED",
+                timestamp=observed_at,
+                target_stage=target_role,
+                desired_target_qty=desired_target_quantity,
+                desired_target_price=desired_target_price,
+                target_price=desired_target_price,
+                order_id=state.active_exit_order_id,
+            )
+        else:
+            # Runner state needs only its protective stop.  Any live target is
+            # contradictory durable state and must not be reported complete.
+            obsolete_target_qty = sum(
+                self._durable_exit_leg(state, role).working_quantity
+                for role in ("FIRST_TARGET", "SECOND_TARGET")
+            )
+            if obsolete_target_qty > 0:
+                return incomplete("OBSOLETE_TARGET_WORKING")
+
+        state.protection_reconciled = True
+        self._record_management_event(
+            state, "PROTECTIVE_STOP_RECONCILED", timestamp=observed_at,
+            desired_target_qty=desired_target_quantity,
+            desired_target_price=desired_target_price,
+        )
+        self._record_management_event(
+            state, "BRACKET_RECONCILIATION_COMPLETE", timestamp=observed_at,
+            desired_target_qty=desired_target_quantity,
+            desired_target_price=desired_target_price,
+        )
         if self.writer is not None:
             self.writer.submit(_management_context_record(
                 symbol.strip().upper(), observed_at, state.signal, state,
@@ -4265,18 +6699,78 @@ class WarriorForwardCaptureService:
             if self.configuration_fingerprint is not None
             and fingerprint == self.configuration_fingerprint
         )
+        entry_lifecycles: dict[str, str] = {}
+        entries_by_lifecycle: dict[str, list[CaptureRecord]] = {}
+        contexts: dict[str, CaptureRecord] = {}
+        fingerprints: dict[str, str | None] = {}
+        lifecycle_evidence: dict[str, list[CaptureRecord]] = {}
+        recovery_records: list[CaptureRecord] = []
+
+        # Index immutable lifecycle identity without requiring the newest
+        # signal schema. Legacy authoritative fills may lack strategy context
+        # fields, but an explicit lifecycle remains safe evidence for finding
+        # same-generation durable records.
+        for record, fingerprint in all_attributed:
+            fingerprints[record.record_id] = fingerprint
+            payload = record.payload
+            lifecycle = _persisted_lifecycle_id(record, payload)
+            if lifecycle is not None:
+                lifecycle_evidence.setdefault(lifecycle, []).append(record)
+            if (
+                record.record_type is CaptureRecordType.PAPER_FILL
+                and payload.get("action") == "ENTRY"
+            ):
+                if lifecycle is None:
+                    recovery_records.append(_recovery_data_quality_record(
+                        record, None, "RECOVERY_LIFECYCLE_SKIPPED",
+                        "LIFECYCLE_ID_UNRECOVERABLE",
+                    ))
+                    continue
+                entry_lifecycles[record.record_id] = lifecycle
+                entries_by_lifecycle.setdefault(lifecycle, []).append(record)
+            elif record.record_type is CaptureRecordType.MANAGEMENT_CONTEXT:
+                context_lifecycle = str(payload.get("lifecycle_id") or "").strip()
+                if context_lifecycle:
+                    contexts[context_lifecycle] = record
+
+        recovery_payloads: dict[str, dict[str, object]] = {}
+        recovery_sources: dict[str, str] = {}
+        skipped_lifecycles: set[str] = set()
+        for lifecycle, lifecycle_entries in entries_by_lifecycle.items():
+            evidence = tuple(lifecycle_evidence.get(lifecycle, ()))
+            context = contexts.get(lifecycle)
+            for entry in lifecycle_entries:
+                recovered_payload, source = _recover_entry_payload(
+                    entry, evidence=evidence, context=context,
+                )
+                if recovered_payload is None:
+                    skipped_lifecycles.add(lifecycle)
+                    continue
+                recovery_payloads[entry.record_id] = recovered_payload
+                recovery_sources[entry.record_id] = source
+            if lifecycle in skipped_lifecycles:
+                recovery_records.append(_recovery_data_quality_record(
+                    lifecycle_entries[-1], lifecycle,
+                    "LEGACY_SESSION_UNRECOVERABLE",
+                    "RECOVERY_LIFECYCLE_SKIPPED",
+                ))
+            elif any("session" not in entry.payload for entry in lifecycle_entries):
+                representative = lifecycle_entries[-1]
+                recovery_records.append(_recovery_data_quality_record(
+                    representative, lifecycle, "LEGACY_SESSION_RECOVERED",
+                    recovery_sources.get(representative.record_id, "SAME_LIFECYCLE"),
+                ))
         # Fingerprint isolation remains the default.  A prior generation may
         # be resumed only when an immutable Warrior ENTRY fill and an active
         # management context prove the same lifecycle, stop, and target
         # model.  This is an explicit, auditable migration boundary; a bare
         # broker position can never create a Warrior state here.
         current_lifecycles = {
-            str(record.payload.get("lifecycle_id") or lifecycle_identity(
-                _signal_from_entry(record, record.payload)
-            ))
+            entry_lifecycles[record.record_id]
             for record in records
             if record.record_type is CaptureRecordType.PAPER_FILL
             and record.payload.get("action") == "ENTRY"
+            and record.record_id in recovery_payloads
         }
         current_symbols = {
             record.symbol
@@ -4285,21 +6779,12 @@ class WarriorForwardCaptureService:
             and record.payload.get("action") == "ENTRY"
         }
         entries: dict[str, CaptureRecord] = {}
-        contexts: dict[str, CaptureRecord] = {}
-        fingerprints: dict[str, str | None] = {}
         for record, fingerprint in all_attributed:
-            fingerprints[record.record_id] = fingerprint
             payload = record.payload
             if record.record_type is CaptureRecordType.PAPER_FILL and payload.get("action") == "ENTRY":
-                lifecycle = payload.get("lifecycle_id") or lifecycle_identity(
-                    _signal_from_entry(record, payload)
-                )
-                entries[str(lifecycle)] = record
-            elif record.record_type is CaptureRecordType.MANAGEMENT_CONTEXT:
-                lifecycle = payload.get("lifecycle_id")
-                if not lifecycle:
-                    continue
-                contexts[str(lifecycle)] = record
+                lifecycle = entry_lifecycles.get(record.record_id)
+                if lifecycle is not None and record.record_id in recovery_payloads:
+                    entries[lifecycle] = record
 
         # A restart creates a new campaign, but an authoritative open position
         # can still belong to the most recent proven Warrior lifecycle from a
@@ -4317,6 +6802,7 @@ class WarriorForwardCaptureService:
             context_fingerprint = fingerprints.get(context.record_id)
             if not self._compatible_recovery_context(
                 entry, context, context_fingerprint,
+                recovery_payloads.get(entry.record_id),
             ):
                 continue
             symbol_quantity = (
@@ -4372,16 +6858,34 @@ class WarriorForwardCaptureService:
                 continue
             payload = record.payload
             if payload.get("action") == "ENTRY":
-                signal = _signal_from_entry(record, payload)
-                quantity = int(payload["filled_shares"])
+                recovered_payload = recovery_payloads.get(record.record_id)
+                if recovered_payload is None:
+                    continue
+                try:
+                    signal = _signal_from_entry(record, recovered_payload)
+                    quantity = int(recovered_payload["filled_shares"])
+                except (KeyError, TypeError, ValueError):
+                    recovery_records.append(_recovery_data_quality_record(
+                        record, entry_lifecycles.get(record.record_id),
+                        "RECOVERY_LIFECYCLE_SKIPPED",
+                        "ENTRY_DESERIALIZATION_INVALID",
+                    ))
+                    continue
                 first = int((Decimal(quantity) * self.config.trade_management.first_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
                 second = int((Decimal(quantity) * self.config.trade_management.second_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
                 self._paper[record.symbol] = _PaperState(
-                    signal, Decimal(payload["fill_price"]), quantity, quantity,
-                    Decimal(payload["structural_stop"]), first, second, quantity,
+                    signal, Decimal(recovered_payload["fill_price"]), quantity, quantity,
+                    Decimal(recovered_payload["structural_stop"]), first, second, quantity,
                 )
+                if self.strategy_ownership is not None:
+                    self.strategy_ownership.acquire(
+                        record.symbol, StrategyOwner.WARRIOR_MOMENTUM,
+                        lifecycle_identity(signal),
+                    )
                 self._paper[record.symbol].risk_budget = Decimal(
-                    payload.get("risk_dollars", signal.risk_per_share * quantity)
+                    recovered_payload.get(
+                        "risk_dollars", signal.risk_per_share * quantity,
+                    )
                 )
             elif record.symbol in self._paper:
                 state = self._paper[record.symbol]
@@ -4431,6 +6935,37 @@ class WarriorForwardCaptureService:
                 state.profit_defense_stop_tightened = bool(payload.get("profit_defense_stop_tightened", False))
                 state.profit_defense_runner_exit = bool(payload.get("profit_defense_runner_exit", False))
                 state.profit_defense_last_action = payload.get("profit_defense_last_action")
+                state.initial_stop = (
+                    state.signal.stop_price
+                    if payload.get("initial_stop") is None
+                    else Decimal(payload["initial_stop"])
+                )
+                state.peak_executable_bid = (
+                    None if payload.get("peak_executable_bid") is None
+                    else Decimal(payload["peak_executable_bid"])
+                )
+                state.peak_executable_pnl = Decimal(
+                    payload.get("peak_executable_pnl", "0")
+                )
+                state.peak_executable_r = (
+                    None if payload.get("peak_executable_r") is None
+                    else Decimal(payload["peak_executable_r"])
+                )
+                state.realized_from_partials = Decimal(
+                    payload.get("realized_from_partials", "0")
+                )
+                state.current_secured_profit = Decimal(
+                    payload.get("current_secured_profit", "0")
+                )
+                state.peak_to_current_giveback = Decimal(
+                    payload.get("peak_to_current_giveback", "0")
+                )
+                state.profit_harvest_stage = int(
+                    payload.get("profit_harvest_stage", 0)
+                )
+                state.pending_profit_harvest_role = payload.get(
+                    "pending_profit_harvest_role"
+                )
                 add_on = payload.get("add_on")
                 if isinstance(add_on, dict):
                     add_on_signal = replace(
@@ -4473,6 +7008,8 @@ class WarriorForwardCaptureService:
                     None if payload.get("exit_price") is None
                     else Decimal(payload["exit_price"])
                 )
+                state.active_exit_role = payload.get("active_exit_role")
+                state.active_exit_order_id = payload.get("active_exit_order_id")
                 state.protective_stop_activated_at = (
                     None if payload.get("protective_stop_activated_at") is None
                     else datetime.fromisoformat(payload["protective_stop_activated_at"])
@@ -4482,19 +7019,22 @@ class WarriorForwardCaptureService:
                 )
             except (KeyError, TypeError, ValueError):
                 self._paper.pop(record.symbol, None)
+        if recovery_records:
+            self._submit_records(tuple(recovery_records))
 
     def _compatible_recovery_context(
         self, entry: CaptureRecord, context: CaptureRecord,
         context_fingerprint: str | None,
+        recovered_entry_payload: dict[str, object] | None = None,
     ) -> bool:
         """Permit only structurally proven same-lifecycle migration."""
         if context_fingerprint is None or entry.symbol != context.symbol:
             return False
-        entry_payload = entry.payload
+        entry_payload = recovered_entry_payload or entry.payload
         context_payload = context.payload
-        entry_lifecycle = entry_payload.get("lifecycle_id") or lifecycle_identity(
-            _signal_from_entry(entry, entry_payload)
-        )
+        entry_lifecycle = _persisted_lifecycle_id(entry, entry_payload)
+        if entry_lifecycle is None:
+            return False
         if (
             context_payload.get("environment") != "PAPER"
             or context_payload.get("strategy") != "WARRIOR_MOMENTUM_V1"
@@ -4643,9 +7183,6 @@ def _prebridge_execution_gate_record(
     ):
         result = PaperEntryAuthorizationResult.REFUSED
         reason = PaperEntryAuthorizationReason.EXPOSURE_LIMIT
-    elif ReasonCode.SPREAD_WIDE in candidate.reason_codes:
-        result = PaperEntryAuthorizationResult.REFUSED
-        reason = PaperEntryAuthorizationReason.SPREAD_WIDE
     else:
         # Every observable pre-bridge gate passed, but no authoritative bridge
         # decision was returned on this observation.  Never manufacture a risk
@@ -4676,10 +7213,20 @@ def _management_context_record(
             "environment": "PAPER",
             "strategy": "WARRIOR_MOMENTUM_V1",
             "lifecycle_id": lifecycle_identity(signal),
+            # Immutable signal provenance makes future schema evolution
+            # recoverable without consulting wall-clock time or another
+            # generation.
+            "session": signal.session,
+            "momentum_score": signal.momentum_score,
+            "catalyst_state": signal.catalyst_state.value,
+            "relative_volume": signal.relative_volume,
+            "float_shares": signal.float_shares,
+            "spread_percent": signal.spread_percent,
             "setup": signal.setup_type.value,
             "entry_timestamp": signal.timestamp,
             "planned_entry": state.entry_price,
             "structural_stop": signal.stop_price,
+            "initial_stop": state.initial_stop,
             "stop": state.stop,
             "prior_low": state.prior_low,
             "minimum_low": state.minimum_low,
@@ -4693,6 +7240,14 @@ def _management_context_record(
             "profit_defense_stop_tightened": state.profit_defense_stop_tightened,
             "profit_defense_runner_exit": state.profit_defense_runner_exit,
             "profit_defense_last_action": state.profit_defense_last_action,
+            "peak_executable_bid": state.peak_executable_bid,
+            "peak_executable_pnl": state.peak_executable_pnl,
+            "peak_executable_r": state.peak_executable_r,
+            "realized_from_partials": state.realized_from_partials,
+            "current_secured_profit": state.current_secured_profit,
+            "peak_to_current_giveback": state.peak_to_current_giveback,
+            "profit_harvest_stage": state.profit_harvest_stage,
+            "pending_profit_harvest_role": state.pending_profit_harvest_role,
             "adaptive_exit": (
                 None if state.adaptive_exit_assessment is None else {
                     "tighten_giveback_r": state.adaptive_exit_assessment.tighten_giveback_r,
@@ -4726,6 +7281,8 @@ def _management_context_record(
             "authoritative_position_seen": state.authoritative_position_seen,
             "exit_reason": state.exit_reason,
             "exit_price": state.exit_price,
+            "active_exit_role": state.active_exit_role,
+            "active_exit_order_id": state.active_exit_order_id,
             "protective_stop_activated_at": state.protective_stop_activated_at,
             "phase": phase,
         },
@@ -4759,6 +7316,84 @@ def _discovery_record(value: PointInTimeObservation, candidate: MomentumCandidat
     )
 
 
+def _bind_decision_generation(
+    candidate: MomentumCandidate,
+    value: PointInTimeObservation,
+) -> MomentumCandidate:
+    """Bind one decision to one immutable observation/quote generation."""
+    scanner_timestamp = value.observation.timestamp
+    decision_timestamp = value.evaluation_timestamp or scanner_timestamp
+    quote_timestamp = value.quote_observed_at or value.observation.quote_timestamp
+    setup = candidate.setup
+    episode = None if setup is None else (
+        setup.structural_episode_id or setup.taxonomy_execution_identity
+    )
+    identity = "|".join((
+        candidate.symbol,
+        scanner_timestamp.isoformat(),
+        decision_timestamp.isoformat(),
+        "" if quote_timestamp is None else quote_timestamp.isoformat(),
+        "" if episode is None else str(episode),
+    ))
+    return replace(
+        candidate,
+        decision_generation_id=sha256(identity.encode("utf-8")).hexdigest()[:24],
+        scanner_observation_timestamp=scanner_timestamp,
+        warrior_observation_timestamp=decision_timestamp,
+        decision_timestamp=decision_timestamp,
+        decision_quote_timestamp=quote_timestamp,
+    )
+
+
+def _opportunity_authorization_record(
+    assessment: WarriorOpportunityAssessment, *, authorized: bool,
+    reason: str, risk_result: str, sizing_result: str,
+) -> CaptureRecord:
+    """Durable sanitized generation-bound authorization provenance."""
+    return CaptureRecord.create(
+        CaptureRecordType.STATE_TRANSITION,
+        assessment.symbol,
+        assessment.decision_timestamp,
+        {
+            "from": WarriorOpportunityState.EXECUTABLE.value,
+            "to": WarriorOpportunityState.AUTHORIZATION_EVALUATED.value,
+            "strategy": assessment.strategy,
+            "setup": assessment.setup_family,
+            "generation_id": assessment.generation_id,
+            "lifecycle_id": assessment.lifecycle_id,
+            "trigger": assessment.structural_trigger,
+            "structural_stop": assessment.structural_stop,
+            "execution_ask": assessment.executable_entry,
+            "execution_bid": assessment.executable_bid,
+            "provider_last_timestamp": assessment.provider_last_timestamp,
+            "provider_bid_timestamp": assessment.provider_bid_timestamp,
+            "provider_ask_timestamp": assessment.provider_ask_timestamp,
+            "decision_timestamp": assessment.decision_timestamp,
+            "execution_quote_timestamp": assessment.execution_quote_timestamp,
+            "spread_percent": assessment.spread_percent,
+            "opportunity_result": assessment.adaptive_result.value,
+            "authorization_result": "AUTHORIZED" if authorized else "REJECTED",
+            "authorization_reason": _bounded_reason(reason),
+            "risk_result": _bounded_reason(risk_result),
+            "sizing_result": _bounded_reason(sizing_result),
+        },
+        identity_parts=(
+            assessment.generation_id, "AUTHORIZATION_EVALUATED",
+            "AUTHORIZED" if authorized else "REJECTED",
+        ),
+    )
+
+
+def _bounded_reason(value: str) -> str:
+    normalized = str(value or "UNSPECIFIED").strip().upper()
+    if (
+        0 < len(normalized) <= 64
+        and all(character.isalnum() or character == "_" for character in normalized)
+    ):
+        return normalized
+    return "OTHER"
+
+
 def _decision_record(value, candidate, completed, features) -> CaptureRecord:
     from .setup_diagnostics import production_setup_diagnostics
 
@@ -4770,7 +7405,11 @@ def _decision_record(value, candidate, completed, features) -> CaptureRecord:
         "observation_status": "ELIGIBLE" if candidate.observation_eligible else "REMOVED",
         "observation_blockers": tuple(code.value for code in candidate.observation_blockers),
         "entry_status": "READY" if candidate.status is CandidateStatus.ENTRY_READY else "BLOCKED",
-        "decision_timestamp": candidate.timestamp,
+        "decision_id": candidate.decision_generation_id,
+        "decision_timestamp": candidate.decision_timestamp or candidate.timestamp,
+        "scanner_observation_timestamp": candidate.scanner_observation_timestamp,
+        "warrior_observation_timestamp": candidate.warrior_observation_timestamp,
+        "decision_quote_timestamp": candidate.decision_quote_timestamp,
         "evaluation_timestamp": value.evaluation_timestamp,
         "last_price_timestamp": value.last_price_observed_at,
         "quote_timestamp": value.quote_observed_at,
@@ -4887,8 +7526,9 @@ def _gate_diagnostics(candidate, config, account):
          "observed": candidate.score.total, "limit": config.entry.minimum_momentum_score},
         {"gate": "setup", "passed": setup is not None and setup.state is SetupState.TRIGGERED,
          "observed": None if setup is None else setup.state.value, "limit": SetupState.TRIGGERED.value},
-        {"gate": "spread", "passed": candidate.spread_percent is not None and candidate.spread_percent <= config.entry.maximum_spread_percent,
-         "observed": candidate.spread_percent, "limit": config.entry.maximum_spread_percent},
+        {"gate": "execution_quality", "passed": candidate.execution_quality in {
+             ExecutionQuality.EXCELLENT, ExecutionQuality.GOOD, ExecutionQuality.MARGINAL,
+         }, "observed": candidate.execution_quality.value, "limit": "MARGINAL_OR_BETTER"},
         {"gate": "catalyst", "passed": not config.entry.require_catalyst_for_entry or candidate.catalyst_status.value == "TRUE",
          "observed": candidate.catalyst_status.value, "limit": "TRUE"},
         {"gate": "liquidity", "passed": execution_liquidity_ok(candidate, config),
@@ -4965,6 +7605,118 @@ def _account_gate_diagnostics(
              account.exposure_limit is None
              or account.existing_exposure < account.exposure_limit
          ), "observed": account.existing_exposure, "limit": account.exposure_limit},
+    )
+
+
+_RECOVERY_SIGNAL_CONTEXT_FIELDS = (
+    "session", "momentum_score", "catalyst_state", "relative_volume",
+)
+
+
+def _persisted_lifecycle_id(
+    record: CaptureRecord, payload: dict[str, object],
+) -> str | None:
+    explicit = str(payload.get("lifecycle_id") or "").strip()
+    if explicit:
+        return explicit
+    try:
+        return lifecycle_identity(_signal_from_entry(record, payload))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _recover_entry_payload(
+    entry: CaptureRecord, *, evidence: tuple[CaptureRecord, ...],
+    context: CaptureRecord | None,
+) -> tuple[dict[str, object] | None, str]:
+    # Modern ENTRY wins. Missing values may come only from records explicitly
+    # bound to this persisted lifecycle; current wall-clock time and unrelated
+    # symbol decisions never participate.
+    payload: dict[str, object] = dict(entry.payload)
+    lifecycle = str(payload.get("lifecycle_id") or "").strip()
+    if not lifecycle:
+        try:
+            _signal_from_entry(entry, payload)
+        except (KeyError, TypeError, ValueError):
+            return None, "LIFECYCLE_ID_UNRECOVERABLE"
+        return payload, "MODERN_ENTRY"
+
+    sibling_fills = tuple(
+        record.payload for record in evidence
+        if record.record_id != entry.record_id
+        and record.record_type is CaptureRecordType.PAPER_FILL
+        and record.payload.get("action") == "ENTRY"
+        and str(record.payload.get("lifecycle_id") or "").strip() == lifecycle
+    )
+    context_payloads = (
+        () if context is None
+        or str(context.payload.get("lifecycle_id") or "").strip() != lifecycle
+        else (context.payload,)
+    )
+    other_payloads = tuple(
+        record.payload for record in evidence
+        if record.record_type not in {
+            CaptureRecordType.PAPER_FILL,
+            CaptureRecordType.MANAGEMENT_CONTEXT,
+        }
+        and str(
+            record.payload.get("lifecycle_id")
+            or record.payload.get("generation_id")
+            or ""
+        ).strip() == lifecycle
+    )
+    source_name = "MODERN_ENTRY"
+    for field in _RECOVERY_SIGNAL_CONTEXT_FIELDS:
+        if payload.get(field) is not None:
+            continue
+        recovered = False
+        for candidate_source, candidates in (
+            ("SAME_LIFECYCLE_ENTRY", sibling_fills),
+            ("SAME_LIFECYCLE_MANAGEMENT_CONTEXT", context_payloads),
+            ("SAME_LIFECYCLE_PROVENANCE", other_payloads),
+        ):
+            values = [candidate.get(field) for candidate in candidates
+                      if candidate.get(field) is not None]
+            if not values:
+                continue
+            normalized = {str(value) for value in values}
+            if len(normalized) != 1:
+                return None, f"CONFLICTING_{field.upper()}"
+            payload[field] = values[-1]
+            if field == "session":
+                source_name = candidate_source
+            recovered = True
+            break
+        if not recovered:
+            return None, f"{field.upper()}_UNRECOVERABLE"
+
+    session = str(payload.get("session") or "").strip().upper()
+    if session not in WARRIOR_ENTRY_ALLOWED_SESSIONS:
+        return None, "SESSION_INVALID"
+    payload["session"] = session
+    try:
+        _signal_from_entry(entry, payload)
+    except (KeyError, TypeError, ValueError):
+        return None, "ENTRY_DESERIALIZATION_INVALID"
+    return payload, source_name
+
+
+def _recovery_data_quality_record(
+    entry: CaptureRecord, lifecycle: str | None, result: str, reason: str,
+) -> CaptureRecord:
+    return CaptureRecord.create(
+        CaptureRecordType.DATA_QUALITY, entry.symbol, entry.timestamp,
+        {
+            "action": "RECOVERY",
+            "strategy": "WARRIOR_MOMENTUM_V1",
+            "lifecycle_id": lifecycle,
+            "result": _bounded_reason(result),
+            "reason": _bounded_reason(reason),
+        },
+        identity_parts=(
+            "RECOVERY", str(lifecycle or entry.record_id),
+            _bounded_reason(result),
+        ),
     )
 
 

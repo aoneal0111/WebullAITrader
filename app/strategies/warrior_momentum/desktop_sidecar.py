@@ -41,8 +41,8 @@ from .order_flow_runtime import (
     OrderFlowPollingService, OrderFlowPriority,
 )
 from .projection_handoff import BoundedProjectionHandoff
-from .models import CandidateStatus, MinuteBar, MomentumCandidate, SetupState
-from .observability import NoOpWarriorObservabilitySink
+from .models import CandidateStatus, MinuteBar, MomentumCandidate, SetupState, SetupType
+from .observability import NoOpWarriorObservabilitySink, safe_close
 from .runtime import WarriorMomentumRuntime
 from .shadow_latched import (
     ShadowLatchedTransition,
@@ -65,6 +65,7 @@ _INTRAMINUTE_REEVALUATION_SECONDS = 1.0
 # boundary, so a prior veto cannot remain authoritative after its inputs age.
 _ACTIVE_CANDIDATE_MIN_REEVALUATION_SECONDS = 5.0
 _ACTIVE_CANDIDATE_MAX_REEVALUATION_SECONDS = 30.0
+_FAST_MOVER_MIN_REEVALUATION_SECONDS = 5.0
 _ACTIVE_CANDIDATE_PRICE_CHANGE_PERCENT = Decimal("1.0")
 _ACTIVE_CANDIDATE_VOLUME_CHANGE_PERCENT = Decimal("10")
 _ACTIVE_CANDIDATE_MIN_VOLUME_CHANGE = Decimal("250000")
@@ -96,6 +97,37 @@ def _meaningful_active_candidate_change(
         >= _ACTIVE_CANDIDATE_VOLUME_CHANGE_PERCENT
     )
     return price_changed or volume_changed
+
+
+def _fast_mover_refresh_eligible(
+    prior: MomentumCandidate,
+    observation: object,
+    config: WarriorMomentumConfig,
+) -> bool:
+    """Identify strong, safe candidates that need dense live observations."""
+    if (
+        not prior.observation_eligible
+        or not prior.tradable
+        or prior.halted
+        or prior.price <= 0
+    ):
+        return False
+    if prior.percentage_change < max(config.discovery.minimum_percentage_change, Decimal("5")):
+        return False
+    if prior.dollar_volume < config.discovery.minimum_dollar_volume:
+        return False
+    # Use existing canonical momentum evidence; this is a cadence decision,
+    # not a second qualification engine.
+    # Require converging evidence rather than allowing an ordinary qualified
+    # candidate to consume the dense cadence.  This remains a cadence hint,
+    # not a second Warrior qualification decision.
+    return bool(
+        prior.score.total >= Decimal("85")
+        or (
+            prior.score.total >= Decimal("75")
+            and prior.relative_volume >= Decimal("5")
+        )
+    )
 
 
 def _safe_warrior_observe(sink: object | None, event: str, symbol: object, **fields: object) -> None:
@@ -169,6 +201,15 @@ class WarriorFocusItem:
     decision_bid: Decimal | None = None
     decision_ask: Decimal | None = None
     decision_spread_percent: Decimal | None = None
+    decision_generation_id: str | None = None
+    scanner_observation_timestamp: datetime | None = None
+    warrior_observation_timestamp: datetime | None = None
+    decision_quote_timestamp: datetime | None = None
+    current_quote_timestamp: datetime | None = None
+    execution_quality: str = "TEMPORARILY_BLOCKED"
+    quick_scalper_state: str | None = None
+    quick_scalper_reason: str | None = None
+    quick_scalper_generation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +280,7 @@ class WarriorDesktopSidecar:
         self, *, enabled: bool, storage_path: Path,
         environment: str = "UNKNOWN",
         strategy_config: WarriorMomentumConfig = WarriorMomentumConfig(),
+        configuration_fingerprint: str | None = None,
         account_context_source: Callable[[], PaperAccountContext | None] | None = None,
         paper_entry_submitter: Callable[[object, int, Decimal], bool] | None = None,
         paper_exit_submitter: Callable[[str, int, Decimal, str, str | None], object] | None = None,
@@ -247,6 +289,7 @@ class WarriorDesktopSidecar:
         paper_entry_rearmer: Callable[..., object] | None = None,
         paper_position_quantity_source: Callable[[str], Decimal] | None = None,
         paper_execution_ownership_source: Callable[[str], bool] | None = None,
+        paper_exit_fill_source: Callable[[str, str | None], tuple[str | None, str | None]] | None = None,
         paper_working_entry_source: Callable[[str, str], bool] | None = None,
         execution_quote_source: ExecutionQuoteSource | None = None,
         order_flow_client: object | None = None,
@@ -256,6 +299,8 @@ class WarriorDesktopSidecar:
         taxonomy_execution_bridge: object | None = None,
         decision_intelligence_observer: object | None = None,
         paper_entry_intelligence: object | None = None,
+        quick_scalper_observer: object | None = None,
+        strategy_ownership: object | None = None,
         observability: object | None = None,
         async_observation_records: bool = False,
         async_decision_intelligence: bool = False,
@@ -267,7 +312,11 @@ class WarriorDesktopSidecar:
         self.environment = str(environment).strip().upper() or "UNKNOWN"
         self.strategy_config = strategy_config
         self.capture_config = ForwardCaptureConfiguration(storage_path=self.storage_path)
-        self.configuration_fingerprint = strategy_configuration_fingerprint(strategy_config)
+        self.configuration_fingerprint = (
+            str(configuration_fingerprint).strip()
+            if configuration_fingerprint is not None
+            else strategy_configuration_fingerprint(strategy_config)
+        )
         self._account_source = account_context_source or (lambda: None)
         self._paper_entry_submitter = paper_entry_submitter
         self._paper_exit_submitter = paper_exit_submitter
@@ -276,6 +325,7 @@ class WarriorDesktopSidecar:
         self._paper_entry_rearmer = paper_entry_rearmer
         self._paper_position_quantity_source = paper_position_quantity_source
         self._paper_execution_ownership_source = paper_execution_ownership_source
+        self._paper_exit_fill_source = paper_exit_fill_source
         self._paper_working_entry_source = paper_working_entry_source
         self._execution_quote_source = execution_quote_source
         self._order_flow = OrderFlowPollingService(order_flow_client)
@@ -285,6 +335,8 @@ class WarriorDesktopSidecar:
         self._taxonomy_execution_bridge = taxonomy_execution_bridge
         self._decision_intelligence_observer = decision_intelligence_observer
         self._paper_entry_intelligence = paper_entry_intelligence
+        self._quick_scalper_observer = quick_scalper_observer
+        self._strategy_ownership = strategy_ownership
         self._observability = observability
         self._async_observation_records = bool(async_observation_records)
         self._async_decision_intelligence = bool(async_decision_intelligence)
@@ -319,6 +371,9 @@ class WarriorDesktopSidecar:
         self._accumulators: dict[str, _BarAccumulator] = {}
         self._last_volume: dict[str, Decimal] = {}
         self._latest: dict[str, MomentumCandidate] = {}
+        self._quick_scalper_projection: dict[
+            str, tuple[str, str, str]
+        ] = {}
         # Diagnostic-only memory of the immediately preceding focus projection.
         # It is deliberately absent on the default no-op path.
         self._diagnostic_focus_symbols: set[str] | None = (
@@ -376,6 +431,16 @@ class WarriorDesktopSidecar:
         with self._lock:
             if self._service is not None:
                 self._service.observe_paper_event(event)
+            callback = getattr(
+                self._quick_scalper_observer, "observe_paper_event", None,
+            )
+            if callable(callback):
+                try:
+                    callback(event)
+                except Exception:
+                    # Scalper observability/management is exception-contained;
+                    # Warrior's authoritative event path must still advance.
+                    pass
 
     def bind_scanner_decision_source(
         self, source: Callable[[str], object | None],
@@ -566,6 +631,7 @@ class WarriorDesktopSidecar:
                     paper_entry_rearmer=self._paper_entry_rearmer,
                     paper_position_quantity_source=self._paper_position_quantity_source,
                     paper_execution_ownership_source=self._paper_execution_ownership_source,
+                    paper_exit_fill_source=self._paper_exit_fill_source,
                     paper_working_entry_source=self._paper_working_entry_source,
                     execution_quote_source=self._execution_quote_source,
                     execution_permitted=lambda: self._accept_execution,
@@ -589,6 +655,7 @@ class WarriorDesktopSidecar:
                     ) if self.environment.upper() == "PAPER" else None,
                     async_observation_records=self._async_observation_records,
                     async_decision_intelligence=self._async_decision_intelligence,
+                    strategy_ownership=self._strategy_ownership,
                 )
                 if self._execution_recovery_orders:
                     self._service.restore_execution_lifecycles(
@@ -755,6 +822,10 @@ class WarriorDesktopSidecar:
                 intelligence_stop()
             except Exception:
                 pass
+        # This sidecar owns the runtime session lifetime of the shared bounded
+        # sink. Closing it publishes the reserved Scalper aggregate even after
+        # raw-event capacity is exhausted. Diagnostic failure remains isolated.
+        safe_close(self._observability)
 
     def __call__(self, event: MarketEvent) -> None:
         if not self.enabled:
@@ -1264,6 +1335,15 @@ class WarriorDesktopSidecar:
                     }
                 )
             )
+            fast_mover_refresh = bool(
+                active_candidate
+                and prior_candidate is not None
+                and _fast_mover_refresh_eligible(
+                    prior_candidate, observation, self.strategy_config,
+                )
+            )
+            if fast_mover_refresh:
+                performance_diagnostics.increment("fast_mover_refresh_eligible")
             last_intraminute = self._last_intraminute_evaluation_at.get(symbol)
             # Quote, trade, and retained-snapshot source timestamps are
             # independent Webull timelines.  A snapshot can therefore be
@@ -1294,6 +1374,10 @@ class WarriorDesktopSidecar:
                     or
                     elapsed >= _ACTIVE_CANDIDATE_MAX_REEVALUATION_SECONDS
                     or (
+                        fast_mover_refresh
+                        and elapsed >= _FAST_MOVER_MIN_REEVALUATION_SECONDS
+                    )
+                    or (
                         elapsed >= _ACTIVE_CANDIDATE_MIN_REEVALUATION_SECONDS
                         and _meaningful_active_candidate_change(
                             prior_candidate, observation,
@@ -1315,10 +1399,14 @@ class WarriorDesktopSidecar:
                 # Reserve the slot before evaluation so an exception cannot
                 # create an unbounded retry loop on a hot symbol.
                 self._last_intraminute_evaluation_at[symbol] = scheduling_timestamp
+                if fast_mover_refresh:
+                    performance_diagnostics.increment("fast_mover_refresh_due")
         if symbol not in self._first_observed or completed or intraminute_due:
             # Anchor every full evaluation in the same local cadence domain,
             # including the initial and completed-bar evaluations.
             self._last_intraminute_evaluation_at[symbol] = scheduling_timestamp
+            if intraminute_due and symbol in self._first_observed:
+                performance_diagnostics.increment("fast_mover_refresh_executed")
             available_bars = tuple(self._bars.get(symbol, ())[-120:])
             evaluated_at = self._aware_now()
             decision_session = scanner_session(evaluated_at).value
@@ -1333,6 +1421,11 @@ class WarriorDesktopSidecar:
                 history = ()
             quote_freshness = last_price_freshness = None
             state = adapter.state_for(symbol)
+            retained_reevaluation = bool(
+                event.event_type is MarketEventType.TRADE
+                and isinstance(event.payload, TradePayload)
+                and event.payload.trade_id == "snapshot-retained-price"
+            )
             processing_age = (
                 None
                 if event.received_timestamp is None
@@ -1341,10 +1434,17 @@ class WarriorDesktopSidecar:
                     (evaluated_at - event.received_timestamp).total_seconds(),
                 )))
             )
+            received_at = event.received_timestamp or evaluated_at
             delivery_age = Decimal(str(max(
                 0,
-                (evaluated_at - event.timestamp).total_seconds(),
+                (received_at - event.timestamp).total_seconds(),
             )))
+            retained_source_age = (
+                Decimal(str(max(
+                    0, (evaluated_at - event.timestamp).total_seconds(),
+                )))
+                if retained_reevaluation else None
+            )
             if state is not None and state.quote_timestamp is not None:
                 quote_freshness = Decimal(str(max(
                     0, (evaluated_at - state.quote_timestamp).total_seconds(),
@@ -1432,6 +1532,9 @@ class WarriorDesktopSidecar:
                     ),
                     order_flow=order_flow,
                     quote_provenance="SHARED_SCANNER_ADAPTER",
+                    retained_reevaluation=retained_reevaluation,
+                    retained_source_age_seconds=retained_source_age,
+                    reevaluation_mailbox_age_seconds=processing_age,
                 )
             service_started = perf_counter()
             service_success = False
@@ -1502,6 +1605,37 @@ class WarriorDesktopSidecar:
                     min(market_timestamps) if len(market_timestamps) == 2 else None
                 )
             self._observe_stages(candidate, signal is not None)
+            lifecycle_setup_types = {
+                SetupType.MOMENTUM_ACCELERATION,
+                SetupType.MOMENTUM_REACCELERATION,
+                SetupType.RECLAIM_CONTINUATION,
+            }
+            if (
+                prior_latest is not None
+                and prior_latest.setup is not None
+                and prior_latest.setup.setup_type in lifecycle_setup_types
+                and (candidate.setup is None or candidate.setup.setup_type is not prior_latest.setup.setup_type)
+            ):
+                prior_name = prior_latest.setup.setup_type.value
+                _safe_warrior_observe(
+                    self._observability, f"{prior_name}_INVALIDATED", symbol,
+                    setup_category=prior_name,
+                    reason="ACCELERATION_INVALIDATED",
+                    session=candidate.session,
+                )
+            if candidate.setup is not None and candidate.setup.setup_type in lifecycle_setup_types:
+                setup_name = candidate.setup.setup_type.value
+                event_name = (
+                    f"{setup_name}_TRIGGERED"
+                    if candidate.setup.state is SetupState.TRIGGERED
+                    else f"{setup_name}_FORMING"
+                )
+                _safe_warrior_observe(
+                    self._observability, event_name, symbol,
+                    setup_category=setup_name,
+                    decision_result=("ENTRY_READY" if signal is not None else candidate.status.value),
+                    session=candidate.session,
+                )
             if accepted_latest:
                 self._update_order_flow_priority(symbol, candidate, signal is not None)
             research_decision = getattr(
@@ -1520,6 +1654,38 @@ class WarriorDesktopSidecar:
                         event_type=getattr(getattr(event, "event_type", None), "value", None),
                         symbol=symbol,
                     )
+            scalp_observer = getattr(
+                self._quick_scalper_observer, "observe", None,
+            )
+            if callable(scalp_observer):
+                try:
+                    scalp_result = scalp_observer(
+                        point_in_time, candidate,
+                        execution_permitted=self._accept_execution,
+                    )
+                    current_source = getattr(
+                        self._quick_scalper_observer,
+                        "current_opportunity", None,
+                    )
+                    current = (
+                        current_source(symbol)
+                        if callable(current_source) else None
+                    )
+                    if current is not None:
+                        self._quick_scalper_projection[symbol] = (
+                            current.state.value,
+                            current.reason.value,
+                            current.assessment.generation_id,
+                        )
+                    elif scalp_result is not None:
+                        self._quick_scalper_projection[symbol] = (
+                            "DISCOVERED", str(scalp_result.reason),
+                            scalp_result.opportunity.generation_id,
+                        )
+                except Exception:
+                    # A disabled/experimental strategy cannot degrade Warrior
+                    # or the market-event consumer.
+                    pass
             self._first_observed.add(symbol)
             self._publications += 1
             if signal is not None or completed:
@@ -1722,6 +1888,7 @@ class WarriorDesktopSidecar:
                 0, (self._aware_now() - market_timestamp).total_seconds(),
             )))
         )
+        scalp = self._quick_scalper_projection.get(candidate.symbol)
         return WarriorFocusItem(
             candidate, self._provenance.get(candidate.symbol, FloatProvenance.UNKNOWN),
             None if setup is None else setup.trigger,
@@ -1733,11 +1900,20 @@ class WarriorDesktopSidecar:
                 > self.capture_config.quote_stale_after_seconds
             ),
             market_age,
-            decision_timestamp=candidate.timestamp,
+            decision_timestamp=candidate.decision_timestamp or candidate.timestamp,
             decision_last=candidate.price,
             decision_bid=candidate.bid,
             decision_ask=candidate.ask,
             decision_spread_percent=candidate.spread_percent,
+            decision_generation_id=candidate.decision_generation_id,
+            scanner_observation_timestamp=candidate.scanner_observation_timestamp,
+            warrior_observation_timestamp=candidate.warrior_observation_timestamp,
+            decision_quote_timestamp=candidate.decision_quote_timestamp,
+            current_quote_timestamp=market_timestamp,
+            execution_quality=candidate.execution_quality.value,
+            quick_scalper_state=None if scalp is None else scalp[0],
+            quick_scalper_reason=None if scalp is None else scalp[1],
+            quick_scalper_generation_id=None if scalp is None else scalp[2],
         )
 
     def _restore_bars(self) -> None:
@@ -2412,6 +2588,7 @@ def _blocking_reasons(candidate: MomentumCandidate, entry_ready: bool) -> tuple[
         "RISK_REJECTED": "strategy_eligibility", "NO_SETUP": "setup",
         "STALE_MARKET_DATA": "stale_market_data",
         "AWAITING_EXECUTION_QUOTE": "awaiting_execution_quote",
+        "EXECUTION_QUALITY_WAIT": "execution_quality_wait",
     }
     return tuple(dict.fromkeys(
         mapping[code.value] for code in candidate.reason_codes if code.value in mapping

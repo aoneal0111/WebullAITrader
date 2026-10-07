@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterable
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
+from decimal import Decimal
 import logging
 from time import perf_counter
 
@@ -13,6 +15,11 @@ from app.momentum_scanner.ranking import rank_candidates
 from app.momentum_scanner.rules import (
     MomentumScannerConfig,
     evaluate_candidate,
+)
+from app.momentum_scanner.quality import (
+    momentum_priority,
+    reevaluation_cadence_ms,
+    velocity_attention,
 )
 from app.scanner_adapter.adapter import MarketEventScannerAdapter
 from app.scanner_adapter.evaluation_mailbox import LatestEvaluationMailbox
@@ -71,6 +78,7 @@ class MomentumScannerPipeline:
         self._superseded_evaluations_skipped = 0
         self._result_version_rejections = 0
         self._reference_ready_reevaluations = 0
+        self._price_history: dict[str, deque[tuple[datetime, Decimal]]] = {}
         if decision_sink is not None and not callable(decision_sink):
             raise TypeError("decision_sink must be callable or None")
         self._decision_sink = decision_sink
@@ -99,7 +107,10 @@ class MomentumScannerPipeline:
             version = self._symbol_versions.get(symbol, 0) + 1
             self._symbol_versions[symbol] = version
             admitted_at = self._clock()
-            self._evaluation_mailbox.enqueue(symbol, version, admitted_at, event)
+            self._evaluation_mailbox.enqueue(
+                symbol, version, admitted_at, event,
+                priority=self._mailbox_priority(symbol),
+            )
             performance_diagnostics.mark_latency_trace_timestamp(
                 "evaluation_mailbox_admitted_at", admitted_at,
             )
@@ -155,6 +166,7 @@ class MomentumScannerPipeline:
             admitted_at,
             event,
             admission_reason="REFERENCE_READY",
+            priority=self._mailbox_priority(normalized),
         )
         if accepted:
             self._reference_ready_reevaluations += 1
@@ -181,6 +193,7 @@ class MomentumScannerPipeline:
             result.observation,
             self.config,
         )
+        decision = self._apply_price_motion(decision)
         observed_at = self._clock()
         self._prune_stale(observed_at)
         decision = replace(
@@ -260,6 +273,7 @@ class MomentumScannerPipeline:
                 decision,
             ),
             key=lambda item: (
+                -item.metrics.momentum_priority,
                 -item.score,
                 -item.metrics.relative_volume,
                 -item.metrics.percentage_change,
@@ -381,6 +395,7 @@ class MomentumScannerPipeline:
         self._latest_events.pop(normalized, None)
         self._latest.pop(normalized, None)
         self._symbol_versions.pop(normalized, None)
+        self._price_history.pop(normalized, None)
         reset = getattr(self._decision_sink, "reset_symbol", None)
         if callable(reset):
             reset(normalized)
@@ -497,6 +512,74 @@ class MomentumScannerPipeline:
         close = getattr(self._decision_sink, "close", None)
         if callable(close):
             close()
+
+    def _mailbox_priority(self, symbol: str) -> int:
+        decision = self._latest.get(symbol)
+        if decision is None:
+            return 0
+        cadence = decision.metrics.reevaluation_cadence_ms
+        return 2 if cadence <= 100 else 1 if cadence <= 250 else 0
+
+    def _apply_price_motion(self, decision: ScannerDecision) -> ScannerDecision:
+        timestamp = decision.timestamp
+        price = decision.price
+        if timestamp is None or price is None or price <= 0:
+            return decision
+        history = self._price_history.setdefault(
+            decision.symbol, deque(maxlen=128),
+        )
+        while history and (timestamp - history[0][0]).total_seconds() > 600:
+            history.popleft()
+
+        def velocity(seconds: int) -> tuple[Decimal | None, Decimal | None]:
+            eligible = tuple(
+                point for point in history
+                if 0 < (timestamp - point[0]).total_seconds() <= seconds
+            )
+            if not eligible:
+                return None, None
+            anchor_time, anchor_price = eligible[0]
+            elapsed = Decimal(str((timestamp - anchor_time).total_seconds())) / Decimal("60")
+            if elapsed <= 0 or anchor_price <= 0:
+                return None, None
+            cents = (price - anchor_price) / elapsed
+            percent = (price - anchor_price) / anchor_price * Decimal("100") / elapsed
+            return cents, percent
+
+        cents_1m, pct_1m = velocity(60)
+        cents_5m, pct_5m = velocity(300)
+        acceleration = (
+            None if pct_1m is None or pct_5m is None
+            else pct_1m - pct_5m
+        )
+        if not history or history[-1] != (timestamp, price):
+            history.append((timestamp, price))
+        velocity_score = velocity_attention(cents_1m, pct_1m)
+        priority, components = momentum_priority(
+            percentage_change=decision.metrics.percentage_change,
+            rvol_score=decision.metrics.rvol_score,
+            dollar_volume=decision.metrics.dollar_volume,
+            velocity_score=velocity_score,
+            spread_score=decision.metrics.spread_quality_score,
+            catalyst_present=decision.catalyst.value != "NONE",
+        )
+        metrics = replace(
+            decision.metrics,
+            price_velocity_cents_1m=cents_1m,
+            price_velocity_percent_1m=pct_1m,
+            price_velocity_cents_5m=cents_5m,
+            price_velocity_percent_5m=pct_5m,
+            price_acceleration_percent=acceleration,
+            momentum_priority=priority,
+            reevaluation_cadence_ms=reevaluation_cadence_ms(
+                priority, velocity_score,
+            ),
+        )
+        return replace(
+            decision,
+            metrics=metrics,
+            momentum_priority_components=components,
+        )
 
     def diagnostic_results(self, *, limit: int = 3):
         return tuple(

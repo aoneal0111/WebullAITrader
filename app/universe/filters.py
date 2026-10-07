@@ -15,7 +15,7 @@ ZERO = Decimal("0")
 @dataclass(frozen=True, slots=True)
 class UniverseFilterConfig:
     stock_minimum_price: Decimal = Decimal("1")
-    stock_maximum_price: Decimal = Decimal("100")
+    stock_maximum_price: Decimal | None = Decimal('100')
     # Historical average volume is retained on UniverseSymbol for reference
     # and RVOL calculations, but must not gate live equity observation.
     stock_minimum_average_volume: Decimal = ZERO
@@ -41,7 +41,8 @@ class UniverseFilterConfig:
             )
 
         if (
-            self.stock_maximum_price
+            self.stock_maximum_price is not None
+            and self.stock_maximum_price
             < self.stock_minimum_price
         ):
             raise ValueError(
@@ -113,20 +114,19 @@ def _stock_is_eligible(
     if item.price is None:
         return False
 
-    if not (
-        config.stock_minimum_price
-        <= item.price
-        <= config.stock_maximum_price
+    if item.price < config.stock_minimum_price:
+        return False
+
+    if (
+        config.stock_maximum_price is not None
+        and item.price > config.stock_maximum_price
     ):
         return False
 
     if item.average_30_day_volume is None:
-        return False
+        return config.stock_minimum_average_volume == ZERO
 
-    return (
-        item.average_30_day_volume
-        >= config.stock_minimum_average_volume
-    )
+    return item.average_30_day_volume >= config.stock_minimum_average_volume
 
 
 def _crypto_is_eligible(
@@ -162,17 +162,20 @@ def _append_stock_reasons(
 
     if item.price is None:
         reasons.append("missing_price")
-    elif not (
-        config.stock_minimum_price
-        <= item.price
-        <= config.stock_maximum_price
+    elif item.price < config.stock_minimum_price or (
+        config.stock_maximum_price is not None
+        and item.price > config.stock_maximum_price
     ):
         reasons.append("price_range")
 
-    if item.average_30_day_volume is None:
+    if (
+        item.average_30_day_volume is None
+        and config.stock_minimum_average_volume > ZERO
+    ):
         reasons.append("missing_average_volume")
     elif (
-        item.average_30_day_volume
+        item.average_30_day_volume is not None
+        and item.average_30_day_volume
         < config.stock_minimum_average_volume
     ):
         reasons.append("average_volume")

@@ -19,13 +19,13 @@ from app.strategies.warrior_momentum.features import canonical_completed_history
 
 
 def candidate(*, symbol="XYZ", rvol="2", move="80", dollar="12000000", spread="1.8",
-              setup=True, reasons=()):
+              float_shares="1000000", setup=True, reasons=()):
     setup_value = SetupDetection(SetupType.HIGH_OF_DAY_BREAKOUT, SetupState.TRIGGERED,
                                  Decimal("80"), Decimal("10"), Decimal("9.8"), StopModel.RECENT_SWING_LOW) if setup else None
     return MomentumCandidate(
         rank=0, symbol=symbol, timestamp=datetime(2026, 9, 17, 14, 0, tzinfo=UTC),
         price=Decimal("10"), percentage_change=Decimal(move), relative_volume=Decimal(rvol),
-        float_shares=Decimal("1000000"), volume=Decimal("1200000"), dollar_volume=Decimal(dollar),
+        float_shares=None if float_shares is None else Decimal(float_shares), volume=Decimal("1200000"), dollar_volume=Decimal(dollar),
         spread_percent=Decimal(spread), catalyst_status=CatalystStatus.TRUE,
         catalyst_type=CatalystType.EARNINGS, score=MomentumScore(Decimal("85"), ()),
         stocks_in_play=(), setup=setup_value, session="REGULAR", status="QUALIFIED",
@@ -46,9 +46,12 @@ def test_same_rvol_weak_mover_is_not_accepted():
     assert result.decision is not AdaptiveDecision.READY
 
 
-def test_catastrophic_spread_and_stale_data_are_hard_blocks():
+def test_catastrophic_spread_is_retained_but_stale_data_is_hard_blocked():
     context = WarriorAdaptiveContext()
-    assert context.evaluate(candidate(spread="5")).decision is AdaptiveDecision.REJECT
+    assert context.evaluate(candidate(spread="5")).decision is not AdaptiveDecision.REJECT
+    assert context.contextual_spread_allowed(
+        candidate(spread="5"), Decimal("1.25"),
+    ) is False
     assert context.evaluate(candidate(reasons=(ReasonCode.STALE_MARKET_DATA,))).decision is AdaptiveDecision.REJECT
 
 
@@ -78,11 +81,11 @@ def test_same_observation_is_idempotent_across_discovery_and_entry_checks():
     assert repeated.observation_count == 1
 
 
-def test_disabled_runtime_preserves_legacy_rejections():
+def test_rvol_and_spread_do_not_block_technical_signal_when_adaptive_toggle_is_off():
     value = candidate(rvol="1", spread="2", reasons=(ReasonCode.RVOL_LOW, ReasonCode.SPREAD_WIDE))
     legacy = WarriorMomentumRuntime().assess_entry(value)
     adaptive = WarriorMomentumRuntime(WarriorMomentumConfig(adaptive_context_enabled=True)).assess_entry(value)
-    assert legacy[1] is None
+    assert legacy[1] is not None
     assert adaptive[0].status.value in {"ENTRY_READY", "SETUP_FORMING", "INELIGIBLE_FOR_EXECUTION", "QUALIFIED"}
 
 
@@ -111,28 +114,50 @@ def _scanner_observation(*, rvol: str = "1.8", spread: str = "1.8", dollar: str 
 def test_adaptive_discovery_retains_exceptional_low_rvol_and_spread_candidate():
     runtime = WarriorMomentumRuntime(WarriorMomentumConfig(adaptive_context_enabled=True))
     discovered = runtime.discover(_scanner_observation(), (), session="REGULAR")
-    assert ReasonCode.RVOL_LOW not in discovered.reason_codes
+    assert ReasonCode.RVOL_LOW in discovered.reason_codes
     assert ReasonCode.SPREAD_WIDE not in discovered.reason_codes
+    assert discovered.execution_quality.value in {"MARGINAL", "POOR"}
     assert discovered.discovery_qualified is True
 
 
-def test_adaptive_discovery_does_not_follow_weak_same_rvol_candidate():
+def test_adaptive_discovery_tracks_weak_rvol_candidate_at_lower_priority():
     runtime = WarriorMomentumRuntime(WarriorMomentumConfig(adaptive_context_enabled=True))
     discovered = runtime.discover(
         _scanner_observation(rvol="1.8", spread="1.8", dollar="300000", move="8"),
         (), session="REGULAR",
     )
-    assert discovered.discovery_qualified is False
+    assert discovered.discovery_qualified is True
+    assert discovered.participation_quality.value in {"WEAK", "MODERATE"}
 
 
-def test_adaptive_discovery_keeps_absolute_liquidity_and_catastrophic_spread_hard():
+def test_adaptive_discovery_keeps_absolute_liquidity_hard_and_spread_as_quality():
     config = WarriorMomentumConfig(adaptive_context_enabled=True)
     low_liquidity = WarriorMomentumRuntime(config).discover(
         _scanner_observation(dollar="100000"), (), session="REGULAR")
     catastrophic = WarriorMomentumRuntime(config).discover(
         _scanner_observation(spread="6"), (), session="REGULAR")
     assert ReasonCode.LIQUIDITY_LOW in low_liquidity.reason_codes
-    assert ReasonCode.SPREAD_WIDE in catastrophic.reason_codes
+    assert ReasonCode.SPREAD_WIDE not in catastrophic.reason_codes
+    assert catastrophic.execution_quality.value == "TEMPORARILY_BLOCKED"
+
+
+def test_adaptive_discovery_contextualizes_high_float_without_downstream_veto():
+    runtime = WarriorMomentumRuntime(WarriorMomentumConfig(adaptive_context_enabled=True))
+    discovered = runtime.discover(
+        _scanner_observation(rvol="1.8", spread="1.8", dollar="12000000"),
+        (), session="REGULAR",
+    )
+    # The fixture's low float remains positive; replace it with a verified
+    # high-float observation and ensure the same adaptive path is used.
+    high_float = replace(_scanner_observation(rvol="1.8", spread="1.8", dollar="12000000"),
+                         float_shares=Decimal("100000000"))
+    high = runtime.discover(high_float, (), session="REGULAR")
+    assert discovered.discovery_qualified is True
+    assert high.discovery_qualified is True
+    assert ReasonCode.FLOAT_HIGH not in high.reason_codes
+    assessed, signal = runtime.assess_entry(high)
+    assert ReasonCode.FLOAT_HIGH not in assessed.reason_codes
+    assert signal is not None or assessed.setup is None or assessed.status is not CandidateStatus.ENTRY_READY
 
 
 def test_adaptive_flag_is_on_by_default_with_explicit_kill_switch(monkeypatch):
@@ -201,7 +226,7 @@ def replace_candidate_timestamp(value, *, seconds: int):
 def test_adaptive_observation_route_retains_exceptional_quality_miss():
     decision = evaluate_candidate(_scanner_observation(rvol="0.01", dollar="13000", move="368"))
     assert decision.qualified is False
-    assert {"relative_volume", "dollar_volume"}.issubset(set(decision.technical_failed_rules))
+    assert set(decision.technical_failed_rules) == {"dollar_volume"}
     assert warrior_observation_eligible(decision) is True
 
 
@@ -209,6 +234,29 @@ def test_adaptive_observation_route_accepts_strong_non_extreme_mover():
     decision = evaluate_candidate(_scanner_observation(rvol="0.2", dollar="120000", move="40"))
     assert decision.qualified is False
     assert warrior_observation_eligible(decision) is True
+
+
+@pytest.mark.parametrize("failed_rule", ("float_verified", "low_float", "relative_volume"))
+def test_contextual_float_and_rvol_failures_reach_warrior_admission(failed_rule):
+    decision = evaluate_candidate(_scanner_observation(rvol="1.8", move="80"))
+    decision = replace(decision, technical_failed_rules=(failed_rule,), failed_rules=(failed_rule,))
+    assert warrior_observation_eligible(decision) is True
+
+
+def test_combined_contextual_failures_reach_warrior_admission():
+    decision = evaluate_candidate(_scanner_observation(rvol="1.8", spread="1.8", move="80"))
+    failures = ("float_verified", "relative_volume", "spread")
+    decision = replace(decision, technical_failed_rules=failures, failed_rules=failures)
+    assert warrior_observation_eligible(decision) is True
+
+
+def test_contextual_admission_keeps_hard_safety_failures_blocked():
+    base = evaluate_candidate(_scanner_observation(move="80"))
+    assert warrior_observation_eligible(replace(base, technical_failed_rules=("halted",))) is False
+    assert warrior_observation_eligible(replace(base, technical_failed_rules=("tradable",))) is False
+    assert warrior_observation_eligible(replace(base, technical_failed_rules=("stale_market_data",))) is False
+    assert warrior_observation_eligible(replace(base, technical_failed_rules=("float_verified",),
+                                                 metrics=replace(base.metrics, spread_percent=Decimal("2.5")))) is True
 
 
 def test_adaptive_observation_route_rejects_weak_or_unsafe_candidates():
@@ -229,9 +277,60 @@ def test_adaptive_execution_liquidity_preserves_quote_safety_rails():
     base = replace(candidate(dollar="1200000", spread="0.8"), bid=Decimal("9.96"), ask=Decimal("10.04"))
     assert runtime.current_execution_liquidity_ok(replace(base, bid=None), quote_fresh=True) is False
     assert runtime.current_execution_liquidity_ok(base, quote_fresh=False) is False
-    assert runtime.current_execution_liquidity_ok(replace(base, spread_percent=Decimal("1.3")), quote_fresh=True) is False
+    # A strong, structured fast mover receives the bounded contextual rail;
+    # the quote is still validated and remains below the 2.5% catastrophic
+    # half-ceiling.
+    assert runtime.current_execution_liquidity_ok(replace(base, spread_percent=Decimal("1.3")), quote_fresh=True) is True
+    weak = replace(base, percentage_change=Decimal("8"), score=MomentumScore(Decimal("40"), ()), setup=None,
+                   spread_percent=Decimal("1.3"))
+    assert WarriorMomentumRuntime(WarriorMomentumConfig(adaptive_context_enabled=True)).current_execution_liquidity_ok(
+        weak, quote_fresh=True,
+    ) is True
     assert runtime.current_execution_liquidity_ok(replace(base, halted=True), quote_fresh=True) is False
     assert runtime.current_execution_liquidity_ok(replace(base, tradable=False), quote_fresh=True) is False
+
+
+def test_adaptive_context_exposes_structured_rvol_and_spread_reasons():
+    result = WarriorAdaptiveContext().evaluate(candidate(rvol="1.8", spread="1.8"))
+    assert AdaptiveReason.RVOL_ADAPTIVE_PASS in result.reasons
+    assert AdaptiveReason.SPREAD_ADAPTIVE_PASS in result.reasons
+    assert AdaptiveReason.FAST_MOVER_RETAINED in result.reasons
+
+
+def test_high_float_fast_mover_can_adaptive_pass_with_real_participation():
+    context = WarriorAdaptiveContext()
+    result = context.evaluate(candidate(float_shares="100000000", rvol="1.5"))
+    assert result.decision in {AdaptiveDecision.FORMING, AdaptiveDecision.READY}
+    assert AdaptiveReason.FLOAT_HIGH_ADAPTIVE_PASS in result.reasons
+    assert AdaptiveReason.RVOL_ADAPTIVE_PASS in result.reasons
+
+
+def test_high_float_or_unknown_float_does_not_pass_on_weak_participation():
+    context = WarriorAdaptiveContext()
+    high = context.evaluate(candidate(float_shares="100000000", rvol="1.5", dollar="150000"))
+    unknown = context.evaluate(candidate(symbol="UNKNOWN", float_shares=None, rvol="1.5", dollar="150000"))
+    assert high.decision is AdaptiveDecision.REJECT
+    assert unknown.decision is AdaptiveDecision.REJECT
+    assert AdaptiveReason.FLOAT_UNSUPPORTED in high.reasons
+    assert AdaptiveReason.FLOAT_UNSUPPORTED in unknown.reasons
+
+
+def test_low_float_remains_positive_evidence_and_unknown_is_not_assumed_positive():
+    low = WarriorAdaptiveContext().evaluate(candidate(float_shares="2000000"))
+    unknown = WarriorAdaptiveContext().evaluate(candidate(symbol="UNKNOWN", float_shares=None))
+    assert AdaptiveReason.FLOAT_LOW_STRONG in low.reasons
+    assert AdaptiveReason.FLOAT_UNVERIFIED_ADAPTIVE_PASS in unknown.reasons
+    assert AdaptiveReason.FLOAT_LOW_STRONG not in unknown.reasons
+
+
+def test_adaptive_spread_rail_is_bounded_and_extreme_spread_still_fails():
+    runtime = WarriorMomentumRuntime(WarriorMomentumConfig(adaptive_context_enabled=True))
+    fast = replace(candidate(rvol="1.8", spread="2.4"), bid=Decimal("9.88"), ask=Decimal("10.12"))
+    assert runtime.execution_spread_limit(fast) == Decimal("2.5")
+    assert runtime.current_execution_liquidity_ok(fast, quote_fresh=True) is True
+    assert runtime.current_execution_liquidity_ok(
+        replace(fast, spread_percent=Decimal("5")), quote_fresh=True,
+    ) is False
 
 
 def test_non_adaptive_execution_liquidity_preserves_legacy_turnover_veto():

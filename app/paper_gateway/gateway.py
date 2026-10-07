@@ -43,6 +43,7 @@ from app.paper_trading.execution_engine import (
 )
 from app.paper_trading.journal import append_event
 from app.paper_trading.matching_engine import MarketQuote
+from app.performance_diagnostics import performance_diagnostics
 from app.paper_trading.models import (
     JournalEventType,
     PaperFill,
@@ -460,7 +461,7 @@ class PaperOrderGateway:
                 terminal_reason = _cancellation_reason(request)
                 cancelled = transition_cancel_order(
                     existing,
-                    at=self._now(),
+                    at=max(self._now(), existing.updated_at),
                     reason=terminal_reason,
                 )
                 event = self._order_event(
@@ -724,6 +725,15 @@ class PaperOrderGateway:
                     success=matching_success,
                 )
 
+            try:
+                target_fill_events = (
+                    self._reconcile_correlated_stops_after_target_fills(reports)
+                )
+            except PaperDurabilityError:
+                return ()
+            for sibling_event in target_fill_events:
+                self._emit_event(sibling_event)
+
             for report, event in durable_transitions:
                 fill = report.fills[0]
                 self._append_journal(
@@ -746,6 +756,155 @@ class PaperOrderGateway:
                     symbol=event.symbol,
                 )
             return reports
+
+    def _reconcile_correlated_stops_after_target_fills(
+        self,
+        reports: tuple[ExecutionReport, ...],
+    ) -> tuple[PaperRuntimeEvent, ...]:
+        """Keep a target's contingent stop equal to durable remaining inventory.
+
+        This is the target-fill side of the correlated OCO contract.  STOP
+        activation already retires target siblings before matching.  A target
+        fill must symmetrically reduce its correlated stop, and a target fill
+        that closes the lifecycle must durably cancel that stop immediately.
+
+        The caller already holds the gateway lock and matching has already
+        updated the in-memory order book.  Lifecycle inventory is therefore
+        derived from durable order history rather than waiting for an
+        asynchronous position projection.
+        """
+        events: list[PaperRuntimeEvent] = []
+        handled_targets: set[str] = set()
+
+        for report in reports:
+            target = report.order
+            identity = target.request.strategy_lifecycle_id
+
+            if (
+                not report.fills
+                or not identity
+                or target.order_id in handled_targets
+                or target.side is not PaperOrderSide.SELL
+                or target.request.order_type is PaperOrderType.STOP
+            ):
+                continue
+
+            handled_targets.add(target.order_id)
+
+            correlated_stops = tuple(
+                order
+                for order in self._order_book.open_orders_for_symbol(target.symbol)
+                if (
+                    order.side is PaperOrderSide.SELL
+                    and order.request.order_type is PaperOrderType.STOP
+                    and order.request.strategy_lifecycle_id == identity
+                    and order.request.metadata.get("reservation_mode")
+                    == "CONTINGENT_OCO"
+                    and order.request.metadata.get("correlated_target_order_id")
+                    == target.order_id
+                )
+            )
+
+            if not correlated_stops:
+                continue
+
+            # More than one active correlated stop is ambiguous protection.
+            # Do not choose one or mutate unrelated protection.
+            if len(correlated_stops) != 1:
+                continue
+
+            stop = correlated_stops[0]
+
+            inventory = sum(
+                (
+                    order.filled_quantity
+                    if order.side is PaperOrderSide.BUY
+                    else -order.filled_quantity
+                )
+                for order in self._order_book.history()
+                if (
+                    order.symbol == target.symbol
+                    and order.request.strategy_lifecycle_id == identity
+                )
+            )
+            inventory = max(Decimal("0"), inventory)
+
+            # Matching has already durably applied this target fill while the
+            # external position projection may still reflect the pre-fill
+            # quantity. Durable same-lifecycle fills are therefore the
+            # authoritative source for synchronous sibling reconciliation.
+
+            fill_timestamp = report.fills[-1].timestamp
+            transition_at = max(fill_timestamp, stop.updated_at)
+
+            if inventory <= 0:
+                updated = transition_cancel_order(
+                    stop,
+                    at=transition_at,
+                    reason=OrderTerminalReason.PROTECTIVE_REPLACED,
+                )
+                sibling_event = self._order_event(
+                    updated,
+                    event_type="ORDER_CANCELLED",
+                    message=(
+                        "Correlated target closed lifecycle; protective "
+                        "stop cancelled."
+                    ),
+                )
+            elif stop.remaining_quantity != inventory or target.is_terminal:
+                metadata = dict(stop.request.metadata)
+                if target.is_terminal:
+                    # A completed target no longer owns the protective sibling.
+                    # Keep protection for any remaining inventory, but release
+                    # the old target correlation so the next target stage can
+                    # establish a fresh contingent OCO relationship.
+                    metadata["reservation_mode"] = "ACTIVE_PROTECTION"
+                    metadata.pop("correlated_target_order_id", None)
+
+                updated = replace(
+                    stop,
+                    updated_at=transition_at,
+                    request=replace(
+                        stop.request,
+                        quantity=stop.filled_quantity + inventory,
+                        metadata=metadata,
+                    ),
+                )
+                sibling_event = self._order_event(
+                    updated,
+                    event_type="ORDER_UPDATED",
+                    message=(
+                        "Completed target released correlated protection for "
+                        "the next target stage."
+                        if target.is_terminal
+                        else
+                        "Correlated target fill reconciled protective stop "
+                        "to remaining lifecycle inventory."
+                    ),
+                )
+            else:
+                continue
+
+            self._persist_event(sibling_event, updated)
+            self._order_book.update(updated)
+            events.append(sibling_event)
+
+            if inventory <= 0:
+                try:
+                    performance_diagnostics.record_management_event(
+                        state="STOP_CANCELLED_BY_POSITION_CLOSE",
+                        symbol=target.symbol,
+                        lifecycle_id=identity,
+                        stop_order_id=stop.order_id,
+                        target_order_id=target.order_id,
+                        previous_stop_working_qty=stop.remaining_quantity,
+                        authoritative_remaining=0,
+                        timestamp=transition_at,
+                    )
+                except Exception:
+                    pass
+
+        return tuple(events)
 
     def _activate_correlated_stops(self, quote: MarketQuote) -> tuple[PaperRuntimeEvent, ...]:
         """Atomically switch a split target/stop bracket to full downside exit.
@@ -789,6 +948,21 @@ class PaperOrderGateway:
                 changes.append(cancelled)
                 events.append(self._order_event(cancelled, event_type="ORDER_CANCELLED",
                     message="Correlated stop triggered; target/entry remainder cancelled."))
+                if (
+                    sibling.side is PaperOrderSide.SELL
+                    and sibling.request.order_type is not PaperOrderType.STOP
+                ):
+                    try:
+                        performance_diagnostics.record_management_event(
+                            state="TARGET_CANCELLED_BY_STOP",
+                            symbol=quote.symbol,
+                            lifecycle_id=identity,
+                            target_order_id=sibling.order_id,
+                            target_working_qty=sibling.remaining_quantity,
+                            timestamp=quote.timestamp,
+                        )
+                    except Exception:
+                        pass
             if inventory <= 0:
                 updated = transition_cancel_order(stop, at=quote.timestamp,
                     reason=OrderTerminalReason.PROTECTIVE_REPLACED)

@@ -40,6 +40,22 @@ class CatalystStatus(StrEnum):
     UNAVAILABLE = "UNAVAILABLE"
 
 
+class ParticipationBand(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    WEAK = "WEAK"
+    MODERATE = "MODERATE"
+    STRONG = "STRONG"
+    VERY_STRONG = "VERY_STRONG"
+
+
+class ExecutionQuality(StrEnum):
+    EXCELLENT = "EXCELLENT"
+    GOOD = "GOOD"
+    MARGINAL = "MARGINAL"
+    POOR = "POOR"
+    TEMPORARILY_BLOCKED = "TEMPORARILY_BLOCKED"
+
+
 @dataclass(frozen=True, slots=True)
 class ScannerObservation:
     symbol: str
@@ -79,6 +95,18 @@ class ScannerMetrics:
     relative_volume: Decimal
     dollar_volume: Decimal
     spread_percent: Decimal | None
+    rvol_score: Decimal = Decimal("0")
+    rvol_band: ParticipationBand = ParticipationBand.UNKNOWN
+    spread_quality: ExecutionQuality = ExecutionQuality.TEMPORARILY_BLOCKED
+    spread_quality_score: Decimal = Decimal("0")
+    price_velocity_cents_1m: Decimal | None = None
+    price_velocity_percent_1m: Decimal | None = None
+    price_velocity_cents_5m: Decimal | None = None
+    price_velocity_percent_5m: Decimal | None = None
+    price_acceleration_percent: Decimal | None = None
+    momentum_priority: Decimal = Decimal("0")
+    reevaluation_cadence_ms: int = 1000
+    relative_volume_available: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,4 +159,8 @@ class ScannerDecision:
     # temporary quality/execution rule (for example spread or RVOL) fails.
     observation_eligible: bool | None = None
     observation_failed_rules: tuple[str, ...] = ()
+    participation_quality: ParticipationBand = ParticipationBand.UNKNOWN
+    execution_quality: ExecutionQuality = ExecutionQuality.TEMPORARILY_BLOCKED
+    execution_block_reason: str | None = None
+    momentum_priority_components: tuple[tuple[str, str], ...] = ()
 

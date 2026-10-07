@@ -20,8 +20,8 @@ from tests.warrior_momentum.test_forward_capture import T0, account, point, scan
 NOW = T0 + timedelta(minutes=20)
 
 
-def snapshot(*, age: str = "1", bid: str = "10.00", ask: str = "10.0050",
-             last: str = "10.0050", confirmed_at=NOW) -> ExecutionQuoteSnapshot:
+def snapshot(*, age: str = "1", bid: str = "10.0050", ask: str = "10.0060",
+             last: str = "10.0060", confirmed_at=NOW) -> ExecutionQuoteSnapshot:
     timestamp = confirmed_at - timedelta(seconds=float(age))
     return ExecutionQuoteSnapshot(
         "XYZ", D(last), D(bid), D(ask), timestamp, timestamp, timestamp, confirmed_at,
@@ -57,7 +57,7 @@ def test_fresh_authoritative_refresh_reruns_gates_then_continues_once(tmp_path) 
     candidate, signal = evaluate(tmp_path, lambda symbol: calls.append(symbol) or snapshot())
     assert calls == ["XYZ"]
     assert candidate.status.value == "ENTRY_READY"
-    assert signal is not None and signal.reference_price == D("10.0050")
+    assert signal is not None and signal.reference_price == D("10.0060")
 
 
 @pytest.mark.parametrize("age", ["5.01", "30"])
@@ -75,8 +75,58 @@ def test_missing_or_failed_refresh_fails_closed(tmp_path, source) -> None:
 
 
 def test_refreshed_wide_spread_fails_closed(tmp_path) -> None:
-    _candidate, wide = evaluate(tmp_path / "wide", lambda _symbol: snapshot(bid="9", ask="10.0050"))
+    candidate, wide = evaluate(tmp_path / "wide", lambda _symbol: snapshot(bid="9", ask="10.0050"))
     assert wide is None
+    assert candidate.status.value == "AWAITING_EXECUTION_DATA"
+    assert "EXECUTION_QUALITY_WAIT" in {
+        reason.value for reason in candidate.reason_codes
+    }
+
+
+def test_old_retained_source_age_does_not_masquerade_as_processing_delay(
+    tmp_path,
+) -> None:
+    calls = []
+    candidate, signal = evaluate(
+        tmp_path,
+        lambda symbol: calls.append(symbol) or snapshot(),
+        value=point(
+            evaluation_timestamp=NOW,
+            quote_freshness_seconds=D("30"),
+            last_price_freshness_seconds=D("30"),
+            processing_age_seconds=D("0.02"),
+            delivery_age_seconds=D("30"),
+            retained_reevaluation=True,
+            retained_source_age_seconds=D("146.248"),
+            reevaluation_mailbox_age_seconds=D("0.009"),
+        ),
+    )
+    assert calls == ["XYZ"]
+    assert signal is not None
+    assert "PROCESSING_DELAYED" not in {
+        reason.value for reason in candidate.reason_codes
+    }
+    assert candidate.decision_generation_id is not None
+    assert candidate.decision_timestamp == NOW
+    assert candidate.decision_quote_timestamp == snapshot().bid_timestamp
+
+
+def test_retained_generation_advances_with_fresh_authoritative_quote(tmp_path) -> None:
+    initial = point(
+        evaluation_timestamp=NOW,
+        quote_freshness_seconds=D("30"),
+        last_price_freshness_seconds=D("30"),
+        processing_age_seconds=D("0.01"),
+        delivery_age_seconds=D("30"),
+        retained_reevaluation=True,
+        retained_source_age_seconds=D("30"),
+        reevaluation_mailbox_age_seconds=D("0.01"),
+    )
+    candidate, signal = evaluate(tmp_path, lambda _symbol: snapshot(), value=initial)
+    assert signal is not None
+    assert candidate.scanner_observation_timestamp == initial.observation.timestamp
+    assert candidate.warrior_observation_timestamp == NOW
+    assert candidate.decision_quote_timestamp == snapshot().bid_timestamp
 
 
 def test_confirmation_crossing_technical_minute_fails_closed(tmp_path) -> None:

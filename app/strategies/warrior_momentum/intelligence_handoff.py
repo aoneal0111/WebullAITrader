@@ -45,12 +45,14 @@ class BoundedIntelligenceHandoff:
     """One-worker, per-key coalescing mailbox with version-safe publication."""
 
     def __init__(self, handler: Callable[[object], object], *,
-                 maximum_keys: int = 128, autostart: bool = False) -> None:
+                 maximum_keys: int = 128, autostart: bool = False,
+                 completion_callback: Callable[[IntelligencePublication], None] | None = None) -> None:
         if not callable(handler):
             raise TypeError("intelligence handler must be callable")
         if maximum_keys <= 0:
             raise ValueError("maximum_keys must be positive")
         self._handler = handler
+        self._completion_callback = completion_callback
         self._maximum_keys = maximum_keys
         self._condition = Condition()
         self._stop = Event()
@@ -134,15 +136,25 @@ class BoundedIntelligenceHandoff:
                 self._superseded += 1
                 self._condition.notify_all()
                 return True
-            self._published[key] = IntelligencePublication(
+            publication = IntelligencePublication(
                 key, work.generation, work.identity, value,
             )
+            self._published[key] = publication
             self._published.move_to_end(key)
             while len(self._published) > self._maximum_keys:
                 evicted, _publication = self._published.popitem(last=False)
                 if evicted not in self._pending:
                     self._generations.pop(evicted, None)
             self._condition.notify_all()
+        callback = self._completion_callback
+        if publication is not None and callback is not None:
+            try:
+                callback(publication)
+            except Exception:
+                # Completion notification is advisory orchestration.  It must
+                # never turn a successful research publication into a worker
+                # failure or affect the immutable publication itself.
+                pass
         return True
 
     def wait_idle(self, timeout_seconds: float = 5.0) -> bool:

@@ -28,8 +28,6 @@ def discovery_reasons(observation: ScannerObservation, metrics: ScannerMetrics, 
         or metrics.dollar_volume < config.minimum_dollar_volume
     ):
         reasons.append(ReasonCode.LIQUIDITY_LOW)
-    if metrics.spread_percent is None or metrics.spread_percent > config.maximum_spread_percent:
-        reasons.append(ReasonCode.SPREAD_WIDE)
     if not observation.tradable:
         reasons.append(ReasonCode.NOT_TRADABLE)
     if observation.halted:
@@ -48,8 +46,12 @@ def candidate_status(score: Decimal, reasons: tuple[ReasonCode, ...], config: Di
 
 
 def discovery_qualified(reasons: tuple[ReasonCode, ...]) -> bool:
-    """Catalyst evidence is quality context; every other discovery reason is a gate."""
-    return not any(code not in {ReasonCode.NO_CATALYST, ReasonCode.CATALYST_UNKNOWN} for code in reasons)
+    """Opportunity admission excludes ranking/execution-quality evidence."""
+    quality = {
+        ReasonCode.NO_CATALYST, ReasonCode.CATALYST_UNKNOWN,
+        ReasonCode.RVOL_LOW, ReasonCode.SPREAD_WIDE,
+    }
+    return not any(code not in quality for code in reasons)
 
 
 def detect_stocks_in_play(

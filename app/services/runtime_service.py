@@ -7,6 +7,12 @@ import logging
 from threading import Event, RLock, Thread
 from typing import Protocol
 
+from app.performance_diagnostics import (
+    PerformanceDiagnostics,
+    ShutdownOrigin,
+    ShutdownReason,
+    performance_diagnostics,
+)
 from app.services.runtime_driver_validation import validate_runtime_driver
 from app.services.runtime_diagnostics import (
     log_runtime_exception,
@@ -79,6 +85,7 @@ class RuntimeService:
         driver_factory: DriverFactory,
         *,
         source: str = "runtime-service",
+        diagnostics: PerformanceDiagnostics = performance_diagnostics,
     ) -> None:
         if not callable(driver_factory):
             raise TypeError("driver_factory must be callable")
@@ -89,6 +96,7 @@ class RuntimeService:
         self._bus = bus
         self._driver_factory = driver_factory
         self._source = source.strip()
+        self._diagnostics = diagnostics
 
         self._lock = RLock()
         self._stop_event = Event()
@@ -96,6 +104,7 @@ class RuntimeService:
         self._driver: RuntimeDriver | None = None
         self._status = RuntimeServiceStatus.STOPPED
         self._stop_reason = "Runtime stopped cleanly."
+        self._runtime_session_id: str | None = None
 
     @property
     def status(self) -> RuntimeServiceStatus:
@@ -131,6 +140,9 @@ class RuntimeService:
             self._stop_event = Event()
             self._stop_reason = "Runtime stopped cleanly."
             self._status = RuntimeServiceStatus.STARTING
+            self._runtime_session_id = self._safe_diagnostic_call(
+                "begin_runtime_session"
+            )
 
             thread = Thread(
                 target=self._run_driver,
@@ -145,6 +157,13 @@ class RuntimeService:
     def stop(
         self,
         reason: str = "Operator requested shutdown.",
+        *,
+        origin: ShutdownOrigin | str = ShutdownOrigin.OPERATOR_STOP,
+        shutdown_reason: ShutdownReason | str = ShutdownReason.OPERATOR_REQUESTED,
+        initiating_component: str = "runtime_service",
+        operator_initiated: bool = True,
+        failure_present: bool = False,
+        exception_class: str | None = None,
     ) -> bool:
         """
         Request cooperative runtime shutdown.
@@ -162,6 +181,15 @@ class RuntimeService:
             if self._status is RuntimeServiceStatus.STOPPED:
                 return False
 
+            self._record_shutdown_request(
+                origin=origin,
+                reason=shutdown_reason,
+                component=initiating_component,
+                failure_present=failure_present,
+                operator_initiated=operator_initiated,
+                exception_class=exception_class,
+            )
+
             if self._status is not RuntimeServiceStatus.STOPPING:
                 self._status = RuntimeServiceStatus.STOPPING
                 self._stop_reason = normalized_reason
@@ -171,6 +199,10 @@ class RuntimeService:
                         source=self._source,
                         reason=normalized_reason,
                     )
+                )
+                self._safe_diagnostic_call(
+                    "record_shutdown_stopping",
+                    runtime_state=self._status.value,
                 )
 
             self._stop_event.set()
@@ -203,8 +235,35 @@ class RuntimeService:
         if timeout_seconds < 0:
             raise ValueError("timeout_seconds must be nonnegative")
 
-        self.stop("Application shutdown requested.")
+        self.stop(
+            "Application shutdown requested.",
+            origin=ShutdownOrigin.APPLICATION_QUIT,
+            shutdown_reason=ShutdownReason.APPLICATION_EXIT,
+            initiating_component="desktop_composition",
+            operator_initiated=True,
+        )
         return self.wait(timeout_seconds)
+
+    def note_shutdown_request(
+        self,
+        *,
+        origin: ShutdownOrigin | str,
+        reason: ShutdownReason | str,
+        initiating_component: str,
+        operator_initiated: bool,
+        failure_present: bool = False,
+        exception_class: str | None = None,
+    ) -> None:
+        """Record an initiating caller without changing runtime state."""
+        with self._lock:
+            self._record_shutdown_request(
+                origin=origin,
+                reason=reason,
+                component=initiating_component,
+                failure_present=failure_present,
+                operator_initiated=operator_initiated,
+                exception_class=exception_class,
+            )
 
     def _run_driver(self) -> None:
         with self._lock:
@@ -213,6 +272,7 @@ class RuntimeService:
         if driver is None:
             return
 
+        failure_present = False
         try:
             self._bus.publish(
                 RuntimeStarting(
@@ -238,6 +298,19 @@ class RuntimeService:
                 cycle_sink=self._publish_cycle,
             )
 
+            if not self._stop_event.is_set():
+                self._record_shutdown_request(
+                    origin=ShutdownOrigin.BACKGROUND_TASK_FAILURE,
+                    reason=ShutdownReason.BACKGROUND_TASK_TERMINATED,
+                    component="runtime_driver",
+                    failure_present=True,
+                    operator_initiated=False,
+                )
+                self._safe_diagnostic_call(
+                    "record_shutdown_stopping",
+                    runtime_state=self._status.value,
+                )
+
             with self._lock:
                 reason = self._stop_reason
 
@@ -250,8 +323,21 @@ class RuntimeService:
             )
 
         except Exception as exc:
+            failure_present = True
             with self._lock:
                 lifecycle_status = self._status.value
+            self._record_shutdown_request(
+                origin=ShutdownOrigin.BACKGROUND_TASK_FAILURE,
+                reason=ShutdownReason.BACKGROUND_TASK_TERMINATED,
+                component="runtime_driver",
+                failure_present=True,
+                operator_initiated=False,
+                exception_class=type(exc).__name__,
+            )
+            self._safe_diagnostic_call(
+                "record_shutdown_stopping",
+                runtime_state=lifecycle_status,
+            )
             shutdown_requested = self._stop_event.is_set()
             log_runtime_exception(
                 _LOGGER,
@@ -275,6 +361,43 @@ class RuntimeService:
                 self._thread = None
                 self._driver = None
                 self._stop_event.set()
+            self._safe_diagnostic_call(
+                "record_shutdown_stopped",
+                cleanup_completed=True,
+                failure_present=failure_present,
+            )
+
+    def _record_shutdown_request(
+        self,
+        *,
+        origin: ShutdownOrigin | str,
+        reason: ShutdownReason | str,
+        component: str,
+        failure_present: bool,
+        operator_initiated: bool,
+        exception_class: str | None = None,
+    ) -> None:
+        self._safe_diagnostic_call(
+            "record_shutdown_request",
+            origin=origin,
+            reason=reason,
+            component=component,
+            stop_event_already_set=self._stop_event.is_set(),
+            failure_present=failure_present,
+            operator_initiated=operator_initiated,
+            runtime_session_id=self._runtime_session_id,
+            exception_class=exception_class,
+            runtime_state=self._status.value,
+        )
+
+    def _safe_diagnostic_call(self, method_name: str, **values):
+        try:
+            callback = getattr(self._diagnostics, method_name, None)
+            if callable(callback):
+                return callback(**values)
+        except Exception:
+            pass
+        return None
 
     def _publish_cycle(self, cycle_count: int) -> None:
         self._bus.publish(

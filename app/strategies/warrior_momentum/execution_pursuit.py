@@ -157,7 +157,7 @@ def assess_top_of_book_pursuit(
     if best_bid is None or best_ask is None or spread_percent is None:
         return blocked("TOP_OF_BOOK_UNAVAILABLE")
     if spread_percent > maximum_spread_percent:
-        return blocked("SPREAD_WIDE")
+        return blocked("EXECUTION_QUALITY_WAIT")
     if structural_stop <= 0 or working_limit <= structural_stop:
         return ExecutionPursuitAssessment(
             ExecutionPursuitDecision.ABANDON, evaluated_at,

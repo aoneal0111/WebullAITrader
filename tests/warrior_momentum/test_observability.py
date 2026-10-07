@@ -7,7 +7,9 @@ from app.strategies.warrior_momentum.observability import (
     WarriorDiagnosticRecord,
     safe_emit,
 )
-from app.strategies.warrior_momentum.desktop_sidecar import _safe_warrior_observe
+from app.strategies.warrior_momentum.desktop_sidecar import (
+    WarriorDesktopSidecar, _safe_warrior_observe,
+)
 from app.trade_intelligence.runtime import _safe_warrior_observe as safe_runtime_observe
 import json
 import pytest
@@ -23,11 +25,98 @@ def test_explicit_sink_emits_sanitized_event(tmp_path: Path):
     assert "secret" not in text
 
 
+@pytest.mark.parametrize("event", ("SCALP_EXECUTION_WAIT", "SCALP_INVALIDATED"))
+def test_scalp_recovery_events_are_bounded_and_generation_bound(
+    tmp_path: Path, event: str,
+):
+    sink = BoundedJsonlWarriorObservabilitySink(tmp_path, f"scalp-{event.lower()}")
+    sink.emit_warrior(
+        event=event, symbol="FAST", generation="generation-1",
+        strategy_owner="QUICK_SCALPER",
+        reason=(
+            "INSUFFICIENT_NET_EXECUTABLE_EDGE"
+            if event == "SCALP_EXECUTION_WAIT" else "SETUP_SUPERSEDED"
+        ),
+    )
+    payload = json.loads(sink.path.read_text(encoding="utf-8"))
+    assert payload["event"] == event
+    assert payload["generation"] == "generation-1"
+    assert payload["strategy_owner"] == "QUICK_SCALPER"
+
+
 def test_event_bound_is_bounded(tmp_path: Path):
     sink = BoundedJsonlWarriorObservabilitySink(tmp_path, "session-2")
     for _ in range(2100):
         sink.emit_warrior(event="SCANNER_SEEN", symbol="DAIC")
     assert len(sink.path.read_text(encoding="utf-8").splitlines()) <= 2048
+
+
+def test_scalper_summary_survives_raw_event_capacity(tmp_path: Path):
+    sink = BoundedJsonlWarriorObservabilitySink(
+        tmp_path, "scalper-summary-after-cap",
+    )
+    for _ in range(obs.MAX_EVENTS + 20):
+        sink.emit_warrior(event="SCANNER_SEEN", symbol="NOISE")
+    for symbol, generation in (("FAST", "g1"), ("NEXT", "g2")):
+        sink.emit_warrior(event="SCALP_ASSESSED", symbol=symbol)
+        sink.emit_warrior(
+            event="SCALP_OPPORTUNITY", symbol=symbol,
+            generation=generation,
+        )
+    sink.emit_warrior(
+        event="SCALP_EXECUTABLE", symbol="FAST", generation="g1",
+    )
+    sink.emit_warrior(
+        event="SCALP_AUTHORIZED", symbol="FAST", generation="g1",
+    )
+    sink.emit_warrior(
+        event="SCALP_ORDER_INTENT", symbol="FAST", generation="g1",
+    )
+    sink.emit_warrior(
+        event="SCALP_ORDER_SUBMITTED", symbol="FAST", generation="g1",
+    )
+    sink.close()
+
+    rows = [
+        json.loads(line)
+        for line in sink.path.read_text(encoding="utf-8").splitlines()
+    ]
+    summary = rows[-1]
+    assert len(rows) == obs.MAX_EVENTS
+    assert summary == {
+        "schema_version": 1,
+        "sequence": obs.MAX_EVENTS,
+        "observed_at": summary["observed_at"],
+        "event": "SCALP_SESSION_SUMMARY",
+        "scalper_symbols_assessed": 2,
+        "scalper_opportunities_created": 2,
+        "scalper_executable": 1,
+        "scalper_authorized": 1,
+        "scalper_order_intents": 1,
+        "scalper_orders_submitted": 1,
+    }
+
+
+def test_desktop_session_shutdown_closes_bounded_scalper_summary(tmp_path: Path):
+    sink = BoundedJsonlWarriorObservabilitySink(tmp_path, "desktop-close-summary")
+    sink.emit_warrior(event="SCALP_ASSESSED", symbol="AIXI")
+    sink.emit_warrior(
+        event="SCALP_OPPORTUNITY", symbol="AIXI", generation="aixi-g1",
+    )
+    sidecar = WarriorDesktopSidecar(
+        enabled=False, storage_path=tmp_path / "unused.sqlite3",
+        observability=sink,
+    )
+
+    sidecar._close_auxiliary_observers()
+
+    rows = [
+        json.loads(line)
+        for line in sink.path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert rows[-1]["event"] == "SCALP_SESSION_SUMMARY"
+    assert rows[-1]["scalper_symbols_assessed"] == 1
+    assert rows[-1]["scalper_opportunities_created"] == 1
 
 
 def test_invalid_event_is_noop(tmp_path: Path):
@@ -56,6 +145,22 @@ def test_session_category_is_emitted_when_supplied(tmp_path: Path):
     sink.emit_warrior(event="SCANNER_SEEN", symbol="DAIC", session="REGULAR")
     payload = json.loads(sink.path.read_text(encoding="utf-8"))
     assert payload["session"] == "REGULAR"
+
+
+def test_contextual_admission_event_is_closed_and_sanitized(tmp_path: Path):
+    sink = BoundedJsonlWarriorObservabilitySink(tmp_path, "contextual-admission")
+    sink.emit_warrior(
+        event="WARRIOR_CONTEXTUAL_ADMISSION",
+        symbol="BKYI",
+        admission_result="ADMITTED",
+        admission_rejection="CONTEXTUAL_QUALITY",
+        failed_rules="float_verified,relative_volume",
+    )
+    payload = json.loads(sink.path.read_text(encoding="utf-8"))
+    assert payload["event"] == "WARRIOR_CONTEXTUAL_ADMISSION"
+    assert payload["admission"] == "ADMITTED"
+    assert payload["reason"] == "CONTEXTUAL_QUALITY"
+    assert "float_verified" not in payload
 
 
 class _ThrowingSink:

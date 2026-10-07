@@ -22,6 +22,18 @@ class AdaptiveDecision(StrEnum):
 
 
 class AdaptiveReason(StrEnum):
+    RVOL_STRONG = "RVOL_STRONG"
+    RVOL_ADAPTIVE_PASS = "RVOL_ADAPTIVE_PASS"
+    RVOL_INSUFFICIENT = "RVOL_INSUFFICIENT"
+    SPREAD_NORMAL_PASS = "SPREAD_NORMAL_PASS"
+    SPREAD_ADAPTIVE_PASS = "SPREAD_ADAPTIVE_PASS"
+    SPREAD_STILL_TOO_WIDE = "SPREAD_STILL_TOO_WIDE"
+    FAST_MOVER_RETAINED = "FAST_MOVER_RETAINED"
+    FLOAT_LOW_STRONG = "FLOAT_LOW_STRONG"
+    FLOAT_NORMAL = "FLOAT_NORMAL"
+    FLOAT_HIGH_ADAPTIVE_PASS = "FLOAT_HIGH_ADAPTIVE_PASS"
+    FLOAT_UNVERIFIED_ADAPTIVE_PASS = "FLOAT_UNVERIFIED_ADAPTIVE_PASS"
+    FLOAT_UNSUPPORTED = "FLOAT_UNSUPPORTED"
     MOMENTUM_EXCEPTIONAL = "MOMENTUM_EXCEPTIONAL"
     PARTICIPATION_IMPROVING = "PARTICIPATION_IMPROVING"
     RVOL_BELOW_TYPICAL_BUT_SUPPORTED = "RVOL_BELOW_TYPICAL_BUT_SUPPORTED"
@@ -117,6 +129,61 @@ class WarriorAdaptiveContext:
             }
         )
 
+    def execution_spread_limit(
+        self,
+        candidate: MomentumCandidate,
+        base_limit: Decimal,
+    ) -> Decimal:
+        """Return a bounded contextual spread ceiling for a fast mover.
+
+        The legacy limit remains the default.  A candidate may receive one
+        bounded expansion only when the same rolling context that admits its
+        RVOL/spread quality miss also has meaningful momentum and structure.
+        The expansion is capped below the catastrophic-spread rail and never
+        treats a missing quote as executable.
+        """
+        result = self.evaluate(candidate)
+        if (
+            result.decision not in {AdaptiveDecision.FORMING, AdaptiveDecision.READY}
+            or result.momentum_strength < Decimal("0.75")
+            or result.structure_quality < Decimal("0.45")
+            or candidate.spread_percent is None
+        ):
+            return base_limit
+        return min(
+            base_limit * Decimal("2"),
+            self.catastrophic_spread_percent / Decimal("2"),
+        )
+
+    def contextual_spread_allowed(
+        self,
+        candidate: MomentumCandidate,
+        base_limit: Decimal,
+    ) -> bool:
+        limit = self.execution_spread_limit(candidate, base_limit)
+        return candidate.spread_percent is not None and candidate.spread_percent <= limit
+
+    def permits_contextual_quality(self, candidate: MomentumCandidate) -> bool:
+        """Allow only a strong, fresh, structurally supported quality miss."""
+        result = self.evaluate(candidate)
+        if result.decision not in {AdaptiveDecision.FORMING, AdaptiveDecision.READY}:
+            return False
+        # Higher/unknown float can never compensate for weak executable
+        # participation.  Low float remains positive evidence, but all names
+        # still pass through the ordinary quote/risk rails later.
+        if candidate.float_shares is None or candidate.float_shares > Decimal("50000000"):
+            return result.liquidity >= Decimal("0.65")
+        return True
+
+    def permits_contextual_discovery(self, candidate: MomentumCandidate) -> bool:
+        """Retain a fast mover for Warrior observation before setup exists."""
+        result = self.evaluate(candidate)
+        if result.decision is AdaptiveDecision.REJECT:
+            return False
+        if candidate.float_shares is None or candidate.float_shares > Decimal("50000000"):
+            return result.liquidity >= Decimal("0.65")
+        return True
+
     @property
     def symbol_state_count(self) -> int:
         return len(self._symbols)
@@ -202,6 +269,39 @@ class WarriorAdaptiveContext:
                       + Decimal("0.15") * structure + Decimal("0.05") * freshness)
 
         reasons: list[AdaptiveReason] = []
+        if candidate.relative_volume >= Decimal("2"):
+            reasons.append(AdaptiveReason.RVOL_STRONG)
+        elif participation >= Decimal("0.55") and momentum >= Decimal("0.75"):
+            reasons.append(AdaptiveReason.RVOL_ADAPTIVE_PASS)
+        else:
+            reasons.append(AdaptiveReason.RVOL_INSUFFICIENT)
+        if candidate.float_shares is None:
+            reasons.append(AdaptiveReason.FLOAT_UNVERIFIED_ADAPTIVE_PASS
+                           if momentum >= Decimal("0.85")
+                           and participation >= Decimal("0.55")
+                           and liquidity >= Decimal("0.65")
+                           and structure >= Decimal("0.45")
+                           else AdaptiveReason.FLOAT_UNSUPPORTED)
+        elif candidate.float_shares <= Decimal("5000000"):
+            reasons.append(AdaptiveReason.FLOAT_LOW_STRONG)
+        elif candidate.float_shares <= Decimal("50000000"):
+            reasons.append(AdaptiveReason.FLOAT_NORMAL)
+        elif (
+            momentum >= Decimal("0.85")
+            and participation >= Decimal("0.55")
+            and liquidity >= Decimal("0.65")
+            and structure >= Decimal("0.45")
+            and freshness > 0
+        ):
+            reasons.append(AdaptiveReason.FLOAT_HIGH_ADAPTIVE_PASS)
+        else:
+            reasons.append(AdaptiveReason.FLOAT_UNSUPPORTED)
+        if spread is None or spread >= self.catastrophic_spread_percent:
+            reasons.append(AdaptiveReason.SPREAD_STILL_TOO_WIDE)
+        elif spread <= Decimal("1.25"):
+            reasons.append(AdaptiveReason.SPREAD_NORMAL_PASS)
+        elif momentum >= Decimal("0.75") and structure >= Decimal("0.45"):
+            reasons.append(AdaptiveReason.SPREAD_ADAPTIVE_PASS)
         if momentum >= Decimal("0.75"):
             reasons.append(AdaptiveReason.MOMENTUM_EXCEPTIONAL)
         if state.prior_participation is not None and participation > state.prior_participation:
@@ -229,7 +329,7 @@ class WarriorAdaptiveContext:
         # A low accumulated amount is not permanently disqualifying once the
         # symbol demonstrates real intraday velocity and repeated evidence.
         improving_liquidity = velocity_score >= Decimal("0.55") and momentum >= Decimal("0.75") and state.observations >= 2
-        hard_block = (freshness == 0 or spread is None or spread >= self.catastrophic_spread_percent
+        hard_block = (freshness == 0
                       or (bootstrap_low and not improving_liquidity)
                       or (dollar < self.minimum_dollar_volume and not improving_liquidity))
         if bootstrap_low:
@@ -248,6 +348,8 @@ class WarriorAdaptiveContext:
             decision = AdaptiveDecision.FORMING if candidate.setup is not None else AdaptiveDecision.WATCH
         else:
             decision = AdaptiveDecision.REJECT
+        if decision is not AdaptiveDecision.REJECT and momentum >= Decimal("0.75"):
+            reasons.append(AdaptiveReason.FAST_MOVER_RETAINED)
         state.prior_participation = participation
         state.prior_score = score
         prior_volume = state.prior_volume

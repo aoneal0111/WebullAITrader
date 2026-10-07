@@ -91,7 +91,8 @@ class TradeIntelligencePanel(QWidget):
             management_layout,
             (
                 "Qty", "Avg Entry", "Mark", "Market Value",
-                "Unrealized", "Current R", "Current Stop",
+                "Unrealized", "Current R", "Current Canonical Stop",
+                "Projected / Next Stop",
                 "Next Target", "Management State",
             ),
             columns=3,
@@ -277,6 +278,9 @@ class TradeIntelligencePanel(QWidget):
             "Setup": row.setup,
             "Setup state": row.setup_state,
             "Strategy status": row.strategy_status,
+            "Quick Scalper state": row.scalper_state,
+            "Quick Scalper reason": row.scalper_reason,
+            "Quick Scalper generation": row.scalper_generation_id,
             "Entry trigger": row.entry_trigger,
             "Stop": row.stop_price,
         }
@@ -304,9 +308,10 @@ class TradeIntelligencePanel(QWidget):
             "Market Value": row.market_value,
             "Unrealized": f"{row.unrealized_pnl}  {row.unrealized_percent}",
             "Current R": row.current_r,
-            "Current Stop": row.current_stop if row.current_stop != "--" else (
+            "Current Canonical Stop": row.current_stop if row.current_stop != "--" else (
                 row.protection.stop_price if row.protection is not None else "--"
             ),
+            "Projected / Next Stop": row.projected_stop,
             "Next Target": row.next_target,
             "Management State": row.management_state,
         })
@@ -575,13 +580,18 @@ def _decision_basis(row: WatchlistRow) -> str:
         f"Last {_money_price(row.decision_last)}  "
         f"Bid {_money_price(row.decision_bid)}  "
         f"Ask {_money_price(row.decision_ask)}",
-        f"Spread {row.decision_spread}",
+        f"Spread {row.decision_spread} · Quality {row.execution_quality}",
+        f"Decision {row.decision_generation_id}",
     ))
 
 
 def _decision_market_relation(row: WatchlistRow) -> str:
     current = _aware_timestamp(row.market_timestamp)
-    decision = _aware_timestamp(row.decision_timestamp)
+    decision = _aware_timestamp(
+        row.decision_quote_timestamp
+        if row.decision_quote_timestamp not in {None, "", "--"}
+        else row.decision_timestamp
+    )
     if current is None or decision is None:
         return "--"
     if current > decision:

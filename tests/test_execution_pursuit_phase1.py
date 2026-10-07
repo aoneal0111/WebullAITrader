@@ -41,10 +41,10 @@ def test_advancing_top_of_book_requests_one_bounded_pursuit_level():
     assert result.data_mode == "TOP_OF_BOOK"
 
 
-def test_wide_spread_blocks_pursuit_without_changing_thesis():
+def test_poor_execution_quality_waits_without_changing_thesis():
     result = assess(spread_percent=D("1.26"))
     assert result.decision is ExecutionPursuitDecision.BLOCKED
-    assert result.reason == "SPREAD_WIDE"
+    assert result.reason == "EXECUTION_QUALITY_WAIT"
 
 
 def test_missing_size_does_not_claim_order_flow_pressure():
@@ -75,4 +75,3 @@ def test_replacement_budget_is_bounded():
     result = assess(replacement_budget_available=False)
     assert result.decision is ExecutionPursuitDecision.ABANDON
     assert result.reason == "PURSUIT_BUDGET_EXHAUSTED"
-

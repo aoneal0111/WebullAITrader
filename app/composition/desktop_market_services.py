@@ -7,6 +7,9 @@ from app.services.chart_market_data import ChartMarketDataService
 from app.strategies.warrior_momentum.execution_quote import (
     WebullExecutionQuoteSource,
 )
+from app.strategies.warrior_momentum.execution_quote_provenance import (
+    create_execution_quote_provenance_sink_from_environment,
+)
 from app.webull.client_factories import MarketDataClientFactory
 from app.webull.market_data_session import utc_now
 from app.webull.request_audit import (
@@ -74,7 +77,8 @@ def create_desktop_market_services(
         observation_sink=publish_chart_observation,
     )
     execution_quote_source = WebullExecutionQuoteSource(
-        shared_rest_market_data
+        shared_rest_market_data,
+        provenance_sink=create_execution_quote_provenance_sink_from_environment(),
     )
 
     return DesktopMarketServices(

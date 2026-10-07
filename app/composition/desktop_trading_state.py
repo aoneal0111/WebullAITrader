@@ -10,6 +10,9 @@ from app.strategies.warrior_momentum.configuration import RiskConfig
 from app.webull.market_data_session import utc_now
 
 
+PAPER_CAMPAIGN_LOSS_FRACTION = Decimal("0.50")
+
+
 class DesktopTradingStateSources:
     """Read-only adapters from desktop projections into trading composition."""
 
@@ -105,23 +108,35 @@ class DesktopTradingStateSources:
             return None
 
         risk_approved = False
+        risk_rejection_reason = None
         exposure = Decimal("0")
         exposure_limit = None
+        campaign_loss_fraction = (
+            PAPER_CAMPAIGN_LOSS_FRACTION
+            if self._configuration.environment.value == "PAPER"
+            else self._risk_policy.maximum_campaign_loss_fraction
+        )
+        campaign_floor = None
+        starting_equity = None
         if paper_account is not None:
             # Use durable campaign capital, not a restart-local or daily P/L
             # counter. Restarting Atlas must not replenish the loss budget.
             starting = Decimal(paper_account.starting_equity)
             current = Decimal(equity)
+            starting_equity = starting
+            campaign_floor = starting * (1 - campaign_loss_fraction)
             gross = paper_account.gross_exposure
             if (starting.is_finite() and starting > 0 and current.is_finite()
                     and gross is not None and Decimal(gross).is_finite()
                     and paper_account.valuation_complete):
                 exposure = max(Decimal("0"), Decimal(gross))
                 exposure_limit = current * self._risk_policy.maximum_gross_exposure_fraction
-                risk_approved = (
-                    current > starting * (1 - self._risk_policy.maximum_campaign_loss_fraction)
-                    and exposure < exposure_limit
-                )
+                if current <= campaign_floor:
+                    risk_rejection_reason = "CAMPAIGN_LOSS"
+                elif exposure >= exposure_limit:
+                    risk_rejection_reason = "EXPOSURE_LIMIT"
+                else:
+                    risk_approved = True
 
         return PaperAccountContext(
             equity=Decimal(equity),
@@ -134,6 +149,11 @@ class DesktopTradingStateSources:
             symbol_authorization_mode=(
                 self._configuration.paper_symbol_authorization_mode
             ),
+            risk_rejection_reason=risk_rejection_reason,
+            starting_equity=starting_equity,
+            current_equity=Decimal(equity),
+            campaign_loss_fraction=campaign_loss_fraction,
+            campaign_equity_floor=campaign_floor,
         )
 
 

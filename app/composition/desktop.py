@@ -25,6 +25,12 @@ from app.strategies.warrior_momentum.desktop_sidecar import (
     strategy_configuration_fingerprint,
 )
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
+from app.strategies.warrior_momentum.quick_scalper import (
+    QuickScalperConfig, SymbolOwnershipRegistry,
+)
+from app.strategies.warrior_momentum.quick_scalper_runtime import (
+    QuickScalperPaperRuntimeAdapter,
+)
 from app.strategies.warrior_momentum.forward_runtime import management_context_available
 from app.trade_intelligence.taxonomy_paper_bridge import TaxonomyPaperExecutionBridge
 from app.trade_intelligence.decision_intelligence import HistoricalDecisionIntelligence
@@ -79,6 +85,21 @@ from .desktop_symbol_intelligence import (
 )
 
 
+def _configured_management_context_source(
+    storage_path, configuration_fingerprint: str,
+):
+    """Bind management recovery to the active runtime configured policy."""
+    def source(symbol: str) -> str | None:
+        return management_context_available(
+            storage_path,
+            symbol,
+            configuration_fingerprint=configuration_fingerprint,
+            allow_compatible_generation=True,
+        )
+
+    return source
+
+
 @dataclass(slots=True)
 class DesktopComposition:
     bus: OperationsBus
@@ -94,6 +115,7 @@ class DesktopComposition:
     chart_default_symbol: str | None = None
     warrior_forward_sidecar: WarriorDesktopSidecar | None = None
     autonomous_paper_bridge: AutonomousPaperExecutionBridge | None = None
+    quick_scalper_runtime: QuickScalperPaperRuntimeAdapter | None = None
     paper_entry_intelligence: HistoricalPaperEntryTimingPolicy | None = None
     trade_intelligence_observer: TradeIntelligenceRuntimeObserver | None = None
     entry_opportunity_value_observer: EntryOpportunityValueRuntimeObserver | None = None
@@ -147,6 +169,13 @@ def create_desktop_composition(
     )
     warrior_observability = intelligence_composition.warrior_observability
     warrior_strategy_config = intelligence_composition.warrior_strategy_config
+    warrior_configuration_fingerprint = strategy_configuration_fingerprint(
+        warrior_strategy_config
+    )
+    warrior_management_context_source = _configured_management_context_source(
+        operational_configuration.warrior_forward_capture_path,
+        warrior_configuration_fingerprint,
+    )
     trade_intelligence_observer = (
         intelligence_composition.trade_intelligence_observer
     )
@@ -276,21 +305,23 @@ def create_desktop_composition(
 
 
     autonomous_paper_bridge = None
+    quick_scalper_runtime = None
+    shared_strategy_ownership = SymbolOwnershipRegistry()
+    paper_strategy_enabled = (
+        operational_configuration.warrior_forward_paper_enabled
+        or operational_configuration.quick_scalper_enabled
+    )
     if paper_trading_commands is not None:
         autonomous_paper_bridge = AutonomousPaperExecutionBridge(
             paper_trading_commands.trading_service,
             paper_trading_commands.order_command_factory,
             mode=configuration.runtime_mode.value,
-            enabled=operational_configuration.warrior_forward_paper_enabled,
+            enabled=paper_strategy_enabled,
             order_book=paper_trading_commands.order_book,
             durable_store=paper_trading_commands.durable_store,
             protection_amender=paper_trading_commands.gateway.amend_protective_stop,
             position_quantity_source=trading_state_sources.position_quantity,
-            management_context_source=lambda symbol: management_context_available(
-                operational_configuration.warrior_forward_capture_path, symbol,
-                configuration_fingerprint=strategy_configuration_fingerprint(),
-                allow_compatible_generation=True,
-            ),
+            management_context_source=warrior_management_context_source,
         )
         # Restore the read model from the authoritative PAPER order book before
         # any management/protection callbacks can observe a live quote.  The
@@ -306,6 +337,24 @@ def create_desktop_composition(
         autonomous_paper_bridge.begin_reconciliation()
         autonomous_paper_bridge.reconcile()
         autonomous_paper_bridge.reconcile_protection()
+        quick_scalper_runtime = QuickScalperPaperRuntimeAdapter(
+            config=QuickScalperConfig(
+                enabled=operational_configuration.quick_scalper_enabled,
+            ),
+            bridge=autonomous_paper_bridge,
+            order_book=paper_trading_commands.order_book,
+            account_context_source=trading_state_sources.warrior_account_context,
+            position_quantity_source=trading_state_sources.position_quantity,
+            execution_quote_source=execution_quote_source,
+            risk_config=warrior_strategy_config.risk,
+            live_trading_enabled=operational_configuration.live_trading_enabled,
+            environment=operational_configuration.environment.value,
+            ownership=shared_strategy_ownership,
+            event_sink=lambda event, payload: warrior_observability.emit_warrior(
+                event=event, **payload,
+            ),
+            clock=paper_clock or utc_now,
+        )
 
     entry_opportunity_value_observer = create_entry_opportunity_value_observer(
         operational_configuration=operational_configuration,
@@ -321,10 +370,11 @@ def create_desktop_composition(
             recovery=decision_intelligence_observer.taxonomy_recovery
         )
     warrior_forward_sidecar = WarriorDesktopSidecar(
-        enabled=operational_configuration.warrior_forward_paper_enabled,
+        enabled=paper_strategy_enabled,
         storage_path=operational_configuration.warrior_forward_capture_path,
         environment=operational_configuration.environment.value,
         strategy_config=warrior_strategy_config,
+        configuration_fingerprint=warrior_configuration_fingerprint,
         account_context_source=trading_state_sources.warrior_account_context,
         paper_entry_submitter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.submit_entry_decision),
         paper_entry_replacer=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.consider_entry_replacement),
@@ -335,6 +385,10 @@ def create_desktop_composition(
         paper_execution_ownership_source=(
             None if autonomous_paper_bridge is None
             else autonomous_paper_bridge.has_execution_ownership
+        ),
+        paper_exit_fill_source=(
+            None if autonomous_paper_bridge is None
+            else autonomous_paper_bridge.latest_exit_fill_role
         ),
         paper_working_entry_source=(
             None if autonomous_paper_bridge is None
@@ -352,6 +406,8 @@ def create_desktop_composition(
         taxonomy_execution_bridge=taxonomy_execution_bridge,
         decision_intelligence_observer=decision_intelligence_observer,
         paper_entry_intelligence=paper_entry_intelligence,
+        quick_scalper_observer=quick_scalper_runtime,
+        strategy_ownership=shared_strategy_ownership,
         async_observation_records=True,
         async_decision_intelligence=True,
         observability=warrior_observability,
@@ -452,6 +508,7 @@ def create_desktop_composition(
         chart_default_symbol=chart_default_symbol,
         warrior_forward_sidecar=warrior_forward_sidecar,
         autonomous_paper_bridge=autonomous_paper_bridge,
+        quick_scalper_runtime=quick_scalper_runtime,
         paper_entry_intelligence=paper_entry_intelligence,
         trade_intelligence_observer=trade_intelligence_observer,
         entry_opportunity_value_observer=entry_opportunity_value_observer,

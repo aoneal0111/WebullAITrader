@@ -15,6 +15,7 @@ class EvaluationWork:
     enqueued_at: datetime
     event: object
     admission_reason: str = "REALTIME_CALLBACK"
+    priority: int = 0
 
 
 class LatestEvaluationMailbox:
@@ -47,6 +48,7 @@ class LatestEvaluationMailbox:
         event: object,
         *,
         admission_reason: str = "REALTIME_CALLBACK",
+        priority: int = 0,
     ) -> bool:
         normalized = symbol.strip().upper()
         if not normalized:
@@ -60,6 +62,7 @@ class LatestEvaluationMailbox:
                 # OrderedDict position remains stable for fairness.
                 self._pending[normalized] = EvaluationWork(
                     normalized, version, enqueued_at, event, admission_reason,
+                    max(0, min(2, int(priority))),
                 )
                 self._produced += 1
                 return True
@@ -68,6 +71,7 @@ class LatestEvaluationMailbox:
                 return False
             self._pending[normalized] = EvaluationWork(
                 normalized, version, enqueued_at, event, admission_reason,
+                max(0, min(2, int(priority))),
             )
             self._produced += 1
             self._high_water = max(self._high_water, len(self._pending))
@@ -77,7 +81,12 @@ class LatestEvaluationMailbox:
         with self._lock:
             if not self._pending:
                 return None
-            _symbol, work = self._pending.popitem(last=False)
+            highest = max(item.priority for item in self._pending.values())
+            symbol = next(
+                key for key, item in self._pending.items()
+                if item.priority == highest
+            )
+            work = self._pending.pop(symbol)
             self._dequeued += 1
             return work
 

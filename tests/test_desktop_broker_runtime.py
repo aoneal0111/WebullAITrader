@@ -173,7 +173,7 @@ def test_configured_driver_resolves_selected_broker_plugin() -> None:
 def test_production_composition_owns_autonomous_webull_universe_provider(
     monkeypatch,
 ) -> None:
-    configured = configuration()
+    configured = replace(configuration(), quick_scalper_enabled=True)
     broker = FakeBroker()
     stream = object()
     captured = {}
@@ -217,6 +217,12 @@ def test_production_composition_owns_autonomous_webull_universe_provider(
     assert observer.enabled is False
     assert provider._admission_observer is observer
     assert captured["universe_service"]._admission_observer is observer
+    universe_config = captured['universe_service']._config
+    assert universe_config.stock_minimum_price == Decimal('1.00')
+    assert universe_config.stock_maximum_price is None
+    assert {item.value for item in universe_config.stock_security_types} == {
+        'COMMON_STOCK', 'ETF',
+    }
     assert driver._scanner is coordinator
     assert configured.allowed_symbols == ("AAPL",)
     assert "default_channels" not in captured

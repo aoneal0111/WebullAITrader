@@ -1360,6 +1360,14 @@ class MarketWorkspace(QWidget):
             decision_bid=match.decision_bid,
             decision_ask=match.decision_ask,
             decision_spread=match.decision_spread,
+            decision_generation_id=match.decision_generation_id,
+            scanner_observation_timestamp=match.scanner_observation_timestamp,
+            warrior_observation_timestamp=match.warrior_observation_timestamp,
+            decision_quote_timestamp=match.decision_quote_timestamp,
+            execution_quality=match.execution_quality,
+            scalper_state=match.scalper_state,
+            scalper_reason=match.scalper_reason,
+            scalper_generation_id=match.scalper_generation_id,
         )
 
     def set_warrior_observability_sink(self, sink) -> None:

@@ -71,7 +71,7 @@ def test_synchronous_full_fill_gets_immediate_actual_protection(tmp_path: Path):
         writer.close()
 
 
-def test_partial_fill_protection_resizes_and_duplicate_reconcile_is_safe(tmp_path: Path):
+def test_reconcile_without_durable_order_book_fails_closed(tmp_path: Path):
     position = {"XYZ": D("40")}
     submitted = []
     store, writer, service = _service(tmp_path, position, submitted)
@@ -81,14 +81,13 @@ def test_partial_fill_protection_resizes_and_duplicate_reconcile_is_safe(tmp_pat
         assert submitted[-1][1] == 40
 
         position["XYZ"] = D("575")
-        assert service.reconcile_authoritative_protection("XYZ", NOW) is True
-        assert submitted[-1][1] == 575
-
         before = len(submitted)
-        assert service.reconcile_authoritative_protection("XYZ", NOW) is True
-        # The service remains idempotent with respect to the authoritative
-        # position handoff; a real bridge owns correlated order deduplication.
-        assert len(submitted) == before + 1
+        assert service.reconcile_authoritative_protection("XYZ", NOW) is False
+        assert service.reconcile_authoritative_protection("XYZ", NOW) is False
+        # A success-like adapter without a canonical ledger cannot prove
+        # either leg and must not be retried into duplicate orders.
+        assert len(submitted) == before
+        assert service._paper["XYZ"].protection_reconciled is False
         assert all(item[1] <= int(position["XYZ"]) for item in submitted)
     finally:
         writer.close()

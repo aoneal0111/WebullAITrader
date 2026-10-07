@@ -205,6 +205,18 @@ class TradeIntelligenceRuntimeObserver:
             current = self._episodes.get(decision.symbol.strip().upper())
             if current is not None and current.last_signature == fast_signature:
                 return
+        if observation_eligible:
+            contextual_failures = tuple(sorted(
+                set(decision.technical_failed_rules or ())
+                & {"relative_volume", "float_verified", "low_float", "dollar_volume", "spread"}
+            ))
+            if contextual_failures:
+                _safe_warrior_observe(
+                    self._observability, "WARRIOR_CONTEXTUAL_ADMISSION", decision.symbol,
+                    admission_result="ADMITTED",
+                    admission_rejection="CONTEXTUAL_QUALITY",
+                    failed_rules=",".join(contextual_failures),
+                )
         try:
             self._observe_scanner(decision, observation_eligible=observation_eligible)
         except Exception:

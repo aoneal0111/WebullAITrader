@@ -131,7 +131,7 @@ def test_actual_position_rebases_warrior_milestones(tmp_path):
         writer.close()
 
 
-def test_partial_position_protection_is_immediate_and_resizes(tmp_path):
+def test_partial_position_reconciliation_requires_durable_order_book(tmp_path):
     from app.strategies.warrior_momentum import (
         ForwardCaptureStore, ForwardCaptureWriter,
     )
@@ -157,15 +157,17 @@ def test_partial_position_protection_is_immediate_and_resizes(tmp_path):
     try:
         _, signal = service.observe(point(), account=account())
         assert signal is not None
-        assert service.reconcile_authoritative_protection("XYZ", NOW)
-        assert submissions == [(1124, "STOP"), (1124, "STOP")]
-        assert service._paper["XYZ"].protection_reconciled is True
+        assert submissions[0] == (1124, "STOP")
+        before = len(submissions)
+        assert service.reconcile_authoritative_protection("XYZ", NOW) is False
+        assert len(submissions) == before
+        assert service._paper["XYZ"].protection_reconciled is False
 
         position["XYZ"] = Decimal("1300")
         assert service.reconcile_authoritative_protection(
             "XYZ", NOW + timedelta(seconds=1),
-        )
-        assert submissions[-1] == (1300, "STOP")
+        ) is False
+        assert len(submissions) == before
         assert service._paper["XYZ"].remaining == 1300
     finally:
         writer.close()

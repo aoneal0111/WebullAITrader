@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from hashlib import sha256
 
@@ -12,6 +12,18 @@ from .features import build_features, contiguous_tail
 from .models import MinuteBar, ReasonCode, SetupDetection, SetupState, SetupType, StopModel
 
 HUNDRED = Decimal("100")
+
+
+@dataclass(frozen=True, slots=True)
+class AccelerationPoint:
+    timestamp: object
+    price: Decimal
+    volume: Decimal
+    dollar_volume: Decimal
+    spread_percent: Decimal | None
+    tradable: bool
+    halted: bool
+    fresh: bool = True
 
 
 def _structural_episode_id(kind: SetupType, bars: tuple[MinuteBar, ...], anchor_count: int) -> str:
@@ -253,12 +265,131 @@ def detect_flat_top(bars: tuple[MinuteBar, ...], config: SetupConfig = SetupConf
     return SetupDetection(kind, SetupState.NOT_FORMED, Decimal("10"), resistance=resistance, reason_codes=(ReasonCode.NO_SETUP,))
 
 
-def detect_best_setup(bars: tuple[MinuteBar, ...], config: SetupConfig = SetupConfig()) -> SetupDetection | None:
+def detect_momentum_acceleration(
+    points: tuple[AccelerationPoint, ...],
+    config: SetupConfig = SetupConfig(),
+) -> SetupDetection:
+    """Detect a bounded live acceleration episode without requiring a minute bar."""
+    kind = SetupType.MOMENTUM_ACCELERATION
+    if len(points) < 3:
+        return _unknown(kind)
+    ordered = points[-8:]
+    latest = ordered[-1]
+    if (latest.timestamp - ordered[0].timestamp).total_seconds() > 30:
+        return SetupDetection(kind, SetupState.NOT_FORMED, Decimal("0"), reason_codes=(ReasonCode.NO_SETUP,))
+    if any(not item.fresh or not item.tradable or item.halted for item in ordered):
+        return SetupDetection(kind, SetupState.NOT_FORMED, Decimal("0"), reason_codes=(ReasonCode.NO_SETUP,))
+    elapsed = max(Decimal("0.1"), Decimal(str((latest.timestamp - ordered[0].timestamp).total_seconds())) / Decimal("60"))
+    half = max(1, len(ordered) // 2)
+    first, prior = ordered[0], ordered[:-1]
+    first_elapsed = max(Decimal("0.1"), Decimal(str((ordered[half - 1].timestamp - first.timestamp).total_seconds())) / Decimal("60"))
+    first_velocity = (ordered[half - 1].price - first.price) / first.price * HUNDRED / first_elapsed
+    velocity = (latest.price - first.price) / first.price * HUNDRED / elapsed
+    acceleration = velocity - first_velocity
+    prior_high = max(item.price for item in prior)
+    base = min(item.price for item in ordered[:-1])
+    trigger = prior_high * (Decimal("1") + config.breakout_buffer_percent / HUNDRED)
+    prior_volume = sum(item.volume for item in ordered[:-1]) / Decimal(len(ordered) - 1)
+    prior_dollar = sum(item.dollar_volume for item in ordered[:-1]) / Decimal(len(ordered) - 1)
+    participation_velocity = (latest.volume - first.volume) / elapsed
+    dollar_volume_velocity = (latest.dollar_volume - first.dollar_volume) / elapsed
+    volume_progress = latest.volume >= max(first.volume, prior_volume * Decimal("1.05"))
+    dollar_progress = latest.dollar_volume >= max(first.dollar_volume, prior_dollar * Decimal("1.05"))
+    positive_steps = sum(1 for left, right in zip(ordered, ordered[1:]) if right.price > left.price)
+    supportive = (
+        positive_steps >= 2 and velocity >= Decimal("0.5") and acceleration >= Decimal("0.05")
+        and volume_progress and dollar_progress
+        and participation_velocity > 0 and dollar_volume_velocity > 0
+        and latest.price > first.price
+    )
+    if not supportive:
+        return SetupDetection(kind, SetupState.NOT_FORMED, Decimal("10"), resistance=prior_high, reason_codes=(ReasonCode.NO_SETUP,))
+    episode = "MOMENTUM_ACCELERATION|" + sha256(f"{ordered[0].timestamp.isoformat()}|{base}".encode()).hexdigest()
+    anchor = f"MOMENTUM_ACCELERATION|{ordered[0].timestamp.isoformat()}"
+    state = SetupState.TRIGGERED if latest.price >= trigger and len(ordered) >= 4 else SetupState.FORMING
+    score = Decimal("84") if state is SetupState.TRIGGERED else Decimal("68")
+    reasons = () if state is SetupState.TRIGGERED else (ReasonCode.BREAKOUT_NOT_CONFIRMED,)
+    return SetupDetection(
+        kind, state, score, trigger, base, StopModel.RECENT_SWING_LOW, prior_high,
+        reasons, structural_episode_id=episode, structural_anchor=anchor,
+    )
+
+
+def _live_points_valid(points: tuple[AccelerationPoint, ...], *, lifetime_seconds: int) -> bool:
+    if len(points) < 5:
+        return False
+    ordered = points[-8:]
+    latest = ordered[-1]
+    if (latest.timestamp - ordered[0].timestamp).total_seconds() > lifetime_seconds:
+        return False
+    if any(not item.fresh or not item.tradable or item.halted for item in ordered):
+        return False
+    # Spread is execution quality, not technical structure. Quote validity
+    # and freshness are enforced before execution.
+    return True
+
+
+def _continuation_detection(
+    points: tuple[AccelerationPoint, ...], config: SetupConfig, *, reclaim: bool,
+) -> SetupDetection:
+    """Detect a bounded pause-then-expansion continuation episode."""
+    kind = SetupType.RECLAIM_CONTINUATION if reclaim else SetupType.MOMENTUM_REACCELERATION
+    if not _live_points_valid(points, lifetime_seconds=45):
+        return _unknown(kind)
+    ordered = points[-8:]
+    latest = ordered[-1]
+    prior = ordered[:-1]
+    level = max(item.price for item in prior[:-2])
+    pause = ordered[-3]
+    base = min(item.price for item in ordered[-4:])
+    # A continuation needs a real pause/absorption phase, not merely a second
+    # rising tick. Reclaim additionally requires price to lose the short level.
+    pause_seen = pause.price <= level * Decimal("0.998")
+    lost_level = any(item.price < level * Decimal("0.998") for item in ordered[1:-1])
+    rising_tail = ordered[-2].price > pause.price and latest.price > ordered[-2].price
+    trigger = level * (Decimal("1") + config.breakout_buffer_percent / HUNDRED)
+    velocity = (latest.price - pause.price) / pause.price * HUNDRED
+    elapsed = max(Decimal("0.1"), Decimal(str((latest.timestamp - pause.timestamp).total_seconds())) / Decimal("60"))
+    volume_velocity = (latest.volume - pause.volume) / elapsed
+    dollar_velocity = (latest.dollar_volume - pause.dollar_volume) / elapsed
+    participation = latest.volume >= max(pause.volume, sum(item.volume for item in prior[-3:]) / Decimal(min(3, len(prior))))
+    dollar_progress = latest.dollar_volume >= max(pause.dollar_volume, sum(item.dollar_volume for item in prior[-3:]) / Decimal(min(3, len(prior))))
+    structure_ok = pause_seen and rising_tail and (lost_level if reclaim else True)
+    supportive = structure_ok and velocity >= Decimal("0.25") and participation and dollar_progress and volume_velocity > 0 and dollar_velocity > 0
+    if not supportive:
+        return SetupDetection(kind, SetupState.NOT_FORMED, Decimal("10"), resistance=level, reason_codes=(ReasonCode.NO_SETUP,))
+    episode_anchor = ordered[-4].timestamp.isoformat()
+    episode = f"{kind.value}|" + sha256(f"{episode_anchor}|{base}".encode()).hexdigest()
+    anchor = f"{kind.value}|{episode_anchor}"
+    state = SetupState.TRIGGERED if latest.price >= trigger else SetupState.FORMING
+    score = Decimal("83") if state is SetupState.TRIGGERED else Decimal("67")
+    reasons = () if state is SetupState.TRIGGERED else (ReasonCode.BREAKOUT_NOT_CONFIRMED,)
+    return SetupDetection(
+        kind, state, score, trigger, base, StopModel.RECENT_SWING_LOW, level,
+        reasons, structural_episode_id=episode, structural_anchor=anchor,
+    )
+
+
+def detect_momentum_reacceleration(points: tuple[AccelerationPoint, ...], config: SetupConfig = SetupConfig()) -> SetupDetection:
+    return _continuation_detection(points, config, reclaim=False)
+
+
+def detect_reclaim_continuation(points: tuple[AccelerationPoint, ...], config: SetupConfig = SetupConfig()) -> SetupDetection:
+    return _continuation_detection(points, config, reclaim=True)
+
+
+def detect_best_setup(
+    bars: tuple[MinuteBar, ...], config: SetupConfig = SetupConfig(),
+    acceleration_points: tuple[AccelerationPoint, ...] = (),
+) -> SetupDetection | None:
     detections = (
         detect_hod_breakout(bars, config),
         detect_micro_pullback(bars, config),
         detect_bull_flag(bars, config),
         detect_flat_top(bars, config),
+        detect_momentum_acceleration(acceleration_points, config),
+        detect_momentum_reacceleration(acceleration_points, config),
+        detect_reclaim_continuation(acceleration_points, config),
     )
 
     actionable = tuple(
@@ -280,6 +411,8 @@ def detect_best_setup(bars: tuple[MinuteBar, ...], config: SetupConfig = SetupCo
         key=lambda item: (
             priority[item.state],
             item.score,
+            item.setup_type is not SetupType.MOMENTUM_ACCELERATION,
+            item.score,
             item.setup_type.value,
         ),
     )
@@ -290,4 +423,4 @@ def hod_proximity(bars: tuple[MinuteBar, ...]) -> Decimal | None:
     return None if features is None else features.distance_from_hod_percent
 
 
-__all__ = ["LegacySetupEpisodeTracker", "detect_hod_breakout", "detect_micro_pullback", "detect_bull_flag", "detect_flat_top", "detect_best_setup", "hod_proximity"]
+__all__ = ["AccelerationPoint", "LegacySetupEpisodeTracker", "detect_hod_breakout", "detect_micro_pullback", "detect_bull_flag", "detect_flat_top", "detect_momentum_acceleration", "detect_momentum_reacceleration", "detect_reclaim_continuation", "detect_best_setup", "hod_proximity"]

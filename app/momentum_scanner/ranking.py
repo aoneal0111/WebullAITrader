@@ -19,6 +19,7 @@ def rank_candidates(
         sorted(
             qualified,
             key=lambda item: (
+                -getattr(item.metrics, "momentum_priority", 0),
                 -item.score,
                 -item.metrics.relative_volume,
                 -item.metrics.percentage_change,

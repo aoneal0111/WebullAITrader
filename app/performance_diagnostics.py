@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from collections import OrderedDict, deque
 from datetime import UTC, datetime
 from contextlib import contextmanager
+from enum import StrEnum
 import json
 import os
 import re
@@ -25,10 +26,15 @@ _MAX_ENTRY_LIFECYCLE_RECORDS = 256
 _MAX_ENTRY_PURSUIT_RECORDS = 512
 _MAX_SETUP_TRANSITION_RECORDS = 512
 _MAX_PROTECTION_EVENTS = 256
+_MAX_MANAGEMENT_EVENTS = 512
 _MAX_STRATEGY_SELECTION_RECORDS = 256
 _MAX_ENTRY_FUNNEL_RECORDS = 512
+_MAX_PRICE_GATE_SAMPLES = 512
+_MAX_PRICE_GATE_QUANTILE_SAMPLES = 2048
+_MAX_PRICE_GATE_SETUP_BREAKDOWNS = 16
 _MAX_STREAM_OBSERVABILITY_EVENTS = 512
 _MAX_RADAR_OBSERVABILITY_EVENTS = 128
+_MAX_SHUTDOWN_EVENTS = 32
 _CRITICAL_STREAM_EVENTS = frozenset({
     "PAYLOAD_STALE_CONTEXT", "RECOVERY_STARTED", "RECOVERY_SUCCEEDED",
     "RECOVERY_FAILED", "RECOVERY_COALESCED", "CONNECT_REQUESTED",
@@ -43,10 +49,15 @@ _ENTRY_FUNNEL_STAGES = (
     "PROCESSING_AGE_CHECK", "EXECUTION_QUOTE_REQUESTED",
     "EXECUTION_QUOTE_RETURNED", "EXECUTION_QUOTE_REJECTED",
     "EXECUTION_QUOTE_ACCEPTED", "EXECUTION_PERMISSION",
-    "HALT_SESSION_GATE", "ACCOUNT_GATE", "ADAPTIVE_PRICE_GATE",
+    "HALT_SESSION_GATE", "ACCOUNT_GATE", "EXECUTION_QUALITY",
+    "ADAPTIVE_PRICE_GATE", "RETAINED_SOURCE_AGE",
     "RISK_AUTHORIZATION", "REWARD_GATE", "PAPER_AUTHORIZATION",
     "ORDER_INTENT", "ORDER_SUBMITTED", "ORDER_ACKNOWLEDGED",
     "ORDER_REJECTED", "FILL", "PARTIAL_FILL",
+    "OPPORTUNITY_ARMED", "OPPORTUNITY_WAITING_EXECUTION",
+    "OPPORTUNITY_EXECUTABLE", "OPPORTUNITY_AUTHORIZED",
+    "OPPORTUNITY_INVALIDATED", "OPPORTUNITY_EXPIRED",
+    "OPPORTUNITY_REJECTED_HARD_SAFETY",
 )
 _ENTRY_COUNTERS = (
     "entry_authorizations", "entry_orders_submitted", "pursuit_evaluations",
@@ -77,6 +88,60 @@ _PURSUIT_REASONS = frozenset({
     "REPRICE_INTERVAL_NOT_ELAPSED", "CHASE_LIMIT_EXCEEDED",
     "OTHER_BOUNDED_REASON",
 })
+
+
+class ShutdownOrigin(StrEnum):
+    OPERATOR_STOP = "OPERATOR_STOP"
+    GUI_CLOSE = "GUI_CLOSE"
+    APPLICATION_QUIT = "APPLICATION_QUIT"
+    EXTERNAL_STOP_REQUEST = "EXTERNAL_STOP_REQUEST"
+    CONSUMER_FAILURE = "CONSUMER_FAILURE"
+    BROKER_FAILURE = "BROKER_FAILURE"
+    MARKET_DATA_FAILURE = "MARKET_DATA_FAILURE"
+    OWNERSHIP_FAILURE = "OWNERSHIP_FAILURE"
+    BACKGROUND_TASK_FAILURE = "BACKGROUND_TASK_FAILURE"
+    PROCESS_SIGNAL = "PROCESS_SIGNAL"
+    UNKNOWN = "UNKNOWN"
+
+
+class ShutdownReason(StrEnum):
+    OPERATOR_REQUESTED = "OPERATOR_REQUESTED"
+    GUI_WINDOW_CLOSED = "GUI_WINDOW_CLOSED"
+    APPLICATION_EXIT = "APPLICATION_EXIT"
+    EXTERNAL_REQUESTED = "EXTERNAL_REQUESTED"
+    CONSUMER_TERMINATED = "CONSUMER_TERMINATED"
+    BROKER_EXCEPTION = "BROKER_EXCEPTION"
+    MARKET_DATA_TERMINAL_FAILURE = "MARKET_DATA_TERMINAL_FAILURE"
+    OWNERSHIP_REJECTED = "OWNERSHIP_REJECTED"
+    BACKGROUND_TASK_TERMINATED = "BACKGROUND_TASK_TERMINATED"
+    PROCESS_SIGNAL_RECEIVED = "PROCESS_SIGNAL_RECEIVED"
+    UNSPECIFIED = "UNSPECIFIED"
+_EXECUTION_GATE_COUNTERS = tuple(sorted({
+    "QUOTE_REJECTED_MISSING", "QUOTE_REJECTED_SYMBOL_MISMATCH",
+    "QUOTE_REJECTED_BID_STALE", "QUOTE_REJECTED_LAST_TRADE_STALE",
+    "QUOTE_REJECTED_TECHNICAL_MINUTE", "QUOTE_REJECTED_INVALID",
+    "ENTRY_PRICE_DISPLACED_PERCENT", "ENTRY_PRICE_DISPLACED_ABSOLUTE",
+    "ENTRY_PRICE_DISPLACED_BOTH", "ENTRY_PRICE_INVALID", "ENTRY_PRICE_BELOW_STOP",
+    "RISK_REJECTED_INVALID_INPUT", "RISK_REJECTED_STOP_DISTANCE",
+    "RISK_REJECTED_ZERO_SHARES", "RISK_REJECTED_ENGINE", "RISK_REJECTED_CAMPAIGN_LOSS", "RISK_REJECTED_EXPOSURE",
+    "RISK_REJECTED_SYMBOL_AUTHORIZATION", "RISK_REJECTED_BROKER_RESTRICTION",
+    "CLEAR_PRICE_DISPLACEMENT", "CLEAR_RISK", "CLEAR_QUOTE_FRESHNESS",
+    "CLEAR_TREATMENT_PENDING", "CLEAR_REWARD", "CLEAR_ACCOUNT", "CLEAR_SESSION",
+    "CLEAR_LIFECYCLE",
+}))
+_QUOTE_AGE_FIELDS = ("bid_age", "last_trade_age", "processing_age", "delivery_age")
+_PRICE_GATE_RESULT_CODES = (
+    "ACCEPTED", "ENTRY_PRICE_DISPLACED_PERCENT", "ENTRY_PRICE_DISPLACED_ABSOLUTE",
+    "ENTRY_PRICE_DISPLACED_BOTH", "ENTRY_PRICE_INVALID", "ENTRY_PRICE_BELOW_STOP",
+)
+_PRICE_GATE_DISTRIBUTION_FIELDS = (
+    "actual_displacement_percent", "risk_normalized_extension", "trigger_age_seconds",
+    "entry_ready_age_seconds", "signal_age_seconds", "remaining_first_target_r",
+    "remaining_final_target_r",
+)
+_PRICE_GATE_CONTINUATION_CLASSES = (
+    "INITIAL_BREAKOUT", "CONTINUATION", "RECLAIM", "REACCELERATION", "OTHER",
+)
 DiagnosticSink = Callable[[str, dict[str, object]], None]
 
 _STARTUP_STAGES = (
@@ -205,6 +270,23 @@ class PerformanceSnapshot:
     latency_diagnostics_persisted: int = 0
     callback_threshold_events: int = 0
     runtime_projection_events_rejected: int = 0
+    fast_mover_refresh_eligible: int = 0
+    fast_mover_refresh_due: int = 0
+    fast_mover_refresh_executed: int = 0
+    acceleration_point_appended: int = 0
+    acceleration_point_duplicate_skipped: int = 0
+    acceleration_insufficient_points: int = 0
+    acceleration_lifetime_exceeded: int = 0
+    acceleration_predicate_failed: int = 0
+    acceleration_forming: int = 0
+    acceleration_triggered: int = 0
+    acceleration_masked_by_stronger_setup: int = 0
+    reacceleration_insufficient_points: int = 0
+    reacceleration_lifetime_exceeded: int = 0
+    reacceleration_predicate_failed: int = 0
+    reacceleration_forming: int = 0
+    reacceleration_triggered: int = 0
+    reacceleration_masked_by_stronger_setup: int = 0
     trade_intelligence_enabled: bool = False
     trade_intelligence_experiences_created: int = 0
     trade_intelligence_decisions_recorded: int = 0
@@ -284,6 +366,24 @@ class PerformanceDiagnostics:
             "latency_diagnostics_persisted": 0,
             "callback_threshold_events": 0,
             "runtime_projection_events_rejected": 0,
+            # Bounded Warrior fast-mover cadence/acceleration diagnostics.
+            "fast_mover_refresh_eligible": 0,
+            "fast_mover_refresh_due": 0,
+            "fast_mover_refresh_executed": 0,
+            "acceleration_point_appended": 0,
+            "acceleration_point_duplicate_skipped": 0,
+            "acceleration_insufficient_points": 0,
+            "acceleration_lifetime_exceeded": 0,
+            "acceleration_predicate_failed": 0,
+            "acceleration_forming": 0,
+            "acceleration_triggered": 0,
+            "acceleration_masked_by_stronger_setup": 0,
+            "reacceleration_insufficient_points": 0,
+            "reacceleration_lifetime_exceeded": 0,
+            "reacceleration_predicate_failed": 0,
+            "reacceleration_forming": 0,
+            "reacceleration_triggered": 0,
+            "reacceleration_masked_by_stronger_setup": 0,
         }
         self._pending_gui_updates = 0
         self._maximum_pending_gui_updates = 0
@@ -516,7 +616,24 @@ class PerformanceDiagnostics:
         self._entry_setup_records: deque[dict[str, object]] = deque(maxlen=_MAX_SETUP_TRANSITION_RECORDS)
         self._entry_funnel_counts = {name: 0 for name in _ENTRY_FUNNEL_STAGES}
         self._entry_funnel_records: deque[dict[str, object]] = deque(maxlen=_MAX_ENTRY_FUNNEL_RECORDS)
+        self._entry_gate_counters = {name: 0 for name in _EXECUTION_GATE_COUNTERS}
+        self._quote_age_samples = {name: deque(maxlen=2048) for name in _QUOTE_AGE_FIELDS}
+        self._price_gate_samples: deque[dict[str, object]] = deque(maxlen=_MAX_PRICE_GATE_SAMPLES)
+        self._price_gate_result_counters = {name: 0 for name in _PRICE_GATE_RESULT_CODES}
+        self._price_gate_continuation_rejections = {
+            name: 0 for name in _PRICE_GATE_CONTINUATION_CLASSES
+        }
+        self._price_gate_quantile_samples: dict[str, deque[float]] = {
+            name: deque(maxlen=_MAX_PRICE_GATE_QUANTILE_SAMPLES)
+            for name in _PRICE_GATE_DISTRIBUTION_FIELDS
+        }
+        self._price_gate_distribution_counts = {
+            name: 0 for name in _PRICE_GATE_DISTRIBUTION_FIELDS
+        }
+        self._price_gate_by_setup: OrderedDict[str, dict[str, object]] = OrderedDict()
+        self._detector_diagnostics_provider: object | None = None
         self._protection_events: deque[dict[str, object]] = deque(maxlen=_MAX_PROTECTION_EVENTS)
+        self._management_events: deque[dict[str, object]] = deque(maxlen=_MAX_MANAGEMENT_EVENTS)
         self._strategy_selection_records: deque[dict[str, object]] = deque(maxlen=_MAX_STRATEGY_SELECTION_RECORDS)
         self._entry_last_setup_state: OrderedDict[str, str] = OrderedDict()
         self._run_id = uuid4().hex
@@ -536,6 +653,20 @@ class PerformanceDiagnostics:
         self._durable_thread = None
         self._durable_write_failures = 0
         self._durable_checkpoint_count = 0
+        self._shutdown_runtime_session_id: str | None = None
+        self._shutdown_requested_at: str | None = None
+        self._shutdown_origin: str | None = None
+        self._shutdown_reason: str | None = None
+        self._shutdown_component: str | None = None
+        self._shutdown_stop_event_already_set = False
+        self._shutdown_failure_present = False
+        self._shutdown_operator_initiated = False
+        self._shutdown_exception_class: str | None = None
+        self._shutdown_cleanup_completed = False
+        self._shutdown_completed_at: str | None = None
+        self._shutdown_events: deque[dict[str, object]] = deque(
+            maxlen=_MAX_SHUTDOWN_EVENTS
+        )
 
     @property
     def run_id(self) -> str:
@@ -547,6 +678,175 @@ class PerformanceDiagnostics:
     def artifact_path(self) -> Path | None:
         with self._lock:
             return self._artifact_path
+
+    def begin_runtime_session(self) -> str:
+        """Begin bounded provenance for one runtime session."""
+        session_id = uuid4().hex
+        try:
+            with self._lock:
+                self._shutdown_runtime_session_id = session_id
+                self._shutdown_requested_at = None
+                self._shutdown_origin = None
+                self._shutdown_reason = None
+                self._shutdown_component = None
+                self._shutdown_stop_event_already_set = False
+                self._shutdown_failure_present = False
+                self._shutdown_operator_initiated = False
+                self._shutdown_exception_class = None
+                self._shutdown_cleanup_completed = False
+                self._shutdown_completed_at = None
+        except Exception:
+            return session_id
+        self.request_checkpoint()
+        return session_id
+
+    def record_shutdown_request(
+        self,
+        *,
+        origin: ShutdownOrigin | str,
+        reason: ShutdownReason | str,
+        component: object,
+        stop_event_already_set: bool,
+        failure_present: bool,
+        operator_initiated: bool,
+        runtime_session_id: str | None = None,
+        exception_class: object | None = None,
+        runtime_state: object | None = None,
+    ) -> bool:
+        """Persist the first shutdown request; later requests cannot replace it."""
+        try:
+            timestamp = datetime.now(UTC).isoformat()
+            normalized_origin = _bounded_enum_value(
+                origin, ShutdownOrigin, ShutdownOrigin.UNKNOWN
+            )
+            normalized_reason = _bounded_enum_value(
+                reason, ShutdownReason, ShutdownReason.UNSPECIFIED
+            )
+            with self._lock:
+                if self._shutdown_requested_at is not None:
+                    return False
+                session_id = _bounded_shutdown_text(
+                    runtime_session_id or self._shutdown_runtime_session_id,
+                    maximum=64,
+                )
+                self._shutdown_runtime_session_id = session_id
+                self._shutdown_requested_at = timestamp
+                self._shutdown_origin = normalized_origin
+                self._shutdown_reason = normalized_reason
+                self._shutdown_component = _bounded_shutdown_text(component)
+                self._shutdown_stop_event_already_set = bool(stop_event_already_set)
+                self._shutdown_failure_present = bool(failure_present)
+                self._shutdown_operator_initiated = bool(operator_initiated)
+                self._shutdown_exception_class = _bounded_shutdown_text(exception_class)
+                self._shutdown_events.append({
+                    "event_type": "RUNTIME_STOP_REQUESTED",
+                    "timestamp": timestamp,
+                    "origin": normalized_origin,
+                    "reason": normalized_reason,
+                    "component": self._shutdown_component,
+                    "runtime_session_id": session_id,
+                    "stop_event_already_set": bool(stop_event_already_set),
+                    "failure_present": bool(failure_present),
+                    "operator_initiated": bool(operator_initiated),
+                    "cleanup_completed": False,
+                    "exception_class": self._shutdown_exception_class,
+                    "runtime_state": _bounded_shutdown_text(runtime_state),
+                })
+            self.request_checkpoint()
+            return True
+        except Exception:
+            return False
+
+    def record_shutdown_stopping(self, *, runtime_state: object | None = None) -> None:
+        try:
+            timestamp = datetime.now(UTC).isoformat()
+            with self._lock:
+                self._shutdown_events.append({
+                    "event_type": "RUNTIME_STOPPING",
+                    "timestamp": timestamp,
+                    "origin": self._shutdown_origin or ShutdownOrigin.UNKNOWN.value,
+                    "reason": self._shutdown_reason or ShutdownReason.UNSPECIFIED.value,
+                    "component": self._shutdown_component,
+                    "runtime_session_id": self._shutdown_runtime_session_id,
+                    "stop_event_already_set": self._shutdown_stop_event_already_set,
+                    "failure_present": self._shutdown_failure_present,
+                    "operator_initiated": self._shutdown_operator_initiated,
+                    "cleanup_completed": False,
+                    "runtime_state": _bounded_shutdown_text(runtime_state),
+                })
+            self.request_checkpoint()
+        except Exception:
+            return
+
+    def record_shutdown_stopped(
+        self,
+        *,
+        cleanup_completed: bool,
+        failure_present: bool | None = None,
+    ) -> None:
+        try:
+            timestamp = datetime.now(UTC).isoformat()
+            with self._lock:
+                if failure_present is not None:
+                    self._shutdown_failure_present = (
+                        self._shutdown_failure_present
+                        or bool(failure_present)
+                    )
+                self._shutdown_cleanup_completed = bool(cleanup_completed)
+                self._shutdown_completed_at = timestamp
+                self._shutdown_events.append({
+                    "event_type": "RUNTIME_STOPPED",
+                    "timestamp": timestamp,
+                    "origin": self._shutdown_origin or ShutdownOrigin.UNKNOWN.value,
+                    "reason": self._shutdown_reason or ShutdownReason.UNSPECIFIED.value,
+                    "component": self._shutdown_component,
+                    "runtime_session_id": self._shutdown_runtime_session_id,
+                    "stop_event_already_set": self._shutdown_stop_event_already_set,
+                    "failure_present": self._shutdown_failure_present,
+                    "operator_initiated": self._shutdown_operator_initiated,
+                    "cleanup_completed": bool(cleanup_completed),
+                })
+            self.request_checkpoint()
+        except Exception:
+            return
+
+    def record_unexpected_consumer_termination(
+        self,
+        *,
+        component: object,
+        exception_class: object | None,
+        runtime_state: object,
+    ) -> None:
+        try:
+            with self._lock:
+                self._shutdown_events.append({
+                    "event_type": "UNEXPECTED_CONSUMER_TERMINATION",
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "component": _bounded_shutdown_text(component),
+                    "exception_class": _bounded_shutdown_text(exception_class),
+                    "runtime_state": _bounded_shutdown_text(runtime_state),
+                    "runtime_session_id": self._shutdown_runtime_session_id,
+                })
+            self.request_checkpoint()
+        except Exception:
+            return
+
+    def shutdown_metrics(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "shutdown_requested_at": self._shutdown_requested_at,
+                "shutdown_origin": self._shutdown_origin,
+                "shutdown_reason": self._shutdown_reason,
+                "shutdown_component": self._shutdown_component,
+                "shutdown_runtime_session_id": self._shutdown_runtime_session_id,
+                "shutdown_stop_event_already_set": self._shutdown_stop_event_already_set,
+                "shutdown_failure_present": self._shutdown_failure_present,
+                "shutdown_operator_initiated": self._shutdown_operator_initiated,
+                "shutdown_exception_class": self._shutdown_exception_class,
+                "shutdown_cleanup_completed": self._shutdown_cleanup_completed,
+                "shutdown_completed_at": self._shutdown_completed_at,
+                "events": tuple(dict(event) for event in self._shutdown_events),
+            }
 
     def start_run(
         self,
@@ -661,6 +961,7 @@ class PerformanceDiagnostics:
             captured_at = datetime.now(UTC)
             startup = self.startup_metrics()
             snapshot = self.snapshot()
+            shutdown = self.shutdown_metrics()
             payload = {
                 "schema_version": _DURABLE_SCHEMA_VERSION,
                 "run_id": run_id,
@@ -671,6 +972,17 @@ class PerformanceDiagnostics:
                 "captured_at": captured_at.isoformat(),
                 "branch": branch,
                 "application_version": application_version,
+                "shutdown_requested_at": shutdown["shutdown_requested_at"],
+                "shutdown_origin": shutdown["shutdown_origin"],
+                "shutdown_reason": shutdown["shutdown_reason"],
+                "shutdown_component": shutdown["shutdown_component"],
+                "shutdown_runtime_session_id": shutdown["shutdown_runtime_session_id"],
+                "shutdown_stop_event_already_set": shutdown["shutdown_stop_event_already_set"],
+                "shutdown_failure_present": shutdown["shutdown_failure_present"],
+                "shutdown_operator_initiated": shutdown["shutdown_operator_initiated"],
+                "shutdown_cleanup_completed": shutdown["shutdown_cleanup_completed"],
+                "shutdown_completed_at": shutdown["shutdown_completed_at"],
+                "shutdown": _json_safe(shutdown),
                 "metrics": _json_safe(asdict(snapshot)),
                 "startup": _json_safe(startup),
                 "forensic": _json_safe(self.forensic_metrics()),
@@ -733,6 +1045,106 @@ class PerformanceDiagnostics:
         except Exception:
             return
 
+    def record_price_gate_sample(self, *, symbol: str, setup_type: object,
+                                 gate_result: str, **values: object) -> None:
+        """Retain bounded, payload-free adaptive price-gate evidence.
+
+        This method is deliberately diagnostic-only.  It never raises and does
+        not participate in the price decision or execution authorization.
+        Numeric distributions use bounded reservoir-like recent samples while
+        exact result counters remain cumulative.
+        """
+        try:
+            normalized_symbol = str(symbol).strip().upper()
+            normalized_setup = getattr(setup_type, "value", setup_type)
+            normalized_setup = str(normalized_setup or "UNKNOWN").strip().upper()[:64]
+            normalized_result = str(gate_result or "OTHER").strip().upper()[:64]
+            if normalized_result not in _PRICE_GATE_RESULT_CODES:
+                normalized_result = "ENTRY_PRICE_INVALID"
+            continuation = str(values.get("continuation_class") or "OTHER").strip().upper()
+            if continuation not in _PRICE_GATE_CONTINUATION_CLASSES:
+                continuation = "OTHER"
+
+            # Lifecycle identifiers are intentionally hashed before publication.
+            identity = values.get("lifecycle_id")
+            if identity is not None:
+                values = dict(values)
+                values["lifecycle_id"] = sha256(str(identity).encode("utf-8")).hexdigest()[:16]
+            record: dict[str, object] = {
+                "symbol": normalized_symbol,
+                "setup_type": normalized_setup,
+                "gate_result": normalized_result,
+                "continuation_class": continuation,
+            }
+            allowed = {
+                "lifecycle_id", "evaluation_timestamp", "structural_trigger",
+                "trigger_timestamp", "trigger_age_seconds", "entry_ready_timestamp",
+                "entry_ready_age_seconds", "technical_signal_timestamp", "signal_age_seconds",
+                "ask", "bid", "spread", "reference_price", "structural_stop",
+                "base_displacement_percent", "contextual_displacement_percent",
+                "effective_percent_limit", "absolute_outer_limit",
+                "effective_max_execution_price", "actual_displacement_percent",
+                "actual_displacement_dollars", "risk_per_share",
+                "risk_normalized_extension", "remaining_first_target_r",
+                "remaining_final_target_r",
+            }
+            for key in allowed:
+                if key in values and values[key] is not None:
+                    record[key] = _json_safe(values[key])
+
+            with self._lock:
+                self._price_gate_samples.append(record)
+                self._price_gate_result_counters[normalized_result] += 1
+                if normalized_result != "ACCEPTED":
+                    self._price_gate_continuation_rejections[continuation] += 1
+                for field_name in _PRICE_GATE_DISTRIBUTION_FIELDS:
+                    try:
+                        raw = values.get(field_name)
+                        if raw is None:
+                            continue
+                        numeric = float(raw)
+                        if numeric != numeric or numeric in (float("inf"), float("-inf")):
+                            continue
+                        self._price_gate_quantile_samples[field_name].append(numeric)
+                        self._price_gate_distribution_counts[field_name] += 1
+                    except (TypeError, ValueError):
+                        continue
+                bucket = self._price_gate_by_setup.get(normalized_setup)
+                if bucket is None:
+                    if len(self._price_gate_by_setup) >= _MAX_PRICE_GATE_SETUP_BREAKDOWNS:
+                        self._price_gate_by_setup.popitem(last=False)
+                    bucket = {
+                        "result_counters": {name: 0 for name in _PRICE_GATE_RESULT_CODES},
+                        "continuation_rejection_counters": {
+                            name: 0 for name in _PRICE_GATE_CONTINUATION_CLASSES
+                        },
+                        "quantile_samples": {
+                            name: deque(maxlen=_MAX_PRICE_GATE_QUANTILE_SAMPLES)
+                            for name in _PRICE_GATE_DISTRIBUTION_FIELDS
+                        },
+                        "distribution_counts": {
+                            name: 0 for name in _PRICE_GATE_DISTRIBUTION_FIELDS
+                        },
+                    }
+                    self._price_gate_by_setup[normalized_setup] = bucket
+                else:
+                    self._price_gate_by_setup.move_to_end(normalized_setup)
+                bucket["result_counters"][normalized_result] += 1
+                if normalized_result != "ACCEPTED":
+                    bucket["continuation_rejection_counters"][continuation] += 1
+                for field_name in _PRICE_GATE_DISTRIBUTION_FIELDS:
+                    try:
+                        raw = values.get(field_name)
+                        if raw is not None:
+                            numeric = float(raw)
+                            if numeric == numeric and numeric not in (float("inf"), float("-inf")):
+                                bucket["quantile_samples"][field_name].append(numeric)
+                                bucket["distribution_counts"][field_name] += 1
+                    except (TypeError, ValueError):
+                        continue
+        except Exception:
+            return
+
     def record_entry_funnel(self, symbol: str, stage: str,
                             outcome: str = "OBSERVED", timestamp: object | None = None,
                             reason: str | None = None, **values: object) -> None:
@@ -747,6 +1159,11 @@ class PerformanceDiagnostics:
             if not normalized_symbol or normalized_stage not in _ENTRY_FUNNEL_STAGES:
                 return
             normalized_outcome = str(outcome).strip().upper()[:64] or "OBSERVED"
+            effective_reason = (
+                str(reason).strip().upper()[:64]
+                if reason is not None
+                else normalized_outcome
+            )
             record = {
                 "symbol": normalized_symbol,
                 "stage": normalized_stage,
@@ -756,6 +1173,27 @@ class PerformanceDiagnostics:
                 record["timestamp"] = _json_safe(timestamp)
             if reason is not None:
                 record["reason"] = str(reason).strip().upper()[:64]
+            if effective_reason in self._entry_gate_counters:
+                record["reason"] = effective_reason
+            normalized_reason = record.get("reason")
+            if normalized_reason in self._entry_gate_counters:
+                with self._lock:
+                    self._entry_gate_counters[normalized_reason] += 1
+            age_values = {
+                "bid_age": values.get("bid_timestamp_age"),
+                "last_trade_age": values.get("last_trade_timestamp_age"),
+                "processing_age": values.get("processing_age"),
+                "delivery_age": values.get("delivery_age"),
+            }
+            with self._lock:
+                for age_name, age_value in age_values.items():
+                    try:
+                        if age_value is not None:
+                            numeric = float(age_value)
+                            if numeric >= 0 and numeric != float("inf"):
+                                self._quote_age_samples[age_name].append(numeric)
+                    except (TypeError, ValueError):
+                        continue
             for key, value in values.items():
                 if key in {"price", "quantity", "account", "response", "exception", "message"}:
                     continue
@@ -838,6 +1276,32 @@ class PerformanceDiagnostics:
 
     def entry_conversion_metrics(self) -> dict[str, object]:
         with self._lock:
+            provider = self._detector_diagnostics_provider
+            detector_diagnostics = {}
+            detector_transitions = {}
+            unique_episodes = {}
+            if provider is not None:
+                try:
+                    detector_diagnostics = provider.snapshot()
+                    detector_transitions = provider.all_transitions()
+                    unique_episodes = provider.unique_episode_counts()
+                except Exception:
+                    detector_diagnostics = {}
+                    detector_transitions = {}
+                    unique_episodes = {}
+            price_gate_by_setup = {}
+            for setup_name, bucket in self._price_gate_by_setup.items():
+                price_gate_by_setup[setup_name] = {
+                    "result_counters": dict(bucket["result_counters"]),
+                    "continuation_rejection_counters": dict(bucket["continuation_rejection_counters"]),
+                    "distributions": {
+                        field_name: dict(
+                            _price_gate_distribution(tuple(samples)),
+                            count=bucket["distribution_counts"][field_name],
+                        )
+                        for field_name, samples in bucket["quantile_samples"].items()
+                    },
+                }
             return {
                 "counters": dict(self._entry_conversion_counters),
                 "replacement_refusal_counts_by_reason": dict(self._entry_refusal_counts),
@@ -846,13 +1310,53 @@ class PerformanceDiagnostics:
                 "setup_transitions": tuple(self._entry_setup_records),
                 "funnel_counts": dict(self._entry_funnel_counts),
                 "funnel_records": tuple(self._entry_funnel_records),
+                "execution_gate_counters": dict(self._entry_gate_counters),
+                "quote_age_summary": {
+                    name: _age_summary(tuple(values))
+                    for name, values in self._quote_age_samples.items()
+                },
+                "price_gate_samples": tuple(self._price_gate_samples),
+                "price_gate_result_counters": dict(self._price_gate_result_counters),
+                "price_gate_continuation_rejection_counters": dict(self._price_gate_continuation_rejections),
+                "price_gate_distributions": {
+                    field_name: dict(
+                        _price_gate_distribution(tuple(samples)),
+                        count=self._price_gate_distribution_counts[field_name],
+                    )
+                    for field_name, samples in self._price_gate_quantile_samples.items()
+                },
+                "price_gate_by_setup_type": price_gate_by_setup,
+                "detector_diagnostics": detector_diagnostics,
+                "detector_transitions": detector_transitions,
+                "unique_setup_episodes": {
+                    name: values.get("unique_setup_episodes", 0)
+                    for name, values in unique_episodes.items()
+                },
+                "unique_triggered_episodes": {
+                    name: values.get("unique_triggered_episodes", 0)
+                    for name, values in unique_episodes.items()
+                },
                 "bounds": {
                     "lifecycle_records": _MAX_ENTRY_LIFECYCLE_RECORDS,
                     "pursuit_evaluations": _MAX_ENTRY_PURSUIT_RECORDS,
                     "setup_transitions": _MAX_SETUP_TRANSITION_RECORDS,
                     "funnel_records": _MAX_ENTRY_FUNNEL_RECORDS,
+                    "detector_symbols": 512,
+                    "detector_transitions_per_symbol": 8,
+                    "quote_age_samples_per_field": 2048,
+                    "price_gate_samples": _MAX_PRICE_GATE_SAMPLES,
+                    "price_gate_quantile_samples_per_field": _MAX_PRICE_GATE_QUANTILE_SAMPLES,
+                    "price_gate_setup_breakdowns": _MAX_PRICE_GATE_SETUP_BREAKDOWNS,
                 },
             }
+
+    def register_detector_diagnostics(self, provider: object | None) -> None:
+        """Register the bounded Warrior diagnostic store for artifact export."""
+        try:
+            with self._lock:
+                self._detector_diagnostics_provider = provider
+        except Exception:
+            return
 
     def increment_reconciliation_counter(self, name: str, amount: int = 1) -> None:
         """Increment a fixed, bounded protection-reconciliation counter."""
@@ -878,11 +1382,26 @@ class PerformanceDiagnostics:
         except Exception:
             return
 
+    def record_management_event(self, *, state: str, **values: object) -> None:
+        """Record a bounded PAPER exit-management transition."""
+        try:
+            record = {"state": str(state).strip().upper()}
+            record.update({
+                str(key): _json_safe(value)
+                for key, value in values.items() if value is not None
+            })
+            with self._lock:
+                self._management_events.append(record)
+        except Exception:
+            return
+
     def reconciliation_metrics(self) -> dict[str, object]:
         with self._lock:
             result: dict[str, object] = dict(self._reconciliation_counters)
             result["protection_events"] = tuple(self._protection_events)
             result["protection_event_limit"] = _MAX_PROTECTION_EVENTS
+            result["management_events"] = tuple(self._management_events)
+            result["management_event_limit"] = _MAX_MANAGEMENT_EVENTS
             return result
 
     def record_order_flow_result(
@@ -1994,6 +2513,30 @@ def _percentile(values: list[float], fraction: float) -> float:
     return values[index]
 
 
+def _age_summary(values: tuple[float, ...]) -> dict[str, object]:
+    ordered = sorted(values)
+    return {
+        "count": len(ordered),
+        "min": ordered[0] if ordered else None,
+        "p50": _percentile(ordered, 0.50) if ordered else None,
+        "p90": _percentile(ordered, 0.90) if ordered else None,
+        "max": ordered[-1] if ordered else None,
+    }
+
+
+def _price_gate_distribution(values: tuple[float, ...]) -> dict[str, object]:
+    """Return bounded quantiles for price-gate evidence."""
+    ordered = sorted(values)
+    return {
+        "count": len(ordered),
+        "p50": _percentile(ordered, 0.50) if ordered else None,
+        "p75": _percentile(ordered, 0.75) if ordered else None,
+        "p90": _percentile(ordered, 0.90) if ordered else None,
+        "p95": _percentile(ordered, 0.95) if ordered else None,
+        "max": ordered[-1] if ordered else None,
+    }
+
+
 def _rate(count: int, started: float | None, latest: float | None) -> float:
     if count < 2 or started is None or latest is None or latest <= started:
         return 0.0
@@ -2020,6 +2563,21 @@ def _json_safe(value: object) -> object:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+
+def _bounded_shutdown_text(value: object, *, maximum: int = 96) -> str | None:
+    if value is None:
+        return None
+    normalized = re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(value).strip())
+    return normalized[:maximum] or None
+
+
+def _bounded_enum_value(value: object, enum_type, fallback) -> str:
+    candidate = getattr(value, "value", value)
+    try:
+        return enum_type(str(candidate).strip().upper()).value
+    except (TypeError, ValueError):
+        return fallback.value
 
 
 def subscription_fingerprint(symbols: object) -> str:
@@ -2060,6 +2618,8 @@ def _age_ms(start: datetime | None, end: datetime) -> float:
 __all__ = [
     "PerformanceDiagnostics",
     "PerformanceSnapshot",
+    "ShutdownOrigin",
+    "ShutdownReason",
     "performance_diagnostics",
     "subscription_fingerprint",
 ]

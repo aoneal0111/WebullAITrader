@@ -114,6 +114,9 @@ class PointInTimeObservation:
     depth_asks: tuple[BookLevel, ...] = ()
     order_flow: OrderFlowAssessment | None = None
     quote_provenance: str = "SHARED_SCANNER_ADAPTER"
+    retained_reevaluation: bool = False
+    retained_source_age_seconds: Decimal | None = None
+    reevaluation_mailbox_age_seconds: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.observation.timestamp.tzinfo is None:
@@ -137,6 +140,16 @@ class PointInTimeObservation:
             raise ValueError("processing age cannot be negative")
         if self.delivery_age_seconds is not None and self.delivery_age_seconds < 0:
             raise ValueError("delivery age cannot be negative")
+        if (
+            self.retained_source_age_seconds is not None
+            and self.retained_source_age_seconds < 0
+        ):
+            raise ValueError("retained source age cannot be negative")
+        if (
+            self.reevaluation_mailbox_age_seconds is not None
+            and self.reevaluation_mailbox_age_seconds < 0
+        ):
+            raise ValueError("reevaluation mailbox age cannot be negative")
         if self.scanner_rank is not None and self.scanner_rank <= 0:
             raise ValueError("scanner rank must be positive when available")
         if self.best_bid_size is not None and self.best_bid_size < 0:
@@ -159,6 +172,11 @@ class PaperAccountContext:
     symbol_authorization_mode: PaperSymbolAuthorizationMode = (
         PaperSymbolAuthorizationMode.STATIC_ALLOWLIST
     )
+    risk_rejection_reason: str | None = None
+    starting_equity: Decimal | None = None
+    current_equity: Decimal | None = None
+    campaign_loss_fraction: Decimal | None = None
+    campaign_equity_floor: Decimal | None = None
 
 
 class PaperSymbolAuthorizationSource(StrEnum):

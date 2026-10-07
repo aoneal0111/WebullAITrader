@@ -688,15 +688,11 @@ def test_forward_service_shadow_path_cannot_submit_paper_or_request_rest(
     assert paper_submissions == []
     assert rest_requests == []
     assert store.records(record_type=CaptureRecordType.PAPER_FILL) == ()
+    # Ordinary spread is no longer a production entry rejection, so it does
+    # not create a counterfactual spread-only latch. The shadow path remains
+    # observational and cannot submit or request REST.
     plans = store.records(record_type=CaptureRecordType.SHADOW_LATCHED_PLAN)
-    assert len(plans) == 1
-    assert plans[0].payload["production_signal_mutated"] is False
-    assert plans[0].payload["paper_submission_attempted"] is False
-    stale = [
-        record for record in store.records(
-            record_type=CaptureRecordType.SHADOW_LATCHED_TRANSITION,
-        )
-        if record.payload.get("transition") == "QUOTE_STALE"
-    ]
-    assert len(stale) == 1
-    assert stale[0].payload["rest_confirmation_requested"] is False
+    assert plans == ()
+    assert store.records(
+        record_type=CaptureRecordType.SHADOW_LATCHED_TRANSITION,
+    ) == ()

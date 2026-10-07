@@ -48,6 +48,14 @@ class WatchlistRow:
     decision_bid: str = "--"
     decision_ask: str = "--"
     decision_spread: str = "--"
+    decision_generation_id: str = "--"
+    scanner_observation_timestamp: str = "--"
+    warrior_observation_timestamp: str = "--"
+    decision_quote_timestamp: str = "--"
+    execution_quality: str = "--"
+    scalper_state: str = "--"
+    scalper_reason: str = "--"
+    scalper_generation_id: str = "--"
 
 
 @dataclass(frozen=True, slots=True)

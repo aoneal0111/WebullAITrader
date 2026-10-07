@@ -23,6 +23,10 @@ from .shadow_latched import *
 from .setups import *
 from .telemetry import *
 from .observability import *
+from .opportunity_engine import *
+from .quick_scalper import *
+from .profit_retention import *
+from .quick_scalper_runtime import *
 from .adaptive_context import *
 from .trade_management import *
 from .validation import *

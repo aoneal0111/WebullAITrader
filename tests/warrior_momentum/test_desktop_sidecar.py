@@ -24,6 +24,7 @@ from app.strategies.warrior_momentum import (
     evidence_maturity, strategy_configuration_fingerprint,
 )
 from app.strategies.warrior_momentum.features import current_completed_bar_tail
+import app.strategies.warrior_momentum.desktop_sidecar as desktop_sidecar_module
 
 T0 = datetime(2026, 8, 11, 14, 30, tzinfo=UTC)
 
@@ -411,6 +412,34 @@ def test_active_candidate_has_max_age_backstop_and_lightweight_freshness(
             record_type=CaptureRecordType.DECISION,
         )
         assert len(decisions) == 2
+    finally:
+        sidecar.stop()
+
+
+def test_fast_mover_no_setup_uses_bounded_five_second_reevaluation(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Dense cadence feeds live acceleration windows without per-tick work."""
+    monkeypatch.setattr(
+        desktop_sidecar_module, "_fast_mover_refresh_eligible",
+        lambda *_args, **_kwargs: True,
+    )
+    scanner = adapter()
+    sidecar = WarriorDesktopSidecar(
+        enabled=True, storage_path=tmp_path / "fast-mover-cadence.sqlite3",
+        clock=lambda: T0,
+    )
+    sidecar.bind_scanner_adapter(scanner)
+    sidecar.start("PAPER")
+    try:
+        deliver(scanner, sidecar, quote(T0))
+        deliver(scanner, sidecar, trade(2, T0 + timedelta(seconds=1), "10.20"))
+        publications = sidecar._publications
+        deliver(scanner, sidecar, quote(T0 + timedelta(seconds=6)))
+        assert sidecar._publications == publications + 1
+        publications = sidecar._publications
+        deliver(scanner, sidecar, quote(T0 + timedelta(seconds=7)))
+        assert sidecar._publications == publications
     finally:
         sidecar.stop()
 
@@ -830,7 +859,8 @@ def test_warrior_focus_maps_decision_market_context_end_to_end(tmp_path) -> None
     observation = replace(observation, bid=D("9"), ask=D("11"))
     runtime = WarriorMomentumRuntime()
     candidate, signal = runtime.assess_entry(runtime.discover(observation, _hod_bars(), session="REGULAR"))
-    assert signal is None and candidate.setup is not None
+    assert signal is not None and candidate.setup is not None
+    assert runtime.current_execution_liquidity_ok(candidate, quote_fresh=True) is False
     sidecar = WarriorDesktopSidecar(
         enabled=False, storage_path=tmp_path / "forward.sqlite3",
         clock=lambda: candidate.timestamp,
@@ -854,7 +884,7 @@ def test_warrior_focus_maps_decision_market_context_end_to_end(tmp_path) -> None
     assert row.decision_spread == f"{candidate.spread_percent:.2f}%"
     assert row.entry_trigger != "--" and row.stop_price != "--"
     assert row.float_provenance == "MCAP/PRICE PROXY"
-    assert row.blocking_reasons == "Spread is too wide"
+    assert row.blocking_reasons == "Waiting for spread/execution quality to improve"
     assert row.strategy_status == "ENTRY BLOCKED"
 
 

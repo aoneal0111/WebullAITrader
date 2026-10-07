@@ -184,6 +184,17 @@ class TradeManagementConfig:
     profit_defense_tighten_giveback_r: Decimal = Decimal("0.45")
     profit_defense_exit_activation_r: Decimal = Decimal("2.50")
     profit_defense_exit_giveback_r: Decimal = Decimal("0.75")
+    profit_harvest_enabled: bool = True
+    profit_harvest_activation_r: Decimal = Decimal("0.75")
+    profit_harvest_fraction: Decimal = Decimal("0.25")
+    strong_profit_harvest_activation_r: Decimal = Decimal("2.00")
+    strong_profit_harvest_fraction: Decimal = Decimal("0.25")
+    exceptional_profit_harvest_activation_r: Decimal = Decimal("4.00")
+    exceptional_runner_max_fraction: Decimal = Decimal("0.25")
+    moderate_peak_retention_fraction: Decimal = Decimal("0.35")
+    strong_peak_retention_fraction: Decimal = Decimal("0.60")
+    exceptional_peak_retention_fraction: Decimal = Decimal("0.75")
+    profit_lock_minimum_step_r: Decimal = Decimal("0.10")
     adaptive_exit_enabled: bool = True
     initial_stop_volatility_multiplier: Decimal = Decimal("1.50")
     initial_stop_spread_multiplier: Decimal = Decimal("2.50")
@@ -205,6 +216,10 @@ class TradeManagementConfig:
             self.profit_defense_tighten_giveback_r,
             self.profit_defense_exit_activation_r,
             self.profit_defense_exit_giveback_r,
+            self.profit_harvest_activation_r,
+            self.strong_profit_harvest_activation_r,
+            self.exceptional_profit_harvest_activation_r,
+            self.profit_lock_minimum_step_r,
             self.exit_volatility_baseline_r,
             self.exit_volatility_allowance_max_r,
             self.exit_supportive_allowance_r,
@@ -214,6 +229,28 @@ class TradeManagementConfig:
         ):
             if value < 0:
                 raise ValueError("profit-defense thresholds must be non-negative")
+        for value in (
+            self.profit_harvest_fraction,
+            self.strong_profit_harvest_fraction,
+            self.exceptional_runner_max_fraction,
+            self.moderate_peak_retention_fraction,
+            self.strong_peak_retention_fraction,
+            self.exceptional_peak_retention_fraction,
+        ):
+            if value <= 0 or value > 1:
+                raise ValueError("profit-harvest fractions must be in (0, 1]")
+        if not (
+            self.profit_harvest_activation_r
+            <= self.strong_profit_harvest_activation_r
+            <= self.exceptional_profit_harvest_activation_r
+        ):
+            raise ValueError("profit-harvest activation tiers must be ordered")
+        if not (
+            self.moderate_peak_retention_fraction
+            <= self.strong_peak_retention_fraction
+            <= self.exceptional_peak_retention_fraction
+        ):
+            raise ValueError("peak-retention tiers must be ordered")
         if (
             self.initial_stop_volatility_multiplier <= 0
             or self.initial_stop_spread_multiplier <= 0

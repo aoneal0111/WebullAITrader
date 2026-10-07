@@ -59,7 +59,7 @@ def from_warrior_candidate(
         strategy_version=strategy_version, model_version=model_version,
         feature_version=FEATURE_VERSION, source_event_identity=source_event_identity,
         snapshot=DecisionTimeSnapshot(
-            decision_timestamp=candidate.timestamp,
+            decision_timestamp=candidate.decision_timestamp or candidate.timestamp,
             source_timestamp=observation.timestamp,
             last_price=candidate.price, bid=observation.bid, ask=observation.ask,
             spread_percent=candidate.spread_percent,

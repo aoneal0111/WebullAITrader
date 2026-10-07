@@ -339,3 +339,6 @@ class OperationalConfiguration:
         dataclasses.field(default_factory=SymbolIntelligenceSECEdgarConfiguration)
     )
     nasdaq_trade_halts_enabled: bool = False
+    # PAPER-only experimental strategy. Composition remains inert unless the
+    # operator opts in explicitly.
+    quick_scalper_enabled: bool = False

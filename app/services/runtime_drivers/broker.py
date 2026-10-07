@@ -27,7 +27,12 @@ from app.operations.runtime import (
     RuntimeWatchlistUpdate,
 )
 from app.operations.scanner_snapshot_publisher import ScannerSnapshotPublisher
-from app.performance_diagnostics import performance_diagnostics, subscription_fingerprint
+from app.performance_diagnostics import (
+    ShutdownOrigin,
+    ShutdownReason,
+    performance_diagnostics,
+    subscription_fingerprint,
+)
 from app.services.market_event_translation import translate_market_event
 from app.services.runtime_diagnostics import log_runtime_exception
 from app.webull.client_factories import market_data_configuration
@@ -211,6 +216,46 @@ class DesktopBrokerRuntimeDriver:
             **metrics,
         }
 
+    def _record_failure_shutdown(
+        self,
+        *,
+        origin: ShutdownOrigin,
+        reason: ShutdownReason,
+        component: str,
+        stop_event: Event,
+        exception_class: str | None,
+    ) -> None:
+        """Record failure provenance without participating in control flow."""
+        try:
+            recorded = performance_diagnostics.record_shutdown_request(
+                origin=origin,
+                reason=reason,
+                component=component,
+                stop_event_already_set=stop_event.is_set(),
+                failure_present=True,
+                operator_initiated=False,
+                exception_class=exception_class,
+                runtime_state="RUNNING",
+            )
+            if recorded:
+                performance_diagnostics.record_shutdown_stopping(
+                    runtime_state="RUNNING"
+                )
+        except Exception:
+            pass
+
+    def _record_unexpected_consumer_termination(
+        self, *, exception_class: str | None
+    ) -> None:
+        try:
+            performance_diagnostics.record_unexpected_consumer_termination(
+                component="desktop_market_data_consumer",
+                exception_class=exception_class,
+                runtime_state="RUNNING",
+            )
+        except Exception:
+            pass
+
     def run(
         self,
         *,
@@ -242,6 +287,13 @@ class DesktopBrokerRuntimeDriver:
             self._connected = True
             performance_diagnostics.record_startup_stage("broker_connected")
         except Exception as exc:
+            self._record_failure_shutdown(
+                origin=ShutdownOrigin.BROKER_FAILURE,
+                reason=ShutdownReason.BROKER_EXCEPTION,
+                component="broker.connect",
+                stop_event=stop_event,
+                exception_class=type(exc).__name__,
+            )
             observer_stop = getattr(self._market_event_observer, "stop", None)
             if callable(observer_stop):
                 observer_stop()
@@ -564,6 +616,13 @@ class DesktopBrokerRuntimeDriver:
             # with REST_ONLY health and no live consumer.
             self._market_data_stop.set()
             if not stop_event.is_set():
+                self._record_failure_shutdown(
+                    origin=ShutdownOrigin.MARKET_DATA_FAILURE,
+                    reason=ShutdownReason.MARKET_DATA_TERMINAL_FAILURE,
+                    component="market_data.startup",
+                    stop_event=stop_event,
+                    exception_class=type(exc).__name__,
+                )
                 stop_event.set()
             try:
                 if self._scanner is not None:
@@ -1239,6 +1298,10 @@ class DesktopBrokerRuntimeDriver:
                         symbol=getattr(event, "symbol", None),
                         success=consumer_success,
                     )
+            if not stop_event.is_set() and not self._shutdown_requested:
+                self._record_unexpected_consumer_termination(
+                    exception_class=None
+                )
         except Exception as exc:
             transport = self._market_data_transport()
             scanner_stage = getattr(self._scanner, "last_failure_stage", None)
@@ -1271,6 +1334,16 @@ class DesktopBrokerRuntimeDriver:
             self._publish_terminal_market_data_failure(exc)
             self._market_data_stop.set()
             if not stop_event.is_set():
+                self._record_unexpected_consumer_termination(
+                    exception_class=type(exc).__name__
+                )
+                self._record_failure_shutdown(
+                    origin=ShutdownOrigin.CONSUMER_FAILURE,
+                    reason=ShutdownReason.CONSUMER_TERMINATED,
+                    component="desktop_market_data_consumer",
+                    stop_event=stop_event,
+                    exception_class=type(exc).__name__,
+                )
                 stop_event.set()
 
     def _publish_scanner_observation_if_due(self, *, force: bool = False) -> None:

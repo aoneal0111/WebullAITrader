@@ -244,6 +244,50 @@ def test_focus_distinguishes_unknown_catalyst_from_confirmed_none() -> None:
     assert view.focus.rows[0].catalyst == "UNKNOWN"
 
 
+def test_jagx_generation_binding_does_not_mix_old_setup_with_new_invalidation() -> None:
+    candidate = replace(
+        discover(observation(symbol="JAGX")),
+        setup=replace(
+            triggered_setup(), trigger=D("6.2031"), stop_price=D("5.82"),
+            structural_episode_id="old-micro-pullback",
+        ),
+        opportunity_state="INVALIDATED",
+        opportunity_generation_id="new-reclaim-generation",
+        opportunity_reason="SETUP_SUPERSEDED",
+    )
+    view = format_warrior_paper(WarriorPaperSnapshot(
+        True, WarriorCaptureHealth.RUNNING, "jagx-generation",
+        (WarriorFocusItem(
+            candidate, CaptureFloatProvenance.AUTHORITATIVE_FLOAT,
+            D("6.2031"), D("5.82"), (),
+            decision_generation_id="old-micro-pullback",
+        ),),
+    ))
+    row = view.focus.rows[0]
+    assert row.setup == "NO SETUP"
+    assert row.warrior_status == "INVALIDATED"
+    assert "superseded" in row.blocking_reasons.lower()
+    assert row.blocking_reasons != "--"
+
+
+def test_quick_scalper_projection_is_separate_and_generation_bound() -> None:
+    candidate = discover(observation(symbol="FAST"))
+    view = format_warrior_paper(WarriorPaperSnapshot(
+        True, WarriorCaptureHealth.RUNNING, "scalper-generation",
+        (WarriorFocusItem(
+            candidate, CaptureFloatProvenance.AUTHORITATIVE_FLOAT,
+            None, None, (), quick_scalper_state="WAITING_EXECUTION",
+            quick_scalper_reason="INSUFFICIENT_NET_EXECUTABLE_EDGE",
+            quick_scalper_generation_id="scalp-generation-1",
+        ),),
+    ))
+    row = view.focus.rows[0]
+    assert row.strategy_name == "Warrior Momentum + Quick Scalper"
+    assert row.scalper_state == "WAITING EXECUTION"
+    assert "executable edge" in row.scalper_reason.lower()
+    assert row.scalper_generation_id == "scalp-generation-1"
+
+
 def test_aemd_like_valid_trigger_missing_catalyst_reaches_balanced_paper_path() -> None:
     runtime, (assessed, signal) = assess_with_trigger(observation())
     assert assessed.status is CandidateStatus.ENTRY_READY
@@ -274,10 +318,8 @@ def test_bjdx_like_candidate_passes_without_5x_rvol_or_catalyst() -> None:
 @pytest.mark.parametrize(
     ("changes", "failed_rule"),
     (
-        ({"rvol": "1.5"}, "relative_volume"),
         ({"float_shares": "55000000"}, "low_float"),
         ({"dollar_volume": "249000"}, "dollar_volume"),
-        ({"spread": "1.7"}, "spread"),
         ({"halted": True}, "not_halted"),
         ({"tradable": False}, "tradable"),
     ),
@@ -288,11 +330,20 @@ def test_balanced_discovery_hard_gates(changes, failed_rule: str) -> None:
     assert failed_rule in decision.failed_rules
 
 
-def test_discovery_spread_can_pass_while_entry_spread_blocks() -> None:
+def test_discovery_spread_can_pass_with_marginal_execution_quality() -> None:
     value = observation(spread="1.40")
     assert evaluate_candidate(value).qualified is True
     _, (assessed, signal) = assess_with_trigger(value)
-    assert signal is None and ReasonCode.SPREAD_WIDE in assessed.reason_codes
+    assert signal is not None
+    assert WarriorMomentumRuntime().current_execution_liquidity_ok(
+        assessed, quote_fresh=True,
+    ) is True
+
+
+@pytest.mark.parametrize("changes", ({"rvol": "1.5"}, {"spread": "1.7"}))
+def test_rvol_and_spread_are_quality_inputs_not_discovery_rejections(changes) -> None:
+    decision = evaluate_candidate(observation(**changes))
+    assert decision.qualified is True
 
 
 def test_discovery_liquidity_can_pass_while_entry_liquidity_blocks() -> None:

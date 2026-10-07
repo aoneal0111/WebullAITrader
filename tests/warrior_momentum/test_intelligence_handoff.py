@@ -90,6 +90,75 @@ def test_worker_exception_is_contained_and_counted() -> None:
         assert handoff.stop(timeout_seconds=2.0)
 
 
+def test_disabled_treatment_policy_does_not_clear_canonical_signal(tmp_path) -> None:
+    store = ForwardCaptureStore(tmp_path / "disabled-treatment.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    policy = HistoricalPaperEntryTimingPolicy(
+        config=EntryIntelligenceConfig(enabled=False),
+    )
+    service = WarriorForwardCaptureService(
+        store, writer,
+        taxonomy_execution_bridge=TaxonomyPaperExecutionBridge(),
+        paper_entry_intelligence=policy.assess,
+        async_decision_intelligence=True,
+    )
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is not None
+        assert service.wait_for_intelligence(timeout_seconds=2.0)
+        assert service.intelligence_worker_metrics().accepted >= 1
+    finally:
+        service.close_intelligence_worker(timeout_seconds=2.0)
+        policy.close()
+        writer.close()
+
+
+def test_intelligence_publication_completion_callback_is_bounded() -> None:
+    completed = []
+    handoff = BoundedIntelligenceHandoff(
+        lambda value: value,
+        maximum_keys=1,
+        autostart=True,
+        completion_callback=completed.append,
+    )
+    try:
+        assert handoff.submit("AAA", "identity", "value")
+        assert handoff.wait_idle(1.0)
+        assert len(completed) == 1
+        assert completed[0].key == "AAA"
+        assert completed[0].identity == "identity"
+        assert completed[0].value == "value"
+    finally:
+        assert handoff.stop(timeout_seconds=2.0)
+
+
+def test_enabled_treatment_publication_redrives_matching_paper_signal(tmp_path) -> None:
+    store = ForwardCaptureStore(tmp_path / "redrive-treatment.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    policy = HistoricalPaperEntryTimingPolicy(
+        config=EntryIntelligenceConfig(enabled=True, mode=PAPER_TREATMENT),
+    )
+    submitted = []
+    service = WarriorForwardCaptureService(
+        store, writer,
+        taxonomy_execution_bridge=TaxonomyPaperExecutionBridge(),
+        decision_intelligence_entry_observer=lambda **_kwargs: (None, None, None),
+        paper_entry_intelligence=policy.assess,
+        paper_entry_submitter=lambda *args: (submitted.append(args) or True),
+        async_decision_intelligence=True,
+    )
+    try:
+        _candidate, signal = service.observe(point(), account=account())
+        assert signal is None
+        assert service.wait_for_intelligence(timeout_seconds=2.0)
+        assert submitted
+        assert service.open_paper_symbols == ("XYZ",)
+    finally:
+        service.close_intelligence_worker(timeout_seconds=2.0)
+        policy.close()
+        writer.close()
+
+
 def test_queue_saturation_rejects_new_key_without_unbounded_fifo() -> None:
     entered = Event()
     release = Event()

@@ -7,7 +7,9 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
-from app.momentum_scanner.models import CatalystStatus, CatalystType
+from app.momentum_scanner.models import (
+    CatalystStatus, CatalystType, ExecutionQuality, ParticipationBand,
+)
 
 STRATEGY_ID = "WARRIOR_MOMENTUM_V1"
 
@@ -37,6 +39,9 @@ class SetupType(StrEnum):
     MICRO_PULLBACK = "MICRO_PULLBACK"
     BULL_FLAG = "BULL_FLAG"
     FLAT_TOP_BREAKOUT = "FLAT_TOP_BREAKOUT"
+    MOMENTUM_ACCELERATION = "MOMENTUM_ACCELERATION"
+    MOMENTUM_REACCELERATION = "MOMENTUM_REACCELERATION"
+    RECLAIM_CONTINUATION = "RECLAIM_CONTINUATION"
 
 
 class SetupState(StrEnum):
@@ -77,6 +82,7 @@ class ReasonCode(StrEnum):
     STALE_MARKET_DATA = "STALE_MARKET_DATA"
     PROCESSING_DELAYED = "PROCESSING_DELAYED"
     AWAITING_EXECUTION_QUOTE = "AWAITING_EXECUTION_QUOTE"
+    EXECUTION_QUALITY_WAIT = "EXECUTION_QUALITY_WAIT"
     ENTRY_PRICE_DISPLACED = "ENTRY_PRICE_DISPLACED"
     INSUFFICIENT_REMAINING_REWARD = "INSUFFICIENT_REMAINING_REWARD"
     SESSION_ENTRY_CUTOFF = "SESSION_ENTRY_CUTOFF"
@@ -201,6 +207,27 @@ class MomentumCandidate:
     # Observation admission is deliberately independent of execution gates.
     observation_eligible: bool = True
     observation_blockers: tuple[ReasonCode, ...] = ()
+    participation_quality: ParticipationBand = ParticipationBand.UNKNOWN
+    relative_volume_status: str = "AVAILABLE"
+    execution_quality: ExecutionQuality = ExecutionQuality.TEMPORARILY_BLOCKED
+    execution_block_reason: str | None = None
+    price_velocity_cents_1m: Decimal | None = None
+    price_velocity_percent_1m: Decimal | None = None
+    price_velocity_cents_5m: Decimal | None = None
+    price_velocity_percent_5m: Decimal | None = None
+    price_acceleration_percent: Decimal | None = None
+    risk_velocity_r_per_minute: Decimal | None = None
+    momentum_priority: Decimal = Decimal("0")
+    momentum_priority_components: tuple[tuple[str, str], ...] = ()
+    reevaluation_cadence_ms: int = 1000
+    decision_generation_id: str | None = None
+    scanner_observation_timestamp: datetime | None = None
+    warrior_observation_timestamp: datetime | None = None
+    decision_timestamp: datetime | None = None
+    decision_quote_timestamp: datetime | None = None
+    opportunity_state: str | None = None
+    opportunity_generation_id: str | None = None
+    opportunity_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

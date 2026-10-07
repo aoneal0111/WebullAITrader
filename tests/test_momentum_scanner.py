@@ -4,6 +4,7 @@ from decimal import Decimal
 from app.momentum_scanner import (
     AssetClass,
     CatalystType,
+    ExecutionQuality,
     FloatProvenance,
     ScannerObservation,
     evaluate_candidate,
@@ -214,13 +215,14 @@ def test_high_shares_outstanding_upper_bound_fails_closed_as_unverified() -> Non
     assert "low_float" not in decision.failed_rules
     assert "float_verified" in decision.failed_rules
 
-def test_wide_spread_candidate_fails() -> None:
+def test_wide_spread_candidate_is_retained_with_blocked_execution_quality() -> None:
     decision = evaluate_candidate(
         observation(bid=D("4.80"), ask=D("5.20"))
     )
 
-    assert decision.qualified is False
-    assert "spread" in decision.failed_rules
+    assert decision.qualified is True
+    assert "spread" in decision.passed_rules
+    assert decision.execution_quality is ExecutionQuality.TEMPORARILY_BLOCKED
 
 
 def test_ranking_excludes_failed_candidates() -> None:

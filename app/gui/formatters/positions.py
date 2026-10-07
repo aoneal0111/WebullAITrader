@@ -48,7 +48,7 @@ def enrich_position_management(
             rows.append(replace(
                 row,
                 current_r=current_r,
-                current_stop=format_price(Decimal(str(context["stop"]))),
+                projected_stop=format_price(Decimal(str(context["stop"]))),
                 next_target=next_target,
             ))
         except (KeyError, TypeError, InvalidOperation, ValueError, ZeroDivisionError):
@@ -125,6 +125,9 @@ def _management_row(position, row, orders) -> PositionManagementRow:
         mark=row[4], unrealized_pnl=row[5], unrealized_percent=row[6],
         realized_pnl=row[7], updated_at=row[8],
         entry_notional=row[9], market_value=row[10],
+        current_stop=(
+            protection.stop_price if protection is not None else "--"
+        ),
         strategy=strategy, setup=setup,
         management_state=(
             "Profit target active"

@@ -94,6 +94,34 @@ def test_stock_above_one_hundred_is_excluded() -> None:
     assert "price_range" in exclusion_reasons(item)
 
 
+def test_scalper_observation_universe_has_one_dollar_floor_and_no_maximum() -> None:
+    high_stock = stock('HIGH', price=D('500.01'))
+    high_etf = stock(
+        'ETF500', price=D('550'), security_type=SecurityType.ETF,
+        average_30_day_volume=None,
+    )
+    config = UniverseFilterConfig(
+        stock_minimum_price=D('1.00'), stock_maximum_price=None,
+        stock_security_types=(SecurityType.COMMON_STOCK, SecurityType.ETF),
+    )
+    selection = UniverseService(
+        InMemoryUniverseProvider((high_stock, high_etf)), config=config,
+    ).select(AssetClass.STOCK)
+
+    assert selection.included_symbols == ('ETF500', 'HIGH')
+    assert exclusion_reasons(high_etf, config) == ()
+
+
+def test_zero_liquidity_floor_does_not_convert_missing_history_to_rejection() -> None:
+    item = stock(average_30_day_volume=None)
+    selection = UniverseService(
+        InMemoryUniverseProvider((item,)),
+    ).select(AssetClass.STOCK)
+
+    assert selection.included == (item,)
+    assert 'missing_average_volume' not in exclusion_reasons(item)
+
+
 def test_low_average_volume_stock_is_observable() -> None:
     item = stock(
         average_30_day_volume=D("499999")

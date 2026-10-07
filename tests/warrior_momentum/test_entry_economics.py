@@ -14,7 +14,7 @@ def test_small_price_displacement_can_consume_large_fraction_of_trade_reward():
     assert not remaining_reward_ok(entry=D('NaN'), **kw)
 
 
-def test_forward_rejects_consumed_reward_before_submission(tmp_path, monkeypatch):
+def test_forward_waits_on_consumed_reward_without_submission(tmp_path, monkeypatch):
     store=ForwardCaptureStore(tmp_path/'forward.sqlite3')
     writer=ForwardCaptureWriter(store,flush_interval_seconds=.01)
     service=WarriorForwardCaptureService(store,writer)
@@ -31,7 +31,9 @@ def test_forward_rejects_consumed_reward_before_submission(tmp_path, monkeypatch
     try:
         assessed, signal = service.observe(point(),account=account())
         assert signal is None
-        assert assessed.status.value == 'INELIGIBLE_FOR_EXECUTION'
+        assert assessed.status.value == 'AWAITING_EXECUTION_DATA'
+        assert assessed.opportunity_state == 'WAITING_EXECUTION'
+        assert assessed.opportunity_reason == 'INSUFFICIENT_CURRENT_REWARD'
         assert not opened
         assert not service._paper
     finally:

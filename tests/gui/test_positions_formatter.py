@@ -173,7 +173,8 @@ def test_enrich_position_management_uses_authoritative_warrior_context() -> None
     enriched = enrich_position_management(snapshot, lambda _symbol: context)
     row = enriched.management[0]
     assert row.current_r == "+0.95R"
-    assert row.current_stop == "185.25"
+    assert row.current_stop == "--"
+    assert row.projected_stop == "185.25"
     assert row.next_target == "190.25 (+1R)"
 
     after_first = enrich_position_management(

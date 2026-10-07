@@ -6,6 +6,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_FLOOR
+from hashlib import sha256
 from threading import RLock
 from typing import Callable
 from enum import StrEnum
@@ -32,7 +33,9 @@ class AutonomousPaperReadiness(StrEnum):
 
 class AutonomousManagementReadiness(StrEnum):
     READY = "READY"
+    RECOVERED_READY = "RECOVERED_READY"
     RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
+    CONFLICT = "CONFLICT"
 
 
 class PaperEntryAuthorizationResult(StrEnum):
@@ -77,6 +80,23 @@ class PaperExitSubmissionState(StrEnum):
     SUBMITTED = "SUBMITTED"
     WORKING = "WORKING"
     UNAVAILABLE = "UNAVAILABLE"
+
+
+class PaperExitSubmissionFailureReason(StrEnum):
+    """Bounded attribution for a non-submitted PAPER exit decision."""
+
+    INVALID_EXIT_REQUEST = "INVALID_EXIT_REQUEST"
+    PAPER_DISABLED = "PAPER_DISABLED"
+    BRIDGE_NOT_READY = "BRIDGE_NOT_READY"
+    POSITION_QUANTITY_INSUFFICIENT = "POSITION_QUANTITY_INSUFFICIENT"
+    POSITION_SOURCE_UNAVAILABLE = "POSITION_SOURCE_UNAVAILABLE"
+    MANAGEMENT_NOT_READY = "MANAGEMENT_NOT_READY"
+    LIFECYCLE_MISMATCH = "LIFECYCLE_MISMATCH"
+    PROTECTION_RECONCILIATION_FAILED = "PROTECTION_RECONCILIATION_FAILED"
+    CANCELLATION_FAILED = "CANCELLATION_FAILED"
+    DUPLICATE_OR_CONFLICTING_EXIT = "DUPLICATE_OR_CONFLICTING_EXIT"
+    GATEWAY_REJECTED = "GATEWAY_REJECTED"
+    CORRELATED_PROTECTION_FAILED = "CORRELATED_PROTECTION_FAILED"
 
 
 class PaperEntryReplacementState(StrEnum):
@@ -126,6 +146,12 @@ class PaperExitSubmissionDecision:
     reason: str
     order_id: str | None = None
     activation_timestamp: datetime | None = None
+    failure_reason: PaperExitSubmissionFailureReason | None = None
+
+    @property
+    def role(self) -> str:
+        """Requested exit role; retained separately from failure attribution."""
+        return self.reason
 
     @property
     def protection_active(self) -> bool:
@@ -259,6 +285,9 @@ class AutonomousPaperExecutionBridge:
     _readiness: AutonomousPaperReadiness = field(default=AutonomousPaperReadiness.READY, init=False)
     _management_incomplete: set[str] = field(default_factory=set, init=False)
     _recovered_symbols: set[str] = field(default_factory=set, init=False)
+    _ignored_stale_management_contexts: dict[str, str] = field(
+        default_factory=dict, init=False,
+    )
     _lock: RLock = field(default_factory=RLock, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -272,6 +301,63 @@ class AutonomousPaperExecutionBridge:
     def management_readiness(self, symbol: str) -> AutonomousManagementReadiness:
         normalized = symbol.strip().upper()
         active_identity = self._active_by_symbol.get(normalized)
+        # A recovered position may not have an in-memory management context
+        # after restart.  Durable order/lifecycle identity is still sufficient
+        # for a narrowly-scoped bracket reconciliation when the position has
+        # one unambiguous contributor and every active order belongs to it.
+        if normalized in self._recovered_symbols:
+            lifecycle, ambiguous = self._execution_lifecycle(normalized)
+            if ambiguous or active_identity is None or active_identity.startswith("recovered:"):
+                performance_diagnostics.record_protection_event(
+                    state="RECOVERED_MANAGEMENT_CONFLICT",
+                    symbol=normalized,
+                    lifecycle_id=active_identity,
+                )
+                return AutonomousManagementReadiness.CONFLICT
+            if lifecycle != active_identity or self._authoritative_quantity(normalized) <= 0:
+                performance_diagnostics.record_protection_event(
+                    state="RECOVERED_MANAGEMENT_CONFLICT",
+                    symbol=normalized,
+                    lifecycle_id=active_identity,
+                )
+                return AutonomousManagementReadiness.CONFLICT
+            context_identity = None
+            if self.management_context_source is not None:
+                try:
+                    context_identity = self.management_context_source(normalized)
+                except Exception:
+                    context_identity = None
+                if context_identity not in (None, active_identity):
+                    if (
+                        self._ignored_stale_management_contexts.get(normalized)
+                        == context_identity
+                    ):
+                        context_identity = None
+                    else:
+                        performance_diagnostics.record_protection_event(
+                            state="RECOVERED_MANAGEMENT_CONFLICT",
+                            symbol=normalized,
+                            lifecycle_id=active_identity,
+                        )
+                        return AutonomousManagementReadiness.CONFLICT
+            if context_identity == active_identity:
+                return AutonomousManagementReadiness.READY
+            if self.order_book is not None:
+                for order in self.order_book.open_orders_for_symbol(normalized):
+                    if order.request.strategy_lifecycle_id != active_identity:
+                        performance_diagnostics.record_protection_event(
+                            state="RECOVERED_MANAGEMENT_CONFLICT",
+                            symbol=normalized,
+                            lifecycle_id=active_identity,
+                        )
+                        return AutonomousManagementReadiness.CONFLICT
+            performance_diagnostics.record_protection_event(
+                state="RECOVERED_MANAGEMENT_READY",
+                symbol=normalized,
+                lifecycle_id=active_identity,
+                authoritative_open_quantity=int(self._authoritative_quantity(normalized)),
+            )
+            return AutonomousManagementReadiness.RECOVERED_READY
         if (
             normalized in self._recovered_symbols
             and self._authoritative_quantity(normalized) > 0
@@ -317,6 +403,7 @@ class AutonomousPaperExecutionBridge:
                 self._readiness = AutonomousPaperReadiness.READY
                 return self._readiness
             self._management_incomplete.clear()
+            self._ignored_stale_management_contexts.clear()
             working = self.order_book.open_orders()
             by_symbol: dict[str, list[object]] = {}
             for order in working:
@@ -336,6 +423,16 @@ class AutonomousPaperExecutionBridge:
                 if len(stops) > 1:
                     identities = {item.request.strategy_lifecycle_id for item in stops}
                     if len(identities) != 1:
+                        self._record_recovery_event(
+                            "ACTIVE_LIFECYCLE_CONFLICT",
+                            symbol,
+                            None,
+                            next(iter(sorted(
+                                str(identity) for identity in identities
+                                if identity is not None
+                            )), None),
+                            "MULTIPLE_ACTIVE_STOP_LIFECYCLES",
+                        )
                         self._readiness = AutonomousPaperReadiness.BLOCKED
                         return self._readiness
                     keeper = max(stops, key=lambda item: (item.updated_at, item.order_id))
@@ -349,9 +446,71 @@ class AutonomousPaperExecutionBridge:
                         item for item in self.order_book.open_orders_for_symbol(symbol)
                         if item.request.side is OrderSide.SELL
                     ]
-                if len(buys) > 1 or (sells and self._authoritative_quantity(symbol) <= 0):
+                if len(buys) > 1:
                     self._readiness = AutonomousPaperReadiness.BLOCKED
                     return self._readiness
+
+                quantity_for_reconcile = self._authoritative_quantity(symbol)
+
+                if sells and quantity_for_reconcile <= 0:
+                    identities = {
+                        item.request.strategy_lifecycle_id
+                        for item in sells
+                    }
+                    if (
+                        buys
+                        or len(identities) != 1
+                        or None in identities
+                    ):
+                        self._record_recovery_event(
+                            "ACTIVE_LIFECYCLE_CONFLICT",
+                            symbol,
+                            None,
+                            None,
+                            "FLAT_POSITION_EXIT_OWNERSHIP_AMBIGUOUS",
+                        )
+                        self._readiness = AutonomousPaperReadiness.BLOCKED
+                        return self._readiness
+
+                    flat_identity = next(iter(identities))
+
+                    for item in tuple(sells):
+                        if not self._cancel_working_order(item):
+                            self._management_incomplete.add(symbol)
+                            self._record_recovery_event(
+                                "ACTIVE_LIFECYCLE_CONFLICT",
+                                symbol,
+                                flat_identity,
+                                None,
+                                "FLAT_POSITION_EXIT_CANCELLATION_FAILED",
+                            )
+                            self._readiness = AutonomousPaperReadiness.BLOCKED
+                            return self._readiness
+
+                    for key in tuple(self._exit_orders):
+                        if key[0] == flat_identity:
+                            self._exit_orders.pop(key, None)
+                            self._exit_keys.pop(key, None)
+
+                    self._reconcile_terminal_exits()
+                    self._active_by_symbol.pop(symbol, None)
+                    self._management_incomplete.discard(symbol)
+                    self._recovered_symbols.discard(symbol)
+
+                    try:
+                        performance_diagnostics.record_protection_event(
+                            state="ZERO_POSITION_EXIT_CLEANUP",
+                            symbol=symbol,
+                            lifecycle_id=flat_identity,
+                            authoritative_open_quantity=0,
+                            cancelled_exit_count=len(sells),
+                            reason="RESTART_AUTHORITATIVE_POSITION_CLOSED",
+                        )
+                    except Exception:
+                        pass
+
+                    continue
+
                 if buys or sells or self._authoritative_quantity(symbol) > 0:
                     recovered_identity, ambiguous = self._execution_lifecycle(symbol)
                     # A not-yet-filled working entry has no contribution in
@@ -367,18 +526,75 @@ class AutonomousPaperExecutionBridge:
                             for item in buys
                         )
                     ):
+                        conflicting_buy = next(
+                            item for item in buys
+                            if item.request.strategy_lifecycle_id
+                            not in (None, recovered_identity)
+                        )
+                        self._record_recovery_event(
+                            "ACTIVE_LIFECYCLE_CONFLICT",
+                            symbol,
+                            recovered_identity,
+                            conflicting_buy.request.strategy_lifecycle_id,
+                            "ACTIVE_ENTRY_LIFECYCLE_MISMATCH",
+                        )
                         self._readiness = AutonomousPaperReadiness.BLOCKED
                         return self._readiness
                     if ambiguous:
+                        self._record_recovery_event(
+                            "ACTIVE_LIFECYCLE_CONFLICT",
+                            symbol,
+                            None,
+                            None,
+                            "MULTIPLE_POSITION_CONTRIBUTORS",
+                        )
                         self._readiness = AutonomousPaperReadiness.BLOCKED
                         return self._readiness
                     context_identity = (
                         None if self.management_context_source is None
                         else self.management_context_source(symbol)
                     )
-                    if recovered_identity is not None and context_identity not in (None, recovered_identity):
-                        self._readiness = AutonomousPaperReadiness.BLOCKED
-                        return self._readiness
+                    if (
+                        recovered_identity is not None
+                        and context_identity not in (None, recovered_identity)
+                    ):
+                        if self._stale_context_can_be_ignored(
+                            symbol, recovered_identity, context_identity,
+                        ):
+                            self._ignored_stale_management_contexts[
+                                symbol
+                            ] = context_identity
+                            self._record_recovery_event(
+                                "STALE_MANAGEMENT_CONTEXT_IGNORED",
+                                symbol,
+                                recovered_identity,
+                                context_identity,
+                                "TERMINAL_CONTEXT_WITHOUT_ACTIVE_OWNERSHIP",
+                            )
+                            self._record_recovery_event(
+                                "RECOVERED_LIFECYCLE_SELECTED",
+                                symbol,
+                                recovered_identity,
+                                context_identity,
+                                "DURABLE_POSITION_AND_PROTECTION_UNAMBIGUOUS",
+                            )
+                            context_identity = None
+                        else:
+                            self._record_recovery_event(
+                                "ACTIVE_LIFECYCLE_CONFLICT",
+                                symbol,
+                                recovered_identity,
+                                context_identity,
+                                (
+                                    "CONTEXT_HAS_ACTIVE_DURABLE_OWNERSHIP"
+                                    if self._lifecycle_has_active_ownership(
+                                        symbol, context_identity,
+                                    )
+                                    else "CONTEXT_NOT_PROVEN_STALE"
+                                ),
+                            )
+                            self._readiness = AutonomousPaperReadiness.BLOCKED
+                            return self._readiness
                     recovered_identity = recovered_identity or context_identity
                     self._active_by_symbol[symbol] = recovered_identity or f"recovered:{symbol}"
                     if buys and recovered_identity is not None:
@@ -395,6 +611,13 @@ class AutonomousPaperExecutionBridge:
                             and sell_identity
                             and sell_identity != recovered_identity
                         ):
+                            self._record_recovery_event(
+                                "ACTIVE_LIFECYCLE_CONFLICT",
+                                symbol,
+                                recovered_identity,
+                                sell_identity,
+                                "ACTIVE_EXIT_LIFECYCLE_MISMATCH",
+                            )
                             self._readiness = AutonomousPaperReadiness.BLOCKED
                             return self._readiness
                         recovered_reason = (
@@ -425,6 +648,86 @@ class AutonomousPaperExecutionBridge:
                     self._recovered_symbols.discard(symbol)
         return self._readiness
 
+    def _stale_context_can_be_ignored(
+        self, symbol: str, current_identity: str, context_identity: str,
+    ) -> bool:
+        """Prove that a mismatched projection is closed historical state."""
+        if not self._durable_lifecycle_is_current(symbol, current_identity):
+            return False
+        if self._lifecycle_has_active_ownership(symbol, context_identity):
+            return False
+        if self.order_book is None:
+            return False
+        historical = tuple(
+            order for order in self.order_book.history()
+            if order.symbol == symbol
+            and order.request.strategy_lifecycle_id == context_identity
+        )
+        return bool(historical) and all(order.is_terminal for order in historical)
+
+    def _durable_lifecycle_is_current(
+        self, symbol: str, identity: str,
+    ) -> bool:
+        """Require unambiguous open-position and active-order ownership."""
+        if self.order_book is None or self._authoritative_quantity(symbol) <= 0:
+            return False
+        lifecycle, ambiguous = self._execution_lifecycle(symbol)
+        if ambiguous or lifecycle != identity:
+            return False
+        working = tuple(self.order_book.open_orders_for_symbol(symbol))
+        if not working or any(
+            order.request.strategy_lifecycle_id != identity
+            for order in working
+        ):
+            return False
+        return any(
+            order.request.side is OrderSide.SELL
+            and order.request.order_type is OrderType.STOP
+            for order in working
+        )
+
+    def _lifecycle_has_active_ownership(
+        self, symbol: str, identity: str,
+    ) -> bool:
+        if self.order_book is None:
+            return False
+        net_quantity = Decimal("0")
+        for order in self.order_book.history():
+            if (
+                order.symbol != symbol
+                or order.request.strategy_lifecycle_id != identity
+            ):
+                continue
+            if not order.is_terminal:
+                return True
+            if order.request.side is OrderSide.BUY:
+                net_quantity += order.filled_quantity
+            else:
+                net_quantity -= order.filled_quantity
+        return net_quantity > 0
+
+    @staticmethod
+    def _lifecycle_hash(identity: str | None) -> str | None:
+        if identity is None:
+            return None
+        return sha256(identity.encode("utf-8")).hexdigest()
+
+    def _record_recovery_event(
+        self, state: str, symbol: str, current_identity: str | None,
+        context_identity: str | None, reason: str,
+    ) -> None:
+        try:
+            performance_diagnostics.record_protection_event(
+                state=state,
+                timestamp=datetime.now(UTC),
+                symbol=symbol,
+                current_lifecycle_hash=self._lifecycle_hash(current_identity),
+                context_lifecycle_hash=self._lifecycle_hash(context_identity),
+                reason=reason,
+            )
+        except Exception:
+            pass
+
     def reconcile_protection(self) -> tuple[str, ...]:
         """Ensure every restored authoritative long has one correlated stop."""
 
@@ -434,8 +737,54 @@ class AutonomousPaperExecutionBridge:
                 return ()
             for symbol, identity in tuple(self._active_by_symbol.items()):
                 quantity = int(self._authoritative_quantity(symbol))
-                if quantity <= 0 or identity is None:
+                if identity is None:
                     continue
+
+                if quantity <= 0:
+                    open_sells = tuple(
+                        order
+                        for order in self.order_book.open_orders_for_symbol(symbol)
+                        if (
+                            order.request.side is OrderSide.SELL
+                            and order.request.strategy_lifecycle_id == identity
+                        )
+                    )
+
+                    cleanup_ok = True
+                    for order in open_sells:
+                        if not self._cancel_working_order(order):
+                            cleanup_ok = False
+                            break
+
+                    if not cleanup_ok:
+                        self._management_incomplete.add(symbol)
+                        continue
+
+                    for key in tuple(self._exit_orders):
+                        if key[0] == identity:
+                            self._exit_orders.pop(key, None)
+                            self._exit_keys.pop(key, None)
+
+                    self._reconcile_terminal_exits()
+                    self._management_incomplete.discard(symbol)
+                    self._active_by_symbol.pop(symbol, None)
+
+                    if open_sells:
+                        try:
+                            performance_diagnostics.record_protection_event(
+                                state="ZERO_POSITION_EXIT_CLEANUP",
+                                symbol=symbol,
+                                lifecycle_id=identity,
+                                authoritative_open_quantity=0,
+                                cancelled_exit_count=len(open_sells),
+                                reason="AUTHORITATIVE_POSITION_CLOSED",
+                            )
+                        except Exception:
+                            pass
+
+                    reconciled.append(symbol)
+                    continue
+
                 stop = self._structural_stop(symbol, identity)
                 if stop is None:
                     self._management_incomplete.add(symbol)
@@ -607,6 +956,12 @@ class AutonomousPaperExecutionBridge:
         """Run the unchanged PAPER entry path and expose its terminal gate."""
 
         symbol = str(getattr(signal, "symbol", "")).strip().upper()
+        strategy_owner = str(
+            getattr(signal, "strategy_owner", None)
+            or getattr(signal, "strategy_id", "WARRIOR_MOMENTUM_V1")
+        ).strip().upper()
+        if strategy_owner.startswith("WARRIOR_MOMENTUM"):
+            strategy_owner = "WARRIOR_MOMENTUM"
         trigger = Decimal(getattr(signal, "entry_trigger"))
         identity = lifecycle_identity(signal)
         if (
@@ -744,7 +1099,10 @@ class AutonomousPaperExecutionBridge:
                             "source": "autonomous-paper",
                             "reason": "ENTRY",
                             "provenance": provenance,
+                            "strategy_owner": strategy_owner,
+                            "strategy_id": str(getattr(signal, "strategy_id", strategy_owner)),
                             "opportunity_id": opportunity,
+                            "generation_id": getattr(signal, "generation_id", None),
                             "opportunity_original_entry": str(anchor),
                             "opportunity_deadline": None if deadline is None else deadline.isoformat(),
                             "lifecycle_number": str(lifecycle_number),
@@ -754,6 +1112,9 @@ class AutonomousPaperExecutionBridge:
                             "replacement_sequence": "0",
                             "original_planned_entry": str(trigger),
                             "structural_stop": str(getattr(signal, "stop_price", "")),
+                            "adaptive_target": str(getattr(signal, "adaptive_target", "")),
+                            "authorization_id": getattr(signal, "authorization_id", None),
+                            "execution_quote_id": getattr(signal, "execution_quote_id", None),
                             "taxonomy_strategy_id": getattr(signal, "taxonomy_strategy_id", None),
                             "taxonomy_strategy_memberships": list(getattr(signal, "taxonomy_strategy_memberships", ())),
                             "opportunity_anchor": str(getattr(signal, "taxonomy_opportunity_anchor", "")),
@@ -1351,9 +1712,37 @@ class AutonomousPaperExecutionBridge:
             symbol, quantity, price, reason, lifecycle_id,
         ).state is PaperExitSubmissionState.SUBMITTED
 
+    def _exit_failure(
+        self, *, state: PaperExitSubmissionState,
+        symbol: str, lifecycle_id: str | None, role: str,
+        failure_reason: PaperExitSubmissionFailureReason,
+        order_id: str | None = None,
+        activation_timestamp: datetime | None = None,
+    ) -> PaperExitSubmissionDecision:
+        """Return and expose one bounded exit-submission failure."""
+        try:
+            performance_diagnostics.record_management_event(
+                state="PAPER_EXIT_SUBMISSION_FAILED",
+                timestamp=datetime.now(UTC),
+                symbol=symbol,
+                lifecycle_id=lifecycle_id,
+                exit_role=role,
+                submission_state=state.value,
+                failure_reason=failure_reason.value,
+                order_id=order_id,
+            )
+        except Exception:
+            # Exit behavior must never depend on observability availability.
+            pass
+        return PaperExitSubmissionDecision(
+            state, symbol, lifecycle_id, role, order_id,
+            activation_timestamp, failure_reason,
+        )
+
     def ensure_exit(
         self, symbol: str, quantity: int, price: Decimal, reason: str,
-        lifecycle_id: str | None = None,
+        lifecycle_id: str | None = None, *, target_stage_only: bool = False,
+        strategy_owner: str | None = None,
     ) -> PaperExitSubmissionDecision:
         normalized = symbol.strip().upper()
         reason_key = reason.strip().upper()
@@ -1367,18 +1756,32 @@ class AutonomousPaperExecutionBridge:
                 stop_price=price,
                 reason=reason_key,
             )
-        if not self._authorized(normalized) or quantity <= 0 or self.readiness is not AutonomousPaperReadiness.READY:
-            return PaperExitSubmissionDecision(
-                PaperExitSubmissionState.UNAVAILABLE, normalized,
-                lifecycle_id, reason_key,
+        if not normalized or quantity <= 0:
+            return self._exit_failure(
+                state=PaperExitSubmissionState.UNAVAILABLE,
+                symbol=normalized, lifecycle_id=lifecycle_id, role=reason_key,
+                failure_reason=PaperExitSubmissionFailureReason.INVALID_EXIT_REQUEST,
+            )
+        if not self.enabled or self.mode.strip().upper() != "PAPER":
+            return self._exit_failure(
+                state=PaperExitSubmissionState.UNAVAILABLE,
+                symbol=normalized, lifecycle_id=lifecycle_id, role=reason_key,
+                failure_reason=PaperExitSubmissionFailureReason.PAPER_DISABLED,
+            )
+        if self.readiness is not AutonomousPaperReadiness.READY:
+            return self._exit_failure(
+                state=PaperExitSubmissionState.UNAVAILABLE,
+                symbol=normalized, lifecycle_id=lifecycle_id, role=reason_key,
+                failure_reason=PaperExitSubmissionFailureReason.BRIDGE_NOT_READY,
             )
         if (
             self.position_quantity_source is not None
             and Decimal(self.position_quantity_source(normalized)) < Decimal(quantity)
         ):
-            return PaperExitSubmissionDecision(
-                PaperExitSubmissionState.UNAVAILABLE, normalized,
-                lifecycle_id, reason_key,
+            return self._exit_failure(
+                state=PaperExitSubmissionState.UNAVAILABLE,
+                symbol=normalized, lifecycle_id=lifecycle_id, role=reason_key,
+                failure_reason=PaperExitSubmissionFailureReason.POSITION_QUANTITY_INSUFFICIENT,
             )
         with self._lock:
             self._reconcile_terminal_entries()
@@ -1388,7 +1791,10 @@ class AutonomousPaperExecutionBridge:
             active = self._active_by_symbol.get(normalized)
             management_ready = (
                 self.management_readiness(normalized)
-                is AutonomousManagementReadiness.READY
+                in {
+                    AutonomousManagementReadiness.READY,
+                    AutonomousManagementReadiness.RECOVERED_READY,
+                }
             )
             # The first protective stop may race the asynchronous capture
             # writer immediately after an entry fill.  The bridge's own
@@ -1420,10 +1826,54 @@ class AutonomousPaperExecutionBridge:
                     )
                 except Exception:
                     recovered_protection_repair = False
+            # A canceled or completed target deliberately marks management
+            # incomplete until its next required milestone is durable.  Permit
+            # that narrowly-scoped repair when the same lifecycle is still
+            # authoritative, persisted management context agrees, and a
+            # durable stop already protects the entire open position.
+            recovered_target_repair = False
+            profit_target_roles = {
+                "FIRST_TARGET", "SECOND_TARGET", "SCALP_TARGET",
+                "PROFIT_HARVEST_1", "PROFIT_HARVEST_2", "PROFIT_HARVEST_3",
+            }
+            if (
+                reason_key in profit_target_roles
+                and active is not None
+                and active == lifecycle_id
+                and self._authoritative_quantity(normalized) > 0
+                and self.management_context_source is not None
+                and self.order_book is not None
+            ):
+                try:
+                    authoritative = self._authoritative_quantity(normalized)
+                    recovered_target_repair = (
+                        self.management_context_source(normalized) == active
+                        and any(
+                            order.request.side is OrderSide.SELL
+                            and order.request.order_type is OrderType.STOP
+                            and order.request.strategy_lifecycle_id == active
+                            and not order.is_terminal
+                            and int(order.remaining_quantity) >= authoritative
+                            for order in self.order_book.open_orders_for_symbol(
+                                normalized
+                            )
+                        )
+                    )
+                except Exception:
+                    recovered_target_repair = False
+            strategy_owned = (
+                bool(strategy_owner)
+                and active is not None
+                and active == lifecycle_id
+                and self._durable_strategy_owner(active)
+                == str(strategy_owner).strip().upper()
+            )
             if (
                 not management_ready
                 and not initial_protection_race
                 and not recovered_protection_repair
+                and not recovered_target_repair
+                and not strategy_owned
             ):
                 if protective:
                     performance_diagnostics.record_protection_event(
@@ -1435,15 +1885,17 @@ class AutonomousPaperExecutionBridge:
                         stop_price=price,
                         reason="MANAGEMENT_NOT_READY",
                     )
-                return PaperExitSubmissionDecision(
-                    PaperExitSubmissionState.UNAVAILABLE, normalized,
-                    lifecycle_id, reason_key,
+                return self._exit_failure(
+                    state=PaperExitSubmissionState.UNAVAILABLE,
+                    symbol=normalized, lifecycle_id=lifecycle_id, role=reason_key,
+                    failure_reason=PaperExitSubmissionFailureReason.MANAGEMENT_NOT_READY,
                 )
             identity = lifecycle_id or active
             if identity is None or active != identity:
-                return PaperExitSubmissionDecision(
-                    PaperExitSubmissionState.UNAVAILABLE, normalized,
-                    identity, reason_key,
+                return self._exit_failure(
+                    state=PaperExitSubmissionState.UNAVAILABLE,
+                    symbol=normalized, lifecycle_id=identity, role=reason_key,
+                    failure_reason=PaperExitSubmissionFailureReason.LIFECYCLE_MISMATCH,
                 )
             if self.order_book is not None:
                 triggered_stop = next((order for order in self.order_book.open_orders_for_symbol(normalized)
@@ -1453,11 +1905,14 @@ class AutonomousPaperExecutionBridge:
                 if triggered_stop is not None:
                     # Never replace a partially executed stop with a fresh,
                     # untriggered order or a new profit target on a rebound.
-                    return PaperExitSubmissionDecision(
-                        PaperExitSubmissionState.WORKING, normalized, identity,
-                        "STOP", triggered_stop.order_id, triggered_stop.created_at,
+                    return self._exit_failure(
+                        state=PaperExitSubmissionState.WORKING,
+                        symbol=normalized, lifecycle_id=identity, role=reason_key,
+                        failure_reason=PaperExitSubmissionFailureReason.DUPLICATE_OR_CONFLICTING_EXIT,
+                        order_id=triggered_stop.order_id,
+                        activation_timestamp=triggered_stop.created_at,
                     )
-            if self.order_book is not None and reason_key in {"FIRST_TARGET", "SECOND_TARGET"}:
+            if self.order_book is not None and reason_key in profit_target_roles:
                 attempts = sorted((order for order in self.order_book.history()
                     if order.symbol == normalized and order.request.side is OrderSide.SELL
                     and order.request.strategy_lifecycle_id == identity
@@ -1466,14 +1921,25 @@ class AutonomousPaperExecutionBridge:
                 if attempts:
                     budget = int(attempts[0].quantity)
                     filled = sum(int(order.filled_quantity) for order in attempts)
-                    if filled >= budget:
+                    if (
+                        filled >= budget
+                        and (
+                            reason_key != "SCALP_TARGET"
+                            or self._authoritative_quantity(normalized) <= 0
+                        )
+                    ):
                         return PaperExitSubmissionDecision(
                             PaperExitSubmissionState.COMPLETED, normalized,
                             identity, reason_key, attempts[-1].order_id,
                         )
-                    # Cancel/retry and recovery may spend only the unfilled
-                    # part of the original milestone, never half again.
-                    quantity = min(quantity, budget - filled)
+                    # A canceled, unfilled target is not a completed
+                    # milestone.  Incremental entry fills may have increased
+                    # the authoritative allocation, so allow reconciliation
+                    # to replace that stale attempt with the current desired
+                    # quantity.  Once any target shares have actually filled,
+                    # preserve the original milestone remainder.
+                    if filled > 0 and reason_key != "SCALP_TARGET":
+                        quantity = min(quantity, budget - filled)
             if self.order_book is not None:
                 # A valid target/stop bracket already reserves the complete
                 # authoritative position.  Recognize it before any mutating
@@ -1514,8 +1980,64 @@ class AutonomousPaperExecutionBridge:
                     if (
                         target_reservation
                         and correlated_stop is not None
+                        and correlated_stop.request.stop_price is not None
+                        and Decimal(price) > Decimal(correlated_stop.request.stop_price)
+                    ):
+                        # Amend/replace only the stop while preserving the
+                        # already-working target sibling.
+                        if self.protection_amender is not None:
+                            correlated_target = next((
+                                order for order in correlated_sells
+                                if order.request.order_type is not OrderType.STOP
+                            ), None)
+                            amended = self.protection_amender(
+                                correlated_stop.order_id, quantity, Decimal(price),
+                                None if correlated_target is None else correlated_target.order_id,
+                            )
+                            if amended:
+                                return PaperExitSubmissionDecision(
+                                    PaperExitSubmissionState.WORKING,
+                                    normalized, identity, reason_key,
+                                    correlated_stop.order_id,
+                                    correlated_stop.created_at,
+                                )
+                            return self._exit_failure(
+                                state=PaperExitSubmissionState.UNAVAILABLE,
+                                symbol=normalized, lifecycle_id=identity,
+                                role=reason_key,
+                                failure_reason=PaperExitSubmissionFailureReason.PROTECTION_RECONCILIATION_FAILED,
+                                order_id=correlated_stop.order_id,
+                                activation_timestamp=correlated_stop.created_at,
+                            )
+                        if not self._cancel_working_order(correlated_stop):
+                            self._management_incomplete.add(normalized)
+                            return self._exit_failure(
+                                state=PaperExitSubmissionState.UNAVAILABLE,
+                                symbol=normalized, lifecycle_id=identity,
+                                role=reason_key,
+                                failure_reason=PaperExitSubmissionFailureReason.CANCELLATION_FAILED,
+                                order_id=correlated_stop.order_id,
+                            )
+                        self._exit_orders.pop((identity, "STOP"), None)
+                        self._exit_keys.pop((identity, "STOP"), None)
+                        self._reconcile_terminal_exits()
+                        return self._place_exit(
+                            normalized, authoritative_quantity, price, "STOP",
+                            identity, contingent_target_order_id=(
+                                next((order.order_id for order in correlated_sells
+                                      if order.request.order_type is not OrderType.STOP), None)
+                            ),
+                        )
+                    if (
+                        target_reservation
+                        and correlated_stop is not None
                         and int(correlated_stop.remaining_quantity)
                         == desired_stop
+                        and (
+                            correlated_stop.request.stop_price is None
+                            or Decimal(correlated_stop.request.stop_price)
+                            >= Decimal(price)
+                        )
                     ):
                         self._management_incomplete.discard(normalized)
                         performance_diagnostics.record_protection_event(
@@ -1535,16 +2057,27 @@ class AutonomousPaperExecutionBridge:
                         )
                 if not self._reconcile_correlated_exits(normalized, identity):
                     self._management_incomplete.add(normalized)
-                    return PaperExitSubmissionDecision(
-                        PaperExitSubmissionState.UNAVAILABLE, normalized,
-                        identity, reason_key,
+                    return self._exit_failure(
+                        state=PaperExitSubmissionState.UNAVAILABLE,
+                        symbol=normalized, lifecycle_id=identity, role=reason_key,
+                        failure_reason=PaperExitSubmissionFailureReason.DUPLICATE_OR_CONFLICTING_EXIT,
                     )
                 if not self._reconcile_protective_quantity(normalized, identity):
-                    self._management_incomplete.add(normalized)
-                    return PaperExitSubmissionDecision(
-                        PaperExitSubmissionState.UNAVAILABLE, normalized,
-                        identity, reason_key,
-                    )
+                    # A completed target leaves the previous contingent stop
+                    # temporarily covering the pre-fill quantity until the
+                    # next target is installed.  Let the correlated target
+                    # transition atomically replace that sibling; rejecting
+                    # here strands the lifecycle with STOP only and prevents
+                    # SECOND_TARGET staging.
+                    target_transition = reason_key in profit_target_roles
+                    if not target_transition:
+                        self._management_incomplete.add(normalized)
+                        return self._exit_failure(
+                            state=PaperExitSubmissionState.UNAVAILABLE,
+                            symbol=normalized, lifecycle_id=identity,
+                            role=reason_key,
+                            failure_reason=PaperExitSubmissionFailureReason.PROTECTION_RECONCILIATION_FAILED,
+                        )
                 working_sells = tuple(
                     order
                     for order in self.order_book.open_orders_for_symbol(
@@ -1571,7 +2104,47 @@ class AutonomousPaperExecutionBridge:
                     if not protective and working_sell.request.order_type is OrderType.STOP:
                         return self._place_target_with_correlated_protection(
                             normalized, quantity, price, reason_key, identity,
-                            working_sell,
+                            working_sell, promote_stop=not target_stage_only,
+                        )
+                    if (
+                        not protective
+                        and working_sell.request.order_type is not OrderType.STOP
+                        and (
+                            int(working_sell.remaining_quantity) != int(quantity)
+                            or working_sell.request.limit_price is None
+                            or Decimal(working_sell.request.limit_price)
+                            != Decimal(price)
+                        )
+                    ):
+                        # A target can become stale when allocation or target
+                        # geometry changes.  Replace it through the same
+                        # correlated bracket path; durable role/identity
+                        # remains the idempotency key.
+                        if not self._cancel_working_order(working_sell):
+                            self._management_incomplete.add(normalized)
+                            return self._exit_failure(
+                                state=PaperExitSubmissionState.UNAVAILABLE,
+                                symbol=normalized, lifecycle_id=identity,
+                                role=reason_key,
+                                failure_reason=PaperExitSubmissionFailureReason.CANCELLATION_FAILED,
+                                order_id=working_sell.order_id,
+                            )
+                        self._exit_orders.pop((identity, reason_key), None)
+                        self._exit_keys.pop((identity, reason_key), None)
+                        self._reconcile_terminal_exits()
+                        replacement_stop = next((
+                            order for order in self.order_book.open_orders_for_symbol(normalized)
+                            if order.request.side is OrderSide.SELL
+                            and order.request.strategy_lifecycle_id == identity
+                            and order.request.order_type is OrderType.STOP
+                        ), None)
+                        if replacement_stop is None:
+                            return self._place_exit(
+                                normalized, quantity, price, reason_key, identity,
+                            )
+                        return self._place_target_with_correlated_protection(
+                            normalized, quantity, price, reason_key, identity,
+                            replacement_stop, promote_stop=not target_stage_only,
                         )
                     if (
                         protective
@@ -1589,9 +2162,12 @@ class AutonomousPaperExecutionBridge:
                             cancellation = None
                         if cancellation is None or not cancellation.success:
                             self._management_incomplete.add(normalized)
-                            return PaperExitSubmissionDecision(
-                                PaperExitSubmissionState.UNAVAILABLE, normalized,
-                                identity, reason_key, working_sell.order_id,
+                            return self._exit_failure(
+                                state=PaperExitSubmissionState.UNAVAILABLE,
+                                symbol=normalized, lifecycle_id=identity,
+                                role=reason_key,
+                                failure_reason=PaperExitSubmissionFailureReason.CANCELLATION_FAILED,
+                                order_id=working_sell.order_id,
                             )
                         self._reconcile_terminal_exits()
                         return self._place_exit(
@@ -1600,14 +2176,29 @@ class AutonomousPaperExecutionBridge:
                     if protective and working_sell.request.stop_price is not None and Decimal(price) > Decimal(working_sell.request.stop_price):
                         if self.protection_amender is not None:
                             amended = self.protection_amender(working_sell.order_id, quantity, Decimal(price))
-                            return PaperExitSubmissionDecision(
-                                PaperExitSubmissionState.WORKING if amended else PaperExitSubmissionState.UNAVAILABLE,
-                                normalized, identity, reason_key, working_sell.order_id, working_sell.created_at)
+                            if amended:
+                                return PaperExitSubmissionDecision(
+                                    PaperExitSubmissionState.WORKING,
+                                    normalized, identity, reason_key,
+                                    working_sell.order_id,
+                                    working_sell.created_at,
+                                )
+                            return self._exit_failure(
+                                state=PaperExitSubmissionState.UNAVAILABLE,
+                                symbol=normalized, lifecycle_id=identity,
+                                role=reason_key,
+                                failure_reason=PaperExitSubmissionFailureReason.PROTECTION_RECONCILIATION_FAILED,
+                                order_id=working_sell.order_id,
+                                activation_timestamp=working_sell.created_at,
+                            )
                         if not self._cancel_working_order(working_sell):
                             self._management_incomplete.add(normalized)
-                            return PaperExitSubmissionDecision(
-                                PaperExitSubmissionState.UNAVAILABLE, normalized,
-                                identity, reason_key, working_sell.order_id,
+                            return self._exit_failure(
+                                state=PaperExitSubmissionState.UNAVAILABLE,
+                                symbol=normalized, lifecycle_id=identity,
+                                role=reason_key,
+                                failure_reason=PaperExitSubmissionFailureReason.CANCELLATION_FAILED,
+                                order_id=working_sell.order_id,
                             )
                         self._reconcile_terminal_exits()
                         return self._place_exit(
@@ -1632,12 +2223,15 @@ class AutonomousPaperExecutionBridge:
                     )
             key = (identity, reason_key)
             if key in self._exit_keys:
-                return PaperExitSubmissionDecision(
-                    PaperExitSubmissionState.UNAVAILABLE, normalized,
-                    identity, reason_key, self._exit_orders.get(key),
+                return self._exit_failure(
+                    state=PaperExitSubmissionState.UNAVAILABLE,
+                    symbol=normalized, lifecycle_id=identity, role=reason_key,
+                    failure_reason=PaperExitSubmissionFailureReason.DUPLICATE_OR_CONFLICTING_EXIT,
+                    order_id=self._exit_orders.get(key),
                 )
             result = self._place_exit(
                 normalized, quantity, price, reason_key, identity,
+                strategy_owner=strategy_owner,
             )
             if protective and result.protection_active:
                 self._management_incomplete.discard(normalized)
@@ -1647,6 +2241,7 @@ class AutonomousPaperExecutionBridge:
         self, normalized: str, quantity: int, price: Decimal,
         reason_key: str, identity: str, *,
         contingent_target_order_id: str | None = None,
+        strategy_owner: str | None = None,
     ) -> PaperExitSubmissionDecision:
         protective = reason_key in {"STOP", "STOP_LOSS"}
         immediate = reason_key in {"SESSION_CLOSE", "OVERNIGHT_CAPABILITY_LOST"}
@@ -1676,6 +2271,10 @@ class AutonomousPaperExecutionBridge:
                             "source": "autonomous-paper",
                             "reason": reason_key,
                             "lifecycle_id": identity,
+                            "strategy_owner": (
+                                str(strategy_owner).strip().upper()
+                                if strategy_owner else self._durable_strategy_owner(identity)
+                            ),
                             **(
                                 {
                                     "reservation_mode": "CONTINGENT_OCO",
@@ -1713,9 +2312,10 @@ class AutonomousPaperExecutionBridge:
                     stop_price=price,
                     reason=getattr(result, "decision", None),
                 )
-            return PaperExitSubmissionDecision(
-                PaperExitSubmissionState.UNAVAILABLE, normalized,
-                identity, reason_key,
+            return self._exit_failure(
+                state=PaperExitSubmissionState.UNAVAILABLE,
+                symbol=normalized, lifecycle_id=identity, role=reason_key,
+                failure_reason=PaperExitSubmissionFailureReason.GATEWAY_REJECTED,
             )
         key = (identity, reason_key)
         self._remember(self._exit_keys, key)
@@ -1737,6 +2337,18 @@ class AutonomousPaperExecutionBridge:
             self._order_created_at(result.broker_order_id),
         )
 
+    def _durable_strategy_owner(self, lifecycle_id: str) -> str | None:
+        """Resolve lifecycle ownership from canonical durable order metadata."""
+        if self.order_book is None:
+            return None
+        owners = {
+            str(order.request.metadata.get("strategy_owner", "")).strip().upper()
+            for order in self.order_book.history()
+            if order.request.strategy_lifecycle_id == lifecycle_id
+            and order.request.metadata.get("strategy_owner")
+        }
+        return next(iter(owners)) if len(owners) == 1 else None
+
     def cancel_working_entries(self, reason: str = "SESSION_ENTRY_CUTOFF") -> tuple[str, ...]:
         """Cancel autonomous BUY orders while preserving protective SELL orders."""
         if self.order_book is None:
@@ -1748,6 +2360,32 @@ class AutonomousPaperExecutionBridge:
                     continue
                 if self._cancel_working_order(order):
                     cancelled.append(order.order_id)
+        return tuple(cancelled)
+
+    def cancel_working_entry_lifecycle(
+        self, symbol: str, lifecycle_id: str,
+        reason: str = "STRATEGY_LIFECYCLE_COMPLETE",
+    ) -> tuple[str, ...]:
+        """Cancel only residual BUY quantity owned by one lifecycle."""
+        if self.order_book is None:
+            return ()
+        normalized = symbol.strip().upper()
+        identity = lifecycle_id.strip()
+        if not normalized or not identity:
+            return ()
+        cancelled: list[str] = []
+        with self._lock:
+            for order in tuple(
+                self.order_book.open_orders_for_symbol(normalized)
+            ):
+                if (
+                    order.request.side is not OrderSide.BUY
+                    or order.request.strategy_lifecycle_id != identity
+                ):
+                    continue
+                if self._cancel_working_order(order):
+                    cancelled.append(order.order_id)
+            self._reconcile_terminal_entries()
         return tuple(cancelled)
 
     def _order_created_at(self, order_id: str | None) -> datetime | None:
@@ -1774,20 +2412,31 @@ class AutonomousPaperExecutionBridge:
     def _place_target_with_correlated_protection(
         self, normalized: str, quantity: int, price: Decimal,
         reason_key: str, identity: str, protective_order,
+        *, promote_stop: bool = True,
     ) -> PaperExitSubmissionDecision:
         """Reserve a target while a non-reserving stop covers all inventory."""
-        if self.position_quantity_source is None or not self._cancel_working_order(protective_order):
-            return PaperExitSubmissionDecision(
-                PaperExitSubmissionState.WORKING, normalized,
-                identity, reason_key, protective_order.order_id,
-                protective_order.created_at,
+        if self.position_quantity_source is None:
+            return self._exit_failure(
+                state=PaperExitSubmissionState.WORKING,
+                symbol=normalized, lifecycle_id=identity, role=reason_key,
+                failure_reason=PaperExitSubmissionFailureReason.POSITION_SOURCE_UNAVAILABLE,
+                order_id=protective_order.order_id,
+                activation_timestamp=protective_order.created_at,
+            )
+        if not self._cancel_working_order(protective_order):
+            return self._exit_failure(
+                state=PaperExitSubmissionState.WORKING,
+                symbol=normalized, lifecycle_id=identity, role=reason_key,
+                failure_reason=PaperExitSubmissionFailureReason.CANCELLATION_FAILED,
+                order_id=protective_order.order_id,
+                activation_timestamp=protective_order.created_at,
             )
         self._exit_orders.pop((identity, "STOP"), None)
         self._exit_keys.pop((identity, "STOP"), None)
         self._reconcile_terminal_exits()
         target = self._place_exit(normalized, quantity, price, reason_key, identity)
         replacement_stop_price = protective_order.request.stop_price
-        if reason_key == "FIRST_TARGET":
+        if reason_key == "FIRST_TARGET" and promote_stop:
             # Once price has reached the first planned reward milestone, the
             # unreserved remainder must no longer retain the original-loss
             # stop.  Use authoritative fill history rather than the planned
@@ -1842,9 +2491,11 @@ class AutonomousPaperExecutionBridge:
             )
             if not restored.protection_active:
                 self._management_incomplete.add(normalized)
-            return PaperExitSubmissionDecision(
-                PaperExitSubmissionState.UNAVAILABLE, normalized,
-                identity, reason_key, target.order_id,
+            return self._exit_failure(
+                state=PaperExitSubmissionState.UNAVAILABLE,
+                symbol=normalized, lifecycle_id=identity, role=reason_key,
+                failure_reason=PaperExitSubmissionFailureReason.CORRELATED_PROTECTION_FAILED,
+                order_id=target.order_id,
             )
         return target
 
@@ -1917,7 +2568,9 @@ class AutonomousPaperExecutionBridge:
             and target is not None
             and stop.request.metadata.get("correlated_target_order_id")
             == target_id
-        ) or (not contingent and target is None)
+        ) or (not contingent and target is None) or (
+            contingent and target is None and int(stop.remaining_quantity) == desired
+        )
         if int(stop.remaining_quantity) == desired and correct_mode:
             return True
         if desired > 0 and self.protection_amender is not None:
@@ -1968,8 +2621,28 @@ class AutonomousPaperExecutionBridge:
                 None,
             )
             if symbol is not None and self._authoritative_quantity(symbol) <= 0:
-                self._active_by_symbol.pop(symbol, None)
-                self._management_incomplete.discard(symbol)
+                # A partially-filled entry may retain residual BUY quantity
+                # when its filled lot exits. Flatness completes that lifecycle:
+                # cancel the residual before releasing ownership so it cannot
+                # reopen the completed trade without a new generation.
+                for entry in tuple(
+                    self.order_book.open_orders_for_symbol(symbol)
+                ):
+                    if (
+                        entry.request.side is OrderSide.BUY
+                        and entry.request.strategy_lifecycle_id == identity
+                        and not entry.is_terminal
+                    ):
+                        self._cancel_working_order(entry)
+                lifecycle_still_working = any(
+                    candidate.request.strategy_lifecycle_id == identity
+                    and not candidate.is_terminal
+                    for candidate in self.order_book.open_orders_for_symbol(symbol)
+                )
+                if not lifecycle_still_working:
+                    self._active_by_symbol.pop(symbol, None)
+                    self._management_incomplete.discard(symbol)
+                    self._recovered_symbols.discard(symbol)
             elif self._authoritative_quantity(symbol) > 0:
                 # Any terminal exit that leaves quantity open is incomplete,
                 # including a partial terminal fill. Retain position ownership
@@ -1984,6 +2657,40 @@ class AutonomousPaperExecutionBridge:
             self._reconcile_terminal_entries()
             self._reconcile_terminal_exits()
             return normalized in self._active_by_symbol
+
+    def latest_exit_fill_role(
+        self, symbol: str, lifecycle_id: str | None = None,
+    ) -> tuple[str | None, str | None]:
+        """Return the role of the most recently updated filled SELL order.
+
+        This is intentionally derived from the durable order identity, not
+        mutable management context such as ``exit_reason``.  It is used only
+        for attribution when the authoritative position projection reports a
+        reduction.
+        """
+        if self.order_book is None:
+            return None, None
+        normalized = symbol.strip().upper()
+        identity = None if lifecycle_id is None else str(lifecycle_id).strip()
+        try:
+            candidates = [
+                order for order in self.order_book.history()
+                if order.symbol == normalized
+                and order.request.side is OrderSide.SELL
+                and order.filled_quantity > 0
+                and (identity is None or order.request.strategy_lifecycle_id == identity)
+            ]
+            if not candidates:
+                return None, None
+            latest = max(candidates, key=lambda item: (item.updated_at, item.order_id))
+            role = latest.request.execution_reason
+            if role in {"STOP", "STOP_LOSS"}:
+                role = "PROTECTIVE_STOP"
+            elif role == "RUNNER_TARGET":
+                role = "RUNNER_EXIT"
+            return role, latest.order_id
+        except Exception:
+            return None, None
 
     def has_working_entry(self, symbol: str, lifecycle_id: str) -> bool:
         """Return whether a specific lifecycle still has a working entry."""
@@ -2073,5 +2780,6 @@ __all__ = [
     "PaperEntryAuthorizationReason", "PaperEntryAuthorizationResult",
     "PaperEntryGateDecision", "lifecycle_identity", "opportunity_identity",
     "PaperEntryReplacementDecision", "PaperEntryReplacementState",
-    "PaperExitSubmissionDecision", "PaperExitSubmissionState",
+    "PaperExitSubmissionDecision", "PaperExitSubmissionFailureReason",
+    "PaperExitSubmissionState",
 ]

@@ -10,6 +10,9 @@ from hashlib import sha256
 from statistics import median
 from typing import TYPE_CHECKING
 
+from app.momentum_scanner.models import ExecutionQuality
+from app.momentum_scanner.quality import spread_quality
+
 from .configuration import WarriorMomentumConfig
 from .forward_models import (
     CaptureRecord,
@@ -32,7 +35,10 @@ if TYPE_CHECKING:
 
 HUNDRED = Decimal("100")
 _EXECUTION_VARIABLE_REJECTIONS = frozenset({
+    # Retain historical compatibility for previously captured decisions while
+    # new decisions use the explicit recoverable quality-wait reason.
     ReasonCode.SPREAD_WIDE,
+    ReasonCode.EXECUTION_QUALITY_WAIT,
     ReasonCode.STALE_MARKET_DATA,
 })
 _REPORTED_VARIABLE_BLOCKERS = frozenset({
@@ -980,8 +986,14 @@ def _market_blockers(
 ) -> tuple[str, ...]:
     blockers: list[str] = []
     spread = _spread_percent(market.bid, market.ask)
-    if spread is None or spread > config.entry.maximum_spread_percent:
-        blockers.append(ReasonCode.SPREAD_WIDE.value)
+    if spread is None:
+        blockers.append(ReasonCode.STALE_MARKET_DATA.value)
+    else:
+        _score, quality, _reason = spread_quality(
+            spread, normal_percent=config.entry.maximum_spread_percent,
+        )
+        if quality in {ExecutionQuality.POOR, ExecutionQuality.TEMPORARILY_BLOCKED}:
+            blockers.append(ReasonCode.EXECUTION_QUALITY_WAIT.value)
     if not _market_fresh(market, capture_config):
         blockers.append(ReasonCode.STALE_MARKET_DATA.value)
     if market.halted:

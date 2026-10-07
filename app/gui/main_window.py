@@ -54,6 +54,7 @@ from app.operations_core import (
     ApplicationStateStore,
     OperationsBus,
 )
+from app.performance_diagnostics import ShutdownOrigin, ShutdownReason
 from app.replay_workspace import ReplayWorkspace
 from app.services import OrderCommandFactory, RuntimeService, TradingService
 from app.services.chart_market_data import ChartMarketDataService
@@ -518,7 +519,13 @@ class MainWindow(QMainWindow):
             workspace.play()
 
     def _stop_runtime(self) -> None:
-        requested = self._runtime_service.stop("Operator requested shutdown.")
+        requested = self._runtime_service.stop(
+            "Operator requested shutdown.",
+            origin=ShutdownOrigin.OPERATOR_STOP,
+            shutdown_reason=ShutdownReason.OPERATOR_REQUESTED,
+            initiating_component="gui.stop_button",
+            operator_initiated=True,
+        )
         if requested:
             self.stop_button.setText("STOPPING…")
             self.stop_button.setEnabled(False)
@@ -530,7 +537,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Runtime is already stopped.", 5000)
 
     def _emergency_stop(self) -> None:
-        self._runtime_service.stop()
+        self._runtime_service.stop(
+            origin=ShutdownOrigin.OPERATOR_STOP,
+            shutdown_reason=ShutdownReason.OPERATOR_REQUESTED,
+            initiating_component="gui.emergency_stop",
+            operator_initiated=True,
+        )
         self.statusBar().showMessage(
             "Emergency stop requested. Runtime shutdown in progress.",
             5000,
@@ -678,7 +690,13 @@ class MainWindow(QMainWindow):
         if self._runtime_service.is_active:
             if not self._close_requested:
                 self._close_requested = True
-                self._runtime_service.stop("Application shutdown requested.")
+                self._runtime_service.stop(
+                    "Application shutdown requested.",
+                    origin=ShutdownOrigin.GUI_CLOSE,
+                    shutdown_reason=ShutdownReason.GUI_WINDOW_CLOSED,
+                    initiating_component="gui.main_window.close_event",
+                    operator_initiated=True,
+                )
             event.ignore()
             QTimer.singleShot(50, self.close)
             return

@@ -102,6 +102,7 @@ class PositionManagementRow:
     market_value: str = "--"
     current_r: str = "--"
     current_stop: str = "--"
+    projected_stop: str = "--"
     next_target: str = "--"
     strategy: str = "—"
     setup: str = "—"

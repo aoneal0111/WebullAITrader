@@ -55,7 +55,8 @@ class PositionsPanel(QWidget):
         for index, title in enumerate((
             "SIDE / QTY", "AVERAGE ENTRY", "MARK", "UNREALIZED",
             "REALIZED", "ENTRY NOTIONAL", "MARKET VALUE",
-            "CURRENT R", "CURRENT STOP", "NEXT TARGET", "MANAGEMENT STATE",
+            "CURRENT R", "CURRENT CANONICAL STOP", "PROJECTED / NEXT STOP",
+            "NEXT TARGET", "MANAGEMENT STATE",
             "STRATEGY / SETUP", "UPDATED", "THESIS",
         )):
             column = index % 4
@@ -403,11 +404,12 @@ class PositionsPanel(QWidget):
         self._facts["ENTRY NOTIONAL"].setText(row.entry_notional)
         self._facts["MARKET VALUE"].setText(row.market_value)
         self._facts["CURRENT R"].setText(row.current_r)
-        self._facts["CURRENT STOP"].setText(
+        self._facts["CURRENT CANONICAL STOP"].setText(
             row.current_stop
             if row.current_stop != "--"
             else row.protection.stop_price if row.protection is not None else "--"
         )
+        self._facts["PROJECTED / NEXT STOP"].setText(row.projected_stop)
         self._facts["NEXT TARGET"].setText(row.next_target)
         self._facts["MANAGEMENT STATE"].setText(row.management_state)
         self._facts["STRATEGY / SETUP"].setText(

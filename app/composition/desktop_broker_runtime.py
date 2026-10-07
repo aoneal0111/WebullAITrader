@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from decimal import Decimal
 import logging
 
 from app.broker_plugins import BrokerRuntime, create_broker_runtime
@@ -65,7 +66,9 @@ from app.services.runtime_drivers.broker import (
     DesktopBrokerRuntimeDriver,
     utc_now,
 )
-from app.universe import UniverseService
+from app.universe import (
+    SecurityType, UniverseFilterConfig, UniverseService,
+)
 from app.webull.sdk_market_data import (
     LazyOfficialDataClient,
     WebullScannerReferenceProvider,
@@ -430,6 +433,17 @@ def create_configured_desktop_broker_driver(
             market_data_client=broker_runtime.market_data,
             universe_service=UniverseService(
                 universe_provider,
+                config=(
+                    UniverseFilterConfig(
+                        stock_minimum_price=Decimal('1.00'),
+                        stock_maximum_price=None,
+                        stock_security_types=(
+                            SecurityType.COMMON_STOCK,
+                            SecurityType.ETF,
+                        ),
+                    )
+                    if configuration.quick_scalper_enabled else None
+                ),
                 ordering_source=universe_provider,
                 admission_observer=universe_admission_observer,
             ),

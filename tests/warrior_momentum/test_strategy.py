@@ -268,12 +268,13 @@ def test_discovery_is_not_entry_and_false_catalyst_is_visible() -> None:
     assert candidate.status in set(CandidateStatus)
     assert ReasonCode.NO_CATALYST in candidate.reason_codes
     assert candidate.symbol == "XYZ"
-    assert runtime.entry_signal(candidate) is None
+    signal = runtime.entry_signal(candidate)
+    assert signal is not None
+    assert signal.execution_authorized is False
     assert focus_rows(runtime.rank((candidate,)))[0].symbol == "XYZ"
 
 
 @pytest.mark.parametrize(("change","reason"), [
-    ({"bid": D("9"), "ask": D("11")}, ReasonCode.SPREAD_WIDE),
     ({"halted": True}, ReasonCode.HALTED),
     ({"tradable": False}, ReasonCode.NOT_TRADABLE),
 ])
@@ -283,7 +284,21 @@ def test_entry_rejects_execution_quality_and_state(change, reason) -> None:
     assessed, signal_value = runtime.assess_entry(candidate)
     assert signal_value is None
     assert reason in assessed.reason_codes
-    assert assessed.status is CandidateStatus.INELIGIBLE_FOR_EXECUTION
+
+
+def test_wide_spread_retains_technical_signal_but_waits_for_execution_quality() -> None:
+    runtime = WarriorMomentumRuntime()
+    candidate = runtime.discover(
+        observation(bid=D("9"), ask=D("11")), hod_bars(), session="REGULAR",
+    )
+    assessed, signal_value = runtime.assess_entry(candidate)
+    assert signal_value is not None
+    assert ReasonCode.SPREAD_WIDE not in assessed.reason_codes
+    assert assessed.execution_quality.value == "TEMPORARILY_BLOCKED"
+    assert runtime.current_execution_liquidity_ok(
+        assessed, quote_fresh=True,
+    ) is False
+    assert assessed.status is CandidateStatus.ENTRY_READY
 
 
 def _forming_hod_bars() -> tuple[MinuteBar, ...]:
@@ -316,7 +331,8 @@ def test_temporary_spread_failure_preserves_forming_setup_and_episode() -> None:
     assert recovered.setup.structural_episode_id == first.setup.structural_episode_id
     assessed, signal_value = runtime.assess_entry(wide)
     assert signal_value is None
-    assert ReasonCode.SPREAD_WIDE in assessed.reason_codes
+    assert ReasonCode.SPREAD_WIDE not in assessed.reason_codes
+    assert assessed.execution_quality.value == "TEMPORARILY_BLOCKED"
 
 
 def test_temporary_rvol_failure_preserves_forming_setup_and_episode() -> None:
@@ -432,7 +448,7 @@ def test_after_hours_without_setup_is_rejected_only_by_remaining_entry_gates() -
     assert set(assessed.reason_codes) == {ReasonCode.NO_SETUP}
 
 
-def test_after_hours_spread_failure_remains_ineligible() -> None:
+def test_after_hours_wide_spread_retains_signal_but_waits_for_quality() -> None:
     runtime = WarriorMomentumRuntime()
     candidate = runtime.discover(
         observation(bid=D("9"), ask=D("11")), hod_bars(), session="AFTER_HOURS",
@@ -440,9 +456,13 @@ def test_after_hours_spread_failure_remains_ineligible() -> None:
 
     assessed, signal_value = runtime.assess_entry(candidate)
 
-    assert signal_value is None
-    assert assessed.status is CandidateStatus.INELIGIBLE_FOR_EXECUTION
-    assert ReasonCode.SPREAD_WIDE in assessed.reason_codes
+    assert signal_value is not None
+    assert assessed.status is CandidateStatus.ENTRY_READY
+    assert ReasonCode.SPREAD_WIDE not in assessed.reason_codes
+    assert assessed.execution_quality.value == "TEMPORARILY_BLOCKED"
+    assert runtime.current_execution_liquidity_ok(
+        assessed, quote_fresh=True,
+    ) is False
     assert ReasonCode.SESSION_NOT_ALLOWED not in assessed.reason_codes
 
 
@@ -484,6 +504,51 @@ def test_position_sizing_enforces_allowed_symbols_and_risk_engine() -> None:
     assert not denied.approved and denied.shares == 0
     assert ReasonCode.EXECUTION_NOT_ALLOWED in denied.reason_codes
     assert ReasonCode.RISK_REJECTED in denied.reason_codes
+
+
+def test_position_sizing_emits_gate_specific_diagnostics_without_changing_result() -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    denied = size_position(
+        signal(), account_equity=D("50000"), buying_power=D("10000"),
+        allowed_symbols=frozenset(), risk_engine_approved=False,
+        diagnostic=lambda reason, values: events.append((reason, values)),
+    )
+    assert not denied.approved and denied.shares == 0
+    assert {reason for reason, _ in events} == {
+        "RISK_REJECTED_SYMBOL_AUTHORIZATION", "RISK_REJECTED_ENGINE",
+    }
+    assert all("account_id" not in values for _, values in events)
+
+
+def test_position_sizing_classifies_campaign_loss_with_sanitized_context() -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    denied = size_position(
+        signal(), account_equity=D("9680.14"), buying_power=D("9680.14"),
+        allowed_symbols=frozenset({"XYZ"}), risk_engine_approved=False,
+        risk_rejection_reason="CAMPAIGN_LOSS",
+        risk_context={
+            "starting_equity": D("10000"), "current_equity": D("9680.14"),
+            "campaign_loss_fraction": D("0.50"),
+            "campaign_equity_floor": D("5000"),
+        }, diagnostic=lambda reason, values: events.append((reason, values)),
+    )
+    assert not denied.approved
+    reason, values = events[-1]
+    assert reason == "RISK_REJECTED_CAMPAIGN_LOSS"
+    assert values["starting_equity"] == D("10000")
+    assert values["campaign_equity_floor"] == D("5000")
+
+
+def test_position_sizing_reports_stop_distance_and_preserves_strict_rejection() -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    wide = replace(signal(), risk_per_share=D("1"), reference_price=D("10"))
+    denied = size_position(
+        wide, account_equity=D("50000"), buying_power=D("10000"),
+        allowed_symbols=frozenset({"XYZ"}),
+        diagnostic=lambda reason, values: events.append((reason, values)),
+    )
+    assert not denied.approved and denied.shares == 0
+    assert events and events[0][0] == "RISK_REJECTED_STOP_DISTANCE"
 
 
 def test_after_hours_position_sizing_still_requires_risk_approval() -> None:

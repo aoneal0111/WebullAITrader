@@ -91,10 +91,10 @@ def _candidate(*, spread: Decimal = Decimal("5"), setup_state=SetupState.TRIGGER
 def test_execution_spread_failure_remains_observation_eligible():
     decision = evaluate_candidate(_observation())
 
-    assert decision.qualified is False
+    assert decision.qualified is True
     assert decision.observation_eligible is True
     assert decision.observation_failed_rules == ()
-    assert "spread" in decision.failed_rules
+    assert "spread" in decision.passed_rules
 
     runtime = WarriorMomentumRuntime()
     candidate = runtime.discover(_observation(), (), session="REGULAR")
@@ -107,8 +107,11 @@ def test_execution_gates_remain_fail_closed_for_retained_observation():
     candidate = _candidate()
     reasons = entry_rejections(candidate, WarriorMomentumRuntime().config)
 
-    assert ReasonCode.SPREAD_WIDE in reasons
+    assert ReasonCode.SPREAD_WIDE not in reasons
     assert candidate.observation_eligible is True
+    assert WarriorMomentumRuntime().current_execution_liquidity_ok(
+        candidate, quote_fresh=True,
+    ) is False
 
 
 def test_no_setup_is_not_an_observation_blocker():

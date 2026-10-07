@@ -118,6 +118,6 @@ def test_depth_never_overrides_spread_or_exhausted_quality():
         (BookLevel(D("7.23"), D("100")),),
     )
     assert _assessment(depth=depth, ask_state="DEPTH_DEPLETION", bid_advancing=True,
-                       spread_percent=D("1.26")).reason == "SPREAD_WIDE"
+                       spread_percent=D("1.26")).reason == "EXECUTION_QUALITY_WAIT"
     assert _assessment(depth=depth, ask_state="DEPTH_DEPLETION", bid_advancing=True,
                        quality_ok=False).reason == "OPPORTUNITY_QUALITY_BLOCKED"

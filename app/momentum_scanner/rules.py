@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
 from app.momentum_scanner.models import (
@@ -11,6 +11,13 @@ from app.momentum_scanner.models import (
     ScannerDecision,
     ScannerMetrics,
     ScannerObservation,
+)
+from app.momentum_scanner.quality import (
+    momentum_priority,
+    reevaluation_cadence_ms,
+    rvol_quality,
+    spread_quality,
+    velocity_attention,
 )
 
 ZERO = Decimal("0")
@@ -50,17 +57,16 @@ def calculate_metrics(observation: ScannerObservation) -> ScannerMetrics:
     if observation.previous_close <= ZERO:
         raise ValueError("previous_close must be positive")
 
-    if observation.average_30_day_volume <= ZERO:
-        raise ValueError("average_30_day_volume must be positive")
-
     percentage_change = (
         (observation.price - observation.previous_close)
         / observation.previous_close
         * HUNDRED
     )
 
+    relative_volume_available = observation.average_30_day_volume > ZERO
     relative_volume = (
         observation.current_volume / observation.average_30_day_volume
+        if relative_volume_available else ZERO
     )
 
     dollar_volume = observation.price * observation.current_volume
@@ -78,11 +84,33 @@ def calculate_metrics(observation: ScannerObservation) -> ScannerMetrics:
             (observation.ask - observation.bid) / midpoint * HUNDRED
         )
 
+    rvol_score, rvol_band = rvol_quality(
+        relative_volume if relative_volume_available else None,
+    )
+    spread_score, execution_quality, _block_reason = spread_quality(
+        spread_percent, normal_percent=MomentumScannerConfig().maximum_spread_percent,
+    )
+    velocity_score = velocity_attention(None, None)
+    priority, _components = momentum_priority(
+        percentage_change=percentage_change,
+        rvol_score=rvol_score,
+        dollar_volume=dollar_volume,
+        velocity_score=velocity_score,
+        spread_score=spread_score,
+        catalyst_present=observation.catalyst is not CatalystType.NONE,
+    )
     return ScannerMetrics(
         percentage_change=percentage_change,
         relative_volume=relative_volume,
         dollar_volume=dollar_volume,
         spread_percent=spread_percent,
+        rvol_score=rvol_score,
+        rvol_band=rvol_band,
+        spread_quality=execution_quality,
+        spread_quality_score=spread_score,
+        momentum_priority=priority,
+        reevaluation_cadence_ms=reevaluation_cadence_ms(priority, velocity_score),
+        relative_volume_available=relative_volume_available,
     )
 
 
@@ -113,10 +141,8 @@ def evaluate_candidate(
         metrics.percentage_change >= config.minimum_percentage_change,
         "percentage_change",
     )
-    check(
-        metrics.relative_volume >= config.minimum_relative_volume,
-        "relative_volume",
-    )
+    # RVOL is participation evidence, not opportunity admission.
+    check(metrics.relative_volume >= ZERO, "relative_volume")
     float_value_is_low = (
         observation.float_shares is not None
         and observation.float_shares <= config.maximum_float_shares
@@ -151,10 +177,38 @@ def evaluate_candidate(
         metrics.dollar_volume >= config.minimum_dollar_volume,
         "dollar_volume",
     )
-    check(
-        metrics.spread_percent is not None
-        and metrics.spread_percent <= config.maximum_spread_percent,
-        "spread",
+    # A missing/elevated spread lowers execution quality but does not erase a
+    # real momentum opportunity. Malformed quotes already fail in
+    # calculate_metrics().
+    check(True, "spread")
+
+    rvol_score, rvol_band = rvol_quality(
+        metrics.relative_volume if metrics.relative_volume_available else None,
+    )
+    spread_score, execution_quality, execution_block_reason = spread_quality(
+        metrics.spread_percent,
+        normal_percent=config.maximum_spread_percent,
+    )
+    velocity_score = velocity_attention(
+        metrics.price_velocity_cents_1m,
+        metrics.price_velocity_percent_1m,
+    )
+    priority, priority_components = momentum_priority(
+        percentage_change=metrics.percentage_change,
+        rvol_score=rvol_score,
+        dollar_volume=metrics.dollar_volume,
+        velocity_score=velocity_score,
+        spread_score=spread_score,
+        catalyst_present=observation.catalyst is not CatalystType.NONE,
+    )
+    metrics = replace(
+        metrics,
+        rvol_score=rvol_score,
+        rvol_band=rvol_band,
+        spread_quality=execution_quality,
+        spread_quality_score=spread_score,
+        momentum_priority=priority,
+        reevaluation_cadence_ms=reevaluation_cadence_ms(priority, velocity_score),
     )
 
     score = _score(observation, metrics)
@@ -251,6 +305,10 @@ def evaluate_candidate(
         quote_received_timestamp=observation.quote_received_timestamp,
         observation_eligible=not observation_failed,
         observation_failed_rules=observation_failed,
+        participation_quality=rvol_band,
+        execution_quality=execution_quality,
+        execution_block_reason=execution_block_reason,
+        momentum_priority_components=priority_components,
     )
 
 
