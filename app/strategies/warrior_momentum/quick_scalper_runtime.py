@@ -725,8 +725,8 @@ class QuickScalperPaperRuntimeAdapter:
             quote_timestamp=(point.quote_observed_at or obs.quote_timestamp),
             observed_at=(point.evaluation_timestamp or self._clock()),
             momentum_stalled=(
-                candidate.price_velocity_cents_1m is not None
-                and candidate.price_velocity_cents_1m <= ZERO
+                getattr(candidate, "price_velocity_cents_1m", None) is not None
+                and getattr(candidate, "price_velocity_cents_1m", None) <= ZERO
             ),
         )
 
