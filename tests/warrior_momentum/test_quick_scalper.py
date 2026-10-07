@@ -181,11 +181,34 @@ def test_confirmation_wait_recovers_without_terminalizing_scalp_generation() -> 
     assert len(calls) == 2
 
 
-def test_freshness_is_hard_five_second_fail_closed() -> None:
+def test_executable_quote_freshness_is_hard_five_second_fail_closed() -> None:
     assessed = QuickScalperPolicy().assess(snapshot(age=5.001))
     assert assessed.decision is ScalpDecision.REJECTED_HARD_SAFETY
     assert assessed.reason == "PROVIDER_DATA_STALE"
     assert QuickScalperConfig().provider_freshness_seconds == D("5")
+
+
+def test_stale_last_does_not_veto_fresh_executable_quote() -> None:
+    value = snapshot()
+    fresh = NOW - timedelta(seconds=0.2)
+    assessed = QuickScalperPolicy().assess(replace(
+        value,
+        last_timestamp=NOW - timedelta(seconds=30),
+        bid_timestamp=fresh,
+        ask_timestamp=fresh,
+    ))
+    assert assessed.decision is ScalpDecision.EXECUTABLE
+    assert assessed.reason == "POSITIVE_EXECUTABLE_EDGE"
+
+
+def test_future_last_timestamp_remains_fail_closed() -> None:
+    value = snapshot()
+    assessed = QuickScalperPolicy().assess(replace(
+        value,
+        last_timestamp=NOW + timedelta(seconds=1),
+    ))
+    assert assessed.decision is ScalpDecision.REJECTED_HARD_SAFETY
+    assert assessed.reason == "PROVIDER_DATA_STALE"
 
 
 def test_canonical_submitter_and_shared_engine_create_one_protected_intent() -> None:
