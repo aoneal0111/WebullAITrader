@@ -441,6 +441,68 @@ def test_prebridge_attribution_counters_distinguish_quote_risk_and_bridge():
     assert len(bridge.entries) == 1
 
 
+def test_reconfirm_reason_counter_attributes_exact_policy_reason():
+    before = performance_diagnostics.snapshot()
+    runtime, bridge, _quotes = adapter()
+    value = replace(
+        snapshot(),
+        short_horizon_range=D("0.01"),
+        velocity_cents_per_minute=D("0.01"),
+        velocity_percent_per_minute=D("0.01"),
+    )
+    runtime._snapshots[("FAST", "g1")] = value
+    runtime.scalper.observe(value)
+    after = performance_diagnostics.snapshot()
+
+    assert (
+        after.quick_scalper_reconfirm_not_executable
+        - before.quick_scalper_reconfirm_not_executable
+    ) == 1
+    assert (
+        after.quick_scalper_reconfirm_insufficient_edge
+        - before.quick_scalper_reconfirm_insufficient_edge
+    ) == 1
+    assert bridge.entries == []
+
+
+def test_risk_diagnostic_counter_attributes_zero_share_rejection():
+    stamp = NOW - timedelta(seconds=0.2)
+    high_quote = ExecutionQuoteSnapshot(
+        "FAST", D("500"), D("499.50"), D("500"),
+        stamp, stamp, stamp, NOW,
+    )
+    before = performance_diagnostics.snapshot()
+    bridge = Bridge()
+    runtime = QuickScalperPaperRuntimeAdapter(
+        config=QuickScalperConfig(enabled=True), bridge=bridge,
+        order_book=PaperOrderBook(),
+        account_context_source=lambda: PaperAccountContext(
+            D("1000"), D("499"), frozenset({"FAST"}),
+            exposure_limit=D("1000"),
+        ),
+        position_quantity_source=lambda _symbol: D("0"),
+        execution_quote_source=Quotes(high_quote), clock=lambda: NOW,
+    )
+    value = replace(
+        snapshot(), last=D("500"), bid=D("499.50"), ask=D("500"),
+        structural_stop=D("490"), short_horizon_range=D("4"),
+        velocity_cents_per_minute=D("3"),
+        velocity_percent_per_minute=D("0.60"),
+    )
+    runtime._snapshots[("FAST", "g1")] = value
+    runtime.scalper.observe(value)
+    after = performance_diagnostics.snapshot()
+
+    assert (
+        after.quick_scalper_risk_rejected - before.quick_scalper_risk_rejected
+    ) == 1
+    assert (
+        after.quick_scalper_risk_zero_shares
+        - before.quick_scalper_risk_zero_shares
+    ) == 1
+    assert bridge.entries == []
+
+
 def test_insufficient_buying_power_still_rejects_high_price_scalp():
     stamp = NOW - timedelta(seconds=0.2)
     high_quote = ExecutionQuoteSnapshot(
