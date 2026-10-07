@@ -477,6 +477,75 @@ def test_reconfirm_reason_counter_attributes_exact_policy_reason():
     assert bridge.entries == []
 
 
+def test_stale_confirmation_attributes_last_only_component():
+    stamp = NOW - timedelta(seconds=0.2)
+    stale_last = NOW - timedelta(seconds=6)
+    quote = ExecutionQuoteSnapshot(
+        "FAST", D("5.00"), D("4.99"), D("5.00"),
+        stale_last, stamp, stamp, NOW,
+    )
+    before = performance_diagnostics.snapshot()
+    runtime, bridge, _quotes = adapter(quotes=Quotes(quote))
+    value = snapshot()
+    runtime._snapshots[("FAST", "g1")] = value
+    runtime.scalper.observe(value)
+    after = performance_diagnostics.snapshot()
+
+    assert (
+        after.quick_scalper_reconfirm_provider_data_stale
+        - before.quick_scalper_reconfirm_provider_data_stale
+    ) == 1
+    assert (
+        after.quick_scalper_freshness_last_stale
+        - before.quick_scalper_freshness_last_stale
+    ) == 1
+    assert (
+        after.quick_scalper_freshness_last_only
+        - before.quick_scalper_freshness_last_only
+    ) == 1
+    assert (
+        after.quick_scalper_freshness_bid_stale
+        - before.quick_scalper_freshness_bid_stale
+    ) == 0
+    assert (
+        after.quick_scalper_freshness_ask_stale
+        - before.quick_scalper_freshness_ask_stale
+    ) == 0
+    assert bridge.entries == []
+
+
+def test_stale_confirmation_attributes_multiple_components():
+    stale = NOW - timedelta(seconds=7)
+    quote = ExecutionQuoteSnapshot(
+        "FAST", D("5.00"), D("4.99"), D("5.00"),
+        stale, stale, stale, NOW,
+    )
+    before = performance_diagnostics.snapshot()
+    runtime, bridge, _quotes = adapter(quotes=Quotes(quote))
+    value = snapshot()
+    runtime._snapshots[("FAST", "g1")] = value
+    runtime.scalper.observe(value)
+    after = performance_diagnostics.snapshot()
+
+    assert (
+        after.quick_scalper_freshness_multiple
+        - before.quick_scalper_freshness_multiple
+    ) == 1
+    assert (
+        after.quick_scalper_freshness_last_stale
+        - before.quick_scalper_freshness_last_stale
+    ) == 1
+    assert (
+        after.quick_scalper_freshness_bid_stale
+        - before.quick_scalper_freshness_bid_stale
+    ) == 1
+    assert (
+        after.quick_scalper_freshness_ask_stale
+        - before.quick_scalper_freshness_ask_stale
+    ) == 1
+    assert bridge.entries == []
+
+
 def test_risk_diagnostic_counter_attributes_zero_share_rejection():
     stamp = NOW - timedelta(seconds=0.2)
     high_quote = ExecutionQuoteSnapshot(
