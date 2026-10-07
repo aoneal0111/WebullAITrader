@@ -11,6 +11,7 @@ from app.market_data.models import (
     MarketEvent, MarketEventType, QuotePayload,
 )
 from app.paper_trading.order_book import PaperOrderBook
+from app.performance_diagnostics import performance_diagnostics
 from app.paper_trading.order_models import (
     OrderRequest, OrderSide, OrderStatus, OrderType, PaperOrder,
 )
@@ -126,6 +127,7 @@ def adapter(
 
 
 def test_stream_assessment_does_not_require_warrior_candidate_or_completed_bar():
+    before = performance_diagnostics.snapshot()
     runtime, bridge, _quotes = adapter()
     first_at = NOW - timedelta(seconds=2)
     second_at = NOW
@@ -161,6 +163,21 @@ def test_stream_assessment_does_not_require_warrior_candidate_or_completed_bar()
 
     assert len(runtime._stream_samples["FAST"]) == 2
     assert bridge.entries == []
+    after = performance_diagnostics.snapshot()
+    assert (
+        after.quick_scalper_stream_observations
+        - before.quick_scalper_stream_observations
+    ) == 2
+    assert (
+        after.quick_scalper_assessments - before.quick_scalper_assessments
+    ) == 2
+    assert (
+        after.quick_scalper_opportunities - before.quick_scalper_opportunities
+    ) == 1
+    assert (
+        after.quick_scalper_authorization_attempts
+        - before.quick_scalper_authorization_attempts
+    ) == 0
 
 
 def test_canonical_scalp_intent_submits_once_without_warrior_signal_coercion():
