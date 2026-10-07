@@ -241,6 +241,166 @@ def test_initial_stream_wait_reason_is_attributed_exactly():
     ) == 0
 
 
+def test_initial_stream_stale_quote_refreshes_authoritatively_before_rejecting():
+    before = performance_diagnostics.snapshot()
+    runtime, bridge, quotes = adapter()
+
+    first_quote = NOW - timedelta(seconds=8)
+    second_quote = NOW - timedelta(seconds=7)
+    first = ScannerObservation(
+        symbol="FAST", timestamp=NOW - timedelta(seconds=1), price=D("4.96"),
+        previous_close=D("4.00"), current_volume=D("1000000"),
+        average_30_day_volume=D("200000"), float_shares=D("5000000"),
+        bid=D("4.95"), ask=D("4.96"), catalyst=CatalystType.OTHER,
+        catalyst_headline=None, tradable=True, halted=False,
+        catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=NOW - timedelta(seconds=1),
+        quote_timestamp=first_quote, trade_timestamp=NOW - timedelta(seconds=1),
+        bid_size=D("500"), ask_size=D("500"),
+    )
+    second = ScannerObservation(
+        symbol="FAST", timestamp=NOW, price=D("5.01"),
+        previous_close=D("4.00"), current_volume=D("1010000"),
+        average_30_day_volume=D("200000"), float_shares=D("5000000"),
+        bid=D("5.00"), ask=D("5.01"), catalyst=CatalystType.OTHER,
+        catalyst_headline=None, tradable=True, halted=False,
+        catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=NOW, quote_timestamp=second_quote,
+        trade_timestamp=NOW, bid_size=D("500"), ask_size=D("500"),
+    )
+
+    assert runtime.observe_stream_event(
+        first, decision_at=NOW - timedelta(seconds=1), session="REGULAR",
+        context=None, execution_permitted=True,
+    ) is None
+    result = runtime.observe_stream_event(
+        second, decision_at=NOW, session="REGULAR",
+        context=None, execution_permitted=True,
+    )
+
+    assert result is not None
+    assert result.reason == "PROVIDER_DATA_STALE"
+    assert quotes.calls == 1
+    assert len(bridge.entries) == 1
+    after = performance_diagnostics.snapshot()
+    assert (
+        after.quick_scalper_initial_provider_data_stale
+        - before.quick_scalper_initial_provider_data_stale
+    ) == 1
+    assert (
+        after.quick_scalper_stale_preview_refresh_attempts
+        - before.quick_scalper_stale_preview_refresh_attempts
+    ) == 1
+    assert (
+        after.quick_scalper_stale_preview_refresh_available
+        - before.quick_scalper_stale_preview_refresh_available
+    ) == 1
+    assert (
+        after.quick_scalper_stale_preview_refresh_advanced
+        - before.quick_scalper_stale_preview_refresh_advanced
+    ) == 1
+    assert (
+        after.quick_scalper_bridge_reached - before.quick_scalper_bridge_reached
+    ) == 1
+
+
+def test_initial_stream_stale_quote_with_missing_refresh_waits_without_entry():
+    before = performance_diagnostics.snapshot()
+    runtime, bridge, quotes = adapter(quotes=Quotes(None))
+
+    first_quote = NOW - timedelta(seconds=8)
+    second_quote = NOW - timedelta(seconds=7)
+    first = ScannerObservation(
+        symbol="FAST", timestamp=NOW - timedelta(seconds=1), price=D("4.96"),
+        previous_close=D("4.00"), current_volume=D("1000000"),
+        average_30_day_volume=D("200000"), float_shares=D("5000000"),
+        bid=D("4.95"), ask=D("4.96"), catalyst=CatalystType.OTHER,
+        catalyst_headline=None, tradable=True, halted=False,
+        catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=NOW - timedelta(seconds=1),
+        quote_timestamp=first_quote, trade_timestamp=NOW - timedelta(seconds=1),
+        bid_size=D("500"), ask_size=D("500"),
+    )
+    second = ScannerObservation(
+        symbol="FAST", timestamp=NOW, price=D("5.01"),
+        previous_close=D("4.00"), current_volume=D("1010000"),
+        average_30_day_volume=D("200000"), float_shares=D("5000000"),
+        bid=D("5.00"), ask=D("5.01"), catalyst=CatalystType.OTHER,
+        catalyst_headline=None, tradable=True, halted=False,
+        catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=NOW, quote_timestamp=second_quote,
+        trade_timestamp=NOW, bid_size=D("500"), ask_size=D("500"),
+    )
+
+    assert runtime.observe_stream_event(
+        first, decision_at=NOW - timedelta(seconds=1), session="REGULAR",
+        context=None, execution_permitted=True,
+    ) is None
+    result = runtime.observe_stream_event(
+        second, decision_at=NOW, session="REGULAR",
+        context=None, execution_permitted=True,
+    )
+
+    assert result is not None
+    assert result.reason == "PROVIDER_DATA_STALE"
+    assert quotes.calls == 1
+    assert bridge.entries == []
+    after = performance_diagnostics.snapshot()
+    assert (
+        after.quick_scalper_stale_preview_refresh_attempts
+        - before.quick_scalper_stale_preview_refresh_attempts
+    ) == 1
+    assert (
+        after.quick_scalper_execution_quote_unavailable
+        - before.quick_scalper_execution_quote_unavailable
+    ) == 1
+    assert (
+        after.quick_scalper_bridge_reached - before.quick_scalper_bridge_reached
+    ) == 0
+
+
+def test_initial_stream_future_quote_timestamp_does_not_request_refresh():
+    runtime, bridge, quotes = adapter()
+
+    first_quote = NOW - timedelta(seconds=1)
+    future_quote = NOW + timedelta(seconds=1)
+    first = ScannerObservation(
+        symbol="FAST", timestamp=NOW - timedelta(seconds=1), price=D("4.96"),
+        previous_close=D("4.00"), current_volume=D("1000000"),
+        average_30_day_volume=D("200000"), float_shares=D("5000000"),
+        bid=D("4.95"), ask=D("4.96"), catalyst=CatalystType.OTHER,
+        catalyst_headline=None, tradable=True, halted=False,
+        catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=NOW - timedelta(seconds=1),
+        quote_timestamp=first_quote, trade_timestamp=NOW - timedelta(seconds=1),
+        bid_size=D("500"), ask_size=D("500"),
+    )
+    second = ScannerObservation(
+        symbol="FAST", timestamp=NOW, price=D("5.01"),
+        previous_close=D("4.00"), current_volume=D("1010000"),
+        average_30_day_volume=D("200000"), float_shares=D("5000000"),
+        bid=D("5.00"), ask=D("5.01"), catalyst=CatalystType.OTHER,
+        catalyst_headline=None, tradable=True, halted=False,
+        catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=NOW, quote_timestamp=future_quote,
+        trade_timestamp=NOW, bid_size=D("500"), ask_size=D("500"),
+    )
+
+    assert runtime.observe_stream_event(
+        first, decision_at=NOW - timedelta(seconds=1), session="REGULAR",
+        context=None, execution_permitted=True,
+    ) is None
+    result = runtime.observe_stream_event(
+        second, decision_at=NOW, session="REGULAR",
+        context=None, execution_permitted=True,
+    )
+
+    assert result is not None
+    assert result.reason == "PROVIDER_DATA_STALE"
+    assert quotes.calls == 0
+    assert bridge.entries == []
+
+
 def test_initial_stream_stale_last_does_not_block_fresh_quote():
     before = performance_diagnostics.snapshot()
     runtime, bridge, quotes = adapter()
