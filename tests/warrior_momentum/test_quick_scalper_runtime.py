@@ -241,7 +241,7 @@ def test_initial_stream_wait_reason_is_attributed_exactly():
     ) == 0
 
 
-def test_initial_stream_hard_safety_reason_is_attributed_exactly():
+def test_initial_stream_stale_last_does_not_block_fresh_quote():
     before = performance_diagnostics.snapshot()
     runtime, bridge, quotes = adapter()
 
@@ -278,16 +278,16 @@ def test_initial_stream_hard_safety_reason_is_attributed_exactly():
     )
 
     assert result is not None
-    assert result.reason == "PROVIDER_DATA_STALE"
-    assert quotes.calls == 0
-    assert bridge.entries == []
+    assert result.reason == "POSITIVE_EXECUTABLE_EDGE"
+    assert quotes.calls == 1
+    assert len(bridge.entries) == 1
     after = performance_diagnostics.snapshot()
     assert (
         after.quick_scalper_initial_provider_data_stale
         - before.quick_scalper_initial_provider_data_stale
-    ) == 1
+    ) == 0
     assert (
-        after.quick_scalper_rejections - before.quick_scalper_rejections
+        after.quick_scalper_executable - before.quick_scalper_executable
     ) == 1
 
 
@@ -585,7 +585,7 @@ def test_reconfirm_reason_counter_attributes_exact_policy_reason():
     assert bridge.entries == []
 
 
-def test_stale_confirmation_attributes_last_only_component():
+def test_stale_confirmation_last_only_reaches_bridge_with_fresh_quote():
     stamp = NOW - timedelta(seconds=0.2)
     stale_last = NOW - timedelta(seconds=6)
     quote = ExecutionQuoteSnapshot(
@@ -602,24 +602,11 @@ def test_stale_confirmation_attributes_last_only_component():
     assert (
         after.quick_scalper_reconfirm_provider_data_stale
         - before.quick_scalper_reconfirm_provider_data_stale
-    ) == 1
-    assert (
-        after.quick_scalper_freshness_last_stale
-        - before.quick_scalper_freshness_last_stale
-    ) == 1
-    assert (
-        after.quick_scalper_freshness_last_only
-        - before.quick_scalper_freshness_last_only
-    ) == 1
-    assert (
-        after.quick_scalper_freshness_bid_stale
-        - before.quick_scalper_freshness_bid_stale
     ) == 0
     assert (
-        after.quick_scalper_freshness_ask_stale
-        - before.quick_scalper_freshness_ask_stale
-    ) == 0
-    assert bridge.entries == []
+        after.quick_scalper_bridge_reached - before.quick_scalper_bridge_reached
+    ) == 1
+    assert len(bridge.entries) == 1
 
 
 def test_stale_confirmation_attributes_multiple_components():
