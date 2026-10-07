@@ -187,7 +187,7 @@ def test_initial_stream_wait_reason_is_attributed_exactly():
     before = performance_diagnostics.snapshot()
     runtime, bridge, quotes = adapter()
 
-    first_at = NOW - timedelta(seconds=2)
+    first_at = NOW - timedelta(seconds=30)
     second_at = NOW
     first = ScannerObservation(
         symbol="FAST", timestamp=first_at, price=D("4.99"),
