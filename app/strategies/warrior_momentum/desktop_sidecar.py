@@ -1593,6 +1593,7 @@ class WarriorDesktopSidecar:
             service_started = perf_counter()
             service_success = False
             try:
+                performance_diagnostics.increment("warrior_full_evaluations")
                 candidate, signal = service.observe(
                     point_in_time,
                     account=self._account_source(),
