@@ -1201,6 +1201,54 @@ class WarriorDesktopSidecar:
             return None if symbol is not None else ()
         return service.setup_lifecycle_snapshot(symbol)
 
+    def _observe_quick_scalper_stream(
+        self, observation: object, *, evaluated_at: datetime,
+    ) -> None:
+        """Feed Quick Scalper from fresh shared stream state on every market event.
+
+        This path is intentionally independent of Warrior full-evaluation cadence.
+        Quick Scalper may use the latest Warrior candidate as optional context, but
+        neither a Warrior setup nor a completed bar is required for assessment.
+        """
+        observer = getattr(
+            self._quick_scalper_observer, "observe_stream_event", None,
+        )
+        if not callable(observer):
+            return
+        symbol = str(getattr(observation, "symbol", "")).strip().upper()
+        if not symbol:
+            return
+        try:
+            scalp_result = observer(
+                observation,
+                decision_at=evaluated_at,
+                session=scanner_session(evaluated_at).value,
+                context=self._latest.get(symbol),
+                execution_permitted=self._accept_execution,
+            )
+            current_source = getattr(
+                self._quick_scalper_observer, "current_opportunity", None,
+            )
+            current = (
+                current_source(symbol)
+                if callable(current_source) else None
+            )
+            if current is not None:
+                self._quick_scalper_projection[symbol] = (
+                    current.state.value,
+                    current.reason.value,
+                    current.assessment.generation_id,
+                )
+            elif scalp_result is not None:
+                self._quick_scalper_projection[symbol] = (
+                    "DISCOVERED", str(scalp_result.reason),
+                    scalp_result.opportunity.generation_id,
+                )
+        except Exception:
+            # Quick Scalper is isolated from the shared market-data consumer.
+            # A strategy-local failure must never degrade Warrior or transport.
+            pass
+
     def _consume(self, event: MarketEvent) -> None:
         adapter, service = self._adapter, self._service
         if adapter is None or service is None or event.symbol is None:
@@ -1214,6 +1262,12 @@ class WarriorDesktopSidecar:
             event_type=getattr(getattr(event, "event_type", None), "value", None),
             symbol=symbol,
         )
+        if (
+            event.event_type in {MarketEventType.QUOTE, MarketEventType.TRADE}
+        ):
+            self._observe_quick_scalper_stream(
+                observation, evaluated_at=self._aware_now(),
+            )
         if observation is None:
             # Retained PAPER positions are management authority even when the
             # scanner cannot assemble a discovery observation (for example,
@@ -1654,38 +1708,6 @@ class WarriorDesktopSidecar:
                         event_type=getattr(getattr(event, "event_type", None), "value", None),
                         symbol=symbol,
                     )
-            scalp_observer = getattr(
-                self._quick_scalper_observer, "observe", None,
-            )
-            if callable(scalp_observer):
-                try:
-                    scalp_result = scalp_observer(
-                        point_in_time, candidate,
-                        execution_permitted=self._accept_execution,
-                    )
-                    current_source = getattr(
-                        self._quick_scalper_observer,
-                        "current_opportunity", None,
-                    )
-                    current = (
-                        current_source(symbol)
-                        if callable(current_source) else None
-                    )
-                    if current is not None:
-                        self._quick_scalper_projection[symbol] = (
-                            current.state.value,
-                            current.reason.value,
-                            current.assessment.generation_id,
-                        )
-                    elif scalp_result is not None:
-                        self._quick_scalper_projection[symbol] = (
-                            "DISCOVERED", str(scalp_result.reason),
-                            scalp_result.opportunity.generation_id,
-                        )
-                except Exception:
-                    # A disabled/experimental strategy cannot degrade Warrior
-                    # or the market-event consumer.
-                    pass
             self._first_observed.add(symbol)
             self._publications += 1
             if signal is not None or completed:
