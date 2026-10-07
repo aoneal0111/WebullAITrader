@@ -1128,3 +1128,108 @@ def test_jagx_shape_real_gateway_partial_fill_target_stop_and_release():
         D("0"),
     ) == D("10")
     composition.close()
+
+
+def stale_preview_snapshot() -> QuickScalpSnapshot:
+    stale = NOW - timedelta(seconds=7)
+    return replace(snapshot(), bid_timestamp=stale, ask_timestamp=stale)
+
+
+def test_stale_preview_still_stale_confirmation_waits_then_retries_same_generation():
+    before = performance_diagnostics.snapshot()
+    runtime, bridge, quotes = adapter(quotes=Quotes(quote(age=7)))
+    value = stale_preview_snapshot()
+    runtime._snapshots[("FAST", "g1")] = value
+
+    runtime.scalper.observe(value)
+
+    assert quotes.calls == 1
+    assert bridge.entries == []
+    assert quotes.decisions[-1]["rejection_reason"] == "PROVIDER_DATA_STALE"
+    item = runtime.current_opportunity("FAST")
+    assert item.state.value == "WAITING_EXECUTION"
+    assert item.assessment.generation_id == "g1"
+    assert runtime.ownership.owner("FAST") is None
+    assert runtime.scalper.guard.allow("FAST", "g1", NOW)[0]
+    after = performance_diagnostics.snapshot()
+    assert (
+        after.quick_scalper_stale_preview_refresh_available
+        - before.quick_scalper_stale_preview_refresh_available
+    ) == 1
+    assert (
+        after.quick_scalper_stale_preview_refresh_advanced
+        - before.quick_scalper_stale_preview_refresh_advanced
+    ) == 0
+
+    quotes.value = quote()
+    runtime.scalper.observe(value)
+    assert quotes.calls == 2
+    assert len(bridge.entries) == 1
+    # Repeated stream events after submission must not request another quote.
+    runtime.scalper.observe(value)
+    assert quotes.calls == 2
+    assert len(bridge.entries) == 1
+
+
+def test_stale_preview_unavailable_confirmation_can_retry_same_generation():
+    runtime, bridge, quotes = adapter(quotes=Quotes(None))
+    value = stale_preview_snapshot()
+    runtime._snapshots[("FAST", "g1")] = value
+
+    runtime.scalper.observe(value)
+
+    assert quotes.calls == 1
+    assert bridge.entries == []
+    assert runtime.current_opportunity("FAST").state.value == "WAITING_EXECUTION"
+    assert runtime.ownership.owner("FAST") is None
+    quotes.value = quote()
+    runtime.scalper.observe(value)
+    assert quotes.calls == 2
+    assert len(bridge.entries) == 1
+
+
+def test_stale_preview_invalid_authoritative_quotes_never_reach_account_or_bridge():
+    invalid_quotes = (
+        (replace(quote(), bid=D("5.01")), "INVALID_EXECUTION_QUOTE"),
+        (replace(quote(), last=D("0")), "INVALID_EXECUTION_QUOTE"),
+        (replace(quote(), bid=D("0")), "INVALID_EXECUTION_QUOTE"),
+        (replace(quote(), ask=D("0")), "PRICE_NOT_ELIGIBLE"),
+        (replace(quote(), bid=D("4.88"), ask=D("4.89")), "RISK_NOT_AUTHORIZED"),
+        (replace(quote(), last_timestamp=NOW + timedelta(seconds=1)),
+         "PROVIDER_DATA_STALE"),
+        (replace(quote(), bid_timestamp=NOW + timedelta(seconds=1)),
+         "PROVIDER_DATA_STALE"),
+        (replace(quote(), ask_timestamp=NOW + timedelta(seconds=1)),
+         "PROVIDER_DATA_STALE"),
+    )
+    for authoritative, reason in invalid_quotes:
+        runtime, bridge, quotes = adapter(quotes=Quotes(authoritative))
+        account_calls = []
+        runtime.account_context_source = lambda: account_calls.append(True)
+        value = stale_preview_snapshot()
+        runtime._snapshots[("FAST", "g1")] = value
+
+        runtime.scalper.observe(value)
+
+        assert quotes.calls == 1, reason
+        assert account_calls == [], reason
+        assert bridge.entries == [], reason
+        assert quotes.decisions[-1]["rejection_reason"] == reason
+        assert runtime.ownership.owner("FAST") is None, reason
+
+
+def test_stale_preview_disabled_live_and_nonpaper_modes_request_no_quote():
+    for enabled, live, environment in (
+        (False, False, "PAPER"),
+        (True, True, "PAPER"),
+        (True, False, "LIVE"),
+    ):
+        runtime, bridge, quotes = adapter(enabled=enabled, live=live)
+        runtime.environment = environment
+        value = stale_preview_snapshot()
+        runtime._snapshots[("FAST", "g1")] = value
+
+        runtime.scalper.observe(value)
+
+        assert quotes.calls == 0
+        assert bridge.entries == []
