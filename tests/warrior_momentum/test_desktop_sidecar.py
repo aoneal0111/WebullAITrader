@@ -90,7 +90,11 @@ def test_quick_scalper_stream_observes_each_market_event_without_warrior_full_ev
         deliver(scanner, sidecar, quote(T0 + timedelta(seconds=3)))
 
         assert sidecar._publications == publications
-        assert [item[0] for item in scalper.calls] == ["XYZ", "XYZ", "XYZ", "XYZ"]
+        # The initial quote alone cannot form a ScannerObservation because
+        # the adapter has no last trade yet. The first trade and each later
+        # quote are nevertheless delivered to Quick Scalper independently of
+        # Warrior's full-evaluation cadence.
+        assert [item[0] for item in scalper.calls] == ["XYZ", "XYZ", "XYZ"]
         assert all(item[4] is True for item in scalper.calls)
         assert scalper.calls[-1][3] is sidecar._latest["XYZ"]
     finally:
