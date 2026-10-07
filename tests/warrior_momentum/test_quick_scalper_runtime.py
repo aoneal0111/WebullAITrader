@@ -442,18 +442,27 @@ def test_prebridge_attribution_counters_distinguish_quote_risk_and_bridge():
 
 
 def test_reconfirm_reason_counter_attributes_exact_policy_reason():
-    before = performance_diagnostics.snapshot()
-    runtime, bridge, _quotes = adapter()
-    value = replace(
-        snapshot(),
-        short_horizon_range=D("0.01"),
-        velocity_cents_per_minute=D("0.01"),
-        velocity_percent_per_minute=D("0.01"),
+    # The stream snapshot is executable, but the authoritative confirmation
+    # widens the spread enough that expected move no longer covers execution
+    # cost. This exercises the real reconfirmation branch rather than failing
+    # before authorization begins.
+    stamp = NOW - timedelta(seconds=0.2)
+    widened_quote = ExecutionQuoteSnapshot(
+        "FAST", D("5.00"), D("4.70"), D("5.00"),
+        stamp, stamp, stamp, NOW,
     )
+    before = performance_diagnostics.snapshot()
+    runtime, bridge, quotes = adapter(quotes=Quotes(widened_quote))
+    value = snapshot()
     runtime._snapshots[("FAST", "g1")] = value
     runtime.scalper.observe(value)
     after = performance_diagnostics.snapshot()
 
+    assert quotes.calls == 1
+    assert (
+        after.quick_scalper_authorization_attempts
+        - before.quick_scalper_authorization_attempts
+    ) == 1
     assert (
         after.quick_scalper_reconfirm_not_executable
         - before.quick_scalper_reconfirm_not_executable
@@ -462,6 +471,9 @@ def test_reconfirm_reason_counter_attributes_exact_policy_reason():
         after.quick_scalper_reconfirm_insufficient_edge
         - before.quick_scalper_reconfirm_insufficient_edge
     ) == 1
+    assert (
+        after.quick_scalper_bridge_reached - before.quick_scalper_bridge_reached
+    ) == 0
     assert bridge.entries == []
 
 
