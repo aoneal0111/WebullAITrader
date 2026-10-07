@@ -230,9 +230,18 @@ class QuickScalperPolicy:
             return OpportunityReason.INVALID_EXECUTION_QUOTE
         if value.structural_stop <= ZERO or value.structural_stop >= value.ask:
             return OpportunityReason.RISK_NOT_AUTHORIZED
-        for timestamp in (
-            value.last_timestamp, value.bid_timestamp, value.ask_timestamp,
-        ):
+        # Execution safety is anchored to the executable market, not to
+        # whether a new trade happened to print recently.  A retained LAST can
+        # legitimately be older in thin or extended-hours trading while a
+        # current BID/ASK still represents the market we can actually enter
+        # and exit against.  Future provider timestamps remain fail-closed for
+        # every component because they indicate a clock/provenance defect.
+        last_age = Decimal(str(
+            (value.decision_at - value.last_timestamp).total_seconds()
+        ))
+        if last_age < ZERO:
+            return OpportunityReason.PROVIDER_DATA_STALE
+        for timestamp in (value.bid_timestamp, value.ask_timestamp):
             age = Decimal(str((value.decision_at - timestamp).total_seconds()))
             if age < ZERO or age > self.config.provider_freshness_seconds:
                 return OpportunityReason.PROVIDER_DATA_STALE
