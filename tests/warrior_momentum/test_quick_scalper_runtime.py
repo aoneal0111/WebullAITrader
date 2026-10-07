@@ -368,6 +368,79 @@ def test_high_price_scalp_sizes_to_buying_power_instead_of_price_veto():
     assert bridge.entries[0][1] == 2
 
 
+def test_prebridge_attribution_counters_distinguish_quote_risk_and_bridge():
+    # Quote unavailable: authorization was attempted but never reached bridge.
+    before = performance_diagnostics.snapshot()
+    runtime, bridge, _quotes = adapter(quotes=Quotes(None))
+    value = snapshot()
+    runtime._snapshots[("FAST", "g1")] = value
+    runtime.scalper.observe(value)
+    after = performance_diagnostics.snapshot()
+    assert (
+        after.quick_scalper_execution_quote_unavailable
+        - before.quick_scalper_execution_quote_unavailable
+    ) == 1
+    assert (
+        after.quick_scalper_bridge_reached - before.quick_scalper_bridge_reached
+    ) == 0
+    assert bridge.entries == []
+
+    # Risk rejection: fresh quote exists but account sizing fails before bridge.
+    stamp = NOW - timedelta(seconds=0.2)
+    high_quote = ExecutionQuoteSnapshot(
+        "FAST", D("500"), D("499.50"), D("500"),
+        stamp, stamp, stamp, NOW,
+    )
+    before = performance_diagnostics.snapshot()
+    bridge = Bridge()
+    runtime = QuickScalperPaperRuntimeAdapter(
+        config=QuickScalperConfig(enabled=True), bridge=bridge,
+        order_book=PaperOrderBook(),
+        account_context_source=lambda: PaperAccountContext(
+            D("1000"), D("499"), frozenset({"FAST"}),
+            exposure_limit=D("1000"),
+        ),
+        position_quantity_source=lambda _symbol: D("0"),
+        execution_quote_source=Quotes(high_quote), clock=lambda: NOW,
+    )
+    value = replace(
+        snapshot(), last=D("500"), bid=D("499.50"), ask=D("500"),
+        structural_stop=D("490"), short_horizon_range=D("4"),
+        velocity_cents_per_minute=D("3"),
+        velocity_percent_per_minute=D("0.60"),
+    )
+    runtime._snapshots[("FAST", "g1")] = value
+    runtime.scalper.observe(value)
+    after = performance_diagnostics.snapshot()
+    assert (
+        after.quick_scalper_risk_rejected - before.quick_scalper_risk_rejected
+    ) == 1
+    assert (
+        after.quick_scalper_bridge_reached - before.quick_scalper_bridge_reached
+    ) == 0
+    assert bridge.entries == []
+
+    # Happy path: bridge boundary and authorization are counted exactly once.
+    before = performance_diagnostics.snapshot()
+    runtime, bridge, _quotes = adapter()
+    value = snapshot()
+    runtime._snapshots[("FAST", "g1")] = value
+    runtime.scalper.observe(value)
+    after = performance_diagnostics.snapshot()
+    assert (
+        after.quick_scalper_bridge_reached - before.quick_scalper_bridge_reached
+    ) == 1
+    assert (
+        after.quick_scalper_bridge_authorized
+        - before.quick_scalper_bridge_authorized
+    ) == 1
+    assert (
+        after.quick_scalper_bridge_rejected
+        - before.quick_scalper_bridge_rejected
+    ) == 0
+    assert len(bridge.entries) == 1
+
+
 def test_insufficient_buying_power_still_rejects_high_price_scalp():
     stamp = NOW - timedelta(seconds=0.2)
     high_quote = ExecutionQuoteSnapshot(
