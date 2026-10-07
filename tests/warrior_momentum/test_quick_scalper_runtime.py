@@ -171,9 +171,12 @@ def test_stream_assessment_does_not_require_warrior_candidate_or_completed_bar()
     assert (
         after.quick_scalper_assessments - before.quick_scalper_assessments
     ) == 2
+    # Execution is deliberately disabled in this test. The stream path
+    # must still count observations/assessment attempts, but it must not
+    # advance an opportunity into the execution lifecycle or request a quote.
     assert (
         after.quick_scalper_opportunities - before.quick_scalper_opportunities
-    ) == 1
+    ) == 0
     assert (
         after.quick_scalper_authorization_attempts
         - before.quick_scalper_authorization_attempts
