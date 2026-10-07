@@ -285,6 +285,24 @@ class PerformanceSnapshot:
     quick_scalper_bridge_reached: int = 0
     quick_scalper_bridge_rejected: int = 0
     quick_scalper_bridge_authorized: int = 0
+    # Exact bounded reason attribution for post-trigger reconfirmation.
+    quick_scalper_reconfirm_insufficient_edge: int = 0
+    quick_scalper_reconfirm_provider_data_stale: int = 0
+    quick_scalper_reconfirm_invalid_execution_quote: int = 0
+    quick_scalper_reconfirm_session_not_allowed: int = 0
+    quick_scalper_reconfirm_price_not_eligible: int = 0
+    quick_scalper_reconfirm_risk_not_authorized: int = 0
+    quick_scalper_reconfirm_other: int = 0
+    # Exact bounded reason attribution from canonical risk sizing.
+    quick_scalper_risk_invalid_input: int = 0
+    quick_scalper_risk_stop_distance: int = 0
+    quick_scalper_risk_symbol_authorization: int = 0
+    quick_scalper_risk_broker_restriction: int = 0
+    quick_scalper_risk_engine: int = 0
+    quick_scalper_risk_campaign_loss: int = 0
+    quick_scalper_risk_zero_shares: int = 0
+    quick_scalper_risk_exposure: int = 0
+    quick_scalper_risk_other: int = 0
     warrior_full_evaluations: int = 0
     fast_mover_refresh_eligible: int = 0
     fast_mover_refresh_due: int = 0
@@ -402,6 +420,22 @@ class PerformanceDiagnostics:
             "quick_scalper_bridge_reached": 0,
             "quick_scalper_bridge_rejected": 0,
             "quick_scalper_bridge_authorized": 0,
+            "quick_scalper_reconfirm_insufficient_edge": 0,
+            "quick_scalper_reconfirm_provider_data_stale": 0,
+            "quick_scalper_reconfirm_invalid_execution_quote": 0,
+            "quick_scalper_reconfirm_session_not_allowed": 0,
+            "quick_scalper_reconfirm_price_not_eligible": 0,
+            "quick_scalper_reconfirm_risk_not_authorized": 0,
+            "quick_scalper_reconfirm_other": 0,
+            "quick_scalper_risk_invalid_input": 0,
+            "quick_scalper_risk_stop_distance": 0,
+            "quick_scalper_risk_symbol_authorization": 0,
+            "quick_scalper_risk_broker_restriction": 0,
+            "quick_scalper_risk_engine": 0,
+            "quick_scalper_risk_campaign_loss": 0,
+            "quick_scalper_risk_zero_shares": 0,
+            "quick_scalper_risk_exposure": 0,
+            "quick_scalper_risk_other": 0,
             "warrior_full_evaluations": 0,
             # Bounded Warrior fast-mover cadence/acceleration diagnostics.
             "fast_mover_refresh_eligible": 0,
