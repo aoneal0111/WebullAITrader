@@ -17,6 +17,7 @@ from uuid import uuid4
 from app.paper_trading.order_book import PaperOrderBook
 from app.paper_trading.order_models import OrderSide
 from app.momentum_scanner.models import ScannerObservation
+from app.performance_diagnostics import performance_diagnostics
 
 from .autonomous_paper import (
     AutonomousPaperExecutionBridge, PaperEntryAuthorizationResult,
@@ -265,7 +266,7 @@ class QuickScalperPaperRuntimeAdapter:
             )
             if preview.decision is ScalpDecision.EXECUTABLE:
                 performance_diagnostics.increment("quick_scalper_executable")
-            elif preview.decision is ScalpDecision.REJECTED:
+            elif preview.decision is ScalpDecision.REJECTED_HARD_SAFETY:
                 performance_diagnostics.increment("quick_scalper_rejections")
             event = (
                 'SCALP_EXECUTABLE'
