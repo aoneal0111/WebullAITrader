@@ -798,12 +798,17 @@ class WarriorForwardCaptureService:
         quality_wait = candidate.execution_quality in {
             ExecutionQuality.POOR, ExecutionQuality.TEMPORARILY_BLOCKED,
         }
+        # Evaluate all adaptive constraints from the same point-in-time
+        # snapshot.  These are not mutually exclusive gates; retaining the
+        # whole constraint set prevents the UI/runtime from cycling through
+        # one veto at a time while the same opportunity remains valid.
         if executable is None:
             reasons.append(OpportunityReason.EXCESSIVE_CURRENT_STRUCTURE_DISPLACEMENT)
-        elif quality_wait:
+        if quality_wait:
             reasons.append(OpportunityReason.EXECUTION_QUALITY_WAIT)
-        elif (
-            _requires_executable_trigger_confirmation(signal.setup_type)
+        if (
+            executable is not None
+            and _requires_executable_trigger_confirmation(signal.setup_type)
             and (
                 bid is None
                 or bid < (
@@ -811,15 +816,10 @@ class WarriorForwardCaptureService:
                 )
             )
         ):
-            # A long breakout is not executable merely because the offer
-            # touches its trigger while the bid remains below it. This is a
-            # recoverable condition: preserve the armed generation and
-            # reevaluate it when a later fresh quote proves executable-side
-            # trigger acceptance.
             reasons.append(
                 OpportunityReason.EXECUTABLE_TRIGGER_NOT_CONFIRMED
             )
-        elif not reward_ok:
+        if executable is not None and not reward_ok:
             reasons.append(OpportunityReason.INSUFFICIENT_CURRENT_REWARD)
         # Displacement and remaining reward are current executable-market
         # measurements.  They forbid entry now, but a pullback/tighter market
@@ -1646,102 +1646,89 @@ class WarriorForwardCaptureService:
                 )
                 assessed = self._bind_opportunity_state(assessed, opportunity)
                 opportunity_reasons = set(opportunity_assessment.reason_codes)
-                if (
-                    OpportunityReason.EXCESSIVE_CURRENT_STRUCTURE_DISPLACEMENT
-                    in opportunity_reasons
-                ):
-                    downstream_clear_reason = "CLEAR_PRICE_DISPLACEMENT"
-                    performance_diagnostics.record_entry_funnel(
-                        symbol, stage="ADAPTIVE_PRICE_GATE", outcome="REJECTED",
-                        reason="ENTRY_PRICE_DISPLACED",
-                        timestamp=value.evaluation_timestamp or observation.timestamp,
-                    )
-                    shadow_reasons.append(ReasonCode.ENTRY_PRICE_DISPLACED.value)
-                    records.append(_transition_record(
-                        assessed, ForwardTransition.ENTRY_BLOCKED,
-                        (ReasonCode.ENTRY_PRICE_DISPLACED.value,),
-                        (*_gate_diagnostics(assessed, self.config, account=account),
-                         {"gate": "execution_entry_price", "passed": False,
-                          "observed": str(value.observation.ask),
-                          "limit": "WITHIN_ADAPTIVE_DISPLACEMENT"}),
-                    ))
-                    signal = None
-                    position = None
-                elif OpportunityReason.INSUFFICIENT_CURRENT_REWARD in opportunity_reasons:
-                    downstream_clear_reason = "CLEAR_REWARD"
-                    performance_diagnostics.record_entry_funnel(
-                        symbol, stage="REWARD_GATE", outcome="REJECTED",
-                        reason="INSUFFICIENT_REMAINING_REWARD",
-                        timestamp=value.evaluation_timestamp or observation.timestamp,
-                    )
-                    records.append(_transition_record(
-                        assessed, ForwardTransition.ENTRY_BLOCKED,
-                        ("INSUFFICIENT_REMAINING_REWARD",),
-                        ({"gate": "remaining_reward", "passed": False,
-                          "entry": str(opportunity_assessment.executable_entry),
-                          "stop": str(signal.stop_price),
-                          "targets": tuple(str(t) for t in signal.target_levels)},),
-                    ))
-                    shadow_reasons.append("INSUFFICIENT_REMAINING_REWARD")
-                    assessed = replace(
-                        assessed, status=CandidateStatus.AWAITING_EXECUTION_DATA,
-                        reason_codes=tuple(dict.fromkeys((
-                            *assessed.reason_codes,
-                            ReasonCode.INSUFFICIENT_REMAINING_REWARD,
-                        ))),
-                        explanations=(
-                            *assessed.explanations,
-                            "Entry waiting: insufficient reward remains at the current executable price; the same valid generation will be reevaluated.",
-                        ),
-                    )
-                    signal = None
-                    position = None
-                elif OpportunityReason.EXECUTION_QUALITY_WAIT in opportunity_reasons:
-                    downstream_clear_reason = "WAIT_EXECUTION_QUALITY"
-                    performance_diagnostics.record_entry_funnel(
-                        symbol, stage="EXECUTION_QUALITY", outcome="WAIT",
-                        timestamp=value.evaluation_timestamp or observation.timestamp,
-                        reason=assessed.execution_block_reason or assessed.execution_quality.value,
-                        spread=assessed.spread_percent,
-                        lifecycle_id=opportunity_assessment.lifecycle_id,
-                    )
-                    assessed = replace(
-                        assessed,
-                        status=CandidateStatus.AWAITING_EXECUTION_DATA,
-                        reason_codes=tuple(dict.fromkeys((
-                            *assessed.reason_codes,
-                            ReasonCode.EXECUTION_QUALITY_WAIT,
-                        ))),
-                    )
-                    signal = None
-                    position = None
-                elif (
-                    OpportunityReason.EXECUTABLE_TRIGGER_NOT_CONFIRMED
-                    in opportunity_reasons
-                ):
-                    downstream_clear_reason = 'WAIT_EXECUTABLE_TRIGGER'
-                    performance_diagnostics.record_entry_funnel(
-                        symbol, stage='EXECUTABLE_TRIGGER_CONFIRMATION',
-                        outcome='WAIT',
-                        timestamp=value.evaluation_timestamp or observation.timestamp,
-                        reason='EXECUTABLE_TRIGGER_NOT_CONFIRMED',
-                        bid=observation.bid,
-                        trigger=(
-                            signal.structural_entry_trigger
-                            or signal.entry_trigger
-                        ),
-                        lifecycle_id=opportunity_assessment.lifecycle_id,
-                    )
+                if opportunity_reasons:
+                    # Adaptive market/timing constraints keep this technical
+                    # generation alive. Record every current constraint from
+                    # one snapshot instead of allowing serial gate churn to
+                    # manufacture a different "rejection" on each tick.
+                    downstream_clear_reason = "WAIT_ADAPTIVE_OPPORTUNITY"
+                    adaptive_labels: list[str] = []
+
+                    if (
+                        OpportunityReason.EXCESSIVE_CURRENT_STRUCTURE_DISPLACEMENT
+                        in opportunity_reasons
+                    ):
+                        adaptive_labels.append("price displacement")
+                        performance_diagnostics.record_entry_funnel(
+                            symbol, stage="ADAPTIVE_PRICE_GATE", outcome="WAIT",
+                            reason="ENTRY_PRICE_DISPLACED",
+                            timestamp=value.evaluation_timestamp or observation.timestamp,
+                            lifecycle_id=opportunity_assessment.lifecycle_id,
+                        )
+                        shadow_reasons.append(ReasonCode.ENTRY_PRICE_DISPLACED.value)
+
+                    if OpportunityReason.INSUFFICIENT_CURRENT_REWARD in opportunity_reasons:
+                        adaptive_labels.append("remaining reward")
+                        performance_diagnostics.record_entry_funnel(
+                            symbol, stage="REWARD_GATE", outcome="WAIT",
+                            reason="INSUFFICIENT_REMAINING_REWARD",
+                            timestamp=value.evaluation_timestamp or observation.timestamp,
+                            lifecycle_id=opportunity_assessment.lifecycle_id,
+                        )
+                        shadow_reasons.append("INSUFFICIENT_REMAINING_REWARD")
+
+                    if OpportunityReason.EXECUTION_QUALITY_WAIT in opportunity_reasons:
+                        adaptive_labels.append("execution quality")
+                        performance_diagnostics.record_entry_funnel(
+                            symbol, stage="EXECUTION_QUALITY", outcome="WAIT",
+                            timestamp=value.evaluation_timestamp or observation.timestamp,
+                            reason=assessed.execution_block_reason or assessed.execution_quality.value,
+                            spread=assessed.spread_percent,
+                            lifecycle_id=opportunity_assessment.lifecycle_id,
+                        )
+
+                    if (
+                        OpportunityReason.EXECUTABLE_TRIGGER_NOT_CONFIRMED
+                        in opportunity_reasons
+                    ):
+                        adaptive_labels.append("trigger confirmation")
+                        performance_diagnostics.record_entry_funnel(
+                            symbol, stage="EXECUTABLE_TRIGGER_CONFIRMATION",
+                            outcome="WAIT",
+                            timestamp=value.evaluation_timestamp or observation.timestamp,
+                            reason="EXECUTABLE_TRIGGER_NOT_CONFIRMED",
+                            bid=observation.bid,
+                            trigger=(
+                                signal.structural_entry_trigger
+                                or signal.entry_trigger
+                            ),
+                            lifecycle_id=opportunity_assessment.lifecycle_id,
+                        )
+
+                    adaptive_reason_codes = []
+                    if OpportunityReason.EXECUTION_QUALITY_WAIT in opportunity_reasons:
+                        adaptive_reason_codes.append(ReasonCode.EXECUTION_QUALITY_WAIT)
+                    if OpportunityReason.INSUFFICIENT_CURRENT_REWARD in opportunity_reasons:
+                        adaptive_reason_codes.append(ReasonCode.INSUFFICIENT_REMAINING_REWARD)
                     assessed = replace(
                         assessed,
                         status=CandidateStatus.AWAITING_EXECUTION_DATA,
+                        reason_codes=tuple(dict.fromkeys((
+                            *assessed.reason_codes,
+                            *adaptive_reason_codes,
+                        ))),
                         explanations=(
                             *assessed.explanations,
-                            'Entry waiting: the offer reached the trigger but '
-                            'the executable bid has not confirmed it; the same '
-                            'generation will be reevaluated.',
+                            "Adaptive opportunity retained; current constraints: "
+                            + ", ".join(adaptive_labels)
+                            + ". Warrior will reevaluate this same generation while "
+                              "Quick Scalper remains independently eligible under shared safety.",
                         ),
                     )
+                    # Do not create an ENTRY_BLOCKED transition for soft
+                    # constraints. The durable Opportunity Book owns this as
+                    # WAITING_EXECUTION, allowing later quotes or another
+                    # strategy to act without recreating the opportunity.
                     signal = None
                     position = None
                 else:
@@ -1761,28 +1748,28 @@ class WarriorForwardCaptureService:
                     )
                     signal = executable_signal
                     position = size_position(
-                    signal, account_equity=account.equity,
-                    buying_power=account.buying_power,
-                    allowed_symbols=account.allowed_symbols,
-                    existing_exposure=account.existing_exposure,
-                    exposure_limit=account.exposure_limit,
-                    risk_engine_approved=account.risk_engine_approved,
-                    risk_rejection_reason=account.risk_rejection_reason,
-                    risk_context={
-                        "starting_equity": account.starting_equity,
-                        "current_equity": account.current_equity,
-                        "campaign_loss_fraction": account.campaign_loss_fraction,
-                        "campaign_equity_floor": account.campaign_equity_floor,
-                    },
-                    broker_restriction=account.broker_restriction,
-                    config=self.config.risk,
-                    symbol_authorized=symbol_authorization.authorized,
-                    diagnostic=lambda reason, details: performance_diagnostics.record_entry_funnel(
-                        symbol, stage="RISK_AUTHORIZATION", outcome="REJECTED",
-                        reason=reason, timestamp=value.evaluation_timestamp or observation.timestamp,
-                        setup_type=signal.setup_type.value,
-                        lifecycle_id=lifecycle_identity(signal), **details,
-                    ),
+                        signal, account_equity=account.equity,
+                        buying_power=account.buying_power,
+                        allowed_symbols=account.allowed_symbols,
+                        existing_exposure=account.existing_exposure,
+                        exposure_limit=account.exposure_limit,
+                        risk_engine_approved=account.risk_engine_approved,
+                        risk_rejection_reason=account.risk_rejection_reason,
+                        risk_context={
+                            "starting_equity": account.starting_equity,
+                            "current_equity": account.current_equity,
+                            "campaign_loss_fraction": account.campaign_loss_fraction,
+                            "campaign_equity_floor": account.campaign_equity_floor,
+                        },
+                        broker_restriction=account.broker_restriction,
+                        config=self.config.risk,
+                        symbol_authorized=symbol_authorization.authorized,
+                        diagnostic=lambda reason, details: performance_diagnostics.record_entry_funnel(
+                            symbol, stage="RISK_AUTHORIZATION", outcome="REJECTED",
+                            reason=reason, timestamp=value.evaluation_timestamp or observation.timestamp,
+                            setup_type=signal.setup_type.value,
+                            lifecycle_id=lifecycle_identity(signal), **details,
+                        ),
                     )
                 if signal is not None and position is not None and position.approved:
                     performance_diagnostics.record_entry_funnel(
