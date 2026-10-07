@@ -270,6 +270,14 @@ class PerformanceSnapshot:
     latency_diagnostics_persisted: int = 0
     callback_threshold_events: int = 0
     runtime_projection_events_rejected: int = 0
+    quick_scalper_stream_observations: int = 0
+    quick_scalper_assessments: int = 0
+    quick_scalper_opportunities: int = 0
+    quick_scalper_executable: int = 0
+    quick_scalper_authorization_attempts: int = 0
+    quick_scalper_rejections: int = 0
+    quick_scalper_orders_submitted: int = 0
+    warrior_full_evaluations: int = 0
     fast_mover_refresh_eligible: int = 0
     fast_mover_refresh_due: int = 0
     fast_mover_refresh_executed: int = 0
@@ -366,6 +374,17 @@ class PerformanceDiagnostics:
             "latency_diagnostics_persisted": 0,
             "callback_threshold_events": 0,
             "runtime_projection_events_rejected": 0,
+            # Constant-storage runtime proof that the first-class Quick Scalper
+            # consumes shared intraminute data independently of Warrior's
+            # bounded full-evaluation cadence.
+            "quick_scalper_stream_observations": 0,
+            "quick_scalper_assessments": 0,
+            "quick_scalper_opportunities": 0,
+            "quick_scalper_executable": 0,
+            "quick_scalper_authorization_attempts": 0,
+            "quick_scalper_rejections": 0,
+            "quick_scalper_orders_submitted": 0,
+            "warrior_full_evaluations": 0,
             # Bounded Warrior fast-mover cadence/acceleration diagnostics.
             "fast_mover_refresh_eligible": 0,
             "fast_mover_refresh_due": 0,

@@ -11,6 +11,7 @@ from app.market_data.models import (
     MarketEvent, MarketEventType, QuotePayload,
 )
 from app.paper_trading.order_book import PaperOrderBook
+from app.performance_diagnostics import performance_diagnostics
 from app.paper_trading.order_models import (
     OrderRequest, OrderSide, OrderStatus, OrderType, PaperOrder,
 )
@@ -126,6 +127,7 @@ def adapter(
 
 
 def test_stream_assessment_does_not_require_warrior_candidate_or_completed_bar():
+    before = performance_diagnostics.snapshot()
     runtime, bridge, _quotes = adapter()
     first_at = NOW - timedelta(seconds=2)
     second_at = NOW
@@ -161,9 +163,28 @@ def test_stream_assessment_does_not_require_warrior_candidate_or_completed_bar()
 
     assert len(runtime._stream_samples["FAST"]) == 2
     assert bridge.entries == []
+    after = performance_diagnostics.snapshot()
+    assert (
+        after.quick_scalper_stream_observations
+        - before.quick_scalper_stream_observations
+    ) == 2
+    assert (
+        after.quick_scalper_assessments - before.quick_scalper_assessments
+    ) == 2
+    # Execution is deliberately disabled in this test. The stream path
+    # must still count observations/assessment attempts, but it must not
+    # advance an opportunity into the execution lifecycle or request a quote.
+    assert (
+        after.quick_scalper_opportunities - before.quick_scalper_opportunities
+    ) == 0
+    assert (
+        after.quick_scalper_authorization_attempts
+        - before.quick_scalper_authorization_attempts
+    ) == 0
 
 
 def test_canonical_scalp_intent_submits_once_without_warrior_signal_coercion():
+    before = performance_diagnostics.snapshot()
     runtime, bridge, quotes = adapter()
     value = snapshot()
     runtime._snapshots[("FAST", "g1")] = value
@@ -178,6 +199,15 @@ def test_canonical_scalp_intent_submits_once_without_warrior_signal_coercion():
     assert intent.strategy_id == "QUICK_SCALPER"
     assert shares > 0 and risk > 0
     assert values["provenance"] == "QUICK_SCALPER_CANONICAL_ENTRY"
+    after = performance_diagnostics.snapshot()
+    assert (
+        after.quick_scalper_authorization_attempts
+        - before.quick_scalper_authorization_attempts
+    ) == 1
+    assert (
+        after.quick_scalper_orders_submitted
+        - before.quick_scalper_orders_submitted
+    ) == 1
 
 
 def test_lifecycle_observability_precedes_authorization_without_extra_quote():
