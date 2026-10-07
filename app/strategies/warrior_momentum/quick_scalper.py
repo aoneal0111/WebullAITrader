@@ -364,7 +364,24 @@ class QuickScalper:
             WarriorOpportunityState.ENTERED,
         }:
             return assessed
-        if not self.config.enabled or assessed.decision is not ScalpDecision.EXECUTABLE:
+        if not self.config.enabled:
+            return assessed
+        stale_preview_refresh = (
+            assessed.decision is ScalpDecision.REJECTED_HARD_SAFETY
+            and assessed.reason == OpportunityReason.PROVIDER_DATA_STALE.value
+            and not any(
+                timestamp > snapshot.decision_at
+                for timestamp in (
+                    snapshot.last_timestamp,
+                    snapshot.bid_timestamp,
+                    snapshot.ask_timestamp,
+                )
+            )
+        )
+        if (
+            assessed.decision is not ScalpDecision.EXECUTABLE
+            and not stale_preview_refresh
+        ):
             return assessed
         allowed, reason = self.guard.allow(
             snapshot.symbol, snapshot.generation_id, snapshot.decision_at,
