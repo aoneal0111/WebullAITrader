@@ -1192,7 +1192,7 @@ def test_stale_preview_invalid_authoritative_quotes_never_reach_account_or_bridg
     invalid_quotes = (
         (replace(quote(), bid=D("5.01")), "INVALID_EXECUTION_QUOTE"),
         (replace(quote(), last=D("0")), "INVALID_EXECUTION_QUOTE"),
-        (replace(quote(), bid=D("0")), "INVALID_EXECUTION_QUOTE"),
+        (replace(quote(), bid=D("0")), "CANONICAL_SUBMISSION_FAILURE"),
         (replace(quote(), ask=D("0")), "PRICE_NOT_ELIGIBLE"),
         (replace(quote(), bid=D("4.88"), ask=D("4.89")), "RISK_NOT_AUTHORIZED"),
         (replace(quote(), last_timestamp=NOW + timedelta(seconds=1)),
@@ -1214,7 +1214,15 @@ def test_stale_preview_invalid_authoritative_quotes_never_reach_account_or_bridg
         assert quotes.calls == 1, reason
         assert account_calls == [], reason
         assert bridge.entries == [], reason
-        assert quotes.decisions[-1]["rejection_reason"] == reason
+        if reason == "CANONICAL_SUBMISSION_FAILURE":
+            # The shared assessment contract rejects a non-positive BID
+            # before the policy can publish its rejection record.
+            assert quotes.decisions == []
+            item = runtime.current_opportunity("FAST")
+            assert item.authorization_result == "REJECTED"
+            assert item.authorization_reason == reason
+        else:
+            assert quotes.decisions[-1]["rejection_reason"] == reason
         assert runtime.ownership.owner("FAST") is None, reason
 
 
