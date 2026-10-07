@@ -303,6 +303,23 @@ class PerformanceSnapshot:
     quick_scalper_risk_zero_shares: int = 0
     quick_scalper_risk_exposure: int = 0
     quick_scalper_risk_other: int = 0
+    # Exact bounded attribution for authoritative confirmation freshness.
+    quick_scalper_freshness_last_stale: int = 0
+    quick_scalper_freshness_bid_stale: int = 0
+    quick_scalper_freshness_ask_stale: int = 0
+    quick_scalper_freshness_last_future: int = 0
+    quick_scalper_freshness_bid_future: int = 0
+    quick_scalper_freshness_ask_future: int = 0
+    quick_scalper_freshness_last_only: int = 0
+    quick_scalper_freshness_bid_only: int = 0
+    quick_scalper_freshness_ask_only: int = 0
+    quick_scalper_freshness_multiple: int = 0
+    quick_scalper_freshness_last_age_ms_total: int = 0
+    quick_scalper_freshness_bid_age_ms_total: int = 0
+    quick_scalper_freshness_ask_age_ms_total: int = 0
+    quick_scalper_freshness_last_age_ms_max: int = 0
+    quick_scalper_freshness_bid_age_ms_max: int = 0
+    quick_scalper_freshness_ask_age_ms_max: int = 0
     warrior_full_evaluations: int = 0
     fast_mover_refresh_eligible: int = 0
     fast_mover_refresh_due: int = 0
@@ -436,6 +453,22 @@ class PerformanceDiagnostics:
             "quick_scalper_risk_zero_shares": 0,
             "quick_scalper_risk_exposure": 0,
             "quick_scalper_risk_other": 0,
+            "quick_scalper_freshness_last_stale": 0,
+            "quick_scalper_freshness_bid_stale": 0,
+            "quick_scalper_freshness_ask_stale": 0,
+            "quick_scalper_freshness_last_future": 0,
+            "quick_scalper_freshness_bid_future": 0,
+            "quick_scalper_freshness_ask_future": 0,
+            "quick_scalper_freshness_last_only": 0,
+            "quick_scalper_freshness_bid_only": 0,
+            "quick_scalper_freshness_ask_only": 0,
+            "quick_scalper_freshness_multiple": 0,
+            "quick_scalper_freshness_last_age_ms_total": 0,
+            "quick_scalper_freshness_bid_age_ms_total": 0,
+            "quick_scalper_freshness_ask_age_ms_total": 0,
+            "quick_scalper_freshness_last_age_ms_max": 0,
+            "quick_scalper_freshness_bid_age_ms_max": 0,
+            "quick_scalper_freshness_ask_age_ms_max": 0,
             "warrior_full_evaluations": 0,
             # Bounded Warrior fast-mover cadence/acceleration diagnostics.
             "fast_mover_refresh_eligible": 0,
@@ -1087,6 +1120,42 @@ class PerformanceDiagnostics:
             raise ValueError("performance counter increment cannot be negative")
         with self._lock:
             self._counters[name] += amount
+
+    def record_quick_scalper_freshness(
+        self, *, last_age_ms: int, bid_age_ms: int, ask_age_ms: int,
+        limit_ms: int,
+    ) -> None:
+        """Record bounded component-level freshness evidence for one rejection."""
+        try:
+            ages = {
+                "last": int(last_age_ms),
+                "bid": int(bid_age_ms),
+                "ask": int(ask_age_ms),
+            }
+            limit = max(0, int(limit_ms))
+            with self._lock:
+                stale = []
+                for name, age in ages.items():
+                    if age < 0:
+                        self._counters[f"quick_scalper_freshness_{name}_future"] += 1
+                    elif age > limit:
+                        stale.append(name)
+                        self._counters[f"quick_scalper_freshness_{name}_stale"] += 1
+                        self._counters[
+                            f"quick_scalper_freshness_{name}_age_ms_total"
+                        ] += age
+                        maximum = f"quick_scalper_freshness_{name}_age_ms_max"
+                        self._counters[maximum] = max(
+                            self._counters[maximum], age,
+                        )
+                if len(stale) == 1:
+                    self._counters[
+                        f"quick_scalper_freshness_{stale[0]}_only"
+                    ] += 1
+                elif len(stale) > 1:
+                    self._counters["quick_scalper_freshness_multiple"] += 1
+        except Exception:
+            return
 
     def record_entry_counter(self, name: str, amount: int = 1) -> None:
         """Record bounded entry-lifecycle counters without performing I/O."""
