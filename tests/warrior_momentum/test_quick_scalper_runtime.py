@@ -6,6 +6,7 @@ from decimal import Decimal as D
 from types import SimpleNamespace
 
 from app.momentum_scanner import AssetClass
+from app.momentum_scanner.models import CatalystStatus, CatalystType, ScannerObservation
 from app.market_data.models import (
     MarketEvent, MarketEventType, QuotePayload,
 )
@@ -122,6 +123,44 @@ def adapter(
         ),
     )
     return runtime, bridge, quotes
+
+
+def test_stream_assessment_does_not_require_warrior_candidate_or_completed_bar():
+    runtime, bridge, _quotes = adapter()
+    first_at = NOW - timedelta(seconds=2)
+    second_at = NOW
+    first = ScannerObservation(
+        symbol="FAST", timestamp=first_at, price=D("4.96"),
+        previous_close=D("4.00"), current_volume=D("1000000"),
+        average_30_day_volume=D("200000"), float_shares=D("5000000"),
+        bid=D("4.95"), ask=D("4.96"), catalyst=CatalystType.OTHER,
+        catalyst_headline=None, tradable=True, halted=False,
+        catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=first_at, quote_timestamp=first_at,
+        trade_timestamp=first_at, bid_size=D("500"), ask_size=D("500"),
+    )
+    second = ScannerObservation(
+        symbol="FAST", timestamp=second_at, price=D("5.01"),
+        previous_close=D("4.00"), current_volume=D("1010000"),
+        average_30_day_volume=D("200000"), float_shares=D("5000000"),
+        bid=D("5.00"), ask=D("5.01"), catalyst=CatalystType.OTHER,
+        catalyst_headline=None, tradable=True, halted=False,
+        catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=second_at, quote_timestamp=second_at,
+        trade_timestamp=second_at, bid_size=D("500"), ask_size=D("500"),
+    )
+
+    assert runtime.observe_stream_event(
+        first, decision_at=first_at, session="REGULAR",
+        context=None, execution_permitted=False,
+    ) is None
+    assert runtime.observe_stream_event(
+        second, decision_at=second_at, session="REGULAR",
+        context=None, execution_permitted=False,
+    ) is None
+
+    assert len(runtime._stream_samples["FAST"]) == 2
+    assert bridge.entries == []
 
 
 def test_canonical_scalp_intent_submits_once_without_warrior_signal_coercion():
