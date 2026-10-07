@@ -471,6 +471,7 @@ class QuickScalperPaperRuntimeAdapter:
         confirmed = self.scalper.policy.assess(refreshed)
         if confirmed.decision is not ScalpDecision.EXECUTABLE:
             performance_diagnostics.increment("quick_scalper_reconfirm_not_executable")
+            self._increment_reconfirm_reason(confirmed.reason)
             self._record_quote_decision(
                 evaluated_at, quote, "REJECTED", confirmed.reason,
             )
@@ -496,6 +497,7 @@ class QuickScalperPaperRuntimeAdapter:
             risk_engine_approved=account.risk_engine_approved,
             broker_restriction=account.broker_restriction,
             config=self.risk_config,
+            diagnostic=self._risk_diagnostic,
         )
         if not sized.approved:
             performance_diagnostics.increment("quick_scalper_risk_rejected")
@@ -855,6 +857,36 @@ class QuickScalperPaperRuntimeAdapter:
         except Exception:
             return None
         return parsed if parsed.is_finite() and parsed > ZERO else None
+
+    @staticmethod
+    def _increment_reconfirm_reason(reason: str | None) -> None:
+        mapping = {
+            "INSUFFICIENT_NET_EXECUTABLE_EDGE": "quick_scalper_reconfirm_insufficient_edge",
+            "PROVIDER_DATA_STALE": "quick_scalper_reconfirm_provider_data_stale",
+            "INVALID_EXECUTION_QUOTE": "quick_scalper_reconfirm_invalid_execution_quote",
+            "SESSION_NOT_ALLOWED": "quick_scalper_reconfirm_session_not_allowed",
+            "PRICE_NOT_ELIGIBLE": "quick_scalper_reconfirm_price_not_eligible",
+            "RISK_NOT_AUTHORIZED": "quick_scalper_reconfirm_risk_not_authorized",
+        }
+        performance_diagnostics.increment(
+            mapping.get(reason, "quick_scalper_reconfirm_other")
+        )
+
+    @staticmethod
+    def _risk_diagnostic(reason: str, _details: dict[str, object]) -> None:
+        mapping = {
+            "RISK_REJECTED_INVALID_INPUT": "quick_scalper_risk_invalid_input",
+            "RISK_REJECTED_STOP_DISTANCE": "quick_scalper_risk_stop_distance",
+            "RISK_REJECTED_SYMBOL_AUTHORIZATION": "quick_scalper_risk_symbol_authorization",
+            "RISK_REJECTED_BROKER_RESTRICTION": "quick_scalper_risk_broker_restriction",
+            "RISK_REJECTED_ENGINE": "quick_scalper_risk_engine",
+            "RISK_REJECTED_CAMPAIGN_LOSS": "quick_scalper_risk_campaign_loss",
+            "RISK_REJECTED_ZERO_SHARES": "quick_scalper_risk_zero_shares",
+            "RISK_REJECTED_EXPOSURE": "quick_scalper_risk_exposure",
+        }
+        performance_diagnostics.increment(
+            mapping.get(reason, "quick_scalper_risk_other")
+        )
 
     def _record_quote_decision(
         self, evaluated_at: datetime, quote: ExecutionQuoteSnapshot,
