@@ -221,9 +221,11 @@ class QuickScalperPaperRuntimeAdapter:
         '''
         if not self.enabled:
             return None
+        performance_diagnostics.increment("quick_scalper_stream_observations")
         symbol = observation.symbol.strip().upper()
         with self._lock:
             self._emit('SCALP_ASSESSED', symbol)
+            performance_diagnostics.increment("quick_scalper_assessments")
             snapshot = self._stream_snapshot(
                 observation, decision_at=decision_at, session=session,
                 context=context,
@@ -255,11 +257,16 @@ class QuickScalperPaperRuntimeAdapter:
                 'SCALP_OPPORTUNITY', snapshot.symbol,
                 generation=snapshot.generation_id,
             )
+            performance_diagnostics.increment("quick_scalper_opportunities")
             preview = self.scalper.policy.assess(snapshot)
             self._emit(
                 'SCALP_ARMED', snapshot.symbol,
                 generation=snapshot.generation_id,
             )
+            if preview.decision is ScalpDecision.EXECUTABLE:
+                performance_diagnostics.increment("quick_scalper_executable")
+            elif preview.decision is ScalpDecision.REJECTED:
+                performance_diagnostics.increment("quick_scalper_rejections")
             event = (
                 'SCALP_EXECUTABLE'
                 if preview.decision is ScalpDecision.EXECUTABLE
@@ -445,8 +452,10 @@ class QuickScalperPaperRuntimeAdapter:
                 False, False, False, False, "PAPER_ONLY_DISABLED",
             )
         # Exactly one authoritative confirmation call per authorization.
+        performance_diagnostics.increment("quick_scalper_authorization_attempts")
         quote = self.execution_quote_source(opportunity.symbol)
         if quote is None:
+            performance_diagnostics.increment("quick_scalper_rejections")
             return CanonicalScalpSubmission(
                 False, False, False, False, "EXECUTION_QUOTE_UNAVAILABLE",
             )
@@ -462,11 +471,13 @@ class QuickScalperPaperRuntimeAdapter:
             self._record_quote_decision(
                 evaluated_at, quote, "REJECTED", confirmed.reason,
             )
+            performance_diagnostics.increment("quick_scalper_rejections")
             return CanonicalScalpSubmission(
                 False, False, False, False, confirmed.reason,
             )
         account = self.account_context_source()
         if account is None:
+            performance_diagnostics.increment("quick_scalper_rejections")
             return CanonicalScalpSubmission(
                 False, False, False, False, "ACCOUNT_UNAVAILABLE",
             )
@@ -483,6 +494,7 @@ class QuickScalperPaperRuntimeAdapter:
             config=self.risk_config,
         )
         if not sized.approved:
+            performance_diagnostics.increment("quick_scalper_rejections")
             self._record_quote_decision(
                 evaluated_at, quote, "REJECTED", "RISK_REJECTED",
             )
@@ -497,6 +509,7 @@ class QuickScalperPaperRuntimeAdapter:
             ).to_integral_value(rounding=ROUND_FLOOR))
             shares = min(shares, executable_cap)
             if shares <= 0:
+                performance_diagnostics.increment("quick_scalper_rejections")
                 self._record_quote_decision(
                     evaluated_at, quote, 'REJECTED',
                     'INSUFFICIENT_EXECUTABLE_SIZE',
@@ -544,6 +557,7 @@ class QuickScalperPaperRuntimeAdapter:
             qty=shares, reason=decision.reason.value,
         )
         if accepted:
+            performance_diagnostics.increment("quick_scalper_orders_submitted")
             self._emit(
                 "SCALP_ORDER_SUBMITTED", refreshed.symbol,
                 generation=refreshed.generation_id, qty=shares,
