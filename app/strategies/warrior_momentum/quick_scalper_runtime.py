@@ -266,8 +266,10 @@ class QuickScalperPaperRuntimeAdapter:
             )
             if preview.decision is ScalpDecision.EXECUTABLE:
                 performance_diagnostics.increment("quick_scalper_executable")
-            elif preview.decision is ScalpDecision.REJECTED_HARD_SAFETY:
-                performance_diagnostics.increment("quick_scalper_rejections")
+            else:
+                self._increment_initial_reason(preview.reason)
+                if preview.decision is ScalpDecision.REJECTED_HARD_SAFETY:
+                    performance_diagnostics.increment("quick_scalper_rejections")
             event = (
                 'SCALP_EXECUTABLE'
                 if preview.decision is ScalpDecision.EXECUTABLE
@@ -876,6 +878,20 @@ class QuickScalperPaperRuntimeAdapter:
         except Exception:
             return None
         return parsed if parsed.is_finite() and parsed > ZERO else None
+
+    @staticmethod
+    def _increment_initial_reason(reason: str | None) -> None:
+        mapping = {
+            "INSUFFICIENT_NET_EXECUTABLE_EDGE": "quick_scalper_initial_insufficient_edge",
+            "PROVIDER_DATA_STALE": "quick_scalper_initial_provider_data_stale",
+            "INVALID_EXECUTION_QUOTE": "quick_scalper_initial_invalid_execution_quote",
+            "SESSION_NOT_ALLOWED": "quick_scalper_initial_session_not_allowed",
+            "PRICE_NOT_ELIGIBLE": "quick_scalper_initial_price_not_eligible",
+            "RISK_NOT_AUTHORIZED": "quick_scalper_initial_risk_not_authorized",
+        }
+        performance_diagnostics.increment(
+            mapping.get(reason, "quick_scalper_initial_other")
+        )
 
     @staticmethod
     def _increment_reconfirm_reason(reason: str | None) -> None:
