@@ -53,6 +53,50 @@ def deliver(scanner, sidecar, event) -> None:
     sidecar(event)
 
 
+class RecordingQuickScalper:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, datetime, str, object | None, bool]] = []
+
+    def observe_stream_event(
+        self, observation, *, decision_at, session, context=None,
+        execution_permitted=True,
+    ):
+        self.calls.append((
+            observation.symbol, decision_at, session, context,
+            execution_permitted,
+        ))
+        return None
+
+
+def test_quick_scalper_stream_observes_each_market_event_without_warrior_full_evaluation(
+    tmp_path: Path,
+) -> None:
+    scanner = adapter()
+    scalper = RecordingQuickScalper()
+    sidecar = WarriorDesktopSidecar(
+        enabled=True,
+        storage_path=tmp_path / "scalper-stream.sqlite3",
+        quick_scalper_observer=scalper,
+        clock=lambda: T0,
+    )
+    sidecar.bind_scanner_adapter(scanner)
+    sidecar.start("PAPER")
+    try:
+        deliver(scanner, sidecar, quote(T0))
+        deliver(scanner, sidecar, trade(2, T0 + timedelta(seconds=1), "10.20"))
+        publications = sidecar._publications
+
+        deliver(scanner, sidecar, quote(T0 + timedelta(seconds=2)))
+        deliver(scanner, sidecar, quote(T0 + timedelta(seconds=3)))
+
+        assert sidecar._publications == publications
+        assert [item[0] for item in scalper.calls] == ["XYZ", "XYZ", "XYZ", "XYZ"]
+        assert all(item[4] is True for item in scalper.calls)
+        assert scalper.calls[-1][3] is sidecar._latest["XYZ"]
+    finally:
+        sidecar.stop()
+
+
 def force_diagnostic_drop(sidecar: WarriorDesktopSidecar, monkeypatch) -> None:
     writer = sidecar._writer
     assert writer is not None
