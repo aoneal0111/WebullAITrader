@@ -181,6 +181,7 @@ def test_stream_assessment_does_not_require_warrior_candidate_or_completed_bar()
 
 
 def test_canonical_scalp_intent_submits_once_without_warrior_signal_coercion():
+    before = performance_diagnostics.snapshot()
     runtime, bridge, quotes = adapter()
     value = snapshot()
     runtime._snapshots[("FAST", "g1")] = value
@@ -195,6 +196,15 @@ def test_canonical_scalp_intent_submits_once_without_warrior_signal_coercion():
     assert intent.strategy_id == "QUICK_SCALPER"
     assert shares > 0 and risk > 0
     assert values["provenance"] == "QUICK_SCALPER_CANONICAL_ENTRY"
+    after = performance_diagnostics.snapshot()
+    assert (
+        after.quick_scalper_authorization_attempts
+        - before.quick_scalper_authorization_attempts
+    ) == 1
+    assert (
+        after.quick_scalper_orders_submitted
+        - before.quick_scalper_orders_submitted
+    ) == 1
 
 
 def test_lifecycle_observability_precedes_authorization_without_extra_quote():
