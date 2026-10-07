@@ -277,6 +277,14 @@ class PerformanceSnapshot:
     quick_scalper_authorization_attempts: int = 0
     quick_scalper_rejections: int = 0
     quick_scalper_orders_submitted: int = 0
+    quick_scalper_execution_quote_unavailable: int = 0
+    quick_scalper_reconfirm_not_executable: int = 0
+    quick_scalper_account_unavailable: int = 0
+    quick_scalper_risk_rejected: int = 0
+    quick_scalper_insufficient_executable_size: int = 0
+    quick_scalper_bridge_reached: int = 0
+    quick_scalper_bridge_rejected: int = 0
+    quick_scalper_bridge_authorized: int = 0
     warrior_full_evaluations: int = 0
     fast_mover_refresh_eligible: int = 0
     fast_mover_refresh_due: int = 0
@@ -384,6 +392,16 @@ class PerformanceDiagnostics:
             "quick_scalper_authorization_attempts": 0,
             "quick_scalper_rejections": 0,
             "quick_scalper_orders_submitted": 0,
+            # Exact pre-bridge attribution. These counters distinguish
+            # confirmation/sizing failures from the shared PAPER bridge.
+            "quick_scalper_execution_quote_unavailable": 0,
+            "quick_scalper_reconfirm_not_executable": 0,
+            "quick_scalper_account_unavailable": 0,
+            "quick_scalper_risk_rejected": 0,
+            "quick_scalper_insufficient_executable_size": 0,
+            "quick_scalper_bridge_reached": 0,
+            "quick_scalper_bridge_rejected": 0,
+            "quick_scalper_bridge_authorized": 0,
             "warrior_full_evaluations": 0,
             # Bounded Warrior fast-mover cadence/acceleration diagnostics.
             "fast_mover_refresh_eligible": 0,
