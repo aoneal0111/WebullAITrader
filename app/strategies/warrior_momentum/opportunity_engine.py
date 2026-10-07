@@ -46,6 +46,14 @@ class AdaptiveOpportunityResult(StrEnum):
     STRUCTURALLY_REJECTED = "STRUCTURALLY_REJECTED"
 
 
+class OpportunityConstraintKind(StrEnum):
+    """Classify opportunity evidence by how it may affect execution."""
+
+    ADAPTIVE = "ADAPTIVE"
+    HARD_SAFETY = "HARD_SAFETY"
+    STRUCTURAL_TERMINAL = "STRUCTURAL_TERMINAL"
+
+
 class OpportunityReason(StrEnum):
     PRICE_NOT_ELIGIBLE = 'PRICE_NOT_ELIGIBLE'
     EXECUTABLE_TRIGGER_NOT_CONFIRMED = 'EXECUTABLE_TRIGGER_NOT_CONFIRMED'
@@ -75,6 +83,36 @@ class OpportunityReason(StrEnum):
     PROTECTION_ACTIVE = "PROTECTION_ACTIVE"
     POSITION_MANAGING = "POSITION_MANAGING"
     EXIT_REQUESTED = "EXIT_REQUESTED"
+
+
+_ADAPTIVE_REASONS = frozenset({
+    OpportunityReason.EXECUTABLE_TRIGGER_NOT_CONFIRMED,
+    OpportunityReason.EXECUTION_QUALITY_WAIT,
+    OpportunityReason.EXCESSIVE_CURRENT_STRUCTURE_DISPLACEMENT,
+    OpportunityReason.INSUFFICIENT_CURRENT_REWARD,
+})
+
+_RECOVERABLE_HARD_SAFETY_REASONS = frozenset({
+    OpportunityReason.PROVIDER_DATA_STALE,
+    OpportunityReason.PROCESSING_DELAYED,
+    OpportunityReason.INVALID_EXECUTION_QUOTE,
+    OpportunityReason.OBSOLETE_QUOTE_GENERATION,
+})
+
+_TRUE_HARD_SAFETY_REASONS = frozenset({
+    OpportunityReason.PRICE_NOT_ELIGIBLE,
+    OpportunityReason.SESSION_NOT_ALLOWED,
+    OpportunityReason.ACCOUNT_NOT_AUTHORIZED,
+    OpportunityReason.RISK_NOT_AUTHORIZED,
+    OpportunityReason.DUPLICATE_EXECUTION,
+})
+
+_STRUCTURAL_TERMINAL_REASONS = frozenset({
+    OpportunityReason.SETUP_INVALIDATED,
+    OpportunityReason.SETUP_SUPERSEDED,
+    OpportunityReason.OPPORTUNITY_EXPIRED,
+    OpportunityReason.LIFECYCLE_COMPLETED,
+})
 
 
 _TERMINAL_STATES = frozenset({
@@ -208,6 +246,27 @@ class WarriorOpportunity:
         return self.reason if self.state in _TERMINAL_STATES else None
 
 
+@dataclass(frozen=True, slots=True)
+class AdaptiveExecutionDecision:
+    """One strategy-neutral interpretation of all current opportunity evidence.
+
+    Market-quality and entry-timing imperfections are adaptive constraints.
+    They keep a valid opportunity alive for reevaluation instead of allowing
+    independent soft gates to terminally reject the lifecycle. Hard account,
+    risk, tradability/session, and structural-invalidity reasons remain
+    fail-closed.
+    """
+
+    state: WarriorOpportunityState
+    reason: OpportunityReason
+    constraints: tuple[OpportunityReason, ...]
+    constraint_kind: OpportunityConstraintKind
+
+    @property
+    def executable(self) -> bool:
+        return self.state is WarriorOpportunityState.EXECUTABLE
+
+
 class WarriorOpportunityPolicy:
     """Deterministic comparison policy using existing normalized evidence.
 
@@ -248,6 +307,59 @@ class WarriorOpportunityPolicy:
             value.generation_id,
         )
 
+    def execution_decision(
+        self, assessment: WarriorOpportunityAssessment,
+    ) -> AdaptiveExecutionDecision:
+        reasons = tuple(dict.fromkeys(assessment.reason_codes))
+        hard = assessment.hard_safety_reason
+        if hard is not None:
+            if hard in _RECOVERABLE_HARD_SAFETY_REASONS:
+                return AdaptiveExecutionDecision(
+                    WarriorOpportunityState.WAITING_EXECUTION,
+                    hard, reasons or (hard,), OpportunityConstraintKind.HARD_SAFETY,
+                )
+            return AdaptiveExecutionDecision(
+                WarriorOpportunityState.REJECTED_HARD_SAFETY,
+                hard, reasons or (hard,), OpportunityConstraintKind.HARD_SAFETY,
+            )
+
+        if assessment.adaptive_result is AdaptiveOpportunityResult.EXECUTABLE:
+            reason = reasons[-1] if reasons else OpportunityReason.TECHNICAL_TRIGGER
+            return AdaptiveExecutionDecision(
+                WarriorOpportunityState.EXECUTABLE,
+                reason, reasons, OpportunityConstraintKind.ADAPTIVE,
+            )
+
+        if assessment.adaptive_result is AdaptiveOpportunityResult.WAIT:
+            reason = reasons[-1] if reasons else OpportunityReason.EXECUTION_QUALITY_WAIT
+            return AdaptiveExecutionDecision(
+                WarriorOpportunityState.WAITING_EXECUTION,
+                reason, reasons or (reason,), OpportunityConstraintKind.ADAPTIVE,
+            )
+
+        if assessment.adaptive_result is AdaptiveOpportunityResult.STRUCTURALLY_REJECTED:
+            reason = reasons[-1] if reasons else OpportunityReason.SETUP_INVALIDATED
+            # A producer may have historically labelled a soft market-quality
+            # miss as structurally rejected. Normalize those reasons into a
+            # persistent WAIT state so one transient gate cannot destroy the
+            # opportunity before another strategy or a later quote can act.
+            if reasons and all(reason in _ADAPTIVE_REASONS for reason in reasons):
+                return AdaptiveExecutionDecision(
+                    WarriorOpportunityState.WAITING_EXECUTION,
+                    reason, reasons, OpportunityConstraintKind.ADAPTIVE,
+                )
+            return AdaptiveExecutionDecision(
+                WarriorOpportunityState.INVALIDATED,
+                reason, reasons or (reason,),
+                OpportunityConstraintKind.STRUCTURAL_TERMINAL,
+            )
+
+        return AdaptiveExecutionDecision(
+            WarriorOpportunityState.ARMED,
+            OpportunityReason.TECHNICAL_TRIGGER,
+            reasons, OpportunityConstraintKind.ADAPTIVE,
+        )
+
 
 class WarriorOpportunityEngine:
     """Thread-safe bounded book of current Warrior execution opportunities."""
@@ -273,28 +385,8 @@ class WarriorOpportunityEngine:
                                 OpportunityReason.TECHNICAL_TRIGGER)
 
     def apply_assessment(self, assessment: WarriorOpportunityAssessment) -> WarriorOpportunity:
-        if assessment.hard_safety_reason is not None:
-            # Provider-data and processing failures fail closed for this
-            # decision but remain recoverable on a later fresh event.
-            recoverable = assessment.hard_safety_reason in {
-                OpportunityReason.PROVIDER_DATA_STALE,
-                OpportunityReason.PROCESSING_DELAYED,
-                OpportunityReason.INVALID_EXECUTION_QUOTE,
-                OpportunityReason.OBSOLETE_QUOTE_GENERATION,
-            }
-            state = (WarriorOpportunityState.WAITING_EXECUTION if recoverable
-                     else WarriorOpportunityState.REJECTED_HARD_SAFETY)
-            return self._transition(assessment, state, assessment.hard_safety_reason)
-        if assessment.adaptive_result is AdaptiveOpportunityResult.WAIT:
-            reason = assessment.reason_codes[-1] if assessment.reason_codes else OpportunityReason.EXECUTION_QUALITY_WAIT
-            return self._transition(assessment, WarriorOpportunityState.WAITING_EXECUTION, reason)
-        if assessment.adaptive_result is AdaptiveOpportunityResult.EXECUTABLE:
-            return self._transition(assessment, WarriorOpportunityState.EXECUTABLE,
-                                    assessment.reason_codes[-1] if assessment.reason_codes else OpportunityReason.TECHNICAL_TRIGGER)
-        if assessment.adaptive_result is AdaptiveOpportunityResult.STRUCTURALLY_REJECTED:
-            reason = assessment.reason_codes[-1] if assessment.reason_codes else OpportunityReason.SETUP_INVALIDATED
-            return self._transition(assessment, WarriorOpportunityState.INVALIDATED, reason)
-        return self.arm(assessment)
+        decision = self.policy.execution_decision(assessment)
+        return self._transition(assessment, decision.state, decision.reason)
 
     def mark_authorized(self, symbol: str, generation_id: str, *, at: datetime) -> WarriorOpportunity | None:
         return self._transition_existing(symbol, generation_id, WarriorOpportunityState.AUTHORIZED,
@@ -533,7 +625,8 @@ def _sanitize_optional(value: str | None) -> str | None:
 
 
 __all__ = [
-    "AdaptiveOpportunityResult", "OpportunityReason", "WarriorOpportunity",
+    "AdaptiveExecutionDecision", "AdaptiveOpportunityResult",
+    "OpportunityConstraintKind", "OpportunityReason", "WarriorOpportunity",
     "WarriorOpportunityAssessment", "WarriorOpportunityEngine",
     "WarriorOpportunityPolicy", "WarriorOpportunityState",
     "WarriorOpportunityTransition",
