@@ -278,6 +278,9 @@ class PerformanceSnapshot:
     quick_scalper_rejections: int = 0
     quick_scalper_orders_submitted: int = 0
     quick_scalper_execution_quote_unavailable: int = 0
+    quick_scalper_stale_preview_refresh_attempts: int = 0
+    quick_scalper_stale_preview_refresh_available: int = 0
+    quick_scalper_stale_preview_refresh_advanced: int = 0
     quick_scalper_reconfirm_not_executable: int = 0
     quick_scalper_account_unavailable: int = 0
     quick_scalper_risk_rejected: int = 0
@@ -438,6 +441,9 @@ class PerformanceDiagnostics:
             # Exact pre-bridge attribution. These counters distinguish
             # confirmation/sizing failures from the shared PAPER bridge.
             "quick_scalper_execution_quote_unavailable": 0,
+            "quick_scalper_stale_preview_refresh_attempts": 0,
+            "quick_scalper_stale_preview_refresh_available": 0,
+            "quick_scalper_stale_preview_refresh_advanced": 0,
             "quick_scalper_reconfirm_not_executable": 0,
             "quick_scalper_account_unavailable": 0,
             "quick_scalper_risk_rejected": 0,
