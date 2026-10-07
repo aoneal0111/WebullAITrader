@@ -718,13 +718,28 @@ class QuickScalperPaperRuntimeAdapter:
     def _manage_open_position(
         self, point: PointInTimeObservation, candidate: MomentumCandidate,
     ) -> None:
-        state = self._positions.get(candidate.symbol)
         obs = point.observation
-        now = point.evaluation_timestamp or self._clock()
-        quote_ts = point.quote_observed_at or obs.quote_timestamp
-        if state is None or obs.bid is None or quote_ts is None:
+        self._manage_open_position_values(
+            symbol=candidate.symbol,
+            executable_bid=obs.bid,
+            quote_timestamp=(point.quote_observed_at or obs.quote_timestamp),
+            observed_at=(point.evaluation_timestamp or self._clock()),
+            momentum_stalled=(
+                getattr(candidate, "price_velocity_cents_1m", None) is not None
+                and getattr(candidate, "price_velocity_cents_1m", None) <= ZERO
+            ),
+        )
+
+    def _manage_open_position_values(
+        self, *, symbol: str, executable_bid: Decimal | None,
+        quote_timestamp: datetime | None, observed_at: datetime,
+        momentum_stalled: bool,
+    ) -> None:
+        """Manage an owned scalp from canonical executable stream values."""
+        state = self._positions.get(symbol)
+        if state is None or executable_bid is None or quote_timestamp is None:
             return
-        age = Decimal(str((now - quote_ts).total_seconds()))
+        age = Decimal(str((observed_at - quote_timestamp).total_seconds()))
         if age < ZERO or age > self.config.provider_freshness_seconds:
             return
         decision = ProfitRetentionPolicy().evaluate(
@@ -733,11 +748,8 @@ class QuickScalperPaperRuntimeAdapter:
                 state.entered_at, state.entry_price, state.initial_stop,
                 self._current_stop(state), state.peak_bid, state.profit_state,
             ),
-            executable_bid=obs.bid, observed_at=now,
-            momentum_stalled=(
-                candidate.price_velocity_cents_1m is not None
-                and candidate.price_velocity_cents_1m <= ZERO
-            ),
+            executable_bid=executable_bid, observed_at=observed_at,
+            momentum_stalled=momentum_stalled,
         )
         state.peak_bid = decision.position.peak_executable_bid
         state.profit_state = decision.position.state
@@ -759,7 +771,7 @@ class QuickScalperPaperRuntimeAdapter:
             )
         elif decision.action is ProfitAction.FULL_EXIT:
             result = self.bridge.ensure_exit(
-                state.symbol, quantity, obs.bid, decision.reason,
+                state.symbol, quantity, executable_bid, decision.reason,
                 state.lifecycle_id, strategy_owner=OWNER,
             )
             if result.state in {
@@ -772,7 +784,7 @@ class QuickScalperPaperRuntimeAdapter:
                     reason=decision.reason, qty=quantity,
                 )
                 self.engine.mark_exit_requested(
-                    state.symbol, state.generation_id, at=now,
+                    state.symbol, state.generation_id, at=observed_at,
                 )
 
     def _current_stop(self, state: _ScalpPositionState) -> Decimal:
