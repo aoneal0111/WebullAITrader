@@ -469,6 +469,25 @@ class QuickScalperPaperRuntimeAdapter:
             bid_timestamp=quote.bid_timestamp, ask_timestamp=quote.ask_timestamp,
         )
         confirmed = self.scalper.policy.assess(refreshed)
+        if (
+            confirmed.decision is not ScalpDecision.EXECUTABLE
+            and confirmed.reason == "PROVIDER_DATA_STALE"
+        ):
+            limit_ms = int(
+                self.config.provider_freshness_seconds * Decimal("1000")
+            )
+            performance_diagnostics.record_quick_scalper_freshness(
+                last_age_ms=int(
+                    (evaluated_at - quote.last_timestamp).total_seconds() * 1000
+                ),
+                bid_age_ms=int(
+                    (evaluated_at - quote.bid_timestamp).total_seconds() * 1000
+                ),
+                ask_age_ms=int(
+                    (evaluated_at - quote.ask_timestamp).total_seconds() * 1000
+                ),
+                limit_ms=limit_ms,
+            )
         if confirmed.decision is not ScalpDecision.EXECUTABLE:
             performance_diagnostics.increment("quick_scalper_reconfirm_not_executable")
             self._increment_reconfirm_reason(confirmed.reason)
