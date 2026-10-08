@@ -188,8 +188,10 @@ def test_dynamic_scalper_authorization_preserves_account_risk_gates(changes):
     assert bridge.entries == []
 
 
-def test_dynamic_scalper_non_allowlisted_entry_reaches_real_paper_gateway():
-    composition = create_session_paper_composition(at=NOW)
+def test_dynamic_scalper_non_allowlisted_entry_reaches_real_paper_gateway(tmp_path):
+    composition = create_session_paper_composition(
+        at=NOW, persistence_path=str(tmp_path / "economics.sqlite3"),
+    )
     try:
         bridge = AutonomousPaperExecutionBridge(
             composition.trading_service, composition.order_command_factory,
@@ -213,6 +215,23 @@ def test_dynamic_scalper_non_allowlisted_entry_reaches_real_paper_gateway():
         assert len(orders) == 1
         assert orders[0].request.metadata["strategy_owner"] == "QUICK_SCALPER"
         assert orders[0].request.side is OrderSide.BUY
+        durable = composition.durable_store.orders()[0]
+        economics = {
+            key.removeprefix("scalp_"): value
+            for key, value in durable.request.metadata.items()
+            if key.startswith("scalp_")
+        }
+        assert D(economics["execution_bid"]) == quote().bid
+        assert D(economics["entry_trigger"]) == quote().ask
+        assert D(economics["risk_per_share"]) == quote().ask - value.structural_stop
+        assessment = runtime.scalper.policy.assess(value)
+        assert D(economics["execution_cost"]) == assessment.round_trip_cost
+        assert D(economics["required_bid_move"]) == assessment.required_bid_move
+        assert D(economics["expected_move"]) == assessment.expected_move
+        assert D(economics["short_horizon_range"]) == value.short_horizon_range
+        assert D(economics["velocity_cents_per_minute"]) == value.velocity_cents_per_minute
+        assert D(economics["net_target_reward_r"]) == assessment.opportunity.remaining_final_target_r
+        assert datetime.fromisoformat(economics["provider_bid_timestamp"]) == quote().bid_timestamp
     finally:
         composition.close()
 

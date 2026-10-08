@@ -1115,6 +1115,23 @@ class AutonomousPaperExecutionBridge:
                             "adaptive_target": str(getattr(signal, "adaptive_target", "")),
                             "authorization_id": getattr(signal, "authorization_id", None),
                             "execution_quote_id": getattr(signal, "execution_quote_id", None),
+                            **({
+                                f"scalp_{name}": (
+                                    value.isoformat() if isinstance(value, datetime)
+                                    else str(value)
+                                )
+                                for name in (
+                                    "execution_bid", "entry_trigger", "stop_price",
+                                    "risk_per_share", "adaptive_target",
+                                    "execution_cost", "expected_move", "required_bid_move",
+                                    "net_target_reward_r",
+                                    "short_horizon_range", "velocity_cents_per_minute",
+                                    "stream_sample_count", "stream_elapsed_seconds",
+                                    "execution_quote_timestamp", "provider_bid_timestamp",
+                                    "provider_ask_timestamp",
+                                )
+                                if (value := getattr(signal, name, None)) is not None
+                            } if strategy_owner == "QUICK_SCALPER" else {}),
                             "taxonomy_strategy_id": getattr(signal, "taxonomy_strategy_id", None),
                             "taxonomy_strategy_memberships": list(getattr(signal, "taxonomy_strategy_memberships", ())),
                             "opportunity_anchor": str(getattr(signal, "taxonomy_opportunity_anchor", "")),
