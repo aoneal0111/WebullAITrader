@@ -79,6 +79,7 @@ def test_startup_production_path_connects_before_consumer_creation():
         retained_channels = ()
 
     driver = object.__new__(DesktopBrokerRuntimeDriver)
+    driver._terminal_stream_failure_published = False
     driver._scanner = Scanner()
     driver._market_data = object()
     driver._market_data_probe = None

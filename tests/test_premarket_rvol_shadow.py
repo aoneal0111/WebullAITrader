@@ -115,7 +115,9 @@ def test_shadow_result_is_structurally_non_authorizing() -> None:
     after = evaluate_candidate(observation)
 
     assert before == after
-    assert before.qualified is False
+    # Discovery can qualify a low-RVOL mover; this shadow result must still
+    # leave the authoritative scanner decision unchanged.
+    assert before.metrics.relative_volume == D("0.1")
     assert result.shadow_pass is True
     assert result.authoritative is False
     assert not hasattr(result, "execution_authorized")

@@ -149,21 +149,23 @@ def _representative_contexts():
     }
 
 
+# Current contract includes TRIGGER_ARMED facts (f66cc6f) and session-root
+# structural provenance/anchors (bdadd17). DETECTED conditions are unchanged.
 GOLDEN_OUTPUT_HASHES = {
-    "empty": "af5f8c5b6651b624ee2614d3e903dc27bdaca851cd734e4d2a38163285cdc08a",
-    "pullback": "770d9543501b92ac159f99e8c9794a669f81a4f17948e835fca2dd6c171cbe6b",
-    "deep": "45475f52f393740d573271c4368c087dcceb58fcddc7a71cb7b9acb723f47e04",
-    "flat": "dfa33e86974c47931158e5ed02f63176c94008e7a6080b1727ce5a05b84064d6",
-    "compression": "fe4db13afbe79328b399bf5ec91a007bba1af9a8a389ab2dd08f92e5f87f8040",
-    "premarket_consolidation": "73dc139b974af53f20187eeda48b6f1959b10d3c91232f846803e5c1a85ca7c6",
-    "retest": "698a9f2096eeaea5e87bbc0bff4fba2f1d4ec836085a04a02c6edfa5218a0609",
-    "reclaim": "24611879582d4c6a8b73aa0232e80180deb085709c17d551bd35f12846fe68eb",
-    "sessions": "a3aaeb34aa1a8e46aedd9018ef3234794aab38cb9c180a83d2efcb8ae0bf4780",
-    "post_gap_trigger": "c1a0167b77b5769cc5f43e0477f6e3bcf1c1c76b8b2e419e72a254a2bf0e4d30",
+    "empty": "726100c518f3f64ff1d2dfd8766f539b5a7da2be9026d93c48d31a1c12dad673",
+    "pullback": "c63965cdb8c317ceafb4e5cf952892da90305f329a083316e8be81c326cf5fa4",
+    "deep": "ff56529756af7ddb29ba6fc6786092547b7d5d399e9031030597363ad594cc98",
+    "flat": "32717d9c435013cf214273577bcda965d97b4153867dab9e33d5e10dd276fe51",
+    "compression": "ce8a828a0f51485e8e6ddbd1b1ab51a0f9acdd9a257ccf972a69a4fd1856643c",
+    "premarket_consolidation": "bd2cbe9cc861fd83a6897d1b34c2592191494f6c4225c0c27c50b3d5831c6e16",
+    "retest": "6148470f092a0ab8fa8bb9d848f06f7640f57b3768b8a6e6bd72856059b5da19",
+    "reclaim": "1ead25c5587c1761e59b6a05b2311f58e268cbecb622bc68f6a28f9033bd3004",
+    "sessions": "2b4c0f3c76501bb47514c2ab445a5b0620b36c8d1d5c99b29b1a997a310a5bff",
+    "post_gap_trigger": "25d5cb2da191ede353de6cdc859fc585dcc66d9493ab6e2514e0efcc6cb63d0b",
 }
 
 
-def test_all_equity_detector_outputs_match_pre_refactor_golden_contracts():
+def test_all_equity_detector_outputs_match_current_golden_contracts():
     registry = default_registry()
     detected: set[str] = set()
     for name, ctx in _representative_contexts().items():

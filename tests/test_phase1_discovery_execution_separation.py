@@ -99,7 +99,8 @@ def test_execution_spread_failure_remains_observation_eligible():
     runtime = WarriorMomentumRuntime()
     candidate = runtime.discover(_observation(), (), session="REGULAR")
     assert candidate.observation_eligible is True
-    assert ReasonCode.SPREAD_WIDE in candidate.reason_codes
+    # Spread is assessed at execution, independently of discovery reasons.
+    assert not runtime.current_execution_liquidity_ok(candidate, quote_fresh=True)
     assert ReasonCode.SPREAD_WIDE not in candidate.observation_blockers
 
 

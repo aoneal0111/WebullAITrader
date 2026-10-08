@@ -18,7 +18,8 @@ def _quote(composition, sequence, bid, ask):
 
 
 def _qty(pipeline):
-    return Decimal(pipeline.position_projection.snapshot.positions[0].quantity)
+    return sum((Decimal(position.quantity) for position in
+                pipeline.position_projection.snapshot.positions), Decimal("0"))
 
 
 def test_restart_exit_fill_clears_restored_position_and_pnl(tmp_path):
@@ -53,6 +54,10 @@ def test_restart_exit_fill_clears_restored_position_and_pnl(tmp_path):
         position_average_cost_source=lambda _symbol: Decimal("10"),
         position_quantity_source=lambda _symbol: Decimal("100"),
     )
+    # Restored order fills are the position authority; replay events populate
+    # history and intentionally do not create operational inventory.
+    pipeline_b.position_projection.reconcile_from_paper_orders(second.order_book.history())
+    pipeline_b.paper_account_projection.reconcile_from_paper_orders(second.order_book.history())
     assert _qty(pipeline_b) == Decimal("100")
     restored = second.order_book.history()
     assert len(restored) == 2
@@ -61,7 +66,7 @@ def test_restart_exit_fill_clears_restored_position_and_pnl(tmp_path):
     assert reports and reports[0].fills
     assert reports[0].fills[0].quantity == Decimal("100")
     assert _qty(pipeline_b) == Decimal("0")
-    assert Decimal(pipeline_b.position_projection.snapshot.positions[0].realized_gain_loss) == Decimal("25.00")
+    assert pipeline_b.paper_account_projection.snapshot.realized_pnl == Decimal("25.00")
     assert len(second.order_book.history()) == 2
     assert sum(len(order.fills) for order in second.order_book.history()) == 2
     second.close()

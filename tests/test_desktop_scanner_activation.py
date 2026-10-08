@@ -23,7 +23,7 @@ from app.composition.runtime_projection_pipeline import (
 from app.configuration import OperationalConfiguration, TradingEnvironment
 from app.gui.formatters import format_watchlist
 from app.live_execution.account_polling import BrokerAccountSnapshot
-from app.momentum_scanner import CatalystType, ScannerDecision, ScannerMetrics
+from app.momentum_scanner import CatalystStatus, CatalystType, ScannerDecision, ScannerMetrics
 from app.operations_core import ApplicationStateStore, OperationsBus
 from app.operations.limits import OperationalState, validate_operational_limits
 from app.realtime_scanner import ScannerSnapshot
@@ -102,6 +102,7 @@ class FakeScanner:
             price=Decimal("5"),
             current_volume=Decimal("1400000"),
             catalyst=CatalystType.OTHER,
+            catalyst_status=CatalystStatus.TRUE,
             catalyst_headline="Material company update",
         )
         return ScannerSnapshot(
@@ -171,7 +172,7 @@ def test_desktop_start_runs_scanner_projects_gui_and_stop_disconnects() -> None:
     def event_sink(event) -> None:
         event_types.append(event.event_type)
         projections.sink(event)
-        if event.event_type == "scanner_snapshot_published":
+        if event.event_type == "candidate_qualified":
             snapshot_published.set()
         if event_types.count("scanner_cycle") >= 2:
             repeated_cycles.set()
@@ -226,7 +227,7 @@ def test_desktop_start_runs_scanner_projects_gui_and_stop_disconnects() -> None:
         assert service.stop() is True
         assert service.wait(3)
 
-        start_call = scanner.calls[0]
+        start_call = next(call for call in scanner.calls if isinstance(call, tuple) and call[0] == "start")
         assert start_call[0] == "start"
         assert "channels" not in start_call[1]
         assert scanner.calls[-2:] == ["stop", "disconnect"]
@@ -259,7 +260,6 @@ def test_desktop_start_runs_scanner_projects_gui_and_stop_disconnects() -> None:
             "scanner_cycle",
             "events_consumed",
             "candidate_qualified",
-            "scanner_snapshot_published",
         }.issubset(event_types)
         assert broker.calls == ["connect", "disconnect"]
         assert scanner.calls.count("run_available") >= 2

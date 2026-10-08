@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -218,3 +219,31 @@ def test_reconciled_position_mark_populates_valuation_without_changing_cash():
     assert after.unrealized_pnl == Decimal("200")
     assert after.gross_exposure == Decimal("1200")
     assert after.net_exposure == Decimal("1200")
+
+
+def test_duplicate_fill_cannot_change_cash_or_realized_pnl():
+    _positions, _orders, account = _projection()
+    buy = _event(1, "BUY", "100", "10")
+    account(buy)
+    account(buy)
+    account(replace(buy, sequence=2))
+    assert account.snapshot.current_cash == Decimal("99000")
+    sell = _event(3, "SELL", "100", "11", "100")
+    account(sell)
+    account(replace(sell, source="replayed-fill", sequence=1))
+    assert account.snapshot.current_cash == Decimal("100100")
+    assert account.snapshot.realized_pnl == Decimal("100")
+
+
+def test_restored_fill_is_not_debited_again_on_later_delivery():
+    _positions, _orders, account = _projection()
+    buy = _event(1, "BUY", "100", "10")
+    durable_order = SimpleNamespace(
+        symbol="SUNE", request=SimpleNamespace(side="BUY"),
+        fills=(SimpleNamespace(fill_id=buy.fill.request_id, timestamp=buy.timestamp,
+                               quantity=buy.fill.quantity, price=buy.fill.fill_price,
+                               commission=Decimal("0")),),
+    )
+    account.reconcile_from_paper_orders((durable_order,))
+    account(buy)
+    assert account.snapshot.current_cash == Decimal("99000")

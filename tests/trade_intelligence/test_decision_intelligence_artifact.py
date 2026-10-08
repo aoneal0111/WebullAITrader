@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,7 @@ REPORT = Path("data/research/historical_tranches/2026_06_01__2026_08_31/reports/
 
 def _build(tmp_path):
     target = tmp_path / "historical_decision_intelligence.sqlite3"
-    build_artifact(REPORT, target, baseline="c3550d020bd3af1e8131dbfaf70507ca16efb356")
+    build_artifact(REPORT, target, baseline="synthetic-test-fixture")
     return target
 
 
@@ -39,7 +40,7 @@ def test_source_hash_and_metadata_are_persisted(tmp_path):
     assert metadata["source_report_sha256"] == hashlib.sha256(REPORT.read_bytes()).hexdigest()
     assert metadata["source_episode_count"] == "719957"
     assert metadata["source_membership_count"] == "1582847"
-    assert metadata["builder_commit"] == "c3550d020bd3af1e8131dbfaf70507ca16efb356"
+    assert metadata["builder_commit"] == "synthetic-test-fixture"
     assert metadata["artifact_build_baseline"] == metadata["source_report_baseline"]
 
 
@@ -126,3 +127,17 @@ def test_di2_service_is_present_but_does_not_expose_runtime_policy():
     assert "class HistoricalDecisionIntelligence" in source
     assert "paper_entry_submitter" not in source
     assert "place_order" not in source
+
+
+@pytest.fixture(autouse=True)
+def report_fixture(synthetic_research_report, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "REPORT", synthetic_research_report)
+
+
+def test_external_historical_report_validates_when_available(tmp_path):
+    report = Path("data/research/historical_tranches/2026_06_01__2026_08_31/reports/full_research_final.json")
+    if not report.exists():
+        pytest.skip("External historical corpus report is not distributed with the repository")
+    artifact = tmp_path / "external.sqlite3"
+    build_artifact(report, artifact)
+    assert validate_artifact(artifact, source_report_path=report, read_only=True).valid

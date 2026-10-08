@@ -109,7 +109,7 @@ def test_callback_queue_memory_metrics_track_depth_high_water_and_totals() -> No
     sdk = Client("session-one")
     stream = backend(sdk)
 
-    assert stream.memory_metrics() == {
+    assert {key: stream.memory_metrics()[key] for key in ("current_depth", "high_water_depth", "messages_enqueued", "messages_dequeued")} == {
         "current_depth": 0,
         "high_water_depth": 0,
         "messages_enqueued": 0,
@@ -120,18 +120,20 @@ def test_callback_queue_memory_metrics_track_depth_high_water_and_totals() -> No
         sdk.on_quotes_message(sdk, f"topic-{index}", object())
 
     metrics = stream.memory_metrics()
-    assert metrics == {
+    assert {key: metrics[key] for key in ("current_depth", "high_water_depth", "messages_enqueued", "messages_dequeued")} == {
         "current_depth": 3,
         "high_water_depth": 3,
         "messages_enqueued": 3,
         "messages_dequeued": 0,
     }
-    assert all(type(value) is int for value in metrics.values())
+    assert all(type(metrics[key]) is int for key in ("current_depth", "high_water_depth", "messages_enqueued", "messages_dequeued"))
+    assert metrics["startup_buffered_count"] == 0
+    assert all(value >= 0 for key, value in metrics.items() if key.startswith("oldest_buffered_age"))
     metrics["current_depth"] = 999
     assert stream.memory_metrics()["current_depth"] == 3
 
     assert stream.receive_nowait() is not None
-    assert stream.memory_metrics() == {
+    assert {key: stream.memory_metrics()[key] for key in ("current_depth", "high_water_depth", "messages_enqueued", "messages_dequeued")} == {
         "current_depth": 2,
         "high_water_depth": 3,
         "messages_enqueued": 3,

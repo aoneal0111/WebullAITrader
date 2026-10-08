@@ -1,3 +1,5 @@
+import pytest
+
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal as D
@@ -435,6 +437,7 @@ def test_production_shaped_real_intelligence_fast_path_latency(tmp_path) -> None
         writer.close()
 
 
+@pytest.mark.usefixtures("historical_intelligence_artifact")
 def test_real_intelligence_sync_and_async_decisions_are_equivalent(tmp_path) -> None:
     def run(name: str, *, asynchronous: bool):
         root = tmp_path / name
@@ -495,6 +498,13 @@ def test_real_intelligence_sync_and_async_decisions_are_equivalent(tmp_path) -> 
                 candidate, signal = service.observe(value, account=account())
                 if asynchronous:
                     assert service.wait_for_intelligence(timeout_seconds=5.0)
+                    # An earlier stale publication can require a fresh canonical
+                    # assignment publication before the next observation authorizes.
+                    if signal is None:
+                        candidate, signal = service.observe(value, account=account())
+                        assert service.wait_for_intelligence(timeout_seconds=5.0)
+                    if signal is None:
+                        candidate, signal = service.observe(value, account=account())
                 setup = candidate.setup
                 outcomes.append((
                     candidate.status.value,
@@ -517,3 +527,22 @@ def test_real_intelligence_sync_and_async_decisions_are_equivalent(tmp_path) -> 
             writer.close()
 
     assert run("sync", asynchronous=False) == run("async", asynchronous=True)
+
+
+def test_wait_idle_includes_publication_callback():
+    entered, release = Event(), Event()
+    def callback(_publication):
+        entered.set()
+        assert release.wait(2)
+    handoff = BoundedIntelligenceHandoff(lambda value: value, autostart=True,
+                                         completion_callback=callback)
+    try:
+        assert handoff.submit("XYZ", "generation", "evidence")
+        assert entered.wait(2)
+        assert handoff.lookup("XYZ") is not None
+        assert not handoff.wait_idle(0.01)
+        release.set()
+        assert handoff.wait_idle(2)
+    finally:
+        release.set()
+        assert handoff.stop(timeout_seconds=2)

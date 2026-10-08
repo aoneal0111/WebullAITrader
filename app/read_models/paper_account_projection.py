@@ -74,6 +74,8 @@ class PaperAccountProjection:
         self._realized = ZERO
         self._fees = ZERO
         self._has_fills = False
+        self._processed_fill_ids: set[str] = set()
+        self._last_sequence_by_source: dict[str, int] = {}
         capital = self._capital()
         if capital is not None:
             self._starting_cash = capital["starting_cash"]
@@ -92,7 +94,10 @@ class PaperAccountProjection:
         if not isinstance(event, PaperRuntimeEvent):
             raise TypeError("event must be a PaperRuntimeEvent")
         with self._lock:
-            if event.fill is not None:
+            if event.sequence <= self._last_sequence_by_source.get(event.source, 0):
+                return
+            self._last_sequence_by_source[event.source] = event.sequence
+            if event.fill is not None and event.fill.request_id not in self._processed_fill_ids:
                 self._has_fills = True
                 fill = event.fill
                 notional = fill.quantity * fill.fill_price
@@ -103,6 +108,7 @@ class PaperAccountProjection:
                 else:
                     raise ValueError("unsupported PAPER fill side")
                 self._realized += fill.realized_pnl
+                self._processed_fill_ids.add(fill.request_id)
             self._snapshot = self._build()
         self._publish(event.timestamp)
 
@@ -126,6 +132,7 @@ class PaperAccountProjection:
             if capital is None else capital["starting_cash"]
         )
         fills: list[tuple[datetime, str, str, Decimal, Decimal, Decimal]] = []
+        processed_fill_ids: set[str] = set()
         for order in orders:
             request = getattr(order, "request", None)
             side = getattr(request, "side", None)
@@ -149,6 +156,11 @@ class PaperAccountProjection:
                     or commission < ZERO
                 ):
                     continue
+                fill_id = getattr(fill, "fill_id", None)
+                if isinstance(fill_id, str):
+                    if fill_id in processed_fill_ids:
+                        continue
+                    processed_fill_ids.add(fill_id)
                 fills.append(
                     (timestamp, symbol, side_value, quantity, price, commission)
                 )
@@ -192,6 +204,7 @@ class PaperAccountProjection:
             self._realized = realized
             self._fees = fees
             self._has_fills = bool(fills)
+            self._processed_fill_ids = processed_fill_ids
             self._snapshot = self._build()
         self._publish()
 
