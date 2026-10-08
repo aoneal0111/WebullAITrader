@@ -316,6 +316,37 @@ def test_stream_assessment_does_not_require_warrior_candidate_or_completed_bar()
     ) == 0
 
 
+def test_stream_one_cent_burst_waits_before_execution_quote_or_bridge():
+    runtime, bridge, quotes = adapter()
+    first_at = NOW - timedelta(seconds=0.2)
+    first = ScannerObservation(
+        symbol="FAST", timestamp=first_at, price=D("4.99"),
+        previous_close=D("4"), current_volume=D("1000000"),
+        average_30_day_volume=D("200000"), float_shares=D("5000000"),
+        bid=D("4.98"), ask=D("4.99"), catalyst=CatalystType.OTHER,
+        catalyst_headline=None, tradable=True, halted=False,
+        catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=first_at, quote_timestamp=first_at,
+        trade_timestamp=first_at, bid_size=D("500"), ask_size=D("500"),
+    )
+    second = replace(
+        first, timestamp=NOW, price=D("5"), bid=D("4.99"), ask=D("5"),
+        last_price_timestamp=NOW, quote_timestamp=NOW, trade_timestamp=NOW,
+    )
+    assert runtime.observe_stream_event(
+        first, decision_at=first_at, session="REGULAR", context=None,
+        execution_permitted=True,
+    ) is None
+    result = runtime.observe_stream_event(
+        second, decision_at=NOW, session="REGULAR", context=None,
+        execution_permitted=True,
+    )
+    assert result.reason == "INSUFFICIENT_NET_EXECUTABLE_EDGE"
+    assert result.expected_move == D("0.01")
+    assert quotes.calls == 0
+    assert bridge.entries == []
+
+
 def test_initial_stream_wait_reason_is_attributed_exactly():
     before = performance_diagnostics.snapshot()
     runtime, bridge, quotes = adapter()
@@ -381,10 +412,10 @@ def test_initial_stream_stale_quote_refreshes_authoritatively_before_rejecting()
     first_quote = NOW - timedelta(seconds=8)
     second_quote = NOW - timedelta(seconds=7)
     first = ScannerObservation(
-        symbol="FAST", timestamp=NOW - timedelta(seconds=1), price=D("4.96"),
+        symbol="FAST", timestamp=NOW - timedelta(seconds=1), price=D("4.86"),
         previous_close=D("4.00"), current_volume=D("1000000"),
         average_30_day_volume=D("200000"), float_shares=D("5000000"),
-        bid=D("4.95"), ask=D("4.96"), catalyst=CatalystType.OTHER,
+        bid=D("4.85"), ask=D("4.86"), catalyst=CatalystType.OTHER,
         catalyst_headline=None, tradable=True, halted=False,
         catalyst_status=CatalystStatus.TRUE,
         last_price_timestamp=NOW - timedelta(seconds=1),
@@ -541,10 +572,10 @@ def test_initial_stream_stale_last_does_not_block_fresh_quote():
     first_at = NOW - timedelta(seconds=7)
     second_at = NOW
     first = ScannerObservation(
-        symbol="FAST", timestamp=first_at, price=D("4.96"),
+        symbol="FAST", timestamp=first_at, price=D("4.86"),
         previous_close=D("4.00"), current_volume=D("1000000"),
         average_30_day_volume=D("200000"), float_shares=D("5000000"),
-        bid=D("4.95"), ask=D("4.96"), catalyst=CatalystType.OTHER,
+        bid=D("4.85"), ask=D("4.86"), catalyst=CatalystType.OTHER,
         catalyst_headline=None, tradable=True, halted=False,
         catalyst_status=CatalystStatus.TRUE,
         last_price_timestamp=first_at, quote_timestamp=first_at,
