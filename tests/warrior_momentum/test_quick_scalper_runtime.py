@@ -5,6 +5,9 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 from types import SimpleNamespace
 
+import pytest
+
+from app.configuration import PaperSymbolAuthorizationMode
 from app.momentum_scanner import AssetClass
 from app.momentum_scanner.models import CatalystStatus, CatalystType, ScannerObservation
 from app.market_data.models import (
@@ -101,6 +104,117 @@ def account() -> PaperAccountContext:
         D("100000"), D("100000"), frozenset({"FAST"}),
         exposure_limit=D("50000"),
     )
+
+
+@pytest.mark.parametrize("stale", [False, True])
+@pytest.mark.parametrize("mode,allowed,expected", [
+    (PaperSymbolAuthorizationMode.STATIC_ALLOWLIST, {"AAPL"}, False),
+    (PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR, {"AAPL"}, False),
+    (PaperSymbolAuthorizationMode.STATIC_ALLOWLIST, {"FAST"}, True),
+    (PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR_AND_QUICK_SCALPER, {"AAPL"}, True),
+])
+def test_scalper_symbol_authorization_requires_explicit_scope(mode, allowed, expected, stale):
+    bridge = Bridge()
+    runtime = QuickScalperPaperRuntimeAdapter(
+        config=QuickScalperConfig(enabled=True), bridge=bridge,
+        order_book=PaperOrderBook(),
+        account_context_source=lambda: replace(
+            account(), allowed_symbols=frozenset(allowed),
+            symbol_authorization_mode=mode,
+        ),
+        position_quantity_source=lambda _symbol: D("0"),
+        execution_quote_source=Quotes(quote()), clock=lambda: NOW,
+    )
+    value = snapshot()
+    if stale:
+        value = replace(
+            value, bid_timestamp=NOW - timedelta(seconds=7),
+            ask_timestamp=NOW - timedelta(seconds=7),
+        )
+    runtime._snapshots[("FAST", "g1")] = value
+    runtime.scalper.observe(value)
+    assert bool(bridge.entries) is expected
+
+
+@pytest.mark.parametrize("enabled,live,environment", [
+    (False, False, "PAPER"),
+    (True, True, "PAPER"),
+    (True, False, "LIVE"),
+    (True, False, "TEST"),
+])
+def test_dynamic_scalper_mode_cannot_enable_disabled_or_non_paper_runtime(enabled, live, environment):
+    bridge = Bridge()
+    quotes = Quotes(quote())
+    runtime = QuickScalperPaperRuntimeAdapter(
+        config=QuickScalperConfig(enabled=enabled), bridge=bridge,
+        order_book=PaperOrderBook(),
+        account_context_source=lambda: replace(
+            account(), allowed_symbols=frozenset({"AAPL"}),
+            symbol_authorization_mode=PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR_AND_QUICK_SCALPER,
+        ),
+        position_quantity_source=lambda _symbol: D("0"),
+        execution_quote_source=quotes, clock=lambda: NOW,
+        live_trading_enabled=live, environment=environment,
+    )
+    value = snapshot()
+    runtime._snapshots[("FAST", "g1")] = value
+    runtime.scalper.observe(value)
+    assert bridge.entries == []
+    assert quotes.calls == 0
+
+
+@pytest.mark.parametrize("changes", [
+    {"broker_restriction": True},
+    {"risk_engine_approved": False},
+    {"buying_power": D("1")},
+    {"existing_exposure": D("50000")},
+])
+def test_dynamic_scalper_authorization_preserves_account_risk_gates(changes):
+    bridge = Bridge()
+    runtime = QuickScalperPaperRuntimeAdapter(
+        config=QuickScalperConfig(enabled=True), bridge=bridge,
+        order_book=PaperOrderBook(),
+        account_context_source=lambda: replace(
+            account(), allowed_symbols=frozenset({"AAPL"}),
+            symbol_authorization_mode=PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR_AND_QUICK_SCALPER,
+            **changes,
+        ),
+        position_quantity_source=lambda _symbol: D("0"),
+        execution_quote_source=Quotes(quote()), clock=lambda: NOW,
+    )
+    value = snapshot()
+    runtime._snapshots[("FAST", "g1")] = value
+    runtime.scalper.observe(value)
+    assert bridge.entries == []
+
+
+def test_dynamic_scalper_non_allowlisted_entry_reaches_real_paper_gateway():
+    composition = create_session_paper_composition(at=NOW)
+    try:
+        bridge = AutonomousPaperExecutionBridge(
+            composition.trading_service, composition.order_command_factory,
+            mode="PAPER", enabled=True, order_book=composition.order_book,
+        )
+        runtime = QuickScalperPaperRuntimeAdapter(
+            config=QuickScalperConfig(enabled=True), bridge=bridge,
+            order_book=composition.order_book,
+            account_context_source=lambda: replace(
+                account(), allowed_symbols=frozenset({"AAPL"}),
+                symbol_authorization_mode=PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR_AND_QUICK_SCALPER,
+            ),
+            position_quantity_source=lambda _symbol: D("0"),
+            execution_quote_source=Quotes(quote()), clock=lambda: NOW,
+        )
+        value = snapshot()
+        runtime._snapshots[("FAST", "g1")] = value
+        runtime.scalper.observe(value)
+        runtime.scalper.observe(value)
+        orders = composition.order_book.open_orders_for_symbol("FAST")
+        assert len(orders) == 1
+        assert orders[0].request.metadata["strategy_owner"] == "QUICK_SCALPER"
+        assert orders[0].request.side is OrderSide.BUY
+    finally:
+        composition.close()
 
 
 def adapter(

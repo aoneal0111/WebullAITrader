@@ -14,6 +14,7 @@ from threading import RLock
 from typing import Callable
 from uuid import uuid4
 
+from app.configuration import PaperSymbolAuthorizationMode
 from app.paper_trading.order_book import PaperOrderBook
 from app.paper_trading.order_models import OrderSide
 from app.momentum_scanner.models import ScannerObservation
@@ -526,6 +527,14 @@ class QuickScalperPaperRuntimeAdapter:
             risk_per_share=risk, account_equity=account.equity,
             buying_power=account.buying_power,
             allowed_symbols=account.allowed_symbols,
+            # This explicit mode grants only this enabled, internally assessed
+            # PAPER path dynamic authority. Warrior-only and static modes keep
+            # requiring allowlist membership for QuickScalper.
+            symbol_authorized=(
+                account.symbol_authorization_mode
+                is PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR_AND_QUICK_SCALPER
+                or refreshed.symbol in account.allowed_symbols
+            ),
             existing_exposure=account.existing_exposure,
             exposure_limit=account.exposure_limit,
             risk_engine_approved=account.risk_engine_approved,

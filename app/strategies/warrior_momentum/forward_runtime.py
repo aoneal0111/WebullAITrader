@@ -7553,7 +7553,10 @@ def _paper_symbol_authorization(
             PaperSymbolAuthorizationSource.NONE,
         )
     mode = account.symbol_authorization_mode
-    if mode is PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR:
+    if mode in {
+        PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR,
+        PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR_AND_QUICK_SCALPER,
+    }:
         authorized = (
             signal.strategy_id == "WARRIOR_MOMENTUM_V1"
             and not signal.execution_authorized
