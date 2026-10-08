@@ -110,6 +110,8 @@ class QuickScalpSnapshot:
     session: str
     relative_volume_status: str = 'AVAILABLE'
     executable_ask_size: Decimal | None = None
+    stream_sample_count: int | None = None
+    stream_elapsed_seconds: Decimal | None = None
 
     def __post_init__(self) -> None:
         if not self.symbol.strip() or not self.generation_id.strip():
@@ -131,6 +133,7 @@ class QuickScalpAssessment:
     round_trip_cost: Decimal
     expected_move: Decimal
     reason: str
+    required_bid_move: Decimal = ZERO
 
 
 class QuickScalperPolicy:
@@ -162,7 +165,13 @@ class QuickScalperPolicy:
         expected_move = max(
             ZERO, value.short_horizon_range,
             value.velocity_cents_per_minute,
-            value.ask * value.velocity_percent_per_minute / HUNDRED,
+            value.bid * value.velocity_percent_per_minute / HUNDRED,
+        )
+        # Movement is measured from BID; the sell target is anchored to ASK.
+        # Include the distance between those anchors and estimated exit slippage.
+        required_bid_move = (
+            max(ZERO, value.ask + target_move - value.bid)
+            + self.config.slippage_per_side + liquidity_slippage
         )
         adaptive = AdaptiveOpportunityResult.EXECUTABLE
         reasons: tuple[OpportunityReason, ...] = ()
@@ -173,7 +182,7 @@ class QuickScalperPolicy:
             decision = ScalpDecision.REJECTED_HARD_SAFETY
             reason = hard.value
             reasons = (hard,)
-        elif expected_move < target_move:
+        elif expected_move < required_bid_move:
             adaptive = AdaptiveOpportunityResult.WAIT
             decision = ScalpDecision.WAIT
             reason = "INSUFFICIENT_NET_EXECUTABLE_EDGE"
@@ -218,7 +227,7 @@ class QuickScalperPolicy:
         )
         return QuickScalpAssessment(
             opportunity, decision, target_move, value.ask + target_move,
-            cost, expected_move, reason,
+            cost, expected_move, reason, required_bid_move,
         )
 
     def _hard_reason(self, value: QuickScalpSnapshot) -> OpportunityReason | None:

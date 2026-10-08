@@ -66,6 +66,15 @@ class QuickScalperExecutionIntent:
     provider_last_timestamp: datetime
     provider_bid_timestamp: datetime
     provider_ask_timestamp: datetime
+    execution_bid: Decimal | None = None
+    execution_cost: Decimal | None = None
+    expected_move: Decimal | None = None
+    required_bid_move: Decimal | None = None
+    net_target_reward_r: Decimal | None = None
+    short_horizon_range: Decimal | None = None
+    velocity_cents_per_minute: Decimal | None = None
+    stream_sample_count: int | None = None
+    stream_elapsed_seconds: Decimal | None = None
     strategy_owner: str = OWNER
     strategy_id: str = OWNER
     setup_type: str = "QUICK_SCALP"
@@ -597,6 +606,15 @@ class QuickScalperPaperRuntimeAdapter:
             provider_last_timestamp=quote.last_timestamp,
             provider_bid_timestamp=quote.bid_timestamp,
             provider_ask_timestamp=quote.ask_timestamp,
+            execution_bid=quote.bid,
+            execution_cost=confirmed.round_trip_cost,
+            expected_move=confirmed.expected_move,
+            required_bid_move=confirmed.required_bid_move,
+            net_target_reward_r=confirmed.opportunity.remaining_final_target_r,
+            short_horizon_range=refreshed.short_horizon_range,
+            velocity_cents_per_minute=refreshed.velocity_cents_per_minute,
+            stream_sample_count=refreshed.stream_sample_count,
+            stream_elapsed_seconds=refreshed.stream_elapsed_seconds,
         )
         self._emit(
             "SCALP_ORDER_INTENT", refreshed.symbol,
@@ -730,6 +748,7 @@ class QuickScalperPaperRuntimeAdapter:
             bid_timestamp=quote_timestamp, ask_timestamp=quote_timestamp,
             structural_stop=structural_stop,
             short_horizon_range=short_range,
+            stream_sample_count=len(samples), stream_elapsed_seconds=elapsed,
             velocity_cents_per_minute=velocity,
             velocity_percent_per_minute=percent_velocity,
             relative_volume=relative_volume,

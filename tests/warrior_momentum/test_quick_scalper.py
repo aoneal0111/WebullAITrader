@@ -107,6 +107,30 @@ def test_positive_executable_economics_cover_spread_and_risk() -> None:
     assert assessed.expected_move >= assessed.target_move
 
 
+def test_bid_movement_must_reach_ask_anchored_target_and_exit_cost() -> None:
+    policy = QuickScalperPolicy()
+    value = snapshot(short_range="0.12", velocity="0.11", velocity_pct="2.2")
+    assessed = policy.assess(value)
+    assert assessed.expected_move >= assessed.target_move
+    assert value.bid + assessed.expected_move < assessed.target_price
+    assert assessed.decision is ScalpDecision.WAIT
+    assert assessed.required_bid_move == D("0.155")
+    recovered = policy.assess(replace(value, velocity_cents_per_minute=D("0.16")))
+    assert recovered.decision is ScalpDecision.EXECUTABLE
+    assert recovered.expected_move >= recovered.required_bid_move
+
+
+def test_target_reachability_includes_exit_slippage_at_boundary() -> None:
+    policy = QuickScalperPolicy()
+    value = snapshot(short_range="0.12", velocity="0.145", velocity_pct="0")
+    assessed = policy.assess(value)
+    assert value.bid + assessed.expected_move == assessed.target_price
+    assert assessed.decision is ScalpDecision.WAIT
+    assert policy.assess(replace(
+        value, velocity_cents_per_minute=assessed.required_bid_move,
+    )).decision is ScalpDecision.EXECUTABLE
+
+
 def test_same_spread_percent_is_adaptive_to_expected_movement() -> None:
     quiet = QuickScalperPolicy().assess(snapshot(
         ask="5.00", bid="4.95", stop="4.85", short_range="0.05",

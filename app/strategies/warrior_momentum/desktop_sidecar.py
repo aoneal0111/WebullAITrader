@@ -1256,6 +1256,22 @@ class WarriorDesktopSidecar:
         symbol = event.symbol.strip().upper()
         lookup_started = perf_counter()
         observation = adapter.observation_for(symbol)
+        if event.event_type is MarketEventType.QUOTE and isinstance(event.payload, QuotePayload):
+            # Execution forensics must see raw quotes even when Warrior has no
+            # completed bar, qualified candidate, or complete reference data.
+            callback = getattr(service, "observe_execution_quote", None)
+            if callable(callback):
+                try:
+                    with self._lock:
+                        callback(
+                            symbol=symbol, quote_timestamp=event.timestamp,
+                            evaluated_at=self._aware_now(),
+                            bid=event.payload.bid, ask=event.payload.ask,
+                            last=None if observation is None else observation.price,
+                        )
+                except Exception:
+                    # This observational path cannot revoke execution authority.
+                    pass
         performance_diagnostics.record_component_duration(
             "warrior.observation_lookup",
             (perf_counter() - lookup_started) * 1000.0,

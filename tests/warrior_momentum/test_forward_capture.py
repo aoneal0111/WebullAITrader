@@ -152,6 +152,41 @@ def test_authoritative_fill_path_is_prospective_bounded_and_flags_gaps(
     writer.close()
 
 
+@pytest.mark.parametrize("first_delay", [0, -1])
+def test_raw_execution_quotes_are_sampled_without_evaluation_and_remain_bounded(tmp_path, first_delay):
+    store = ForwardCaptureStore(tmp_path / "stream-path.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(store, writer, paper_campaign_id="paper")
+    try:
+        service._execution_path_max_samples = 2
+        service.observe_paper_event(SimpleNamespace(
+            fill=SimpleNamespace(symbol="XYZ", side="BUY", quantity=D("10"),
+                                 fill_price=D("10"), timestamp=T0),
+            order=SimpleNamespace(lifecycle_id="life", order_id="entry"),
+            source="paper", sequence=1,
+        ))
+        for seconds, delay in ((1, first_delay), (1, first_delay), (10, 7), (11, 0), (12, 0)):
+            stamp = T0 + timedelta(seconds=seconds)
+            service.observe_execution_quote(
+                symbol="XYZ", bid=D("10.01"), ask=D("10.04"), last=None,
+                quote_timestamp=stamp, evaluated_at=stamp + timedelta(seconds=delay),
+            )
+        writer.flush()
+        records = store.records(record_type=CaptureRecordType.EXECUTION_PRICE_PATH)
+        quotes = [r.payload for r in records if r.payload["action"] == "QUOTE"]
+        assert len(quotes) == 2
+        assert quotes[0]["last"] is None
+        assert quotes[0]["bid"] == "10.01"
+        assert quotes[0]["future_quote"] is (first_delay < 0)
+        assert quotes[-1]["quote_age_seconds"] == "7.0"
+        assert quotes[-1]["stale_quote"] is True
+        assert quotes[-1]["missing_interval"] is True
+        assert sum(r.payload["action"] == "CAPTURE_LIMIT_REACHED" for r in records) == 1
+        assert service._paper == {}
+    finally:
+        writer.close()
+
+
 def test_observational_capture_handoff_does_not_block_strategy_evaluation(
     tmp_path: Path,
 ) -> None:

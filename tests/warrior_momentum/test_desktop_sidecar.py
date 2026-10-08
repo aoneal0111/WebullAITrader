@@ -592,6 +592,31 @@ def test_retained_quote_marks_build_zero_volume_management_bars(
     assert sidecar._accumulators["XYZ"].close == D("17.00")
 
 
+def test_raw_quote_capture_runs_without_scanner_reference_or_completed_bar(tmp_path):
+    scanner = MarketEventScannerAdapter(ScannerReferenceStore(()))
+    recorded = []
+    sidecar = WarriorDesktopSidecar(
+        enabled=False, storage_path=tmp_path / "raw-quotes.sqlite3",
+        clock=lambda: T0 + timedelta(seconds=2),
+    )
+    sidecar._adapter = scanner
+    sidecar._service = SimpleNamespace(
+        open_paper_symbols=(),
+        observe_execution_quote=lambda **values: recorded.append(values),
+    )
+    value = quote(T0)
+    scanner.consume(value)
+    assert scanner.observation_for("XYZ") is None
+    sidecar._consume(value)
+
+    assert recorded == [{
+        "symbol": "XYZ", "quote_timestamp": T0,
+        "evaluated_at": T0 + timedelta(seconds=2),
+        "bid": value.payload.bid, "ask": value.payload.ask, "last": None,
+    }]
+    assert not sidecar._bars
+
+
 def test_retained_position_advances_without_complete_scanner_observation(
     tmp_path: Path,
 ) -> None:

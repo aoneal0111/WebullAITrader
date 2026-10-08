@@ -2271,11 +2271,25 @@ class WarriorForwardCaptureService:
         observation = value.observation
         timestamp = value.quote_observed_at or observation.timestamp
         now = value.evaluation_timestamp or observation.timestamp
+        self.observe_execution_quote(
+            symbol=observation.symbol, quote_timestamp=timestamp,
+            evaluated_at=now, bid=observation.bid, ask=observation.ask,
+            last=observation.price,
+        )
+
+    def observe_execution_quote(
+        self, *, symbol: str, quote_timestamp: datetime,
+        evaluated_at: datetime, bid: Decimal | None, ask: Decimal | None,
+        last: Decimal | None,
+    ) -> None:
+        """Sample owned PAPER paths independently of strategy evaluation cadence."""
+        symbol = symbol.strip().upper()
+        timestamp, now = quote_timestamp, evaluated_at
         for (campaign, lifecycle), state in tuple(self._execution_paths.items()):
-            if state["symbol"] != observation.symbol:
+            if state["symbol"] != symbol:
                 continue
-            last = state["last_sample_at"]
-            if last is not None and (timestamp - last).total_seconds() < self._execution_path_min_interval_seconds:
+            previous_sample = state["last_sample_at"]
+            if previous_sample is not None and (timestamp - previous_sample).total_seconds() < self._execution_path_min_interval_seconds:
                 continue
             samples = int(state["samples"])
             if samples >= self._execution_path_max_samples:
@@ -2283,7 +2297,7 @@ class WarriorForwardCaptureService:
                     state["sample_limit_recorded"] = True
                     self._submit_records((CaptureRecord.create(
                         CaptureRecordType.EXECUTION_PRICE_PATH,
-                        observation.symbol, now,
+                        symbol, now,
                         {"action": "CAPTURE_LIMIT_REACHED",
                          "paper_campaign_id": campaign,
                          "lifecycle_id": lifecycle,
@@ -2291,7 +2305,7 @@ class WarriorForwardCaptureService:
                         identity_parts=(campaign, lifecycle, "sample-limit"),
                     ),))
                 continue
-            gap_seconds = None if last is None else max(0.0, (timestamp - last).total_seconds())
+            gap_seconds = None if previous_sample is None else max(0.0, (timestamp - previous_sample).total_seconds())
             stale_seconds = max(0.0, (now - timestamp).total_seconds())
             missing = gap_seconds is not None and gap_seconds > self._execution_path_gap_seconds
             stale = stale_seconds > float(self.capture_config.quote_stale_after_seconds)
@@ -2300,15 +2314,16 @@ class WarriorForwardCaptureService:
             state["missing_intervals"] = int(state["missing_intervals"]) + int(missing)
             state["stale_quotes"] = int(state["stale_quotes"]) + int(stale)
             midpoint = None
-            if observation.bid is not None and observation.ask is not None:
-                midpoint = (observation.bid + observation.ask) / Decimal("2")
+            if bid is not None and ask is not None:
+                midpoint = (bid + ask) / Decimal("2")
             self._submit_records((CaptureRecord.create(
-                CaptureRecordType.EXECUTION_PRICE_PATH, observation.symbol, now,
+                CaptureRecordType.EXECUTION_PRICE_PATH, symbol, now,
                 {"action": "QUOTE", "paper_campaign_id": campaign,
                  "lifecycle_id": lifecycle, "quote_timestamp": timestamp,
-                 "bid": observation.bid, "ask": observation.ask,
-                 "midpoint": midpoint, "last": observation.price,
+                 "bid": bid, "ask": ask,
+                 "midpoint": midpoint, "last": last,
                  "quote_age_seconds": Decimal(str(stale_seconds)),
+                 "future_quote": timestamp > now,
                  "stale_quote": stale, "interval_seconds": gap_seconds,
                  "missing_interval": missing, "sample_number": samples + 1},
                 identity_parts=(campaign, lifecycle, timestamp.isoformat()),
