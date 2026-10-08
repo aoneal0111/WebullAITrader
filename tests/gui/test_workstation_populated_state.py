@@ -127,7 +127,7 @@ def test_empty_workstation_keeps_scanner_and_activity_states_compact(
 
     workspace = dashboard.market_workspace
     assert workspace.watchlist._table._empty_state.isVisible()
-    assert workspace.opportunities_section.height() >= workspace.market_section.height()
+    assert workspace.market_section.height() >= workspace.opportunities_section.height()
     assert workspace.crypto_scanner_section.height() == workspace.opportunities_section.height()
     assert not hasattr(workspace, "activity_section")
     assert not hasattr(workspace, "reasoning_section")

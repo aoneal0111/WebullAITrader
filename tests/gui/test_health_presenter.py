@@ -76,6 +76,6 @@ def test_health_presenter_prepares_immutable_dashboard_model() -> None:
     assert ("Reference Cache", "WARM") in view.snapshot.metrics
     assert ("AI", "READY") in view.snapshot.metrics
     assert ("Persistence", "READY") in view.snapshot.metrics
-    assert ("Heartbeat", "10:00:00") in view.snapshot.metrics
+    assert ("Heartbeat", state.health_projection.last_heartbeat.astimezone().strftime("%H:%M:%S")) in view.snapshot.metrics
     assert ("Reconnects", "2") in view.snapshot.metrics
     assert view.snapshot.incident == "Storage nearing capacity."

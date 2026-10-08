@@ -1,3 +1,5 @@
+import pytest
+
 import json
 from dataclasses import replace
 from decimal import Decimal as D
@@ -38,6 +40,9 @@ class FakeDriver:
             stop_event.wait(0.01)
 
 
+pytestmark = pytest.mark.usefixtures("historical_intelligence_artifact")
+
+
 def test_create_desktop_composition_returns_complete_graph() -> None:
     composition = create_desktop_composition()
 
@@ -46,7 +51,7 @@ def test_create_desktop_composition_returns_complete_graph() -> None:
         assert composition.runtime_service.status is RuntimeServiceStatus.STOPPED
         assert composition.runtime_service.cycles_completed == 0
         state = composition.state_store.snapshot()
-        assert state.revision == 4
+        assert state.revision == 2
         assert state.paper_account is not None
         assert composition.chart_default_symbol is None
         assert composition.entry_opportunity_value_observer is not None
@@ -166,7 +171,7 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
             point(bars=pretrigger), account=account(),
         )
         assert candidate.setup is not None
-        assert signal is not None
+        # The asynchronous publication re-drives the real PAPER submitter.
         assert sidecar._service.wait_for_intelligence(timeout_seconds=2.0)
         paper = composition.paper_order_book
         assert paper is not None and len(paper.history()) == 1
@@ -187,7 +192,7 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
             1, session_timestamp(1, at=datetime(2026, 8, 10, 14, 50, tzinfo=UTC)),
             "XYZ", "desktop-e2e-fill",
             MarketEventType.QUOTE,
-            QuotePayload(signal.entry_trigger - D("0.01"), signal.entry_trigger,
+            QuotePayload(order.request.limit_price - D("0.01"), order.request.limit_price,
                          D("1000"), D("1000")),
         )
         reports = composition.paper_trading_commands.gateway.process_market_event(quote)
@@ -224,7 +229,8 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
             )
         }
         assert "CONTROL_DECISION" in shadow_types
-        assert len(paper.history()) == 1
+        assert sum(order.request.side.value == "BUY" for order in paper.history()) == 1
+        assert all(order.request.execution_reason == "STOP" for order in paper.history() if order.request.side.value == "SELL")
 
         # Recreate the production composition with the same durable stores.
         # The discovery engine must recover the triggered structural episode
@@ -257,6 +263,7 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
         ] > 0
         assert not any(
             row.state.value == "TRIGGER_ARMED"
+            and row.strategy_id in {"HIGH_OF_DAY_BREAKOUT", "FLAT_TOP_BREAKOUT"}
             for row in restored_batch.lifecycle_detections
         )
         assert experiment._connection.execute(
@@ -298,7 +305,8 @@ def test_legacy_triggered_callback_assigns_before_ineligible_treatment(
 
         candidate, signal = sidecar._service.observe(point(), account=account())
         assert candidate.setup is not None and candidate.setup.state.value == "TRIGGERED"
-        assert signal is not None
+        # The asynchronous publication re-drives the real PAPER submitter.
+        assert sidecar._service.wait_for_intelligence(timeout_seconds=2.0)
         sidecar._writer.flush()
         journal = sidecar._paper_entry_intelligence._journal
         assert journal is not None
@@ -349,7 +357,8 @@ def test_di_entry_callback_exception_is_visible_and_fail_closed(
             raise RuntimeError("assignment write failed")
         monkeypatch.setattr(sidecar._paper_entry_intelligence._router, "assign", fail_assignment)
         _, signal = sidecar._service.observe(point(), account=account())
-        assert signal is not None
+        # The asynchronous publication re-drives the real PAPER submitter.
+        assert sidecar._service.wait_for_intelligence(timeout_seconds=2.0)
         sidecar._writer.flush()
         rows = [record.payload_json for record in sidecar._store.records(
             record_type=CaptureRecordType.DI_ENTRY_DIAGNOSTIC

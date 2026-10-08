@@ -131,8 +131,8 @@ class BoundedIntelligenceHandoff:
             return True
         with self._condition:
             self._completed += 1
-            self._active -= 1
             if self._generations.get(key) != work.generation:
+                self._active -= 1
                 self._superseded += 1
                 self._condition.notify_all()
                 return True
@@ -146,15 +146,20 @@ class BoundedIntelligenceHandoff:
                 if evicted not in self._pending:
                     self._generations.pop(evicted, None)
             self._condition.notify_all()
-        callback = self._completion_callback
-        if publication is not None and callback is not None:
-            try:
-                callback(publication)
-            except Exception:
-                # Completion notification is advisory orchestration.  It must
-                # never turn a successful research publication into a worker
-                # failure or affect the immutable publication itself.
-                pass
+        try:
+            callback = self._completion_callback
+            if publication is not None and callback is not None:
+                try:
+                    callback(publication)
+                except Exception:
+                    # Callback failure cannot invalidate the research publication.
+                    pass
+        finally:
+            # Publication callbacks may re-drive PAPER execution. Keep the work
+            # active until that boundary completes so wait_idle cannot race it.
+            with self._condition:
+                self._active -= 1
+                self._condition.notify_all()
         return True
 
     def wait_idle(self, timeout_seconds: float = 5.0) -> bool:

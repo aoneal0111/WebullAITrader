@@ -33,6 +33,8 @@ def _prepare_signal(service, value):
     )
     assessed, signal = service.runtime.assess_entry(candidate)
     assert signal is not None
+    # Model a working entry with reward still available at the replacement ask.
+    signal = replace(signal, target_levels=(Decimal("11.00"), Decimal("11.50")))
     service.runtime.discover = lambda *_args, **_kwargs: candidate
     service.runtime.assess_entry = lambda _candidate: (assessed, None)
     service.runtime.technical_entry_signal = lambda _candidate: None

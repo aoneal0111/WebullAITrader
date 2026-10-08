@@ -267,7 +267,7 @@ def test_production_observe_routes_recovered_candidate_through_live_seam(tmp_pat
             ),
         )
         candidates = {
-            "value": replace(candidate, spread_percent=Decimal("2.00")),
+            "value": replace(candidate, spread_percent=Decimal("20.00"), bid=Decimal("8.20"), ask=Decimal("10.21")),
         }
         service.runtime.discover = lambda observation, bars, session: candidates["value"]
         service.runtime.assess_entry = lambda discovered: (
@@ -294,7 +294,7 @@ def test_production_observe_routes_recovered_candidate_through_live_seam(tmp_pat
         account = PaperAccountContext(Decimal("50000"), Decimal("25000"), frozenset({"DBGI"}))
         # First observation is an execution-quality block; it must not submit.
         service.runtime.assess_entry = lambda discovered: (discovered, None)
-        service.observe(observation, account=account)
+        service.observe(replace(observation, observation=replace(observation.observation, bid=Decimal("8.20"))), account=account)
         assert not submissions
         assert len(seam_calls) == 1
         candidates["value"] = replace(candidate, spread_percent=Decimal("0.90"))

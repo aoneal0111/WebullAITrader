@@ -366,6 +366,7 @@ class ApplicationStateStore:
                     TimelineUpdated,
                     DecisionsUpdated,
                     PortfolioUpdated,
+                    PaperAccountUpdated,
                     PortfolioIntelligenceUpdated,
                     HealthUpdated,
                     WatchlistUpdated,

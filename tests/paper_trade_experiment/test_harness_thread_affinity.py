@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -86,6 +88,9 @@ def _candidate() -> SimpleNamespace:
             StopModel.BREAKOUT_LEVEL,
         ),
     )
+
+
+pytestmark = pytest.mark.usefixtures("historical_intelligence_artifact")
 
 
 def test_worker_thread_assignment_uses_per_operation_connection(tmp_path: Path) -> None:
@@ -294,6 +299,7 @@ def test_real_desktop_callback_worker_thread_persists_assignment(tmp_path: Path,
         # Signal presence belongs to the canonical strategy/control path and
         # may vary independently of experimental treatment eligibility.  This
         # test proves only the worker-thread persistence boundary.
+        assert sidecar._service.wait_for_intelligence(timeout_seconds=2.0)
         sidecar._writer.flush()
         journal = sidecar._paper_entry_intelligence._journal
         assert journal is not None
