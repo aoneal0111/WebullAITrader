@@ -454,6 +454,11 @@ class QuickScalperPaperRuntimeAdapter:
             return CanonicalScalpSubmission(
                 False, False, False, False, "PAPER_ONLY_DISABLED",
             )
+        stale_preview_refresh = assessed.reason == "PROVIDER_DATA_STALE"
+        if stale_preview_refresh:
+            performance_diagnostics.increment(
+                "quick_scalper_stale_preview_refresh_attempts"
+            )
         # Exactly one authoritative confirmation call per authorization.
         performance_diagnostics.increment("quick_scalper_authorization_attempts")
         quote = self.execution_quote_source(opportunity.symbol)
@@ -462,6 +467,10 @@ class QuickScalperPaperRuntimeAdapter:
             performance_diagnostics.increment("quick_scalper_rejections")
             return CanonicalScalpSubmission(
                 False, False, False, False, "EXECUTION_QUOTE_UNAVAILABLE",
+            )
+        if stale_preview_refresh:
+            performance_diagnostics.increment(
+                "quick_scalper_stale_preview_refresh_available"
             )
         evaluated_at = self._clock()
         refreshed = replace(
@@ -489,6 +498,10 @@ class QuickScalperPaperRuntimeAdapter:
                     (evaluated_at - quote.ask_timestamp).total_seconds() * 1000
                 ),
                 limit_ms=limit_ms,
+            )
+        if confirmed.decision is ScalpDecision.EXECUTABLE and stale_preview_refresh:
+            performance_diagnostics.increment(
+                "quick_scalper_stale_preview_refresh_advanced"
             )
         if confirmed.decision is not ScalpDecision.EXECUTABLE:
             performance_diagnostics.increment("quick_scalper_reconfirm_not_executable")

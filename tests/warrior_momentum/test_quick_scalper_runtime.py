@@ -241,6 +241,166 @@ def test_initial_stream_wait_reason_is_attributed_exactly():
     ) == 0
 
 
+def test_initial_stream_stale_quote_refreshes_authoritatively_before_rejecting():
+    before = performance_diagnostics.snapshot()
+    runtime, bridge, quotes = adapter()
+
+    first_quote = NOW - timedelta(seconds=8)
+    second_quote = NOW - timedelta(seconds=7)
+    first = ScannerObservation(
+        symbol="FAST", timestamp=NOW - timedelta(seconds=1), price=D("4.96"),
+        previous_close=D("4.00"), current_volume=D("1000000"),
+        average_30_day_volume=D("200000"), float_shares=D("5000000"),
+        bid=D("4.95"), ask=D("4.96"), catalyst=CatalystType.OTHER,
+        catalyst_headline=None, tradable=True, halted=False,
+        catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=NOW - timedelta(seconds=1),
+        quote_timestamp=first_quote, trade_timestamp=NOW - timedelta(seconds=1),
+        bid_size=D("500"), ask_size=D("500"),
+    )
+    second = ScannerObservation(
+        symbol="FAST", timestamp=NOW, price=D("5.01"),
+        previous_close=D("4.00"), current_volume=D("1010000"),
+        average_30_day_volume=D("200000"), float_shares=D("5000000"),
+        bid=D("5.00"), ask=D("5.01"), catalyst=CatalystType.OTHER,
+        catalyst_headline=None, tradable=True, halted=False,
+        catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=NOW, quote_timestamp=second_quote,
+        trade_timestamp=NOW, bid_size=D("500"), ask_size=D("500"),
+    )
+
+    assert runtime.observe_stream_event(
+        first, decision_at=NOW - timedelta(seconds=1), session="REGULAR",
+        context=None, execution_permitted=True,
+    ) is None
+    result = runtime.observe_stream_event(
+        second, decision_at=NOW, session="REGULAR",
+        context=None, execution_permitted=True,
+    )
+
+    assert result is not None
+    assert result.reason == "PROVIDER_DATA_STALE"
+    assert quotes.calls == 1
+    assert len(bridge.entries) == 1
+    after = performance_diagnostics.snapshot()
+    assert (
+        after.quick_scalper_initial_provider_data_stale
+        - before.quick_scalper_initial_provider_data_stale
+    ) == 1
+    assert (
+        after.quick_scalper_stale_preview_refresh_attempts
+        - before.quick_scalper_stale_preview_refresh_attempts
+    ) == 1
+    assert (
+        after.quick_scalper_stale_preview_refresh_available
+        - before.quick_scalper_stale_preview_refresh_available
+    ) == 1
+    assert (
+        after.quick_scalper_stale_preview_refresh_advanced
+        - before.quick_scalper_stale_preview_refresh_advanced
+    ) == 1
+    assert (
+        after.quick_scalper_bridge_reached - before.quick_scalper_bridge_reached
+    ) == 1
+
+
+def test_initial_stream_stale_quote_with_missing_refresh_waits_without_entry():
+    before = performance_diagnostics.snapshot()
+    runtime, bridge, quotes = adapter(quotes=Quotes(None))
+
+    first_quote = NOW - timedelta(seconds=8)
+    second_quote = NOW - timedelta(seconds=7)
+    first = ScannerObservation(
+        symbol="FAST", timestamp=NOW - timedelta(seconds=1), price=D("4.96"),
+        previous_close=D("4.00"), current_volume=D("1000000"),
+        average_30_day_volume=D("200000"), float_shares=D("5000000"),
+        bid=D("4.95"), ask=D("4.96"), catalyst=CatalystType.OTHER,
+        catalyst_headline=None, tradable=True, halted=False,
+        catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=NOW - timedelta(seconds=1),
+        quote_timestamp=first_quote, trade_timestamp=NOW - timedelta(seconds=1),
+        bid_size=D("500"), ask_size=D("500"),
+    )
+    second = ScannerObservation(
+        symbol="FAST", timestamp=NOW, price=D("5.01"),
+        previous_close=D("4.00"), current_volume=D("1010000"),
+        average_30_day_volume=D("200000"), float_shares=D("5000000"),
+        bid=D("5.00"), ask=D("5.01"), catalyst=CatalystType.OTHER,
+        catalyst_headline=None, tradable=True, halted=False,
+        catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=NOW, quote_timestamp=second_quote,
+        trade_timestamp=NOW, bid_size=D("500"), ask_size=D("500"),
+    )
+
+    assert runtime.observe_stream_event(
+        first, decision_at=NOW - timedelta(seconds=1), session="REGULAR",
+        context=None, execution_permitted=True,
+    ) is None
+    result = runtime.observe_stream_event(
+        second, decision_at=NOW, session="REGULAR",
+        context=None, execution_permitted=True,
+    )
+
+    assert result is not None
+    assert result.reason == "PROVIDER_DATA_STALE"
+    assert quotes.calls == 1
+    assert bridge.entries == []
+    after = performance_diagnostics.snapshot()
+    assert (
+        after.quick_scalper_stale_preview_refresh_attempts
+        - before.quick_scalper_stale_preview_refresh_attempts
+    ) == 1
+    assert (
+        after.quick_scalper_execution_quote_unavailable
+        - before.quick_scalper_execution_quote_unavailable
+    ) == 1
+    assert (
+        after.quick_scalper_bridge_reached - before.quick_scalper_bridge_reached
+    ) == 0
+
+
+def test_initial_stream_future_quote_timestamp_does_not_request_refresh():
+    runtime, bridge, quotes = adapter()
+
+    first_quote = NOW - timedelta(seconds=1)
+    future_quote = NOW + timedelta(seconds=1)
+    first = ScannerObservation(
+        symbol="FAST", timestamp=NOW - timedelta(seconds=1), price=D("4.96"),
+        previous_close=D("4.00"), current_volume=D("1000000"),
+        average_30_day_volume=D("200000"), float_shares=D("5000000"),
+        bid=D("4.95"), ask=D("4.96"), catalyst=CatalystType.OTHER,
+        catalyst_headline=None, tradable=True, halted=False,
+        catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=NOW - timedelta(seconds=1),
+        quote_timestamp=first_quote, trade_timestamp=NOW - timedelta(seconds=1),
+        bid_size=D("500"), ask_size=D("500"),
+    )
+    second = ScannerObservation(
+        symbol="FAST", timestamp=NOW, price=D("5.01"),
+        previous_close=D("4.00"), current_volume=D("1010000"),
+        average_30_day_volume=D("200000"), float_shares=D("5000000"),
+        bid=D("5.00"), ask=D("5.01"), catalyst=CatalystType.OTHER,
+        catalyst_headline=None, tradable=True, halted=False,
+        catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=NOW, quote_timestamp=future_quote,
+        trade_timestamp=NOW, bid_size=D("500"), ask_size=D("500"),
+    )
+
+    assert runtime.observe_stream_event(
+        first, decision_at=NOW - timedelta(seconds=1), session="REGULAR",
+        context=None, execution_permitted=True,
+    ) is None
+    result = runtime.observe_stream_event(
+        second, decision_at=NOW, session="REGULAR",
+        context=None, execution_permitted=True,
+    )
+
+    assert result is not None
+    assert result.reason == "PROVIDER_DATA_STALE"
+    assert quotes.calls == 0
+    assert bridge.entries == []
+
+
 def test_initial_stream_stale_last_does_not_block_fresh_quote():
     before = performance_diagnostics.snapshot()
     runtime, bridge, quotes = adapter()
@@ -968,3 +1128,116 @@ def test_jagx_shape_real_gateway_partial_fill_target_stop_and_release():
         D("0"),
     ) == D("10")
     composition.close()
+
+
+def stale_preview_snapshot() -> QuickScalpSnapshot:
+    stale = NOW - timedelta(seconds=7)
+    return replace(snapshot(), bid_timestamp=stale, ask_timestamp=stale)
+
+
+def test_stale_preview_still_stale_confirmation_waits_then_retries_same_generation():
+    before = performance_diagnostics.snapshot()
+    runtime, bridge, quotes = adapter(quotes=Quotes(quote(age=7)))
+    value = stale_preview_snapshot()
+    runtime._snapshots[("FAST", "g1")] = value
+
+    runtime.scalper.observe(value)
+
+    assert quotes.calls == 1
+    assert bridge.entries == []
+    assert quotes.decisions[-1]["rejection_reason"] == "PROVIDER_DATA_STALE"
+    item = runtime.current_opportunity("FAST")
+    assert item.state.value == "WAITING_EXECUTION"
+    assert item.assessment.generation_id == "g1"
+    assert runtime.ownership.owner("FAST") is None
+    assert runtime.scalper.guard.allow("FAST", "g1", NOW)[0]
+    after = performance_diagnostics.snapshot()
+    assert (
+        after.quick_scalper_stale_preview_refresh_available
+        - before.quick_scalper_stale_preview_refresh_available
+    ) == 1
+    assert (
+        after.quick_scalper_stale_preview_refresh_advanced
+        - before.quick_scalper_stale_preview_refresh_advanced
+    ) == 0
+
+    quotes.value = quote()
+    runtime.scalper.observe(value)
+    assert quotes.calls == 2
+    assert len(bridge.entries) == 1
+    # Repeated stream events after submission must not request another quote.
+    runtime.scalper.observe(value)
+    assert quotes.calls == 2
+    assert len(bridge.entries) == 1
+
+
+def test_stale_preview_unavailable_confirmation_can_retry_same_generation():
+    runtime, bridge, quotes = adapter(quotes=Quotes(None))
+    value = stale_preview_snapshot()
+    runtime._snapshots[("FAST", "g1")] = value
+
+    runtime.scalper.observe(value)
+
+    assert quotes.calls == 1
+    assert bridge.entries == []
+    assert runtime.current_opportunity("FAST").state.value == "WAITING_EXECUTION"
+    assert runtime.ownership.owner("FAST") is None
+    quotes.value = quote()
+    runtime.scalper.observe(value)
+    assert quotes.calls == 2
+    assert len(bridge.entries) == 1
+
+
+def test_stale_preview_invalid_authoritative_quotes_never_reach_account_or_bridge():
+    invalid_quotes = (
+        (replace(quote(), bid=D("5.01")), "INVALID_EXECUTION_QUOTE"),
+        (replace(quote(), last=D("0")), "INVALID_EXECUTION_QUOTE"),
+        (replace(quote(), bid=D("0")), "CANONICAL_SUBMISSION_FAILURE"),
+        (replace(quote(), ask=D("0")), "PRICE_NOT_ELIGIBLE"),
+        (replace(quote(), bid=D("4.88"), ask=D("4.89")), "RISK_NOT_AUTHORIZED"),
+        (replace(quote(), last_timestamp=NOW + timedelta(seconds=1)),
+         "PROVIDER_DATA_STALE"),
+        (replace(quote(), bid_timestamp=NOW + timedelta(seconds=1)),
+         "PROVIDER_DATA_STALE"),
+        (replace(quote(), ask_timestamp=NOW + timedelta(seconds=1)),
+         "PROVIDER_DATA_STALE"),
+    )
+    for authoritative, reason in invalid_quotes:
+        runtime, bridge, quotes = adapter(quotes=Quotes(authoritative))
+        account_calls = []
+        runtime.account_context_source = lambda: account_calls.append(True)
+        value = stale_preview_snapshot()
+        runtime._snapshots[("FAST", "g1")] = value
+
+        runtime.scalper.observe(value)
+
+        assert quotes.calls == 1, reason
+        assert account_calls == [], reason
+        assert bridge.entries == [], reason
+        if reason == "CANONICAL_SUBMISSION_FAILURE":
+            # The shared assessment contract rejects a non-positive BID
+            # before the policy can publish its rejection record.
+            assert quotes.decisions == []
+            item = runtime.current_opportunity("FAST")
+            assert item.authorization_result == "REJECTED"
+            assert item.authorization_reason == reason
+        else:
+            assert quotes.decisions[-1]["rejection_reason"] == reason
+        assert runtime.ownership.owner("FAST") is None, reason
+
+
+def test_stale_preview_disabled_live_and_nonpaper_modes_request_no_quote():
+    for enabled, live, environment in (
+        (False, False, "PAPER"),
+        (True, True, "PAPER"),
+        (True, False, "LIVE"),
+    ):
+        runtime, bridge, quotes = adapter(enabled=enabled, live=live)
+        runtime.environment = environment
+        value = stale_preview_snapshot()
+        runtime._snapshots[("FAST", "g1")] = value
+
+        runtime.scalper.observe(value)
+
+        assert quotes.calls == 0
+        assert bridge.entries == []
