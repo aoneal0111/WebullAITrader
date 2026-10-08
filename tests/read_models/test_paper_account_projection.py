@@ -245,6 +245,8 @@ def test_unique_fill_after_higher_sequence_cancellation_is_accounted_once():
     ))
     sell = _event(2, "SELL", "100", "11", "100")
     account(sell)
+    assert account.snapshot.current_cash == Decimal("100100")
+    assert account.snapshot.realized_pnl == Decimal("100")
     account(sell)
     account(replace(sell, sequence=4))
 
