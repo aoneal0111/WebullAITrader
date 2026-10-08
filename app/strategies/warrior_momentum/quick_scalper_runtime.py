@@ -146,6 +146,7 @@ class QuickScalperPaperRuntimeAdapter:
         ] = OrderedDict()
         self._stream_generation_started: dict[str, datetime] = {}
         self._lock = RLock()
+        self._reconciling = False
         self.scalper = QuickScalper(
             engine=self.engine, ownership=self.ownership, config=config,
             authorize_and_submit=self._authorize_and_submit,
@@ -322,6 +323,19 @@ class QuickScalperPaperRuntimeAdapter:
 
     def reconcile(self, symbol: str | None = None) -> None:
         """Rebuild ownership/protection solely from canonical order history."""
+        with self._lock:
+            # Gateway submissions emit events synchronously before returning
+            # their acknowledgement. Do not reconcile an unfinished bracket
+            # transition recursively through the desktop event sink.
+            if self._reconciling:
+                return
+            self._reconciling = True
+            try:
+                self._reconcile(symbol)
+            finally:
+                self._reconciling = False
+
+    def _reconcile(self, symbol: str | None = None) -> None:
         wanted = None if symbol is None else symbol.strip().upper()
         lifecycles: dict[str, list[object]] = {}
         for order in self.order_book.history():
@@ -343,22 +357,20 @@ class QuickScalperPaperRuntimeAdapter:
                  else -item.filled_quantity for item in orders), ZERO,
             )
             working = any(not item.is_terminal for item in orders)
-            open_buys = [
-                item for item in orders
-                if item.request.side is OrderSide.BUY and not item.is_terminal
-            ]
             completed_exit = any(
                 item.request.side is OrderSide.SELL
                 and item.filled_quantity > ZERO for item in orders
             )
-            if net <= ZERO and completed_exit and open_buys:
-                self.bridge.cancel_working_entry_lifecycle(
-                    current_symbol, identity, "SCALP_POSITION_FLAT",
+            if net == ZERO and completed_exit and working:
+                self.bridge.cancel_flat_lifecycle_orders(
+                    current_symbol, identity, strategy_owner=OWNER,
                 )
                 working = any(
                     not item.is_terminal
                     for item in self.order_book.history()
                     if item.request.strategy_lifecycle_id == identity
+                    and item.symbol == current_symbol
+                    and str(item.request.metadata.get("strategy_owner", "")).upper() == OWNER
                 )
             if net > ZERO or working:
                 self.ownership.acquire(

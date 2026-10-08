@@ -94,10 +94,18 @@ class PaperAccountProjection:
         if not isinstance(event, PaperRuntimeEvent):
             raise TypeError("event must be a PaperRuntimeEvent")
         with self._lock:
-            if event.sequence <= self._last_sequence_by_source.get(event.source, 0):
+            last_sequence = self._last_sequence_by_source.get(event.source, 0)
+            unseen_fill = (
+                event.fill is not None
+                and event.fill.request_id not in self._processed_fill_ids
+            )
+            # Synchronous order management can deliver a sibling cancellation
+            # before the fill that caused it. Fill identity is authoritative
+            # for accounting, independently of the stream high-water mark.
+            if event.sequence <= last_sequence and not unseen_fill:
                 return
-            self._last_sequence_by_source[event.source] = event.sequence
-            if event.fill is not None and event.fill.request_id not in self._processed_fill_ids:
+            self._last_sequence_by_source[event.source] = max(last_sequence, event.sequence)
+            if unseen_fill:
                 self._has_fills = True
                 fill = event.fill
                 notional = fill.quantity * fill.fill_price

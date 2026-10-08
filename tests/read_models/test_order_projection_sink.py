@@ -150,6 +150,32 @@ def test_duplicate_order_fact_does_not_republish_state() -> None:
     assert store.snapshot().revision == revision
 
 
+@pytest.mark.parametrize("delay", [0, 1])
+def test_cancelled_order_cannot_be_resurrected_by_delayed_working_event(delay):
+    bus = OperationsBus()
+    store = ApplicationStateStore(bus)
+    projection = OrderProjection(bus)
+    projection(event(sequence=3, status="CANCELLED"))
+    revision = store.snapshot().revision
+
+    projection(event(sequence=2, status="WORKING", timestamp=NOW + timedelta(seconds=delay)))
+
+    assert projection.snapshot.orders[0].status == "CANCELLED"
+    assert store.snapshot().revision == revision
+
+
+def test_older_order_fact_does_not_replace_newer_partial_fill():
+    projection = OrderProjection(OperationsBus())
+    projection(event(sequence=3, status="PARTIALLY_FILLED", timestamp=NOW + timedelta(seconds=1)))
+    projection(event(sequence=2, status="WORKING"))
+    # An older fact for another order must still be accepted.
+    projection(event(sequence=1, order_id="other", status="WORKING"))
+
+    assert [(o.order_id, o.status) for o in projection.snapshot.orders] == [
+        ("order-1", "PARTIALLY_FILLED"), ("other", "WORKING"),
+    ]
+
+
 def test_projection_rejects_wrong_event_type() -> None:
     projection = OrderProjection(OperationsBus())
 

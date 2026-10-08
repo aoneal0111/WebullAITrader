@@ -2388,6 +2388,40 @@ class AutonomousPaperExecutionBridge:
             self._reconcile_terminal_entries()
         return tuple(cancelled)
 
+    def cancel_flat_lifecycle_orders(
+        self, symbol: str, lifecycle_id: str, *, strategy_owner: str,
+    ) -> tuple[str, ...]:
+        """Cancel residual orders only after an owned lifecycle has closed."""
+        if self.order_book is None:
+            return ()
+        normalized = symbol.strip().upper()
+        identity = lifecycle_id.strip()
+        owner = strategy_owner.strip().upper()
+        if not normalized or not identity or not owner:
+            return ()
+        cancelled: list[str] = []
+        with self._lock:
+            orders = tuple(
+                order for order in self.order_book.history()
+                if order.symbol == normalized
+                and order.request.strategy_lifecycle_id == identity
+                and str(order.request.metadata.get("strategy_owner", "")).upper() == owner
+            )
+            net = sum((
+                order.filled_quantity if order.request.side is OrderSide.BUY
+                else -order.filled_quantity for order in orders
+            ), Decimal("0"))
+            closed = any(
+                order.request.side is OrderSide.SELL and order.filled_quantity > 0
+                for order in orders
+            )
+            if net != 0 or not closed:
+                return ()
+            for order in orders:
+                if not order.is_terminal and self._cancel_working_order(order):
+                    cancelled.append(order.order_id)
+        return tuple(cancelled)
+
     def _order_created_at(self, order_id: str | None) -> datetime | None:
         if self.order_book is None or order_id is None:
             return None

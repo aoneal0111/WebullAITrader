@@ -172,6 +172,15 @@ def _reduce_order(
         item.order_id: item
         for item in current.orders
     }
+    previous = by_id.get(projected.order_id)
+    if previous is not None:
+        if projected.updated_at < previous.updated_at:
+            return current
+        if (
+            previous.status.strip().upper() in _TERMINAL_STATUSES
+            and projected.status.strip().upper() not in _TERMINAL_STATUSES
+        ):
+            return current
     by_id[projected.order_id] = projected
 
     ordered = sorted(
