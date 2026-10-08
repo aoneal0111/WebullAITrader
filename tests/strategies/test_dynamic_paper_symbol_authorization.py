@@ -78,6 +78,27 @@ def test_configuration_defaults_to_restrictive_static_allowlist():
     )
 
 
+def test_combined_dynamic_configuration_is_explicit_and_non_live():
+    mode = PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR_AND_QUICK_SCALPER
+    configured = load_configuration({
+        "PAPER_SYMBOL_AUTHORIZATION_MODE": mode.value,
+        "WEBULL_TRADING_ENVIRONMENT": "TEST",
+        "LIVE_TRADING_ENABLED": "false",
+    })
+    assert configured.paper_symbol_authorization_mode is mode
+    assert configured.quick_scalper_enabled is False
+    for restriction in (
+        {"LIVE_TRADING_ENABLED": "true"},
+        {"WEBULL_TRADING_ENVIRONMENT": "PRODUCTION"},
+        {"WEBULL_TRADING_ENVIRONMENT": "LIVE"},
+    ):
+        with pytest.raises(ValueError):
+            load_configuration({
+                "PAPER_SYMBOL_AUTHORIZATION_MODE": mode.value,
+                **restriction,
+            })
+
+
 def test_dynamic_configuration_is_explicit_non_live_and_fail_closed():
     configured = load_configuration({
         "PAPER_SYMBOL_AUTHORIZATION_MODE": "dynamic_warrior",
@@ -97,7 +118,11 @@ def test_dynamic_configuration_is_explicit_non_live_and_fail_closed():
             load_configuration(invalid)
 
 
-def test_dynamic_mode_authorizes_only_the_authoritative_warrior_service_path(tmp_path):
+@pytest.mark.parametrize("mode", [
+    PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR,
+    PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR_AND_QUICK_SCALPER,
+])
+def test_dynamic_mode_authorizes_only_the_authoritative_warrior_service_path(tmp_path, mode):
     store = ForwardCaptureStore(tmp_path / "dynamic.sqlite3")
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
     composition = create_paper_trading_command_composition(
@@ -119,7 +144,7 @@ def test_dynamic_mode_authorizes_only_the_authoritative_warrior_service_path(tmp
                 Decimal("50000"),
                 Decimal("25000"),
                 frozenset({"AAPL"}),
-                symbol_authorization_mode=PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR,
+                symbol_authorization_mode=mode,
             ),
         )
         writer.flush()
@@ -129,7 +154,7 @@ def test_dynamic_mode_authorizes_only_the_authoritative_warrior_service_path(tmp
             record_type=CaptureRecordType.EXECUTION_GATE_DECISION,
         )[0].payload
         assert decision["result"] == "AUTHORIZED"
-        assert decision["symbol_authorization_mode"] == "DYNAMIC_WARRIOR"
+        assert decision["symbol_authorization_mode"] == mode.value
         assert decision["symbol_authorization_source"] == "DYNAMIC_WARRIOR_PAPER"
         assert decision["order_constructed"] is True
         assert decision["submission_attempted"] is True

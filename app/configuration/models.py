@@ -16,10 +16,11 @@ class TradingEnvironment(StrEnum):
 
 
 class PaperSymbolAuthorizationMode(StrEnum):
-    """How the Warrior PAPER path answers its symbol-authorization gate."""
+    """Explicit symbol-authorization scope for internal PAPER strategies."""
 
     STATIC_ALLOWLIST = "STATIC_ALLOWLIST"
     DYNAMIC_WARRIOR = "DYNAMIC_WARRIOR"
+    DYNAMIC_WARRIOR_AND_QUICK_SCALPER = "DYNAMIC_WARRIOR_AND_QUICK_SCALPER"
 
 
 @dataclass(frozen=True, slots=True)

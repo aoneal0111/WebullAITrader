@@ -333,7 +333,10 @@ def load_configuration(env=None):
     )
     if (
         paper_symbol_authorization_mode
-        is PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR
+        in {
+            PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR,
+            PaperSymbolAuthorizationMode.DYNAMIC_WARRIOR_AND_QUICK_SCALPER,
+        }
         and (
             live
             or trading_configuration.environment
