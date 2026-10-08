@@ -1425,13 +1425,15 @@ def _structural_stop_from_placement(order: object) -> Decimal | None:
 def _decision_strategy_id(order: object) -> str:
     """Preserve autonomous strategy identity in the PAPER read model.
 
-    Operator-created orders retain the historical operator label.  Warrior
+    Operator-created orders retain the historical operator label. Autonomous
     orders carry an explicit lifecycle prefix, so the gateway can attribute
     the authoritative order event without changing execution semantics.
     """
     lifecycle = str(getattr(order, "strategy_lifecycle_id", "") or "").strip()
     if lifecycle.startswith("WARRIOR_MOMENTUM_V1|"):
         return "WARRIOR_MOMENTUM_V1"
+    if lifecycle.startswith("QUICK_SCALPER|"):
+        return "QUICK_SCALPER"
     return "operator-order-entry"
 
 
@@ -1439,6 +1441,8 @@ def _decision_reasoning(order: object) -> str:
     lifecycle = str(getattr(order, "strategy_lifecycle_id", "") or "").strip()
     if lifecycle.startswith("WARRIOR_MOMENTUM_V1|"):
         return "Warrior Momentum autonomous PAPER authorization."
+    if lifecycle.startswith("QUICK_SCALPER|"):
+        return "Quick Scalper autonomous PAPER authorization."
     return "Operator submitted a validated paper order."
 
 

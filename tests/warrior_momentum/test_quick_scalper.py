@@ -4,6 +4,8 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 
+import pytest
+
 from app.strategies.warrior_momentum.opportunity_engine import (
     WarriorOpportunityEngine, WarriorOpportunityState,
 )
@@ -115,20 +117,39 @@ def test_bid_movement_must_reach_ask_anchored_target_and_exit_cost() -> None:
     assert value.bid + assessed.expected_move < assessed.target_price
     assert assessed.decision is ScalpDecision.WAIT
     assert assessed.required_bid_move == D("0.155")
-    recovered = policy.assess(replace(value, velocity_cents_per_minute=D("0.16")))
+    recovered = policy.assess(replace(value, short_horizon_range=D("0.16")))
     assert recovered.decision is ScalpDecision.EXECUTABLE
     assert recovered.expected_move >= recovered.required_bid_move
 
 
 def test_target_reachability_includes_exit_slippage_at_boundary() -> None:
     policy = QuickScalperPolicy()
-    value = snapshot(short_range="0.12", velocity="0.145", velocity_pct="0")
+    value = snapshot(short_range="0.145", velocity="0.145", velocity_pct="0")
     assessed = policy.assess(value)
     assert value.bid + assessed.expected_move == assessed.target_price
     assert assessed.decision is ScalpDecision.WAIT
     assert policy.assess(replace(
-        value, velocity_cents_per_minute=assessed.required_bid_move,
+        value, short_horizon_range=assessed.required_bid_move,
     )).decision is ScalpDecision.EXECUTABLE
+
+
+@pytest.mark.parametrize("elapsed", ["0.2", "4", "15", "30"])
+def test_one_cent_burst_cannot_supply_a_minute_of_unobserved_movement(elapsed) -> None:
+    rate = D("0.01") * D("60") / D(elapsed)
+    value = replace(
+        snapshot(short_range="0.01"),
+        velocity_cents_per_minute=rate,
+        velocity_percent_per_minute=rate / D("4.96") * D("100"),
+        stream_elapsed_seconds=D(elapsed), stream_sample_count=5,
+    )
+    assessed = QuickScalperPolicy().assess(value)
+    assert assessed.expected_move == D("0.01")
+    assert assessed.decision is ScalpDecision.WAIT
+    # Genuine movement can recover at the same spread and elapsed time.
+    recovered = QuickScalperPolicy().assess(replace(
+        value, short_horizon_range=D("0.20"),
+    ))
+    assert recovered.decision is ScalpDecision.EXECUTABLE
 
 
 def test_same_spread_percent_is_adaptive_to_expected_movement() -> None:

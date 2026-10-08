@@ -15,6 +15,13 @@ There is no new fixed spread, RVOL, or reward/risk veto. Stronger movement can
 make the same spread executable on a later assessment. Existing hard safety
 checks still run before this economic wait condition.
 
+Entry approval uses the observed short-horizon BID range as its movement
+evidence. Per-minute velocities remain diagnostic context; they cannot supply
+an unobserved future minute of movement. This avoids multiplying a brief burst
+into an unsupported dollar estimate. Larger observed movement can recover at
+the same spread without a fixed duration or sample-count veto. Historical range
+is still a proxy, not a prediction of the next move or a calibrated win probability.
+
 ## Prospective quote path
 
 The desktop sidecar sends raw QUOTE bid/ask values and their provider timestamp

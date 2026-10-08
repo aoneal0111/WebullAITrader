@@ -12,6 +12,8 @@ from app.services.order_command_factory import OrderEntryCommand
 
 from decimal import Decimal
 
+import pytest
+
 
 NOW = datetime(2026, 8, 31, 11, 30, tzinfo=UTC)
 
@@ -59,6 +61,23 @@ def test_places_order_into_shared_book() -> None:
     assert stored.status is OrderStatus.ACCEPTED
     assert stored.symbol == "AAPL"
     assert stored.request.client_order_id == "client-1"
+
+
+@pytest.mark.parametrize("lifecycle, strategy, reasoning", [
+    ("QUICK_SCALPER|AAPL|g1", "QUICK_SCALPER", "Quick Scalper autonomous PAPER authorization."),
+    ("WARRIOR_MOMENTUM_V1|AAPL|g1", "WARRIOR_MOMENTUM_V1", "Warrior Momentum autonomous PAPER authorization."),
+    (None, "operator-order-entry", "Operator submitted a validated paper order."),
+])
+def test_accepted_decision_preserves_strategy_identity(lifecycle, strategy, reasoning):
+    events = []
+    gateway = PaperOrderGateway(PaperOrderBook(), clock=lambda: NOW, event_sink=events.append)
+    request = placement_request()
+    request = replace(request, order=replace(request.order, strategy_lifecycle_id=lifecycle))
+    acknowledgement = gateway.place_order(request)
+    assert acknowledgement.accepted
+    decision = next(event.decision for event in events if event.decision is not None)
+    assert decision.strategy_id == strategy
+    assert decision.reasoning_summary == reasoning
 
 
 def test_cancels_order_from_shared_book() -> None:

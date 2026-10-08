@@ -162,11 +162,10 @@ class QuickScalperPolicy:
             value.short_horizon_range * self.config.volatility_move_fraction,
             cost * self.config.execution_cost_multiple,
         )
-        expected_move = max(
-            ZERO, value.short_horizon_range,
-            value.velocity_cents_per_minute,
-            value.bid * value.velocity_percent_per_minute / HUNDRED,
-        )
+        # A per-minute velocity is a rate, not evidence that a minute of
+        # movement remains available. Use demonstrated BID movement instead
+        # of extrapolating a short burst into an unobserved future minute.
+        expected_move = max(ZERO, value.short_horizon_range)
         # Movement is measured from BID; the sell target is anchored to ASK.
         # Include the distance between those anchors and estimated exit slippage.
         required_bid_move = (
