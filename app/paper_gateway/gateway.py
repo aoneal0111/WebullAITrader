@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import replace
+from collections import deque
 from collections.abc import Callable
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from threading import RLock
+from threading import RLock, local
 from time import perf_counter
 
 from app.momentum_scanner import AssetClass
@@ -156,6 +158,9 @@ class PaperOrderGateway:
         self._sequence = 0
         self._journal = PaperJournal()
         self._lock = RLock()
+        self._mutation_context = local()
+        self._pending_events: deque[PaperRuntimeEvent] = deque()
+        self._dispatching_events = False
         self._durability_error: Exception | None = None
         self._stale_market_event_count = 0
         if self._durable_store is not None:
@@ -200,7 +205,7 @@ class PaperOrderGateway:
             )
 
         order = request.order
-        with self._lock:
+        with self._mutation():
             self._require_durability()
             if (
                 order.side.value == "SELL"
@@ -453,7 +458,7 @@ class PaperOrderGateway:
             )
 
         try:
-            with self._lock:
+            with self._mutation():
                 self._require_durability()
                 # A fill may have arrived while cancellation waited for the
                 # gateway lock. Never persist the pre-lock order snapshot.
@@ -518,7 +523,7 @@ class PaperOrderGateway:
         correlated_target_order_id: str | None = None,
     ) -> bool:
         """Atomically amend protection, optionally upgrading a legacy bracket."""
-        with self._lock:
+        with self._mutation():
             self._require_durability()
             order = self._order_book.get(order_id)
             if (order.is_terminal or order.side is not PaperOrderSide.SELL
@@ -625,7 +630,7 @@ class PaperOrderGateway:
             last_trade_price=None,
         )
 
-        with self._lock:
+        with self._mutation():
             if self._durability_error is not None:
                 return ()
             try:
@@ -1064,10 +1069,10 @@ class PaperOrderGateway:
         evaluated_at = self._now() if at is None else at
         if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
             raise ValueError("validity reconciliation time must be timezone-aware")
-        with self._lock:
+        with self._mutation():
             events = self._expire_temporally_invalid_orders(evaluated_at)
-        for event in events:
-            self._emit_event(event)
+            for event in events:
+                self._emit_event(event)
         return events
 
     def _expire_temporally_invalid_orders(
@@ -1388,7 +1393,7 @@ class PaperOrderGateway:
             ),
         )
         try:
-            self._event_sink(diagnostic)
+            self._emit_event(diagnostic)
         except Exception:
             _LOGGER.exception("PAPER durability diagnostic sink failed")
 
@@ -1399,8 +1404,61 @@ class PaperOrderGateway:
             ) from self._durability_error
 
     def _emit_event(self, event: PaperRuntimeEvent) -> None:
-        if self._event_sink is not None:
-            self._event_sink(event)
+        if self._event_sink is None:
+            return
+        with self._lock:
+            self._pending_events.append(event)
+        if not getattr(self._mutation_context, "depth", 0):
+            self._drain_events()
+
+    @contextmanager
+    def _mutation(self):
+        """Commit state under the lock; invoke external observers after release."""
+        try:
+            with self._lock:
+                self._mutation_context.depth = getattr(self._mutation_context, "depth", 0) + 1
+                try:
+                    yield
+                finally:
+                    self._mutation_context.depth -= 1
+        finally:
+            if not getattr(self._mutation_context, "depth", 0):
+                self._drain_events()
+
+    def _drain_events(self) -> None:
+        if self._event_sink is None:
+            return
+        # Never wait for another dispatcher: it may be in a callback waiting
+        # for a strategy lock held by this caller. Its loop will deliver our
+        # committed events in FIFO order, including reentrant submissions.
+        with self._lock:
+            if self._dispatching_events:
+                return
+            self._dispatching_events = True
+        try:
+            while True:
+                with self._lock:
+                    if not self._pending_events:
+                        self._dispatching_events = False
+                        return
+                    event = self._pending_events.popleft()
+                started = perf_counter()
+                try:
+                    try:
+                        self._event_sink(event)
+                    except Exception:
+                        if event.event_type != "PAPER_DURABILITY_FAILED":
+                            raise
+                        _LOGGER.exception("PAPER durability diagnostic sink failed")
+                finally:
+                    performance_diagnostics.record_component_duration(
+                        "paper.runtime_event_delivery", (perf_counter() - started) * 1000,
+                        event_type=event.event_type, symbol=event.symbol,
+                    )
+        except BaseException:
+            with self._lock:
+                self._dispatching_events = False
+            raise
 
     def _now(self) -> datetime:
         value = self._clock()
