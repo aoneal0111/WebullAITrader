@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 from pathlib import Path
+
+import pytest
+from app.strategies.warrior_momentum.validation_dataset import write_dataset, SessionReference
 
 from app.momentum_scanner.models import (
     AssetClass, CatalystStatus, CatalystType, ScannerObservation,
@@ -133,8 +137,31 @@ def test_breakdown_grouping_and_replay_determinism() -> None:
 
 
 def test_captured_dataset_hash_and_multisession_coverage() -> None:
-    dataset = load_dataset(Path("data/warrior_momentum_v1_validation"))
+    directory = Path("data/warrior_momentum_v1_validation")
+    if not (directory / "manifest.json").exists():
+        pytest.skip("External Webull historical capture is not distributed with the repository")
+    dataset = load_dataset(directory)
     assert dataset.sha256 == "2c0ddf816eb82a40c14aebbd836e7bc403fe6aa1fbc324614fe88ee87801a41d"
     assert len(dataset.bars) == 19800
     assert min(bar.timestamp.date() for bar in dataset.bars) < max(bar.timestamp.date() for bar in dataset.bars)
     assert "UNAVAILABLE" in dataset.catalyst_evidence
+
+
+def test_dataset_roundtrip_and_tamper_detection(tmp_path):
+    bars = (bar(0), replace(bar(1), timestamp=T0 + timedelta(days=1)))
+    references = (SessionReference("XYZ", T0.date().isoformat(), D("9"), D("1000")),)
+    manifest = write_dataset(tmp_path, captured_at=T0, bars=reversed(bars),
+                             references=references, symbols=("XYZ",))
+    # Label synthetic data explicitly; it is not the external historical capture.
+    import json
+    manifest["source"] = "SYNTHETIC_TEST_FIXTURE"
+    manifest["selection_method"] = "deterministic loader contract fixture"
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    dataset = load_dataset(tmp_path)
+    assert dataset.bars == bars
+    assert dataset.references == references
+    assert dataset.sha256 == manifest["bars_sha256"]
+    assert len({item.timestamp.date() for item in dataset.bars}) == 2
+    (tmp_path / "bars.jsonl").write_bytes((tmp_path / "bars.jsonl").read_bytes() + b" ")
+    with pytest.raises(ValueError, match="hash mismatch"):
+        load_dataset(tmp_path)

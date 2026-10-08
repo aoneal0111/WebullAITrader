@@ -28,6 +28,9 @@ def _driver(scanner: _Scanner):
         suspend_gap_detection_seconds=10,
         stream_reconnect_backoff_seconds=1,
     )
+    driver._diagnostic_recovery_attempt_sequence = 0
+    driver._market_data_consumer_state = "RUNNING"
+    driver._shutdown_requested = False
     driver._scanner = scanner
     driver._market_data = None
     driver._market_data_started_monotonic = 0.0

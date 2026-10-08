@@ -83,7 +83,7 @@ def test_equity_stop_bypasses_exposure_guard_and_other_market_task(monkeypatch, 
                         composition.runtime_service, composition.trading_service,
                         composition.order_command_factory, asset_modules=modules)
     calls = []
-    monkeypatch.setattr(composition.runtime_service, 'stop', lambda reason='': calls.append(reason) or True)
+    monkeypatch.setattr(composition.runtime_service, 'stop', lambda reason='', **_kwargs: calls.append(reason) or True)
     try:
         # The old routing silently ignored Stop while any lifecycle task existed.
         window.asset_navigation.task = object()

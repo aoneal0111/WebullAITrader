@@ -121,14 +121,6 @@ def close_desktop_composition(
             # Review export is diagnostic-only and cannot block shutdown.
             pass
 
-    paper_trading_commands = getattr(
-        composition,
-        "paper_trading_commands",
-        None,
-    )
-    if paper_trading_commands is not None:
-        _shutdown_stage("paper_trading_commands", paper_trading_commands.close)
-
     warrior_forward_sidecar = getattr(
         composition,
         "warrior_forward_sidecar",
@@ -136,6 +128,14 @@ def close_desktop_composition(
     )
     if warrior_forward_sidecar is not None:
         _shutdown_stage("warrior_sidecar", warrior_forward_sidecar.stop)
+
+    paper_trading_commands = getattr(
+        composition,
+        "paper_trading_commands",
+        None,
+    )
+    if paper_trading_commands is not None:
+        _shutdown_stage("paper_trading_commands", paper_trading_commands.close)
 
     trade_intelligence_observer = getattr(
         composition,

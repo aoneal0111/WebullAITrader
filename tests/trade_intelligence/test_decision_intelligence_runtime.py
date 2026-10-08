@@ -1,3 +1,5 @@
+import pytest
+
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 from pathlib import Path
@@ -51,6 +53,9 @@ def _candidate(state: SetupState, price: str = "10") -> SimpleNamespace:
         taxonomy_opportunity_id="fixture-opportunity",
     )
     return SimpleNamespace(setup=setup, price=D(price))
+
+
+pytestmark = pytest.mark.usefixtures("historical_intelligence_artifact")
 
 
 def test_runtime_is_read_only_and_retains_memberships(tmp_path: Path):

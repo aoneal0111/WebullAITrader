@@ -81,8 +81,8 @@ def test_orders_page_is_read_only_by_default_and_renders_authoritative_fields(
     application,
 ) -> None:
     page = OrdersPage()
-    assert page.order_entry_panel.isHidden()
-    assert page.layout().indexOf(page.order_entry_panel) == -1
+    assert not page.order_entry_panel.submit_button.isEnabled()
+    assert page.layout().indexOf(page.order_entry_panel) >= 0
 
     page.render_projection(OrdersReadModelSnapshot(orders=(OrderReadModel(
         order_id="paper-stop-1",

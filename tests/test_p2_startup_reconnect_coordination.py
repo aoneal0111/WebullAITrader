@@ -7,6 +7,7 @@ from app.services.runtime_drivers.broker import DesktopBrokerRuntimeDriver
 
 def _driver(scanner, *, watchdog=None):
     driver = object.__new__(DesktopBrokerRuntimeDriver)
+    driver._shutdown_requested = False
     driver._scanner = scanner
     driver._market_data_stop = Event()
     driver._market_data_consumer_state = "RUNNING"

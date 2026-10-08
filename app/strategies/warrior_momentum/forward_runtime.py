@@ -2820,6 +2820,10 @@ class WarriorForwardCaptureService:
             record_pursuit("MISSING_BID_ASK")
             return
 
+        if not thesis_valid:
+            record_pursuit("THESIS_INVALID")
+            return
+
         stale_limit = self.capture_config.quote_stale_after_seconds
         freshness = (
             value.quote_freshness_seconds,

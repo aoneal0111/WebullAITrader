@@ -478,8 +478,8 @@ def test_composite_orders_authority_first_and_isolates_adaptive_exception():
     composite = CompositeMarketEventObserver(
         primary, warrior, adaptive_entry=adaptive,
     )
-    composite(object())
-    composite(object())
+    composite(quote(T0))
+    composite(quote(T0))
     assert sequence == [
         "PAPER_GATEWAY", "WARRIOR_SUBMISSION", "ADAPTIVE_RESEARCH",
         "PAPER_GATEWAY", "WARRIOR_SUBMISSION", "ADAPTIVE_RESEARCH",
@@ -636,7 +636,7 @@ def test_queue_pressure_cannot_stop_authoritative_composite_processing():
     )
     started = perf_counter()
     for _ in range(100):
-        composite(object())
+        composite(quote(T0))
     elapsed = perf_counter() - started
     assert counts == {"paper": 100, "warrior": 100, "adaptive": 100}
     assert elapsed < 0.1

@@ -38,6 +38,9 @@ def _sidecar(tmp_path, quantity, service):
         metrics=lambda: SimpleNamespace(
             dropped_records=0,
             queue_depth=0,
+            diagnostic_dropped_records=0,
+            diagnostic_queue_depth=0,
+            critical_failure_state=False,
         ),
     )
     return sidecar
@@ -53,7 +56,7 @@ def test_normal_market_event_does_not_reconcile_already_clean_position(tmp_path)
     sidecar._last_protection_quantity["DBGI"] = 40
     sidecar._last_protection_attempt_at["DBGI"] = monotonic()
 
-    sidecar(_quote())
+    sidecar.authoritative_observe(_quote())
 
     assert calls == []
 
@@ -66,7 +69,7 @@ def test_quantity_change_reconciles_immediately(tmp_path):
     )
     sidecar = _sidecar(tmp_path, 40, service)
 
-    sidecar(_quote())
+    sidecar.authoritative_observe(_quote())
 
     assert calls == ["DBGI"]
     assert "DBGI" not in sidecar._protection_dirty
@@ -88,7 +91,7 @@ def test_slow_reconciliation_does_not_hold_sidecar_snapshot_lock(tmp_path):
         counterfactual_symbols=(),
     )
     sidecar = _sidecar(tmp_path, 40, service)
-    worker = Thread(target=sidecar, args=(_quote(),))
+    worker = Thread(target=sidecar.authoritative_observe, args=(_quote(),))
     worker.start()
     assert started.wait(1.0)
 

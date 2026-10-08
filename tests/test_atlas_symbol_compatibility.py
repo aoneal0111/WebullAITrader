@@ -186,7 +186,7 @@ def test_screener_preserves_canonical_api_identity_and_raw_boundaries():
     engine, universe, _ = build()
     symbols = universe.list_symbols(AssetClass.STOCK)
 
-    assert symbols[0].display_symbol == "BAD"
+    assert symbols[0].display_symbol == "GOOD"
     good = next(item for item in symbols if item.symbol == "GOOD")
     assert good.api_symbol == "GOOD"
     assert good.instrument_id == "913256135"
@@ -267,28 +267,33 @@ def test_temporary_failures_remain_retryable():
     assert len([call for call in market_data.calls if call[0] == "BAD"]) == 3
 
 
-def test_only_warmed_symbols_are_subscribed_and_empty_universe_fails_closed():
+def test_pending_symbols_are_observed_but_only_warmed_symbols_are_active():
     engine, _, _ = build(behavior={"BAD": "unsupported"})
     transport = Transport()
     coordinator = LiveScannerCoordinator(transport, engine)
-
-    assert coordinator.start() == ("GOOD",)
-    assert transport.calls[-1] == ("subscribe", ("GOOD",))
+    try:
+        assert set(coordinator.start()) == {"GOOD", "BAD"}
+        assert coordinator._initial_reference_complete.wait(2)
+        assert coordinator.snapshot().active_symbols == ("GOOD",)
+        assert ("subscribe", ("BAD", "GOOD")) in transport.calls or ("subscribe", ("GOOD", "BAD")) in transport.calls
+    finally:
+        coordinator.stop()
+        coordinator.disconnect()
 
     empty_engine, _, _ = build(
         behavior={"BAD": "unsupported", "GOOD": "unsupported"}
     )
-    empty_transport = Transport()
-    empty = LiveScannerCoordinator(empty_transport, empty_engine)
-    assert empty.start() == ()
-    assert not any(
-        isinstance(call, tuple) and call[0] == "subscribe"
-        for call in empty_transport.calls
-    )
-    snapshot = empty.snapshot()
-    assert snapshot.active_symbols == ()
-    assert snapshot.healthy is False
-    assert "selected market-data environment" in snapshot.health_reason
+    empty = LiveScannerCoordinator(Transport(), empty_engine)
+    try:
+        assert set(empty.start()) == {"GOOD", "BAD"}
+        assert empty._initial_reference_complete.wait(2)
+        snapshot = empty.snapshot()
+        assert snapshot.active_symbols == ()
+        assert snapshot.healthy is False
+        assert "selected market-data environment" in snapshot.health_reason
+    finally:
+        empty.stop()
+        empty.disconnect()
 
 
 def test_sdk_logger_configuration_is_single_and_non_propagating():

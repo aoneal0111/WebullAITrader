@@ -140,3 +140,6 @@ atlas-*-current.txt
 atlas-*.png
 font-test.png
 tests/gui/_render_*_review.py
+
+# Runtime performance diagnostics (generated on Linux when TEMP is unset)
+/atlas-performance/

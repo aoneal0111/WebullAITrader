@@ -102,6 +102,9 @@ def capture(tmp_path: Path):
     writer.close()
 
 
+pytestmark = pytest.mark.usefixtures("historical_intelligence_artifact")
+
+
 def test_authoritative_fill_path_is_prospective_bounded_and_flags_gaps(
     tmp_path: Path,
 ) -> None:
