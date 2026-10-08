@@ -731,9 +731,6 @@ class PaperOrderGateway:
                 )
             except PaperDurabilityError:
                 return ()
-            for sibling_event in target_fill_events:
-                self._emit_event(sibling_event)
-
             for report, event in durable_transitions:
                 fill = report.fills[0]
                 self._append_journal(
@@ -755,6 +752,8 @@ class PaperOrderGateway:
                     event_type=event.event_type,
                     symbol=event.symbol,
                 )
+            for sibling_event in target_fill_events:
+                self._emit_event(sibling_event)
             return reports
 
     def _reconcile_correlated_stops_after_target_fills(

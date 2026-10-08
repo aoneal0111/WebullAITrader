@@ -235,6 +235,25 @@ def test_duplicate_fill_cannot_change_cash_or_realized_pnl():
     assert account.snapshot.realized_pnl == Decimal("100")
 
 
+def test_unique_fill_after_higher_sequence_cancellation_is_accounted_once():
+    _positions, _orders, account = _projection()
+    account(_event(1, "BUY", "100", "10"))
+    account(PaperRuntimeEvent(
+        sequence=3, timestamp=datetime(2026, 1, 3, tzinfo=timezone.utc),
+        event_type="ORDER_CANCELLED", message="sibling stop cancelled",
+        cycle=0, symbol="SUNE", source="test",
+    ))
+    sell = _event(2, "SELL", "100", "11", "100")
+    account(sell)
+    assert account.snapshot.current_cash == Decimal("100100")
+    assert account.snapshot.realized_pnl == Decimal("100")
+    account(sell)
+    account(replace(sell, sequence=4))
+
+    assert account.snapshot.current_cash == Decimal("100100")
+    assert account.snapshot.realized_pnl == Decimal("100")
+
+
 def test_restored_fill_is_not_debited_again_on_later_delivery():
     _positions, _orders, account = _projection()
     buy = _event(1, "BUY", "100", "10")
