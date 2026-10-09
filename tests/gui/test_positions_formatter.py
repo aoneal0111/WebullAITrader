@@ -190,6 +190,22 @@ def test_enrich_position_management_uses_authoritative_warrior_context() -> None
     assert runner.next_target == "RUNNER / TRAIL"
 
 
+@pytest.mark.parametrize("first_taken, expected", [(False, "+0.54R"), (True, "+1.06R")])
+def test_target_reward_uses_actual_entry_risk_instead_of_target_stage(first_taken, expected):
+    snapshot = format_positions(PositionsReadModelSnapshot(
+        positions=(make_read_model_position(
+            symbol="FSLY", quantity="85", average_cost="29.57", market_value="2484.55",
+        ),),
+    ))
+    context = {
+        "entry_price": "29.57", "structural_stop": "29.07", "stop": "29.07",
+        "target_levels": ("29.839440", "30.10"),
+        "first_taken": first_taken, "second_taken": False,
+    }
+    row = enrich_position_management(snapshot, lambda _symbol: context).management[0]
+    assert row.next_target.endswith(f"({expected})")
+
+
 def test_format_positions_returns_immutable_rows() -> None:
     snapshot = format_positions(
         PositionsReadModelSnapshot(
