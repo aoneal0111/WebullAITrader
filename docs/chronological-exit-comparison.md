@@ -94,3 +94,48 @@ chronologically sorted portfolio replay. Batch reports are independent, not
 cumulative; their byte ranges identify the records consumed. Keep costs,
 horizon and selection settings fixed across batches. Use a new checkpoint and
 report directory for a changed policy or a separate sampling experiment.
+
+## Opt-in earlier partial comparison
+
+`--policy-set EARLY_PARTIAL_V1` adds two policies to the original three:
+25% at +0.75R then break-even, and 25% at +0.50R then break-even. They use
+identical entries, quantities, costs and runner handling; only activation
+differs. Partials round down to whole shares. Fewer than four shares means
+no quarter partial and no break-even activation. New stops still take effect
+on the next bar. Default `BASELINE` retains the original three policies and
+existing checkpoint configuration.
+
+Start a separate small research batch:
+
+```powershell
+Set-Location "$env:USERPROFILE\WebullAITrader"
+$ReplayOutput = & .\.venv\Scripts\python.exe `
+    -m app.trade_intelligence.knowledge.exit_replay `
+    data/research/historical_tranches/2026_06_01__2026_08_31 `
+    --strategy ALL --policy-set EARLY_PARTIAL_V1 `
+    --max-scan 250 --max-episodes 10 --max-per-symbol 1 `
+    --hold-minutes 60 --risk-dollars 25 --cost-per-share-per-side 0.01 `
+    --checkpoint data/research/early_partial_v1/checkpoint.json `
+    --report-dir data/research/early_partial_v1/reports --summary-only
+if ($LASTEXITCODE -ne 0) { throw "Early partial batch failed; stop here." }
+$Comparison = $ReplayOutput[-1] | ConvertFrom-Json
+$Comparison | Select-Object scanned_rows, selected_episodes, `
+    source_rows_consumed, at_eof | Format-List
+$Comparison.early_partial_comparison | ConvertTo-Json -Depth 6
+```
+
+Repeat exactly this command to resume. Do not reuse `exit_coverage_v1`'s
+checkpoint or reports. The early-policy checkpoint records all five policy
+definitions and rejects changed settings. Its `early_partial_comparison`
+totals use only episodes closed under both quarter-partial policies. Overall
+`paired_pnl_totals` still require all five to close; these are different
+cohorts and must not be combined. Unresolved paths are counted, not assigned
+zero profit. Each report's episodes preserve the fill traces for inspection.
+
+This is a bar-mechanics comparison, not an exact Warrior 0.75R harvest replay:
+the experiment uses break-even, whereas Warrior also has staged harvest and
+peak-retention logic. It does not run the Quick Scalper or modify runtime
+configuration. No winner has been established. Earlier sales can preserve
+profit before a reversal and reduce profit on a continued winner; both are
+covered by tests. The sparse historical corpus can still leave most episodes
+unresolved, so this batch measures coverage before performance conclusions.
