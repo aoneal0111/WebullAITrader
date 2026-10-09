@@ -1,5 +1,7 @@
 """Exercise synchronous desktop projection -> scalper -> gateway feedback."""
 from decimal import Decimal as D
+from datetime import timedelta
+from types import SimpleNamespace
 
 from app.composition.runtime_projection_pipeline import create_runtime_projection_pipeline
 from app.operations_core import OperationsBus
@@ -11,6 +13,89 @@ from app.strategies.warrior_momentum.quick_scalper_runtime import QuickScalperPa
 from tests.test_support.session_clock import create_session_paper_composition
 from tests.warrior_momentum.test_quick_scalper_runtime import NOW, account, quote, snapshot, Quotes, paper_order
 import pytest
+
+
+@pytest.mark.parametrize("reason,elapsed", [
+    ("SCALP_MAX_HOLD", 301), ("SCALP_MOMENTUM_STALL", 1),
+])
+def test_full_exit_partial_fill_keeps_liquidation_order_instead_of_restoring_target(reason, elapsed):
+    pipeline = create_runtime_projection_pipeline(
+        operations_bus=OperationsBus(), account_id="liquidation-feedback",
+        paper_account_starting_cash=D("100000"),
+    )
+    holder = {}
+
+    def quantity(symbol):
+        return sum((D(p.quantity) for p in pipeline.position_projection.snapshot.positions
+                    if p.symbol == symbol), D("0"))
+
+    def sink(event):
+        pipeline.sink(event)
+        if "runtime" in holder:
+            holder["runtime"].observe_paper_event(event)
+
+    composition = create_session_paper_composition(
+        at=NOW, event_sink=sink, position_quantity_source=quantity,
+        position_average_cost_source=lambda _symbol: D("5"),
+    )
+    try:
+        bridge = AutonomousPaperExecutionBridge(
+            composition.trading_service, composition.order_command_factory,
+            mode="PAPER", enabled=True, order_book=composition.order_book,
+            position_quantity_source=quantity,
+            protection_amender=composition.gateway.amend_protective_stop,
+        )
+        runtime = QuickScalperPaperRuntimeAdapter(
+            config=QuickScalperConfig(enabled=True), bridge=bridge,
+            order_book=composition.order_book, account_context_source=account,
+            position_quantity_source=quantity, execution_quote_source=Quotes(quote()),
+            clock=lambda: NOW,
+        )
+        holder["runtime"] = runtime
+        value = snapshot()
+        runtime._snapshots[("FAST", "g1")] = value
+        runtime.scalper.observe(value)
+        composition.gateway.process_market_event(MarketEvent(
+            1, NOW, "FAST", "feedback", MarketEventType.QUOTE,
+            QuotePayload(D("4.99"), D("5"), D("120"), D("120")),
+        ))
+        later = NOW + timedelta(seconds=elapsed)
+        runtime._manage_open_position(
+            SimpleNamespace(observation=SimpleNamespace(bid=D("5.06"), quote_timestamp=later),
+                            evaluation_timestamp=later, quote_observed_at=later),
+            SimpleNamespace(symbol="FAST", price_velocity_cents_1m=D("0")),
+        )
+        working = composition.order_book.open_orders_for_symbol("FAST")
+        liquidation = next(o for o in working if o.request.execution_reason == reason)
+        assert not any(o.request.execution_reason == "SCALP_TARGET" for o in working)
+        composition.gateway.process_market_event(MarketEvent(
+            2, later, "FAST", "feedback", MarketEventType.QUOTE,
+            QuotePayload(D("5.06"), D("5.07"), D("30"), D("30")),
+        ))
+        assert quantity("FAST") == D("90")
+        working = composition.order_book.open_orders_for_symbol("FAST")
+        assert next(o for o in working if o.request.execution_reason == reason).order_id == liquidation.order_id
+        assert not any(o.request.execution_reason == "SCALP_TARGET" for o in working)
+        assert next(o for o in working if o.request.execution_reason == "STOP").remaining_quantity == D("90")
+        history_count = len(composition.order_book.history())
+        recovered = QuickScalperPaperRuntimeAdapter(
+            config=QuickScalperConfig(enabled=True), bridge=bridge,
+            order_book=composition.order_book, account_context_source=account,
+            position_quantity_source=quantity, execution_quote_source=Quotes(quote()),
+            clock=lambda: later,
+        )
+        holder["runtime"] = recovered
+        assert len(composition.order_book.history()) == history_count
+        assert not composition.order_book.get(liquidation.order_id).is_terminal
+        composition.gateway.process_market_event(MarketEvent(
+            3, later + timedelta(seconds=1), "FAST", "feedback", MarketEventType.QUOTE,
+            QuotePayload(D("5.06"), D("5.07"), D("90"), D("90")),
+        ))
+        assert quantity("FAST") == D("0")
+        assert not composition.order_book.open_orders_for_symbol("FAST")
+        assert recovered.ownership.owner("FAST") is None
+    finally:
+        composition.close()
 
 
 def test_partial_entry_and_target_close_through_synchronous_feedback():

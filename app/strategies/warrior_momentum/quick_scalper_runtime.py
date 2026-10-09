@@ -108,6 +108,7 @@ class _ScalpPositionState:
     entered_at: datetime
     peak_bid: Decimal
     profit_state: ProfitState = ProfitState.NO_PROFIT
+    full_exit_submitting: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,6 +447,19 @@ class QuickScalperPaperRuntimeAdapter:
     def _ensure_protection(
         self, state: _ScalpPositionState, quantity: int,
     ) -> None:
+        # A full exit uses the bridge's correlated stop. Rebuilding the normal
+        # target during its acknowledgement or partial fills can replace that
+        # liquidation order and send the remaining inventory back to holding.
+        # Inspect durable orders as well so restart recovery preserves exits.
+        if state.full_exit_submitting or any(
+            order.request.strategy_lifecycle_id == state.lifecycle_id
+            and order.request.side is OrderSide.SELL
+            and order.request.execution_reason in {
+                "SCALP_MAX_HOLD", "SCALP_MOMENTUM_STALL",
+            }
+            for order in self.order_book.open_orders_for_symbol(state.symbol)
+        ):
+            return
         protection = self.bridge.ensure_exit(
             state.symbol, quantity, state.initial_stop, "STOP",
             state.lifecycle_id, strategy_owner=OWNER,
@@ -894,10 +908,14 @@ class QuickScalperPaperRuntimeAdapter:
                 generation=state.generation_id, reason=decision.reason,
             )
         elif decision.action is ProfitAction.FULL_EXIT:
-            result = self.bridge.ensure_exit(
-                state.symbol, quantity, executable_bid, decision.reason,
-                state.lifecycle_id, strategy_owner=OWNER,
-            )
+            state.full_exit_submitting = True
+            try:
+                result = self.bridge.ensure_exit(
+                    state.symbol, quantity, executable_bid, decision.reason,
+                    state.lifecycle_id, strategy_owner=OWNER,
+                )
+            finally:
+                state.full_exit_submitting = False
             if result.state in {
                 PaperExitSubmissionState.SUBMITTED,
                 PaperExitSubmissionState.WORKING,
