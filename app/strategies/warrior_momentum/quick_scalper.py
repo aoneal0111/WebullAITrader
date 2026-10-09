@@ -57,6 +57,9 @@ class QuickScalperConfig:
     maximum_top_of_book_participation_fraction: Decimal = Decimal('0.25')
     full_liquidity_top_of_book_quantity: Decimal = Decimal('100')
     strategy_loss_guard: Decimal = Decimal("300")
+    minimum_net_target_reward_r: Decimal = Decimal("0.50")
+    confirmation_reward_penalty_r: Decimal = Decimal("0.25")
+    stream_confirmation_seconds: Decimal = Decimal("2")
 
     def __post_init__(self) -> None:
         if self.minimum_price != Decimal('1.00'):
@@ -75,8 +78,11 @@ class QuickScalperConfig:
             self.absolute_minimum_move, self.volatility_move_fraction,
             self.execution_cost_multiple, self.slippage_per_side,
             self.strategy_loss_guard,
+            self.minimum_net_target_reward_r, self.confirmation_reward_penalty_r,
         ) < ZERO:
             raise ValueError("Quick Scalper bounds must be non-negative")
+        if self.stream_confirmation_seconds <= ZERO:
+            raise ValueError("stream confirmation scale must be positive")
         if min(
             self.maximum_holding_seconds, self.cooldown_seconds,
             self.attempt_window_seconds, self.maximum_attempts_per_symbol,
@@ -112,6 +118,9 @@ class QuickScalpSnapshot:
     executable_ask_size: Decimal | None = None
     stream_sample_count: int | None = None
     stream_elapsed_seconds: Decimal | None = None
+    observed_bid_advance: Decimal | None = None
+    stream_upward_updates: int | None = None
+    stream_price_change_updates: int | None = None
 
     def __post_init__(self) -> None:
         if not self.symbol.strip() or not self.generation_id.strip():
@@ -134,6 +143,8 @@ class QuickScalpAssessment:
     expected_move: Decimal
     reason: str
     required_bid_move: Decimal = ZERO
+    momentum_confidence: Decimal = Decimal("1")
+    required_net_target_reward_r: Decimal = ZERO
 
 
 class QuickScalperPolicy:
@@ -157,15 +168,24 @@ class QuickScalperPolicy:
             max(ZERO, spread)
             + (self.config.slippage_per_side + liquidity_slippage) * 2
         )
+        risk = value.ask - value.structural_stop
+        confidence = self._momentum_confidence(value)
+        required_reward_r = (
+            self.config.minimum_net_target_reward_r
+            + self.config.confirmation_reward_penalty_r * (Decimal("1") - confidence)
+        )
         target_move = max(
             self.config.absolute_minimum_move,
             value.short_horizon_range * self.config.volatility_move_fraction,
             cost * self.config.execution_cost_multiple,
+            risk * required_reward_r + cost,
         )
         # A per-minute velocity is a rate, not evidence that a minute of
         # movement remains available. Use demonstrated BID movement instead
         # of extrapolating a short burst into an unobserved future minute.
         expected_move = max(ZERO, value.short_horizon_range)
+        if value.observed_bid_advance is not None:
+            expected_move = min(expected_move, max(ZERO, value.observed_bid_advance))
         # Movement is measured from BID; the sell target is anchored to ASK.
         # Include the distance between those anchors and estimated exit slippage.
         required_bid_move = (
@@ -186,7 +206,6 @@ class QuickScalperPolicy:
             decision = ScalpDecision.WAIT
             reason = "INSUFFICIENT_NET_EXECUTABLE_EDGE"
             reasons = (OpportunityReason.EXECUTION_QUALITY_WAIT,)
-        risk = value.ask - value.structural_stop
         spread_percent = spread / value.ask * HUNDRED if value.ask > ZERO else None
         opportunity = WarriorOpportunityAssessment(
             symbol=value.symbol,
@@ -227,7 +246,35 @@ class QuickScalperPolicy:
         return QuickScalpAssessment(
             opportunity, decision, target_move, value.ask + target_move,
             cost, expected_move, reason, required_bid_move,
+            confidence, required_reward_r,
         )
+
+    def _momentum_confidence(self, value: QuickScalpSnapshot) -> Decimal:
+        # Candidate/bar snapshots retain their existing contextual assessment.
+        # Stream confirmation uses distinct provider updates, elapsed time and
+        # direction. These are smooth discounts, not fixed sample/time vetoes.
+        if (
+            value.stream_sample_count is None
+            or value.stream_elapsed_seconds is None
+        ):
+            return Decimal("1")
+        updates = max(0, value.stream_sample_count - 1)
+        upward = (
+            updates if value.stream_upward_updates is None
+            else max(0, value.stream_upward_updates)
+        )
+        changed = (
+            updates if value.stream_price_change_updates is None
+            else max(0, value.stream_price_change_updates)
+        )
+        persistence = (
+            min(Decimal("1"), Decimal(upward) / Decimal(changed))
+            if changed else ZERO
+        )
+        update_confidence = Decimal(upward) / Decimal(upward + 1)
+        elapsed = max(ZERO, value.stream_elapsed_seconds)
+        time_confidence = elapsed / (elapsed + self.config.stream_confirmation_seconds)
+        return persistence * update_confidence * time_confidence
 
     def _hard_reason(self, value: QuickScalpSnapshot) -> OpportunityReason | None:
         if value.session not in self.config.allowed_sessions:
