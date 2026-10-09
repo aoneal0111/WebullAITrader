@@ -90,6 +90,14 @@ order restoration and can be joined to fill-derived lifecycle P&L.
 
 ## Remaining policy validation
 
+Full-exit reconciliation preserves a working `SCALP_MAX_HOLD` or
+`SCALP_MOMENTUM_STALL` order instead of restoring the normal `SCALP_TARGET`.
+The canonical bridge retains its correlated stop, and gateway partial-fill
+reconciliation reduces protection to remaining inventory. Recovery from durable
+orders follows the same rule. A maximum hold requests a limit exit at a fresh
+executable BID; it does not guarantee immediate execution or completion within
+that holding interval.
+
 The policy uses structural risk and confirmation to select the target, then
 approves only when observed movement supports reaching it from BID with
 estimated exit cost. This does not establish positive expectancy. Target geometry,
