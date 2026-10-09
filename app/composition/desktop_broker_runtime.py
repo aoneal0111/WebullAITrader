@@ -26,7 +26,7 @@ from app.dynamic_momentum_discovery import (
     UniverseAdmissionObserverFanout,
     WebullBroadDiscoveryProvider,
 )
-from app.momentum_radar import MomentumRadar
+from app.momentum_radar import MomentumRadar, RadarConfig
 from app.momentum_scanner import (
     ChartPremarketHistorySource,
     CurrentPremarketVolumeAccumulator,
@@ -294,7 +294,7 @@ def create_configured_desktop_broker_driver(
         universe_provider = WebullScannerUniverseProvider(
             data_client,
             clock=clock,
-            radar=MomentumRadar(),
+            radar=MomentumRadar(RadarConfig(minimum_promotion_change_percent=Decimal("10"))),
             # Discovery breadth is expanded independently from the existing
             # bounded real-time promotion/subscription budget.
             maximum_breadth=250,
@@ -306,6 +306,7 @@ def create_configured_desktop_broker_driver(
                 "VOLUME_LEADERS", "TURNOVER_LEADERS",
             ),
             retention_seconds=300,
+            mover_retention_seconds=3600,
             admission_observer=universe_admission_observer,
         )
         catalyst_providers = build_catalyst_providers(
@@ -498,7 +499,9 @@ def create_configured_desktop_broker_driver(
             )
             if callable(accelerator_setter):
                 accelerator_setter(
-                    catalyst_discovery_runtime.symbols_nonblocking
+                    lambda: universe_provider.eligible_mover_symbols(
+                        catalyst_discovery_runtime.symbols_nonblocking()
+                    )
                 )
                 catalyst_discovery_runtime.set_refresh_callback(
                     scanner_coordinator.refresh_accelerator_channels

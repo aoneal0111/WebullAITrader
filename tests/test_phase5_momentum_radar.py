@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from app.momentum_radar import MomentumRadar, RadarSnapshot
+from app.momentum_radar import MomentumRadar, RadarSnapshot, RadarConfig
 
 
 T0 = datetime(2026, 9, 23, 15, 0, tzinfo=UTC)
@@ -60,3 +60,14 @@ def test_duplicate_state_is_symbol_bounded_and_radar_has_no_authority():
     radar.observe((snap("A", T0, "5", "100", "2", "5", ("SESSION_GAINERS", "VOLUME_LEADERS")),))
     assert len(radar.state_snapshot()) == 1
     assert not hasattr(radar, "authorize")
+
+
+def test_ten_percent_promotion_waits_for_crossing_and_session_reset():
+    radar = MomentumRadar(RadarConfig(minimum_promotion_change_percent=Decimal("10")))
+    radar.observe((snap("FAST", T0, "5", "100", "5", "9.99"),))
+    assert radar.promote(capacity=1) == ()
+    radar.observe((snap("FAST", T0 + timedelta(seconds=30), "5.1", "200", "7", "10"),))
+    assert radar.promote(capacity=1) == ("FAST",)
+    radar.reset_session()
+    radar.observe((snap("FAST", T0 + timedelta(days=1), "5", "100", "5", "2"),))
+    assert radar.promote(capacity=1) == ()

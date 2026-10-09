@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from threading import RLock
 from typing import Any
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 from app.catalysts import CatalystAggregator, WebullCatalystProvider
 from app.live_scanner.session import ScannerSession, scanner_session
@@ -266,6 +267,8 @@ class WebullScannerUniverseProvider:
         production_symbol_capacity: int = 100,
         radar: MomentumRadar | None = None,
         admission_observer: object | None = None,
+        mover_retention_seconds: int = 0,
+        mover_threshold_percent: Decimal = Decimal("10"),
     ) -> None:
         if page_size < 1 or page_size > 100:
             raise ValueError("scanner screener page_size must be 1..100")
@@ -273,6 +276,9 @@ class WebullScannerUniverseProvider:
             raise ValueError("scanner screener maximum_breadth must be page_size..500")
         if retention_seconds < 0:
             raise ValueError("scanner screener retention_seconds cannot be negative")
+        if (mover_retention_seconds < 0 or not mover_threshold_percent.is_finite()
+                or mover_threshold_percent <= 0):
+            raise ValueError("mover retention must be nonnegative and threshold positive")
         if legacy_source_limit <= 0:
             raise ValueError("legacy scanner source limit must be positive")
         if accelerator_capacity <= 0:
@@ -287,6 +293,10 @@ class WebullScannerUniverseProvider:
         self._maximum_breadth = maximum_breadth
         self._sources = tuple(dict.fromkeys(str(source).strip().upper() for source in sources))
         self._retention = timedelta(seconds=retention_seconds)
+        self._mover_retention = timedelta(seconds=mover_retention_seconds)
+        self._mover_threshold = mover_threshold_percent
+        self._mover_until: dict[str, datetime] = {}
+        self._mover_session: tuple[date, str] | None = None
         self._legacy_source_limit = int(legacy_source_limit)
         self._accelerator_capacity = int(accelerator_capacity)
         self._production_symbol_capacity = int(production_symbol_capacity)
@@ -463,6 +473,16 @@ class WebullScannerUniverseProvider:
         now = observed_at
         fresh_symbols = set(rows)
         with self._state_lock:
+            session_key = (now.astimezone(ZoneInfo("America/New_York")).date(), session.value)
+            same_mover_session = self._mover_session == session_key
+            mover_until = dict(self._mover_until) if same_mover_session else {}
+            mover_until = {symbol: deadline for symbol, deadline in mover_until.items() if now < deadline}
+            if self._mover_retention > timedelta(0):
+                for symbol, row in rows.items():
+                    change = _percent_value(row)
+                    if change is not None and change.is_finite() and change >= self._mover_threshold:
+                        mover_until[symbol] = now + self._mover_retention
+            mover_until = dict(sorted(mover_until.items(), key=lambda item: item[1], reverse=True)[:500])
             state_rows = self._rows if startup_seed else self._full_rows
             state_seen_at = (
                 self._row_seen_at
@@ -480,6 +500,15 @@ class WebullScannerUniverseProvider:
                 symbol: list(values)
                 for symbol, values in state_provenance.items()
             }
+            if not startup_seed and same_mover_session:
+                # Preserve a qualifying startup seed through the first full
+                # refresh, whose full-discovery cache is initially empty.
+                for symbol in mover_until:
+                    if symbol not in previous_rows and symbol in self._rows:
+                        previous_rows[symbol] = self._rows[symbol]
+                        if symbol in self._row_seen_at:
+                            previous_seen_at[symbol] = self._row_seen_at[symbol]
+                        previous_provenance[symbol] = list(self._provenance.get(symbol, ()))
             radar_states = dict(
                 self._radar_states
                 if startup_seed
@@ -498,7 +527,7 @@ class WebullScannerUniverseProvider:
                 seen = previous_seen_at.get(symbol)
                 if (
                     seen is not None
-                    and now - seen <= self._retention
+                    and (now - seen <= self._retention or symbol in mover_until)
                     and symbol not in rows
                 ):
                     rows[symbol] = row
@@ -508,21 +537,24 @@ class WebullScannerUniverseProvider:
                     _observe_admission(
                         self._admission_observer, "record",
                         stage="DISCOVERY_RETAINED", outcome="RETAINED",
-                        reason="WITHIN_DISCOVERY_TTL", normalized_symbol=symbol,
+                        reason="RETAINED_TEN_PERCENT_MOVER" if symbol in mover_until else "WITHIN_DISCOVERY_TTL", normalized_symbol=symbol,
                     )
         row_seen_at = {} if startup_seed else dict(previous_seen_at)
         row_seen_at.update({symbol: now for symbol in fresh_symbols})
         row_seen_at = {
             symbol: seen for symbol, seen in row_seen_at.items()
-            if symbol in rows and now - seen <= self._retention
+            if symbol in rows and (now - seen <= self._retention or symbol in mover_until)
         }
         legacy_primary = _legacy_priority_order(
-            provenance,
+            ({symbol: values for symbol, values in provenance.items() if symbol in fresh_symbols}
+             if self._mover_retention > timedelta(0) else provenance),
             session=session,
             maximum_per_source=self._legacy_source_limit,
         )
         accelerator: tuple[str, ...] = ()
         if self._radar is not None and not startup_seed:
+            if self._mover_retention > timedelta(0) and not same_mover_session:
+                self._radar.reset_session()
             radar_rows = tuple(
                 RadarSnapshot(
                     symbol=symbol, observed_at=now,
@@ -560,6 +592,13 @@ class WebullScannerUniverseProvider:
                 symbol for symbol in promoted
                 if symbol not in legacy_set and symbol in rows
             )[:self._accelerator_capacity]
+            # A prior qualifying move survives consolidation and history-window
+            # turnover. This priority is observation only, never order authority.
+            retained_priority = tuple(
+                symbol for symbol in self._radar.priority_order()
+                if symbol in mover_until and symbol not in legacy_set and symbol in rows
+            )
+            accelerator = tuple(dict.fromkeys((*retained_priority, *accelerator)))[:self._accelerator_capacity]
             for symbol in set(accelerator) - prior_accelerator:
                 assessment = self._radar.assessment(symbol)
                 source_count = len(set(next((row.sources for row in radar_rows if row.symbol == symbol), ())))
@@ -600,6 +639,12 @@ class WebullScannerUniverseProvider:
             except Exception:
                 external_accelerator = ()
         legacy_set = set(legacy_primary)
+        if self._mover_retention > timedelta(0):
+            # News priority can reorder retained movers, but a news seed alone
+            # cannot satisfy the configured ten-percent mover promotion rule.
+            external_accelerator = tuple(
+                symbol for symbol in external_accelerator if symbol in mover_until
+            )
         accelerator = tuple(dict.fromkeys((
             *(symbol for symbol in external_accelerator if symbol not in legacy_set),
             *accelerator,
@@ -685,6 +730,8 @@ class WebullScannerUniverseProvider:
             )
         instruments = tuple(instruments_list)
         with self._state_lock:
+            self._mover_until = mover_until
+            self._mover_session = session_key
             self._rows = rows
             self._provenance = provenance
             self._row_seen_at = row_seen_at
@@ -716,6 +763,7 @@ class WebullScannerUniverseProvider:
                 "pages": pages,
                 "legacy_primary_symbols": len(legacy_primary),
                 "accelerator_symbols": len(accelerator),
+                "retained_ten_percent_movers": len(mover_until),
                 "background_symbols": len(background),
             })
         return instruments
@@ -723,6 +771,19 @@ class WebullScannerUniverseProvider:
     def row_for(self, symbol: str) -> Mapping[str, object] | None:
         with self._state_lock:
             return self._rows.get(symbol.strip().upper())
+
+    def eligible_mover_symbols(self, symbols: Sequence[str]) -> tuple[str, ...]:
+        """Filter catalyst observation priority, without granting execution authority."""
+        normalized = tuple(dict.fromkeys(str(symbol).strip().upper() for symbol in symbols))
+        if self._mover_retention <= timedelta(0):
+            return normalized
+        now = self._clock()
+        session_key = (now.astimezone(ZoneInfo("America/New_York")).date(), scanner_session(now).value)
+        with self._state_lock:
+            if session_key != self._mover_session:
+                return ()
+            return tuple(symbol for symbol in normalized
+                         if symbol in self._mover_until and now < self._mover_until[symbol])
 
     def instrument_for(self, symbol: str) -> UniverseSymbol | None:
         with self._state_lock:
@@ -1081,7 +1142,18 @@ def _legacy_priority_order(
 
 
 def _percent_value(row: Mapping[str, object]) -> Decimal | None:
-    return _decimal_value(row, "change_percent", "change_ratio", "change")
+    percent = _decimal_value(row, "change_percent")
+    if percent is not None:
+        return percent if percent.is_finite() else None
+    ratio = _decimal_value(row, "change_ratio")
+    if ratio is not None:
+        return ratio * Decimal("100") if ratio.is_finite() else None
+    price = _decimal_value(row, "price", "close")
+    previous_close = _decimal_value(row, "pre_close")
+    if (price is not None and previous_close is not None
+            and price.is_finite() and previous_close.is_finite() and previous_close > 0):
+        return (price / previous_close - Decimal("1")) * Decimal("100")
+    return None
 
 
 def _screener_page(
