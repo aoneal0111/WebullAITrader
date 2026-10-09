@@ -54,6 +54,48 @@ def test_representative_strategy_parity(tmp_path):
             assert row[1:4] == tuple(source["strategy_scorecards"][name][k] for k in ("median_mfe", "median_mae", "median_maximum_r"))
 
 
+def test_chronological_split_metrics_survive_export(tmp_path):
+    report = json.loads(REPORT.read_text(encoding="utf-8"))
+    name = "HIGH_OF_DAY_BREAKOUT"
+    report["temporal"] = {
+        "splits": {
+            "TRAIN": {name: {"sample_count": 81796}},
+            "VALIDATION": {name: {"sample_count": 31021}},
+            "TEST": {name: {"sample_count": 20517,
+                            "target_hit_rates": {"2": 0.630062874689282},
+                            "stop_first_rates": {"5": 0.4562070478140079}}},
+        },
+        "policy_stability": {name: {"descriptive_status": "STABLE"}},
+        # Execution summaries must not substitute for strategy outcomes.
+        "execution_analysis": {name: {"TEST": {"sample_count": 999}}},
+    }
+    source = tmp_path / "chronological.json"
+    source.write_text(json.dumps(report), encoding="utf-8")
+    target = tmp_path / "chronological.sqlite3"
+    build_artifact(source, target)
+    with sqlite3.connect(target) as db:
+        row = db.execute("""SELECT train_sample_count, validation_sample_count,
+            test_sample_count, test_target_2_rate, test_stop_first_rate,
+            policy_stability, walk_forward_state FROM strategy_evidence
+            WHERE strategy=?""", (name,)).fetchone()
+    assert row == (81796, 31021, 20517, 0.630062874689282,
+                   0.4562070478140079, "STABLE", None)
+
+
+def test_missing_split_evidence_is_not_filled_from_execution_summary(tmp_path):
+    report = json.loads(REPORT.read_text(encoding="utf-8"))
+    name = "HIGH_OF_DAY_BREAKOUT"
+    report["temporal"] = {"execution_analysis": {
+        name: {"TEST": {"sample_count": 999, "target_hit_rates": {"2": 1.0}}}}}
+    source = tmp_path / "execution_only.json"
+    source.write_text(json.dumps(report), encoding="utf-8")
+    target = tmp_path / "execution_only.sqlite3"
+    build_artifact(source, target)
+    with sqlite3.connect(target) as db:
+        assert db.execute("SELECT test_sample_count, test_target_2_rate FROM "
+                          "strategy_evidence WHERE strategy=?", (name,)).fetchone() == (None, None)
+
+
 def test_transition_parity(tmp_path):
     target = _build(tmp_path)
     source = next(x for x in json.loads(REPORT.read_text(encoding="utf-8"))["reentry"]["transition_matrix"] if x["parent_strategy"] == "FIRST_PULLBACK" and x["child_strategy"] == "CONSOLIDATION_BREAKOUT")

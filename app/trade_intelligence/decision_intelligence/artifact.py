@@ -21,6 +21,7 @@ from .models import (
 
 FAILURE_CLASSES = ("STOP_FIRST_5PCT", "LOW_MFE_BELOW_2PCT", "TARGET_2_NOT_REACHED", "TARGET_5_NOT_REACHED", "TARGET_8_NOT_REACHED", "POSITIVE_MFE_BUT_GIVEBACK")
 LIMITATIONS = {
+    "MFE_IS_NOT_REALIZED_RETURN": "Future favorable movement is not an executable runner exit; legacy partial/runner return estimates require chronological replay.",
     "IEX_SINGLE_EXCHANGE": "Historical benchmark data is an IEX single-exchange research source.",
     "CURRENT_SNAPSHOT_UNIVERSE": "Universe metadata is a current snapshot, not historical point-in-time metadata.",
     "SURVIVORSHIP_BIAS": "The research universe may not represent delisted or unavailable symbols.",
@@ -60,6 +61,14 @@ def _metric(obj, *names):
 def _split_value(obj, split):
     if not isinstance(obj, dict): return None
     return obj.get(split) or obj.get(split.lower()) or obj.get(split.title())
+
+def _strategy_split(temporal, strategy, split):
+    """Prefer chronological scorecards; execution evidence has different metrics."""
+    strategies = _split_value(temporal.get("splits", {}), split)
+    if isinstance(strategies, dict) and isinstance(strategies.get(strategy), dict):
+        return strategies[strategy]
+    # Older reports stored scorecards by strategy rather than by split.
+    return _split_value(temporal.get("strategy_scorecards", {}).get(strategy), split) or {}
 
 def _source_check(report, path):
     if not isinstance(report, dict): raise ArtifactValidationError("source report root is not an object")
@@ -129,10 +138,12 @@ def _build_rows(c, report):
     score = report["strategy_scorecards"]; profit = report.get("profit_research", {}); temporal = report.get("temporal", {})
     for strategy, s in score.items():
         rates = s.get("target_hit_rates", {}); stops = s.get("stop_first_rates", {})
-        test = _split_value(temporal.get("strategy_scorecards", {}).get(strategy), "TEST") or _split_value(temporal.get("execution_analysis", {}).get(strategy), "TEST") or {}
-        tr = _split_value(temporal.get("strategy_scorecards", {}).get(strategy), "TRAIN") or {}
-        va = _split_value(temporal.get("strategy_scorecards", {}).get(strategy), "VALIDATION") or {}
-        vals = [strategy, s.get("sample_count"), tr.get("sample_count"), va.get("sample_count"), test.get("sample_count"), s.get("median_mfe"), s.get("median_mae"), s.get("median_maximum_r"), *(rates.get(str(x)) for x in (2,3,5,8,10)), *(test.get("target_hit_rates",{}).get(str(x)) for x in (2,3,5,8,10)), stops.get("5"), test.get("stop_first_rates",{}).get("5"), s.get("confidence_state"), None, None, None, _j(s.get("concentration")), None, None, _j(s)]
+        test = _strategy_split(temporal, strategy, "TEST")
+        tr = _strategy_split(temporal, strategy, "TRAIN")
+        va = _strategy_split(temporal, strategy, "VALIDATION")
+        stability = temporal.get("policy_stability", {}).get(strategy, {})
+        policy_status = _text(stability.get("descriptive_status")) if isinstance(stability, dict) else None
+        vals = [strategy, s.get("sample_count"), tr.get("sample_count"), va.get("sample_count"), test.get("sample_count"), s.get("median_mfe"), s.get("median_mae"), s.get("median_maximum_r"), *(rates.get(str(x)) for x in (2,3,5,8,10)), *(test.get("target_hit_rates",{}).get(str(x)) for x in (2,3,5,8,10)), stops.get("5"), test.get("stop_first_rates",{}).get("5"), s.get("confidence_state"), None, policy_status, None, _j(s.get("concentration")), None, None, _j(s)]
         c.execute("INSERT INTO strategy_evidence VALUES (" + ",".join("?" for _ in range(28)) + ")", vals)
         for kind, mapping in (("percent_target", profit.get(strategy, {}).get("percent_targets", {})), ("r_target", profit.get(strategy, {}).get("r_targets", {}))):
             for bucket, row in mapping.items() if isinstance(mapping, dict) else ():
