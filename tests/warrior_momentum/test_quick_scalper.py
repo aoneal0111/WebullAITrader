@@ -23,7 +23,7 @@ NOW = datetime(2026, 10, 5, 19, 0, tzinfo=UTC)
 
 def snapshot(
     *, symbol: str = "FAST", generation: str = "g1", ask: str = "5.00",
-    bid: str = "4.96", stop: str = "4.85", short_range: str = "0.18",
+    bid: str = "4.96", stop: str = "4.85", short_range: str = "0.24",
     velocity: str = "0.14", velocity_pct: str = "2.8",
     age: float = 1.0, session: str = "REGULAR",
 ) -> QuickScalpSnapshot:
@@ -56,7 +56,7 @@ def test_scalper_price_policy_is_one_dollar_minimum_with_no_maximum() -> None:
         velocity='0.10', velocity_pct='9.9',
     ))
     high = policy.assess(snapshot(
-        ask='500.00', bid='499.50', stop='490.00', short_range='4.00',
+        ask='500.00', bid='499.50', stop='498.50', short_range='4.00',
         velocity='3.00', velocity_pct='0.60',
     ))
     below = policy.assess(snapshot(
@@ -109,9 +109,81 @@ def test_positive_executable_economics_cover_spread_and_risk() -> None:
     assert assessed.expected_move >= assessed.target_move
 
 
+def test_target_accounts_for_structural_risk_and_waits_for_demonstrated_move():
+    policy = QuickScalperPolicy()
+    value = snapshot(ask="5", bid="4.99", stop="4.90", short_range="0.40")
+    tight = policy.assess(value)
+    wide = policy.assess(replace(value, structural_stop=D("4.60")))
+    assert wide.target_price > tight.target_price
+    assert wide.opportunity.remaining_final_target_r >= wide.required_net_target_reward_r
+    assert wide.decision is ScalpDecision.EXECUTABLE
+    unsupported = policy.assess(replace(
+        value, structural_stop=D("4.60"), short_horizon_range=D("0.10"),
+    ))
+    assert unsupported.decision is ScalpDecision.WAIT
+    assert unsupported.reason == "INSUFFICIENT_NET_EXECUTABLE_EDGE"
+
+
+def test_brief_confirmation_waits_but_persistent_move_recovers_at_same_spread():
+    policy = QuickScalperPolicy()
+    value = replace(
+        snapshot(ask="5", bid="4.99", stop="4.90", short_range="0.11"),
+        observed_bid_advance=D("0.11"), stream_sample_count=3,
+        stream_elapsed_seconds=D("0.12"),
+        stream_upward_updates=2, stream_price_change_updates=2,
+    )
+    brief = policy.assess(value)
+    established = policy.assess(replace(
+        value, stream_sample_count=9, stream_elapsed_seconds=D("12"),
+        stream_upward_updates=8, stream_price_change_updates=8,
+    ))
+    assert brief.decision is ScalpDecision.WAIT
+    assert established.decision is ScalpDecision.EXECUTABLE
+    assert brief.momentum_confidence < established.momentum_confidence
+    assert brief.required_net_target_reward_r > established.required_net_target_reward_r
+    assert brief.opportunity.spread_percent == established.opportunity.spread_percent
+    # No fixed duration veto: a substantially larger, observed short burst
+    # can still support the higher reward requirement.
+    assert policy.assess(replace(
+        value, short_horizon_range=D("0.30"), observed_bid_advance=D("0.30"),
+    )).decision is ScalpDecision.EXECUTABLE
+
+
+def test_price_persistence_matters_more_than_heartbeat_sample_count():
+    value = replace(
+        snapshot(ask="5", bid="4.99", stop="4.90", short_range="0.11"),
+        observed_bid_advance=D("0.11"), stream_sample_count=20,
+        stream_elapsed_seconds=D("20"),
+        stream_upward_updates=3, stream_price_change_updates=10,
+    )
+    mixed = QuickScalperPolicy().assess(value)
+    upward = QuickScalperPolicy().assess(replace(
+        value, stream_upward_updates=9, stream_price_change_updates=9,
+    ))
+    assert mixed.decision is ScalpDecision.WAIT
+    assert upward.decision is ScalpDecision.EXECUTABLE
+    assert mixed.momentum_confidence < upward.momentum_confidence
+
+
+def test_retraced_bid_advance_wait_recovers_without_consuming_generation():
+    submitted = []
+    scalper = QuickScalper(
+        engine=WarriorOpportunityEngine(), ownership=SymbolOwnershipRegistry(),
+        config=QuickScalperConfig(enabled=True),
+        authorize_and_submit=lambda value: submitted.append(value) or CanonicalScalpSubmission(
+            True, True, True, False, "AUTHORIZED",
+        ),
+    )
+    value = replace(snapshot(short_range="0.30"), observed_bid_advance=D("0.03"))
+    assert scalper.observe(value).decision is ScalpDecision.WAIT
+    assert not submitted
+    assert scalper.observe(replace(value, observed_bid_advance=D("0.30"))).decision is ScalpDecision.EXECUTABLE
+    assert len(submitted) == 1
+
+
 def test_bid_movement_must_reach_ask_anchored_target_and_exit_cost() -> None:
     policy = QuickScalperPolicy()
-    value = snapshot(short_range="0.12", velocity="0.11", velocity_pct="2.2")
+    value = snapshot(stop="4.95", short_range="0.12", velocity="0.11", velocity_pct="2.2")
     assessed = policy.assess(value)
     assert assessed.expected_move >= assessed.target_move
     assert value.bid + assessed.expected_move < assessed.target_price
@@ -124,7 +196,7 @@ def test_bid_movement_must_reach_ask_anchored_target_and_exit_cost() -> None:
 
 def test_target_reachability_includes_exit_slippage_at_boundary() -> None:
     policy = QuickScalperPolicy()
-    value = snapshot(short_range="0.145", velocity="0.145", velocity_pct="0")
+    value = snapshot(stop="4.95", short_range="0.145", velocity="0.145", velocity_pct="0")
     assessed = policy.assess(value)
     assert value.bid + assessed.expected_move == assessed.target_price
     assert assessed.decision is ScalpDecision.WAIT
@@ -147,7 +219,7 @@ def test_one_cent_burst_cannot_supply_a_minute_of_unobserved_movement(elapsed) -
     assert assessed.decision is ScalpDecision.WAIT
     # Genuine movement can recover at the same spread and elapsed time.
     recovered = QuickScalperPolicy().assess(replace(
-        value, short_horizon_range=D("0.20"),
+        value, short_horizon_range=D("0.30"),
     ))
     assert recovered.decision is ScalpDecision.EXECUTABLE
 

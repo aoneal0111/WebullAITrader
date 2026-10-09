@@ -81,6 +81,11 @@ class QuickScalperExecutionIntent:
     target_levels: tuple[Decimal, ...] = ()
     taxonomy_execution_identity: str | None = None
     taxonomy_opportunity_id: str | None = None
+    observed_bid_advance: Decimal | None = None
+    momentum_confidence: Decimal | None = None
+    required_net_target_reward_r: Decimal | None = None
+    stream_upward_updates: int | None = None
+    stream_price_change_updates: int | None = None
 
     def __post_init__(self) -> None:
         if self.entry_trigger <= self.stop_price or self.risk_per_share <= ZERO:
@@ -500,6 +505,10 @@ class QuickScalperPaperRuntimeAdapter:
             last=quote.last, bid=quote.bid, ask=quote.ask,
             last_timestamp=quote.last_timestamp,
             bid_timestamp=quote.bid_timestamp, ask_timestamp=quote.ask_timestamp,
+            observed_bid_advance=(
+                None if source.observed_bid_advance is None else
+                source.observed_bid_advance + quote.bid - source.bid
+            ),
         )
         confirmed = self.scalper.policy.assess(refreshed)
         if (
@@ -615,6 +624,11 @@ class QuickScalperPaperRuntimeAdapter:
             velocity_cents_per_minute=refreshed.velocity_cents_per_minute,
             stream_sample_count=refreshed.stream_sample_count,
             stream_elapsed_seconds=refreshed.stream_elapsed_seconds,
+            observed_bid_advance=refreshed.observed_bid_advance,
+            momentum_confidence=confirmed.momentum_confidence,
+            required_net_target_reward_r=confirmed.required_net_target_reward_r,
+            stream_upward_updates=refreshed.stream_upward_updates,
+            stream_price_change_updates=refreshed.stream_price_change_updates,
         )
         self._emit(
             "SCALP_ORDER_INTENT", refreshed.symbol,
@@ -688,7 +702,12 @@ class QuickScalperPaperRuntimeAdapter:
         ):
             samples.clear()
             self._stream_generation_started.pop(symbol, None)
-        samples.append(sample)
+        if samples and quote_timestamp == samples[-1].provider_timestamp:
+            # Retain the latest quote at that provider instant without making
+            # repeated callbacks look like independent confirmations.
+            samples[-1] = sample
+        else:
+            samples.append(sample)
         cutoff = quote_timestamp - _STREAM_WINDOW
         while samples and samples[0].provider_timestamp < cutoff:
             samples.popleft()
@@ -713,6 +732,7 @@ class QuickScalperPaperRuntimeAdapter:
         if structural_stop <= ZERO or structural_stop >= observation.ask:
             return None
         short_range = max(item.bid for item in samples) - structural_stop
+        changes = [right.bid - left.bid for left, right in zip(samples, list(samples)[1:])]
         generation_started = self._stream_generation_started.setdefault(
             symbol, first.provider_timestamp,
         )
@@ -749,6 +769,9 @@ class QuickScalperPaperRuntimeAdapter:
             structural_stop=structural_stop,
             short_horizon_range=short_range,
             stream_sample_count=len(samples), stream_elapsed_seconds=elapsed,
+            observed_bid_advance=move,
+            stream_upward_updates=sum(change > ZERO for change in changes),
+            stream_price_change_updates=sum(change != ZERO for change in changes),
             velocity_cents_per_minute=velocity,
             velocity_percent_per_minute=percent_velocity,
             relative_volume=relative_volume,

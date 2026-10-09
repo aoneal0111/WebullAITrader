@@ -28,7 +28,7 @@ from app.strategies.warrior_momentum.execution_quote import (
 from app.strategies.warrior_momentum.forward_models import PaperAccountContext
 from app.strategies.warrior_momentum.models import MinuteBar
 from app.strategies.warrior_momentum.quick_scalper import (
-    QuickScalpSnapshot, QuickScalperConfig, StrategyOwner,
+    QuickScalpSnapshot, QuickScalperConfig, ScalpDecision, StrategyOwner,
 )
 from app.strategies.warrior_momentum.quick_scalper_runtime import (
     QuickScalperExecutionIntent, QuickScalperPaperRuntimeAdapter,
@@ -207,7 +207,11 @@ def test_dynamic_scalper_non_allowlisted_entry_reaches_real_paper_gateway(tmp_pa
             position_quantity_source=lambda _symbol: D("0"),
             execution_quote_source=Quotes(quote()), clock=lambda: NOW,
         )
-        value = snapshot()
+        value = replace(
+            snapshot(), observed_bid_advance=D("0.20"),
+            stream_sample_count=8, stream_elapsed_seconds=D("10"),
+            stream_upward_updates=7, stream_price_change_updates=7,
+        )
         runtime._snapshots[("FAST", "g1")] = value
         runtime.scalper.observe(value)
         runtime.scalper.observe(value)
@@ -231,6 +235,11 @@ def test_dynamic_scalper_non_allowlisted_entry_reaches_real_paper_gateway(tmp_pa
         assert D(economics["short_horizon_range"]) == value.short_horizon_range
         assert D(economics["velocity_cents_per_minute"]) == value.velocity_cents_per_minute
         assert D(economics["net_target_reward_r"]) == assessment.opportunity.remaining_final_target_r
+        assert D(economics["observed_bid_advance"]) == value.observed_bid_advance
+        assert D(economics["momentum_confidence"]) == assessment.momentum_confidence
+        assert D(economics["required_net_target_reward_r"]) == assessment.required_net_target_reward_r
+        assert int(economics["stream_upward_updates"]) == 7
+        assert int(economics["stream_price_change_updates"]) == 7
         assert datetime.fromisoformat(economics["provider_bid_timestamp"]) == quote().bid_timestamp
     finally:
         composition.close()
@@ -257,6 +266,77 @@ def adapter(
         ),
     )
     return runtime, bridge, quotes
+
+
+def stream_observation(bid, offset):
+    at = NOW + timedelta(seconds=offset)
+    price = D(bid) + D("0.01")
+    return ScannerObservation(
+        symbol="FAST", timestamp=at, price=price, previous_close=D("4"),
+        current_volume=D("1000000"), average_30_day_volume=D("200000"),
+        float_shares=D("5000000"), bid=D(bid), ask=price,
+        catalyst=CatalystType.OTHER, catalyst_headline=None,
+        tradable=True, halted=False, catalyst_status=CatalystStatus.TRUE,
+        last_price_timestamp=at, quote_timestamp=at, trade_timestamp=at,
+        bid_size=D("500"), ask_size=D("500"),
+    )
+
+
+def test_repeated_provider_instant_replaces_sample_without_inflating_confirmation():
+    runtime, _, _ = adapter()
+    first = stream_observation("4.80", -3)
+    assert runtime._stream_snapshot(first, decision_at=NOW, session="REGULAR", context=None) is None
+    repeated = replace(first, bid=D("4.85"), ask=D("4.86"), price=D("4.86"))
+    for _ in range(20):
+        assert runtime._stream_snapshot(repeated, decision_at=NOW, session="REGULAR", context=None) is None
+    assert len(runtime._stream_samples["FAST"]) == 1
+    next_quote = stream_observation("5", 0)
+    value = runtime._stream_snapshot(next_quote, decision_at=NOW, session="REGULAR", context=None)
+    assert value.stream_sample_count == 2
+    assert value.observed_bid_advance == D("0.15")
+    assert value.stream_upward_updates == value.stream_price_change_updates == 1
+    again = runtime._stream_snapshot(next_quote, decision_at=NOW, session="REGULAR", context=None)
+    assert again == value
+
+
+def test_retracement_cannot_use_earlier_high_as_current_bid_advance():
+    runtime, bridge, quotes = adapter()
+    for bid, offset in (("4.80", -10), ("5.00", -5)):
+        runtime.observe_stream_event(
+            stream_observation(bid, offset), decision_at=NOW,
+            session="REGULAR", execution_permitted=False,
+        )
+    assessed = runtime.observe_stream_event(
+        stream_observation("4.84", 0), decision_at=NOW,
+        session="REGULAR", execution_permitted=True,
+    )
+    assert assessed.decision is ScalpDecision.WAIT
+    assert assessed.expected_move == D("0.04")
+    assert runtime._snapshots[("FAST", assessed.opportunity.generation_id)].short_horizon_range == D("0.20")
+    assert quotes.calls == 0
+    assert not bridge.entries
+
+
+def test_authoritative_bid_retrace_waits_then_recovers_on_same_generation():
+    quotes = Quotes(replace(quote(), bid=D("4.93"), ask=D("4.94")))
+    runtime, bridge, _ = adapter(quotes=quotes)
+    value = replace(
+        snapshot(), observed_bid_advance=D("0.15"),
+        stream_sample_count=8, stream_elapsed_seconds=D("10"),
+        stream_upward_updates=7, stream_price_change_updates=7,
+    )
+    runtime._snapshots[("FAST", "g1")] = value
+    assert runtime.scalper.observe(value).decision is ScalpDecision.EXECUTABLE
+    assert quotes.calls == 1
+    assert not bridge.entries
+    assert quotes.decisions[-1]["rejection_reason"] == "INSUFFICIENT_NET_EXECUTABLE_EDGE"
+    quotes.value = quote()
+    runtime.scalper.observe(value)
+    assert len(bridge.entries) == 1
+    intent = bridge.entries[0][0]
+    assert intent.observed_bid_advance == D("0.15")
+    assert intent.momentum_confidence > D("0")
+    assert intent.net_target_reward_r >= intent.required_net_target_reward_r
 
 
 def test_stream_assessment_does_not_require_warrior_candidate_or_completed_bar():
@@ -412,10 +492,10 @@ def test_initial_stream_stale_quote_refreshes_authoritatively_before_rejecting()
     first_quote = NOW - timedelta(seconds=8)
     second_quote = NOW - timedelta(seconds=7)
     first = ScannerObservation(
-        symbol="FAST", timestamp=NOW - timedelta(seconds=1), price=D("4.86"),
+        symbol="FAST", timestamp=NOW - timedelta(seconds=1), price=D("4.76"),
         previous_close=D("4.00"), current_volume=D("1000000"),
         average_30_day_volume=D("200000"), float_shares=D("5000000"),
-        bid=D("4.85"), ask=D("4.86"), catalyst=CatalystType.OTHER,
+        bid=D("4.75"), ask=D("4.76"), catalyst=CatalystType.OTHER,
         catalyst_headline=None, tradable=True, halted=False,
         catalyst_status=CatalystStatus.TRUE,
         last_price_timestamp=NOW - timedelta(seconds=1),
@@ -572,10 +652,10 @@ def test_initial_stream_stale_last_does_not_block_fresh_quote():
     first_at = NOW - timedelta(seconds=7)
     second_at = NOW
     first = ScannerObservation(
-        symbol="FAST", timestamp=first_at, price=D("4.86"),
+        symbol="FAST", timestamp=first_at, price=D("4.76"),
         previous_close=D("4.00"), current_volume=D("1000000"),
         average_30_day_volume=D("200000"), float_shares=D("5000000"),
-        bid=D("4.85"), ask=D("4.86"), catalyst=CatalystType.OTHER,
+        bid=D("4.75"), ask=D("4.76"), catalyst=CatalystType.OTHER,
         catalyst_headline=None, tradable=True, halted=False,
         catalyst_status=CatalystStatus.TRUE,
         last_price_timestamp=first_at, quote_timestamp=first_at,
@@ -788,7 +868,7 @@ def test_high_price_scalp_sizes_to_buying_power_instead_of_price_veto():
     )
     value = replace(
         snapshot(), last=D('500'), bid=D('499.50'), ask=D('500'),
-        structural_stop=D('490'), short_horizon_range=D('4'),
+        structural_stop=D('498.50'), short_horizon_range=D('4'),
         velocity_cents_per_minute=D('3'),
         velocity_percent_per_minute=D('0.60'),
     )
@@ -837,7 +917,7 @@ def test_prebridge_attribution_counters_distinguish_quote_risk_and_bridge():
     )
     value = replace(
         snapshot(), last=D("500"), bid=D("499.50"), ask=D("500"),
-        structural_stop=D("490"), short_horizon_range=D("4"),
+        structural_stop=D("498.50"), short_horizon_range=D("4"),
         velocity_cents_per_minute=D("3"),
         velocity_percent_per_minute=D("0.60"),
     )
@@ -985,7 +1065,7 @@ def test_risk_diagnostic_counter_attributes_zero_share_rejection():
     )
     value = replace(
         snapshot(), last=D("500"), bid=D("499.50"), ask=D("500"),
-        structural_stop=D("490"), short_horizon_range=D("4"),
+        structural_stop=D("498.50"), short_horizon_range=D("4"),
         velocity_cents_per_minute=D("3"),
         velocity_percent_per_minute=D("0.60"),
     )
@@ -1022,7 +1102,7 @@ def test_insufficient_buying_power_still_rejects_high_price_scalp():
     )
     value = replace(
         snapshot(), last=D('500'), bid=D('499.50'), ask=D('500'),
-        structural_stop=D('490'), short_horizon_range=D('4'),
+        structural_stop=D('498.50'), short_horizon_range=D('4'),
         velocity_cents_per_minute=D('3'),
         velocity_percent_per_minute=D('0.60'),
     )
