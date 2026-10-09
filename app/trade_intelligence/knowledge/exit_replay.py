@@ -71,6 +71,17 @@ POLICIES = (
                break_even_after_partial=True, trail_distance_r=D("1")),
 )
 
+# Compare activation thresholds at the same partial size and runner policy.
+# These are bar-mechanics proxies, not Warrior's full profit-harvest engine.
+EARLY_PARTIAL_POLICIES = (
+    ExitPolicy("QUARTER_AT_075R_THEN_BREAK_EVEN", target_r=D("0.75"),
+               partial_fraction=D("0.25"), break_even_after_partial=True),
+    ExitPolicy("QUARTER_AT_050R_THEN_BREAK_EVEN", target_r=D("0.50"),
+               partial_fraction=D("0.25"), break_even_after_partial=True),
+)
+POLICY_SETS = {"BASELINE": POLICIES,
+               "EARLY_PARTIAL_V1": POLICIES + EARLY_PARTIAL_POLICIES}
+
 
 def replay_long(bars: Iterable[HistoricalBar], *, symbol: str,
                 entry_time: datetime, entry_price: Decimal, initial_stop: Decimal,
@@ -158,15 +169,15 @@ def replay_long(bars: Iterable[HistoricalBar], *, symbol: str,
     return result("OPEN_AT_DATA_END" if seen else "NO_POST_ENTRY_BARS")
 
 
-def compare(bars: Iterable[HistoricalBar], **entry):
+def compare(bars: Iterable[HistoricalBar], *, policies=POLICIES, **entry):
     path = tuple(bars)
-    return tuple(replay_long(path, policy=policy, **entry) for policy in POLICIES)
+    return tuple(replay_long(path, policy=policy, **entry) for policy in policies)
 
 
-def coverage_bucket():
+def coverage_bucket(policies=POLICIES):
     return {"selected_episodes": 0, "paired_closed_episodes": 0,
-            "status_counts": {p.name: Counter() for p in POLICIES},
-            "paired_pnl_totals": {p.name: D(0) for p in POLICIES}}
+            "status_counts": {p.name: Counter() for p in policies},
+            "paired_pnl_totals": {p.name: D(0) for p in policies}}
 
 
 def record_coverage(bucket, results):
@@ -192,6 +203,7 @@ def main(argv=None):
     parser.add_argument("--max-scan", type=int, default=100)
     parser.add_argument("--max-episodes", type=int, default=10)
     parser.add_argument("--strategy", default="HIGH_OF_DAY_BREAKOUT")
+    parser.add_argument("--policy-set", choices=tuple(POLICY_SETS), default="BASELINE")
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--report-dir", type=Path)
     parser.add_argument("--summary-only", action="store_true")
@@ -200,6 +212,9 @@ def main(argv=None):
     parser.add_argument("--risk-dollars", type=D, default=D("25"))
     parser.add_argument("--cost-per-share-per-side", type=D, default=D("0.01"))
     args = parser.parse_args(argv)
+    policies = POLICY_SETS[args.policy_set]
+    policy_version = ("CHRONOLOGICAL_BAR_EXITS_V1" if args.policy_set == "BASELINE"
+                      else "EARLY_PARTIAL_BAR_EXITS_V1")
     if not 0 < args.max_scan <= 1000 or not 0 < args.max_episodes <= 100:
         parser.error("Use at most 1000 scanned rows and 100 episodes per batch")
     if not 0 < args.max_per_symbol <= 100:
@@ -218,7 +233,10 @@ def main(argv=None):
                      "risk_dollars": str(args.risk_dollars),
                      "cost_per_share_per_side": str(args.cost_per_share_per_side),
                      "max_per_symbol": args.max_per_symbol,
-                     "policy_version": "CHRONOLOGICAL_BAR_EXITS_V1"}
+                     "policy_version": policy_version}
+    if args.policy_set != "BASELINE":
+        configuration.update(policy_set=args.policy_set,
+            policies=json.loads(json.dumps([asdict(p) for p in policies], default=str)))
     offset = source_rows = 0
     if args.checkpoint and args.checkpoint.exists():
         saved = json.loads(args.checkpoint.read_text(encoding="utf-8"))
@@ -230,13 +248,15 @@ def main(argv=None):
         if not isinstance(source_rows, int) or source_rows < 0:
             parser.error("Invalid checkpoint row count")
     selected = scanned = paired = 0
-    coverage = coverage_bucket()
+    coverage = coverage_bucket(policies)
+    early_comparison = (coverage_bucket(EARLY_PARTIAL_POLICIES)
+                        if args.policy_set == "EARLY_PARTIAL_V1" else None)
     grouped = {}
     skipped = Counter()
     symbol_counts = Counter()
     partition_hashes = {}
     details = []
-    totals = {p.name: D(0) for p in POLICIES}
+    totals = {p.name: D(0) for p in policies}
     print("EVIDENCE: MINUTE_BAR_PROXY_FIXED_PLANNED_ENTRY_NOT_ACTUAL_FILLS")
     print("PORTFOLIO: INDEPENDENT_EPISODES_NO_SHARED_CAPITAL_OR_OVERLAP_MODEL")
     with source_path.open("rb") as handle:
@@ -280,7 +300,7 @@ def main(argv=None):
             bars = tuple(islice(provider.bars(), 5001))
             if provider.errors or len(bars) > 5000:
                 raise ValueError("INVALID_OR_OVERSIZED_BAR_PARTITION")
-            results = compare(bars, symbol=symbol,
+            results = compare(bars, policies=policies, symbol=symbol,
                 entry_time=datetime.fromisoformat(row["detected_timestamp"]),
                 entry_price=entry_price, initial_stop=stop, quantity=qty,
                 hold_minutes=args.hold_minutes,
@@ -289,12 +309,16 @@ def main(argv=None):
             symbol_counts[symbol] += 1
             partition_hashes[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
             record_coverage(coverage, results)
+            if early_comparison is not None:
+                names = {p.name for p in EARLY_PARTIAL_POLICIES}
+                record_coverage(early_comparison,
+                                tuple(r for r in results if r.policy in names))
             for strategy in memberships if args.strategy == "ALL" else (args.strategy,):
                 key = (row["trading_date"], strategy)
-                record_coverage(grouped.setdefault(key, coverage_bucket()), results)
+                record_coverage(grouped.setdefault(key, coverage_bucket(policies)), results)
             detail = {"episode_id": row["episode_id"], "symbol": symbol,
                 "normalized_sha256": partition_hashes[path.name],
-                "policy_version": "CHRONOLOGICAL_BAR_EXITS_V1",
+                "policy_version": policy_version,
                 "hold_minutes": args.hold_minutes,
                 "cost_per_share_per_side": args.cost_per_share_per_side,
                 "entry_time": row["detected_timestamp"], "entry_price": entry_price,
@@ -326,6 +350,12 @@ def main(argv=None):
         "source_rows_consumed": source_rows + scanned, "at_eof": next_offset == stat.st_size,
         "selection": "BOUNDED_FILE_ORDER_SAMPLE_NOT_REPRESENTATIVE_PERFORMANCE",
         "grouping": "OVERLAPPING_STRATEGY_MEMBERSHIPS_DO_NOT_SUM_GROUPS"}
+    if early_comparison is not None:
+        summary["early_partial_comparison"] = {
+            **early_comparison,
+            "excluded_from_paired_totals": selected - early_comparison["paired_closed_episodes"],
+            "cohort": "BOTH_QUARTER_PARTIAL_POLICIES_CLOSED_SAME_EPISODES",
+            "scope": "PARTIAL_THRESHOLD_MECHANICS_NOT_EXACT_WARRIOR_HARVEST"}
     if args.report_dir:
         save_json(args.report_dir / f"coverage_{offset}_{next_offset}.json",
                   {**summary, "episodes": details})
