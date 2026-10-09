@@ -86,6 +86,7 @@ class QuickScalperExecutionIntent:
     required_net_target_reward_r: Decimal | None = None
     stream_upward_updates: int | None = None
     stream_price_change_updates: int | None = None
+    observed_ask_advance: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.entry_trigger <= self.stop_price or self.risk_per_share <= ZERO:
@@ -119,6 +120,7 @@ class _StreamQuoteSample:
     bid: Decimal
     ask: Decimal
     ask_size: Decimal | None
+    session: str
 
 
 class QuickScalperPaperRuntimeAdapter:
@@ -523,6 +525,10 @@ class QuickScalperPaperRuntimeAdapter:
                 None if source.observed_bid_advance is None else
                 source.observed_bid_advance + quote.bid - source.bid
             ),
+            observed_ask_advance=(
+                None if source.observed_ask_advance is None else
+                source.observed_ask_advance + quote.ask - source.ask
+            ),
         )
         confirmed = self.scalper.policy.assess(refreshed)
         if (
@@ -643,6 +649,7 @@ class QuickScalperPaperRuntimeAdapter:
             required_net_target_reward_r=confirmed.required_net_target_reward_r,
             stream_upward_updates=refreshed.stream_upward_updates,
             stream_price_change_updates=refreshed.stream_price_change_updates,
+            observed_ask_advance=refreshed.observed_ask_advance,
         )
         self._emit(
             "SCALP_ORDER_INTENT", refreshed.symbol,
@@ -698,6 +705,7 @@ class QuickScalperPaperRuntimeAdapter:
         sample = _StreamQuoteSample(
             quote_timestamp, last_timestamp, observation.price,
             observation.bid, observation.ask, observation.ask_size,
+            session.strip().upper(),
         )
         samples = self._stream_samples.get(symbol)
         if samples is None:
@@ -712,7 +720,8 @@ class QuickScalperPaperRuntimeAdapter:
             return None
         if (
             samples
-            and quote_timestamp - samples[-1].provider_timestamp > _STREAM_WINDOW
+            and (quote_timestamp - samples[-1].provider_timestamp > _STREAM_WINDOW
+                 or sample.session != samples[-1].session)
         ):
             samples.clear()
             self._stream_generation_started.pop(symbol, None)
@@ -751,7 +760,7 @@ class QuickScalperPaperRuntimeAdapter:
             symbol, first.provider_timestamp,
         )
         generation = sha256(
-            f'{symbol}|{generation_started.isoformat()}|QUICK_SCALP_STREAM'.encode(
+            f'{symbol}|{sample.session}|{generation_started.isoformat()}|QUICK_SCALP_STREAM'.encode(
                 'utf-8'
             )
         ).hexdigest()[:24]
@@ -784,6 +793,7 @@ class QuickScalperPaperRuntimeAdapter:
             short_horizon_range=short_range,
             stream_sample_count=len(samples), stream_elapsed_seconds=elapsed,
             observed_bid_advance=move,
+            observed_ask_advance=observation.ask - first.ask,
             stream_upward_updates=sum(change > ZERO for change in changes),
             stream_price_change_updates=sum(change != ZERO for change in changes),
             velocity_cents_per_minute=velocity,

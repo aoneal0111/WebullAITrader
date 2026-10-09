@@ -16,11 +16,12 @@ There is no fixed spread or RVOL veto. Stronger movement can
 make the same spread executable on a later assessment. Existing hard safety
 checks still run before this economic wait condition.
 
-For stream entries, movement evidence is the smaller of the trailing BID range
-and the positive BID advance from the first retained distinct provider quote to
-the current quote. An earlier high that has already retraced cannot supply the
-remaining move. Authoritative confirmation adjusts that advance by the change
-from the discovery BID to the execution BID. Candidate/bar snapshots without
+For stream entries, movement evidence is the smallest of the trailing BID range,
+positive BID advance, and positive ASK advance from the first retained distinct
+provider quote to the current quote. An earlier high that has already retraced
+cannot supply the remaining move, and spread compression alone cannot supply
+price-level momentum. Authoritative confirmation adjusts both advances by the
+changes from discovery to execution quotes. Candidate/bar snapshots without
 stream evidence retain their BID-range proxy.
 
 Per-minute velocities remain diagnostic context; they cannot supply
@@ -79,7 +80,7 @@ New Quick Scalper entry-order metadata carries scalar `scalp_` fields for:
 - Calculated net target reward divided by stop risk.
 - Provider BID/ASK timestamps and execution-quote confirmation time.
 - Trailing range, velocity, and stream sample count/elapsed time when available.
-- Directional BID advance, upward/nonzero price-update counts, confirmation score,
+- Directional BID/ASK advance, upward/nonzero price-update counts, confirmation score,
   and required modeled net reward/risk.
 
 ASK is stored as `scalp_entry_trigger`. Movement and cost values are policy
@@ -89,6 +90,15 @@ describe the separate confirmed execution quote. These inputs survive durable
 order restoration and can be joined to fill-derived lifecycle P&L.
 
 ## Remaining policy validation
+
+Stream movement evidence is bounded by both BID and ASK advance from the first
+retained quote, as well as the trailing BID range. A BID rising toward a flat or
+falling ASK therefore cannot count spread compression alone as upward price-level
+movement. This is a recoverable evidence wait, not a fixed spread cutoff. The
+authoritative execution quote updates both advances before reassessment, and
+`scalp_observed_ask_advance` persists the confirmed ASK evidence with the entry.
+Rolling stream samples and generation baselines reset at session changes so
+premarket quotes cannot establish regular-session momentum or structural stops.
 
 An initial stop attempt can fail while the position projection or entry
 acknowledgement is catching up with a fill. Fresh quotes for an already-owned

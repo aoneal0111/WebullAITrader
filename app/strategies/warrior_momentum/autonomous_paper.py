@@ -1127,7 +1127,7 @@ class AutonomousPaperExecutionBridge:
                                     "net_target_reward_r",
                                     "short_horizon_range", "velocity_cents_per_minute",
                                     "stream_sample_count", "stream_elapsed_seconds",
-                                    "observed_bid_advance", "momentum_confidence",
+                                    "observed_bid_advance", "observed_ask_advance", "momentum_confidence",
                                     "required_net_target_reward_r", "stream_upward_updates",
                                     "stream_price_change_updates",
                                     "execution_quote_timestamp", "provider_bid_timestamp",
