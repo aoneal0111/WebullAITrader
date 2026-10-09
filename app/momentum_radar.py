@@ -19,6 +19,7 @@ class RadarConfig:
     snapshot_window: int = 8
     minimum_displacement_for_replacement: Decimal = Decimal("0.10")
     demotion_fraction: Decimal = Decimal("0.75")
+    minimum_promotion_change_percent: Decimal = ZERO
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +59,12 @@ class MomentumRadar:
         self._metrics = {"evaluated": 0, "emerging": 0, "promotions": 0,
                          "demotions": 0, "replacements": 0}
 
+    def reset_session(self) -> None:
+        self._history.clear()
+        self._assessments.clear()
+        self._promoted.clear()
+        self._required.clear()
+
     def observe(self, snapshots: tuple[RadarSnapshot, ...], *, required: tuple[str, ...] = ()) -> tuple[RadarAssessment, ...]:
         self._required = {symbol.strip().upper() for symbol in required if symbol.strip()}
         for snapshot in snapshots:
@@ -90,13 +97,15 @@ class MomentumRadar:
         top_score = ordered[0].score if ordered else ZERO
         incumbent_floor = top_score * self.config.demotion_fraction
         for assessment in ordered:
+            if not self._promotion_eligible(assessment.symbol):
+                continue
             if assessment.symbol in self._promoted and assessment.score >= incumbent_floor:
                 if len(selected) < capacity and assessment.symbol not in selected:
                     selected.append(assessment.symbol)
         for assessment in ordered:
             if len(selected) >= capacity:
                 break
-            if assessment.symbol not in selected:
+            if assessment.symbol not in selected and self._promotion_eligible(assessment.symbol):
                 selected.append(assessment.symbol)
         prior = set(self._promoted)
         self._promoted = set(selected)
@@ -104,6 +113,12 @@ class MomentumRadar:
         self._metrics["demotions"] += len(prior - self._promoted)
         self._metrics["replacements"] += min(len(prior - self._promoted), len(self._promoted - prior))
         return tuple(selected)
+
+    def _promotion_eligible(self, symbol: str) -> bool:
+        history = self._history.get(symbol, ())
+        change = history[-1].change_percent if history else None
+        return (change is not None and change.is_finite()
+                and change >= self.config.minimum_promotion_change_percent)
 
     def priority_order(self) -> tuple[str, ...]:
         return tuple(assessment.symbol for assessment in sorted(
