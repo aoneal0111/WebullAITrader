@@ -40,9 +40,9 @@ def enrich_position_management(
             if second_taken:
                 next_target = "RUNNER / TRAIL"
             elif first_taken and len(targets) > 1:
-                next_target = f"{format_price(targets[1])} (+2R)"
+                next_target = _target_with_reward(targets[1], entry, risk)
             elif targets:
-                next_target = f"{format_price(targets[0])} (+1R)"
+                next_target = _target_with_reward(targets[0], entry, risk)
             else:
                 next_target = "--"
             rows.append(replace(
@@ -54,6 +54,17 @@ def enrich_position_management(
         except (KeyError, TypeError, InvalidOperation, ValueError, ZeroDivisionError):
             rows.append(row)
     return replace(snapshot, management=tuple(rows))
+
+
+def _target_with_reward(target: Decimal, entry: Decimal, risk: Decimal) -> str:
+    price = format_price(target)
+    if not risk.is_finite() or risk <= 0:
+        return price
+    reward = (target - entry) / risk
+    if not reward.is_finite():
+        return price
+    label = f"{reward:+.0f}" if reward == reward.to_integral_value() else f"{reward:+.2f}"
+    return f"{price} ({label}R)"
 
 
 def _display_decimal(value: str) -> Decimal | None:
