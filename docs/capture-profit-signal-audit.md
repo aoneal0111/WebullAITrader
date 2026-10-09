@@ -91,3 +91,60 @@ quote sizes and timing, and compare signals with the actual harvest/protection
 path. Test different regimes and days with settings frozen before observation.
 Scalper needs its own evidence and exit policies. This audit alone does not
 justify changing either strategy's runtime thresholds.
+
+## Bounded batch exporter
+
+`capture_profit_export` replaces the pasted export script. It selects closed,
+filled Warrior lifecycles from the active campaign whose entry creation time is
+at or after the supplied performance snapshot's runtime start. Sorting is by
+entry time and lifecycle, not by PNL. It reads both SQLite databases in `mode=ro`
+with `query_only` enabled and a ten-second progress deadline per connection.
+It never starts Atlas, modifies orders, or changes configuration.
+
+```powershell
+& .\.venv\Scripts\python.exe -m app.trade_intelligence.knowledge.capture_profit_export `
+    $Latest.FullName --offset 5 --limit 2
+if ($LASTEXITCODE -ne 0) { throw "Capture export failed." }
+```
+
+Limits: at most five lifecycles per call, 5,000 active-campaign orders / 32 MB
+for the streamed order scan, 500 orders per selected lifecycle, 4,000 execution
+path records / 8 MB, and 1,000 nearby entry context records / 4 MB. Every capture
+export is capped at 8 MB. Overflow is reported as an exclusion, not silently
+truncated. No usable exports produces exit code 1; partial success remains exit
+code 0 with exclusions listed in stdout and the archive manifest. The manifest
+also includes reconciliation status, the fixed audit settings, selected lifecycle
+identities and counts. Outputs use a new uniquely named directory and ZIP.
+
+Each lifecycle includes nearby DECISION, DI_ENTRY_DIAGNOSTIC,
+EXECUTION_GATE_DECISION, SETUP_LIFECYCLE, STATE_TRANSITION, SPREAD_EVIDENCE and
+DATA_QUALITY records from five minutes before entry creation to thirty seconds
+after. These are **symbol/time candidates for investigation**, not proven joins
+to the authorizing decision. They are not filtered by campaign, because older
+context records may omit campaign identity. Check identity, timing, session,
+retained trigger and confirmation age before drawing an authorization conclusion.
+Future-of-entry records are context only, never pre-entry evidence.
+
+Offsets are positions in the currently eligible closed set, not a durable
+checkpoint. If additional trades close between calls, its ordering can change.
+Use a stopped/fixed run for a stable batch sequence, keep the manifest and deduplicate
+by campaign/lifecycle. These retrospective, closed-trade samples are not forward
+validation and do not include trades still open. Do not mix runtime versions
+without checking available provenance.
+
+### Broader October 9 batch
+
+The first five closed trades in entry order all reconciled: CCI +$21.70,
+FSLY -$43.92, IBRX -$6.57, first NAUT +$28.85 and JAGX -$17.00. The unchanged
+0.40R overlay produced no observed exit signal for any of these five. FSLY's
+eligible sampled peak was about 0.20R; IBRX's was 0.33R; JAGX's highest eligible
+sampled mark was negative. The overlay cannot address every weak entry or stalled
+trade. CCI and first NAUT already realized partials and raised their stops.
+
+A newer detector state of FORMING does not independently prove that an entry
+bypassed confirmation: Warrior intentionally permits a bounded retained earlier
+trigger, subject to current executable bid confirmation and other gates. The
+retained-confirmation expiry repair is already documented in
+`retained-trigger-expiry.md`. Nearby entry evidence is needed to evaluate the
+specific generation and confirmation age used for FSLY/JAGX. Do not infer a new
+runtime defect from proximity alone.
