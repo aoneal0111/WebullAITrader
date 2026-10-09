@@ -83,6 +83,69 @@ POLICY_SETS = {"BASELINE": POLICIES,
                "EARLY_PARTIAL_V1": POLICIES + EARLY_PARTIAL_POLICIES}
 
 
+def size_entry(entry_price, initial_stop, risk_dollars, cost_per_side,
+               mode="PRICE_RISK", capital_cap=None):
+    """Declared planned-stop risk, not a guarantee against gaps or liquidity."""
+    values = (entry_price, initial_stop, risk_dollars, cost_per_side)
+    if (any(not v.is_finite() for v in values) or
+            not entry_price > initial_stop > 0 or risk_dollars <= 0 or cost_per_side < 0):
+        raise ValueError("INVALID_SIZING_INPUT")
+    if mode not in ("PRICE_RISK", "COST_INCLUSIVE"):
+        raise ValueError("INVALID_SIZING_MODE")
+    if capital_cap is not None and (not capital_cap.is_finite() or capital_cap <= 0):
+        raise ValueError("INVALID_CAPITAL_CAP")
+    if mode == "COST_INCLUSIVE" and capital_cap is None:
+        raise ValueError("COST_INCLUSIVE_REQUIRES_CAPITAL_CAP")
+    price_risk = entry_price - initial_stop
+    risk_per_share = price_risk + (2 * cost_per_side if mode == "COST_INCLUSIVE" else D(0))
+    risk_qty = (risk_dollars / risk_per_share).to_integral_value(rounding=ROUND_FLOOR)
+    qty = risk_qty
+    capital_qty = None
+    if capital_cap is not None:
+        # Reserve entry cost as well as purchase notional inside this cap.
+        capital_qty = (capital_cap / (entry_price + cost_per_side)).to_integral_value(rounding=ROUND_FLOOR)
+        qty = min(qty, capital_qty)
+    if mode == "COST_INCLUSIVE":
+        qty = min(qty, D(10000))
+    return {"mode": mode, "quantity": qty, "risk_limited_quantity": risk_qty,
+            "capital_limited_quantity": capital_qty, "capital_cap": capital_cap,
+            "purchase_notional": qty * entry_price,
+            "entry_cash_required": qty * (entry_price + cost_per_side),
+            "planned_price_risk": qty * price_risk,
+            "estimated_round_trip_cost": qty * 2 * cost_per_side,
+            "planned_stop_loss_with_cost": qty * (price_risk + 2 * cost_per_side)}
+
+
+def next_minute_entry(bars, *, symbol, detected_time, planned_price, initial_stop):
+    """Use only the exact next minute's open, never a later available bar.
+
+    An OHLC open is a research proxy, not a Webull quote or executable fill.
+    Replacing the planned entry is a distinct experiment, not a limit fill.
+    """
+    if detected_time.tzinfo is None or detected_time.utcoffset() is None:
+        raise ValueError("INVALID_ENTRY_TIME")
+    bars = tuple(bars)
+    previous = None
+    for bar in bars:
+        if bar.symbol != symbol or (previous is not None and bar.timestamp <= previous):
+            raise ValueError("MIXED_SYMBOL_OR_UNORDERED_BARS")
+        previous = bar.timestamp
+    entry_time = detected_time.replace(second=0, microsecond=0) + MINUTE
+    audit = {"model": "NEXT_MINUTE_OPEN", "detected_time": detected_time,
+             "planned_entry_price": planned_price, "entry_time": entry_time,
+             "entry_price": None, "open_minus_planned": None}
+    candidate = next((b for b in bars if b.timestamp == entry_time), None)
+    if candidate is None:
+        audit["status"] = "NO_ENTRY_MISSING_NEXT_MINUTE"
+    elif candidate.open <= initial_stop:
+        audit["status"] = "NO_ENTRY_OPEN_AT_OR_BELOW_STOP"
+        audit["observed_open"] = candidate.open
+    else:
+        audit.update(status="ENTRY_OPEN_PROXY", entry_price=candidate.open,
+                     open_minus_planned=candidate.open - planned_price)
+    return audit
+
+
 def replay_long(bars: Iterable[HistoricalBar], *, symbol: str,
                 entry_time: datetime, entry_price: Decimal, initial_stop: Decimal,
                 quantity: Decimal, policy: ExitPolicy, hold_minutes: int = 60,
@@ -211,6 +274,9 @@ def main(argv=None):
     parser.add_argument("--hold-minutes", type=int, default=60)
     parser.add_argument("--risk-dollars", type=D, default=D("25"))
     parser.add_argument("--cost-per-share-per-side", type=D, default=D("0.01"))
+    parser.add_argument("--sizing-mode", choices=("PRICE_RISK", "COST_INCLUSIVE"), default="PRICE_RISK")
+    parser.add_argument("--capital-cap", type=D)
+    parser.add_argument("--entry-model", choices=("PLANNED_PRE_BAR", "NEXT_MINUTE_OPEN"), default="PLANNED_PRE_BAR")
     args = parser.parse_args(argv)
     policies = POLICY_SETS[args.policy_set]
     policy_version = ("CHRONOLOGICAL_BAR_EXITS_V1" if args.policy_set == "BASELINE"
@@ -223,6 +289,10 @@ def main(argv=None):
         parser.error("risk-dollars must be positive and finite")
     if args.hold_minutes <= 0 or not args.cost_per_share_per_side.is_finite() or args.cost_per_share_per_side < 0:
         parser.error("hold-minutes must be positive; costs must be finite and nonnegative")
+    if args.capital_cap is not None and (not args.capital_cap.is_finite() or args.capital_cap <= 0):
+        parser.error("capital-cap must be positive and finite")
+    if args.sizing_mode == "COST_INCLUSIVE" and args.capital_cap is None:
+        parser.error("COST_INCLUSIVE requires an explicit capital-cap")
     source_path = args.root / "corpus_repaired/episodes.jsonl"
     if args.checkpoint and args.checkpoint.resolve() == source_path.resolve():
         parser.error("Checkpoint must not overwrite the episode source")
@@ -236,6 +306,13 @@ def main(argv=None):
                      "policy_version": policy_version}
     if args.policy_set != "BASELINE":
         configuration.update(policy_set=args.policy_set,
+            policies=json.loads(json.dumps([asdict(p) for p in policies], default=str)))
+    entry_sizing_experiment = (args.entry_model != "PLANNED_PRE_BAR" or
+                              args.sizing_mode != "PRICE_RISK" or args.capital_cap is not None)
+    if entry_sizing_experiment:
+        configuration.update(entry_sizing_version="ENTRY_SIZING_V1",
+            entry_model=args.entry_model, sizing_mode=args.sizing_mode,
+            capital_cap=str(args.capital_cap) if args.capital_cap is not None else None,
             policies=json.loads(json.dumps([asdict(p) for p in policies], default=str)))
     offset = source_rows = 0
     if args.checkpoint and args.checkpoint.exists():
@@ -256,8 +333,11 @@ def main(argv=None):
     symbol_counts = Counter()
     partition_hashes = {}
     details = []
+    entry_status_counts = Counter()
     totals = {p.name: D(0) for p in policies}
-    print("EVIDENCE: MINUTE_BAR_PROXY_FIXED_PLANNED_ENTRY_NOT_ACTUAL_FILLS")
+    print("EVIDENCE: " + ("MINUTE_BAR_PROXY_NEXT_MINUTE_OPEN_NOT_ACTUAL_FILLS"
+          if args.entry_model == "NEXT_MINUTE_OPEN" else
+          "MINUTE_BAR_PROXY_FIXED_PLANNED_ENTRY_NOT_ACTUAL_FILLS"))
     print("PORTFOLIO: INDEPENDENT_EPISODES_NO_SHARED_CAPITAL_OR_OVERLAP_MODEL")
     with source_path.open("rb") as handle:
         if offset and offset < stat.st_size:
@@ -283,11 +363,13 @@ def main(argv=None):
                 continue
             path = args.root / "normalized" / f"{symbol}_{row['trading_date']}.jsonl"
             entry_price, stop = D(str(row["trigger_price"])), D(str(row["structural_stop"]))
-            if not entry_price > stop > 0 or not path.is_file():
+            if not entry_price.is_finite() or not stop.is_finite() or not entry_price > stop > 0 or not path.is_file():
                 skipped["INVALID_GEOMETRY_OR_MISSING_PARTITION"] += 1
                 continue
-            qty = (args.risk_dollars / (entry_price - stop)).to_integral_value(rounding=ROUND_FLOOR)
-            if not 0 < qty <= 10000:
+            sizing = size_entry(entry_price, stop, args.risk_dollars,
+                args.cost_per_share_per_side, args.sizing_mode, args.capital_cap)
+            qty = sizing["quantity"]
+            if args.entry_model == "PLANNED_PRE_BAR" and not 0 < qty <= 10000:
                 skipped["QUANTITY_OUTSIDE_LIMIT"] += 1
                 continue
             # Bound source lines too: the provider quarantines malformed rows,
@@ -300,11 +382,35 @@ def main(argv=None):
             bars = tuple(islice(provider.bars(), 5001))
             if provider.errors or len(bars) > 5000:
                 raise ValueError("INVALID_OR_OVERSIZED_BAR_PARTITION")
-            results = compare(bars, policies=policies, symbol=symbol,
-                entry_time=datetime.fromisoformat(row["detected_timestamp"]),
-                entry_price=entry_price, initial_stop=stop, quantity=qty,
-                hold_minutes=args.hold_minutes,
-                cost_per_share_per_side=args.cost_per_share_per_side)
+            entry_time = datetime.fromisoformat(row["detected_timestamp"])
+            audit = None
+            if args.entry_model == "NEXT_MINUTE_OPEN":
+                audit = next_minute_entry(bars, symbol=symbol, detected_time=entry_time,
+                                         planned_price=entry_price, initial_stop=stop)
+                if audit["status"] == "ENTRY_OPEN_PROXY":
+                    entry_price, entry_time = audit["entry_price"], audit["entry_time"]
+                    sizing = size_entry(entry_price, stop, args.risk_dollars,
+                        args.cost_per_share_per_side, args.sizing_mode, args.capital_cap)
+                    qty = sizing["quantity"]
+                    if not 0 < qty <= 10000:
+                        audit["status"] = "NO_ENTRY_QUANTITY_OUTSIDE_LIMIT"
+                if audit["status"] != "ENTRY_OPEN_PROXY":
+                    qty, sizing = D(0), None
+                    results = tuple(ReplayResult(p.name, audit["status"], D(0), None,
+                                    D(0), (), stop) for p in policies)
+                else:
+                    results = compare(bars, policies=policies, symbol=symbol,
+                        entry_time=entry_time, entry_price=entry_price, initial_stop=stop,
+                        quantity=qty, hold_minutes=args.hold_minutes,
+                        cost_per_share_per_side=args.cost_per_share_per_side)
+                entry_status_counts[audit["status"]] += 1
+            else:
+                results = compare(bars, policies=policies, symbol=symbol,
+                    entry_time=entry_time, entry_price=entry_price, initial_stop=stop,
+                    quantity=qty, hold_minutes=args.hold_minutes,
+                    cost_per_share_per_side=args.cost_per_share_per_side)
+                if entry_sizing_experiment:
+                    entry_status_counts["ASSUMED_PLANNED_ENTRY"] += 1
             selected += 1
             symbol_counts[symbol] += 1
             partition_hashes[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -321,9 +427,16 @@ def main(argv=None):
                 "policy_version": policy_version,
                 "hold_minutes": args.hold_minutes,
                 "cost_per_share_per_side": args.cost_per_share_per_side,
-                "entry_time": row["detected_timestamp"], "entry_price": entry_price,
+                "entry_time": (entry_time.isoformat() if args.entry_model == "NEXT_MINUTE_OPEN"
+                               else row["detected_timestamp"]), "entry_price": entry_price,
                 "initial_stop": stop, "quantity": qty,
                 "results": [asdict(r) for r in results]}
+            if entry_sizing_experiment:
+                detail.update(sizing=sizing, entry_audit=audit,
+                              planned_entry_price=D(str(row["trigger_price"])))
+                if audit is not None and audit["status"] != "ENTRY_OPEN_PROXY":
+                    detail["entry_price"] = None
+                    detail["entry_time"] = audit["entry_time"].isoformat()
             if args.report_dir:
                 details.append(detail)
             if not args.summary_only:
@@ -356,6 +469,9 @@ def main(argv=None):
             "excluded_from_paired_totals": selected - early_comparison["paired_closed_episodes"],
             "cohort": "BOTH_QUARTER_PARTIAL_POLICIES_CLOSED_SAME_EPISODES",
             "scope": "PARTIAL_THRESHOLD_MECHANICS_NOT_EXACT_WARRIOR_HARVEST"}
+    if entry_sizing_experiment:
+        summary["entry_status_counts"] = entry_status_counts
+        summary["risk_scope"] = "PLANNED_STOP_PLUS_DECLARED_COST_NOT_GAP_OR_PORTFOLIO_GUARANTEE"
     if args.report_dir:
         save_json(args.report_dir / f"coverage_{offset}_{next_offset}.json",
                   {**summary, "episodes": details})
