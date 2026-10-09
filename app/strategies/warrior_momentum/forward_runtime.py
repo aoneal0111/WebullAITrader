@@ -558,8 +558,15 @@ class WarriorForwardCaptureService:
     def _opportunity_generation(signal: MomentumEntrySignal) -> str:
         return lifecycle_identity(signal)
 
-    def _remember_armed_signal(self, signal: MomentumEntrySignal) -> None:
+    def _remember_armed_signal(
+        self, signal: MomentumEntrySignal, *, renew_continuity: bool = True,
+    ) -> None:
         key = (signal.symbol.strip().upper(), self._opportunity_generation(signal))
+        previous = self._armed_signals.get(key)
+        if not renew_continuity and previous is not None:
+            # Fresh execution evidence does not constitute a newly confirmed
+            # breakout. Keep the last genuine confirmation's expiry anchor.
+            signal = replace(signal, timestamp=previous.timestamp)
         self._armed_signals[key] = signal
         self._armed_signals.move_to_end(key)
         while len(self._armed_signals) > self._armed_signal_capacity:
@@ -910,7 +917,9 @@ class WarriorForwardCaptureService:
                 symbol, stage="TECHNICAL_SIGNAL", timestamp=value.evaluation_timestamp or observation.timestamp,
             )
             generation = self._opportunity_generation(technical_signal)
-            self._remember_armed_signal(technical_signal)
+            self._remember_armed_signal(
+                technical_signal, renew_continuity=not retained_generation,
+            )
             armed = self.opportunity_engine.get(symbol, generation)
             if armed is None:
                 armed = self.opportunity_engine.arm(
