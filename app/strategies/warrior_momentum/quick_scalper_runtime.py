@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from app.configuration import PaperSymbolAuthorizationMode
 from app.paper_trading.order_book import PaperOrderBook
-from app.paper_trading.order_models import OrderSide
+from app.paper_trading.order_models import OrderSide, OrderType
 from app.momentum_scanner.models import ScannerObservation
 from app.performance_diagnostics import performance_diagnostics
 
@@ -880,6 +880,25 @@ class QuickScalperPaperRuntimeAdapter:
         age = Decimal(str((observed_at - quote_timestamp).total_seconds()))
         if age < ZERO or age > self.config.provider_freshness_seconds:
             return
+        quantity = max(0, int(self.position_quantity_source(state.symbol)))
+        if quantity <= 0:
+            self.reconcile(state.symbol)
+            return
+        # A fill callback can precede the position projection or entry
+        # acknowledgement. If protection failed then, no new order event may
+        # arrive to retry it. Repair missing/undersized protection on a fresh
+        # owned-position quote without waiting for a profit action or max hold.
+        if not any(
+            order.request.strategy_lifecycle_id == state.lifecycle_id
+            and order.request.side is OrderSide.SELL
+            and order.request.order_type is OrderType.STOP
+            and order.remaining_quantity >= quantity
+            for order in self.order_book.open_orders_for_symbol(state.symbol)
+        ):
+            self.reconcile(state.symbol)
+            state = self._positions.get(symbol)
+            if state is None:
+                return
         decision = ProfitRetentionPolicy().evaluate(
             ProfitRetentionPosition(
                 StrategyOwner.QUICK_SCALPER, state.symbol, state.lifecycle_id,
@@ -891,10 +910,6 @@ class QuickScalperPaperRuntimeAdapter:
         )
         state.peak_bid = decision.position.peak_executable_bid
         state.profit_state = decision.position.state
-        quantity = max(0, int(self.position_quantity_source(state.symbol)))
-        if quantity <= 0:
-            self.reconcile(state.symbol)
-            return
         if (
             decision.action is ProfitAction.TIGHTEN_STOP
             and decision.desired_stop is not None

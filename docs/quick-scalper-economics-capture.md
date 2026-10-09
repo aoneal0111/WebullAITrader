@@ -90,6 +90,15 @@ order restoration and can be joined to fill-derived lifecycle P&L.
 
 ## Remaining policy validation
 
+An initial stop attempt can fail while the position projection or entry
+acknowledgement is catching up with a fill. Fresh quotes for an already-owned
+scalp now trigger canonical reconciliation when no same-lifecycle stop covers
+the projected open quantity. This retries protection without requiring another
+fill or waiting for the maximum-hold action. Existing quantity, ownership, and
+freshness checks still apply. Healthy stops are left alone. This is recovery
+on fresh quote arrival, not an independent timer or a guarantee of immediate
+protection when no fresh quotes arrive.
+
 Full-exit reconciliation preserves a working `SCALP_MAX_HOLD` or
 `SCALP_MOMENTUM_STALL` order instead of restoring the normal `SCALP_TARGET`.
 The canonical bridge retains its correlated stop, and gateway partial-fill

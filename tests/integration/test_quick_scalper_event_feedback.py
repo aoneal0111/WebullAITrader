@@ -15,6 +15,97 @@ from tests.warrior_momentum.test_quick_scalper_runtime import NOW, account, quot
 import pytest
 
 
+@pytest.mark.parametrize("failure", ["projection_lag", "ownership_lag"])
+def test_initial_stop_failure_recovers_on_next_fresh_quote_without_another_fill(failure):
+    pipeline = create_runtime_projection_pipeline(
+        operations_bus=OperationsBus(), account_id="protection-retry",
+        paper_account_starting_cash=D("100000"),
+    )
+    holder = {}
+    lagging = True
+
+    def quantity(symbol):
+        return sum((D(p.quantity) for p in pipeline.position_projection.snapshot.positions
+                    if p.symbol == symbol), D("0"))
+
+    def bridge_quantity(symbol):
+        return D("0") if lagging and failure == "projection_lag" else quantity(symbol)
+
+    def sink(event):
+        pipeline.sink(event)
+        if "runtime" in holder:
+            holder["runtime"].observe_paper_event(event)
+
+    composition = create_session_paper_composition(
+        at=NOW, event_sink=sink, position_quantity_source=quantity,
+        position_average_cost_source=lambda _symbol: D("5"),
+    )
+    try:
+        bridge = AutonomousPaperExecutionBridge(
+            composition.trading_service, composition.order_command_factory,
+            mode="PAPER", enabled=True, order_book=composition.order_book,
+            position_quantity_source=bridge_quantity,
+            protection_amender=composition.gateway.amend_protective_stop,
+        )
+        runtime = QuickScalperPaperRuntimeAdapter(
+            config=QuickScalperConfig(enabled=True), bridge=bridge,
+            order_book=composition.order_book, account_context_source=account,
+            position_quantity_source=quantity, execution_quote_source=Quotes(quote()),
+            clock=lambda: NOW,
+        )
+        holder["runtime"] = runtime
+        value = snapshot()
+        runtime._snapshots[("FAST", "g1")] = value
+        runtime.scalper.observe(value)
+        identity = bridge._active_by_symbol["FAST"]
+        if failure == "ownership_lag":
+            bridge._active_by_symbol.pop("FAST")
+        composition.gateway.process_market_event(MarketEvent(
+            1, NOW, "FAST", "feedback", MarketEventType.QUOTE,
+            QuotePayload(D("4.99"), D("5"), D("120"), D("120")),
+        ))
+        assert quantity("FAST") == D("120")
+        assert not any(o.request.execution_reason == "STOP"
+                       for o in composition.order_book.open_orders_for_symbol("FAST"))
+        history_count = len(composition.order_book.history())
+        later = NOW + timedelta(seconds=2)
+        for quote_timestamp in (NOW - timedelta(seconds=60), later + timedelta(seconds=1)):
+            runtime._manage_open_position_values(
+                symbol="FAST", executable_bid=D("5.01"), quote_timestamp=quote_timestamp,
+                observed_at=later, momentum_stalled=False,
+            )
+        assert len(composition.order_book.history()) == history_count
+        # A fresh quote is not permission to bypass still-lagging quantity or
+        # lifecycle authorization. Recovery must wait for canonical readiness.
+        runtime._manage_open_position_values(
+            symbol="FAST", executable_bid=D("5.01"), quote_timestamp=later,
+            observed_at=later, momentum_stalled=False,
+        )
+        assert not any(o.request.execution_reason == "STOP"
+                       for o in composition.order_book.open_orders_for_symbol("FAST"))
+        lagging = False
+        bridge._active_by_symbol["FAST"] = identity
+        # No further fill or order callback arrives. An ordinary fresh quote
+        # must retry protection long before the five-minute holding exit.
+        runtime._manage_open_position_values(
+            symbol="FAST", executable_bid=D("5.01"), quote_timestamp=later,
+            observed_at=later, momentum_stalled=False,
+        )
+        working = composition.order_book.open_orders_for_symbol("FAST")
+        stop = next(o for o in working if o.request.execution_reason == "STOP")
+        assert stop.remaining_quantity == D("120")
+        assert stop.request.strategy_lifecycle_id == identity
+        assert not any(o.request.execution_reason == "SCALP_MAX_HOLD" for o in working)
+        history_count = len(composition.order_book.history())
+        runtime._manage_open_position_values(
+            symbol="FAST", executable_bid=D("5.01"), quote_timestamp=later,
+            observed_at=later, momentum_stalled=False,
+        )
+        assert len(composition.order_book.history()) == history_count
+    finally:
+        composition.close()
+
+
 @pytest.mark.parametrize("reason,elapsed", [
     ("SCALP_MAX_HOLD", 301), ("SCALP_MOMENTUM_STALL", 1),
 ])
