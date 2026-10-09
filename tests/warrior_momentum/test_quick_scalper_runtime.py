@@ -208,7 +208,7 @@ def test_dynamic_scalper_non_allowlisted_entry_reaches_real_paper_gateway(tmp_pa
             execution_quote_source=Quotes(quote()), clock=lambda: NOW,
         )
         value = replace(
-            snapshot(), observed_bid_advance=D("0.20"),
+            snapshot(), observed_bid_advance=D("0.20"), observed_ask_advance=D("0.20"),
             stream_sample_count=8, stream_elapsed_seconds=D("10"),
             stream_upward_updates=7, stream_price_change_updates=7,
         )
@@ -236,6 +236,7 @@ def test_dynamic_scalper_non_allowlisted_entry_reaches_real_paper_gateway(tmp_pa
         assert D(economics["velocity_cents_per_minute"]) == value.velocity_cents_per_minute
         assert D(economics["net_target_reward_r"]) == assessment.opportunity.remaining_final_target_r
         assert D(economics["observed_bid_advance"]) == value.observed_bid_advance
+        assert D(economics["observed_ask_advance"]) == value.observed_ask_advance
         assert D(economics["momentum_confidence"]) == assessment.momentum_confidence
         assert D(economics["required_net_target_reward_r"]) == assessment.required_net_target_reward_r
         assert int(economics["stream_upward_updates"]) == 7
@@ -280,6 +281,45 @@ def stream_observation(bid, offset):
         last_price_timestamp=at, quote_timestamp=at, trade_timestamp=at,
         bid_size=D("500"), ask_size=D("500"),
     )
+
+
+@pytest.mark.parametrize("first_ask", ["5.00", "5.50"])
+def test_bid_catching_up_to_flat_or_falling_ask_waits_without_authorization(first_ask):
+    runtime, bridge, quotes = adapter()
+    first = replace(stream_observation("4.75", -10), ask=D(first_ask))
+    runtime.observe_stream_event(
+        first, decision_at=NOW, session="REGULAR", execution_permitted=False,
+    )
+    assessed = runtime.observe_stream_event(
+        stream_observation("4.99", 0), decision_at=NOW, session="REGULAR",
+    )
+    assert assessed.decision is ScalpDecision.WAIT
+    assert assessed.reason == "INSUFFICIENT_NET_EXECUTABLE_EDGE"
+    assert quotes.calls == 0
+    assert bridge.entries == []
+
+
+def test_session_change_resets_stream_baseline_and_generation():
+    runtime, _, _ = adapter()
+    for bid, offset in (("4.75", -10), ("4.80", -5)):
+        prior = runtime._stream_snapshot(
+            stream_observation(bid, offset), decision_at=NOW,
+            session="PREMARKET", context=None,
+        )
+    assert prior is not None
+    first_regular = runtime._stream_snapshot(
+        stream_observation("4.99", -1), decision_at=NOW,
+        session="REGULAR", context=None,
+    )
+    assert first_regular is None
+    regular = runtime._stream_snapshot(
+        stream_observation("5.10", 0), decision_at=NOW,
+        session="REGULAR", context=None,
+    )
+    assert regular.stream_sample_count == 2
+    assert regular.structural_stop == D("4.99")
+    assert regular.observed_bid_advance == D("0.11")
+    assert regular.generation_id != prior.generation_id
 
 
 def test_repeated_provider_instant_replaces_sample_without_inflating_confirmation():
@@ -337,6 +377,26 @@ def test_authoritative_bid_retrace_waits_then_recovers_on_same_generation():
     assert intent.observed_bid_advance == D("0.15")
     assert intent.momentum_confidence > D("0")
     assert intent.net_target_reward_r >= intent.required_net_target_reward_r
+
+
+def test_authoritative_ask_retrace_removes_movement_evidence_then_recovers():
+    quotes = Quotes(replace(quote(), bid=D("4.91"), ask=D("4.92")))
+    runtime, bridge, _ = adapter(quotes=quotes)
+    value = replace(
+        snapshot(), structural_stop=D("4.80"),
+        observed_bid_advance=D("0.24"), observed_ask_advance=D("0.18"),
+        stream_sample_count=8, stream_elapsed_seconds=D("10"),
+        stream_upward_updates=7, stream_price_change_updates=7,
+    )
+    runtime._snapshots[("FAST", "g1")] = value
+    assert runtime.scalper.observe(value).decision is ScalpDecision.EXECUTABLE
+    assert quotes.calls == 1
+    assert not bridge.entries
+    assert quotes.decisions[-1]["rejection_reason"] == "INSUFFICIENT_NET_EXECUTABLE_EDGE"
+    quotes.value = quote()
+    runtime.scalper.observe(value)
+    assert len(bridge.entries) == 1
+    assert bridge.entries[0][0].observed_ask_advance == D("0.18")
 
 
 def test_stream_assessment_does_not_require_warrior_candidate_or_completed_bar():

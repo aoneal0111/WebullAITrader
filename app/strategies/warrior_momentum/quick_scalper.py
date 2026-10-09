@@ -121,6 +121,7 @@ class QuickScalpSnapshot:
     observed_bid_advance: Decimal | None = None
     stream_upward_updates: int | None = None
     stream_price_change_updates: int | None = None
+    observed_ask_advance: Decimal | None = None
 
     def __post_init__(self) -> None:
         if not self.symbol.strip() or not self.generation_id.strip():
@@ -186,6 +187,10 @@ class QuickScalperPolicy:
         expected_move = max(ZERO, value.short_horizon_range)
         if value.observed_bid_advance is not None:
             expected_move = min(expected_move, max(ZERO, value.observed_bid_advance))
+        if value.observed_ask_advance is not None:
+            # BID catching up to a flat/falling ASK is spread compression,
+            # not evidence that the executable price level is advancing.
+            expected_move = min(expected_move, max(ZERO, value.observed_ask_advance))
         # Movement is measured from BID; the sell target is anchored to ASK.
         # Include the distance between those anchors and estimated exit slippage.
         required_bid_move = (
