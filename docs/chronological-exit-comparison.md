@@ -55,3 +55,42 @@ counts displayed. That common cohort can still be selectively biased, so
 inspect its coverage before comparing totals. First establish replay coverage
 and correctness, then use chronological periods and cost sensitivity. Do not
 promote a policy from this small sample or let it control runtime automatically.
+
+## Resumable coverage batches
+
+For coverage across strategies, use a separate research checkpoint:
+
+```powershell
+& .\.venv\Scripts\python.exe -m app.trade_intelligence.knowledge.exit_replay `
+    data/research/historical_tranches/2026_06_01__2026_08_31 `
+    --strategy ALL --max-scan 250 --max-episodes 10 --max-per-symbol 1 `
+    --hold-minutes 60 --risk-dollars 25 --cost-per-share-per-side 0.01 `
+    --checkpoint data/research/exit_coverage_v1/checkpoint.json `
+    --report-dir data/research/exit_coverage_v1/reports --summary-only
+```
+
+Repeat exactly the same command for the next batch. The checkpoint seeks
+directly to the next source byte offset; it does not reread preceding episode
+rows. Source path, size, modification time and policy configuration must match.
+A malformed batch does not advance the checkpoint. Report-write failure also
+prevents advancement. Reports are written before the checkpoint, using atomic
+file replacement. These two writes are not one transaction: after a crash
+between them, retrying regenerates the same offset-named report. Run only one
+process per checkpoint. Source size/mtime checks detect ordinary edits but are
+not a cryptographic integrity guarantee; keep the source immutable.
+
+Each report preserves selected episode details and normalized partition hashes,
+per-policy status counts, skipped-row reasons, and date/strategy groups. Overall
+totals count each selected episode once. `ALL` records an episode in each of its
+strategy memberships; these groups overlap and must not be summed together.
+Paired PNL includes only episodes closed under all three policies. A zero total
+with zero paired episodes means no comparison, not break-even performance.
+
+The per-symbol cap resets each batch. Capped rows are counted as skipped and
+consumed by the cursor; they are not queued for later replay. This deliberately
+samples the source order and can omit later opportunities in the same symbol.
+It is a coverage diagnostic, not a representative strategy evaluation or a
+chronologically sorted portfolio replay. Batch reports are independent, not
+cumulative; their byte ranges identify the records consumed. Keep costs,
+horizon and selection settings fixed across batches. Use a new checkpoint and
+report directory for a changed policy or a separate sampling experiment.

@@ -140,3 +140,135 @@ def test_cli_rejects_malformed_bars_instead_of_silently_skipping(tmp_path):
     (tmp_path / "normalized/ABC_2026-08-13.jsonl").write_text("NOT_JSON\n")
     with pytest.raises(ValueError, match="INVALID_OR_OVERSIZED"):
         main([str(tmp_path)])
+
+
+def batch_fixture(root, episodes, bars=None):
+    (root / "corpus_repaired").mkdir()
+    (root / "normalized").mkdir()
+    rows = [{"episode_id": name, "symbol": "ABC", "trading_date": "2026-08-13",
+             "strategy_memberships": ["HIGH_OF_DAY_BREAKOUT", "MICRO_PULLBACK"],
+             "trigger_price": "10", "structural_stop": "9",
+             "detected_timestamp": START.isoformat()} for name in episodes]
+    source = root / "corpus_repaired/episodes.jsonl"
+    source.write_bytes(b"".join((json.dumps(row, ensure_ascii=False) + "\r\n").encode() for row in rows))
+    (root / "normalized/ABC_2026-08-13.jsonl").write_text(
+        "\n".join(json.dumps(asdict(b), default=str) for b in (bars or [bar(0), bar(1)])) + "\n")
+    return source
+
+
+def test_checkpoint_resumes_at_next_row_with_utf8_and_crlf(tmp_path, capsys):
+    source = batch_fixture(tmp_path, ["épisode", "second"])
+    checkpoint = tmp_path / "cursor.json"
+    reports = tmp_path / "reports"
+    args = [str(tmp_path), "--max-episodes", "1", "--hold-minutes", "1",
+            "--checkpoint", str(checkpoint), "--report-dir", str(reports)]
+    main(args)
+    first = json.loads(capsys.readouterr().out.splitlines()[-1])
+    main(args)
+    output = capsys.readouterr().out.splitlines()
+    second = json.loads(output[-1])
+    assert json.loads(output[-2])["episode_id"] == "second"
+    assert second["start_byte_offset"] == first["next_byte_offset"]
+    assert second["source_rows_consumed"] == 2
+    assert second["next_byte_offset"] == source.stat().st_size and second["at_eof"]
+    assert len(list(reports.glob("coverage_*.json"))) == 2
+    report = json.loads((reports / f"coverage_{second['start_byte_offset']}_{second['next_byte_offset']}.json").read_text())
+    assert report["episodes"][0]["episode_id"] == "second"
+
+
+@pytest.mark.parametrize("change", ["source", "policy"])
+def test_checkpoint_rejects_changed_source_or_policy(tmp_path, change):
+    source = batch_fixture(tmp_path, ["first", "second"])
+    checkpoint = tmp_path / "cursor.json"
+    args = [str(tmp_path), "--max-episodes", "1", "--checkpoint", str(checkpoint)]
+    main(args)
+    original = checkpoint.read_bytes()
+    if change == "source":
+        with source.open("ab") as f:
+            f.write(b"\n")
+    else:
+        args += ["--hold-minutes", "30"]
+    with pytest.raises(SystemExit):
+        main(args)
+    assert checkpoint.read_bytes() == original
+
+
+def test_failed_batch_does_not_advance_checkpoint(tmp_path):
+    batch_fixture(tmp_path, ["first", "second"])
+    checkpoint = tmp_path / "cursor.json"
+    args = [str(tmp_path), "--max-episodes", "1", "--checkpoint", str(checkpoint)]
+    main(args)
+    original = checkpoint.read_bytes()
+    (tmp_path / "normalized/ABC_2026-08-13.jsonl").write_text("NOT_JSON\n")
+    with pytest.raises(ValueError):
+        main(args)
+    assert checkpoint.read_bytes() == original
+
+
+def test_coverage_groups_overlap_without_double_counting_total(tmp_path, capsys):
+    batch_fixture(tmp_path, ["first"])
+    main([str(tmp_path), "--strategy", "ALL", "--hold-minutes", "1", "--summary-only"])
+    output = capsys.readouterr().out.splitlines()
+    summary = json.loads(output[-1])
+    assert len(output) == 3
+    assert summary["coverage"]["selected_episodes"] == 1
+    assert len(summary["by_date_strategy"]) == 2
+    assert all(g["paired_closed_episodes"] == 1 for g in summary["by_date_strategy"])
+    assert summary["normalized_partition_hashes"]
+
+
+def test_symbol_cap_skips_are_reported_and_cursor_consumes_them(tmp_path, capsys):
+    source = batch_fixture(tmp_path, ["first", "second", "third"])
+    main([str(tmp_path), "--max-per-symbol", "1", "--summary-only"])
+    summary = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert summary["selected_episodes"] == 1
+    assert summary["scanned_rows"] == 3
+    assert summary["skipped_rows"]["PER_SYMBOL_BATCH_LIMIT"] == 2
+    assert summary["next_byte_offset"] == source.stat().st_size
+
+
+def test_individually_closed_policy_not_in_paired_totals(tmp_path, capsys):
+    batch_fixture(tmp_path, ["first"], [bar(0, high="12", low="9.5", close="11.5"),
+        bar(1, open="10.5", high="11", low="10", close="10.5"), bar(3)])
+    main([str(tmp_path), "--summary-only"])
+    summary = json.loads(capsys.readouterr().out.splitlines()[-1])
+    statuses = summary["coverage"]["status_counts"]
+    assert statuses["HALF_AT_1R_THEN_1R_TRAIL"] == {"CLOSED": 1}
+    assert statuses["STRUCTURAL_STOP_AND_TIME"] == {"UNRESOLVED_MISSING_BARS": 1}
+    assert summary["paired_closed_episodes"] == 0
+    assert all(D(value) == 0 for value in summary["paired_pnl_totals"].values())
+
+
+def test_checkpoint_cannot_overwrite_corpus(tmp_path):
+    source = batch_fixture(tmp_path, ["first"])
+    original = source.read_bytes()
+    with pytest.raises(SystemExit):
+        main([str(tmp_path), "--checkpoint", str(source)])
+    assert source.read_bytes() == original
+
+
+def test_report_write_failure_does_not_advance_checkpoint(tmp_path, monkeypatch):
+    from app.trade_intelligence.knowledge import exit_replay
+    batch_fixture(tmp_path, ["first", "second"])
+    checkpoint = tmp_path / "cursor.json"
+    args = [str(tmp_path), "--max-episodes", "1", "--checkpoint", str(checkpoint)]
+    main(args)
+    original = checkpoint.read_bytes()
+    def fail_write(*args):
+        raise OSError("Disk full")
+    monkeypatch.setattr(exit_replay, "save_json", fail_write)
+    with pytest.raises(OSError, match="Disk full"):
+        main(args + ["--report-dir", str(tmp_path / "reports")])
+    assert checkpoint.read_bytes() == original
+
+
+def test_checkpoint_rejects_offset_inside_a_row(tmp_path):
+    batch_fixture(tmp_path, ["first", "second"])
+    checkpoint = tmp_path / "cursor.json"
+    args = [str(tmp_path), "--max-episodes", "1", "--checkpoint", str(checkpoint)]
+    main(args)
+    data = json.loads(checkpoint.read_text())
+    data["next_byte_offset"] -= 1
+    checkpoint.write_text(json.dumps(data))
+    with pytest.raises(SystemExit):
+        main(args)
