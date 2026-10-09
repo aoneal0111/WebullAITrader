@@ -363,21 +363,30 @@ def simulate_profit_policy(row: dict, *, target_percent: int = 5, partial_percen
         terminal = "INTRABAR_ORDER_UNKNOWN"
     target_return = float(target_percent) if target_r is None else None
     target_r_return = float(target_r) if target_r is not None else None
-    runner_return = None if terminal == "INTRABAR_ORDER_UNKNOWN" else (
-        float(runner_target_percent) if runner_target_percent is not None and runner_event.get("hit") else
-        float(outcomes.get("horizons", {}).get("3600", {}).get("mfe_percent")) if terminal == "SESSION_CLOSE" and outcomes.get("horizons", {}).get("3600", {}).get("mfe_percent") is not None else None)
-    resolved = terminal != "INTRABAR_ORDER_UNKNOWN" and (event.get("hit") or partial_percent == 0)
+    # A horizon's MFE is a future maximum, never a terminal fill or close.
+    runner_return = None
+    resolved = terminal != "INTRABAR_ORDER_UNKNOWN" and event.get("first_plan_event") == "TARGET_FIRST" and bool(event.get("hit"))
     realized = (partial_percent / 100) * target_return if resolved and target_return is not None else None
     realized_r = (partial_percent / 100) * target_r_return if resolved and target_r_return is not None else None
-    total = None if realized is None and runner_return is None else (realized or 0) + ((100 - partial_percent) / 100) * (runner_return or 0)
+    total = realized if partial_percent == 100 and resolved else None
+    total_r = realized_r if partial_percent == 100 and resolved else None
+    if not ambiguity and event.get("first_plan_event") == "STOP_FIRST":
+        entry, stop = _number(row.get("trigger_price")), _number(row.get("structural_stop"))
+        if entry is not None and stop is not None and entry > stop > 0:
+            total = (stop / entry - 1) * 100
+            total_r = -1.0
+            realized = realized_r = None
+            terminal = "STOP_FIRST"
+    policy_resolved = total is not None or total_r is not None
     return {"research_version": PROFIT_RESEARCH_VERSION, "simulation": "SIMULATED", "fill_status": "NOT_ACTUAL_FILL",
             "policy": {"partial_percent": partial_percent, "target_percent": target_percent,
                         "target_r": target_r, "runner_terminal": runner_terminal,
                         "runner_target_percent": runner_target_percent},
             "gross_return_percent": total, "realized_partial_return": realized,
-            "realized_partial_r": realized_r, "r_return": None if realized_r is None else realized_r + ((100 - partial_percent) / 100) * (runner_return or 0),
+            "realized_partial_r": realized_r, "r_return": total_r,
             "runner_return": runner_return, "total_simulated_return": total,
-            "resolvable": resolved, "ambiguity_state": terminal,
+            "resolvable": policy_resolved, "ambiguity_state": terminal,
+            "resolution_basis": "ORDERED_OUTCOME_LABELS" if policy_resolved else "UNAVAILABLE_RUNNER_EXIT_OR_EVENT_ORDER",
             "time_to_first_partial": event.get("elapsed_seconds") if resolved else None,
             "terminal_reason": terminal}
 
@@ -389,7 +398,8 @@ def runner_path_analysis(row: dict, target_percent: int) -> dict:
             "hit": bool(event.get("hit")), "post_target_MFE": post.get("mfe_after_target", post.get("maximum_giveback_after_8")),
             "post_target_MAE": post.get("mae_after_target"), "time_to_peak_after_target": post.get("time_to_peak_after_target"),
             "maximum_giveback_from_peak": post.get("maximum_giveback_after_8"),
-            "ending_return_at_session_close": row.get("outcomes", {}).get("horizons", {}).get("3600", {}).get("mfe_percent"),
+            "ending_return_at_session_close": None,
+            "horizon_3600_mfe_percent": row.get("outcomes", {}).get("horizons", {}).get("3600", {}).get("mfe_percent"),
             "ambiguity_state": event.get("first_plan_event") if event.get("first_plan_event") == "INTRABAR_ORDER_UNKNOWN" else None}
 
 
@@ -811,25 +821,32 @@ def _sql_policy_metrics(connection, where: str, params: tuple, *, kind: str, tar
 
 def _sql_policy_value_metrics(connection, where: str, params: tuple, *, kind: str, target,
                               partial_percent: int) -> dict:
-    hit, _stop, _elapsed, ambiguity = _policy_columns(kind, target)
+    hit, stop, _elapsed, ambiguity = _policy_columns(kind, target)
     target_return = float(target) if kind == "percent" else None
     target_expr = str(target_return) if target_return is not None else str(float(target))
     ambiguous = ambiguity if kind == "percent" else "0"
-    resolved = f"({ambiguous} = 0 AND ({hit} = 1 OR {partial_percent} = 0))"
-    runner = "horizon_mfe"
-    realized = f"CASE WHEN {resolved} THEN {partial_percent / 100:g} * {target_expr} END"
+    geometry = "trigger_price > structural_stop AND structural_stop > 0"
+    stop_return = "(structural_stop / trigger_price - 1) * 100" if kind == "percent" else "-1.0"
+    # Partial runners cannot be priced from aggregate future maxima. Only a
+    # stop-first close or full target exit can be resolved from these labels.
     total = (f"CASE WHEN {ambiguous} = 1 THEN NULL "
-             f"WHEN {realized} IS NULL AND {runner} IS NULL THEN NULL "
-             f"ELSE COALESCE({realized}, 0) + {(100 - partial_percent) / 100:g} * COALESCE({runner}, 0) END")
+             f"WHEN {stop} = 1 AND {geometry} THEN {stop_return} "
+             f"WHEN {stop} = 0 AND {hit} = 1 AND {partial_percent} = 100 THEN {target_expr} "
+             "ELSE NULL END")
     count = connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where}", params).fetchone()[0]
     usable = f"{total} IS NOT NULL"
     median_return = _sql_median(connection, total, f"{where} AND {usable}", params)
     mean_return, positive_rate, tail = connection.execute(
-        f"SELECT AVG({total}), AVG(CASE WHEN {total} > 0 THEN 1.0 ELSE 0.0 END), "
+        f"SELECT AVG({total}), AVG(CASE WHEN {total} IS NULL THEN NULL WHEN {total} > 0 THEN 1.0 ELSE 0.0 END), "
         f"MAX({total}) FROM observations WHERE {where}", params
     ).fetchone() if count else (None, None, None)
-    return {"sample_count": count, "gross_return_percent_mean": mean_return,
-            "median_return_percent": median_return, "positive_return_rate": positive_rate,
+    resolved_count = connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where} AND {usable}", params).fetchone()[0]
+    complete = resolved_count == count
+    return {"sample_count": count, "gross_return_percent_mean": mean_return if complete else None,
+            "resolved_sample_count": resolved_count,
+            "resolved_subset_return_percent_mean": mean_return,
+            "resolution_basis": "ORDERED_STOP_OR_FULL_TARGET_ONLY_RUNNER_UNAVAILABLE",
+            "median_return_percent": median_return if complete else None, "positive_return_rate": positive_rate if complete else None,
             "tail_contribution_max_percent": tail, "partial_percent": partial_percent,
             "target": target, "target_kind": kind, "simulation": "SIMULATED",
             "fill_status": "NO_SLIPPAGE_CLAIM_NO_REAL_FILL_CLAIM",
@@ -1755,17 +1772,20 @@ def full_research_report_streaming(row_factory, *, total: int | None = None,
         for strategy in ACTIVE_STRATEGIES:
             where, params = "strategy = ? AND a8 = 0", (strategy,)
             runner[strategy] = {"sample_count": connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where} AND horizon_mfe IS NOT NULL", params).fetchone()[0],
-                                "median_return_percent": _sql_median(connection, "horizon_mfe", where, params),
-                                "positive_return_rate": connection.execute(f"SELECT AVG(CASE WHEN horizon_mfe > 0 THEN 1.0 ELSE 0.0 END) FROM observations WHERE {where} AND horizon_mfe IS NOT NULL", params).fetchone()[0],
+                                "median_return_percent": None,
+                                "positive_return_rate": None,
+                                "median_horizon_mfe_percent": _sql_median(connection, "horizon_mfe", where, params),
+                                "resolution_basis": "FAVORABLE_MOVEMENT_ONLY_NO_RUNNER_EXIT",
                                 "post_8_mfe_median": _sql_median(connection, "post8_mfe", where, params),
                                 "giveback_median": _sql_median(connection, "post8_giveback", where, params),
-                                "terminal_reason_frequencies": {"SESSION_CLOSE": connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where}", params).fetchone()[0]}}
+                                "terminal_reason_frequencies": {"UNAVAILABLE_RUNNER_EXIT": connection.execute(f"SELECT COUNT(*) FROM observations WHERE {where}", params).fetchone()[0]}}
         if progress: progress.advance(); progress.complete_phase(); progress.begin_phase("EXECUTION_RESEARCH")
         execution = _execution_report(connection)
         if progress: progress.advance(); progress.complete_phase(); progress.begin_phase("FINALIZE"); progress.complete_phase(); progress.begin_phase("COMPLETE"); progress.complete_phase()
         return {
             "preset": "FULL_RESEARCH", "metadata": {"phase": 4, "research_only": True, "records_ingested": len(dates) and connection.execute("SELECT COUNT(DISTINCT episode_id) FROM observations").fetchone()[0] or 0,
                 "temporal_method": "strict trading-date chronology", "no_random_split": True,
+                "profit_return_semantics": "ORDERED_STOP_OR_FULL_TARGET_ONLY_RUNNER_UNAVAILABLE_V2",
                 "context_derivation_version": PIT_CONTEXT_VERSION, "generic_pullback_version": GENERIC_PULLBACK_VERSION,
                 "execution_research_version": EXECUTION_RESEARCH_VERSION,
                 "context_timestamp_semantics": "bars and fields effective at or before episode decision timestamp"},

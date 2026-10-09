@@ -162,10 +162,38 @@ def test_profit_policy_is_simulated_and_supports_partial_runner():
     result = simulate_profit_policy(source, target_percent=5, partial_percent=50, runner_terminal="SESSION_CLOSE")
     assert result["simulation"] == "SIMULATED"
     assert result["fill_status"] == "NOT_ACTUAL_FILL"
-    assert result["total_simulated_return"] == 2.5
+    assert result["realized_partial_return"] == 2.5
+    assert result["total_simulated_return"] is None
+    assert not result["resolvable"]
     assert runner_path_analysis(source, 5)["hit"] is True
     source["outcomes"]["percent_targets"]["5"]["first_plan_event"] = "INTRABAR_ORDER_UNKNOWN"
     assert simulate_profit_policy(source, target_percent=5, partial_percent=50)["ambiguity_state"] == "INTRABAR_ORDER_UNKNOWN"
+
+
+def test_future_peak_is_never_a_runner_close_or_realized_return():
+    source = row(date(2026, 8, 7))
+    source["outcomes"]["horizons"] = {"3600": {"mfe_percent": "1000"}}
+    result = simulate_profit_policy(source, target_percent=5, partial_percent=50)
+    assert result["runner_return"] is None
+    assert result["total_simulated_return"] is None
+    assert runner_path_analysis(source, 5)["ending_return_at_session_close"] is None
+    report = full_research_report_streaming(lambda: iter((source,)))
+    policy = report["partial_exit_research"]["FIRST_PULLBACK"]["5"]["50"]
+    assert policy["resolved_sample_count"] == 0
+    assert policy["gross_return_percent_mean"] is None
+
+
+def test_stop_before_eventual_target_is_a_loss_not_target_profit():
+    source = row(date(2026, 8, 7))
+    source.update(trigger_price="10", structural_stop="9")
+    source["outcomes"]["percent_targets"]["5"].update(hit=True, first_plan_event="STOP_FIRST")
+    result = simulate_profit_policy(source, target_percent=5, partial_percent=100)
+    assert abs(result["total_simulated_return"] + 10) < 1e-10
+    assert result["terminal_reason"] == "STOP_FIRST"
+    report = full_research_report_streaming(lambda: iter((source,)))
+    policy = report["partial_exit_research"]["FIRST_PULLBACK"]["5"]["100"]
+    assert abs(policy["gross_return_percent_mean"] + 10) < 1e-10
+    assert policy["positive_return_rate"] == 0
 
 
 def test_capital_and_constant_risk_are_separate_research_scenarios():
