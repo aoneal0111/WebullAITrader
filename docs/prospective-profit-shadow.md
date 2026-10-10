@@ -36,7 +36,10 @@ synthesized missing quotes are added.
 
 This can capture previously discarded subsecond price changes. It cannot repair
 upstream feed gaps, clock skew, writer drops or recordings from earlier runs.
-Every unresolved interval still prevents a verified alternate-exit comparison.
+Captured shadow timing/quote coverage failures also invalidate still-open paths
+in the offline captured-exit comparison, including changed prices whose provider
+timestamp did not advance. Non-coverage shadow failures such as missing stop or
+entry mutations do not silently become quote-coverage failures.
 
 ## Windows checks
 
