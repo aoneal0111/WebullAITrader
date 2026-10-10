@@ -182,7 +182,7 @@ class PaperOrderGateway:
         return self._order_book
 
     @contextmanager
-    def controller_reconciliation(self, account_id: str):
+    def controller_reconciliation(self, account_id: str, *, campaign_id: str | None = None):
         """Hold the PAPER mutation lock while reconciling a durable account.
 
         Callers may update controller bookkeeping, never call the broker or
@@ -193,7 +193,13 @@ class PaperOrderGateway:
             self._require_durability()
             if self._durable_store is None or self._durable_store.account_id != account_id:
                 raise ValueError("Controller requires the matching durable PAPER account")
+            if campaign_id is not None and self._durable_store.active_campaign_id != campaign_id:
+                raise ValueError("Controller campaign changed; restart and reconcile required")
             yield self._order_book.history()
+
+    @property
+    def paper_campaign_id(self) -> str | None:
+        return None if self._durable_store is None else self._durable_store.active_campaign_id
 
     @property
     def execution_engine(self) -> PaperExecutionEngine:

@@ -1,5 +1,6 @@
 """Explicit, dedicated PAPER stock routing; not installed in desktop composition."""
 from collections import defaultdict
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
 from hashlib import sha256
@@ -8,6 +9,10 @@ from threading import RLock
 from app.asset_modules.admission_controller import Admission, EntryReservation
 from app.asset_modules.engine_catalog import EngineId
 from app.order_placement import OrderPlacementRequest, OrderRequestModel, OrderSide, OrderType, TimeInForce
+
+
+class ControllerEntryRefused(RuntimeError):
+    pass
 
 
 class PaperControllerRouter:
@@ -28,6 +33,7 @@ class PaperControllerRouter:
         self.authorize = authorize
         self.clock = clock or (lambda: datetime.now(UTC))
         self._lock = RLock()
+        self.campaign_id = gateway.paper_campaign_id
         with gateway.controller_reconciliation(account_id):
             pass
 
@@ -59,29 +65,35 @@ class PaperControllerRouter:
                 net[(order.symbol, lifecycle)] += order.filled_quantity * (1 if order.request.side.value == "BUY" else -1)
         return any(net.values())
 
-    def submit(self, request: EntryReservation):
+    def _claim(self, request):
         if (request.account_id != self.account_id or request.engine not in {EngineId.WARRIOR, EngineId.SCALPER}
                 or request.side != "BUY" or request.multiplier != 1 or request.quantity != request.quantity.to_integral_value()):
             raise ValueError("Router supports owned long whole-share equity entries only")
+        if self.authorize(request) is not True:
+            return Admission("REJECTED", "ENTRY_NOT_AUTHORIZED")
+        with self.gateway.controller_reconciliation(self.account_id, campaign_id=self.campaign_id) as orders:
+            if self._unmanaged_exposure(orders):
+                return Admission("REJECTED", "UNMANAGED_PAPER_EXPOSURE")
+            if any(o.request.strategy_lifecycle_id == request.lifecycle_id
+                   and o.request.client_order_id != self.client_id(request.command_id)
+                   and o.request.execution_reason in {"ENTRY", "ENTRY_REPLACEMENT"}
+                   and (not o.is_terminal or o.filled_quantity != 0) for o in orders):
+                return Admission("REJECTED", "LIFECYCLE_ALREADY_USED")
+        admission = self.controller.reserve(request, now=self.clock())
+        if admission.state != "RESERVED":
+            return admission
+        if self.authorize(request) is not True:
+            self.controller.abandon_unsubmitted(request.command_id, request.engine)
+            return Admission("ABANDONED", "ENTRY_NOT_AUTHORIZED")
+        if not self.controller.claim_dispatch(request.command_id, request.engine, now=self.clock()):
+            return Admission("NOT_DISPATCHED")
+        return Admission("SUBMITTING", "DISPATCH_CLAIMED")
+
+    def submit(self, request: EntryReservation):
         with self._lock:
-            if self.authorize(request) is not True:
-                return Admission("REJECTED", "ENTRY_NOT_AUTHORIZED")
-            with self.gateway.controller_reconciliation(self.account_id) as orders:
-                if self._unmanaged_exposure(orders):
-                    return Admission("REJECTED", "UNMANAGED_PAPER_EXPOSURE")
-                if any(o.request.strategy_lifecycle_id == request.lifecycle_id
-                       and o.request.client_order_id != self.client_id(request.command_id)
-                       and o.request.execution_reason == "ENTRY" for o in orders):
-                    return Admission("REJECTED", "LIFECYCLE_ALREADY_USED")
-            admission = self.controller.reserve(request, now=self.clock())
-            if admission.state != "RESERVED":
+            admission = self._claim(request)
+            if admission.reason != "DISPATCH_CLAIMED":
                 return admission
-            if self.authorize(request) is not True:
-                self.controller.abandon_unsubmitted(request.command_id, request.engine)
-                return Admission("ABANDONED", "ENTRY_NOT_AUTHORIZED")
-            if not self.controller.claim_dispatch(request.command_id, request.engine, now=self.clock()):
-                return Admission("NOT_DISPATCHED")
-            # No controller database transaction is held across broker calls.
             order = OrderRequestModel(
                 request_id=self.client_id(request.command_id), account_id=self.account_id,
                 symbol=request.instrument, side=OrderSide.BUY, order_type=OrderType.LIMIT,
@@ -96,12 +108,35 @@ class PaperControllerRouter:
             if ack.accepted:
                 self.controller.acknowledge(request.command_id, request.engine, ack.broker_order_id)
                 return Admission("ACKNOWLEDGED")
-            # Rejections without an authoritative stored order stay uncertain.
             return Admission("SUBMITTING", "BROKER_REJECTION_REQUIRES_RECONCILIATION")
+
+    def submit_placement(self, reservation, placement, submit):
+        """Preserve strategy metadata and use the existing TradingService gates."""
+        r = placement.order
+        if (placement.session_id != self.session_id or r.account_id != self.account_id
+                or r.symbol != reservation.instrument or r.side.value != "BUY"
+                or r.order_type.value != "LIMIT" or r.quantity != reservation.quantity
+                or r.limit_price != reservation.entry_limit or r.strategy_lifecycle_id != reservation.lifecycle_id
+                or Decimal(str(r.metadata.get("structural_stop"))) != reservation.structural_stop
+                or r.metadata.get("reason") not in {"ENTRY", "ENTRY_REPLACEMENT"}):
+            raise ValueError("Placement and reservation identity conflict")
+        with self._lock:
+            admission = self._claim(reservation)
+            if admission.reason != "DISPATCH_CLAIMED":
+                raise ControllerEntryRefused(admission.reason or admission.state)
+            routed = replace(placement, order=replace(r,
+                client_order_id=self.client_id(reservation.command_id),
+                metadata={**dict(r.metadata), "controller_command_id": reservation.command_id,
+                          "policy_version": reservation.policy_version,
+                          "chase_deadline": reservation.expires_at.isoformat()}))
+            result = submit(routed)
+            if result.success:
+                self.controller.acknowledge(reservation.command_id, reservation.engine, result.broker_order_id)
+            return result
 
     def reconcile(self):
         results = {}
-        with self._lock, self.gateway.controller_reconciliation(self.account_id) as orders:
+        with self._lock, self.gateway.controller_reconciliation(self.account_id, campaign_id=self.campaign_id) as orders:
             for row in self._commands():
                 request = row["request"]
                 command = request["command_id"]
@@ -120,7 +155,7 @@ class PaperControllerRouter:
                         or r.structural_stop_price != Decimal(request["structural_stop"])
                         or r.metadata.get("policy_version") != request["policy_version"]
                         or r.metadata.get("controller_command_id") != command
-                        or r.execution_reason != "ENTRY"
+                        or r.execution_reason not in {"ENTRY", "ENTRY_REPLACEMENT"}
                         or r.entry_valid_until != datetime.fromisoformat(request["expires_at"])
                         or (row["broker_order_id"] and row["broker_order_id"] != entry.order_id)):
                     results[command] = "IDENTITY_CONFLICT"

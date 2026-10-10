@@ -347,6 +347,7 @@ def composition_snapshot(composition: object) -> dict[str, object]:
             "cycles": _attr(runtime, "cycles_completed"),
         },
         "raw_ingress": raw_metrics,
+        "paper_controller": _sanitize(_call(getattr(composition, "paper_controller_service", None), "status")) or {"enabled": False},
         "market_data_consumer": _sanitize(consumer_metrics),
         "authoritative_lane": lane_metrics,
         "evaluation_mailbox": mailbox_metrics,

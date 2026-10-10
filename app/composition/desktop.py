@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -115,6 +115,7 @@ class DesktopComposition:
     chart_default_symbol: str | None = None
     warrior_forward_sidecar: WarriorDesktopSidecar | None = None
     autonomous_paper_bridge: AutonomousPaperExecutionBridge | None = None
+    paper_controller_service: object | None = None
     quick_scalper_runtime: QuickScalperPaperRuntimeAdapter | None = None
     paper_entry_intelligence: HistoricalPaperEntryTimingPolicy | None = None
     trade_intelligence_observer: TradeIntelligenceRuntimeObserver | None = None
@@ -305,6 +306,7 @@ def create_desktop_composition(
 
 
     autonomous_paper_bridge = None
+    paper_controller_service = None
     quick_scalper_runtime = None
     shared_strategy_ownership = SymbolOwnershipRegistry()
     paper_strategy_enabled = (
@@ -337,6 +339,18 @@ def create_desktop_composition(
         autonomous_paper_bridge.begin_reconciliation()
         autonomous_paper_bridge.reconcile()
         autonomous_paper_bridge.reconcile_protection()
+        if operational_configuration.paper_controller_enabled:
+            if not paper_environment or operational_configuration.live_trading_enabled:
+                raise ValueError("The entry controller is PAPER-only with live trading disabled")
+            from .paper_controller import attach_paper_controller
+            paper_controller_service = attach_paper_controller(
+                paper_trading_commands, autonomous_paper_bridge,
+                account_source=trading_state_sources.warrior_account_context,
+                quote_source=execution_quote_source,
+                risk_config=warrior_strategy_config.risk,
+                clock=paper_clock,
+            )
+            paper_trading_commands = replace(paper_trading_commands, trading_service=paper_controller_service)
         quick_scalper_runtime = QuickScalperPaperRuntimeAdapter(
             config=QuickScalperConfig(
                 enabled=operational_configuration.quick_scalper_enabled,
@@ -489,6 +503,8 @@ def create_desktop_composition(
         symbol_intelligence=symbol_intelligence,
         memory_observability=memory_observability,
     )
+    if paper_controller_service is not None:
+        trading_service = paper_controller_service
 
     result = DesktopComposition(
         bus=bus,
@@ -508,6 +524,7 @@ def create_desktop_composition(
         chart_default_symbol=chart_default_symbol,
         warrior_forward_sidecar=warrior_forward_sidecar,
         autonomous_paper_bridge=autonomous_paper_bridge,
+        paper_controller_service=paper_controller_service,
         quick_scalper_runtime=quick_scalper_runtime,
         paper_entry_intelligence=paper_entry_intelligence,
         trade_intelligence_observer=trade_intelligence_observer,

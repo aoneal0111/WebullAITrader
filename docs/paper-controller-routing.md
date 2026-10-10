@@ -1,8 +1,9 @@
 # Durable PAPER equity routing and recovery
 
 `PaperControllerRouter` connects the admission ledger to a real
-`PaperOrderGateway`. It is an explicit adapter, not installed in desktop
-composition. Existing Atlas entry and protection behavior remains active.
+`PaperOrderGateway`. Desktop composition can now connect it explicitly with
+`ATLAS_PAPER_CONTROLLER_ENABLED=true`; see `desktop-paper-controller.md`.
+The disabled mode preserves existing Atlas behavior.
 
 The adapter supports Warrior and Quick Scalper long, whole-share stock LIMIT
 entries only. Crypto, options, futures, short entries and contract multipliers
@@ -39,10 +40,10 @@ empty controller ledger cannot bypass it. Closing an unfilled expired or
 cancelled entry permits release, but its command identity remains terminal.
 Lifecycle identities must not be reused for new entries.
 
-This stage does not install automatic stops, replace existing exit management,
-route live Webull orders, launch workers or enable AI. Before desktop activation,
-wire the trusted authorization/protection path and verify complete campaign
-adoption. Protective exits continue through the existing independent gateway
+The adapter does not install automatic stops, replace existing exit management,
+route live Webull orders, launch workers or enable AI. The optional desktop
+connection uses the existing trusted authorization/protection path and waits
+for legacy exposure to be flat before admitting new entries. Protective exits continue through the existing independent gateway
 path and must never wait for AI or new-entry budget availability.
 
 Validation covers actual gateway placement, durable restart, lost acknowledgement,
