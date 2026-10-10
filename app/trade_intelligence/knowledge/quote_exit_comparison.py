@@ -82,9 +82,9 @@ def compare(rows, *, signal_at, stop, targets=(Decimal("0.05"), Decimal("0.10"))
                 status = "UNRESOLVED_QUOTE_AGE"
                 break
             elapsed = (quote.observed_at - entry.observed_at).total_seconds()
-            reason = ("STOP" if quote.bid <= stop else
-                      "TARGET" if quote.bid >= entry.ask + target else
-                      "MAX_HOLD" if elapsed >= hold_seconds else None)
+            reason = ("MAX_HOLD" if elapsed >= hold_seconds else
+                      "STOP" if quote.bid <= stop else
+                      "TARGET" if quote.bid >= entry.ask + target else None)
             if reason:
                 status, exit_quote = "CLOSED_QUOTE_PROXY", quote
                 break

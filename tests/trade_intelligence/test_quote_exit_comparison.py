@@ -58,3 +58,8 @@ def test_no_entry_and_zero_size():
 def test_empty_policies_do_not_claim_paired_closure():
     with pytest.raises(ValueError):
         run([], targets=())
+
+
+def test_target_after_hold_deadline_is_not_classified_as_target():
+    result = run([quote(1,"0.99","1"), quote(2,"1.2","1.3")], hold_seconds=1)
+    assert all(r["exit_reason"] == "MAX_HOLD" for r in result["results"])
