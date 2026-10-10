@@ -2,7 +2,7 @@
 import argparse
 from collections import Counter
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 import json
 from pathlib import Path
 
@@ -24,6 +24,12 @@ def summarize(data):
     Caller-supplied net PnL must already include its declared cost model. This
     validates identities and comparability, not source fills or profitability.
     """
+    with localcontext() as context:
+        context.prec = 50
+        return _summarize(data)
+
+
+def _summarize(data):
     if not isinstance(data, dict) or data.get("version") != "ENGINE_COMPARISON_V1":
         raise ValueError("Expected ENGINE_COMPARISON_V1 input")
     experiment = _label(data.get("experiment_id"), "experiment_id")

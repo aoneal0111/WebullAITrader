@@ -1,4 +1,5 @@
 from copy import deepcopy
+from decimal import localcontext
 import json
 import subprocess
 import sys
@@ -56,6 +57,16 @@ def test_counts_dependence_and_exact_cost_inclusive_amounts():
     assert p["paired_net_pnl"] == "0.05"
     assert p["paired_mean_net_pnl"] == "0.025"
     assert p["paired_profit_factor"] == "2"
+
+
+def test_summary_ignores_callers_decimal_precision():
+    data = fixture()
+    data["results"] = [row(policy=p, pnl="12345.678901")
+                       for p in ["champion-v1", "challenger-v1"]]
+    with localcontext() as context:
+        context.prec = 3
+        out = summarize(data)
+    assert out["engines"][0]["policies"][0]["paired_net_pnl"] == "12345.678901"
 
 
 @pytest.mark.parametrize("change", [
