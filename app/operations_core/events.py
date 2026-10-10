@@ -72,6 +72,7 @@ class OperationsOrder:
     lifecycle_id: str | None = None
     execution_reason: str | None = None
     execution_source: str | None = None
+    structural_stop_price: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -102,6 +103,7 @@ class OperationsOrder:
             "lifecycle_id",
             "execution_reason",
             "execution_source",
+            "structural_stop_price",
         ):
             value = getattr(self, field_name)
             if value is not None:

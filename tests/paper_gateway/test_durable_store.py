@@ -907,3 +907,26 @@ def test_committed_order_mutation_always_has_its_durable_event(tmp_path) -> None
         for event in durable_events
     )
     composition.close()
+
+
+def test_projected_entry_structural_stop_survives_durable_event_replay(tmp_path):
+    class StoppedSignal(Signal):
+        stop_price = Decimal("9.5")
+        structural_stop_price = Decimal("9.5")
+    path = tmp_path / "shadow-stop.sqlite3"
+    events = []
+    first = create_paper_trading_command_composition(persistence_path=str(path), event_sink=events.append)
+    try:
+        bridge = AutonomousPaperExecutionBridge(first.trading_service, first.order_command_factory, order_book=first.order_book)
+        assert bridge.submit_entry(StoppedSignal(), 10, Decimal("5"))
+        first.gateway.process_market_event(quote(1, "9.99", "10"))
+        fill_event = next(e for e in events if e.fill is not None)
+        assert fill_event.order.structural_stop_price == "9.5"
+    finally:
+        first.close()
+    replayed = []
+    second = create_paper_trading_command_composition(persistence_path=str(path), event_sink=replayed.append)
+    try:
+        assert next(e for e in replayed if e.fill is not None).order.structural_stop_price == "9.5"
+    finally:
+        second.close()

@@ -1292,6 +1292,7 @@ class PaperOrderGateway:
                     else order.request.execution_reason
                 ),
                 execution_source=self._source,
+                structural_stop_price=_decimal_text(order.request.structural_stop_price),
             ),
             fill=fill,
             mark_price=mark_price,
