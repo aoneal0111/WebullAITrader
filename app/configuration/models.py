@@ -343,3 +343,4 @@ class OperationalConfiguration:
     # PAPER-only experimental strategy. Composition remains inert unless the
     # operator opts in explicitly.
     quick_scalper_enabled: bool = False
+    paper_controller_enabled: bool = False

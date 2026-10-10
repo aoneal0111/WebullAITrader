@@ -84,6 +84,6 @@ claims, duplicate identity, quote age/expiry, lifecycle ownership, allocation
 limits, partial exposure preventing release and recovery after uncertain
 submission. These are coordination tests, not trading-performance tests.
 
-Next integrate the reconciler and broker adapter in PAPER, then migrate engine
-workers behind this protocol. AI can propose strategy actions and policy versions;
+The reconciler and PAPER adapter now have an opt-in desktop connection; see
+`desktop-paper-controller.md`. Next migrate engine workers behind this protocol. AI can propose strategy actions and policy versions;
 the trusted deterministic path owns admission, submission and protection.

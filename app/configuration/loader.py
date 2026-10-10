@@ -481,6 +481,7 @@ def load_configuration(env=None):
             e.get("NASDAQ_TRADE_HALTS_ENABLED", "false")
         ),
         quick_scalper_enabled=_bool(e.get("QUICK_SCALPER_ENABLED", "false")),
+        paper_controller_enabled=_bool(e.get("ATLAS_PAPER_CONTROLLER_ENABLED", "false")),
     )
 
 
