@@ -91,3 +91,14 @@ def test_runtime_keeps_subsecond_changed_sides_and_shadow_signals(tmp_path):
         assert service._paper == {}
     finally:
         writer.close()
+
+
+def test_quotes_during_partial_entry_preserve_coverage_without_arming():
+    s = shadow(False)
+    assert quote(s, 1, "11") is None
+    s.fill(identity="2", side="BUY", quantity=D(5), price=D(10), at=T0 + timedelta(seconds=2), stop=D(9), complete=False)
+    for second in range(3, 12):
+        assert quote(s, second, "11") is None
+    assert not s.armed and s.problem is None
+    s.entry_complete = True
+    assert quote(s, 12, "10.5")["action"] == "PROFIT_SHADOW_ARMED"

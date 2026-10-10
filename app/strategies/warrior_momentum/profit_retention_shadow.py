@@ -28,8 +28,10 @@ class ProfitRetentionShadow:
             return
         self.fill_ids.add(identity)
         if side == "BUY":
-            if self.last_at is not None:
+            if self.last_at is not None and self.entry_complete:
                 self.problem = "ENTRY_CHANGED_AFTER_OBSERVATION"
+            if not self.entry_complete:
+                self.last_at = None
             self.bought += quantity
             self.remaining += quantity
             self.cost += quantity * price
@@ -50,7 +52,7 @@ class ProfitRetentionShadow:
 
     def observe(self, *, at, source_at, bid, ask, max_age, max_gap):
         """Emit each transition once; never bridge an invalid observation interval."""
-        if self.problem is None and self.entry_complete and self.remaining > 0:
+        if self.problem is None and self.remaining > 0:
             previous = self.last_at or self.entry_at
             age = D(str((at - source_at).total_seconds()))
             if at <= previous:
@@ -68,6 +70,8 @@ class ProfitRetentionShadow:
                 self.problem = "INVALID_RISK"
             else:
                 self.last_at = at
+                if not self.entry_complete:
+                    return None
                 mark = self.cash + self.remaining * bid
                 self.peak = mark if self.peak is None else max(self.peak, mark)
                 risk = self.cost - self.bought * self.stop
