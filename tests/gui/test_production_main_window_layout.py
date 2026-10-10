@@ -69,7 +69,9 @@ def test_production_main_window_keeps_trade_intelligence_in_middle_row(
         assert workspace.trade_intelligence.isVisible()
         assert workspace.opportunities_section.isVisible()
         assert not workspace.crypto_scanner_section.isVisible()
-        assert window.asset_navigation.tabs.count() == 4
+        assert window.asset_navigation.tabs.count() == 6
+        assert window.asset_navigation.tabs.tabText(4) == "Warrior"
+        assert window.asset_navigation.tabs.tabText(5) == "Scalper"
         assert workspace.lower_splitter.count() == 2
         assert workspace.lower_splitter.orientation() == Qt.Orientation.Horizontal
         assert workspace.opportunities_section.width() > 500

@@ -65,6 +65,17 @@ def test_real_crypto_pages_do_not_show_equity_rows(monkeypatch, tmp_path):
         app.processEvents()
         assert window.asset_surface.currentWidget() is window.pages
         assert window.global_status.isVisible()
+        from app.asset_modules.engine_catalog import EngineId
+        window.asset_navigation.tabs.setCurrentIndex(5)
+        app.processEvents()
+        scalper = window.asset_surface.currentWidget()
+        assert scalper.engine is EngineId.SCALPER
+        window.pages.setCurrentIndex(1)
+        app.processEvents()
+        assert window.asset_surface.currentWidget() is scalper
+        window.asset_navigation.tabs.setCurrentIndex(4)
+        app.processEvents()
+        assert window.asset_surface.currentWidget().engine is EngineId.WARRIOR
     finally:
         window.close()
         modules.crypto_supervisor.paper.close()

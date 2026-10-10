@@ -2,6 +2,7 @@
 from PySide6.QtCore import QThread, Signal, QTimer, Qt
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QTabBar, QPushButton, QLabel, QComboBox
 from app.assets import AssetType
+from app.asset_modules.engine_catalog import EngineId
 
 
 class _LifecycleTask(QThread):
@@ -28,7 +29,7 @@ class AssetNavigation(QWidget):
         self.setObjectName("assetNavigation")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.modules = modules
-        self.assets = tuple(AssetType)
+        self.assets = (*tuple(AssetType), EngineId.WARRIOR, EngineId.SCALPER)
         self.task = None
         self.last_error = ""
         row = QHBoxLayout(self)
@@ -36,7 +37,7 @@ class AssetNavigation(QWidget):
         self.tabs.setObjectName("assetMarketTabs")
         self.tabs.setDrawBase(False)
         for asset in self.assets:
-            self.tabs.addTab(asset.value.title())
+            self.tabs.addTab({EngineId.WARRIOR: "Warrior", EngineId.SCALPER: "Scalper"}.get(asset, asset.value.title()))
         row.addWidget(self.tabs)
         self.status = QLabel()
         row.addWidget(self.status, 1)
@@ -64,7 +65,8 @@ class AssetNavigation(QWidget):
 
     def refresh(self):
         asset = self.assets[self.tabs.currentIndex()]
-        state = "NOT AVAILABLE" if self.modules is None else self.modules.status(asset)
+        state = ("EQUITY STRATEGY VIEW" if isinstance(asset, EngineId) else
+                 "NOT AVAILABLE" if self.modules is None else self.modules.status(asset))
         self.status.setText(self.last_error or f"{asset.value.title()}: {state}")
         self.toggle.setVisible(asset is AssetType.CRYPTO)
         self.toggle.setText("Stop market" if state == "ACTIVE" else "Start market")
