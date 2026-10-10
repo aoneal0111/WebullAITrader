@@ -13,6 +13,8 @@ from app.trade_intelligence.knowledge.capture_profit_audit import audit_capture,
 D = Decimal
 VERSION = "CAPTURE_FULL_SIZE_EXITS_V1"
 POLICIES = [VERSION + "|STRUCTURAL_STOP_AND_TIME", VERSION + "|PEAK_RETENTION_AND_TIME"]
+COVERAGE_FAILURES = {"NONINCREASING_PROVIDER_TIMESTAMP", "NONINCREASING_OBSERVATION",
+                     "QUOTE_GAP", "FUTURE_QUOTE", "STALE_QUOTE", "INVALID_QUOTE"}
 
 
 def digest(value):
@@ -64,13 +66,21 @@ def _compare(captures, **settings):
             quantity, entry, stop = life["bought"], life["average_entry"], life["structural_stop"]
             buy_fees = sum((number(f.get("commission", 0)) for f in buys), D(0))
             cost = buy_fees + quantity * (settings["exit_fee_per_share"] + 2 * settings["extra_cost_per_side"])
-            quotes = [r for r in paths[key] if r["payload"].get("action") == "QUOTE"
+            quotes = [r for r in paths[key]
+                      if (r["payload"].get("action") == "QUOTE"
+                          or (r["payload"].get("action") == "PROFIT_SHADOW_UNAVAILABLE"
+                              and r["payload"].get("reason") in COVERAGE_FAILURES))
                       and start <= instant(r["timestamp"]) <= end]
             states = [{"policy": p, "status": "UNRESOLVED", "reason": "CAPTURE_ENDED", "net_pnl": None}
                       for p in POLICIES]
             previous, peak, armed = start, None, False
             for r in quotes:
                 at, p = instant(r["timestamp"]), r["payload"]
+                if p.get("action") == "PROFIT_SHADOW_UNAVAILABLE":
+                    for state in states:
+                        if state["reason"] == "CAPTURE_ENDED":
+                            state["reason"] = p["reason"]
+                    break
                 source = instant(p["quote_timestamp"])
                 age = D(str((at - source).total_seconds()))
                 reason = None

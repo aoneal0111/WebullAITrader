@@ -124,3 +124,16 @@ def test_actual_exit_price_does_not_enter_proxy_state():
     report = compare_captures([data])
     assert report["lifecycles"][0]["actual_closed_pnl"] == "20"
     assert report["lifecycles"][0]["results"][0]["net_pnl"] == "-10"
+
+
+def test_prospective_coverage_failure_invalidates_only_still_open_proxies():
+    data = sample()
+    record = deepcopy(data["capture_records"][3])
+    record["timestamp"] = "2026-10-09T15:00:02.5+00:00"
+    record["payload"] = dict(action="PROFIT_SHADOW_UNAVAILABLE", paper_campaign_id="c",
+        lifecycle_id="WARRIOR_MOMENTUM_V1|TEST|episode", reason="NONINCREASING_PROVIDER_TIMESTAMP")
+    data["capture_records"].insert(4, record)
+    base, peak = results(data)
+    assert base["status"] == "UNRESOLVED"
+    assert base["reason"] == "NONINCREASING_PROVIDER_TIMESTAMP"
+    assert peak["status"] == "CLOSED" and peak["net_pnl"] == "2.0"

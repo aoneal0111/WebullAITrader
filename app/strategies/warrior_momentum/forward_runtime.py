@@ -70,6 +70,7 @@ from .session_risk import (
     overnight_session_follows,
 )
 from .runtime import WarriorMomentumRuntime, entry_rejections, execution_liquidity_ok
+from .profit_retention_shadow import ProfitRetentionShadow
 from .shadow_analysis import ShadowOpportunityAnalyzer
 from .shadow_latched import (
     ShadowLatchedPlanResearch,
@@ -2027,7 +2028,14 @@ class WarriorForwardCaptureService:
         order = getattr(event, "order", None)
         lifecycle = str(getattr(order, "lifecycle_id", None) or "").strip()
         campaign = str(self.paper_campaign_id or "").strip()
-        if fill is None or not lifecycle or not campaign:
+        if not lifecycle or not campaign:
+            return
+        shadow_path = self._execution_paths.get((campaign, lifecycle))
+        if fill is None:
+            shadow = None if shadow_path is None else shadow_path.get("profit_shadow")
+            if shadow is not None and str(getattr(order, "side", "")).upper() == "BUY":
+                if str(getattr(order, "status", "")).upper() in {"FILLED", "CANCELLED", "EXPIRED"}:
+                    shadow.entry_complete = True
             return
 
         symbol = str(getattr(fill, "symbol", "")).strip().upper()
@@ -2056,6 +2064,8 @@ class WarriorForwardCaptureService:
                 "missing_intervals": 0, "stale_quotes": 0,
                 "sample_limit_recorded": False,
             }
+            if lifecycle.startswith("WARRIOR_MOMENTUM_V1|"):
+                state["profit_shadow"] = ProfitRetentionShadow()
             self._execution_paths[key] = state
         if state is None:
             # A sell without a locally observed/recovered entry remains
@@ -2068,6 +2078,16 @@ class WarriorForwardCaptureService:
                 identity_parts=(campaign, lifecycle, str(getattr(event, "sequence", ""))),
             ),))
             return
+        shadow = state.get("profit_shadow")
+        if shadow is not None:
+            try:
+                raw_stop = getattr(order, "structural_stop_price", None)
+                shadow.fill(identity=f"{getattr(event, 'source', '')}:{getattr(event, 'sequence', '')}",
+                    side=side, quantity=quantity, price=price, at=timestamp,
+                    stop=None if raw_stop is None else Decimal(str(raw_stop)),
+                    complete=str(getattr(order, "status", "")).upper() == "FILLED")
+            except Exception:
+                shadow.problem = "FILL_OBSERVATION_FAILED"
         state["quantity"] = Decimal(str(state["quantity"])) + (
             quantity if side == "BUY" else -quantity
         )
@@ -2298,8 +2318,22 @@ class WarriorForwardCaptureService:
             if state["symbol"] != symbol:
                 continue
             previous_sample = state["last_sample_at"]
-            if previous_sample is not None and (timestamp - previous_sample).total_seconds() < self._execution_path_min_interval_seconds:
-                continue
+            # Retain changed sides inside the heartbeat interval, but suppress
+            # exact repeats and nonincreasing provider timestamps.
+            sides = (bid, ask)
+            if previous_sample is not None:
+                elapsed = (timestamp - previous_sample).total_seconds()
+                age = (now - timestamp).total_seconds()
+                invalid_age = age < 0 or age > float(self.capture_config.quote_stale_after_seconds)
+                if elapsed <= 0:
+                    shadow = state.get("profit_shadow")
+                    if shadow is not None and (sides != state.get("last_sides") or invalid_age):
+                        shadow.problem = "NONINCREASING_PROVIDER_TIMESTAMP"
+                        self._capture_profit_shadow(campaign, lifecycle, state, now, timestamp, bid, ask)
+                    continue
+                if (elapsed < self._execution_path_min_interval_seconds
+                        and sides == state.get("last_sides") and not invalid_age):
+                    continue
             samples = int(state["samples"])
             if samples >= self._execution_path_max_samples:
                 if not bool(state["sample_limit_recorded"]):
@@ -2320,8 +2354,13 @@ class WarriorForwardCaptureService:
             stale = stale_seconds > float(self.capture_config.quote_stale_after_seconds)
             state["samples"] = samples + 1
             state["last_sample_at"] = timestamp
+            state["last_sides"] = sides
             state["missing_intervals"] = int(state["missing_intervals"]) + int(missing)
             state["stale_quotes"] = int(state["stale_quotes"]) + int(stale)
+            shadow = state.get("profit_shadow")
+            if shadow is not None and missing:
+                shadow.problem = "QUOTE_GAP"
+            self._capture_profit_shadow(campaign, lifecycle, state, now, timestamp, bid, ask)
             midpoint = None
             if bid is not None and ask is not None:
                 midpoint = (bid + ask) / Decimal("2")
@@ -2337,6 +2376,24 @@ class WarriorForwardCaptureService:
                  "missing_interval": missing, "sample_number": samples + 1},
                 identity_parts=(campaign, lifecycle, timestamp.isoformat()),
             ),))
+
+    def _capture_profit_shadow(self, campaign, lifecycle, state, now, timestamp, bid, ask):
+        """Research failures never change authoritative position management."""
+        shadow = state.get("profit_shadow")
+        if shadow is None:
+            return
+        try:
+            payload = shadow.observe(at=now, source_at=timestamp, bid=bid, ask=ask,
+                max_age=Decimal(str(self.capture_config.quote_stale_after_seconds)),
+                max_gap=Decimal(str(self._execution_path_gap_seconds)))
+            if payload is not None:
+                self._submit_records((CaptureRecord.create(
+                    CaptureRecordType.EXECUTION_PRICE_PATH, str(state["symbol"]), now,
+                    {**payload, "paper_campaign_id": campaign, "lifecycle_id": lifecycle},
+                    identity_parts=(campaign, lifecycle, payload["action"]),
+                ),))
+        except Exception:
+            shadow.problem = "QUOTE_OBSERVATION_FAILED"
 
     def _remember_memory_identity(self, symbol: str, opportunity_id: str) -> None:
         """Retain one latest identity per symbol with deterministic eviction."""
