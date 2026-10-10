@@ -98,7 +98,7 @@ def test_shell_retains_existing_pages_and_command_boundaries(window) -> None:
 def test_asset_navigation_separates_scanners_without_starting_runtime(window):
     from app.assets import AssetType
     assert window.scanner_research_tabs.count() == 1
-    assert window.asset_navigation.tabs.count() == 4
+    assert window.asset_navigation.tabs.count() == 6
     window.pages.setCurrentIndex(7)
     window.asset_navigation.tabs.setCurrentIndex(1)
     assert window._selected_asset is AssetType.CRYPTO
