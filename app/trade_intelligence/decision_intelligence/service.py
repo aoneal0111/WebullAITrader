@@ -563,18 +563,18 @@ class HistoricalDecisionIntelligence:
             return cached
         row = self._connection.execute(
             "SELECT strategy, whole_sample_count, train_sample_count, validation_sample_count, "
-            "test_sample_count, median_mfe, median_mae, median_max_r, target_5_rate, "
-            "target_8_rate, test_target_5_rate, test_target_8_rate, stop_first_rate, "
-            "test_stop_first_rate, confidence_state, walk_forward_state, descriptive_tier "
+            "test_sample_count, median_mfe, median_mae, median_max_r, target_2_rate, target_5_rate, "
+            "target_8_rate, test_target_2_rate, test_target_5_rate, test_target_8_rate, stop_first_rate, "
+            "test_stop_first_rate, confidence_state, walk_forward_state, policy_stability, descriptive_tier "
             "FROM strategy_evidence WHERE strategy=?", (strategy,)).fetchone()
         if row is None:
             result = {"strategy": strategy, "state": "MISSING_CONTEXT"}
             self._strategy_cache.put(strategy, result)
             return result
         names = ("strategy", "whole_sample_count", "train_sample_count", "validation_sample_count",
-                 "test_sample_count", "median_mfe", "median_mae", "median_max_r", "target_5_rate",
-                 "target_8_rate", "test_target_5_rate", "test_target_8_rate", "stop_first_rate",
-                 "test_stop_first_rate", "confidence_state", "walk_forward_state", "descriptive_tier")
+                 "test_sample_count", "median_mfe", "median_mae", "median_max_r", "target_2_rate", "target_5_rate",
+                 "target_8_rate", "test_target_2_rate", "test_target_5_rate", "test_target_8_rate", "stop_first_rate",
+                 "test_stop_first_rate", "confidence_state", "walk_forward_state", "policy_stability", "descriptive_tier")
         result = dict(zip(names, row))
         self._strategy_cache.put(strategy, result)
         return result
@@ -787,6 +787,11 @@ def _location(trigger: Decimal | None, price: Decimal | None, stop: Decimal | No
 def _confidence(rows: tuple[dict[str, object], ...]) -> str:
     values = {row.get("confidence_state") for row in rows}
     for candidate in ("STRONG_EVIDENCE", "MODERATE_EVIDENCE", "WEAK_EVIDENCE"):
+        if candidate in values:
+            return candidate
+    # Preserve descriptive sample labels; never upgrade them to validated
+    # execution confidence. Entry treatment has a separate eligibility check.
+    for candidate in ("LARGE_SAMPLE", "MODERATE", "SMALL_SAMPLE", "LOW_SAMPLE", "INSUFFICIENT_SAMPLE"):
         if candidate in values:
             return candidate
     return "MISSING_CONTEXT" if not rows else "INSUFFICIENT_SAMPLE"

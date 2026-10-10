@@ -57,6 +57,36 @@ def test_disabled_policy_is_observation_only_and_does_not_create_signal(tmp_path
     journal.close()
 
 
+def test_descriptive_coverage_is_recognized_without_authorizing_treatment(tmp_path):
+    result = replace(_result(), setup_evidence=({
+        "confidence_state": "LARGE_SAMPLE", "train_sample_count": 100,
+        "validation_sample_count": 40, "test_sample_count": 30,
+        "policy_stability": "STABLE", "test_target_2_rate": 0.9,
+    },))
+    journal = PaperExperimentJournal(tmp_path / "descriptive.sqlite3")
+    policy = HistoricalPaperEntryTimingPolicy(
+        config=EntryIntelligenceConfig(enabled=True, mode=PAPER_TREATMENT, allocation_percent=0),
+        journal=journal,
+    )
+    try:
+        called = []
+        decision, signal = policy.assess(
+            result, _candidate(), environment="PAPER",
+            signal_factory=lambda candidate: called.append(candidate) or object(),
+        )
+        assert decision.setup_quality.state == "RESEARCH_SUPPORTED"
+        assert "RESEARCH_ONLY_NOT_EXECUTION_VALIDATED" in decision.blocking_reasons
+        assert signal is None
+        assert called == []
+        for missing in ("train_sample_count", "validation_sample_count", "test_sample_count", "policy_stability"):
+            row = dict(result.setup_evidence[0])
+            row[missing] = None
+            quality = policy._setup_quality(replace(result, setup_evidence=(row,)))
+            assert quality.state != "RESEARCH_SUPPORTED"
+    finally:
+        journal.close()
+
+
 def test_armed_result_without_candidate_setup_still_persists_assignment(tmp_path: Path):
     journal = PaperExperimentJournal(tmp_path / "experiment.sqlite3")
     policy = HistoricalPaperEntryTimingPolicy(

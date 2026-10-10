@@ -103,6 +103,27 @@ def test_live_never_opens_historical_artifact(tmp_path: Path):
     assert service._connection is None
 
 
+def test_repaired_research_metrics_survive_runtime_lookup(historical_intelligence_artifact, tmp_path):
+    with sqlite3.connect(historical_intelligence_artifact) as db:
+        db.execute("""UPDATE strategy_evidence SET confidence_state='LARGE_SAMPLE',
+            train_sample_count=100, validation_sample_count=50, test_sample_count=40,
+            target_2_rate=0.6, test_target_2_rate=0.55, policy_stability='STABLE',
+            walk_forward_state=NULL""")
+    service = HistoricalDecisionIntelligence(journal_path=tmp_path / "metrics.sqlite3")
+    service.start("PAPER")
+    try:
+        result = service.evaluate(value=_value(), candidate=_candidate(SetupState.FORMING))
+        assert result.confidence == "LARGE_SAMPLE"
+        for row in result.setup_evidence:
+            assert row["test_target_2_rate"] == 0.55
+            assert row["target_2_rate"] == 0.6
+            assert row["policy_stability"] == "STABLE"
+            assert row["walk_forward_state"] is None
+            assert row["test_sample_count"] == 40
+    finally:
+        service.close()
+
+
 def test_meaningful_stage_changes_are_journaled_but_duplicate_ticks_are_deduped(tmp_path: Path):
     service = HistoricalDecisionIntelligence(journal_path=tmp_path / "journal.sqlite3")
     service.start("PAPER")
