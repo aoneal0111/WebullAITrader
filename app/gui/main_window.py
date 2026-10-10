@@ -62,6 +62,8 @@ from app.gui.formatters.warrior_paper import format_warrior_paper
 from app.assets import AssetType
 from app.gui.widgets.asset_navigation import AssetNavigation
 from app.gui.pages.crypto_paper import CryptoPaperPage
+from app.asset_modules.engine_catalog import EngineId
+from app.gui.pages.strategy_orders import StrategyOrdersPage
 
 
 class MainWindow(QMainWindow):
@@ -619,6 +621,8 @@ class MainWindow(QMainWindow):
                 else active_route
             ),
         )
+        if isinstance(self._selected_asset, EngineId):
+            self.asset_surface.currentWidget().render_state(state)
 
     def _on_page_changed(self, index: int) -> None:
         self._select_asset(self._selected_asset)
@@ -637,9 +641,11 @@ class MainWindow(QMainWindow):
             self.asset_surface.setCurrentWidget(self.pages)
             return
         route = self.pages.currentIndex()
-        key = (asset, route)
+        key = (asset, -1 if isinstance(asset, EngineId) else route)
         if key not in self._asset_pages:
-            if asset is AssetType.CRYPTO and route == 7:
+            if isinstance(asset, EngineId):
+                page = StrategyOrdersPage(asset)
+            elif asset is AssetType.CRYPTO and route == 7:
                 page = self.crypto_research
             elif asset is AssetType.CRYPTO and getattr(self._asset_modules, 'crypto_supervisor', None):
                 names = ('Mission Control','Positions','Orders','Strategies','Settings',
@@ -661,6 +667,8 @@ class MainWindow(QMainWindow):
             self._asset_pages[key] = page
             self.asset_surface.addWidget(page)
         self.asset_surface.setCurrentWidget(self._asset_pages[key])
+        if isinstance(asset, EngineId):
+            self._asset_pages[key].render_state(self._state_store.snapshot())
 
     def _render_replay_state(self, state: ApplicationState) -> None:
         self._replay_presenter.render(state)
