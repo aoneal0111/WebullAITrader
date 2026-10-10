@@ -219,23 +219,38 @@ def test_risk_is_rechecked_after_reservation_before_broker_call(setup):
 
 
 def test_inactive_desktop_composition_wires_both_engines_and_operator_boundary(monkeypatch, tmp_path):
-    from app.composition.desktop import create_desktop_composition
-    from app.diagnostics.paper_validation_capture import composition_snapshot
+    import subprocess
+    import sys
+    # Desktop composition owns Qt objects. Keep their lifetime isolated from
+    # later threaded tests, whose garbage collection can run off the Qt thread.
     monkeypatch.setenv("WEBULL_TRADING_ENVIRONMENT", "PAPER")
     monkeypatch.setenv("LIVE_TRADING_ENABLED", "false")
     monkeypatch.setenv("ATLAS_PAPER_CONTROLLER_ENABLED", "true")
     monkeypatch.setenv("QUICK_SCALPER_ENABLED", "true")
-    composition = create_desktop_composition(paper_persistence_path=tmp_path / "desktop.db", paper_clock=lambda: NOW)
-    try:
-        service = composition.paper_controller_service
-        assert service is not None
-        assert composition.trading_service is service
-        assert composition.autonomous_paper_bridge.trading_service is service
-        assert composition.paper_trading_commands.trading_service is service
-        assert composition.quick_scalper_runtime.bridge is composition.autonomous_paper_bridge
-        assert not composition.runtime_service.is_active
-        status = composition_snapshot(composition)["paper_controller"]
-        assert status["enabled"] is True
-        assert status["active_commands"] == 0
-    finally:
-        composition.close()
+    script = '''
+import sys
+from pathlib import Path
+from app.composition.desktop import create_desktop_composition
+from app.diagnostics.paper_validation_capture import composition_snapshot
+from tests.test_support.session_clock import REGULAR_SESSION_UTC as NOW
+composition = create_desktop_composition(paper_persistence_path=Path(sys.argv[1]), paper_clock=lambda: NOW)
+try:
+    service = composition.paper_controller_service
+    assert service is not None
+    assert composition.trading_service is service
+    assert composition.autonomous_paper_bridge.trading_service is service
+    assert composition.paper_trading_commands.trading_service is service
+    assert composition.quick_scalper_runtime.bridge is composition.autonomous_paper_bridge
+    assert not composition.runtime_service.is_active
+    status = composition_snapshot(composition)["paper_controller"]
+    assert status["enabled"] is True
+    assert status["active_commands"] == 0
+finally:
+    composition.close()
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", "import sys; sys.path = " + repr(sys.path) + "\n" + script,
+         str(tmp_path / "desktop.db")],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
