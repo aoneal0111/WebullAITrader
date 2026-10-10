@@ -47,6 +47,10 @@ class DurablePaperExecutionStore:
     shutdown.  No SQLite connection crosses a thread boundary.
     """
 
+    @property
+    def account_id(self) -> str:
+        return self._account_id
+
     def __init__(
         self,
         path: str | Path,
