@@ -395,6 +395,25 @@ class HistoricalPaperEntryTimingPolicy:
         factors: list[str] = []
         blocking: list[str] = []
         confidence = {str(row.get("confidence_state")) for row in result.setup_evidence}
+        if not confidence & {"STRONG_EVIDENCE", "MODERATE_EVIDENCE", "WEAK_EVIDENCE"}:
+            # Historical target touches and sample size do not establish
+            # executable expectancy. Describe repaired coverage without
+            # silently enabling the PAPER entry treatment.
+            supported = any(
+                row.get("confidence_state") in {"LARGE_SAMPLE", "MODERATE"}
+                and all(isinstance(row.get(key), int)
+                        and not isinstance(row.get(key), bool)
+                        and row[key] >= 30
+                        for key in ("train_sample_count", "validation_sample_count", "test_sample_count"))
+                and row.get("policy_stability") == "STABLE"
+                for row in result.setup_evidence
+            )
+            if supported:
+                return SetupQualityAssessment(
+                    "RESEARCH_SUPPORTED",
+                    ("CHRONOLOGICAL_SPLIT_SUPPORT", "DESCRIPTIVE_POLICY_STABILITY"),
+                    ("RESEARCH_ONLY_NOT_EXECUTION_VALIDATED",),
+                )
         if confidence & {"STRONG_EVIDENCE", "MODERATE_EVIDENCE"}:
             factors.append("CONFIDENCE")
         else:

@@ -65,6 +65,9 @@ def test_every_active_strategy_can_pass_the_normalized_contract():
         result = MultiStrategyExecutionAdapter().adapt(adapted, **_kwargs(adapted))
         assert result.candidate is not None, strategy
         assert result.candidate.selected_execution_strategy == strategy
+        projected = result.candidate.as_warrior_setup()
+        assert projected.taxonomy_strategy_id == strategy
+        assert projected.trigger > projected.stop_price
 
 
 def test_each_family_detector_has_trigger_stop_and_positive_risk():
