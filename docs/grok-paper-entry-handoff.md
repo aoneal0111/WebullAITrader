@@ -7,6 +7,11 @@ owning lifecycle, account, session and deadline. This stage supports original
 whole-share equity entries only. It rejects replacements, cancellations, sells,
 Crypto, Options and Futures.
 
+Prepared entries require original owner, stop, risk and opportunity metadata.
+The native placement factory and acknowledgement-to-bridge callback are described
+in [Grok entry ownership](grok-entry-ownership.md). A successful acknowledgement
+with an incomplete management handoff remains an accepted order, not a retry.
+
 The caller supplies a current deterministic strategy authorization callback.
 That callback must recheck setup confirmation, session, halt/tradability and
 upstream strategy permission. It must return exactly `True`. Authorization runs
