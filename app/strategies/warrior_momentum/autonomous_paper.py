@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_FLOOR
 from hashlib import sha256
+import json
 from threading import RLock
 from typing import Callable
 from enum import StrEnum
@@ -14,7 +15,7 @@ from enum import StrEnum
 from app.paper_trading.order_book import PaperOrderBook
 from app.paper_gateway.durable_store import DurablePaperExecutionStore
 from app.paper_trading.order_models import OrderSide, OrderType
-from app.order_placement import OrderPlacementDecision
+from app.order_placement import OrderPlacementDecision, OrderPlacementRequest, OrderPlacementResult
 from app.services.order_command_factory import OrderCommandFactory, OrderEntryCommand
 from app.services.trading_service import TradingService
 from app.strategies.warrior_momentum.features import BAR_INTERVAL
@@ -1208,6 +1209,73 @@ class AutonomousPaperExecutionBridge:
                 PaperEntryAuthorizationReason.AUTHORIZED, symbol, identity,
                 tuple(gates), True, True, result.decision.value,
             )
+
+    def adopt_entry_acknowledgement(self, placement: OrderPlacementRequest,
+                                   result: OrderPlacementResult) -> bool:
+        """Register an externally reviewed entry only from the canonical book.
+
+        This does not authorize or resubmit an order. Adoption survives entry
+        disablement/deadline expiry: an acknowledged position still needs its
+        owner. The owning runtime must install management state and reconcile
+        subsequent fills before any autonomous integration is activated.
+        """
+        if (self.mode.strip().upper() != "PAPER" or self.order_book is None
+                or not isinstance(placement, OrderPlacementRequest)
+                or not isinstance(result, OrderPlacementResult) or not result.success):
+            return False
+        r = placement.order
+        router = getattr(self.trading_service, "router", None)
+        if (router is None or r.account_id != router.account_id
+                or placement.session_id != router.session_id):
+            return False
+        identity = r.strategy_lifecycle_id
+        owner = r.metadata.get("strategy_owner")
+        if (not identity or r.side.value != "BUY" or r.order_type.value != "LIMIT"
+                or r.metadata.get("source") != "autonomous-paper"
+                or r.metadata.get("reason") != "ENTRY"
+                or owner not in {"WARRIOR_MOMENTUM", "QUICK_SCALPER"}
+                or not identity.startswith(("WARRIOR_MOMENTUM_V1|" if owner == "WARRIOR_MOMENTUM"
+                                            else "QUICK_SCALPER|"))
+                or result.request_id != r.request_id):
+            return False
+        command = sha256((identity + "|" + str(r.metadata.get("replacement_sequence", "0"))).encode()).hexdigest()
+        signature = sha256(json.dumps(dict(r.metadata), sort_keys=True, default=str).encode()).hexdigest()
+        if result.client_order_id != router.client_id(command):
+            return False
+        with self._lock:
+            try:
+                order = self.order_book.get(result.broker_order_id)
+                native = order.request
+                fields = ("symbol", "quantity", "limit_price", "stop_price",
+                          "strategy_lifecycle_id")
+                if (any(getattr(native, name) != getattr(r, name) for name in fields)
+                        or native.client_order_id != result.client_order_id
+                        or native.metadata.get("controller_command_id") != command
+                        or native.metadata.get("policy_version") != "DESKTOP_PAPER_ENTRY_V1:" + signature
+                        or native.side.value != r.side.value
+                        or native.order_type.value != r.order_type.value
+                        or native.time_in_force.value != r.time_in_force.value
+                        or any(native.metadata.get(k) != r.metadata.get(k) for k in
+                               ("source", "reason", "strategy_owner", "opportunity_id",
+                                "structural_stop", "risk_dollars", "chase_deadline"))
+                        or native.structural_stop_price is None
+                        or not 0 < native.structural_stop_price < r.limit_price):
+                    return False
+                current = self._active_by_symbol.get(r.symbol)
+                if current is not None and current != identity:
+                    return False
+                quantity = sum((item.filled_quantity * (1 if item.request.side is OrderSide.BUY else -1)
+                    for item in self.order_book.history()
+                    if item.symbol == r.symbol and item.request.strategy_lifecycle_id == identity), Decimal("0"))
+                if quantity < 0:
+                    return False
+            except Exception:
+                return False
+            self._remember(self._seen_entries, identity)
+            self._entry_orders[identity] = order.order_id
+            if not order.is_terminal or quantity > 0:
+                self._active_by_symbol[r.symbol] = identity
+            return True
 
     def submit_entry(self, signal: object, shares: int, risk_dollars: Decimal) -> bool:
         """Compatibility boundary retaining the historical boolean contract."""
