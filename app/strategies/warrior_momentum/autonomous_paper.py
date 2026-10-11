@@ -43,10 +43,12 @@ class PaperEntryAuthorizationResult(StrEnum):
     AUTHORIZED = "AUTHORIZED"
     REFUSED = "REFUSED"
     DEFERRED = "DEFERRED"
+    PREPARED = "PREPARED"
 
 
 class PaperEntryAuthorizationReason(StrEnum):
     AUTHORIZED = "AUTHORIZED"
+    ENTRY_PREPARED = "ENTRY_PREPARED"
     PAPER_DISABLED = "PAPER_DISABLED"
     ENVIRONMENT_MISMATCH = "ENVIRONMENT_MISMATCH"
     INVALID_SYMBOL = "INVALID_SYMBOL"
@@ -186,6 +188,14 @@ class PaperEntryAuthorizationDecision:
     @property
     def authorized(self) -> bool:
         return self.result is PaperEntryAuthorizationResult.AUTHORIZED
+
+
+@dataclass(frozen=True, slots=True)
+class PaperEntryPreparation:
+    """Native command preparation; neither authorization nor submission."""
+
+    decision: PaperEntryAuthorizationDecision
+    placement: OrderPlacementRequest | None
 
 
 def lifecycle_identity(signal: object) -> str:
@@ -955,7 +965,58 @@ class AutonomousPaperExecutionBridge:
         provenance: str = "AUTONOMOUS_ORIGINAL_ENTRY",
     ) -> PaperEntryAuthorizationDecision:
         """Run the unchanged PAPER entry path and expose its terminal gate."""
+        result = self._entry_decision(
+            signal, shares, risk_dollars,
+            opportunity_id=opportunity_id, opportunity_anchor=opportunity_anchor,
+            opportunity_deadline=opportunity_deadline, lifecycle_number=lifecycle_number,
+            max_lifecycles_per_opportunity=max_lifecycles_per_opportunity,
+            max_displacement_percent=max_displacement_percent,
+            max_displacement_absolute=max_displacement_absolute, provenance=provenance,
+        )
+        assert isinstance(result, PaperEntryAuthorizationDecision)
+        return result
 
+    def prepare_entry_decision(
+        self, signal: object, shares: int, risk_dollars: Decimal,
+        *, opportunity_id: str | None = None,
+        opportunity_anchor: Decimal | None = None,
+        opportunity_deadline: datetime | None = None,
+        lifecycle_number: int = 1,
+        max_lifecycles_per_opportunity: int = 3,
+        max_displacement_percent: Decimal = Decimal("1.5"),
+        max_displacement_absolute: Decimal = Decimal("0.05"),
+        provenance: str = "AUTONOMOUS_ORIGINAL_ENTRY",
+    ) -> PaperEntryPreparation:
+        """Build the native placement without placing or claiming its lifecycle.
+
+        The caller must retain this exact placement and independently revalidate
+        current strategy authorization and controller gates before dispatch.
+        Preparation does not reserve capital, queue review, or authorize a buy.
+        """
+        result = self._entry_decision(
+            signal, shares, risk_dollars,
+            opportunity_id=opportunity_id, opportunity_anchor=opportunity_anchor,
+            opportunity_deadline=opportunity_deadline, lifecycle_number=lifecycle_number,
+            max_lifecycles_per_opportunity=max_lifecycles_per_opportunity,
+            max_displacement_percent=max_displacement_percent,
+            max_displacement_absolute=max_displacement_absolute, provenance=provenance,
+            prepare_only=True,
+        )
+        assert isinstance(result, PaperEntryPreparation)
+        return result
+
+    def _entry_decision(
+        self, signal: object, shares: int, risk_dollars: Decimal,
+        *, opportunity_id: str | None = None,
+        opportunity_anchor: Decimal | None = None,
+        opportunity_deadline: datetime | None = None,
+        lifecycle_number: int = 1,
+        max_lifecycles_per_opportunity: int = 3,
+        max_displacement_percent: Decimal = Decimal("1.5"),
+        max_displacement_absolute: Decimal = Decimal("0.05"),
+        provenance: str = "AUTONOMOUS_ORIGINAL_ENTRY",
+        prepare_only: bool = False,
+    ) -> PaperEntryAuthorizationDecision | PaperEntryPreparation:
         symbol = str(getattr(signal, "symbol", "")).strip().upper()
         strategy_owner = str(
             getattr(signal, "strategy_owner", None)
@@ -974,7 +1035,9 @@ class AutonomousPaperExecutionBridge:
             identity = f"{identity}|ATTEMPT|{lifecycle_number}"
         opportunity = opportunity_id or opportunity_identity(signal)
         gates: list[PaperEntryGateDecision] = []
-        performance_diagnostics.record_entry_counter("entry_authorizations")
+        performance_diagnostics.record_entry_counter(
+            "entry_preparations" if prepare_only else "entry_authorizations"
+        )
         performance_diagnostics.record_entry_lifecycle(
             identity,
             symbol=symbol,
@@ -1004,9 +1067,9 @@ class AutonomousPaperExecutionBridge:
         def refused(
             reason: PaperEntryAuthorizationReason, *, constructed: bool = False,
             attempted: bool = False, placement: str | None = None,
-        ) -> PaperEntryAuthorizationDecision:
+        ) -> PaperEntryAuthorizationDecision | PaperEntryPreparation:
             performance_diagnostics.record_entry_funnel(
-                symbol=symbol, stage="PAPER_AUTHORIZATION", outcome="REJECTED",
+                symbol=symbol, stage="ENTRY_PREPARATION" if prepare_only else "PAPER_AUTHORIZATION", outcome="REJECTED",
                 reason=reason.value, timestamp=datetime.now(UTC),
             )
             if reason is PaperEntryAuthorizationReason.DUPLICATE_LIFECYCLE:
@@ -1016,13 +1079,14 @@ class AutonomousPaperExecutionBridge:
             performance_diagnostics.record_entry_lifecycle(
                 identity,
                 risk_approved=False,
-                terminal_state="AUTHORIZATION_REFUSED",
+                terminal_state="PREPARATION_REFUSED" if prepare_only else "AUTHORIZATION_REFUSED",
                 expiry_reason=reason.value,
             )
-            return PaperEntryAuthorizationDecision(
+            decision = PaperEntryAuthorizationDecision(
                 PaperEntryAuthorizationResult.REFUSED, reason, symbol, identity,
                 tuple(gates), constructed, attempted, placement,
             )
+            return PaperEntryPreparation(decision, None) if prepare_only else decision
 
         if not gate("environment", self.mode.strip().upper() == "PAPER", self.mode, "PAPER"):
             return refused(PaperEntryAuthorizationReason.ENVIRONMENT_MISMATCH)
@@ -1153,6 +1217,19 @@ class AutonomousPaperExecutionBridge:
                 gate("order_constructible", False, False, True)
                 return refused(PaperEntryAuthorizationReason.ORDER_CONSTRUCTION_FAILED)
             gate("order_constructible", True, True, True)
+            if prepare_only:
+                performance_diagnostics.record_entry_funnel(
+                    symbol=symbol, stage="ENTRY_PREPARATION", outcome="PREPARED",
+                    timestamp=datetime.now(UTC),
+                )
+                return PaperEntryPreparation(
+                    PaperEntryAuthorizationDecision(
+                        PaperEntryAuthorizationResult.PREPARED,
+                        PaperEntryAuthorizationReason.ENTRY_PREPARED, symbol, identity,
+                        tuple(gates), True, False, None,
+                    ),
+                    request,
+                )
             try:
                 result = self.trading_service.place_order(request)
             except Exception:
@@ -1257,7 +1334,9 @@ class AutonomousPaperExecutionBridge:
                         or native.time_in_force.value != r.time_in_force.value
                         or any(native.metadata.get(k) != r.metadata.get(k) for k in
                                ("source", "reason", "strategy_owner", "opportunity_id",
-                                "structural_stop", "risk_dollars", "chase_deadline"))
+                                "structural_stop", "risk_dollars", "opportunity_deadline"))
+                        or native.metadata.get("chase_deadline") != (
+                            r.metadata.get("chase_deadline") or r.metadata.get("opportunity_deadline"))
                         or native.structural_stop_price is None
                         or not 0 < native.structural_stop_price < r.limit_price):
                     return False
@@ -2902,7 +2981,7 @@ __all__ = [
     "AutonomousPaperExecutionBridge", "AutonomousManagementReadiness",
     "AutonomousPaperReadiness", "PaperEntryAuthorizationDecision",
     "PaperEntryAuthorizationReason", "PaperEntryAuthorizationResult",
-    "PaperEntryGateDecision", "lifecycle_identity", "opportunity_identity",
+    "PaperEntryPreparation", "PaperEntryGateDecision", "lifecycle_identity", "opportunity_identity",
     "PaperEntryReplacementDecision", "PaperEntryReplacementState",
     "PaperExitSubmissionDecision", "PaperExitSubmissionFailureReason",
     "PaperExitSubmissionState",
