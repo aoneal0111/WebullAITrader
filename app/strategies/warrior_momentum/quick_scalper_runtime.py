@@ -138,8 +138,11 @@ class QuickScalperPaperRuntimeAdapter:
         ownership: SymbolOwnershipRegistry | None = None,
         event_sink: Callable[[str, dict[str, object]], None] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        paper_entry_reviewer: Callable[..., object] | None = None,
+        paper_entry_review_refresher: Callable[..., object] | None = None,
     ) -> None:
         self.config = config
+        self._paper_entry_reviewer = paper_entry_reviewer
         self.bridge = bridge
         self.order_book = order_book
         self.account_context_source = account_context_source
@@ -167,6 +170,7 @@ class QuickScalperPaperRuntimeAdapter:
         self.scalper = QuickScalper(
             engine=self.engine, ownership=self.ownership, config=config,
             authorize_and_submit=self._authorize_and_submit,
+            review_refresher=paper_entry_review_refresher,
         )
         self.reconcile()
 
@@ -305,6 +309,57 @@ class QuickScalperPaperRuntimeAdapter:
     def current_opportunity(self, symbol: str):
         """Return the immutable generation-bound projection for GUI use."""
         return self.engine.get(symbol)
+
+    def resolve_native_review(self, resolution, *, at):
+        """Resolve receipts under native serialization, with canonical checks."""
+        from app.asset_modules.grok_runtime_handoff import ReviewResolution
+        from app.asset_modules.engine_catalog import EngineId
+        if not isinstance(resolution, ReviewResolution) or resolution.entry.prepared.candidate.engine is not EngineId.SCALPER:
+            return False
+        with self._lock:
+            key = resolution.entry.prepared.candidate.candidate_id
+            pending = self.scalper._pending_reviews.get(key)
+            if pending is None and resolution.state in {"ACKNOWLEDGED", "POSITION_CLOSED"}:
+                pending = self.scalper._pending_reviews.get("UNCERTAIN|" + resolution.entry.prepared.candidate.lifecycle_id)
+            order_request = resolution.entry.prepared.placement.order
+            if pending is None or (order_request.symbol, order_request.strategy_lifecycle_id) != (pending[0], pending[2]):
+                return False
+            if resolution.state == "ACKNOWLEDGED":
+                if self.adopt_acknowledged_entry(resolution.entry.prepared.placement, resolution.result) is not True:
+                    return False
+                done = self.scalper._resolve_review(resolution, at=at, adopted=True)
+            elif resolution.state == "POSITION_CLOSED":
+                try:
+                    if self.bridge.adopt_entry_acknowledgement(resolution.entry.prepared.placement, resolution.result) is not True:
+                        return False
+                    order = self.order_book.get(resolution.result.broker_order_id)
+                    lifecycle = resolution.entry.prepared.candidate.lifecycle_id
+                    orders = [o for o in self.order_book.history() if o.request.strategy_lifecycle_id == lifecycle]
+                    net = sum((o.filled_quantity * (1 if o.request.side.value == "BUY" else -1) for o in orders), Decimal(0))
+                    if not order.is_terminal or net != 0:
+                        return False
+                    if any(o.filled_quantity and o.average_fill_price is None for o in orders):
+                        return False
+                    pnl = sum((o.filled_quantity * o.average_fill_price * (1 if o.request.side.value == "SELL" else -1)
+                        for o in orders if o.filled_quantity), Decimal(0))
+                    filled = any(o.filled_quantity for o in orders if o.request.side.value == "BUY")
+                    done = self.scalper._resolve_review(resolution, at=at, closed_pnl=pnl,
+                        record_close=filled and lifecycle not in self._closed_lifecycles)
+                    if done and filled:
+                        self._closed_lifecycles.add(lifecycle)
+                except Exception:
+                    return False
+            elif resolution.state == "NO_ORDER":
+                if resolution.result is not None and (resolution.result.success
+                        or resolution.result.metadata.get("controller_reason") == "CONTROLLER_UNAVAILABLE"):
+                    return False
+                done = self.scalper._resolve_review(resolution, at=at)
+            else:
+                return False
+            if done:
+                self._emit("SCALP_REVIEW_RESOLVED", resolution.entry.prepared.placement.order.symbol,
+                    lifecycle=resolution.entry.prepared.candidate.lifecycle_id, state=resolution.state)
+            return done
 
     def adopt_acknowledged_entry(self, placement, result) -> bool:
         """Rebuild management from an acknowledged owned entry; never buy again."""
@@ -671,6 +726,31 @@ class QuickScalperPaperRuntimeAdapter:
             stream_price_change_updates=refreshed.stream_price_change_updates,
             observed_ask_advance=refreshed.observed_ask_advance,
         )
+        if self._paper_entry_reviewer is not None:
+            from app.asset_modules.grok_native_review import NativeReviewReceipt
+            try:
+                receipt = self._paper_entry_reviewer(intent, shares, risk * shares)
+                if isinstance(receipt, NativeReviewReceipt) and receipt.pending and len(receipt.candidate_ids) == 1:
+                    self._emit("SCALP_REVIEW_PENDING", refreshed.symbol, generation=refreshed.generation_id)
+                    performance_diagnostics.record_entry_funnel(refreshed.symbol,
+                        stage="ENTRY_REVIEW_PENDING", outcome="PENDING_REVIEW", timestamp=evaluated_at,
+                        lifecycle_id=lifecycle)
+                    return CanonicalScalpSubmission(False, True, False, False,
+                        "AI_REVIEW_PENDING", lifecycle, review_pending=True,
+                        review_candidate_id=receipt.candidate_ids[0])
+                if isinstance(receipt, NativeReviewReceipt) and receipt.state == "NOT_SENT" and receipt.reason == "BUSY":
+                    return CanonicalScalpSubmission(False, False, False, False,
+                        "AI_REVIEW_BUSY", lifecycle, recoverable=True)
+                if not isinstance(receipt, NativeReviewReceipt) or receipt.pending:
+                    raise ValueError("Unbound review outcome")
+            except Exception:
+                # An explicit reviewer may have entered dispatch before failing.
+                # Preserve the claim; never fall back to another buy.
+                return CanonicalScalpSubmission(False, True, False, False,
+                    "AI_REVIEW_RECONCILIATION_REQUIRED", lifecycle, review_pending=True,
+                    review_candidate_id="UNCERTAIN|" + lifecycle)
+            return CanonicalScalpSubmission(False, False, False, False,
+                "AI_REVIEW_NOT_SENT", lifecycle)
         self._emit(
             "SCALP_ORDER_INTENT", refreshed.symbol,
             generation=refreshed.generation_id, qty=shares,

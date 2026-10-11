@@ -394,6 +394,8 @@ class CanonicalScalpSubmission:
     lifecycle_id: str | None = None
     order_id: str | None = None
     recoverable: bool = False
+    review_pending: bool = False
+    review_candidate_id: str | None = None
 
 
 class QuickScalper:
@@ -405,6 +407,7 @@ class QuickScalper:
         authorize_and_submit: Callable[
             [QuickScalpAssessment], CanonicalScalpSubmission
         ],
+        review_refresher: Callable[..., object] | None = None,
     ) -> None:
         self.engine = engine
         self.ownership = ownership
@@ -412,11 +415,21 @@ class QuickScalper:
         self.policy = QuickScalperPolicy(config)
         self.guard = QuickScalperGuard(config)
         self._submit = authorize_and_submit
+        self._review_refresher = review_refresher
+        self._pending_reviews = {}
 
     def observe(self, snapshot: QuickScalpSnapshot) -> QuickScalpAssessment:
         assessed = self.policy.assess(snapshot)
         self.engine.arm(assessed.opportunity)
         item = self.engine.apply_assessment(assessed.opportunity)
+        if item.state is WarriorOpportunityState.REVIEW_PENDING or any(
+                pending[0] == snapshot.symbol for pending in self._pending_reviews.values()):
+            if self._review_refresher is not None:
+                try:
+                    self._review_refresher(snapshot, assessed)
+                except Exception:
+                    pass  # Failed refresh cannot extend the authorization lease.
+            return assessed
         if item.state in {
             WarriorOpportunityState.AUTHORIZATION_EVALUATED,
             WarriorOpportunityState.AUTHORIZED,
@@ -424,7 +437,7 @@ class QuickScalper:
             WarriorOpportunityState.ENTERED,
         }:
             return assessed
-        if not self.config.enabled:
+        if not self.config.enabled or len(self._pending_reviews) >= 32:
             return assessed
         stale_preview_refresh = (
             assessed.decision is ScalpDecision.REJECTED_HARD_SAFETY
@@ -468,6 +481,13 @@ class QuickScalper:
             result = CanonicalScalpSubmission(
                 False, False, False, False, "CANONICAL_SUBMISSION_FAILURE"
             )
+        if result.review_pending:
+            if not result.review_candidate_id:
+                raise ValueError("Pending review must retain a bound candidate identity")
+            self._pending_reviews[result.review_candidate_id] = (
+                snapshot.symbol, snapshot.generation_id, item.assessment.lifecycle_id)
+            self.engine.mark_review_pending(snapshot.symbol, snapshot.generation_id, at=snapshot.decision_at)
+            return assessed
         recoverable_confirmation = result.reason in {
             'EXECUTION_QUOTE_UNAVAILABLE',
             'INSUFFICIENT_NET_EXECUTABLE_EDGE',
@@ -516,6 +536,39 @@ class QuickScalper:
                 item.assessment.lifecycle_id,
             )
         return assessed
+
+
+    def _resolve_review(self, resolution, *, at, adopted=False, closed_pnl=None, record_close=True):
+        key = resolution.entry.prepared.candidate.candidate_id
+        pending_key = key
+        pending = self._pending_reviews.get(key)
+        if pending is None and resolution.state in {"ACKNOWLEDGED", "POSITION_CLOSED"}:
+            pending_key = "UNCERTAIN|" + resolution.entry.prepared.candidate.lifecycle_id
+            pending = self._pending_reviews.get(pending_key)
+        if pending is None:
+            return False
+        symbol, generation, lifecycle = pending
+        order = resolution.entry.prepared.placement.order
+        if order.symbol != symbol or order.strategy_lifecycle_id != lifecycle:
+            return False
+        if resolution.state == "ACKNOWLEDGED" and adopted is True:
+            self.engine.mark_review_acknowledged(symbol, generation, at=at)
+            self.guard.record_attempt(symbol, generation, at)
+        elif resolution.state == "POSITION_CLOSED" and closed_pnl is not None:
+            self.guard.record_attempt(symbol, generation, at)
+            if record_close:
+                self.guard.record_close(symbol, at, closed_pnl)
+            else:
+                self.guard._open.discard(symbol)
+            self.engine.complete(symbol, generation, at=at)
+            self.ownership.release(symbol, StrategyOwner.QUICK_SCALPER, lifecycle)
+        elif resolution.state == "NO_ORDER":
+            self.engine.release_review(symbol, generation, at=at)
+            self.ownership.release(symbol, StrategyOwner.QUICK_SCALPER, lifecycle)
+        else:
+            return False
+        self._pending_reviews.pop(pending_key)
+        return True
 
 
 __all__ = [
