@@ -39,7 +39,7 @@ class PreparedEntry:
         context["placement"] = {"symbol": r.symbol, "quantity": str(r.quantity),
             "limit_price": str(r.limit_price), "structural_stop": str(stop),
             "risk_dollars": str(risk), "opportunity_id": r.metadata["opportunity_id"]}
-        deadline = datetime.fromisoformat(str(r.metadata.get("chase_deadline")))
+        deadline = datetime.fromisoformat(str(r.metadata.get("chase_deadline") or r.metadata.get("opportunity_deadline")))
         key = sha256((placement.session_id + "|" + r.account_id + "|"
                       + r.strategy_lifecycle_id + "|" + r.client_order_id).encode()).hexdigest()
         c = Candidate(engine, engine.value + "|" + key, deadline,
@@ -76,7 +76,7 @@ class PreparedEntry:
             valid = False
         if not valid:
             raise ValueError("Owned entry economics required")
-        deadline = datetime.fromisoformat(str(r.metadata.get("chase_deadline")))
+        deadline = datetime.fromisoformat(str(r.metadata.get("chase_deadline") or r.metadata.get("opportunity_deadline")))
         if deadline != c.valid_until:
             raise ValueError("Candidate and placement deadline conflict")
 

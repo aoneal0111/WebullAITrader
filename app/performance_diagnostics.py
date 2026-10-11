@@ -51,7 +51,7 @@ _ENTRY_FUNNEL_STAGES = (
     "EXECUTION_QUOTE_ACCEPTED", "EXECUTION_PERMISSION",
     "HALT_SESSION_GATE", "ACCOUNT_GATE", "EXECUTION_QUALITY",
     "ADAPTIVE_PRICE_GATE", "RETAINED_SOURCE_AGE",
-    "RISK_AUTHORIZATION", "REWARD_GATE", "PAPER_AUTHORIZATION",
+    "RISK_AUTHORIZATION", "REWARD_GATE", "PAPER_AUTHORIZATION", "ENTRY_PREPARATION",
     "ORDER_INTENT", "ORDER_SUBMITTED", "ORDER_ACKNOWLEDGED",
     "ORDER_REJECTED", "FILL", "PARTIAL_FILL",
     "OPPORTUNITY_ARMED", "OPPORTUNITY_WAITING_EXECUTION",
@@ -60,7 +60,7 @@ _ENTRY_FUNNEL_STAGES = (
     "OPPORTUNITY_REJECTED_HARD_SAFETY",
 )
 _ENTRY_COUNTERS = (
-    "entry_authorizations", "entry_orders_submitted", "pursuit_evaluations",
+    "entry_authorizations", "entry_preparations", "entry_orders_submitted", "pursuit_evaluations",
     "pursuit_not_invoked_due_to_state", "replacement_candidates",
     "replacements_approved", "replacements_submitted", "replacements_succeeded",
     "replacements_failed", "entry_expirations", "partial_fill_events",
