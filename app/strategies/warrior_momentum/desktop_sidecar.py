@@ -323,6 +323,7 @@ class WarriorDesktopSidecar:
         self._paper_entry_submitter = paper_entry_submitter
         self._paper_order_source = paper_order_source
         self._paper_acknowledgement_adopter = paper_acknowledgement_adopter
+        self._grok_runtime_handoff = None
         self._paper_exit_submitter = paper_exit_submitter
         self._paper_entry_canceller = paper_entry_canceller
         self._paper_entry_replacer = paper_entry_replacer
@@ -430,8 +431,53 @@ class WarriorDesktopSidecar:
                     self._execution_recovery_orders
                 )
 
+    def bind_grok_runtime_handoff(self, handoff) -> None:
+        """Explicit binding only; does not construct signals or activate AI."""
+        from app.asset_modules.grok_runtime_handoff import GrokRuntimeHandoff
+        if not isinstance(handoff, GrokRuntimeHandoff):
+            raise TypeError("Controlled Grok runtime handoff required")
+        with self._processing_lock:
+            if self._grok_runtime_handoff is not None and self._grok_runtime_handoff is not handoff:
+                old = self._grok_runtime_handoff
+                state = old.snapshot()
+                if (not state["closed"] or state["pending_entries"]
+                        or state["reconciliation_required"] or not old.request_stop()):
+                    raise ValueError("Existing Grok runtime handoff still requires reconciliation")
+            self._grok_runtime_handoff = handoff
+
+    def grok_entry_status(self):
+        handoff = self._grok_runtime_handoff
+        return None if handoff is None else handoff.snapshot()
+
+    def submit_grok_entries(self, entries, *, engine_evidence, account_evidence):
+        """Trusted adapters offer already prepared native signals, without AI waits."""
+        with self._lock:
+            handoff = self._grok_runtime_handoff
+            permitted = self.enabled and self._accept_execution and self._service is not None
+        if handoff is None or not permitted:
+            return "NOT_READY"
+        return handoff.submit(entries, engine_evidence=engine_evidence, account_evidence=account_evidence)
+
+    def poll_grok_completions(self):
+        """Explicit owner-lane pump when no market event is arriving."""
+        with self._processing_lock:
+            return self._drain_grok_completions()
+
+    def _drain_grok_completions(self):
+        handoff = self._grok_runtime_handoff
+        if handoff is None:
+            return ()
+        return handoff.drain(self._service, self._quick_scalper_observer)
+
     def observe_paper_event(self, event: object) -> None:
         """Forward authoritative PAPER fills to research-only path capture."""
+        if self._grok_runtime_handoff is not None:
+            try:
+                self._grok_runtime_handoff.reconcile_protection()
+            except Exception:
+                # Completion remains retained; native management must still
+                # advance if the canonical protection attempt is incomplete.
+                pass
         with self._lock:
             if self._service is not None:
                 self._service.observe_paper_event(event)
@@ -729,6 +775,9 @@ class WarriorDesktopSidecar:
                         pass
 
     def stop(self) -> None:
+        self._accept_execution = False
+        if self._grok_runtime_handoff is not None:
+            self._grok_runtime_handoff.request_stop()
         # Serialize teardown with the observational worker.  This keeps the
         # service/writer alive until an in-flight evaluation has completed,
         # while the GUI snapshot remains independent of this lock.
@@ -743,6 +792,9 @@ class WarriorDesktopSidecar:
     def _stop_impl(self) -> None:
         if not self.enabled:
             return
+        if self._grok_runtime_handoff is not None and not self._grok_runtime_handoff.close(
+                self._service, self._quick_scalper_observer):
+            raise TimeoutError("Grok entry review or acknowledgement reconciliation still pending")
         # Publish shutdown intent before waiting for an in-flight confirmation.
         self._accept_execution = False
         self._order_flow.stop()
@@ -850,6 +902,7 @@ class WarriorDesktopSidecar:
                 self._last_observation_at = self._aware_now()
                 self._update_health(allow_recovery=False)
             try:
+                self._drain_grok_completions()
                 self._consume(event)
                 with self._lock:
                     self._update_health(allow_recovery=True)
@@ -917,6 +970,8 @@ class WarriorDesktopSidecar:
 
     def fail_closed_market_data(self, reason: str = "MARKET_DATA_TERMINAL_FAILURE") -> None:
         """Revoke only new-entry authority after terminal stream failure."""
+        if self._grok_runtime_handoff is not None:
+            self._grok_runtime_handoff.request_stop()
         try:
             with self._lock:
                 self._accept_execution = False

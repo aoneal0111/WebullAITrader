@@ -40,7 +40,9 @@ existing Warrior/Scalper strategies into observation process workers, subscribe
 to market events, construct new signals, register position managers or enable
 autonomous Grok trading. Native runtime adoption APIs are described in
 `grok-entry-ownership.md`; desktop construction supplies Warrior adoption
-dependencies without activating Grok entries. Before activation, an engine
+dependencies without activating Grok entries. Explicit serialized completion
+polling and shutdown retention are provided by `GrokRuntimeHandoff` and the
+sidecar binding API; see `grok-desktop-completions.md`. Before activation, an engine
 adapter must bind fresh deterministic signals, strategy-owner metadata and
 position protection/reconciliation to the immutable placements, and provide
 current authorization. A caller must also poll results and handle STOPPING and
