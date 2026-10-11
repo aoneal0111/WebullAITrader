@@ -39,7 +39,8 @@ def test_grok_uses_one_fixed_endpoint_and_does_not_grant_tools():
 
 @pytest.mark.parametrize("raw", [b"not json", b"x"*65537,
     response({}, status="incomplete"), response({}, error={"message": "secret"}),
-    response({}, output=[{"type": "function_call"}])])
+    response({}, output=[{"type": "function_call"}])],
+    ids=["invalid-json", "oversized-response", "incomplete", "provider-error", "tool-call"])
 def test_bad_responses_fail_closed_without_error_body(raw):
     client = GrokClient("secret", "grok-test", transport=lambda _: raw)
     with pytest.raises(GrokUnavailable, match="^GROK_REQUEST_FAILED$"):
