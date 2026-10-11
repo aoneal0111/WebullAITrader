@@ -1855,13 +1855,20 @@ class WarriorForwardCaptureService:
                         review_timestamp=value.evaluation_timestamp or observation.timestamp,
                     )
                     if (authorization_decision is not None
-                            and authorization_decision.reason in {PaperEntryAuthorizationReason.AI_REVIEW_PENDING,
+                            and authorization_decision.reason in {PaperEntryAuthorizationReason.AI_REVIEW_BUSY, PaperEntryAuthorizationReason.AI_REVIEW_PENDING,
                                 PaperEntryAuthorizationReason.AI_REVIEW_RECONCILIATION_REQUIRED}):
                         review_waiting = True
                         entry_value_state = authorization_decision.reason.value
                         generation = self._opportunity_generation(signal)
-                        pending = self.opportunity_engine.mark_review_pending(
-                            symbol, generation, at=value.evaluation_timestamp or observation.timestamp)
+                        if authorization_decision.reason is PaperEntryAuthorizationReason.AI_REVIEW_BUSY:
+                            pending = self.opportunity_engine.apply_assessment(replace(
+                                opportunity_assessment, adaptive_result=AdaptiveOpportunityResult.WAIT,
+                                hard_safety_reason=None, reason_codes=(OpportunityReason.EXECUTION_QUALITY_WAIT,)))
+                            if self.strategy_ownership is not None:
+                                self.strategy_ownership.release(symbol, StrategyOwner.WARRIOR_MOMENTUM, generation)
+                        else:
+                            pending = self.opportunity_engine.mark_review_pending(
+                                symbol, generation, at=value.evaluation_timestamp or observation.timestamp)
                         assessed = self._bind_opportunity_state(assessed, pending)
                         if execution_record is not None:
                             records.append(execution_record)
@@ -5332,18 +5339,20 @@ class WarriorForwardCaptureService:
                             and len(receipt.candidate_ids) == 1):
                         self._pending_native_reviews[receipt.candidate_ids[0]] = signal
                         reason = PaperEntryAuthorizationReason.AI_REVIEW_PENDING
+                    elif isinstance(receipt, NativeReviewReceipt) and receipt.state == "NOT_SENT" and receipt.reason == "BUSY":
+                        reason = PaperEntryAuthorizationReason.AI_REVIEW_BUSY
                     elif not isinstance(receipt, NativeReviewReceipt) or receipt.pending:
                         raise ValueError("Unbound review outcome")
                 except Exception:
                     self._pending_native_reviews["UNCERTAIN|" + identity] = signal
                     reason = PaperEntryAuthorizationReason.AI_REVIEW_RECONCILIATION_REQUIRED
-            waiting = reason in {PaperEntryAuthorizationReason.AI_REVIEW_PENDING,
+            waiting = reason in {PaperEntryAuthorizationReason.AI_REVIEW_BUSY, PaperEntryAuthorizationReason.AI_REVIEW_PENDING,
                 PaperEntryAuthorizationReason.AI_REVIEW_RECONCILIATION_REQUIRED}
             decision = PaperEntryAuthorizationDecision(
                 PaperEntryAuthorizationResult.DEFERRED if waiting
                 else PaperEntryAuthorizationResult.REFUSED,
                 reason, signal.symbol, identity, (),
-                waiting, False, None)
+                waiting and reason is not PaperEntryAuthorizationReason.AI_REVIEW_BUSY, False, None)
             return (), _execution_gate_record(signal, decision, symbol_authorization), decision
         if self._paper_entry_submitter is not None:
             result = self._paper_entry_submitter(signal, shares, risk_dollars)

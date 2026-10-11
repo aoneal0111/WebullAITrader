@@ -13,7 +13,9 @@ binding. It creates no `_paper` position, exports no executable signal, and does
 not record authorization, order submission, or a shadow rejection.
 
 The opportunity enters `REVIEW_PENDING` and retains its existing symbol claim.
-Repeated eligible evaluations may call `paper_entry_review_refresher`; they do
+A busy shared worker is a temporary WAIT: no review is bound, the unsubmitted
+claim is released, and the generation can be reevaluated. It is not a hard
+rejection. Repeated eligible evaluations may call `paper_entry_review_refresher`; they do
 not call the reviewer or synchronous submitter again. A reviewer exception or
 malformed receipt retains an uncertain lifecycle claim. It can be recovered
 only by a matching canonical acknowledgement/closed-position receipt, not by

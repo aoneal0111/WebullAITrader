@@ -738,6 +738,9 @@ class QuickScalperPaperRuntimeAdapter:
                     return CanonicalScalpSubmission(False, True, False, False,
                         "AI_REVIEW_PENDING", lifecycle, review_pending=True,
                         review_candidate_id=receipt.candidate_ids[0])
+                if isinstance(receipt, NativeReviewReceipt) and receipt.state == "NOT_SENT" and receipt.reason == "BUSY":
+                    return CanonicalScalpSubmission(False, False, False, False,
+                        "AI_REVIEW_BUSY", lifecycle, recoverable=True)
                 if not isinstance(receipt, NativeReviewReceipt) or receipt.pending:
                     raise ValueError("Unbound review outcome")
             except Exception:

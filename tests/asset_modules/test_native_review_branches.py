@@ -314,3 +314,45 @@ def test_pending_generation_change_does_not_start_second_scalper_review():
     before = owner.owner('FAST')
     engine.observe(snapshot(generation='g2'))
     assert len(calls) == 1 and owner.owner('FAST') == before
+
+
+def test_busy_warrior_review_waits_without_terminal_rejection_and_retries(tmp_path):
+    store = ForwardCaptureStore(tmp_path / 'busy.db')
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    ownership = SymbolOwnershipRegistry()
+    calls = []
+    def reviewer(*args, **kw):
+        calls.append(args[0])
+        return NativeReviewReceipt('NOT_SENT', 'BUSY') if len(calls) == 1 else NativeReviewReceipt('PENDING_REVIEW', 'AI_REVIEW_PENDING', ('candidate',))
+    runtime = WarriorForwardCaptureService(store, writer, strategy_ownership=ownership,
+        paper_entry_reviewer=reviewer, paper_entry_submitter=lambda *a: pytest.fail('Fallback buy'))
+    try:
+        _, entry = runtime.observe(point(), account=account())
+        assert entry is None and len(calls) == 1
+        assert ownership.owner(calls[0].symbol) is None
+        assert runtime.opportunity_engine.get(calls[0].symbol).state is WarriorOpportunityState.WAITING_EXECUTION
+        runtime.observe(point(), account=account())
+        assert len(calls) == 2 and ownership.owner(calls[0].symbol)
+        assert runtime.opportunity_engine.get(calls[0].symbol).state is WarriorOpportunityState.REVIEW_PENDING
+    finally:
+        writer.close()
+
+
+def test_busy_scalper_review_is_recoverable_without_counting_attempts():
+    ownership = SymbolOwnershipRegistry()
+    calls = []
+    def offer(a):
+        calls.append(a)
+        if len(calls) == 1:
+            return CanonicalScalpSubmission(False, False, False, False, 'AI_REVIEW_BUSY', recoverable=True)
+        return CanonicalScalpSubmission(False, True, False, False, 'AI_REVIEW_PENDING',
+            a.opportunity.lifecycle_id, review_pending=True, review_candidate_id='candidate')
+    engine = QuickScalper(engine=WarriorOpportunityEngine(), ownership=ownership,
+        config=QuickScalperConfig(enabled=True), authorize_and_submit=offer)
+    engine.observe(snapshot())
+    assert ownership.owner('FAST') is None
+    assert engine.engine.get('FAST').state is WarriorOpportunityState.WAITING_EXECUTION
+    assert not engine.guard._generations
+    engine.observe(snapshot())
+    assert len(calls) == 2 and ownership.owner('FAST')
+    assert engine.engine.get('FAST').state is WarriorOpportunityState.REVIEW_PENDING
