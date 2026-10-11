@@ -69,6 +69,9 @@ class PreparedEntry:
             valid = (stop.is_finite() and risk.is_finite() and risk > 0
                      and r.limit_price is not None and 0 < stop < r.limit_price
                      and bool(r.metadata.get("opportunity_id")))
+            if c.engine is EngineId.SCALPER:
+                target = Decimal(str(r.metadata.get("adaptive_target")))
+                valid = valid and target.is_finite() and target > r.limit_price
         except Exception:
             valid = False
         if not valid:

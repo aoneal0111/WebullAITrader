@@ -306,6 +306,26 @@ class QuickScalperPaperRuntimeAdapter:
         """Return the immutable generation-bound projection for GUI use."""
         return self.engine.get(symbol)
 
+    def adopt_acknowledged_entry(self, placement, result) -> bool:
+        """Rebuild management from an acknowledged owned entry; never buy again."""
+        from app.order_placement import OrderPlacementRequest, OrderPlacementResult
+        if (not isinstance(placement, OrderPlacementRequest)
+                or not isinstance(result, OrderPlacementResult) or not result.success
+                or placement.order.metadata.get("strategy_owner") != OWNER):
+            return False
+        with self._lock:
+            try:
+                target = self._decimal(placement.order.metadata.get("adaptive_target"))
+                if target is None or not target.is_finite() or target <= placement.order.limit_price:
+                    return False
+                if self.bridge.adopt_entry_acknowledgement(placement, result, require_active=True) is not True:
+                    return False
+                self.reconcile(placement.order.symbol)
+                return self.ownership.owner(placement.order.symbol) == (
+                    StrategyOwner.QUICK_SCALPER, placement.order.strategy_lifecycle_id)
+            except Exception:
+                return False
+
     def observe_paper_event(self, event: object) -> None:
         symbol = str(getattr(event, "symbol", "") or "").strip().upper()
         if symbol:

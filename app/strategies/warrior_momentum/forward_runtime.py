@@ -399,6 +399,8 @@ class WarriorForwardCaptureService:
         strategy_ownership: SymbolOwnershipRegistry | None = None,
         async_observation_records: bool = False,
         async_decision_intelligence: bool = False,
+        paper_order_source: Callable[[str], object] | None = None,
+        paper_acknowledgement_adopter: Callable[..., bool] | None = None,
     ) -> None:
         self.store = store
         self.writer = writer
@@ -410,6 +412,8 @@ class WarriorForwardCaptureService:
             from .desktop_sidecar import strategy_configuration_fingerprint
             configuration_fingerprint = strategy_configuration_fingerprint(config)
         self._paper_entry_submitter = paper_entry_submitter
+        self._paper_order_source = paper_order_source
+        self._paper_acknowledgement_adopter = paper_acknowledgement_adopter
         self._paper_exit_submitter = paper_exit_submitter
         self._paper_entry_replacer = paper_entry_replacer
         self._paper_entry_rearmer = paper_entry_rearmer
@@ -5292,6 +5296,63 @@ class WarriorForwardCaptureService:
                 accepted = bool(result)
             if not accepted:
                 return (), execution_record, authorization_decision
+        return self._install_paper_state(signal, shares, risk_dollars,
+            float_provenance, symbol_authorization, execution_record, authorization_decision)
+
+    def adopt_acknowledged_entry(self, signal, placement, result, *,
+                                 float_provenance, symbol_authorization) -> bool:
+        """Install native management state on the serialized runtime thread.
+
+        No entry is submitted here. True means management state installed,
+        not that every bracket leg is active. Normal quote/fill reconciliation
+        must continue, including after an incomplete protection attempt.
+        """
+        from app.order_placement import OrderPlacementRequest, OrderPlacementResult
+        from app.paper_trading.order_models import PaperOrder
+        if (not isinstance(signal, MomentumEntrySignal)
+                or not isinstance(placement, OrderPlacementRequest)
+                or not isinstance(result, OrderPlacementResult) or not result.success
+                or not isinstance(float_provenance, FloatProvenance)
+                or not isinstance(symbol_authorization, PaperSymbolAuthorization)
+                or not symbol_authorization.authorized
+                or self._paper_order_source is None or self._paper_acknowledgement_adopter is None
+                or self._paper_entry_submitter is None or self._paper_exit_submitter is None
+                or self._paper_position_quantity_source is None):
+            return False
+        try:
+            order = self._paper_order_source(result.broker_order_id)
+            r = placement.order
+            if (not isinstance(order, PaperOrder) or order.order_id != result.broker_order_id
+                    or r.symbol != signal.symbol or order.symbol != signal.symbol
+                    or r.strategy_lifecycle_id != lifecycle_identity(signal)
+                    or order.request.strategy_lifecycle_id != lifecycle_identity(signal)
+                    or r.metadata.get("strategy_owner") != "WARRIOR_MOMENTUM"
+                    or r.limit_price != signal.entry_trigger
+                    or order.request.structural_stop_price != signal.stop_price
+                    or r.quantity != r.quantity.to_integral_value()):
+                return False
+            risk = Decimal(str(r.metadata.get("risk_dollars")))
+            if not risk.is_finite() or risk <= ZERO:
+                return False
+            existing = self._paper.get(signal.symbol)
+            if existing is not None and lifecycle_identity(existing.signal) != lifecycle_identity(signal):
+                return False
+            if self._paper_acknowledgement_adopter(placement, result, require_active=True) is not True:
+                return False
+            if existing is not None:
+                return True
+            # A terminal, unfilled or fully closed lifecycle must not be
+            # revived into planned inventory just because its ack was replayed.
+            records, _, _ = self._install_paper_state(signal, int(r.quantity), risk,
+                float_provenance, symbol_authorization, None, None)
+            self._submit_records(records)
+            return True
+        except Exception:
+            return False
+
+    def _install_paper_state(self, signal, shares, risk_dollars, float_provenance,
+                             symbol_authorization, execution_record, authorization_decision):
+        """Shared state/protection path for native and acknowledged entries."""
         first = int((Decimal(shares) * self.config.trade_management.first_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
         second = int((Decimal(shares) * self.config.trade_management.second_target_exit_percent).to_integral_value(rounding=ROUND_FLOOR))
         state = _PaperState(
