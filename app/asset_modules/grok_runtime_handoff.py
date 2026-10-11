@@ -39,6 +39,14 @@ class RuntimeEntry:
             raise ValueError("Scalper management uses canonical order metadata")
 
 
+@dataclass(frozen=True)
+class ReviewResolution:
+    entry: RuntimeEntry
+    state: str
+    reason: str
+    result: OrderPlacementResult | None = None
+
+
 class GrokRuntimeHandoff:
     """No queued batches or automatic retries of a buy, including uncertain buys.
 
@@ -48,11 +56,13 @@ class GrokRuntimeHandoff:
     or proven closed in the canonical ledger. Unknown dispatch also blocks work.
     """
 
-    def __init__(self, suite, service, bridge, *, authorize, clock):
+    def __init__(self, suite, service, bridge, *, authorize, clock, retain_resolutions=False):
         if (not isinstance(bridge, AutonomousPaperExecutionBridge)
                 or bridge.mode != "PAPER" or bridge.trading_service is not service):
             raise TypeError("Canonical bridge and its controlled PAPER service required")
         self.bridge = bridge
+        self._retain_resolutions = retain_resolutions is True
+        self._resolutions = {}
         self.worker = GrokEntryWorker(GrokPaperEntries(suite, service,
             authorize=authorize, clock=clock, on_acknowledged=self._acknowledge))
         self._lock = RLock()
@@ -91,7 +101,7 @@ class GrokRuntimeHandoff:
         with self._lock:
             if self._closed:
                 return "CLOSED"
-            if self._entries or self._uncertain:
+            if self._entries or self._uncertain or self._resolutions:
                 return "BUSY"
             try:
                 batch = tuple(islice(entries, 33))
@@ -127,18 +137,30 @@ class GrokRuntimeHandoff:
                     if isinstance(outcome.result, OrderPlacementResult) and outcome.result.success:
                         self._results[key] = outcome.result
                     elif (outcome.state == "DISPATCH_UNCERTAIN"
+                          or outcome.state in {"SUBMITTED", "ACKNOWLEDGED_HANDOFF_INCOMPLETE"}
                           or isinstance(outcome.result, OrderPlacementResult)
-                          and outcome.result.decision is OrderPlacementDecision.GATEWAY_FAILURE):
+                          and (outcome.result.decision is OrderPlacementDecision.GATEWAY_FAILURE
+                               or outcome.result.metadata.get("controller_reason") == "CONTROLLER_UNAVAILABLE")):
                         self._uncertain_keys.add(key)
                 self._uncertain = bool(self._uncertain_keys or self._unknown_completion)
                 # Abstentions and explicit refusals did not create inventory.
                 if not self._uncertain:
-                    self._entries = {k: e for k, e in self._entries.items() if k in self._results}
+                    for key in tuple(self._entries):
+                        if key not in self._results:
+                            outcome = next((o for o in report.outcomes if o.candidate_id == key), None)
+                            if self._retain_resolutions:
+                                self._resolutions[key] = ReviewResolution(
+                                    self._entries[key], "NO_ORDER",
+                                    outcome.state if outcome is not None else report.reason,
+                                    outcome.result if outcome is not None else None,
+                                )
+                            self._entries.pop(key)
             adopted = []
             for key, result in tuple(self._results.items()):
                 entry = self._entries[key]
                 try:
-                    if self._proven_closed(entry, result):
+                    closed = self._proven_closed(entry, result)
+                    if closed:
                         done = True
                     elif entry.prepared.candidate.engine is EngineId.WARRIOR:
                         done = warrior is not None and warrior.adopt_acknowledged_entry(
@@ -151,12 +173,31 @@ class GrokRuntimeHandoff:
                 except Exception:
                     done = False
                 if done:
+                    if self._retain_resolutions:
+                        self._resolutions[key] = ReviewResolution(
+                            entry, "POSITION_CLOSED" if closed else "ACKNOWLEDGED",
+                            "CANONICAL_ACKNOWLEDGEMENT", result,
+                        )
                     adopted.append(key)
                     self._results.pop(key)
                     self._entries.pop(key)
                     self._uncertain_keys.discard(key)
             self._uncertain = bool(self._uncertain_keys or self._unknown_completion)
             return tuple(adopted)
+
+    def take_resolutions(self):
+        """Owner-lane receipts; unread receipts block another retained batch."""
+        with self._lock:
+            result = tuple(self._resolutions.values())
+            self._resolutions.clear()
+            return result
+
+    def entry_states(self):
+        """Bounded state projection without polling, model calls or ledger I/O."""
+        with self._lock:
+            return {key: ("RECONCILIATION_REQUIRED" if self._unknown_completion or key in self._uncertain_keys
+                          else "ACKNOWLEDGEMENT_PENDING" if key in self._results
+                          else "PENDING_REVIEW") for key in self._entries}
 
     def recover_acknowledgement(self, candidate_id, result):
         """Accept a canonical acknowledgement from durable reconciliation only.
