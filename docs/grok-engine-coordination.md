@@ -43,6 +43,11 @@ quotes, buying power, risk, session and duplicate identity before making changes
 No management candidate is currently dispatched by these new interfaces.
 Existing local protection continues independently of AI calls.
 
+The next entry-only adapter is documented in
+[grok-paper-entry-handoff.md](grok-paper-entry-handoff.md). It can route trusted
+original equity placements through the controlled paper service after engine
+and master selection. Desktop strategy workers are not yet subscribed to it.
+
 Strategies from external repos enter through engine-specific adapters; attach
 source/version, declared costs and test evidence to candidate evidence. No repo
 is automatically promoted because its author reports good returns. Open positions
