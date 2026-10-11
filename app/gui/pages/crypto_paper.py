@@ -24,7 +24,7 @@ class CryptoPaperPage(QWidget):
         disclosure = QLabel('Snapshot fills assume 0.1% fees and 0.1% slippage per side. Exchange queues and partial fills are not simulated.')
         disclosure.setWordWrap(True)
         layout.addWidget(disclosure)
-        self.enabled = QCheckBox('Enable AI paper proposals — shares crypto quotes and simulated account data with Gemini')
+        self.enabled = QCheckBox('Enable AI paper proposals — shares crypto quotes and simulated account data with Grok')
         self.enabled.setObjectName('cryptoProposalToggle')
         self.enabled.setChecked(supervisor.entries_enabled)
         self.enabled.setEnabled(supervisor.provider is not None)
@@ -97,7 +97,7 @@ class CryptoPaperPage(QWidget):
         self.enabled.blockSignals(False)
         status = self.supervisor.status
         if self.supervisor.provider is None:
-            status = 'AI not configured. Set GEMINI_API_KEY and ATLAS_SUPERVISOR_MODEL locally, then restart.'
+            status = 'AI not configured. Set XAI_API_KEY and ATLAS_GROK_MODEL locally, then restart.'
         self.state.setText(f'{status}\nProtection: {self.supervisor.protection_status}')
         snapshot = self.supervisor.paper.snapshot()
         self.summary.setText(f"Cash: ${Decimal(snapshot['cash']):,.2f}   Realized P/L: ${Decimal(snapshot['realized']):,.2f}   Open positions: {len(snapshot['positions'])}")

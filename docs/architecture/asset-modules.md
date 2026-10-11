@@ -27,15 +27,15 @@ existing behavior.
 
 ## AI authority and setup
 
-Set `GEMINI_API_KEY` and `ATLAS_SUPERVISOR_MODEL` locally (environment or untracked
+Set `XAI_API_KEY` and `ATLAS_GROK_MODEL` locally (environment or untracked
 .env), restart Atlas, start Crypto, then enable AI paper proposals on its Mission
 Control page. No model is chosen implicitly, no key is bundled, and the checkbox is
 OFF after every application restart. It discloses sending crypto observations and
-simulated account state to Gemini. Research-only decisions are inputs, not execution
+simulated account state to Grok. Research-only decisions are inputs, not execution
 permission. No external AI call is made by tests or installation.
 
-`GeminiProposalProvider` uses the documented REST generateContent JSON response
-mode. `CryptoSupervisor` accepts an injected provider with `propose(context)` so a
+`GrokProposalProvider` uses the shared bounded xAI Responses JSON-schema client.
+See [Grok engine coordination](../grok-engine-coordination.md) for all engine/master interfaces. `CryptoSupervisor` accepts an injected provider with `propose(context)` so a
 future provider can be evaluated without modifying execution. Calls are limited to
 one per minute, two proposals per response, 120 requests per process lifetime, a
 15-second HTTP timeout and a 64 KiB response. Costs vary by chosen model. Protection
@@ -98,8 +98,9 @@ reproduced independently on unchanged base commit b964ce5 in an isolated worktre
 it is not counted as passing or silently repaired by this build.
 
 Final local run: **283 passed, 1 explicitly deselected** in the focused suites.
-The excluded baseline failure is described above. The Gemini REST adapter has not
-been exercised against a paid account, and Windows installation must still run its
+The excluded baseline failure is described above. The historical Gemini adapter
+was subsequently replaced by Grok; neither adapter has been exercised here against
+a paid account, and Windows installation must still run its
 local validation. No exchange execution adapter was added.
 
 

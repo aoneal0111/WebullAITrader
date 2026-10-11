@@ -15,7 +15,7 @@ def test_composed_crypto_is_idle_until_activated_and_restarts(monkeypatch, tmp_p
         'CRYPTO_DISCOVERY_PATH':str(tmp_path/'crypto.jsonl')})
     monkeypatch.setattr(desktop, 'load_configuration', lambda: config)
     monkeypatch.setattr(configuration_module, 'load_configuration', lambda: config)
-    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    monkeypatch.delenv('XAI_API_KEY', raising=False)
     composition = create_desktop_composition(paper_persistence_path=tmp_path/'equity.sqlite3')
     # No network in tests. This uses the real worker lifecycle with an injected absent provider.
     composition.crypto_research_runtime._provider = None
