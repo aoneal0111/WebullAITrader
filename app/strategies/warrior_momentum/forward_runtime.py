@@ -401,6 +401,8 @@ class WarriorForwardCaptureService:
         async_decision_intelligence: bool = False,
         paper_order_source: Callable[[str], object] | None = None,
         paper_acknowledgement_adopter: Callable[..., bool] | None = None,
+        paper_entry_reviewer: Callable[..., object] | None = None,
+        paper_entry_review_refresher: Callable[..., object] | None = None,
     ) -> None:
         self.store = store
         self.writer = writer
@@ -411,6 +413,9 @@ class WarriorForwardCaptureService:
             # truth without introducing a module import cycle.
             from .desktop_sidecar import strategy_configuration_fingerprint
             configuration_fingerprint = strategy_configuration_fingerprint(config)
+        self._paper_entry_reviewer = paper_entry_reviewer
+        self._paper_entry_review_refresher = paper_entry_review_refresher
+        self._pending_native_reviews = {}
         self._paper_entry_submitter = paper_entry_submitter
         self._paper_order_source = paper_order_source
         self._paper_acknowledgement_adopter = paper_acknowledgement_adopter
@@ -684,6 +689,7 @@ class WarriorForwardCaptureService:
             WarriorOpportunityState.ARMED: "OPPORTUNITY_ARMED",
             WarriorOpportunityState.WAITING_EXECUTION: "OPPORTUNITY_WAITING_EXECUTION",
             WarriorOpportunityState.EXECUTABLE: "OPPORTUNITY_EXECUTABLE",
+            WarriorOpportunityState.REVIEW_PENDING: "ENTRY_REVIEW_PENDING",
             WarriorOpportunityState.AUTHORIZATION_EVALUATED: "OPPORTUNITY_AUTHORIZATION_EVALUATED",
             WarriorOpportunityState.AUTHORIZED: "OPPORTUNITY_AUTHORIZED",
             WarriorOpportunityState.INVALIDATED: "OPPORTUNITY_INVALIDATED",
@@ -1561,6 +1567,7 @@ class WarriorForwardCaptureService:
                 existing_strategy_position=assessed.symbol in self._paper,
                 execution_permitted=self._execution_permitted(),
             ))
+        review_waiting = False
         shadow_reasons = list(
             code.value for code in entry_rejections(assessed, self.config)
         )
@@ -1845,105 +1852,121 @@ class WarriorForwardCaptureService:
                     entry_records, execution_record, authorization_decision = self._open_paper(
                         signal, position.shares, position.risk_dollars,
                         value.float_provenance, symbol_authorization,
+                        review_timestamp=value.evaluation_timestamp or observation.timestamp,
                     )
-                    entry_value_state = (
-                        authorization_decision.reason.value
-                        if authorization_decision is not None
-                        else "ENTRY_AUTHORIZATION_ACCEPTED"
-                        if entry_records
-                        else "ENTRY_AUTHORIZATION_REFUSED"
-                    )
-                    records.extend(entry_records)
-                    generation = self._opportunity_generation(signal)
-                    transition_at = value.evaluation_timestamp or observation.timestamp
-                    authorization_reason = (
-                        authorization_decision.reason.value
-                        if authorization_decision is not None
-                        else "ENTRY_AUTHORIZATION_ACCEPTED"
-                        if entry_records else "ENTRY_AUTHORIZATION_REFUSED"
-                    )
-                    evaluated = self.opportunity_engine.mark_authorization_evaluated(
-                        symbol, generation, at=transition_at,
-                        authorized=bool(entry_records),
-                        reason=authorization_reason,
-                        risk_result="APPROVED",
-                        sizing_result=f"SHARES_{position.shares}",
-                    )
-                    assessed = self._bind_opportunity_state(assessed, evaluated)
-                    records.append(_opportunity_authorization_record(
-                        opportunity_assessment,
-                        authorized=bool(entry_records),
-                        reason=authorization_reason,
-                        risk_result="APPROVED",
-                        sizing_result=f"SHARES_{position.shares}",
-                    ))
-                    if execution_record is not None:
-                        records.append(execution_record)
-                    if not entry_records:
-                        downstream_clear_reason = "CLEAR_ACCOUNT"
-                        if self.strategy_ownership is not None:
-                            self.strategy_ownership.release(
-                                symbol, StrategyOwner.WARRIOR_MOMENTUM,
-                                generation,
-                            )
-                    performance_diagnostics.record_entry_funnel(
-                        symbol, stage="PAPER_AUTHORIZATION",
-                        outcome="ACCEPTED" if entry_records else "REJECTED",
-                        timestamp=value.evaluation_timestamp or observation.timestamp,
-                        reason=(None if entry_records else "PAPER_SUBMITTER_REJECTED"),
-                    )
-                    if entry_records:
-                        self.opportunity_engine.mark_authorized(
-                            symbol, generation, at=transition_at,
-                        )
-                        pending = self.opportunity_engine.mark_order_intent(
-                            symbol, generation, at=transition_at, submitted=True,
-                        )
+                    if (authorization_decision is not None
+                            and authorization_decision.reason in {PaperEntryAuthorizationReason.AI_REVIEW_PENDING,
+                                PaperEntryAuthorizationReason.AI_REVIEW_RECONCILIATION_REQUIRED}):
+                        review_waiting = True
+                        entry_value_state = authorization_decision.reason.value
+                        generation = self._opportunity_generation(signal)
+                        pending = self.opportunity_engine.mark_review_pending(
+                            symbol, generation, at=value.evaluation_timestamp or observation.timestamp)
                         assessed = self._bind_opportunity_state(assessed, pending)
-                        performance_diagnostics.record_entry_funnel(
-                            symbol, stage="ORDER_INTENT", timestamp=value.evaluation_timestamp or observation.timestamp,
-                        )
-                        self._record_setup_lifecycle(
-                            value, assessed, setup_state="ENTRY_AUTHORIZED",
-                            technical_signal=technical_signal, signal=signal,
-                            timestamp=value.evaluation_timestamp or observation.timestamp,
-                            lifecycle_stage="ENTRY_AUTHORIZED",
-                        )
-                        self._record_setup_lifecycle(
-                            value, assessed, setup_state="ORDER_SUBMITTED",
-                            technical_signal=technical_signal, signal=signal,
-                            timestamp=value.evaluation_timestamp or observation.timestamp,
-                            lifecycle_stage="ORDER_SUBMITTED",
-                        )
-                    if entry_records:
-                        from app.trade_intelligence.opportunity_memory import EntryAttemptSummary
-                        self.opportunity_memory.record_entry_attempt(
-                            observation.timestamp.date(), symbol,
-                            memory_opportunity_id,
-                            EntryAttemptSummary(
-                                lifecycle_id=lifecycle_identity(signal),
-                                setup=signal.setup_type.value,
-                                attempted_at=signal.timestamp,
-                                requested_price=signal.entry_trigger,
-                                requested_quantity=Decimal(position.shares),
-                                structural_stop=signal.stop_price,
-                                spread=signal.spread_percent,
-                                liquidity=signal.dollar_volume,
-                                risk=position.risk_dollars,
-                                result="ATTEMPTED",
-                            ),
-                        )
-                    # A configured execution bridge is authoritative for the
-                    # entry boundary.  If it rejects the command, do not
-                    # return an apparently executable signal to callers.
-                    if self._paper_entry_submitter is not None and not entry_records:
-                        shadow_reasons.append(ReasonCode.EXECUTION_NOT_ALLOWED.value)
+                        if execution_record is not None:
+                            records.append(execution_record)
+                        # Do not export an executable signal while the owning
+                        # review is pending, or classify it as a rejection.
                         signal = None
-                        performance_diagnostics.record_entry_funnel(
-                            symbol, stage="ORDER_REJECTED", outcome="REJECTED",
-                            reason="EXECUTION_NOT_ALLOWED",
-                            timestamp=value.evaluation_timestamp or observation.timestamp,
+                    else:
+                        entry_value_state = (
+                            authorization_decision.reason.value
+                            if authorization_decision is not None
+                            else "ENTRY_AUTHORIZATION_ACCEPTED"
+                            if entry_records
+                            else "ENTRY_AUTHORIZATION_REFUSED"
                         )
+                        records.extend(entry_records)
+                        generation = self._opportunity_generation(signal)
+                        transition_at = value.evaluation_timestamp or observation.timestamp
+                        authorization_reason = (
+                            authorization_decision.reason.value
+                            if authorization_decision is not None
+                            else "ENTRY_AUTHORIZATION_ACCEPTED"
+                            if entry_records else "ENTRY_AUTHORIZATION_REFUSED"
+                        )
+                        evaluated = self.opportunity_engine.mark_authorization_evaluated(
+                            symbol, generation, at=transition_at,
+                            authorized=bool(entry_records),
+                            reason=authorization_reason,
+                            risk_result="APPROVED",
+                            sizing_result=f"SHARES_{position.shares}",
+                        )
+                        assessed = self._bind_opportunity_state(assessed, evaluated)
+                        records.append(_opportunity_authorization_record(
+                            opportunity_assessment,
+                            authorized=bool(entry_records),
+                            reason=authorization_reason,
+                            risk_result="APPROVED",
+                            sizing_result=f"SHARES_{position.shares}",
+                        ))
+                        if execution_record is not None:
+                            records.append(execution_record)
+                        if not entry_records:
+                            downstream_clear_reason = "CLEAR_ACCOUNT"
+                            if self.strategy_ownership is not None:
+                                self.strategy_ownership.release(
+                                    symbol, StrategyOwner.WARRIOR_MOMENTUM,
+                                    generation,
+                                )
+                        performance_diagnostics.record_entry_funnel(
+                            symbol, stage="PAPER_AUTHORIZATION",
+                            outcome="ACCEPTED" if entry_records else "REJECTED",
+                            timestamp=value.evaluation_timestamp or observation.timestamp,
+                            reason=(None if entry_records else "PAPER_SUBMITTER_REJECTED"),
+                        )
+                        if entry_records:
+                            self.opportunity_engine.mark_authorized(
+                                symbol, generation, at=transition_at,
+                            )
+                            pending = self.opportunity_engine.mark_order_intent(
+                                symbol, generation, at=transition_at, submitted=True,
+                            )
+                            assessed = self._bind_opportunity_state(assessed, pending)
+                            performance_diagnostics.record_entry_funnel(
+                                symbol, stage="ORDER_INTENT", timestamp=value.evaluation_timestamp or observation.timestamp,
+                            )
+                            self._record_setup_lifecycle(
+                                value, assessed, setup_state="ENTRY_AUTHORIZED",
+                                technical_signal=technical_signal, signal=signal,
+                                timestamp=value.evaluation_timestamp or observation.timestamp,
+                                lifecycle_stage="ENTRY_AUTHORIZED",
+                            )
+                            self._record_setup_lifecycle(
+                                value, assessed, setup_state="ORDER_SUBMITTED",
+                                technical_signal=technical_signal, signal=signal,
+                                timestamp=value.evaluation_timestamp or observation.timestamp,
+                                lifecycle_stage="ORDER_SUBMITTED",
+                            )
+                        if entry_records:
+                            from app.trade_intelligence.opportunity_memory import EntryAttemptSummary
+                            self.opportunity_memory.record_entry_attempt(
+                                observation.timestamp.date(), symbol,
+                                memory_opportunity_id,
+                                EntryAttemptSummary(
+                                    lifecycle_id=lifecycle_identity(signal),
+                                    setup=signal.setup_type.value,
+                                    attempted_at=signal.timestamp,
+                                    requested_price=signal.entry_trigger,
+                                    requested_quantity=Decimal(position.shares),
+                                    structural_stop=signal.stop_price,
+                                    spread=signal.spread_percent,
+                                    liquidity=signal.dollar_volume,
+                                    risk=position.risk_dollars,
+                                    result="ATTEMPTED",
+                                ),
+                            )
+                        # A configured execution bridge is authoritative for the
+                        # entry boundary.  If it rejects the command, do not
+                        # return an apparently executable signal to callers.
+                        if (self._paper_entry_submitter is not None or self._paper_entry_reviewer is not None) and not entry_records:
+                            shadow_reasons.append(ReasonCode.EXECUTION_NOT_ALLOWED.value)
+                            signal = None
+                            performance_diagnostics.record_entry_funnel(
+                                symbol, stage="ORDER_REJECTED", outcome="REJECTED",
+                                reason="EXECUTION_NOT_ALLOWED",
+                                timestamp=value.evaluation_timestamp or observation.timestamp,
+                            )
                 elif position is not None:
                     shadow_reasons.extend(code.value for code in position.reason_codes)
                     records.append(_transition_record(
@@ -1954,7 +1977,7 @@ class WarriorForwardCaptureService:
                     ))
                     signal = None
 
-        if signal is None and self._shadow is not None:
+        if signal is None and not review_waiting and self._shadow is not None:
             records.append(self._shadow.observe_rejection(
                 decision_record, value, assessed,
                 tuple(dict.fromkeys(shadow_reasons)),
@@ -5271,6 +5294,7 @@ class WarriorForwardCaptureService:
         self, signal: MomentumEntrySignal, shares: int, risk_dollars: Decimal,
         float_provenance: FloatProvenance,
         symbol_authorization: PaperSymbolAuthorization,
+        *, review_timestamp: datetime | None = None,
     ) -> tuple[
         tuple[CaptureRecord, ...], CaptureRecord | None,
         PaperEntryAuthorizationDecision | None,
@@ -5279,6 +5303,48 @@ class WarriorForwardCaptureService:
             return (), None, None
         execution_record = None
         authorization_decision = None
+        if self._paper_entry_reviewer is not None:
+            from app.asset_modules.grok_native_review import NativeReviewReceipt
+            identity = lifecycle_identity(signal)
+            pending = next((item for item in self._pending_native_reviews.values()
+                            if item.symbol == signal.symbol), None)
+            at = review_timestamp or signal.timestamp
+            reason = PaperEntryAuthorizationReason.AUTHORIZATION_OUTCOME_UNAVAILABLE
+            if pending is not None:
+                if lifecycle_identity(pending) == identity:
+                    if self._paper_entry_review_refresher is not None:
+                        try:
+                            self._paper_entry_review_refresher(signal, evaluated_at=at)
+                        except Exception:
+                            pass  # An unrefreshed authorization lease expires.
+                    reason = PaperEntryAuthorizationReason.AI_REVIEW_PENDING
+                else:
+                    reason = PaperEntryAuthorizationReason.DUPLICATE_LIFECYCLE
+            else:
+                if len(self._pending_native_reviews) >= 32:
+                    return (), None, PaperEntryAuthorizationDecision(
+                        PaperEntryAuthorizationResult.REFUSED, reason, signal.symbol, identity, ())
+                try:
+                    receipt = self._paper_entry_reviewer(signal, shares, risk_dollars,
+                        float_provenance=float_provenance, symbol_authorization=symbol_authorization,
+                        evaluated_at=at)
+                    if (isinstance(receipt, NativeReviewReceipt) and receipt.pending
+                            and len(receipt.candidate_ids) == 1):
+                        self._pending_native_reviews[receipt.candidate_ids[0]] = signal
+                        reason = PaperEntryAuthorizationReason.AI_REVIEW_PENDING
+                    elif not isinstance(receipt, NativeReviewReceipt) or receipt.pending:
+                        raise ValueError("Unbound review outcome")
+                except Exception:
+                    self._pending_native_reviews["UNCERTAIN|" + identity] = signal
+                    reason = PaperEntryAuthorizationReason.AI_REVIEW_RECONCILIATION_REQUIRED
+            waiting = reason in {PaperEntryAuthorizationReason.AI_REVIEW_PENDING,
+                PaperEntryAuthorizationReason.AI_REVIEW_RECONCILIATION_REQUIRED}
+            decision = PaperEntryAuthorizationDecision(
+                PaperEntryAuthorizationResult.DEFERRED if waiting
+                else PaperEntryAuthorizationResult.REFUSED,
+                reason, signal.symbol, identity, (),
+                waiting, False, None)
+            return (), _execution_gate_record(signal, decision, symbol_authorization), decision
         if self._paper_entry_submitter is not None:
             result = self._paper_entry_submitter(signal, shares, risk_dollars)
             if isinstance(result, PaperEntryAuthorizationDecision):
@@ -5298,6 +5364,56 @@ class WarriorForwardCaptureService:
                 return (), execution_record, authorization_decision
         return self._install_paper_state(signal, shares, risk_dollars,
             float_provenance, symbol_authorization, execution_record, authorization_decision)
+
+    def resolve_native_review(self, resolution, *, at):
+        """Consume a bound receipt on the owner lane; never place another buy."""
+        from app.asset_modules.grok_runtime_handoff import ReviewResolution
+        from app.asset_modules.engine_catalog import EngineId
+        if not isinstance(resolution, ReviewResolution) or resolution.entry.prepared.candidate.engine is not EngineId.WARRIOR:
+            return False
+        key = resolution.entry.prepared.candidate.candidate_id
+        pending_key = key
+        signal = self._pending_native_reviews.get(key)
+        if signal is None and resolution.state in {"ACKNOWLEDGED", "POSITION_CLOSED"}:
+            pending_key = "UNCERTAIN|" + resolution.entry.prepared.candidate.lifecycle_id
+            signal = self._pending_native_reviews.get(pending_key)
+        if signal is None or signal != resolution.entry.signal:
+            return False
+        generation = self._opportunity_generation(signal)
+        if resolution.state == "ACKNOWLEDGED":
+            if self.adopt_acknowledged_entry(signal, resolution.entry.prepared.placement, resolution.result,
+                    float_provenance=resolution.entry.float_provenance,
+                    symbol_authorization=resolution.entry.symbol_authorization) is not True:
+                return False
+            self.opportunity_engine.mark_review_acknowledged(signal.symbol, generation, at=at)
+            performance_diagnostics.record_entry_funnel(signal.symbol, stage="ORDER_SUBMITTED",
+                outcome="ACCEPTED", timestamp=at, lifecycle_id=lifecycle_identity(signal))
+        elif resolution.state in {"NO_ORDER", "POSITION_CLOSED"}:
+            if resolution.state == "NO_ORDER":
+                if resolution.result is not None and (resolution.result.success
+                        or resolution.result.metadata.get("controller_reason") == "CONTROLLER_UNAVAILABLE"):
+                    return False
+                self.opportunity_engine.release_review(signal.symbol, generation, at=at)
+            else:
+                try:
+                    if (self._paper_acknowledgement_adopter is None
+                            or self._paper_acknowledgement_adopter(resolution.entry.prepared.placement, resolution.result) is not True
+                            or self._paper_order_source is None
+                            or not self._paper_order_source(resolution.result.broker_order_id).is_terminal
+                            or self._paper_position_quantity_source is None
+                            or self._paper_position_quantity_source(signal.symbol) != 0):
+                        return False
+                except Exception:
+                    return False
+                self.opportunity_engine.complete(signal.symbol, generation, at=at)
+            if self.strategy_ownership is not None:
+                self.strategy_ownership.release(signal.symbol, StrategyOwner.WARRIOR_MOMENTUM, generation)
+        else:
+            return False
+        performance_diagnostics.record_entry_funnel(signal.symbol, stage="ENTRY_REVIEW_RESOLVED",
+            outcome=resolution.state, reason=resolution.reason, timestamp=at, lifecycle_id=lifecycle_identity(signal))
+        self._pending_native_reviews.pop(pending_key)
+        return True
 
     def adopt_acknowledged_entry(self, signal, placement, result, *,
                                  float_provenance, symbol_authorization) -> bool:

@@ -1,5 +1,5 @@
 """Bounded native equity review receipts and expiring strategy authorization."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from itertools import islice
 from threading import RLock
@@ -82,6 +82,7 @@ class NativeGrokReview:
         self._lock = RLock()
         self._grants = {}
         self._entries = {}
+        self._resolution_backlog = {}
         self._closed = False
         self.handoff = GrokRuntimeHandoff(suite, service, bridge,
             authorize=self._authorize, clock=clock, retain_resolutions=True)
@@ -166,9 +167,37 @@ class NativeGrokReview:
     def drain(self, warrior, scalper):
         return self.handoff.drain(warrior, scalper)
 
-    def take_resolutions(self):
-        resolutions = self.handoff.take_resolutions()
+    def apply_resolutions(self, warrior, scalper, *, at):
+        """Owner-lane pump; retain receipts until native bookkeeping succeeds."""
+        self.handoff.drain(warrior, scalper)
+        fresh = self.handoff.take_resolutions()
         with self._lock:
+            for resolution in fresh:
+                self._resolution_backlog[resolution.entry.prepared.candidate.candidate_id] = resolution
+            pending = tuple(self._resolution_backlog.items())
+        applied = []
+        for key, resolution in pending:
+            try:
+                if (resolution.state == "ACKNOWLEDGED"
+                        and self.handoff._proven_closed(resolution.entry, resolution.result)):
+                    resolution = replace(resolution, state="POSITION_CLOSED")
+                runtime = warrior if resolution.entry.prepared.candidate.engine is EngineId.WARRIOR else scalper
+                done = runtime is not None and runtime.resolve_native_review(resolution, at=at) is True
+            except Exception:
+                done = False
+            if done:
+                with self._lock:
+                    self._resolution_backlog.pop(key, None)
+                    self._entries.pop(key, None)
+                    self._grants.pop(key, None)
+                applied.append(key)
+        return tuple(applied)
+
+    def take_resolutions(self):
+        fresh = self.handoff.take_resolutions()
+        with self._lock:
+            resolutions = (*self._resolution_backlog.values(), *fresh)
+            self._resolution_backlog.clear()
             for resolution in resolutions:
                 key = resolution.entry.prepared.candidate.candidate_id
                 self._entries.pop(key, None)
@@ -176,7 +205,10 @@ class NativeGrokReview:
         return resolutions
 
     def pending_states(self):
-        return self.handoff.entry_states()
+        states = self.handoff.entry_states()
+        with self._lock:
+            states.update({key: "NATIVE_RECEIPT_PENDING" for key in self._resolution_backlog})
+        return states
 
     def request_stop(self):
         with self._lock:

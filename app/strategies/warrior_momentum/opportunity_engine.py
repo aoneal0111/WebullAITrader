@@ -25,6 +25,7 @@ class WarriorOpportunityState(StrEnum):
     ARMED = "ARMED"
     WAITING_EXECUTION = "WAITING_EXECUTION"
     EXECUTABLE = "EXECUTABLE"
+    REVIEW_PENDING = "REVIEW_PENDING"
     AUTHORIZATION_EVALUATED = "AUTHORIZATION_EVALUATED"
     AUTHORIZED = "AUTHORIZED"
     ORDER_PENDING = "ORDER_PENDING"
@@ -73,6 +74,8 @@ class OpportunityReason(StrEnum):
     ACCOUNT_NOT_AUTHORIZED = "ACCOUNT_NOT_AUTHORIZED"
     RISK_NOT_AUTHORIZED = "RISK_NOT_AUTHORIZED"
     DUPLICATE_EXECUTION = "DUPLICATE_EXECUTION"
+    AI_REVIEW_PENDING = "AI_REVIEW_PENDING"
+    AI_REVIEW_NO_ORDER = "AI_REVIEW_NO_ORDER"
     PAPER_ORDER_AUTHORIZED = "PAPER_ORDER_AUTHORIZED"
     AUTHORIZATION_REJECTED = "AUTHORIZATION_REJECTED"
     ORDER_INTENT_CREATED = "ORDER_INTENT_CREATED"
@@ -388,6 +391,60 @@ class WarriorOpportunityEngine:
         decision = self.policy.execution_decision(assessment)
         return self._transition(assessment, decision.state, decision.reason)
 
+    def mark_review_pending(self, symbol, generation_id, *, at):
+        """Pending model review is neither authorization nor an order intent."""
+        with self._lock:
+            key = (symbol.strip().upper(), generation_id)
+            current = self._items.get(key)
+            if current is None or current.state not in {
+                    WarriorOpportunityState.EXECUTABLE, WarriorOpportunityState.WAITING_EXECUTION,
+                    WarriorOpportunityState.ARMED, WarriorOpportunityState.REVIEW_PENDING}:
+                return None
+            item = self._replace_locked(key, current, WarriorOpportunityState.REVIEW_PENDING,
+                OpportunityReason.AI_REVIEW_PENDING, at)
+            item = replace(item, authorization_result="PENDING_REVIEW",
+                authorization_reason="AI_REVIEW_PENDING", order_intent_result=None)
+            self._items[key] = item
+            return item
+
+    def release_review(self, symbol, generation_id, *, at):
+        """Only a proven no-order receipt can release a pending review."""
+        with self._lock:
+            key = (symbol.strip().upper(), generation_id)
+            current = self._items.get(key)
+            if current is None or current.state is not WarriorOpportunityState.REVIEW_PENDING:
+                return current
+            # Explicit receipt resolution may return to WAIT; ordinary quote
+            # reassessments cannot silently release a pending review.
+            item = replace(current, state=WarriorOpportunityState.WAITING_EXECUTION,
+                reason=OpportunityReason.AI_REVIEW_NO_ORDER, updated_at=max(at, current.updated_at),
+                revision=current.revision + 1, authorization_result="NO_ORDER",
+                authorization_reason="AI_REVIEW_NO_ORDER", order_intent_result=None)
+            self._items[key] = item
+            self._emit(item)
+            return item
+
+    def mark_review_acknowledged(self, symbol, generation_id, *, at):
+        """Record an adopted acknowledgement without regressing fill/exit state."""
+        with self._lock:
+            key = (symbol.strip().upper(), generation_id)
+            current = self._items.get(key)
+            if current is None:
+                return None
+            advanced = current.state in _TERMINAL_STATES or current.state in {
+                WarriorOpportunityState.ENTERED, WarriorOpportunityState.PARTIALLY_FILLED,
+                WarriorOpportunityState.PROTECTED, WarriorOpportunityState.MANAGING,
+                WarriorOpportunityState.EXIT_REQUESTED}
+            item = replace(current,
+                state=current.state if advanced else WarriorOpportunityState.ORDER_PENDING,
+                reason=current.reason if advanced else OpportunityReason.ORDER_SUBMITTED,
+                authorization_result="AUTHORIZED", authorization_reason="CANONICAL_ACKNOWLEDGEMENT",
+                order_intent_result="SUBMITTED", updated_at=max(at, current.updated_at),
+                revision=current.revision + 1)
+            self._items[key] = item
+            self._emit(item)
+            return item
+
     def mark_authorized(self, symbol: str, generation_id: str, *, at: datetime) -> WarriorOpportunity | None:
         return self._transition_existing(symbol, generation_id, WarriorOpportunityState.AUTHORIZED,
                                          OpportunityReason.PAPER_ORDER_AUTHORIZED, at)
@@ -555,6 +612,7 @@ class WarriorOpportunityEngine:
             return current
         if (
             current.state in {
+                WarriorOpportunityState.REVIEW_PENDING,
                 WarriorOpportunityState.AUTHORIZATION_EVALUATED,
                 WarriorOpportunityState.AUTHORIZED,
                 WarriorOpportunityState.ORDER_PENDING,
