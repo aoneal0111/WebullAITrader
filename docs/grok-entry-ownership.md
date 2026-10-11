@@ -59,9 +59,10 @@ status separately.
 ## Remaining desktop integration
 
 These are explicit management APIs, not automatic Grok activation. Fresh signal
-preparation, dispatch-time setup authorization, owner-thread completion polling
-and shutdown reconciliation still need to be connected before enabling
-autonomous Grok entries. Bridge adoption alone still does not install Warrior's
+preparation and current dispatch-time setup authorization still need to be
+connected to the explicit offer/completion APIs before enabling
+autonomous Grok entries. Explicit owner-lane completion polling and shutdown
+retention are described in `grok-desktop-completions.md`. Bridge adoption alone still does not install Warrior's
 forward-runtime state. No live broker route is added. Validation uses mocked
 Grok responses and the real controlled paper gateway, including unfilled,
 partial and complete entries, mismatched acknowledgements and protection retry.
