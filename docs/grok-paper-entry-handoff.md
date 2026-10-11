@@ -40,6 +40,11 @@ must supply confirmed placements and current strategy authorization, together
 with position protection registration. Existing desktop behavior is unchanged.
 No new configuration switch enables this handoff yet.
 
+`GrokEntryWorker` now supplies an explicit bounded background runner for this
+adapter. It refuses backlog and revokes subsequent entry checks on shutdown;
+see [background worker semantics](grok-entry-worker.md). It still does not wire
+desktop signals or register their protection automatically.
+
 AI management changes remain unavailable until atomic order/position revision
 checks and protection-preserving mutation adapters exist. Options/Futures also
 still require contract data and execution adapters. This code makes no claim of

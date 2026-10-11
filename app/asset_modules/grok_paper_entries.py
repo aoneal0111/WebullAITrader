@@ -64,11 +64,14 @@ class GrokPaperEntries:
         self.suite, self.service, self.authorize, self.clock = suite, service, authorize, clock
         self._lock = Lock()
 
-    def review_and_submit(self, entries, *, engine_evidence, account_evidence):
+    def review_and_submit(self, entries, *, engine_evidence, account_evidence,
+                          entry_enabled=lambda: True):
         if not self._lock.acquire(blocking=False):
             return EntryDispatch("NOT_SENT", "AI_ENTRY_WORKER_BUSY")
         outcomes = []
         try:
+            if entry_enabled() is not True:
+                return EntryDispatch("NOT_SENT", "ENTRY_WORKER_STOPPED")
             entries = tuple(entries)
             if not entries:
                 return EntryDispatch("NOT_SENT", "NO_CANDIDATES")
@@ -87,9 +90,13 @@ class GrokPaperEntries:
             if any(self.authorize(e) is not True for e in entries):
                 return EntryDispatch("NOT_SENT", "STRATEGY_NOT_AUTHORIZED")
             for engine in (EngineId.WARRIOR, EngineId.SCALPER):
+                if entry_enabled() is not True:
+                    return EntryDispatch("NOT_SENT", "ENTRY_WORKER_STOPPED")
                 candidates = tuple(e.candidate for e in entries if e.candidate.engine is engine)
                 if candidates:
                     self.suite.review(engine, candidates, evidence=engine_evidence.get(engine.value, {}))
+            if entry_enabled() is not True:
+                return EntryDispatch("NOT_SENT", "ENTRY_WORKER_STOPPED")
             advice = self.suite.coordinate(account_evidence=account_evidence)
             bound = {e.candidate.candidate_id: e for e in entries}
             now = self.clock()
@@ -100,8 +107,14 @@ class GrokPaperEntries:
                 return EntryDispatch("NOT_SENT", "MASTER_BINDING_CONFLICT")
             for c in advice.selected:
                 e = bound[c.candidate_id]
+                if entry_enabled() is not True:
+                    outcomes.append(EntryOutcome(c.candidate_id, "WORKER_STOPPED"))
+                    continue
                 if c.valid_until <= self.clock() or self.authorize(e) is not True:
                     outcomes.append(EntryOutcome(c.candidate_id, "AUTHORIZATION_REVOKED"))
+                    continue
+                if entry_enabled() is not True:
+                    outcomes.append(EntryOutcome(c.candidate_id, "WORKER_STOPPED"))
                     continue
                 try:
                     result = self.service.place_order(e.placement)
