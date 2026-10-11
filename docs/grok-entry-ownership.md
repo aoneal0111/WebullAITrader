@@ -31,17 +31,37 @@ If a callback raises or returns anything other than `True`, the outcome is
 ID, remains attached. Treat this as existing or uncertain exposure needing
 reconciliation, never as permission to retry the entry.
 
+## Native runtime management handoff
+
+Warrior's `adopt_acknowledged_entry(signal, placement, result,
+float_provenance=..., symbol_authorization=...)` installs the same management
+state used after a native synchronous submission. Call it on the serialized
+owning runtime thread after polling a background completion, not directly from
+`on_acknowledged`. It verifies the original signal, canonical order and bridge
+ownership before installing state. Desktop construction supplies the canonical
+order source and bridge adopter; ordinary entry submission remains unchanged.
+
+Scalper's `adopt_acknowledged_entry(placement, result)` uses its existing locked
+ledger reconciliation to restore ownership, position state, stop and adaptive
+target. Prepared scalper entries require a finite adaptive target above the
+entry limit before review begins.
+
+Both runtime methods use bridge adoption with `require_active=True`. A terminal
+unfilled or fully closed lifecycle cannot revive planned inventory. Repeated
+active adoption is idempotent and neither method submits another buy. Synchronous
+partial fills are reconciled to actual inventory, and later fills use the
+existing protection reconciler. A protection submission failure retains state
+for reconciliation rather than treating the acknowledgement as a failed entry.
+A `True` handoff means state adopted, not proof that every protective leg is
+active; continue the native fill and quote observers and inspect protection
+status separately.
+
 ## Remaining desktop integration
 
-This is an explicit ownership handoff, not automatic desktop activation or a
-complete position-management adapter. A runtime callback must adopt the native
-acknowledgement, install the owning strategy's management state, reconcile any
-synchronous fill, and retain subsequent fill/quote observers. Adoption alone
-does not install Warrior's forward-runtime state or create a stop. The tests
-explicitly call the existing deterministic stop path after filling the entry;
-they verify ownership and that protection does not depend on another AI call.
-
-Desktop construction and strategy submission remain unchanged. Fresh signal
-preparation, dispatch-time setup authorization, completion polling, management
-state installation and shutdown reconciliation must be connected before enabling
-autonomous Grok entries. No live broker route is added.
+These are explicit management APIs, not automatic Grok activation. Fresh signal
+preparation, dispatch-time setup authorization, owner-thread completion polling
+and shutdown reconciliation still need to be connected before enabling
+autonomous Grok entries. Bridge adoption alone still does not install Warrior's
+forward-runtime state. No live broker route is added. Validation uses mocked
+Grok responses and the real controlled paper gateway, including unfilled,
+partial and complete entries, mismatched acknowledgements and protection retry.

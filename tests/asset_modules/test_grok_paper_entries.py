@@ -14,7 +14,8 @@ from tests.asset_modules.test_controlled_paper_service import setup, placement, 
 
 def prepared(commands, engine=EngineId.WARRIOR, symbol="SPY"):
     p = placement(commands, engine=engine.value, symbol=symbol,
-                  strategy_owner="WARRIOR_MOMENTUM" if engine is EngineId.WARRIOR else "QUICK_SCALPER")
+                  strategy_owner="WARRIOR_MOMENTUM" if engine is EngineId.WARRIOR else "QUICK_SCALPER",
+                  **({"adaptive_target": "6.10"} if engine is EngineId.SCALPER else {}))
     c = Candidate(engine, engine.value + "|" + symbol, NOW + timedelta(seconds=60),
                   '{"setup":"confirmed","source":"test"}', lifecycle_id=p.order.strategy_lifecycle_id)
     return PreparedEntry(c, p)

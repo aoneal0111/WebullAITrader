@@ -391,6 +391,8 @@ def create_desktop_composition(
         configuration_fingerprint=warrior_configuration_fingerprint,
         account_context_source=trading_state_sources.warrior_account_context,
         paper_entry_submitter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.submit_entry_decision),
+        paper_order_source=(None if paper_trading_commands is None else paper_trading_commands.order_book.get),
+        paper_acknowledgement_adopter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.adopt_entry_acknowledgement),
         paper_entry_replacer=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.consider_entry_replacement),
         paper_entry_rearmer=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.submit_rearmed_entry),
         paper_exit_submitter=(None if autonomous_paper_bridge is None else autonomous_paper_bridge.ensure_exit),

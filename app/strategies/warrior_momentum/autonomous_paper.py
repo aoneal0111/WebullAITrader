@@ -1211,7 +1211,7 @@ class AutonomousPaperExecutionBridge:
             )
 
     def adopt_entry_acknowledgement(self, placement: OrderPlacementRequest,
-                                   result: OrderPlacementResult) -> bool:
+                                   result: OrderPlacementResult, *, require_active: bool = False) -> bool:
         """Register an externally reviewed entry only from the canonical book.
 
         This does not authorize or resubmit an order. Adoption survives entry
@@ -1268,6 +1268,8 @@ class AutonomousPaperExecutionBridge:
                     for item in self.order_book.history()
                     if item.symbol == r.symbol and item.request.strategy_lifecycle_id == identity), Decimal("0"))
                 if quantity < 0:
+                    return False
+                if require_active and order.is_terminal and quantity <= 0:
                     return False
             except Exception:
                 return False

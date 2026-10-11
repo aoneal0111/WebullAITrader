@@ -306,6 +306,8 @@ class WarriorDesktopSidecar:
         async_decision_intelligence: bool = False,
         report_worker_factory: Callable[..., WarriorReportWorker] = WarriorReportWorker,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        paper_order_source: Callable[[str], object] | None = None,
+        paper_acknowledgement_adopter: Callable[..., bool] | None = None,
     ) -> None:
         self.enabled = bool(enabled)
         self.storage_path = Path(storage_path)
@@ -319,6 +321,8 @@ class WarriorDesktopSidecar:
         )
         self._account_source = account_context_source or (lambda: None)
         self._paper_entry_submitter = paper_entry_submitter
+        self._paper_order_source = paper_order_source
+        self._paper_acknowledgement_adopter = paper_acknowledgement_adopter
         self._paper_exit_submitter = paper_exit_submitter
         self._paper_entry_canceller = paper_entry_canceller
         self._paper_entry_replacer = paper_entry_replacer
@@ -626,6 +630,8 @@ class WarriorDesktopSidecar:
                     self.capture_config,
                     configuration_fingerprint=self.configuration_fingerprint,
                     paper_entry_submitter=self._paper_entry_submitter,
+                    paper_order_source=self._paper_order_source,
+                    paper_acknowledgement_adopter=self._paper_acknowledgement_adopter,
                     paper_exit_submitter=self._paper_exit_submitter,
                     paper_entry_replacer=self._paper_entry_replacer,
                     paper_entry_rearmer=self._paper_entry_rearmer,
