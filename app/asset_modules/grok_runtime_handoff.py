@@ -137,8 +137,10 @@ class GrokRuntimeHandoff:
                     if isinstance(outcome.result, OrderPlacementResult) and outcome.result.success:
                         self._results[key] = outcome.result
                     elif (outcome.state == "DISPATCH_UNCERTAIN"
+                          or outcome.state in {"SUBMITTED", "ACKNOWLEDGED_HANDOFF_INCOMPLETE"}
                           or isinstance(outcome.result, OrderPlacementResult)
-                          and outcome.result.decision is OrderPlacementDecision.GATEWAY_FAILURE):
+                          and (outcome.result.decision is OrderPlacementDecision.GATEWAY_FAILURE
+                               or outcome.result.metadata.get("controller_reason") == "CONTROLLER_UNAVAILABLE")):
                         self._uncertain_keys.add(key)
                 self._uncertain = bool(self._uncertain_keys or self._unknown_completion)
                 # Abstentions and explicit refusals did not create inventory.

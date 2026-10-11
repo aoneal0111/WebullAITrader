@@ -51,7 +51,9 @@ protection remains independent of model review. The bounded state projection is:
 Unread resolutions retain producer bindings and block the next batch. There is
 no accumulating history or queue: at most 32 bound entries and their receipts.
 An uncertain result does not become a NO_ORDER receipt just because an order is
-absent. Stop revokes further authorizations immediately, but late acknowledgements
+absent. A controller-unavailable result is conservatively retained: the native
+service may have dispatched successfully before a ledger acknowledgement failed.
+Malformed success completions without a canonical result are also retained. Stop revokes further authorizations immediately, but late acknowledgements
 remain adoptable. `close` stays incomplete until the worker has stopped and the
 owner consumes outstanding resolutions.
 

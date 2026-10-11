@@ -321,3 +321,55 @@ def test_pending_review_rejects_future_grant_before_worker_start(setup):
     assert submit(review, r).reason == "AUTHORIZATION_NOT_CURRENT"
     assert ai.client.requests == 0 and not review.pending_states()
     review.request_stop()
+
+
+def test_controller_failure_after_real_dispatch_is_retained_for_canonical_recovery(setup, warrior):
+    commands, _, service, _, _, _ = setup
+    review, _ = create(setup)
+    r = request(review)
+    key = r.entry.prepared.candidate.candidate_id
+    captured = []
+    raw = service.service.place_order
+    def place(p):
+        result = raw(p)
+        captured.append(result)
+        return result
+    service.service.place_order = place
+    acknowledge = service.router.controller.acknowledge
+    service.router.controller.acknowledge = lambda *a: (_ for _ in ()).throw(RuntimeError("ledger acknowledgement unavailable"))
+    assert submit(review, r).pending
+    finished(review)
+    assert len(commands.order_book.history()) == 1 and captured[0].success
+    review.drain(None, None)
+    assert review.pending_states()[key] == "RECONCILIATION_REQUIRED"
+    assert not review.take_resolutions()
+    assert submit(review, r).reason == "BUSY"
+    service.router.controller.acknowledge = acknowledge
+    service.reconcile()
+    assert review.handoff.recover_acknowledgement(key, captured[0])
+    review.drain(warrior, None)
+    assert review.take_resolutions()[0].state == "ACKNOWLEDGED"
+    assert len(commands.order_book.history()) == 1
+    review.request_stop()
+
+
+def test_malformed_success_completion_does_not_release_ownership(setup):
+    entered, release = Event(), Event()
+    def block(context, answer):
+        entered.set()
+        assert release.wait(2)
+    review, _ = create(setup, block)
+    r = request(review)
+    key = r.entry.prepared.candidate.candidate_id
+    try:
+        assert submit(review, r).pending and entered.wait(1)
+        review.request_stop()
+        release.set()
+        finished(review)
+        review.handoff.worker._report = EntryDispatch("REVIEWED", "MASTER_SELECTED", (EntryOutcome(key, "SUBMITTED"),))
+        review.drain(None, None)
+        assert review.pending_states()[key] == "RECONCILIATION_REQUIRED"
+        assert not review.take_resolutions()
+    finally:
+        release.set()
+        review.request_stop()
