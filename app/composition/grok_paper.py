@@ -1,5 +1,5 @@
 """Explicit desktop Grok PAPER entry composition; construction is network-free."""
-from datetime import UTC, datetime
+from app.webull.market_data_session import utc_now
 
 from app.asset_modules.grok import configured_client
 from app.asset_modules.grok_coordinator import GrokSuite
@@ -21,7 +21,7 @@ def create_grok_paper_suite(configuration, runtime_mode, *, clock=None):
         raise ValueError("Configure valid XAI_API_KEY and ATLAS_GROK_MODEL for Grok PAPER entries") from None
     if client is None:
         raise ValueError("Configure XAI_API_KEY and ATLAS_GROK_MODEL for Grok PAPER entries")
-    return GrokSuite(client, clock=clock or (lambda: datetime.now(UTC)))
+    return GrokSuite(client, clock=clock or utc_now)
 
 
 def bind_grok_paper_entries(sidecar, suite, service, bridge, *, clock):
