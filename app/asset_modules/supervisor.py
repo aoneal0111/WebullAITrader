@@ -7,8 +7,14 @@ from uuid import uuid4
 
 class CryptoSupervisor:
     """One off-thread request per minute; protection runs independently of AI."""
-    def __init__(self, paper, source, provider=None):
+    def __init__(self, paper, source, provider=None, *, entry_router=None):
+        if entry_router is not None:
+            from app.asset_modules.crypto_allocation import CryptoAllocationRouter
+            if not isinstance(entry_router, CryptoAllocationRouter) or entry_router.ledger is not paper:
+                raise ValueError('Crypto allocation router must own this paper ledger')
+            entry_router.set_enabled(False)
         self.paper, self.source, self.provider = paper, source, provider
+        self.entry_router = entry_router
         self.gate = RLock()
         self._entries_enabled = False
         self.protection_thread = None
@@ -26,8 +32,22 @@ class CryptoSupervisor:
 
     @entries_enabled.setter
     def entries_enabled(self, value):
+        if type(value) is not bool:
+            raise ValueError('Explicit entry activation required')
         with self.gate:
-            self._entries_enabled = bool(value)
+            if self.entry_router is not None:
+                self.entry_router.set_enabled(value)
+            self._entries_enabled = value
+
+    def _protect(self, quotes, now):
+        if self.entry_router is None:
+            problems = self.paper.protect(quotes, now=now)
+        else:
+            result = self.entry_router.protect(quotes, now=now)
+            problems = list(result['protection'])
+            problems.extend('ALLOCATION: '+state for state in set(result['reconciliation'].values())
+                            if state not in {'HELD', 'CLOSED'})
+        self.protection_status = '; '.join(problems) or 'MONITORING'
 
     def start(self):
         if self.thread is not None:
@@ -57,8 +77,7 @@ class CryptoSupervisor:
         while not self.stop_event.is_set():
             try:
                 quotes = {row.pair.canonical_symbol: row for row in self.source()}
-                problems = self.paper.protect(quotes)
-                self.protection_status = '; '.join(problems) or 'MONITORING'
+                self._protect(quotes, datetime.now(UTC))
             except Exception as error:
                 self.protection_status = f'ERROR: {type(error).__name__}'
             self.stop_event.wait(1)
@@ -75,7 +94,7 @@ class CryptoSupervisor:
     def tick(self):
         quotes = {row.pair.canonical_symbol:row for row in self.source()}
         now = datetime.now(UTC)
-        self.paper.protect(quotes, now)
+        self._protect(quotes, now)
         if not self.entries_enabled:
             self.status = 'MANAGING EXISTING POSITIONS · NEW AI PROPOSALS OFF'
             return
@@ -112,10 +131,22 @@ class CryptoSupervisor:
                 with self.gate:
                     if self.stop_event.is_set() or not self._entries_enabled:
                         return
-                    changed = self.paper.apply(proposal, current)
-                outcomes.append('PAPER FILLED' if changed else 'HOLD')
+                    dispatch_at = datetime.now(UTC)
+                    if self.entry_router is not None and proposal.get('action') == 'BUY':
+                        result = self.entry_router.submit(proposal, current, now=dispatch_at)
+                        outcome = 'PAPER FILLED' if result['entry'] == 'OPENED' else result['entry']
+                    else:
+                        changed = self.paper.apply(proposal, current, now=dispatch_at)
+                        outcome = 'PAPER FILLED' if changed else 'HOLD'
+                        if self.entry_router is not None:
+                            self._protect(current, datetime.now(UTC))
+                outcomes.append(outcome)
             except (ValueError, KeyError, ArithmeticError) as error:
-                outcomes.append(f'REJECTED: {str(error)[:160]}')
+                if self.entry_router is None:
+                    outcomes.append(f'REJECTED: {str(error)[:160]}')
+                else:
+                    # A post-claim error may have filled. Never describe it as a refusal.
+                    outcomes.append(f'ALLOCATION REVIEW REQUIRED: {type(error).__name__}')
             self.paper.record_decision(proposal, outcomes[-1])
         self.status = '; '.join(outcomes) or 'HOLD'
 
