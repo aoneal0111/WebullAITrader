@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 import pytest
 
-from app.asset_modules.admission_controller import EntryReservation, PaperAdmissionController
+from app.asset_modules.admission_controller import EntryReservation, FuturesEntryReservation, PaperAdmissionController
 from app.asset_modules.engine_catalog import EngineId
 from app.asset_modules.paper_controller_router import PaperControllerRouter
 from app.paper_gateway import PaperOrderGateway
@@ -45,6 +45,23 @@ def test_routes_actual_gateway_preserves_identity_and_never_duplicates(setup):
     assert len(g.order_book.history()) == 1
     assert router.reconcile() == {"one": "HELD"}
     assert c.snapshot("paper")["reserved_capital"] == 60
+
+
+def test_equity_reconciler_does_not_inspect_or_release_futures_commands(setup):
+    c,g,router = setup
+    c.bind_futures_ledger('paper','a'*32)
+    future = FuturesEntryReservation('future','paper',EngineId.FUTURES,'FUTURES|MICRO|future',
+        'MICRO','synthetic-futures','BUY',D(1),D(50),D(49),D(1),D(11),D(2),NOW,
+        NOW+timedelta(seconds=30),D(10),D(1),'a'*32,'b'*64)
+    assert c.reserve(future,now=NOW).state=='RESERVED'
+    assert c.claim_dispatch(future.command_id,future.engine,now=NOW)
+    c.acknowledge(future.command_id,future.engine,'synthetic-local-reference')
+    assert router.reconcile()=={}
+    assert c.snapshot('paper')['reserved_capital']==D(11)
+    assert router.submit(entry()).state=='ACKNOWLEDGED'
+    assert router.reconcile()=={'one':'HELD'}
+    assert c.command('paper','future')['state']=='ACKNOWLEDGED'
+    assert c.snapshot('paper')['reserved_capital']==D(71)
 
 
 def test_uncertain_claim_recovers_order_without_resubmission(setup):
