@@ -84,6 +84,7 @@ class NativeGrokReview:
         self._entries = {}
         self._resolution_backlog = {}
         self._closed = False
+        self._permission_source = None
         self.handoff = GrokRuntimeHandoff(suite, service, bridge,
             authorize=self._authorize, clock=clock, retain_resolutions=True)
 
@@ -157,12 +158,26 @@ class NativeGrokReview:
             self._grants[candidate_id] = authorization
             return True
 
+    def bind_execution_permission(self, source):
+        """Bind a local nonblocking execution switch before any reviews."""
+        if not callable(source):
+            raise TypeError("Local execution permission source required")
+        with self._lock:
+            if self._closed or self._entries:
+                raise ValueError("Cannot change authorization while review is active")
+            self._permission_source = source
+
     def _authorize(self, prepared):
         with self._lock:
             key = prepared.candidate.candidate_id
             entry, grant = self._entries.get(key), self._grants.get(key)
-            return (not self._closed and entry is not None and entry.prepared is prepared
+            allowed = (not self._closed and entry is not None and entry.prepared is prepared
                     and grant is not None and grant.allows(self.clock()) is True)
+            source = self._permission_source
+        try:
+            return allowed and (source is None or source() is True)
+        except Exception:
+            return False
 
     def drain(self, warrior, scalper):
         return self.handoff.drain(warrior, scalper)

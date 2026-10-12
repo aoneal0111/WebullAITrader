@@ -174,6 +174,16 @@ class QuickScalperPaperRuntimeAdapter:
         )
         self.reconcile()
 
+    def bind_native_review_callbacks(self, reviewer, refresher):
+        """Bind explicit PAPER callbacks before work; never replace pending claims."""
+        if not callable(reviewer) or not callable(refresher):
+            raise TypeError("Native review callbacks required")
+        with self._lock:
+            if self.environment != "PAPER" or self.live_trading_enabled or self.scalper._pending_reviews:
+                raise ValueError("Native review binding requires quiescent PAPER entries")
+            self._paper_entry_reviewer = reviewer
+            self.scalper._review_refresher = refresher
+
     @property
     def enabled(self) -> bool:
         return (
