@@ -116,6 +116,7 @@ class DesktopComposition:
     warrior_forward_sidecar: WarriorDesktopSidecar | None = None
     autonomous_paper_bridge: AutonomousPaperExecutionBridge | None = None
     paper_controller_service: object | None = None
+    grok_suite: object | None = None
     quick_scalper_runtime: QuickScalperPaperRuntimeAdapter | None = None
     paper_entry_intelligence: HistoricalPaperEntryTimingPolicy | None = None
     trade_intelligence_observer: TradeIntelligenceRuntimeObserver | None = None
@@ -165,6 +166,8 @@ def create_desktop_composition(
         )
 
     operational_configuration = load_configuration()
+    from .grok_paper import create_grok_paper_suite, bind_grok_paper_entries
+    grok_suite = create_grok_paper_suite(operational_configuration, configuration.runtime_mode, clock=paper_clock)
     intelligence_composition = create_desktop_intelligence_composition(
         operational_configuration=operational_configuration,
     )
@@ -428,6 +431,9 @@ def create_desktop_composition(
         async_decision_intelligence=True,
         observability=warrior_observability,
     )
+    if grok_suite is not None:
+        bind_grok_paper_entries(warrior_forward_sidecar, grok_suite, paper_controller_service,
+            autonomous_paper_bridge, clock=paper_clock or utc_now)
     if paper_trading_commands is not None:
         warrior_forward_sidecar.restore_execution_lifecycles(
             paper_trading_commands.order_book.history()
@@ -527,6 +533,7 @@ def create_desktop_composition(
         warrior_forward_sidecar=warrior_forward_sidecar,
         autonomous_paper_bridge=autonomous_paper_bridge,
         paper_controller_service=paper_controller_service,
+        grok_suite=grok_suite,
         quick_scalper_runtime=quick_scalper_runtime,
         paper_entry_intelligence=paper_entry_intelligence,
         trade_intelligence_observer=trade_intelligence_observer,
