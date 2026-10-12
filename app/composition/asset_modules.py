@@ -6,6 +6,7 @@ from app.asset_modules.crypto_paper import CryptoPaper
 from app.asset_modules.supervisor import CryptoSupervisor
 from app.asset_modules.grok_coordinator import configured_suite
 from app.asset_modules.futures_ledger_view import FuturesLedgerReader
+from app.asset_modules.options_ledger_view import OptionsLedgerReader
 
 
 def create_asset_modules(composition):
@@ -70,4 +71,5 @@ def create_asset_modules(composition):
     modules.crypto_supervisor = supervisor
     modules.grok_suite = grok
     modules.futures_ledger_reader = FuturesLedgerReader(execution_path.with_name('futures-paper.sqlite3'))
+    modules.options_ledger_reader = OptionsLedgerReader(execution_path.with_name('options-paper.sqlite3'))
     return modules

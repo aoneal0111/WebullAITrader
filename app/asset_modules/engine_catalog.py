@@ -25,6 +25,6 @@ ENGINE_READINESS = {
     EngineId.WARRIOR: "Shared equity runtime; strategy orders identified by lifecycle",
     EngineId.SCALPER: "Shared equity runtime; strategy orders identified by lifecycle",
     EngineId.CRYPTO: "Separate spot paper supervisor; broker execution unavailable",
-    EngineId.OPTIONS: "Planning only; contract quote and execution adapter required",
+    EngineId.OPTIONS: "Offline signals, paper worker and shared allocation available; desktop feed and execution not connected",
     EngineId.FUTURES: "Offline signals, paper worker and shared allocation available; desktop feed and execution not connected",
 }
