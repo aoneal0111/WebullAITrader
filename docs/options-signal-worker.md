@@ -45,7 +45,8 @@ Current quotes can change the selected alternative or cause a refusal.
 Detected failure or closure disables entries and discards pending work. There
 is no automatic retry, restart, code mutation or model-generated order.
 Restarting a worker and reopening the ledger retains consumed successful
-signals. The options ledger still has isolated cash/risk: shared allocation,
+signals. The options ledger retains its own cash/risk checks. An explicitly injected
+[allocation router](options-shared-allocation.md) also reserves shared capital;
 GUI composition, real data adapters and Grok review remain later stages.
 
 ## Windows check
