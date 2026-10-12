@@ -74,3 +74,25 @@ Primary references checked October 12, 2026:
 The next stage needs this response sample and entitlement result to implement
 validated contract discovery and a fresh quote adapter. Options remains offline
 planning/paper-ledger only until those boundaries and desktop routing are ready.
+
+## Isolating a failed snapshot
+
+If discovery succeeds but a combined snapshot returns SDK_REQUEST_UNAVAILABLE,
+that state alone does not identify entitlement, transport, protocol or symbol
+failure. The probe now includes exception class, typed HTTP status where present,
+and only known SDK/provider error codes. Exception messages, request IDs and
+unknown provider codes remain suppressed.
+
+Read one or two known contracts independently, without rediscovering the chain:
+
+```powershell
+& .\.venv\Scripts\python.exe -m app.asset_modules.options_data_check --online `
+    --symbols "SPY261218C00640000,SPY261218P00690000"
+```
+
+These symbols were returned by the operator's October 12 discovery capture;
+they are diagnostic examples, not a contract-selection recommendation. This
+mode makes at most two snapshot attempts, one per contract, and reports each
+requested symbol. It never retries a failed read, requests a subscription, places
+an order or upgrades the SDK. The global three-attempt bound remains unchanged.
+Quote readiness still remains unvalidated after a successful read.
