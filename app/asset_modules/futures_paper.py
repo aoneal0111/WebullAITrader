@@ -179,6 +179,14 @@ class FuturesPaper:
                 'positions':[{'intent_id':i,'plan':json.loads(p),'entry_fill':e,'reserved_risk':r,'reserved_margin':m} for i,p,e,r,m in rows],
                 'events':[{'at':at,**json.loads(payload)} for at,payload in events]}
 
+    def intent_state(self, identity):
+        """Durable simulator ownership, including closed intents outside journal pages."""
+        with self.transaction():
+            if not self.db.execute('SELECT 1 FROM intents WHERE id=?', (identity,)).fetchone():
+                return None
+            return ('OPEN' if self.db.execute('SELECT 1 FROM positions WHERE id=?', (identity,)).fetchone()
+                    else 'CLOSED')
+
     def close(self):
         with self.lock:
             self.enabled = False
