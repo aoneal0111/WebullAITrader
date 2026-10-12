@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import sqlite3
 from threading import RLock
+from uuid import uuid4
 
 from app.asset_modules.contract_logic import Contract, Plan, Quote, exit_reason
 from app.asset_modules.contract_serialization import number, encode, decode
@@ -24,6 +25,7 @@ class FuturesPaper:
         self.risk_per_trade,self.total_open_risk = risk_per_trade,total_open_risk
         self.slippage_ticks,self.max_contracts,self.max_positions = slippage_ticks,max_contracts,max_positions
         self.enabled,self.lock = False,RLock()
+        self._allocation_token = object()
         Path(path).parent.mkdir(parents=True,exist_ok=True)
         self.db = sqlite3.connect(path,timeout=5,isolation_level=None,check_same_thread=False)
         try:
@@ -35,12 +37,15 @@ class FuturesPaper:
             self.db.execute('CREATE TABLE IF NOT EXISTS intents (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)')
             self.db.execute('CREATE TABLE IF NOT EXISTS positions (id TEXT PRIMARY KEY, symbol TEXT UNIQUE, plan TEXT, entry_fill TEXT, opened_at TEXT, last_quote_at TEXT, reserved_risk TEXT, reserved_margin TEXT)')
             self.db.execute('CREATE TABLE IF NOT EXISTS journal (id INTEGER PRIMARY KEY, at TEXT, payload TEXT)')
+            self.db.execute('CREATE TABLE IF NOT EXISTS settlements (id TEXT PRIMARY KEY, net_pnl TEXT NOT NULL, settled_at TEXT NOT NULL)')
             settings = json.dumps([str(starting_cash),str(risk_per_trade),str(total_open_risk),slippage_ticks,max_contracts,max_positions])
             with self.transaction():
                 self.db.execute('PRAGMA application_id=0x41544650')
                 old = self.db.execute('SELECT settings FROM metadata WHERE id=1').fetchone()
                 if old and old[0] != settings: raise ValueError('Futures PAPER settings conflict with existing ledger')
                 self.db.execute('INSERT OR IGNORE INTO metadata VALUES (1,?)',(settings,))
+                self.db.execute('INSERT OR IGNORE INTO metadata VALUES (2,?)',(uuid4().hex,))
+                self.ledger_id = self.db.execute('SELECT settings FROM metadata WHERE id=2').fetchone()[0]
                 self.db.execute('INSERT OR IGNORE INTO account VALUES (1,?,?)',(str(starting_cash),'0'))
         except Exception:
             self.db.close()
@@ -65,7 +70,7 @@ class FuturesPaper:
         self.db.execute('INSERT INTO journal (at,payload) VALUES (?,?)',
             (at.isoformat(),json.dumps({'evidence':'FUTURES_QUOTE_PROXY_NOT_EXECUTABLE_FILL',**payload},default=str)))
 
-    def enter(self,identity,p,quote,*,now):
+    def enter(self,identity,p,quote,*,now,allocation_token=None):
         if not isinstance(identity,str) or not 1 <= len(identity) <= 180:
             raise ValueError('Bounded intent identity required')
         if not isinstance(p,Plan) or not isinstance(p.contract,Contract) or not isinstance(quote,Quote):
@@ -91,6 +96,9 @@ class FuturesPaper:
                 if old[0] != fingerprint: raise ValueError('Intent identity reused for a different plan')
                 return 'DUPLICATE'
             if not self.enabled: return 'ENTRIES_DISABLED'
+            if (self.db.execute('SELECT 1 FROM metadata WHERE id=3').fetchone()
+                    and allocation_token is not self._allocation_token):
+                return 'ALLOCATION_ROUTER_REQUIRED'
             last = self.db.execute('SELECT at FROM journal ORDER BY id DESC LIMIT 1').fetchone()
             if last and now < datetime.fromisoformat(last[0]): return 'OUT_OF_ORDER_EVENT'
             if quote.symbol != c.symbol or not quote.valid(now) or quote.bid % c.tick or quote.ask % c.tick:
@@ -163,6 +171,7 @@ class FuturesPaper:
                 self.db.execute('DELETE FROM positions WHERE id=?',(identity,))
                 self._event(now,intent_id=identity,symbol=p.contract.symbol,action='CLOSE',side=p.side,reason=reason,
                     quantity=p.quantity,fill=fill,fees=fee,net_pnl=gross-2*fee)
+                self.db.execute('INSERT INTO settlements VALUES (?,?,?)',(identity,str(gross-2*fee),now.isoformat()))
                 results[identity] = reason
         return results
 
@@ -186,6 +195,25 @@ class FuturesPaper:
                 return None
             return ('OPEN' if self.db.execute('SELECT 1 FROM positions WHERE id=?', (identity,)).fetchone()
                     else 'CLOSED')
+
+    def bind_allocation(self, controller_id, account_id):
+        """One durable shared allocation per simulator ledger, across restarts."""
+        binding = json.dumps([controller_id,account_id])
+        with self.transaction():
+            old = self.db.execute('SELECT settings FROM metadata WHERE id=3').fetchone()
+            if old and old[0]!=binding: raise ValueError('Futures ledger allocation binding conflict')
+            self.db.execute('INSERT OR IGNORE INTO metadata VALUES (3,?)',(binding,))
+            return self._allocation_token
+
+    def intent_evidence(self, identity):
+        with self.transaction():
+            row = self.db.execute('SELECT fingerprint FROM intents WHERE id=?',(identity,)).fetchone()
+            if row is None: return None
+            position = self.db.execute('SELECT 1 FROM positions WHERE id=?',(identity,)).fetchone()
+            settled = self.db.execute('SELECT net_pnl,settled_at FROM settlements WHERE id=?',(identity,)).fetchone()
+            return {'fingerprint':row[0],'state':'OPEN' if position else 'CLOSED',
+                    'net_pnl':None if settled is None else D(settled[0]),
+                    'settled_at':None if settled is None else datetime.fromisoformat(settled[1])}
 
     def close(self):
         with self.lock:

@@ -125,7 +125,7 @@ class FuturesPaperController:
     This is not the shared equity router or a broker adapter. The ledger retains
     final sizing, quote, cash, margin, duplicate and protection authority.
     """
-    def __init__(self, ledger, *, settings, authorize):
+    def __init__(self, ledger, *, settings, authorize, entry_router=None):
         from app.asset_modules.futures_paper import FuturesPaper
         if not isinstance(ledger, FuturesPaper) or not isinstance(settings, FuturesSignalSettings):
             raise ValueError('Futures PAPER ledger and settings required')
@@ -135,7 +135,19 @@ class FuturesPaperController:
             raise ValueError('Signal and ledger slippage must agree')
         if settings.max_contracts > ledger.max_contracts:
             raise ValueError('Signal contract cap exceeds ledger cap')
+        if entry_router is not None:
+            from app.asset_modules.futures_allocation import FuturesAllocationRouter
+            if not isinstance(entry_router,FuturesAllocationRouter) or entry_router.ledger is not ledger:
+                raise ValueError('Router must own this futures ledger')
         self.ledger, self.settings, self.authorize = ledger, settings, authorize
+        self.entry_router = entry_router
+        self.last_allocation_reconciliation = {}
+
+    def protect(self, quotes, *, now):
+        results = self.ledger.protect(quotes,now=now)
+        if self.entry_router is not None:
+            self.last_allocation_reconciliation = self.entry_router.reconcile()
+        return results
 
     def step(self, contract, history, quotes, *, now):
         with self.ledger.lock:
@@ -143,7 +155,7 @@ class FuturesPaperController:
 
     def _step(self, contract, history, quotes, *, now):
         # Existing exits run first and do not depend on authorization or new signals.
-        protection = self.ledger.protect(quotes, now=now)
+        protection = self.protect(quotes, now=now)
         candidate, reason = propose(contract, history, quotes.get(contract.symbol), now, self.settings)
         if candidate is None:
             return {'entry': reason, 'protection': protection, 'proposal': None}
@@ -153,6 +165,8 @@ class FuturesPaperController:
             result = 'ENTRIES_DISABLED'
         elif self.authorize(candidate, now) is not True:
             result = 'ENTRY_NOT_AUTHORIZED'
+        elif self.entry_router is not None:
+            result = self.entry_router.submit(candidate,quotes[contract.symbol],now=now)
         else:
             result = self.ledger.enter(candidate.intent_id, candidate.plan,
                                        quotes[contract.symbol], now=now)

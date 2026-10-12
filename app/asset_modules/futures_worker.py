@@ -142,7 +142,7 @@ class FuturesWorkerController:
 
     def submit(self, contract, history, quotes, *, now):
         self.worker._owner()
-        protection = self.controller.ledger.protect(quotes,now=now)
+        protection = self.controller.protect(quotes,now=now)
         if self.worker.state in {WorkerState.FAILED, WorkerState.CLOSED}:
             self.controller.ledger.set_enabled(False)
             return {'entry':'WORKER_UNAVAILABLE','protection':protection}
@@ -156,7 +156,7 @@ class FuturesWorkerController:
 
     def poll(self, quotes, *, now):
         self.worker._owner()
-        protection = self.controller.ledger.protect(quotes,now=now)
+        protection = self.controller.protect(quotes,now=now)
         reply = self.worker.poll()
         if self.worker.state in {WorkerState.FAILED, WorkerState.CLOSED}:
             self.controller.ledger.set_enabled(False)

@@ -46,7 +46,8 @@ class PaperControllerRouter:
         after = ""
         while True:
             page = self.controller.recovery_commands(self.account_id, after_command_id=after, limit=1000)
-            rows.extend(page)
+            rows.extend(row for row in page if row['request']['engine'] in {
+                EngineId.WARRIOR.value,EngineId.SCALPER.value})
             if len(page) < 1000:
                 return rows
             after = page[-1]["request"]["command_id"]
