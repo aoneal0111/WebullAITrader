@@ -24,6 +24,8 @@ def test_composed_crypto_is_idle_until_activated_and_restarts(monkeypatch, tmp_p
         assert modules.status(AssetType.EQUITY) == 'OFF'
         assert modules.status(AssetType.CRYPTO) == 'OFF'
         assert modules.status(AssetType.FUTURES) == 'NOT AVAILABLE'
+        assert modules.futures_ledger_reader.path == tmp_path/'futures-paper.sqlite3'
+        assert not modules.futures_ledger_reader.path.exists()
         assert modules.crypto_supervisor.provider is None
         for _ in range(2):
             modules.activate(AssetType.CRYPTO)
