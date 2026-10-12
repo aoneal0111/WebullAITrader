@@ -179,6 +179,11 @@ class OptionsPaper:
                 'positions': [{'intent_id': i, 'plan': json.loads(p), 'entry_fill': e, 'reserved_risk': r} for i,p,e,r in positions],
                 'events': [{'at': at, **json.loads(p)} for at,p in events]}
 
+    def has_intent(self, identity):
+        """Successful entry identities remain consumed after exit and restart."""
+        with self.lock:
+            return self.db.execute('SELECT 1 FROM intents WHERE id=?', (identity,)).fetchone() is not None
+
     def close(self):
         with self.lock:
             self.enabled = False
