@@ -77,6 +77,7 @@ def test_protection_continues_while_model_is_blocked(tmp_path):
     try:
         assert entered.wait(2)
         row.bid, row.ask = D('110'), D('110.1')
+        row.timestamp = datetime.now(UTC)
         from time import monotonic, sleep
         deadline = monotonic()+3
         while paper.snapshot()['positions'] and monotonic() < deadline:

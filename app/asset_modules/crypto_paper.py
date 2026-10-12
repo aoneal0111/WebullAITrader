@@ -1,4 +1,5 @@
 """Isolated spot-crypto snapshot simulator. No broker/exchange order calls."""
+from contextlib import contextmanager
 from datetime import datetime, UTC
 from decimal import Decimal as D
 import json
@@ -31,6 +32,37 @@ class CryptoPaper:
         self.db.execute('CREATE TABLE IF NOT EXISTS decisions (at TEXT, symbol TEXT, action TEXT, outcome TEXT, reason TEXT)')
         self.db.commit()
 
+    @contextmanager
+    def transaction(self):
+        # Claim the write lock before reading balances, across processes too.
+        with self.lock:
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                yield
+                self.db.commit()
+            except BaseException:
+                self.db.rollback()
+                raise
+
+    @staticmethod
+    def _quote(symbol, quote, now):
+        if (not isinstance(now,datetime) or now.tzinfo is None or now.utcoffset() is None):
+            raise ValueError('Aware crypto execution time required')
+        pair = getattr(quote,'pair',None)
+        source_at = getattr(quote,'timestamp',None)
+        if (pair is None or getattr(pair,'quote_asset',None) != 'USD'
+                or getattr(pair,'canonical_symbol',None) != symbol
+                or not isinstance(source_at,datetime) or source_at.tzinfo is None
+                or source_at.utcoffset() is None):
+            raise ValueError('Matching USD pair and aware quote timestamp required')
+        if (not 0 <= (now-source_at).total_seconds() <= 90
+                or getattr(quote,'bid',None) is None or getattr(quote,'ask',None) is None):
+            raise ValueError('Missing or stale crypto quote')
+        bid,ask = number(quote.bid),number(quote.ask)
+        if not 0 < bid <= ask:
+            raise ValueError('Invalid crypto quote')
+        return bid,ask,source_at
+
     def snapshot(self):
         with self.lock:
             cash, realized = self.db.execute('SELECT cash, realized FROM account WHERE id=1').fetchone()
@@ -41,7 +73,7 @@ class CryptoPaper:
                 'events': [{'at': at, **json.loads(payload)} for at, payload in journal]}
 
     def record_decision(self, proposal, outcome):
-        with self.lock, self.db:
+        with self.transaction():
             self.db.execute('INSERT INTO decisions VALUES (?,?,?,?,?)',
                             (datetime.now(UTC).isoformat(), str(proposal.get('symbol',''))[:40],
                              str(proposal.get('action',''))[:20], str(outcome)[:200],
@@ -62,18 +94,13 @@ class CryptoPaper:
             raise ValueError('Invalid paper proposal')
         if action == 'HOLD':
             return False
-        quote = quotes.get(symbol)
-        if quote is None or quote.pair.quote_asset != 'USD':
-            raise ValueError('A supported USD pair and fresh bid/ask are required')
-        age = (now - quote.timestamp).total_seconds()
-        if not 0 <= age <= 90 or quote.bid is None or quote.ask is None:
-            raise ValueError('Missing or stale crypto quote')
-        bid, ask = number(quote.bid), number(quote.ask)
-        if not 0 < bid <= ask:
-            raise ValueError('Invalid crypto quote')
-        with self.lock, self.db:
+        bid,ask,source_at = self._quote(symbol,quotes.get(symbol),now)
+        with self.transaction():
             if self.db.execute('SELECT 1 FROM journal WHERE id=?', (identity,)).fetchone():
                 return False
+            last = self.db.execute('SELECT at FROM journal ORDER BY rowid DESC LIMIT 1').fetchone()
+            if last and now < datetime.fromisoformat(last[0]):
+                raise ValueError('Crypto execution time precedes the last recorded fill')
             cash, realized = map(number, self.db.execute('SELECT cash,realized FROM account WHERE id=1').fetchone())
             position = self.db.execute('SELECT quantity,entry,stop,target FROM positions WHERE symbol=?', (symbol,)).fetchone()
             if action == 'BUY':
@@ -100,6 +127,9 @@ class CryptoPaper:
             else:
                 if not position:
                     raise ValueError('No position to sell')
+                opened = self.db.execute("SELECT at FROM journal WHERE json_extract(payload,'$.symbol')=? AND json_extract(payload,'$.action')='BUY' ORDER BY rowid DESC LIMIT 1",(symbol,)).fetchone()
+                if opened is None or source_at < datetime.fromisoformat(opened[0]):
+                    raise ValueError('Protection quote precedes position entry or entry evidence is missing')
                 held, entry = number(position[0]), number(position[1])
                 fraction = number(proposal.get('fraction', '1'))
                 if not 0 < fraction <= 1:
@@ -127,11 +157,12 @@ class CryptoPaper:
         for position in self.snapshot()['positions']:
             symbol = position['symbol']
             quote = quotes.get(symbol)
-            if quote is None or quote.bid is None or not 0 <= (now-quote.timestamp).total_seconds() <= 90:
+            if quote is None or getattr(quote,'bid',None) is None:
                 problems.append(f'{symbol}: awaiting fresh protection quote')
                 continue
             try:
-                if number(quote.bid) <= number(position['stop']) or number(quote.bid) >= number(position['target']):
+                bid,_,_ = self._quote(symbol,quote,now)
+                if bid <= number(position['stop']) or bid >= number(position['target']):
                     self.apply({'id':f"protection:{symbol}:{quote.timestamp.isoformat()}",
                                 'symbol':symbol,'action':'SELL','reason':'Paper stop/target'}, quotes, now=now)
             except (ValueError, KeyError, ArithmeticError):

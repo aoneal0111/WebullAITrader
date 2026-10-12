@@ -47,7 +47,7 @@ def test_crypto_paper_persists_and_exit_costs_are_accounted(tmp_path):
     paper.close()
     paper = CryptoPaper(path)
     assert paper.snapshot() == initial
-    higher = replace(q, bid=D('110'),ask=D('111'))
+    higher = replace(q, timestamp=datetime.now(UTC),bid=D('110'),ask=D('111'))
     paper.protect({'BTC/USD':higher})
     assert paper.snapshot()['positions'] == []
     assert D(paper.snapshot()['realized']) > 0
