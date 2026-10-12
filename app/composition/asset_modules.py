@@ -11,7 +11,7 @@ def create_asset_modules(composition):
     from pathlib import Path
     from app.configuration import load_configuration
     paper = CryptoPaper(Path(load_configuration().execution_database_path).with_name('crypto-paper.sqlite3'))
-    grok = configured_suite()
+    grok = getattr(composition, "grok_suite", None) or configured_suite()
     supervisor = CryptoSupervisor(paper, composition.crypto_research_runtime.latest,
                                   grok.crypto if grok is not None else None)
     def equity_exposure():

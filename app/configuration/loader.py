@@ -482,6 +482,7 @@ def load_configuration(env=None):
         ),
         quick_scalper_enabled=_bool(e.get("QUICK_SCALPER_ENABLED", "false")),
         paper_controller_enabled=_bool(e.get("ATLAS_PAPER_CONTROLLER_ENABLED", "false")),
+        grok_paper_entries_enabled=_bool(e.get("ATLAS_GROK_PAPER_ENTRIES_ENABLED", "false")),
     )
 
 

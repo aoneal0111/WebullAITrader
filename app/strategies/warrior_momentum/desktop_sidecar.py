@@ -325,6 +325,7 @@ class WarriorDesktopSidecar:
         self._paper_acknowledgement_adopter = paper_acknowledgement_adopter
         self._grok_runtime_handoff = None
         self._grok_native_producer = None
+        self._grok_native_producer_factory = None
         self._paper_exit_submitter = paper_exit_submitter
         self._paper_entry_canceller = paper_entry_canceller
         self._paper_entry_replacer = paper_entry_replacer
@@ -439,28 +440,42 @@ class WarriorDesktopSidecar:
 
     def bind_grok_native_producer(self, producer):
         """Explicit offline binding; no provider calls or configuration activation."""
+        with self._processing_lock:
+            self._bind_grok_native_producer(producer)
+
+    def _bind_grok_native_producer(self, producer):
         from app.asset_modules.grok_desktop_producer import DesktopGrokProducer
         from .quick_scalper_runtime import QuickScalperPaperRuntimeAdapter
         if not isinstance(producer, DesktopGrokProducer):
             raise TypeError("Native desktop producer required")
+        observer = self._quick_scalper_observer
+        if (self.environment != "PAPER" or self._service is not None
+                or not isinstance(observer, QuickScalperPaperRuntimeAdapter)
+                or observer.bridge is not producer.review.bridge
+                or getattr(self._paper_acknowledgement_adopter, "__self__", None) is not producer.review.bridge):
+            raise ValueError("Bind to the same stopped canonical PAPER runtimes")
+        old = self._grok_native_producer
+        if old is not None and (not old.review._closed or old._requests or old.review.pending_states()):
+            raise ValueError("Prior native producer requires reconciliation")
+        if self._grok_runtime_handoff is not None and old is None:
+            state = self._grok_runtime_handoff.snapshot()
+            if not state["closed"] or state["pending_entries"] or state["reconciliation_required"]:
+                raise ValueError("Prior handoff requires reconciliation")
+        observer.bind_native_review_callbacks(producer.scalper_offer, producer.scalper_refresh)
+        producer.permitted = self.grok_native_execution_permitted
+        self._grok_native_producer = producer
+        self._grok_runtime_handoff = producer.review.handoff
+
+
+    def bind_grok_native_producer_factory(self, factory):
+        """Bind a network-free factory while stopped; preserve prior ownership."""
+        if not callable(factory):
+            raise TypeError("Native producer factory required")
         with self._processing_lock:
-            observer = self._quick_scalper_observer
-            if (self.environment != "PAPER" or self._service is not None
-                    or not isinstance(observer, QuickScalperPaperRuntimeAdapter)
-                    or observer.bridge is not producer.review.bridge
-                    or getattr(self._paper_acknowledgement_adopter, "__self__", None) is not producer.review.bridge):
-                raise ValueError("Bind to the same stopped canonical PAPER runtimes")
-            old = self._grok_native_producer
-            if old is not None and (not old.review._closed or old._requests or old.review.pending_states()):
-                raise ValueError("Prior native producer requires reconciliation")
-            if self._grok_runtime_handoff is not None and old is None:
-                state = self._grok_runtime_handoff.snapshot()
-                if not state["closed"] or state["pending_entries"] or state["reconciliation_required"]:
-                    raise ValueError("Prior handoff requires reconciliation")
-            observer.bind_native_review_callbacks(producer.scalper_offer, producer.scalper_refresh)
-            producer.permitted = self.grok_native_execution_permitted
-            self._grok_native_producer = producer
-            self._grok_runtime_handoff = producer.review.handoff
+            if self._service is not None:
+                raise ValueError("Bind native producer factory while stopped")
+            self._bind_grok_native_producer(factory())
+            self._grok_native_producer_factory = factory
 
     def bind_grok_runtime_handoff(self, handoff) -> None:
         """Explicit binding only; does not construct signals or activate AI."""
@@ -689,6 +704,9 @@ class WarriorDesktopSidecar:
                 self.environment = environment.strip().upper()
         with self._processing_lock:
             try:
+                if (self._grok_native_producer_factory is not None
+                        and self._grok_native_producer.review._closed):
+                    self._bind_grok_native_producer(self._grok_native_producer_factory())
                 entry_value_start = getattr(
                     self._entry_value_observer, "start", None,
                 )

@@ -147,7 +147,8 @@ class GrokProposalProvider:
         return proposals
 
 
-def configured_client():
-    key = os.environ.get("XAI_API_KEY", "")
-    model = os.environ.get("ATLAS_GROK_MODEL", "")
+def configured_client(environment=None):
+    environment = os.environ if environment is None else environment
+    key = environment.get("XAI_API_KEY", "").strip()
+    model = environment.get("ATLAS_GROK_MODEL", "").strip()
     return GrokClient(key, model) if key and model else None
