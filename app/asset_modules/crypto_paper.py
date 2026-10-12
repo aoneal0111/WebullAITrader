@@ -1,8 +1,10 @@
 """Isolated spot-crypto snapshot simulator. No broker/exchange order calls."""
 from contextlib import contextmanager
 from datetime import datetime, UTC
-from decimal import Decimal as D
+from decimal import Decimal as D, localcontext
 import json
+from hashlib import sha256
+from uuid import uuid4
 from pathlib import Path
 import sqlite3
 from threading import RLock
@@ -25,12 +27,34 @@ class CryptoPaper:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.lock = RLock()
         self.db = sqlite3.connect(path, check_same_thread=False)
-        self.db.execute('CREATE TABLE IF NOT EXISTS account (id INTEGER PRIMARY KEY, cash TEXT NOT NULL, realized TEXT NOT NULL)')
-        self.db.execute("INSERT OR IGNORE INTO account VALUES (1, '10000', '0')")
-        self.db.execute('CREATE TABLE IF NOT EXISTS positions (symbol TEXT PRIMARY KEY, quantity TEXT, entry TEXT, stop TEXT, target TEXT)')
-        self.db.execute('CREATE TABLE IF NOT EXISTS journal (id TEXT PRIMARY KEY, at TEXT, payload TEXT)')
-        self.db.execute('CREATE TABLE IF NOT EXISTS decisions (at TEXT, symbol TEXT, action TEXT, outcome TEXT, reason TEXT)')
-        self.db.commit()
+        try:
+            with self.transaction():
+                tables = {r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+                marker = self.db.execute('PRAGMA application_id').fetchone()[0]
+                if marker not in {0,0x41544350}:
+                    raise ValueError('Use a dedicated Crypto PAPER ledger')
+                if tables and marker==0:
+                    expected = {'account':('id','cash','realized'),
+                        'positions':('symbol','quantity','entry','stop','target'),
+                        'journal':('id','at','payload'),
+                        'decisions':('at','symbol','action','outcome','reason')}
+                    if tables!=set(expected) or any(tuple(r[1] for r in self.db.execute('PRAGMA table_info('+name+')'))!=cols for name,cols in expected.items()):
+                        raise ValueError('Unrecognized legacy Crypto PAPER schema')
+                self.db.execute('CREATE TABLE IF NOT EXISTS account (id INTEGER PRIMARY KEY, cash TEXT NOT NULL, realized TEXT NOT NULL)')
+                self.db.execute("INSERT OR IGNORE INTO account VALUES (1, '10000', '0')")
+                self.db.execute('CREATE TABLE IF NOT EXISTS positions (symbol TEXT PRIMARY KEY, quantity TEXT, entry TEXT, stop TEXT, target TEXT)')
+                self.db.execute('CREATE TABLE IF NOT EXISTS journal (id TEXT PRIMARY KEY, at TEXT, payload TEXT)')
+                self.db.execute('CREATE TABLE IF NOT EXISTS decisions (at TEXT, symbol TEXT, action TEXT, outcome TEXT, reason TEXT)')
+                self.db.execute('CREATE TABLE IF NOT EXISTS crypto_metadata (key TEXT PRIMARY KEY,value TEXT NOT NULL)')
+                self.db.execute("INSERT OR IGNORE INTO crypto_metadata VALUES ('ledger_id',?)",(uuid4().hex,))
+                self.ledger_id = self.db.execute("SELECT value FROM crypto_metadata WHERE key='ledger_id'").fetchone()[0]
+                self.db.execute('CREATE TABLE IF NOT EXISTS crypto_intents (id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,symbol TEXT NOT NULL,quantity TEXT NOT NULL,entry_cost TEXT NOT NULL,realized_pnl TEXT NOT NULL,opened_at TEXT NOT NULL,closed_at TEXT)')
+                self.db.execute('CREATE TABLE IF NOT EXISTS crypto_position_intents (symbol TEXT PRIMARY KEY,intent_id TEXT UNIQUE NOT NULL)')
+                self.db.execute('CREATE TABLE IF NOT EXISTS crypto_dispatches (id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,entry_id TEXT,quantity TEXT NOT NULL,net_pnl TEXT,at TEXT NOT NULL)')
+                self.db.execute('PRAGMA application_id=0x41544350')
+        except BaseException:
+            self.db.close()
+            raise
 
     @contextmanager
     def transaction(self):
@@ -63,6 +87,44 @@ class CryptoPaper:
             raise ValueError('Invalid crypto quote')
         return bid,ask,source_at
 
+    @staticmethod
+    def _fingerprint(proposal):
+        action = proposal['action']
+        terms = {'symbol':proposal['symbol'],'action':action}
+        fields = ('notional','stop','target') if action=='BUY' else ('fraction',)
+        for field in fields:
+            value = number(proposal.get(field,'1') if field=='fraction' else proposal[field])
+            if len(value.as_tuple().digits)>32 or value.adjusted()>12 or value.as_tuple().exponent < -12:
+                raise ValueError('Bounded dispatch monetary terms required')
+            with localcontext() as ctx:
+                ctx.prec = 100
+                terms[field] = str(value.normalize())
+        return sha256(json.dumps(terms,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+
+    def intent_evidence(self,identity):
+        """Authoritative local entry/partial/closed evidence; never broker state."""
+        with self.transaction():
+            row = self.db.execute('SELECT fingerprint,symbol,quantity,entry_cost,realized_pnl,opened_at,closed_at FROM crypto_intents WHERE id=?',(identity,)).fetchone()
+            if row is None: return None
+            linked = self.db.execute('SELECT symbol FROM crypto_position_intents WHERE intent_id=?',(identity,)).fetchone()
+            position = None if linked is None else self.db.execute('SELECT quantity FROM positions WHERE symbol=?',(linked[0],)).fetchone()
+            if row[6] is None and (position is None or linked[0]!=row[1]):
+                return {'state':'INCONSISTENT','fingerprint':row[0]}
+            if row[6] is not None and linked is not None:
+                return {'state':'INCONSISTENT','fingerprint':row[0]}
+            return {'state':'OPEN' if row[6] is None else 'CLOSED','fingerprint':row[0],
+                'symbol':row[1],'bought_quantity':number(row[2]),'entry_cost':number(row[3]),
+                'remaining_quantity':number(position[0]) if position else D(0),
+                'realized_pnl':number(row[4]),'opened_at':datetime.fromisoformat(row[5]),
+                'settled_at':None if row[6] is None else datetime.fromisoformat(row[6])}
+
+    def dispatch_evidence(self,identity):
+        with self.transaction():
+            row = self.db.execute('SELECT fingerprint,entry_id,quantity,net_pnl,at FROM crypto_dispatches WHERE id=?',(identity,)).fetchone()
+            return None if row is None else {'fingerprint':row[0],'entry_id':row[1],
+                'quantity':number(row[2]),'net_pnl':None if row[3] is None else number(row[3]),
+                'filled_at':datetime.fromisoformat(row[4])}
+
     def snapshot(self):
         with self.lock:
             cash, realized = self.db.execute('SELECT cash, realized FROM account WHERE id=1').fetchone()
@@ -94,10 +156,16 @@ class CryptoPaper:
             raise ValueError('Invalid paper proposal')
         if action == 'HOLD':
             return False
+        fingerprint = self._fingerprint(proposal)
         bid,ask,source_at = self._quote(symbol,quotes.get(symbol),now)
         with self.transaction():
-            if self.db.execute('SELECT 1 FROM journal WHERE id=?', (identity,)).fetchone():
+            old = self.db.execute('SELECT fingerprint FROM crypto_dispatches WHERE id=?',(identity,)).fetchone()
+            if old:
+                if old[0]!=fingerprint: raise ValueError('Crypto dispatch identity reused with different terms')
                 return False
+            if self.db.execute('SELECT 1 FROM journal WHERE id=?',(identity,)).fetchone():
+                raise ValueError('Legacy dispatch identity lacks verified terms')
+            entry_id,exit_pnl = None,None
             last = self.db.execute('SELECT at FROM journal ORDER BY rowid DESC LIMIT 1').fetchone()
             if last and now < datetime.fromisoformat(last[0]):
                 raise ValueError('Crypto execution time precedes the last recorded fill')
@@ -124,6 +192,10 @@ class CryptoPaper:
                     raise ValueError('Insufficient reward after estimated costs')
                 cash -= cost
                 self.db.execute('INSERT INTO positions VALUES (?,?,?,?,?)', (symbol,str(quantity),str(cost/quantity),str(stop),str(target)))
+                entry_id = identity
+                self.db.execute('INSERT INTO crypto_intents VALUES (?,?,?,?,?,?,?,NULL)',
+                    (identity,fingerprint,symbol,str(quantity),str(cost),'0',now.isoformat()))
+                self.db.execute('INSERT INTO crypto_position_intents VALUES (?,?)',(symbol,identity))
             else:
                 if not position:
                     raise ValueError('No position to sell')
@@ -140,11 +212,21 @@ class CryptoPaper:
                 price = bid * (1-self.slippage)
                 proceeds = quantity*price*(1-self.fee)
                 cash += proceeds
-                realized += proceeds - quantity*entry
+                exit_pnl = proceeds-quantity*entry
+                realized += exit_pnl
+                linked = self.db.execute('SELECT intent_id FROM crypto_position_intents WHERE symbol=?',(symbol,)).fetchone()
+                if linked:
+                    entry_id = linked[0]
+                    old_pnl = number(self.db.execute('SELECT realized_pnl FROM crypto_intents WHERE id=?',(entry_id,)).fetchone()[0])
+                    self.db.execute('UPDATE crypto_intents SET realized_pnl=?,closed_at=? WHERE id=?',
+                        (str(old_pnl+exit_pnl),now.isoformat() if quantity==held else None,entry_id))
                 if quantity == held:
                     self.db.execute('DELETE FROM positions WHERE symbol=?', (symbol,))
+                    self.db.execute('DELETE FROM crypto_position_intents WHERE symbol=?',(symbol,))
                 else:
                     self.db.execute('UPDATE positions SET quantity=? WHERE symbol=?', (str(held-quantity), symbol))
+            self.db.execute('INSERT INTO crypto_dispatches VALUES (?,?,?,?,?,?)',
+                (identity,fingerprint,entry_id,str(quantity),None if exit_pnl is None else str(exit_pnl),now.isoformat()))
             event = {'symbol':symbol, 'action':action, 'quantity':str(quantity), 'fill':str(price),
                      'model':'SNAPSHOT_SIMULATION', 'reason':str(proposal.get('reason',''))[:500]}
             self.db.execute('UPDATE account SET cash=?,realized=? WHERE id=1', (str(cash),str(realized)))
