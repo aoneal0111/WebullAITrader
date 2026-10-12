@@ -177,6 +177,38 @@ class OptionsEntryReservation(EntryReservation):
 
 
 @dataclass(frozen=True)
+class CryptoEntryReservation(EntryReservation):
+    execution_cost_budget: Decimal
+    ledger_id: str
+    plan_fingerprint: str
+    local_intent_id: str
+
+    def __post_init__(self):
+        super().__post_init__()
+        if (self.engine is not EngineId.CRYPTO or self.side!='BUY' or self.multiplier!=Decimal(1)
+                or not self.instrument.endswith('/USD')):
+            raise ValueError('Owned long spot crypto required')
+        _text(self.local_intent_id,'local_intent_id')
+        if len(self.local_intent_id)>200: raise ValueError('Bounded local identity required')
+        if self.execution_cost_budget!=0: _positive(self.execution_cost_budget,'execution_cost_budget')
+        elif not isinstance(self.execution_cost_budget,Decimal): raise ValueError('Decimal execution costs required')
+        for value,length in ((self.ledger_id,32),(self.plan_fingerprint,64)):
+            if not isinstance(value,str) or len(value)!=length or any(c not in '0123456789abcdef' for c in value):
+                raise ValueError('Durable ledger and proposal identities required')
+        with localcontext() as ctx:
+            ctx.prec=100
+            if self.capital<self.entry_limit*self.quantity+self.execution_cost_budget:
+                raise ValueError('Capital must cover spot notional and execution costs')
+            if self.loss_budget<(self.entry_limit-self.structural_stop)*self.quantity+self.execution_cost_budget:
+                raise ValueError('Loss budget must cover stop risk and execution costs')
+
+    def payload(self):
+        data=json.loads(super().payload())
+        data.update(capital_model='PAID_CRYPTO_SPOT',execution_cost_budget=_decimal_text(self.execution_cost_budget))
+        return json.dumps(data,sort_keys=True,separators=(',',':'))
+
+
+@dataclass(frozen=True)
 class Admission:
     state: str
     reason: str = ""
@@ -201,6 +233,8 @@ class PaperAdmissionController:
             db.execute("INSERT OR IGNORE INTO controller_metadata VALUES ('identity',?)",(uuid4().hex,))
             self.identity = db.execute("SELECT value FROM controller_metadata WHERE key='identity'").fetchone()[0]
             db.execute('CREATE TABLE IF NOT EXISTS controller_futures_bindings (account_id TEXT PRIMARY KEY,ledger_id TEXT UNIQUE NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS controller_crypto_bindings (account_id TEXT PRIMARY KEY,ledger_id TEXT UNIQUE NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS controller_crypto_settlements (command_id TEXT PRIMARY KEY,account_id TEXT NOT NULL,net_pnl TEXT NOT NULL,settled_at TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS controller_options_bindings (account_id TEXT PRIMARY KEY,ledger_id TEXT UNIQUE NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS controller_options_settlements (command_id TEXT PRIMARY KEY,account_id TEXT NOT NULL,net_pnl TEXT NOT NULL,settled_at TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS controller_futures_settlements (command_id TEXT PRIMARY KEY,account_id TEXT NOT NULL,net_pnl TEXT NOT NULL,settled_at TEXT NOT NULL)')
@@ -252,7 +286,7 @@ class PaperAdmissionController:
         return ""
 
     def reserve(self, request: EntryReservation, *, now=None):
-        if type(request) not in {EntryReservation,FuturesEntryReservation,OptionsEntryReservation}:
+        if type(request) not in {EntryReservation,FuturesEntryReservation,OptionsEntryReservation,CryptoEntryReservation}:
             raise ValueError('Trusted typed reservation required')
         now = _aware(now or datetime.now(UTC))
         payload = request.payload()
@@ -276,7 +310,11 @@ class PaperAdmissionController:
                 bound = db.execute('SELECT ledger_id FROM controller_options_bindings WHERE account_id=?',(request.account_id,)).fetchone()
                 if not bound or bound['ledger_id'] != request.ledger_id:
                     return Admission('REJECTED','OPTIONS_LEDGER_NOT_BOUND')
-            last_settlement = db.execute('SELECT settled_at FROM controller_futures_settlements WHERE account_id=? UNION ALL SELECT settled_at FROM controller_options_settlements WHERE account_id=? ORDER BY settled_at DESC LIMIT 1',(request.account_id,request.account_id)).fetchone()
+            if isinstance(request,CryptoEntryReservation):
+                bound=db.execute('SELECT ledger_id FROM controller_crypto_bindings WHERE account_id=?',(request.account_id,)).fetchone()
+                if not bound or bound['ledger_id']!=request.ledger_id:
+                    return Admission('REJECTED','CRYPTO_LEDGER_NOT_BOUND')
+            last_settlement = db.execute('SELECT settled_at FROM controller_futures_settlements WHERE account_id=? UNION ALL SELECT settled_at FROM controller_options_settlements WHERE account_id=? UNION ALL SELECT settled_at FROM controller_crypto_settlements WHERE account_id=? ORDER BY settled_at DESC LIMIT 1',(request.account_id,request.account_id,request.account_id)).fetchone()
             if last_settlement and now < datetime.fromisoformat(last_settlement[0]):
                 return Admission('REJECTED','ALLOCATION_EVENT_OUT_OF_ORDER')
             active = db.execute("""SELECT * FROM controller_commands WHERE account_id=?
@@ -286,7 +324,7 @@ class PaperAdmissionController:
             if len(active) >= self.MAX_ACTIVE_COMMANDS:
                 return Admission("REJECTED", "CONTROLLER_CAPACITY")
             pnl = _total(Decimal(row[0]) for row in db.execute(
-                'SELECT net_pnl FROM controller_futures_settlements WHERE account_id=? UNION ALL SELECT net_pnl FROM controller_options_settlements WHERE account_id=?',(request.account_id,request.account_id)))
+                'SELECT net_pnl FROM controller_futures_settlements WHERE account_id=? UNION ALL SELECT net_pnl FROM controller_options_settlements WHERE account_id=? UNION ALL SELECT net_pnl FROM controller_crypto_settlements WHERE account_id=?',(request.account_id,request.account_id,request.account_id)))
             capital_ceiling = _total((Decimal(account['capital']),min(pnl,Decimal(0))))
             if _total([request.capital, *(Decimal(row["capital"]) for row in active)]) > capital_ceiling:
                 return Admission("REJECTED", "SHARED_CAPITAL_LIMIT")
@@ -320,6 +358,17 @@ class PaperAdmissionController:
             if any(row['account_id']!=account_id or row['ledger_id']!=ledger_id for row in rows):
                 raise ValueError('Options ledger already belongs to another allocation')
             db.execute('INSERT OR IGNORE INTO controller_options_bindings VALUES (?,?)',(account_id,ledger_id))
+
+    def bind_crypto_ledger(self, account_id, ledger_id):
+        _text(account_id,'account_id')
+        _text(ledger_id,'ledger_id')
+        with self._transaction() as db:
+            if not db.execute('SELECT 1 FROM controller_accounts WHERE account_id=?',(account_id,)).fetchone():
+                raise ValueError('Configure the shared account allocation explicitly first')
+            rows = db.execute('SELECT account_id,ledger_id FROM controller_crypto_bindings WHERE account_id=? OR ledger_id=?',(account_id,ledger_id)).fetchall()
+            if any(row['account_id']!=account_id or row['ledger_id']!=ledger_id for row in rows):
+                raise ValueError('Crypto ledger already belongs to another allocation')
+            db.execute('INSERT OR IGNORE INTO controller_crypto_bindings VALUES (?,?)',(account_id,ledger_id))
 
     def command(self, account_id, command_id):
         with self._transaction() as db:
@@ -388,15 +437,49 @@ class PaperAdmissionController:
             db.execute('INSERT INTO controller_options_settlements VALUES (?,?,?,?)',(command_id,row['account_id'],str(net_pnl),settled_at))
             db.execute("UPDATE controller_commands SET state='CLOSED',reconciliation_reference=? WHERE command_id=?",(reference,command_id))
 
+    def refuse_crypto_dispatch(self, command_id, *, reference):
+        """Trusted simulator adapter only: a completed local refusal, never a timeout."""
+        _text(reference,'refusal reference')
+        with self._transaction() as db:
+            row = self._owned(db,command_id,EngineId.CRYPTO)
+            if row['state']!='SUBMITTING' or json.loads(row['payload']).get('capital_model')!='PAID_CRYPTO_SPOT':
+                raise ValueError('One claimed crypto premium dispatch required')
+            db.execute("UPDATE controller_commands SET state='REJECTED',reconciliation_reference=? WHERE command_id=?",(reference,command_id))
+
+    def settle_crypto_flat(self, command_id, *, ledger_id, plan_fingerprint, net_pnl, settled_at, reference):
+        """Trusted simulator reconciliation: durable matching closed intent and net P&L."""
+        _text(reference,'settlement reference')
+        settled_at = _aware(settled_at).isoformat()
+        if not isinstance(net_pnl,Decimal) or not net_pnl.is_finite():
+            raise ValueError('Finite Decimal settlement required')
+        if (len(net_pnl.as_tuple().digits)>40 or net_pnl.as_tuple().exponent < -32 or net_pnl.adjusted()>12):
+            raise ValueError('Crypto settlement exceeds bounded fractional precision')
+        with self._transaction() as db:
+            row = self._owned(db,command_id,EngineId.CRYPTO)
+            payload = json.loads(row['payload'])
+            if (payload.get('capital_model')!='PAID_CRYPTO_SPOT' or payload.get('ledger_id')!=ledger_id
+                    or payload.get('plan_fingerprint')!=plan_fingerprint):
+                raise ValueError('Settlement identity mismatch')
+            old = db.execute('SELECT net_pnl,settled_at FROM controller_crypto_settlements WHERE command_id=?',(command_id,)).fetchone()
+            if old:
+                if Decimal(old[0])!=net_pnl or old[1]!=settled_at: raise ValueError('Settlement cannot be changed')
+                return
+            if row['state'] not in {'SUBMITTING','ACKNOWLEDGED'}:
+                raise ValueError('Submitted crypto intent required')
+            db.execute('INSERT INTO controller_crypto_settlements VALUES (?,?,?,?)',(command_id,row['account_id'],str(net_pnl),settled_at))
+            db.execute("UPDATE controller_commands SET state='CLOSED',reconciliation_reference=? WHERE command_id=?",(reference,command_id))
+
     def allocation_balance(self, account_id):
         with self._transaction() as db:
             row = db.execute('SELECT capital FROM controller_accounts WHERE account_id=?',(account_id,)).fetchone()
             if row is None: raise ValueError('Account allocation not configured')
             futures_pnl = _total(Decimal(r[0]) for r in db.execute('SELECT net_pnl FROM controller_futures_settlements WHERE account_id=?',(account_id,)))
             options_pnl = _total(Decimal(r[0]) for r in db.execute('SELECT net_pnl FROM controller_options_settlements WHERE account_id=?',(account_id,)))
-            pnl = _total((futures_pnl,options_pnl))
+            crypto_pnl = _total(Decimal(r[0]) for r in db.execute('SELECT net_pnl FROM controller_crypto_settlements WHERE account_id=?',(account_id,)))
+            pnl = _total((futures_pnl,options_pnl,crypto_pnl))
             return {'configured_capital':Decimal(row[0]),'futures_realized_pnl':futures_pnl,
-                    'options_realized_pnl':options_pnl,'derivatives_realized_pnl':pnl,
+                    'options_realized_pnl':options_pnl,'derivatives_realized_pnl':_total((futures_pnl,options_pnl)),
+                    'crypto_realized_pnl':crypto_pnl,'simulator_realized_pnl':pnl,
                     'capital_ceiling':_total((Decimal(row[0]),min(pnl,Decimal(0))))}
 
     @staticmethod
@@ -454,8 +537,8 @@ class PaperAdmissionController:
             raise ValueError("Verified terminal orders and flat lifecycle required")
         with self._transaction() as db:
             row = self._owned(db, command_id, engine)
-            if json.loads(row['payload']).get('capital_model') in {'DECLARED_FUTURES_MARGIN','PAID_OPTION_PREMIUM'}:
-                raise ValueError('Derivative allocation release requires verified settlement')
+            if json.loads(row['payload']).get('capital_model') in {'DECLARED_FUTURES_MARGIN','PAID_OPTION_PREMIUM','PAID_CRYPTO_SPOT'}:
+                raise ValueError('Simulator allocation release requires verified settlement')
             if row["state"] == "CLOSED":
                 return
             if row["state"] not in {"SUBMITTING", "ACKNOWLEDGED"}:
