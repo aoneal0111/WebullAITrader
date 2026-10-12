@@ -149,7 +149,8 @@ def test_desktop_futures_routes_share_reader_but_never_start_a_market(saved):
         assert events.ledger_reader is positions.ledger_reader and events.content.item(0,2).text()=='OPEN'
         window.asset_navigation.tabs.setCurrentIndex(window.asset_navigation.assets.index(AssetType.OPTIONS))
         app.processEvents()
-        assert window.asset_surface.currentWidget().ledger_reader is None
+        assert window.asset_surface.currentWidget().ledger_reader is not positions.ledger_reader
+        assert window.asset_surface.currentWidget().last_ledger_view.status=='UNCONFIGURED'
         assert window.asset_surface.currentWidget().content.rowCount()==0
         assert modules.status(AssetType.FUTURES)=='NOT AVAILABLE'
         assert not composition.runtime_service.is_active and ledger.enabled
