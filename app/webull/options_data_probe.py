@@ -110,10 +110,11 @@ class Observation:
 
 
 class OptionsDataProbe:
-    def __init__(self, factory, *, clock):
-        if not callable(factory) or not callable(clock):
+    def __init__(self, factory, *, clock, sampler=schema_sample):
+        if not callable(factory) or not callable(clock) or not callable(sampler):
             raise TypeError('Lazy read-only SDK factory and clock required')
         self.factory, self.clock = factory, clock
+        self.sampler = sampler
         self.client, self.calls, self.lock = None, 0, Lock()
 
     def _read(self, operation, invoke, *, requested_symbols=()):
@@ -136,7 +137,7 @@ class OptionsDataProbe:
                     return Observation(operation,'INVALID_RESPONSE',self.clock(), requested_symbols=requested_symbols)
                 if len(json.dumps(payload,allow_nan=False).encode()) > 131072:
                     return Observation(operation,'RESPONSE_TOO_LARGE',self.clock(), requested_symbols=requested_symbols)
-                sample,symbols = schema_sample(payload)
+                sample,symbols = self.sampler(payload)
                 if operation.startswith('CONTRACTS_'):
                     underlying = operation.removeprefix('CONTRACTS_')
                     symbols = tuple(s for s in symbols if OCC.fullmatch(s)[1] == underlying)
