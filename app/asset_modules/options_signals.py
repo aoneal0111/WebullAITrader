@@ -131,9 +131,12 @@ class OptionsPaperController:
             raise ValueError('Signal and ledger execution settings must agree')
         self.ledger, self.settings, self.authorize = ledger, settings, authorize
 
+    def protect(self, quotes, *, now):
+        return self.ledger.protect(quotes, now=now)
+
     def step(self, history, underlying_quote, contracts, quotes, *, now):
         with self.ledger.lock:
-            protection = self.ledger.protect(quotes, now=now)
+            protection = self.protect(quotes, now=now)
             candidates, reason = propose(history, underlying_quote, contracts, quotes, now, self.settings)
             candidate = candidates[0] if candidates else None
             if candidate is None:
