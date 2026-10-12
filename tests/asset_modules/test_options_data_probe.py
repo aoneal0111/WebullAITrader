@@ -110,7 +110,8 @@ def test_discovery_does_not_promote_a_different_underlying_symbol():
     assert p.discover('QQQ').symbols == (SYMBOL,)
 
 
-def test_online_command_uses_market_data_scope_and_bounded_reads(tmp_path,monkeypatch,capsys):
+@pytest.mark.parametrize('explicit', [False, True])
+def test_online_command_uses_market_data_scope_and_bounded_reads(tmp_path,monkeypatch,capsys,explicit):
     import sys
     import dotenv
     import app.configuration.loader as loader
@@ -127,12 +128,49 @@ def test_online_command_uses_market_data_scope_and_bounded_reads(tmp_path,monkey
     monkeypatch.setattr(data,'create_official_data_client',factory)
     monkeypatch.setattr(loader,'load_configuration',lambda:c)
     monkeypatch.setattr(dotenv,'load_dotenv',lambda **_:None)
-    monkeypatch.setattr(sys,'argv',['check','--online'])
+    monkeypatch.setattr(sys,'argv',['check','--online'] + (['--symbols', SYMBOL+',SPY261016P00640000'] if explicit else []))
     assert module.main()==0
     text=capsys.readouterr().out
     report=json.loads(text)
-    assert report['market_data_requests']==3 and len(report['results'])==3
+    assert report['market_data_requests']==(2 if explicit else 3)
+    assert len(report['results'])==(2 if explicit else 3)
+    assert client.instrument.get_option_contracts.call_count==(0 if explicit else 2)
+    if explicit:
+        assert [r['requested_symbols'] for r in report['results']]==[[SYMBOL],['SPY261016P00640000']]
     assert factory.call_count==1
     assert factory.call_args.kwargs['app_key']=='test-key'
     assert 'test-key' not in text and 'test-secret' not in text
     assert not report['options_trading_enabled']
+
+
+@pytest.mark.parametrize('kind',['server','client','attribute','unknown','unsafe_code'])
+def test_safe_exception_diagnostics_do_not_expose_messages_ids_or_unknown_codes(kind):
+    from webull.core.exception.exceptions import ServerException,ClientException
+    p,c,_,_=sdk()
+    if kind=='server': exc=ServerException('QUOTE_PERMISSION_DENIED','private signed request',403,'private-id')
+    elif kind=='client': exc=ClientException('SDK.InvalidParameter','private signed request')
+    elif kind=='attribute': exc=AttributeError('private signed request')
+    elif kind=='unsafe_code': exc=ServerException('ERROR_PRIVATE_KEY_ABCD','private signed request',417,'private-id')
+    else: exc=RuntimeError('private signed request')
+    c.option_market_data.get_option_snapshot.side_effect=exc
+    r=p.snapshots((SYMBOL,))
+    text=json.dumps(r.report())
+    assert 'private' not in text and 'ABCD' not in text and 'signed' not in text
+    assert r.state=='SDK_REQUEST_UNAVAILABLE' and r.requested_symbols==(SYMBOL,)
+    if kind=='server':
+        assert r.diagnostics=={'exception_class':'ServerException','error_code':'QUOTE_PERMISSION_DENIED','http_status':403}
+    elif kind=='client': assert r.diagnostics['error_code']=='SDK.InvalidParameter'
+    elif kind=='unsafe_code': assert r.diagnostics['error_code']=='UNRECOGNIZED_ERROR_CODE'
+    elif kind=='attribute': assert r.diagnostics['exception_class']=='AttributeError'
+    else: assert r.diagnostics['exception_class']=='OTHER_EXCEPTION'
+
+
+@pytest.mark.parametrize('args',[['--symbols',SYMBOL],['--online','--symbols','QQQ'],
+    ['--online','--symbols',SYMBOL+','+SYMBOL],['--online','--symbols',','.join([SYMBOL]*3)]])
+def test_invalid_explicit_contracts_stop_before_network(monkeypatch,args):
+    import sys
+    from app.asset_modules import options_data_check as module
+    monkeypatch.setattr(sys,'argv',['check']+args)
+    monkeypatch.setattr(module,'OptionsDataProbe',lambda *_args,**_kwargs:pytest.fail('Invalid network initialization'))
+    with pytest.raises(SystemExit) as caught: module.main()
+    assert caught.value.code==2

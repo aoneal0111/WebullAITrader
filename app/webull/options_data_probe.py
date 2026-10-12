@@ -1,6 +1,6 @@
 """Bounded read-only option SDK capability/schema probe; no order surface."""
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import json
 import re
@@ -12,6 +12,30 @@ DECIMAL_FIELDS = frozenset({'bid','ask','bid_price','ask_price','price','strike_
     'multiplier','contract_multiplier','option_contract_multiplier','tick_size','bid_size','ask_size'})
 TIME_FIELDS = frozenset({'time','timestamp','bid_time','ask_time','quote_time',
     'bid_timestamp','ask_timestamp','expire_date','expiration_date','option_expire_date'})
+
+
+def safe_exception_details(exc):
+    """Only typed status and bounded provider codes; never exception messages."""
+    from webull.core.exception.exceptions import ClientException, ServerException
+    known = {'AttributeError', 'TypeError', 'ValueError', 'TimeoutError',
+             'ConnectionError', 'OSError', 'JSONDecodeError'}
+    name = type(exc).__name__
+    details = {'exception_class': name if name in known else 'OTHER_EXCEPTION'}
+    if isinstance(exc, (ClientException, ServerException)):
+        details['exception_class'] = 'ServerException' if isinstance(exc,ServerException) else 'ClientException'
+        code = exc.get_error_code()
+        from webull.core.exception import error_code as sdk_codes
+        permitted = {v for k,v in vars(sdk_codes).items() if k.startswith('SDK_') and isinstance(v,str)}
+        permitted.update({'ERROR_INIT_TOKEN', 'ERROR_STORAGE_TOKEN', 'UNSUPPORTED_SYMBOL',
+            'INVALID_SYMBOL', 'PERMISSION_DENIED', 'QUOTE_PERMISSION_DENIED',
+            'SUBSCRIPTION_REQUIRED', 'DATA_PERMISSION_DENIED', 'ACCESS_DENIED',
+            'INVALID_TOKEN', 'TOKEN_EXPIRED', 'RATE_LIMIT', 'TOO_MANY_REQUESTS'})
+        details['error_code'] = code if isinstance(code,str) and code in permitted else 'UNRECOGNIZED_ERROR_CODE'
+        if isinstance(exc,ServerException):
+            status = exc.get_http_status()
+            if type(status) is int and 100 <= status <= 599:
+                details['http_status'] = status
+    return details
 
 
 def supported_symbol(value):
@@ -75,11 +99,14 @@ class Observation:
     observed_at: datetime
     schema: dict | list | None = None
     symbols: tuple[str,...] = ()
+    diagnostics: dict | None = None
+    requested_symbols: tuple[str,...] = ()
 
     def report(self):
         return {'operation':self.operation,'state':self.state,
             'observed_at':self.observed_at.isoformat(), 'schema':self.schema,
-            'symbols':list(self.symbols), 'quote_readiness':'UNVALIDATED_RESPONSE_SCHEMA'}
+            'symbols':list(self.symbols), 'diagnostics':self.diagnostics,
+            'requested_symbols':list(self.requested_symbols), 'quote_readiness':'UNVALIDATED_RESPONSE_SCHEMA'}
 
 
 class OptionsDataProbe:
@@ -89,10 +116,10 @@ class OptionsDataProbe:
         self.factory, self.clock = factory, clock
         self.client, self.calls, self.lock = None, 0, Lock()
 
-    def _read(self, operation, invoke):
+    def _read(self, operation, invoke, *, requested_symbols=()):
         with self.lock:
             if self.calls >= 3:
-                return Observation(operation,'PROBE_REQUEST_LIMIT',self.clock())
+                return Observation(operation,'PROBE_REQUEST_LIMIT',self.clock(), requested_symbols=requested_symbols)
             self.calls += 1  # No retries, including failed initialization.
             try:
                 if self.client is None:
@@ -100,22 +127,24 @@ class OptionsDataProbe:
                 response = invoke(self.client)
                 status = getattr(response,'status_code',None)
                 if status != 200:
-                    return Observation(operation, f'HTTP_{status}' if type(status) is int else 'INVALID_RESPONSE',self.clock())
+                    return Observation(operation, f'HTTP_{status}' if type(status) is int else 'INVALID_RESPONSE',self.clock(), requested_symbols=requested_symbols)
                 raw = getattr(response,'content',None)
                 if isinstance(raw,bytes) and len(raw) > 131072:
-                    return Observation(operation,'RESPONSE_TOO_LARGE',self.clock())
+                    return Observation(operation,'RESPONSE_TOO_LARGE',self.clock(), requested_symbols=requested_symbols)
                 payload = response.json()
                 if not isinstance(payload,(dict,list)):
-                    return Observation(operation,'INVALID_RESPONSE',self.clock())
+                    return Observation(operation,'INVALID_RESPONSE',self.clock(), requested_symbols=requested_symbols)
                 if len(json.dumps(payload,allow_nan=False).encode()) > 131072:
-                    return Observation(operation,'RESPONSE_TOO_LARGE',self.clock())
+                    return Observation(operation,'RESPONSE_TOO_LARGE',self.clock(), requested_symbols=requested_symbols)
                 sample,symbols = schema_sample(payload)
                 if operation.startswith('CONTRACTS_'):
                     underlying = operation.removeprefix('CONTRACTS_')
                     symbols = tuple(s for s in symbols if OCC.fullmatch(s)[1] == underlying)
-                return Observation(operation,'RESPONSE_CAPTURED',self.clock(),sample,symbols)
-            except Exception:
-                return Observation(operation,'SDK_REQUEST_UNAVAILABLE',self.clock())
+                return Observation(operation,'RESPONSE_CAPTURED',self.clock(),sample,symbols,
+                    requested_symbols=requested_symbols)
+            except Exception as exc:
+                return Observation(operation,'SDK_REQUEST_UNAVAILABLE',self.clock(),
+                    diagnostics=safe_exception_details(exc), requested_symbols=requested_symbols)
 
     def discover(self, underlying):
         if underlying not in {'SPY','QQQ'}:
@@ -128,4 +157,4 @@ class OptionsDataProbe:
                 or len(set(symbols)) != len(symbols) or not all(supported_symbol(s) for s in symbols)):
             raise ValueError('One to twenty unique SPY/QQQ OCC contracts required')
         return self._read('OPTION_SNAPSHOTS',lambda sdk: sdk.option_market_data.get_option_snapshot(
-            symbols=list(symbols),category='US_OPTION'))
+            symbols=list(symbols),category='US_OPTION'),requested_symbols=symbols)
