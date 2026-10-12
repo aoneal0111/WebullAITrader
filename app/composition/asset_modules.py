@@ -5,12 +5,14 @@ from app.asset_modules.lifecycle import AssetModules, ModuleAdapter
 from app.asset_modules.crypto_paper import CryptoPaper
 from app.asset_modules.supervisor import CryptoSupervisor
 from app.asset_modules.grok_coordinator import configured_suite
+from app.asset_modules.futures_ledger_view import FuturesLedgerReader
 
 
 def create_asset_modules(composition):
     from pathlib import Path
     from app.configuration import load_configuration
-    paper = CryptoPaper(Path(load_configuration().execution_database_path).with_name('crypto-paper.sqlite3'))
+    execution_path = Path(load_configuration().execution_database_path)
+    paper = CryptoPaper(execution_path.with_name('crypto-paper.sqlite3'))
     grok = getattr(composition, "grok_suite", None) or configured_suite()
     supervisor = CryptoSupervisor(paper, composition.crypto_research_runtime.latest,
                                   grok.crypto if grok is not None else None)
@@ -67,4 +69,5 @@ def create_asset_modules(composition):
     modules = AssetModules(adapters, maximum_active=2)
     modules.crypto_supervisor = supervisor
     modules.grok_suite = grok
+    modules.futures_ledger_reader = FuturesLedgerReader(execution_path.with_name('futures-paper.sqlite3'))
     return modules

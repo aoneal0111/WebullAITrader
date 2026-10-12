@@ -654,7 +654,9 @@ class MainWindow(QMainWindow):
             elif asset in {AssetType.FUTURES, AssetType.OPTIONS}:
                 names = ("Mission Control", "Positions", "Orders", "Strategies",
                          "Settings", "Activity", "Decisions", "Scanner", "Replay", "Operator Workspace")
-                page = DerivativeWorkspace(asset, names[route])
+                page = DerivativeWorkspace(asset, names[route],
+                    ledger_reader=getattr(self._asset_modules,'futures_ledger_reader',None)
+                    if asset is AssetType.FUTURES else None)
             else:
                 names = ("Mission Control", "Positions", "Orders", "Strategies",
                          "Settings", "Activity", "Decisions", "Scanner", "Replay", "Operator Workspace")
