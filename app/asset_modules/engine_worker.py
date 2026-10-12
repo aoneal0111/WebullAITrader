@@ -73,7 +73,7 @@ def _quote(payload):
     return symbol, payload["bid"], payload["ask"]
 
 
-def _worker_main(connection, engine, session, policy):
+def _worker_main(connection, engine, session, policy, assessor=None):
     """Pure observation worker. Messages never authorize an order or new code."""
     identity = {"engine": engine, "session": session, "policy": policy}
     symbols = OrderedDict()
@@ -104,6 +104,9 @@ def _worker_main(connection, engine, session, policy):
                     symbols.popitem(last=False)
                 result = {"symbol": symbol, "bid": bid, "ask": ask, "samples": samples}
                 reply = "OBSERVED"
+            elif kind == "ASSESS" and assessor is not None:
+                result = assessor(payload)
+                reply = "ASSESSED"
             else:
                 break
             connection.send_bytes(_encode({**identity, "sequence": sequence, "kind": reply, "payload": result}))
@@ -119,6 +122,8 @@ class EngineWorker:
     Poll frequently to enforce deadlines. Failure never automatically restarts,
     retries, trades, or edits code. Use a new handle for an explicitly new session.
     """
+
+    _target = staticmethod(_worker_main)
 
     def __init__(self, engine: EngineId, *, policy_version: str, timeout_seconds: float = 2):
         self._engine = EngineId(engine)
@@ -166,7 +171,7 @@ class EngineWorker:
             raise RuntimeError("Worker already started or closed")
         context = mp.get_context("spawn")
         parent, child = context.Pipe(duplex=True)
-        process = context.Process(target=_worker_main,
+        process = context.Process(target=self._target,
                                   args=(child, self.engine.value, self.session_id, self.policy_version),
                                   name="atlas-observer-" + self.engine.value, daemon=True)
         self._connection = parent
@@ -189,13 +194,7 @@ class EngineWorker:
         if self.state != WorkerState.READY:
             raise RuntimeError("Worker is not ready; requests are not queued")
         payload = {} if payload is None else payload
-        if kind == "OBSERVE":
-            _quote(payload)
-            expected = "OBSERVED"
-        elif kind == "PING" and payload == {}:
-            expected = "PONG"
-        else:
-            raise ValueError("Only observation and health requests are supported")
+        expected = self._request(kind, payload)
         next_sequence = self._sequence + 1
         data = _encode({"engine": self.engine.value, "session": self.session_id,
                         "policy": self.policy_version, "sequence": next_sequence,
@@ -207,10 +206,25 @@ class EngineWorker:
             return False
         self._sequence = next_sequence
         self._expected = expected
-        self._expected_payload = dict(payload)
+        self._expected_payload = _decode(data)["payload"]
         self._deadline = time.monotonic() + self.timeout_seconds
         self.state = WorkerState.BUSY
         return True
+
+    def _request(self, kind, payload):
+        if kind == "OBSERVE":
+            _quote(payload)
+            expected = "OBSERVED"
+        elif kind == "PING" and payload == {}:
+            expected = "PONG"
+        else:
+            raise ValueError("Only observation and health requests are supported")
+        return expected
+
+    def _valid_payload(self, payload):
+        return (set(payload) == {"symbol", "bid", "ask", "samples"}
+                and all(payload[key] == value for key, value in self._expected_payload.items())
+                and type(payload["samples"]) is int and payload["samples"] > 0)
 
     def poll(self):
         self._owner()
@@ -239,9 +253,7 @@ class EngineWorker:
                              and payload["pid"] == self.pid and type(payload["symbols"]) is int
                              and 0 <= payload["symbols"] <= MAX_SYMBOLS)
                 else:
-                    valid = (set(payload) == {"symbol", "bid", "ask", "samples"}
-                             and all(payload[key] == value for key, value in self._expected_payload.items())
-                             and type(payload["samples"]) is int and payload["samples"] > 0)
+                    valid = self._valid_payload(payload)
                 if not valid:
                     self._fail("INVALID_RESPONSE_PAYLOAD")
                     return None
