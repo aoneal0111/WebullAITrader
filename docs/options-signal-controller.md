@@ -2,7 +2,8 @@
 
 This stage connects supplied SPY/QQQ underlying signals to the dedicated
 `OptionsPaper` ledger. It makes no network calls and is not wired into Atlas's
-running GUI, Grok, the shared allocation controller or a broker. Options data
+running GUI, Grok or a broker. Optional shared allocation is documented in
+[options-shared-allocation.md](options-shared-allocation.md). Options data
 reads currently return HTTP 403; this does not bypass that blocker or enable
 trading. The ledger remains off by default, including after reopening.
 
@@ -48,7 +49,8 @@ Successful intent identity is tied to policy, underlying, completed signal bar
 and direction. It stays consumed after exit and restart, even if the caller
 later supplies a different strike for that same signal. Unfilled refusals do
 not consume an identity. Existing ledger tables are reused; this adds no schema
-migration. Cash and risk remain isolated from the shared equity/futures pool.
+migration. Without an explicitly injected allocation router, cash and risk remain isolated
+from the shared equity/futures pool.
 
 ## Windows mechanics check
 

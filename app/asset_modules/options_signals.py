@@ -119,9 +119,9 @@ class OptionsPaperController:
     """Dedicated offline ingress; exits precede signals and entry authorization.
 
     Trusted authorization must check session/halt/tradability. This controller
-    has no shared allocation, network, broker, GUI or Grok composition yet.
+    has no network, broker, GUI or Grok composition yet.
     """
-    def __init__(self, ledger, *, settings, authorize):
+    def __init__(self, ledger, *, settings, authorize, entry_router=None):
         from app.asset_modules.options_paper import OptionsPaper
         if not isinstance(ledger, OptionsPaper) or not isinstance(settings, OptionsSignalSettings):
             raise ValueError('Options PAPER ledger and settings required')
@@ -129,10 +129,19 @@ class OptionsPaperController:
             raise ValueError('Trusted authorization callback required')
         if settings.slippage != ledger.slippage or settings.max_contracts > ledger.max_contracts:
             raise ValueError('Signal and ledger execution settings must agree')
+        if entry_router is not None:
+            from app.asset_modules.options_allocation import OptionsAllocationRouter
+            if not isinstance(entry_router,OptionsAllocationRouter) or entry_router.ledger is not ledger:
+                raise ValueError('Router must own this options ledger')
         self.ledger, self.settings, self.authorize = ledger, settings, authorize
+        self.entry_router = entry_router
+        self.last_allocation_reconciliation = {}
 
     def protect(self, quotes, *, now):
-        return self.ledger.protect(quotes, now=now)
+        results = self.ledger.protect(quotes, now=now)
+        if self.entry_router is not None:
+            self.last_allocation_reconciliation = self.entry_router.reconcile()
+        return results
 
     def step(self, history, underlying_quote, contracts, quotes, *, now):
         with self.ledger.lock:
@@ -147,6 +156,8 @@ class OptionsPaperController:
                 result = 'ENTRIES_DISABLED'
             elif self.authorize(candidate, now) is not True:
                 result = 'ENTRY_NOT_AUTHORIZED'
+            elif self.entry_router is not None:
+                result = self.entry_router.submit(candidate,quotes[candidate.plan.contract.symbol],now=now)
             else:
                 # Submit just the first ranked alternative; refusals do not try others.
                 result = self.ledger.enter(candidate.intent_id, candidate.plan,
