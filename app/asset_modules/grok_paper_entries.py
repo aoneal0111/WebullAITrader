@@ -144,8 +144,10 @@ class GrokPaperEntries:
                 if entry_enabled() is not True:
                     return EntryDispatch("NOT_SENT", "ENTRY_WORKER_STOPPED")
                 candidates = tuple(e.candidate for e in entries if e.candidate.engine is engine)
-                if candidates:
-                    self.suite.review(engine, candidates, evidence=engine_evidence.get(engine.value, {}))
+                # Clear the other engine's prior advice too. An empty review
+                # performs no API request and cannot leak an old candidate into
+                # the master selection for this immutable batch.
+                self.suite.review(engine, candidates, evidence=engine_evidence.get(engine.value, {}))
             if entry_enabled() is not True:
                 return EntryDispatch("NOT_SENT", "ENTRY_WORKER_STOPPED")
             advice = self.suite.coordinate(account_evidence=account_evidence)

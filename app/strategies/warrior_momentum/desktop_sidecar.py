@@ -324,6 +324,7 @@ class WarriorDesktopSidecar:
         self._paper_order_source = paper_order_source
         self._paper_acknowledgement_adopter = paper_acknowledgement_adopter
         self._grok_runtime_handoff = None
+        self._grok_native_producer = None
         self._paper_exit_submitter = paper_exit_submitter
         self._paper_entry_canceller = paper_entry_canceller
         self._paper_entry_replacer = paper_entry_replacer
@@ -431,12 +432,44 @@ class WarriorDesktopSidecar:
                     self._execution_recovery_orders
                 )
 
+    def grok_native_execution_permitted(self):
+        """Local switch only; safe for the background authorization callback."""
+        return (self.enabled and self.environment == "PAPER" and self._accept_execution
+                and self._service is not None)
+
+    def bind_grok_native_producer(self, producer):
+        """Explicit offline binding; no provider calls or configuration activation."""
+        from app.asset_modules.grok_desktop_producer import DesktopGrokProducer
+        from .quick_scalper_runtime import QuickScalperPaperRuntimeAdapter
+        if not isinstance(producer, DesktopGrokProducer):
+            raise TypeError("Native desktop producer required")
+        with self._processing_lock:
+            observer = self._quick_scalper_observer
+            if (self.environment != "PAPER" or self._service is not None
+                    or not isinstance(observer, QuickScalperPaperRuntimeAdapter)
+                    or observer.bridge is not producer.review.bridge
+                    or getattr(self._paper_acknowledgement_adopter, "__self__", None) is not producer.review.bridge):
+                raise ValueError("Bind to the same stopped canonical PAPER runtimes")
+            old = self._grok_native_producer
+            if old is not None and (not old.review._closed or old._requests or old.review.pending_states()):
+                raise ValueError("Prior native producer requires reconciliation")
+            if self._grok_runtime_handoff is not None and old is None:
+                state = self._grok_runtime_handoff.snapshot()
+                if not state["closed"] or state["pending_entries"] or state["reconciliation_required"]:
+                    raise ValueError("Prior handoff requires reconciliation")
+            observer.bind_native_review_callbacks(producer.scalper_offer, producer.scalper_refresh)
+            producer.permitted = self.grok_native_execution_permitted
+            self._grok_native_producer = producer
+            self._grok_runtime_handoff = producer.review.handoff
+
     def bind_grok_runtime_handoff(self, handoff) -> None:
         """Explicit binding only; does not construct signals or activate AI."""
         from app.asset_modules.grok_runtime_handoff import GrokRuntimeHandoff
         if not isinstance(handoff, GrokRuntimeHandoff):
             raise TypeError("Controlled Grok runtime handoff required")
         with self._processing_lock:
+            if self._grok_native_producer is not None:
+                raise ValueError("Replace native producer through its binding API")
             if self._grok_runtime_handoff is not None and self._grok_runtime_handoff is not handoff:
                 old = self._grok_runtime_handoff
                 state = old.snapshot()
@@ -464,6 +497,8 @@ class WarriorDesktopSidecar:
             return self._drain_grok_completions()
 
     def _drain_grok_completions(self):
+        if self._grok_native_producer is not None:
+            return self._grok_native_producer.drain(self._service, self._quick_scalper_observer, at=self._aware_now())
         handoff = self._grok_runtime_handoff
         if handoff is None:
             return ()
@@ -671,11 +706,16 @@ class WarriorDesktopSidecar:
                     flush_interval_seconds=self.capture_config.flush_interval_seconds,
                     configuration_fingerprint=self.configuration_fingerprint,
                 )
+                if self._grok_native_producer is not None and (
+                        self.environment != "PAPER" or self._grok_native_producer.review._closed):
+                    raise ValueError("Bind a fresh PAPER native producer before starting")
                 self._service = WarriorForwardCaptureService(
                     self._store, self._writer, self.strategy_config,
                     self.capture_config,
                     configuration_fingerprint=self.configuration_fingerprint,
                     paper_entry_submitter=self._paper_entry_submitter,
+                    paper_entry_reviewer=None if self._grok_native_producer is None else self._grok_native_producer.warrior_offer,
+                    paper_entry_review_refresher=None if self._grok_native_producer is None else self._grok_native_producer.warrior_refresh,
                     paper_order_source=self._paper_order_source,
                     paper_acknowledgement_adopter=self._paper_acknowledgement_adopter,
                     paper_exit_submitter=self._paper_exit_submitter,
@@ -776,7 +816,9 @@ class WarriorDesktopSidecar:
 
     def stop(self) -> None:
         self._accept_execution = False
-        if self._grok_runtime_handoff is not None:
+        if self._grok_native_producer is not None:
+            self._grok_native_producer.request_stop()
+        elif self._grok_runtime_handoff is not None:
             self._grok_runtime_handoff.request_stop()
         # Serialize teardown with the observational worker.  This keeps the
         # service/writer alive until an in-flight evaluation has completed,
@@ -792,7 +834,10 @@ class WarriorDesktopSidecar:
     def _stop_impl(self) -> None:
         if not self.enabled:
             return
-        if self._grok_runtime_handoff is not None and not self._grok_runtime_handoff.close(
+        if self._grok_native_producer is not None:
+            if not self._grok_native_producer.close(self._service, self._quick_scalper_observer, at=self._aware_now()):
+                raise TimeoutError("Grok entry review or acknowledgement reconciliation still pending")
+        elif self._grok_runtime_handoff is not None and not self._grok_runtime_handoff.close(
                 self._service, self._quick_scalper_observer):
             raise TimeoutError("Grok entry review or acknowledgement reconciliation still pending")
         # Publish shutdown intent before waiting for an in-flight confirmation.
@@ -970,7 +1015,9 @@ class WarriorDesktopSidecar:
 
     def fail_closed_market_data(self, reason: str = "MARKET_DATA_TERMINAL_FAILURE") -> None:
         """Revoke only new-entry authority after terminal stream failure."""
-        if self._grok_runtime_handoff is not None:
+        if self._grok_native_producer is not None:
+            self._grok_native_producer.request_stop()
+        elif self._grok_runtime_handoff is not None:
             self._grok_runtime_handoff.request_stop()
         try:
             with self._lock:
