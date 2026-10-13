@@ -65,6 +65,9 @@ def create_optional_research_runtimes(
             chart_market_configuration,
         )
     )
+    from app.crypto_research.bar_capture import CryptoBarCapture
+    bar_capture = (CryptoBarCapture(operational_configuration.crypto_discovery_path.with_name('crypto-completed-bars.sqlite3'))
+                   if getattr(operational_configuration, 'crypto_completed_bar_capture_enabled', False) else None)
     crypto_research_runtime = CryptoResearchRuntime(
         enabled=operational_configuration.crypto_discovery_enabled,
         provider=WebullCryptoResearchProvider(crypto_data_client),
@@ -73,6 +76,7 @@ def create_optional_research_runtimes(
             for value in operational_configuration.crypto_discovery_symbols
         ),
         path=operational_configuration.crypto_discovery_path,
+        completed_bar_capture=bar_capture,
         queue_capacity=operational_configuration.crypto_discovery_queue_capacity,
         refresh_seconds=operational_configuration.crypto_discovery_refresh_seconds,
         intelligence_history_max_symbols=(
