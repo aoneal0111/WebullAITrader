@@ -12,7 +12,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from app.asset_modules.engine_catalog import EngineId
 
 MASTER = "MASTER"
-ROLES = frozenset({engine.value for engine in EngineId} | {MASTER})
+LEARNING = "LEARNING"
+ROLES = frozenset({engine.value for engine in EngineId} | {MASTER, LEARNING})
 
 
 class GrokUnavailable(RuntimeError):
