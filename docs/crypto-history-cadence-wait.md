@@ -30,3 +30,20 @@ not model this independent timer interaction; they remain useful for phase drift
 but are not proof of real provider readiness. A new normal PAPER capture after
 installation is still needed. Saved records remain unchanged, and neither this
 change nor its tests establish strategy profitability.
+
+## Timer completion recheck
+
+The next operator capture improved to 20 of 21 observations reaching the worker
+per coin, but one window still had previous-cycle bars about 71.89 seconds old.
+Those timestamps alone do not distinguish a skipped request from a request,
+normalization or capture failure. They do not establish an early timer wakeup.
+
+An offline regression does demonstrate that a one-millisecond early timeout or
+clock reading leaves the previous single-wait code short of the request minimum,
+so it skips history. The wait now rechecks the actual due time. A monotonic
+five-second total wait budget and eight-attempt bound prevent loops on a stalled
+or rewound wall clock. Sub-millisecond remainders wait at least one millisecond
+within the remaining budget. Shutdown interrupts each wait. No provider request
+retry is added; history is requested only if the original clock-based due guard
+passes. This repairs a reproduced scheduling defect, while attribution of the
+remaining real observation still requires request/capture evidence.

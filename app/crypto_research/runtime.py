@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from queue import Empty, Full, Queue
 from threading import Event, RLock, Thread
+from time import monotonic
 
 from .analysis import calculate_features, detect_events, score_features
 from .evidence import (
@@ -311,9 +312,20 @@ class CryptoResearchRuntime:
                         if 0 < seconds <= 5.0:
                             remaining.append(seconds)
             if remaining:
-                if self._stop.wait(max(remaining)):
-                    return False
-                cutoff = self._clock()
+                target = cutoff + timedelta(seconds=max(remaining))
+                deadline = monotonic() + 5.0
+                # A timeout can return before the wall clock reaches the due
+                # time. Recheck rather than turning that small remainder into
+                # an entire skipped minute. Bound time and attempts if clocks
+                # stop advancing or move backwards; the due guard still wins.
+                for _ in range(8):
+                    seconds = (target - cutoff).total_seconds()
+                    budget = deadline - monotonic()
+                    if seconds <= 0 or budget <= 0:
+                        break
+                    if self._stop.wait(min(max(seconds, .001), budget)):
+                        return False
+                    cutoff = self._clock()
         due: list[tuple[CryptoPair, CryptoBarInterval]] = []
         for pair in shortlist:
             for interval, cadence in (
