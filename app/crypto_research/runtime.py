@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from queue import Empty, Full, Queue
 from threading import Event, RLock, Thread
 
@@ -673,10 +673,28 @@ class CryptoResearchRuntime:
                 self._publish_status(CryptoResearchStatus.DISABLED)
         return stopped
 
+    def _poll_delay(self, started_at: datetime, finished_at: datetime, *, align: bool) -> float:
+        # Default completed-history collection uses one-minute bars. Keep its
+        # polling phase away from the close boundary without increasing requests.
+        # Custom cadences and quote-only discovery retain their existing behavior.
+        if (self._refresh_seconds != 60.0 or self._intelligence_context_sink is None
+                or finished_at < started_at):
+            return self._refresh_seconds
+        earliest = started_at + timedelta(seconds=self._refresh_seconds)
+        basis = max(earliest, finished_at) if align else finished_at
+        target = basis.replace(second=10, microsecond=0)
+        if target < basis or (not align and target == basis):
+            target += timedelta(minutes=1)
+        return (max(target, earliest) - finished_at).total_seconds()
+
     def _run_poller(self) -> None:
+        align = True
         while not self._stop.is_set():
+            started_at = self._clock()
             self.refresh_once()
-            if self._stop.wait(self._refresh_seconds):
+            delay = self._poll_delay(started_at, self._clock(), align=align)
+            align = False
+            if self._stop.wait(delay):
                 return
 
     def _run_worker(self) -> None:
