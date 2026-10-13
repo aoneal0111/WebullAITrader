@@ -26,6 +26,7 @@ from .models import (
 from .outcomes import CryptoOutcomeDecision
 from .strategies import CryptoDiscoveryContext
 from .persistence import CryptoJsonLinesStore, CryptoResearchStore
+from .bar_capture import CryptoBarCapture
 from .provider import (
     MalformedCryptoQuoteError,
     UnsupportedCryptoSymbolError,
@@ -83,6 +84,9 @@ class CryptoResearchMetrics:
     intelligence_contexts_published: int = 0
     intelligence_submit_failures: int = 0
     outcome_update_cycles: int = 0
+    completed_bar_capture_stored: int = 0
+    completed_bar_capture_duplicates: int = 0
+    completed_bar_capture_failures: int = 0
 
 
 class CryptoResearchRuntime:
@@ -102,6 +106,7 @@ class CryptoResearchRuntime:
         signature_capacity: int = 4096,
         maximum_quote_age_seconds: float = 120.0,
         store: CryptoResearchStore | None = None,
+        completed_bar_capture: CryptoBarCapture | None = None,
         view_store: CryptoResearchViewStore | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         intelligence_context_sink: Callable[[CryptoDiscoveryContext], object] | None = None,
@@ -131,6 +136,12 @@ class CryptoResearchRuntime:
         self._provider = provider
         self._configured_pairs = tuple(configured_pairs)
         self._store = store or CryptoJsonLinesStore(path)
+        if completed_bar_capture is not None and not isinstance(completed_bar_capture, CryptoBarCapture):
+            raise ValueError('Dedicated completed-bar capture required')
+        self._completed_bar_capture = completed_bar_capture
+        self._completed_bar_capture_stored = 0
+        self._completed_bar_capture_duplicates = 0
+        self._completed_bar_capture_failures = 0
         self._view = view_store or default_crypto_research_view()
         self._queue: Queue[CryptoObservation] = Queue(maxsize=queue_capacity)
         self._refresh_seconds = refresh_seconds
@@ -327,6 +338,16 @@ class CryptoResearchRuntime:
                     self._history_bars_admitted += admitted
                     self._history_bars_duplicate += max(0, after - before) + result.duplicate_rows
                     self._history_bars_rejected += result.malformed_rows + result.incomplete_rows
+                if self._completed_bar_capture is not None:
+                    try:
+                        capture = self._completed_bar_capture.append_many(result.bars, captured_at=self._clock())
+                        with self._lock:
+                            self._completed_bar_capture_stored += capture.stored
+                            self._completed_bar_capture_duplicates += capture.duplicates
+                    except Exception:
+                        # Capture failure never changes provider admission or execution.
+                        with self._lock:
+                            self._completed_bar_capture_failures += 1
             except Exception:
                 with self._lock:
                     self._history_requests_failed += 1
@@ -574,6 +595,9 @@ class CryptoResearchRuntime:
                 self._intelligence_contexts_published,
                 self._intelligence_submit_failures,
                 self._outcome_update_cycles,
+                self._completed_bar_capture_stored,
+                self._completed_bar_capture_duplicates,
+                self._completed_bar_capture_failures,
             )
 
     def memory_metrics(self) -> dict[str, int]:
