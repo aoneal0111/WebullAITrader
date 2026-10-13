@@ -427,6 +427,10 @@ class CryptoResearchRuntime:
             if not self._pairs:
                 self._publish_status(CryptoResearchStatus.NO_SUPPORTED_PAIRS)
                 return 0
+            # Complete provider history acquisition/capture before requesting
+            # fresh snapshots. Later history must not become eligible at an
+            # already-recorded quote cutoff.
+            self._refresh_completed_bars()
             accepted = 0
             received = 0
             succeeded = 0
@@ -477,7 +481,6 @@ class CryptoResearchRuntime:
                     if received
                     else CryptoResearchStatus.AWAITING_DATA
                 )
-            self._refresh_completed_bars()
             return accepted
         except Exception as exc:
             with self._lock:
