@@ -344,4 +344,5 @@ class OperationalConfiguration:
     # operator opts in explicitly.
     quick_scalper_enabled: bool = False
     paper_controller_enabled: bool = False
+    crypto_shared_allocation_enabled: bool = False
     grok_paper_entries_enabled: bool = False

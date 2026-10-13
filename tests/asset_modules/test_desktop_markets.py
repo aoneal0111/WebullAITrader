@@ -29,6 +29,7 @@ def test_composed_crypto_is_idle_until_activated_and_restarts(monkeypatch, tmp_p
         assert modules.options_ledger_reader.path == tmp_path/'options-paper.sqlite3'
         assert not modules.options_ledger_reader.path.exists()
         assert modules.crypto_supervisor.provider is None
+        assert modules.crypto_supervisor.entry_router is None
         for _ in range(2):
             modules.activate(AssetType.CRYPTO)
             assert modules.status(AssetType.CRYPTO) == 'ACTIVE'

@@ -135,6 +135,15 @@ class PaperControllerRouter:
                 self.controller.acknowledge(reservation.command_id, reservation.engine, result.broker_order_id)
             return result
 
+    def shared_allocation_ready(self):
+        """Trusted cross-engine gate: reconcile equity and reject unmanaged exposure."""
+        with self._lock:
+            results = self.reconcile()
+            if any(state not in {'HELD', 'CLOSED'} for state in results.values()):
+                return False
+            with self.gateway.controller_reconciliation(self.account_id, campaign_id=self.campaign_id) as orders:
+                return not self._unmanaged_exposure(orders)
+
     def reconcile(self):
         results = {}
         with self._lock, self.gateway.controller_reconciliation(self.account_id, campaign_id=self.campaign_id) as orders:

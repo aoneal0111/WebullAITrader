@@ -12,11 +12,19 @@ from app.asset_modules.options_ledger_view import OptionsLedgerReader
 def create_asset_modules(composition):
     from pathlib import Path
     from app.configuration import load_configuration
-    execution_path = Path(load_configuration().execution_database_path)
+    from app.composition.crypto_allocation import validate_crypto_allocation, attach_crypto_allocation
+    configuration = load_configuration()
+    shared_service = validate_crypto_allocation(configuration, composition)
+    execution_path = Path(configuration.execution_database_path)
     paper = CryptoPaper(execution_path.with_name('crypto-paper.sqlite3'))
-    grok = getattr(composition, "grok_suite", None) or configured_suite()
-    supervisor = CryptoSupervisor(paper, composition.crypto_research_runtime.latest,
-                                  grok.crypto if grok is not None else None)
+    try:
+        router = None if shared_service is None else attach_crypto_allocation(shared_service, paper)
+        grok = getattr(composition, "grok_suite", None) or configured_suite()
+        supervisor = CryptoSupervisor(paper, composition.crypto_research_runtime.latest,
+                                      grok.crypto if grok is not None else None, entry_router=router)
+    except Exception:
+        paper.close()
+        raise
     def equity_exposure():
         state = composition.state_store.snapshot()
         return any(Decimal(row.quantity) != 0 for row in state.positions) or any(
