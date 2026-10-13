@@ -92,3 +92,48 @@ def test_wait_is_bounded_and_does_not_retry_early_cycle(tmp_path):
     runtime.refresh_once(wait_for_history_cadence=True)
     assert waits == []
     assert [kind for kind, _ in requests] == ['M1', 'M5', 'QUOTE', 'QUOTE']
+
+
+def test_early_wait_completion_rechecks_timer_before_history_request(tmp_path):
+    runtime, clock, requests, waits = make_runtime(tmp_path)
+    runtime.refresh_once()
+    clock[0] = NOW+timedelta(minutes=1, seconds=10)
+    class Stop:
+        def wait(self, seconds):
+            waits.append(seconds)
+            # Model a timer wakeup/clock reading one millisecond early once.
+            elapsed = seconds-.001 if len(waits) == 1 else seconds
+            clock[0] += timedelta(seconds=elapsed)
+            return False
+    runtime._stop = Stop()
+    runtime.refresh_once(wait_for_history_cadence=True)
+    assert [kind for kind, _ in requests] == ['M1', 'M5', 'QUOTE']*2
+    assert len(waits) == 2
+    for kind in ('M1', 'M5'):
+        times = [at for k, at in requests if k == kind]
+        assert times[1]-times[0] >= timedelta(seconds=60)
+
+
+def test_nonadvancing_clock_cannot_loop_or_issue_early_requests(tmp_path):
+    runtime, clock, requests, waits = make_runtime(tmp_path)
+    runtime.refresh_once()
+    clock[0] = NOW+timedelta(minutes=1, seconds=10)
+    class Stop:
+        def wait(self, seconds):
+            waits.append(seconds)
+            return False
+    runtime._stop = Stop()
+    runtime.refresh_once(wait_for_history_cadence=True)
+    assert len(waits) == 8
+    assert [kind for kind, _ in requests] == ['M1', 'M5', 'QUOTE', 'QUOTE']
+
+
+def test_monotonic_wait_budget_limits_rechecking(tmp_path, monkeypatch):
+    runtime, clock, requests, waits = make_runtime(tmp_path)
+    runtime.refresh_once()
+    clock[0] = NOW+timedelta(minutes=1, seconds=10)
+    ticks = iter((100, 106))
+    monkeypatch.setattr('app.crypto_research.runtime.monotonic', lambda: next(ticks))
+    runtime.refresh_once(wait_for_history_cadence=True)
+    assert waits == []
+    assert [kind for kind, _ in requests] == ['M1', 'M5', 'QUOTE', 'QUOTE']
