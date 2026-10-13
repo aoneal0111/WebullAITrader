@@ -63,7 +63,8 @@ def test_poller_refreshes_immediately_then_uses_interruptible_aligned_wait():
         def wait(self, delay):
             calls.append(('WAIT', delay))
             return True
-    def refresh():
+    def refresh(*, wait_for_history_cadence):
+        assert wait_for_history_cadence is True
         calls.append(('REFRESH', clock[0]))
         clock[0] += timedelta(seconds=6)
     runtime._stop = Stop()

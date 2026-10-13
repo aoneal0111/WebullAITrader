@@ -289,12 +289,31 @@ class CryptoResearchRuntime:
             self._shortlist_deferred += max(0, len(available) - len(selected))
             return selected
 
-    def _refresh_completed_bars(self) -> None:
+    def _refresh_completed_bars(self, *, wait_for_cadence: bool = False) -> bool:
         sink = self._intelligence_context_sink
         if sink is None or self._provider is None or not self.enabled:
-            return
+            return True
         shortlist = self._research_shortlist()
         cutoff = self._clock()
+        if wait_for_cadence and self._refresh_seconds == 60.0:
+            # Discovery duration varies between otherwise aligned poll cycles.
+            # Wait out a nearly-due history timer instead of skipping a minute.
+            # Keep the actual request minimum; never backdate its cutoff.
+            remaining = []
+            for pair in shortlist:
+                for interval, cadence in (
+                    (CryptoBarInterval.M1, self._m1_refresh_seconds),
+                    (CryptoBarInterval.M5, self._m5_refresh_seconds),
+                ):
+                    last = self._history_last_requested.get((pair.canonical_symbol, interval))
+                    if last is not None and cadence == 60.0:
+                        seconds = cadence - (cutoff - last).total_seconds()
+                        if 0 < seconds <= 5.0:
+                            remaining.append(seconds)
+            if remaining:
+                if self._stop.wait(max(remaining)):
+                    return False
+                cutoff = self._clock()
         due: list[tuple[CryptoPair, CryptoBarInterval]] = []
         for pair in shortlist:
             for interval, cadence in (
@@ -355,6 +374,7 @@ class CryptoResearchRuntime:
         cutoff = self._clock()
         self._update_intelligence_outcomes()
         self._publish_discovery_contexts(shortlist, cutoff)
+        return True
 
     def _update_intelligence_outcomes(self) -> None:
         sink = self._intelligence_outcome_sink
@@ -415,7 +435,7 @@ class CryptoResearchRuntime:
                     self._phase_b_contexts_unavailable += 1
                     self._intelligence_submit_failures += 1
 
-    def refresh_once(self) -> int:
+    def refresh_once(self, *, wait_for_history_cadence: bool = False) -> int:
         """Perform one isolated provider refresh; useful for controlled diagnostics."""
         if not self.enabled or self._provider is None:
             return 0
@@ -430,7 +450,8 @@ class CryptoResearchRuntime:
             # Complete provider history acquisition/capture before requesting
             # fresh snapshots. Later history must not become eligible at an
             # already-recorded quote cutoff.
-            self._refresh_completed_bars()
+            if self._refresh_completed_bars(wait_for_cadence=wait_for_history_cadence) is False:
+                return 0
             accepted = 0
             received = 0
             succeeded = 0
@@ -691,7 +712,7 @@ class CryptoResearchRuntime:
         align = True
         while not self._stop.is_set():
             started_at = self._clock()
-            self.refresh_once()
+            self.refresh_once(wait_for_history_cadence=True)
             delay = self._poll_delay(started_at, self._clock(), align=align)
             align = False
             if self._stop.wait(delay):
