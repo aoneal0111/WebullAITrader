@@ -318,10 +318,10 @@ class CryptoResearchRuntime:
                     observed_at=observed_at,
                     decision_cutoff=observed_at,
                 )
-                before = self._bar_history.metrics().crypto_evidence_duplicates_suppressed
-                admitted = self._bar_history.add_many(result.bars)
-                after = self._bar_history.metrics().crypto_evidence_duplicates_suppressed
                 with self._lock:
+                    before = self._bar_history.metrics().crypto_evidence_duplicates_suppressed
+                    admitted = self._bar_history.add_many(result.bars)
+                    after = self._bar_history.metrics().crypto_evidence_duplicates_suppressed
                     self._history_requests_succeeded += 1
                     self._history_rows_seen += len(rows)
                     self._history_bars_admitted += admitted
@@ -512,6 +512,21 @@ class CryptoResearchRuntime:
             return tuple(
                 sorted(self._latest.values(), key=lambda item: (item.rank, item.pair.canonical_symbol))
             )
+
+    def completed_bars(self, symbol: str, *, as_of: datetime,
+                       interval: CryptoBarInterval = CryptoBarInterval.M1,
+                       limit: int = 64) -> tuple[CryptoCompletedBar, ...]:
+        """Read retained provider evidence only; never fetch or build candles."""
+        if (not isinstance(symbol, str) or not symbol or len(symbol) > 64
+                or not isinstance(interval, CryptoBarInterval)
+                or type(limit) is not int or not 1 <= limit <= 64
+                or not isinstance(as_of, datetime) or as_of.tzinfo is None
+                or as_of.utcoffset() is None):
+            raise ValueError("Bounded symbol, interval, limit and aware cutoff required")
+        with self._lock:
+            values = self._bar_history.bars(symbol, interval)
+            return tuple(bar for bar in values if max(
+                bar.closed_at, bar.observed_at, bar.decision_cutoff) <= as_of)[-limit:]
 
     def metrics(self) -> CryptoResearchMetrics:
         with self._lock:
