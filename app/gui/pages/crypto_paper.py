@@ -20,7 +20,9 @@ class CryptoPaperPage(QWidget):
         heading = QLabel(f'CRYPTO · {title.upper()}')
         heading.setObjectName('sectionTitle')
         layout.addWidget(heading)
-        layout.addWidget(QLabel('PAPER · Spot USD pairs · Separate $10,000 starting balance'))
+        shared = supervisor.entry_router is not None
+        layout.addWidget(QLabel('PAPER · Spot USD pairs · Shared campaign allocation; separate crypto cash ledger'
+                               if shared else 'PAPER · Spot USD pairs · Separate $10,000 starting balance'))
         disclosure = QLabel('Snapshot fills assume 0.1% fees and 0.1% slippage per side. Exchange queues and partial fills are not simulated.')
         disclosure.setWordWrap(True)
         layout.addWidget(disclosure)
@@ -86,6 +88,11 @@ class CryptoPaperPage(QWidget):
                                             action='SELL', reason='Operator paper close'), quotes)
             except (ValueError, KeyError, ArithmeticError):
                 errors.append(position['symbol'])
+        if supervisor.entry_router is not None:
+            try:
+                supervisor.entry_router.reconcile()
+            except Exception:
+                errors.append('shared allocation reconciliation required')
         supervisor.status = ('Fresh quotes required to close: ' + ', '.join(errors)) if errors else 'Paper positions closed; AI proposals paused'
         self.refresh()
 
