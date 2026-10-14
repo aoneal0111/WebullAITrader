@@ -15,6 +15,7 @@ from app.market_data.models import MarketEvent, MarketEventType, QuotePayload, R
 from app.operations_core import OperationsBus
 from app.paper_trading.command_composition import create_paper_trading_command_composition, PAPER_ACCOUNT_ID
 from app.paper_trading.protection_host import PaperProtectionHost
+from app.paper_trading.protection_feed import PaperProtectionFeed
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
 
 T0 = datetime(2026, 10, 14, 15, 0, tzinfo=timezone.utc)
@@ -56,12 +57,28 @@ def _worker(path, pipe):
         pipe.send({"ready": True, **host.snapshot()})
         if pipe.recv() != "PROCESS_SYNTHETIC_QUOTE":
             raise ValueError("Unexpected check command")
+        mono = [100.0]
+        feed = PaperProtectionFeed(host, source="synthetic-protection-check",
+                                   silence_seconds=5, clock=lambda: mono[0])
+        old = feed.connect()
         now += timedelta(seconds=1)
-        host.process(MarketEvent(2, now, "DEMO", "synthetic-protection-check",
-                                MarketEventType.RESUME, ResumePayload("synthetic")))
+        feed.process(old, MarketEvent(2, now, "DEMO", "synthetic-protection-check",
+                                     MarketEventType.RESUME, ResumePayload("synthetic")))
+        now += timedelta(seconds=5)
+        mono[0] += 5
+        silence_paused = feed.check_health() == "FEED_SILENT" and host._quantity("DEMO") == 10
+        token = feed.connect()
         now += timedelta(seconds=1)
-        outcome = host.process(quote(now))
+        old_blocked = feed.process(old, quote(now)) == "OLD_CONNECTION"
+        status_required = feed.process(token, quote(now)) == "HALTED"
+        now += timedelta(seconds=1)
+        feed.process(token, MarketEvent(3, now, "DEMO", "synthetic-protection-check",
+                                       MarketEventType.RESUME, ResumePayload("synthetic")))
+        now += timedelta(seconds=1)
+        outcome = feed.process(token, quote(now))
         pipe.send({"outcome": outcome, **host.snapshot(),
+                   "silence_paused": silence_paused, "old_connection_blocked": old_blocked,
+                   "reconnect_requires_status": status_required,
                    "qt_widgets_imported": "PySide6.QtWidgets" in sys.modules,
                    "working_buys": sum(o.request.side.value == "BUY" for o in host._commands.order_book.open_orders())})
     except Exception as exc:
@@ -99,11 +116,17 @@ def synthetic_check():
             passed = (duplicate_blocked and worker.exitcode == 0
                       and result.get("outcome") == "PROCESSED" and result.get("positions") == 0
                       and result.get("qt_widgets_imported") is False
+                      and result.get("silence_paused") is True
+                      and result.get("old_connection_blocked") is True
+                      and result.get("reconnect_requires_status") is True
                       and result.get("working_buys") == 0)
             return dict(scope="SYNTHETIC_HEADLESS_PROTECTION_NOT_LIVE_FEED_OR_PERFORMANCE",
                         passed=passed, separate_process=True, original_command_runtime_closed=True,
                         duplicate_owner_blocked=duplicate_blocked, positions_remaining=result.get("positions"),
                         qt_widgets_imported=result.get("qt_widgets_imported"),
+                        silence_paused=result.get("silence_paused"),
+                        old_connection_blocked=result.get("old_connection_blocked"),
+                        reconnect_requires_status=result.get("reconnect_requires_status"),
                         entries_enabled=False, live_feed_validated=False, network_requests=0)
         finally:
             if worker.is_alive():
