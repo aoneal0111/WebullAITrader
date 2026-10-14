@@ -1,5 +1,6 @@
 from copy import deepcopy
 from datetime import timedelta
+from decimal import Decimal
 import json
 import sqlite3
 
@@ -47,7 +48,7 @@ def test_native_closed_simulations_are_read_only_and_separate(tmp_path, engine, 
     assert path.read_bytes() == before
     assert len(report["outcomes"]) == 1 and report["excluded"] == {}
     o = report["outcomes"][0]
-    assert o["net_pnl"] == pnl
+    assert Decimal(o["net_pnl"]) == Decimal(pnl)
     assert o["policy_version"] == o["strategy_family"] == "UNKNOWN"
     assert o["source_kind"] == "UNVERIFIED_SIMULATOR_INPUT_PROVENANCE"
     assert "NOT_EXECUTABLE_FILL" in o["evidence_kind"]
@@ -59,7 +60,7 @@ def test_native_closed_simulations_are_read_only_and_separate(tmp_path, engine, 
     assert journal.ingest_proxy_outcomes([o]) == {"inserted":1, "already_present":0}
     assert LearningJournal(journal.path).ingest_proxy_outcomes([o]) == {"inserted":0, "already_present":1}
     assert journal.outcome_feedback()["groups"] == []
-    assert journal.proxy_outcome_feedback()["groups"][0]["net_pnl"] == pnl
+    assert Decimal(journal.proxy_outcome_feedback()["groups"][0]["net_pnl"]) == Decimal(pnl)
     assert journal.review_next()["state"] == "IDLE"
 
 

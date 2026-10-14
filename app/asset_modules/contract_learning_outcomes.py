@@ -34,7 +34,7 @@ def validate_proxy_outcome(o):
             or o["policy_version"] != "UNKNOWN" or o["strategy_family"] != "UNKNOWN"):
         raise ValueError("Explicit simulation scope and unknown strategy attribution required")
     q = amount(o["quantity"])
-    if q <= 0 or q != q.to_integral_value() or amount(o["recorded_fees"]) < 0:
+    if not 0 < q <= 5 or q != q.to_integral_value() or amount(o["recorded_fees"]) < 0:
         raise ValueError("Invalid simulator quantity or fees")
     amount(o["net_pnl"])
     if instant(o["closed_at"]) < instant(o["opened_at"]):
@@ -96,7 +96,7 @@ def read_contract_outcomes(path, engine):
             if not isinstance(symbol, str) or not 1 <= len(symbol) <= 512 or exit_event.get("symbol") != symbol:
                 raise ValueError("Simulator instrument conflict")
             quantities = [entry.get("quantity"), exit_event.get("quantity")]
-            if any(type(q) is not int or q <= 0 for q in quantities) or quantities[0] != quantities[1]:
+            if any(type(q) is not int or not 1 <= q <= 5 for q in quantities) or quantities[0] != quantities[1]:
                 raise ValueError("Simulator quantity conflict")
             price_in, price_out = amount(entry["fill"]), amount(exit_event["fill"])
             fee_in, fee_out = amount(entry["fees"]), amount(exit_event["fees"])
