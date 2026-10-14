@@ -1,3 +1,4 @@
+from dataclasses import replace
 from decimal import Decimal as D
 
 import pytest
@@ -9,7 +10,16 @@ from app.asset_modules.grok_learning import LearningJournal
 from app.strategies.warrior_momentum.models import SetupType
 from tests.asset_modules.test_controlled_paper_service import setup, fill
 from tests.asset_modules.test_native_entry_preparation import signal
-from tests.asset_modules.test_desktop_crypto_allocation import desktop
+from tests.asset_modules.test_desktop_crypto_allocation import desktop as _desktop
+
+
+@pytest.fixture
+def desktop(tmp_path, monkeypatch):
+    import tests.asset_modules.test_desktop_crypto_allocation as fixtures
+    load = fixtures.load_configuration
+    monkeypatch.setattr(fixtures, "load_configuration", lambda values: replace(
+        load(values), historical_entry_experiment_path=tmp_path / "entry-experiment.sqlite3"))
+    yield from _desktop.__wrapped__(tmp_path, monkeypatch)
 
 
 def provider(config="a"*64):
