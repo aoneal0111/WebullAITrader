@@ -35,11 +35,14 @@ def instant(value):
 
 
 def validate_outcome(value):
-    if not isinstance(value, dict) or set(value) != FIELDS:
+    if not isinstance(value, dict) or set(value) not in (FIELDS, FIELDS | {"strategy_family"}):
         raise ValueError("Invalid outcome fields")
     for name in FIELDS - {"quantity", "net_pnl", "recorded_fees"}:
         if not isinstance(value[name], str) or not 1 <= len(value[name]) <= 512:
             raise ValueError("Invalid outcome label")
+    if "strategy_family" in value and (not isinstance(value["strategy_family"], str)
+            or not 1 <= len(value["strategy_family"]) <= 101):
+        raise ValueError("Invalid strategy family")
     if value["engine"] not in {"WARRIOR_MOMENTUM_V1", "QUICK_SCALPER", "UNKNOWN"}:
         raise ValueError("Equity outcome owner required")
     if (value["evidence_kind"] != "DURABLE_EQUITY_PAPER_FILLS"
@@ -81,7 +84,7 @@ def read_equity_outcomes(path):
                 excluded["MISSING_LIFECYCLE"] += 1
                 continue
             buys, sells, fees = [], [], Decimal(0)
-            owners, versions = set(), set()
+            owners, versions, families = set(), set(), set()
             for order in orders:
                 r, fills = order["request"], order["fills"]
                 if r["side"] not in {"BUY", "SELL"}:
@@ -106,6 +109,7 @@ def read_equity_outcomes(path):
                     # Controller policy_version can be a per-order metadata hash;
                     # it is not a comparable frozen strategy version.
                     versions.add(m.get("strategy_policy_version") or "UNKNOWN")
+                    families.add(m.get("strategy_family"))
             if not buys and not sells:
                 excluded["NO_FILLS"] += 1
                 continue
@@ -137,6 +141,9 @@ def read_equity_outcomes(path):
             if len(versions) != 1:
                 excluded["POLICY_VERSION_CONFLICT"] += 1
                 continue
+            if len(families) != 1:
+                excluded["STRATEGY_FAMILY_CONFLICT"] += 1
+                continue
             cash = sum((q*p for _, q, p in sells), Decimal(0)) - sum((q*p for _, q, p in buys), Decimal(0))
             outcome = dict(campaign=campaign, engine=engine, lifecycle=life, instrument=symbol,
                 policy_version=next(iter(versions)), opened_at=min(x[0] for x in buys).isoformat(),
@@ -144,6 +151,9 @@ def read_equity_outcomes(path):
                 recorded_fees=str(fees), evidence_kind="DURABLE_EQUITY_PAPER_FILLS",
                 cost_scope="RECORDED_COMMISSIONS_NO_EXTRA_COST_ASSUMED",
                 source_kind="UNVERIFIED_PAPER_LEDGER_PROVENANCE")
+            recorded_family = next(iter(families))
+            if recorded_family is not None:
+                outcome["strategy_family"] = recorded_family
             validate_outcome(outcome)
             outcomes.append(outcome)
     return {"campaign": campaign, "outcomes": outcomes, "excluded": dict(excluded),
@@ -154,15 +164,16 @@ def outcome_summary(outcomes):
     groups = defaultdict(list)
     for o in outcomes:
         validate_outcome(o)
-        groups[(o["campaign"], o["engine"], o["policy_version"])].append(o)
+        groups[(o["campaign"], o["engine"], o["policy_version"], o.get("strategy_family", "UNKNOWN"))].append(o)
     if len(groups) > 100:
         raise ValueError("Outcome group limit exceeded")
     stats = []
     with localcontext() as ctx:
         ctx.prec = 50
-        for (campaign, engine, policy), rows in sorted(groups.items()):
+        for (campaign, engine, policy, setup), rows in sorted(groups.items()):
             pnls = [amount(o["net_pnl"]) for o in rows]
             stats.append({"campaign": campaign, "engine": engine, "policy_version": policy,
+                          "strategy_family": setup,
                           "closed_lifecycles": len(rows), "net_pnl": str(sum(pnls, Decimal(0))),
                           "wins": sum(p > 0 for p in pnls), "losses": sum(p < 0 for p in pnls),
                           "breakeven": sum(p == 0 for p in pnls),
