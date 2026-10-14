@@ -131,6 +131,7 @@ def read_contract_outcomes(path, engine):
 
 
 def proxy_summary(outcomes):
+    from app.asset_modules.outcome_metrics import outcome_metrics
     groups = defaultdict(list)
     for o in outcomes:
         validate_proxy_outcome(o)
@@ -149,8 +150,7 @@ def proxy_summary(outcomes):
             stats.append(dict(engine=engine, ledger_id=ledger, evidence_kind=evidence,
                               reconciliation_scope=reconciliation, policy_version="UNKNOWN",
                               strategy_family="UNKNOWN", closed_intents=len(rows),
-                              net_pnl=str(sum(pnls, Decimal(0))), wins=sum(p>0 for p in pnls),
-                              losses=sum(p<0 for p in pnls), breakeven=sum(p==0 for p in pnls),
+                              **outcome_metrics(pnls),
                               source_kind=rows[0]["source_kind"], cost_scope=rows[0]["cost_scope"]))
     return {"scope": "QUOTE_SIMULATION_FEEDBACK_NOT_EQUITY_FILLS_OR_INDEPENDENT_HOLDOUT",
             "groups": stats, "promotion": "NONE"}
