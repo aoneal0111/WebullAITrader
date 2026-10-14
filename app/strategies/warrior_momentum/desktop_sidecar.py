@@ -349,6 +349,7 @@ class WarriorDesktopSidecar:
         self._async_decision_intelligence = bool(async_decision_intelligence)
         self._report_worker_factory = report_worker_factory
         self._accept_execution = False
+        self._entry_revocation_reason: str | None = None
         self._clock = clock
         self._lock = RLock()
         # Serializes full observational evaluations without making the GUI
@@ -699,6 +700,10 @@ class WarriorDesktopSidecar:
         with self._lock:
             if self._health in {WarriorCaptureHealth.STARTING, WarriorCaptureHealth.RUNNING}:
                 return
+            if self._entry_revocation_reason is not None and self._health is not WarriorCaptureHealth.STOPPED:
+                return  # Complete Stop before opening a new session.
+            self._entry_revocation_reason = None
+            self._accept_execution = False
             self._health = WarriorCaptureHealth.STARTING
             if environment:
                 self.environment = environment.strip().upper()
@@ -787,15 +792,20 @@ class WarriorDesktopSidecar:
                 performance_diagnostics.set_diagnostic_sink(
                     self._persist_latency_diagnostic
                 )
-                self._set_strategy_health(
-                    WarriorCaptureHealth.RUNNING,
-                    category="LIFECYCLE", reason="STARTED",
-                )
+                with self._lock:
+                    # A terminal failure can arrive while startup constructs
+                    # resources. STARTED must not overwrite its revocation.
+                    self._set_strategy_health(
+                        WarriorCaptureHealth.DEGRADED if self._entry_revocation_reason
+                        else WarriorCaptureHealth.RUNNING,
+                        category="ENTRY_AUTHORITY_REVOKED" if self._entry_revocation_reason else "LIFECYCLE",
+                        reason=self._entry_revocation_reason or "STARTED",
+                    )
+                    self._accept_execution = self._entry_revocation_reason is None
                 self._set_observability_health(
                     WarriorObservabilityHealth.RUNNING,
                     reason="DIAGNOSTIC_QUEUE_AVAILABLE",
                 )
-                self._accept_execution = True
                 self._order_flow.start()
             except Exception as exc:
                 with self._lock:
@@ -833,7 +843,9 @@ class WarriorDesktopSidecar:
                         pass
 
     def stop(self) -> None:
-        self._accept_execution = False
+        with self._lock:
+            self._entry_revocation_reason = self._entry_revocation_reason or "STOP_REQUESTED"
+            self._accept_execution = False
         if self._grok_native_producer is not None:
             self._grok_native_producer.request_stop()
         elif self._grok_runtime_handoff is not None:
@@ -1033,12 +1045,9 @@ class WarriorDesktopSidecar:
 
     def fail_closed_market_data(self, reason: str = "MARKET_DATA_TERMINAL_FAILURE") -> None:
         """Revoke only new-entry authority after terminal stream failure."""
-        if self._grok_native_producer is not None:
-            self._grok_native_producer.request_stop()
-        elif self._grok_runtime_handoff is not None:
-            self._grok_runtime_handoff.request_stop()
         try:
             with self._lock:
+                self._entry_revocation_reason = str(reason)[:128] or "MARKET_DATA_TERMINAL_FAILURE"
                 self._accept_execution = False
                 self._set_strategy_health(
                     WarriorCaptureHealth.DEGRADED,
@@ -1047,7 +1056,16 @@ class WarriorDesktopSidecar:
                 )
         except Exception:
             # Diagnostics/health propagation must never unwind shutdown.
+            self._entry_revocation_reason = "MARKET_DATA_TERMINAL_FAILURE"
             self._accept_execution = False
+        try:
+            if self._grok_native_producer is not None:
+                self._grok_native_producer.request_stop()
+            elif self._grok_runtime_handoff is not None:
+                self._grok_runtime_handoff.request_stop()
+        except Exception:
+            # Entry authority was revoked before notifying optional advisers.
+            pass
 
     def _apply_session_policy(self, observed_at: datetime) -> None:
         config = self.strategy_config.session_management
@@ -2134,6 +2152,13 @@ class WarriorDesktopSidecar:
 
     def _update_health(self, *, allow_recovery: bool) -> None:
         assert self._writer is not None
+        if self._entry_revocation_reason is not None:
+            self._accept_execution = False
+            self._set_strategy_health(
+                WarriorCaptureHealth.DEGRADED,
+                category="ENTRY_AUTHORITY_REVOKED", reason=self._entry_revocation_reason,
+            )
+            return
         metrics = self._writer.metrics()
         # Observe this lane once per callback (before processing).  The
         # cumulative drop counter is evidence, while health reflects whether
