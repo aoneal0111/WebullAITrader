@@ -1261,7 +1261,8 @@ def test_restart_reconstruction_ignores_warrior_and_restores_scalper_owner():
     assert runtime.ownership.owner("OTHER") is None
 
 
-def test_max_hold_profit_retention_uses_canonical_exit_path():
+@pytest.mark.parametrize("hold_seconds", [45, 300, 600])
+def test_max_hold_profit_retention_uses_configured_canonical_exit_path(hold_seconds):
     book = PaperOrderBook()
     book.submit(paper_order(
         order_id="entry", side=OrderSide.BUY, quantity="10", filled="10",
@@ -1269,13 +1270,13 @@ def test_max_hold_profit_retention_uses_canonical_exit_path():
     ))
     bridge = Bridge()
     runtime = QuickScalperPaperRuntimeAdapter(
-        config=QuickScalperConfig(enabled=True), bridge=bridge,
+        config=QuickScalperConfig(enabled=True, maximum_holding_seconds=hold_seconds), bridge=bridge,
         order_book=book, account_context_source=account,
         position_quantity_source=lambda _symbol: D("10"),
         execution_quote_source=Quotes(quote()), clock=lambda: NOW,
     )
     bridge.exits.clear()
-    later = NOW + timedelta(seconds=301)
+    later = NOW + timedelta(seconds=hold_seconds)
     point = SimpleNamespace(
         observation=SimpleNamespace(bid=D("5.03"), quote_timestamp=later),
         evaluation_timestamp=later, quote_observed_at=later,
@@ -1283,6 +1284,12 @@ def test_max_hold_profit_retention_uses_canonical_exit_path():
     candidate = SimpleNamespace(
         symbol="FAST", price_velocity_cents_1m=D("0"),
     )
+    before = later - timedelta(seconds=1)
+    runtime._manage_open_position(SimpleNamespace(
+        observation=SimpleNamespace(bid=D("5.03"), quote_timestamp=before),
+        evaluation_timestamp=before, quote_observed_at=before,
+    ), candidate)
+    assert not any(item[3] == "SCALP_MAX_HOLD" for item in bridge.exits)
     runtime._manage_open_position(point, candidate)
     assert bridge.exits[-1][2:4] == (D("5.03"), "SCALP_MAX_HOLD")
     assert bridge.exits[-1][-1]["strategy_owner"] == "QUICK_SCALPER"
