@@ -76,6 +76,8 @@ def main() -> int:
         window.show()
 
         try:
+            if composition.learning_collector is not None:
+                composition.learning_collector.start()
             return application.exec()
         finally:
             if asset_modules.crypto_supervisor.close():

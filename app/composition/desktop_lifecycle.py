@@ -29,6 +29,14 @@ def close_desktop_composition(
     """Close composed resources in lifecycle order without trading authority."""
 
     symbol_intelligence_stopped = True
+    learning_collector_stopped = True
+    collector = getattr(composition, "learning_collector", None)
+    if collector is not None:
+        try:
+            learning_collector_stopped = _shutdown_stage("learning_outcomes",
+                lambda: collector.close(timeout_seconds=min(timeout_seconds, 2.0)))
+        except Exception:
+            learning_collector_stopped = False
 
     crypto = getattr(composition, "crypto_research_runtime", None)
     if crypto is not None:
@@ -157,7 +165,7 @@ def close_desktop_composition(
     except Exception:
         pass
 
-    return runtime_stopped and symbol_intelligence_stopped
+    return runtime_stopped and symbol_intelligence_stopped and learning_collector_stopped
 
 
 __all__ = ["close_desktop_composition"]

@@ -347,3 +347,6 @@ class OperationalConfiguration:
     crypto_shared_allocation_enabled: bool = False
     grok_paper_entries_enabled: bool = False
     crypto_completed_bar_capture_enabled: bool = False
+    learning_outcome_collection_enabled: bool = False
+    learning_outcome_journal_path: Path = Path("data/research/learning/learning.sqlite3")
+    learning_outcome_collection_seconds: int = 60

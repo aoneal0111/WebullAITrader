@@ -132,6 +132,7 @@ class DesktopComposition:
     symbol_intelligence_activation_state: str = "DISABLED"
     daily_review_exporter: DailyReviewExporter | None = None
     paper_validation_capture: PaperValidationCapture | None = None
+    learning_collector: object | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         from .desktop_lifecycle import close_desktop_composition
@@ -166,6 +167,9 @@ def create_desktop_composition(
         )
 
     operational_configuration = load_configuration()
+    from app.composition.learning_collection import create_learning_collector
+    learning_collector = create_learning_collector(operational_configuration,
+        configuration.runtime_mode, paper_persistence_path=paper_persistence_path)
     from .grok_paper import create_grok_paper_suite, bind_grok_paper_entries
     grok_suite = create_grok_paper_suite(operational_configuration, configuration.runtime_mode, clock=paper_clock)
     intelligence_composition = create_desktop_intelligence_composition(
@@ -527,6 +531,7 @@ def create_desktop_composition(
         trading_service = paper_controller_service
 
     result = DesktopComposition(
+        learning_collector=learning_collector,
         bus=bus,
         state_store=state_store,
         runtime_service=runtime_service,
