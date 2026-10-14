@@ -21,8 +21,10 @@ PROMPT = (
     "TRIALS, or none when evidence is weak. Consider cost-inclusive expectancy, "
     "win rate, profit factor, paired sample size, excluded episodes and day/symbol "
     "concentration together. These retrospective results are not independent "
-    "holdout proof or portfolio returns. Do not invent drawdown, regimes, sources "
-    "or fill quality. Explain limitations. You cannot place orders, change code, "
+    "holdout proof or portfolio returns. Do not invent drawdown, regimes, sources, "
+    "strategy versions or fill quality. Observational outcomes may have unknown policy versions "
+    "and unverified provenance; they do not establish causal policy superiority. "
+    "Explain limitations. You cannot place orders, change code, "
     "risk limits, open positions or activate policies."
 )
 SCHEMA = {
@@ -70,12 +72,15 @@ class LearningJournal:
             # Refuse an unrelated existing database before creating any tables.
             names = {r[0] for r in db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
-            if names - {"learning_experiments_v1"}:
+            if names - {"learning_experiments_v1", "learning_outcomes_v1"}:
                 raise ValueError("Use a dedicated learning journal")
             db.execute("""CREATE TABLE IF NOT EXISTS learning_experiments_v1 (
                 experiment_id TEXT PRIMARY KEY, digest TEXT NOT NULL,
                 input_json TEXT NOT NULL, imported_at TEXT NOT NULL,
                 review_json TEXT
+            )""")
+            db.execute("""CREATE TABLE IF NOT EXISTS learning_outcomes_v1 (
+                identity TEXT PRIMARY KEY, payload TEXT NOT NULL
             )""")
 
     @contextmanager
@@ -105,6 +110,34 @@ class LearningJournal:
                             datetime.now(timezone.utc).isoformat()))
         return summary
 
+    def ingest_outcomes(self, outcomes):
+        from app.asset_modules.learning_outcomes import validate_outcome
+        if not isinstance(outcomes, list) or len(outcomes) > 5000:
+            raise ValueError("Bounded outcome batch required")
+        encoded = [(validate_outcome(o), _encode(o)) for o in outcomes]
+        if len({identity for identity, _ in encoded}) != len(encoded):
+            raise ValueError("Duplicate outcome identity")
+        inserted = 0
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for identity, payload in encoded:
+                row = db.execute("SELECT payload FROM learning_outcomes_v1 WHERE identity=?",
+                                 (identity,)).fetchone()
+                if row and row[0] != payload:
+                    raise ValueError("Closed outcome changed; reconcile source before learning")
+                if not row:
+                    db.execute("INSERT INTO learning_outcomes_v1 VALUES (?,?)", (identity, payload))
+                    inserted += 1
+        return {"inserted": inserted, "already_present": len(encoded)-inserted}
+
+    def outcome_feedback(self):
+        from app.asset_modules.learning_outcomes import outcome_summary
+        with self._db() as db:
+            rows = db.execute("SELECT payload FROM learning_outcomes_v1 ORDER BY identity LIMIT 100001").fetchall()
+        if len(rows) > 100000:
+            raise ValueError("Outcome feedback limit exceeded")
+        return outcome_summary([json.loads(r[0]) for r in rows])
+
     def review(self, experiment_id, *, client=None):
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -116,6 +149,7 @@ class LearningJournal:
                 return json.loads(row[1])
             summary = summarize(json.loads(row[0]))
             candidates = _candidates(summary)
+            feedback = self.outcome_feedback()
             # Prior decisions are audit context, not new independent trade samples.
             prior = [json.loads(r[0]) for r in db.execute(
                 "SELECT review_json FROM learning_experiments_v1 "
@@ -125,6 +159,7 @@ class LearningJournal:
                       "selected": r["selected"]} for r in prior]
             base = {"version": "GROK_LEARNING_REVIEW_V1", "experiment_id": experiment_id,
                     "evidence_kind": summary["evidence_kind"], "candidates": candidates,
+                    "outcome_feedback": feedback,
                     "selected": [], "promotion": "NONE",
                     "scope": "RESEARCH_NOMINATIONS_NOT_POLICY_ACTIVATION_OR_MODEL_TRAINING"}
             if not candidates:
@@ -142,6 +177,7 @@ class LearningJournal:
             answer = client.request(LEARNING, PROMPT,
                                     {"mode": "PAPER", "comparison": summary,
                                      "candidates": candidates,
+                                     "observational_outcome_feedback": feedback,
                                      "prior_reviews_not_independent_evidence": prior}, SCHEMA)
             if (not isinstance(answer, dict) or set(answer) != {"candidate_ids", "reason"}
                     or not isinstance(answer["reason"], str)
@@ -182,10 +218,13 @@ class GrokLearningLoop:
     Outcome producers must first ingest complete frozen comparisons. This loop
     never creates experiments from selected losing trades or polls a broker.
     """
-    def __init__(self, journal, *, client=None):
-        self.journal, self.client = journal, client
+    def __init__(self, journal, *, client=None, outcome_source=None):
+        self.journal, self.client, self.outcome_source = journal, client, outcome_source
 
     def tick(self):
+        if self.outcome_source is not None:
+            # Refuse review if source reconciliation fails; never use a partial import.
+            self.journal.ingest_outcomes(self.outcome_source())
         return self.journal.review_next(client=self.client)
 
     def run(self, stop, emit):
