@@ -7,7 +7,9 @@ check is exposed as a CLI; there is no live feed or unattended launch command.
 
 The host opens an existing dedicated Atlas PAPER equity ledger. A bounded
 read-only preflight checks campaign/account identity, fills and active ownership.
-Only Warrior and Quick Scalper lifecycles are supported. Unknown or conflicting
+Only STOCK-class orders with Warrior and Quick Scalper lifecycles are supported
+(ETF symbols use Atlas's STOCK classification).
+An equity lifecycle label cannot authorize another asset class. Unknown or conflicting
 active ownership, short/fractional net inventory, invalid fills and missing
 structural stops require reconciliation; the host does not invent replacements.
 It reuses the desktop's order-authority position restoration, rather than folding

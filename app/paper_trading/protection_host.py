@@ -60,6 +60,8 @@ def _preflight(path):
         if active and lifecycle_owner(life) not in {EngineId.WARRIOR, EngineId.SCALPER}:
             raise ValueError("Unclassified active inventory or orders require reconciliation")
         if active:
+            if any(o['request'].get('asset_class') != 'STOCK' for o in orders):
+                raise ValueError("Equity asset class required")
             permitted = ({"WARRIOR_MOMENTUM", "WARRIOR_MOMENTUM_V1"}
                          if lifecycle_owner(life) is EngineId.WARRIOR else {"QUICK_SCALPER"})
             if any(o['request'].get('metadata', {}).get('strategy_owner') not in permitted | {None, ""}

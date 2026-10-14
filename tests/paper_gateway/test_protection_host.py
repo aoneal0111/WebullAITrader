@@ -165,8 +165,8 @@ def test_invalid_quote_payload_never_changes_inventory(tmp_path,bid,ask,size):
         runtime.close()
 
 
-@pytest.mark.parametrize('change', ['missing_stop', 'owner_conflict'])
-def test_missing_stop_or_conflicting_owner_never_invents_protection(tmp_path,change):
+@pytest.mark.parametrize('change', ['missing_stop', 'owner_conflict', 'unsupported_asset'])
+def test_invalid_active_scope_or_missing_stop_never_invents_protection(tmp_path,change):
     path = tmp_path / 'paper-execution.sqlite3'
     seed(path,stop=False)
     with sqlite3.connect(path) as db:
@@ -177,8 +177,10 @@ def test_missing_stop_or_conflicting_owner_never_invents_protection(tmp_path,cha
             if change == 'missing_stop':
                 value['request']['structural_stop_price'] = None
                 value['request']['metadata'].pop('structural_stop',None)
-            else:
+            elif change == 'owner_conflict':
                 value['request']['metadata']['strategy_owner'] = 'QUICK_SCALPER'
+            else:
+                value['request']['asset_class'] = 'CRYPTO'
             db.execute('UPDATE orders SET payload=? WHERE order_id=?',(json.dumps(value),identity))
     with pytest.raises(ValueError):
         PaperProtectionHost(path,environment='PAPER',clock=lambda:T0)
