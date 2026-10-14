@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from app.composition.runtime_projection_pipeline import create_runtime_projection_pipeline
 from app.operations_core import OperationsBus
 from app.market_data.models import MarketEvent, MarketEventType, QuotePayload
-from app.paper_trading.order_models import OrderSide, OrderStatus
+from app.paper_trading.order_models import OrderSide, OrderStatus, OrderType
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
 from app.strategies.warrior_momentum.quick_scalper import QuickScalperConfig
 from app.strategies.warrior_momentum.quick_scalper_runtime import QuickScalperPaperRuntimeAdapter
@@ -158,6 +158,8 @@ def test_full_exit_partial_fill_keeps_liquidation_order_instead_of_restoring_tar
         )
         working = composition.order_book.open_orders_for_symbol("FAST")
         liquidation = next(o for o in working if o.request.execution_reason == reason)
+        assert liquidation.request.order_type is OrderType.MARKET
+        assert not any(o.request.side is OrderSide.BUY for o in working)
         assert not any(o.request.execution_reason == "SCALP_TARGET" for o in working)
         composition.gateway.process_market_event(MarketEvent(
             2, later, "FAST", "feedback", MarketEventType.QUOTE,
@@ -167,7 +169,11 @@ def test_full_exit_partial_fill_keeps_liquidation_order_instead_of_restoring_tar
         working = composition.order_book.open_orders_for_symbol("FAST")
         assert next(o for o in working if o.request.execution_reason == reason).order_id == liquidation.order_id
         assert not any(o.request.execution_reason == "SCALP_TARGET" for o in working)
-        assert next(o for o in working if o.request.execution_reason == "STOP").remaining_quantity == D("90")
+        # The market liquidation owns all remaining shares. A second reserving
+        # stop is not needed and must not replace/duplicate this full exit.
+        assert len(working) == 1
+        assert working[0].request.order_type is OrderType.MARKET
+        assert working[0].remaining_quantity == D("90")
         history_count = len(composition.order_book.history())
         recovered = QuickScalperPaperRuntimeAdapter(
             config=QuickScalperConfig(enabled=True), bridge=bridge,
@@ -180,7 +186,7 @@ def test_full_exit_partial_fill_keeps_liquidation_order_instead_of_restoring_tar
         assert not composition.order_book.get(liquidation.order_id).is_terminal
         composition.gateway.process_market_event(MarketEvent(
             3, later + timedelta(seconds=1), "FAST", "feedback", MarketEventType.QUOTE,
-            QuotePayload(D("5.06"), D("5.07"), D("90"), D("90")),
+            QuotePayload(D("5.04"), D("5.05"), D("90"), D("90")),
         ))
         assert quantity("FAST") == D("0")
         assert not composition.order_book.open_orders_for_symbol("FAST")

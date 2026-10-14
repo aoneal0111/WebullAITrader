@@ -39,6 +39,10 @@ stop; FLYE overshot slightly. All six historical policies remain unversioned.
   repeated management requests to cancel and replace it. Preserve it when its
   remaining quantity matches authoritative inventory, including after partial
   fills and a falling bid. Quantity/type mismatch still requires reconciliation.
+- Full liquidation cancels residual BUY quantity of the same lifecycle first.
+  Otherwise a partially filled entry can buy again during an exit. If entry
+  cancellation fails, the existing bracket is retained and liquidation reports
+  cancellation failure rather than dismantling protection with a BUY still live.
 
 Ownership, position quantity, PAPER authority, cancellation failure handling,
 and the already-triggered stop guard still apply. A successful order submission

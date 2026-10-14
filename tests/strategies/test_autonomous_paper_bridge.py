@@ -696,6 +696,41 @@ def test_liquidation_replaces_protection_with_idempotent_market_exit(reason) -> 
     composition.close()
 
 
+def test_full_exit_retains_protection_until_residual_entry_cancellation_succeeds() -> None:
+    position = {"PMI": Decimal("0")}
+    composition = create_paper_trading_command_composition(
+        position_quantity_source=lambda symbol: position[symbol],
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+        position_quantity_source=lambda symbol: position[symbol],
+    )
+    try:
+        assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+        composition.gateway.process_market_event(MarketEvent(
+            1, session_timestamp(1), "PMI", "test", MarketEventType.QUOTE,
+            QuotePayload(Decimal("9.99"), Decimal("10"), Decimal("40"), Decimal("40")),
+        ))
+        position["PMI"] = Decimal("40")
+        stop = bridge.ensure_exit("PMI", 40, Decimal("9.50"), "STOP", "trade-a")
+        assert stop.protection_active
+        with patch.object(AutonomousPaperExecutionBridge, "_cancel_working_order", return_value=False):
+            blocked = bridge.ensure_exit("PMI", 40, Decimal("9.99"), "SCALP_MAX_HOLD", "trade-a")
+        assert blocked.state is PaperExitSubmissionState.UNAVAILABLE
+        assert blocked.failure_reason is PaperExitSubmissionFailureReason.CANCELLATION_FAILED
+        assert not composition.order_book.get(stop.order_id).is_terminal
+        assert len(composition.order_book.open_orders()) == 2
+        retry = bridge.ensure_exit("PMI", 40, Decimal("9.99"), "SCALP_MAX_HOLD", "trade-a")
+        assert retry.state is PaperExitSubmissionState.SUBMITTED
+        working = composition.order_book.open_orders()
+        assert len(working) == 1
+        assert working[0].request.order_type is OrderType.MARKET
+        assert working[0].remaining_quantity == Decimal("40")
+    finally:
+        composition.close()
+
+
 def test_scalp_liquidation_keeps_partial_market_order_as_bid_falls() -> None:
     position = {"PMI": Decimal("100")}
     composition = create_paper_trading_command_composition(

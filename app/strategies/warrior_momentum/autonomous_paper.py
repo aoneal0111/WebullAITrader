@@ -2102,6 +2102,20 @@ class AutonomousPaperExecutionBridge:
                     failure_reason=PaperExitSubmissionFailureReason.LIFECYCLE_MISMATCH,
                 )
             if self.order_book is not None:
+                if reason_key in _IMMEDIATE_EXIT_REASONS:
+                    # A full exit must not leave a residual entry able to refill
+                    # the lifecycle as price falls. Cancel it while the current
+                    # stop/target bracket is still intact; failed cancellation
+                    # must not dismantle that protection.
+                    self.cancel_working_entry_lifecycle(normalized, identity, reason_key)
+                    if any(order.request.side is OrderSide.BUY
+                           and order.request.strategy_lifecycle_id == identity
+                           for order in self.order_book.open_orders_for_symbol(normalized)):
+                        return self._exit_failure(
+                            state=PaperExitSubmissionState.UNAVAILABLE,
+                            symbol=normalized, lifecycle_id=identity, role=reason_key,
+                            failure_reason=PaperExitSubmissionFailureReason.CANCELLATION_FAILED,
+                        )
                 triggered_stop = next((order for order in self.order_book.open_orders_for_symbol(normalized)
                     if order.request.strategy_lifecycle_id == identity
                     and order.request.order_type is OrderType.STOP
