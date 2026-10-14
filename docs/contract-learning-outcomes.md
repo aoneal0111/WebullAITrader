@@ -33,8 +33,8 @@ beside equity observational feedback. The snapshot is frozen with the review.
 These outcomes never create paired comparisons, nominate eligible challengers,
 activate policies, or prove strategy profitability. Existing cached reviews are
 not rewritten or repeated. The CLI performs no model calls, even when a key is
-present. Desktop automatic ingestion and crypto outcome import remain future
-work.
+present. Desktop automatic ingestion remains future work. Crypto has a separate
+linked-dispatch importer documented in crypto-learning-outcomes.md.
 
 Run from the repository root, supplying the actual dedicated simulator ledger:
 

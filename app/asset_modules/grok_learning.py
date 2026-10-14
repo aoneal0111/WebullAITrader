@@ -26,6 +26,7 @@ PROMPT = (
     "and unverified provenance; they do not establish causal policy superiority. "
     "Quote simulation feedback is separate from equity fills and may be synthetic; "
     "futures event/settlement agreement is not independent multiplier reconciliation. "
+    "Crypto linked dispatch PnL does not independently reconcile separately recorded fees. "
     "Never pool these results or treat them as eligible challengers. "
     "Explain limitations. You cannot place orders, change code, "
     "risk limits, open positions or activate policies."
