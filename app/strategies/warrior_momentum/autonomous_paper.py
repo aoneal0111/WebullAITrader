@@ -23,6 +23,11 @@ from app.performance_diagnostics import performance_diagnostics
 
 
 _RECENT_LIFECYCLE_LIMIT = 1024
+# These intents end holding, rather than stage a profit target at a fixed price.
+_IMMEDIATE_EXIT_REASONS = frozenset({
+    "SESSION_CLOSE", "OVERNIGHT_CAPABILITY_LOST",
+    "SCALP_MAX_HOLD", "SCALP_MOMENTUM_STALL",
+})
 
 
 class AutonomousPaperReadiness(StrEnum):
@@ -2310,9 +2315,15 @@ class AutonomousPaperExecutionBridge:
                         and working_sell.request.order_type is not OrderType.STOP
                         and (
                             int(working_sell.remaining_quantity) != int(quantity)
-                            or working_sell.request.limit_price is None
-                            or Decimal(working_sell.request.limit_price)
-                            != Decimal(price)
+                            or (
+                                reason_key in _IMMEDIATE_EXIT_REASONS
+                                and working_sell.request.order_type is not OrderType.MARKET
+                            )
+                            or (
+                                reason_key not in _IMMEDIATE_EXIT_REASONS
+                                and (working_sell.request.limit_price is None
+                                     or Decimal(working_sell.request.limit_price) != Decimal(price))
+                            )
                         )
                     ):
                         # A target can become stale when allocation or target
@@ -2443,7 +2454,7 @@ class AutonomousPaperExecutionBridge:
         strategy_owner: str | None = None,
     ) -> PaperExitSubmissionDecision:
         protective = reason_key in {"STOP", "STOP_LOSS"}
-        immediate = reason_key in {"SESSION_CLOSE", "OVERNIGHT_CAPABILITY_LOST"}
+        immediate = reason_key in _IMMEDIATE_EXIT_REASONS
         if protective:
             performance_diagnostics.record_protection_event(
                 state="PROTECTION_SUBMIT_ATTEMPT",
@@ -2691,7 +2702,7 @@ class AutonomousPaperExecutionBridge:
                 identity,
             )
             return target
-        if reason_key in {"SESSION_CLOSE", "OVERNIGHT_CAPABILITY_LOST"}:
+        if reason_key in _IMMEDIATE_EXIT_REASONS:
             return target
         # The target owns the share reservation.  The correlated stop owns
         # trigger authority for every remaining share without independently

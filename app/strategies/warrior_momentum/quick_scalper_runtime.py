@@ -30,7 +30,7 @@ from .forward_models import PaperAccountContext, PointInTimeObservation
 from .models import MomentumCandidate
 from .opportunity_engine import WarriorOpportunityEngine
 from .profit_retention import (
-    ProfitAction, ProfitRetentionPolicy, ProfitRetentionPosition, ProfitState,
+    ProfitAction, ProfitRetentionConfig, ProfitRetentionPolicy, ProfitRetentionPosition, ProfitState,
 )
 from .quick_scalper import (
     CanonicalScalpSubmission, QuickScalpAssessment, QuickScalpSnapshot,
@@ -534,7 +534,7 @@ class QuickScalperPaperRuntimeAdapter:
     def _ensure_protection(
         self, state: _ScalpPositionState, quantity: int,
     ) -> None:
-        # A full exit uses the bridge's correlated stop. Rebuilding the normal
+        # A full exit uses the bridge's market liquidation. Rebuilding the normal
         # target during its acknowledgement or partial fills can replace that
         # liquidation order and send the remaining inventory back to holding.
         # Inspect durable orders as well so restart recovery preserves exits.
@@ -1019,7 +1019,9 @@ class QuickScalperPaperRuntimeAdapter:
             state = self._positions.get(symbol)
             if state is None:
                 return
-        decision = ProfitRetentionPolicy().evaluate(
+        decision = ProfitRetentionPolicy(ProfitRetentionConfig(
+            scalp_maximum_holding_seconds=self.config.maximum_holding_seconds,
+        )).evaluate(
             ProfitRetentionPosition(
                 StrategyOwner.QUICK_SCALPER, state.symbol, state.lifecycle_id,
                 state.entered_at, state.entry_price, state.initial_stop,

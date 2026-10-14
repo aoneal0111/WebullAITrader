@@ -657,7 +657,11 @@ def test_session_cutoff_cancels_buy_entries_but_preserves_protective_sells() -> 
     composition.close()
 
 
-def test_session_close_replaces_protection_with_market_exit() -> None:
+@pytest.mark.parametrize("reason", [
+    "SESSION_CLOSE", "OVERNIGHT_CAPABILITY_LOST",
+    "SCALP_MAX_HOLD", "SCALP_MOMENTUM_STALL",
+])
+def test_liquidation_replaces_protection_with_idempotent_market_exit(reason) -> None:
     composition = create_paper_trading_command_composition(
         position_quantity_source=lambda _symbol: Decimal("100"),
     )
@@ -674,7 +678,7 @@ def test_session_close_replaces_protection_with_market_exit() -> None:
     _paper_quote(composition, 2, "10.20", "10.21")
 
     decision = bridge.ensure_exit(
-        "PMI", 100, Decimal("10.25"), "SESSION_CLOSE", "trade-a",
+        "PMI", 100, Decimal("10.25"), reason, "trade-a",
     )
 
     assert decision.state.value == "SUBMITTED"
@@ -682,7 +686,49 @@ def test_session_close_replaces_protection_with_market_exit() -> None:
     assert len(working) == 1
     assert working[0].request.order_type is OrderType.MARKET
     assert working[0].request.time_in_force.value == "GTC"
+    again = bridge.ensure_exit("PMI", 100, Decimal("10.10"), reason, "trade-a")
+    assert again.state.value == "WORKING"
+    assert again.order_id == decision.order_id
+    assert len(composition.order_book.open_orders()) == 1
+    # A falling BID must not strand a liquidation at the original limit.
+    _paper_quote(composition, 3, "10.05", "10.06")
+    assert composition.order_book.get(decision.order_id).filled_quantity == Decimal("100")
     composition.close()
+
+
+def test_scalp_liquidation_keeps_partial_market_order_as_bid_falls() -> None:
+    position = {"PMI": Decimal("100")}
+    composition = create_paper_trading_command_composition(
+        position_quantity_source=lambda symbol: position[symbol],
+    )
+    bridge = AutonomousPaperExecutionBridge(
+        composition.trading_service, composition.order_command_factory,
+        order_book=composition.order_book,
+        position_quantity_source=lambda symbol: position[symbol],
+    )
+    try:
+        assert bridge.submit_entry(Signal(), 100, Decimal("50"))
+        _paper_quote(composition, 1, "9.99", "10")
+        assert bridge.ensure_exit("PMI", 100, Decimal("9.50"), "STOP", "trade-a").protection_active
+        assert bridge.ensure_exit("PMI", 100, Decimal("10.50"), "SCALP_TARGET", "trade-a").protection_active
+        exit_order = bridge.ensure_exit("PMI", 100, Decimal("9.99"), "SCALP_MAX_HOLD", "trade-a")
+        assert exit_order.protection_active
+        composition.gateway.process_market_event(MarketEvent(
+            2, session_timestamp(2), "PMI", "test", MarketEventType.QUOTE,
+            QuotePayload(Decimal("9.80"), Decimal("9.81"), Decimal("40"), Decimal("100")),
+        ))
+        partial = composition.order_book.get(exit_order.order_id)
+        assert partial.filled_quantity == Decimal("40")
+        position["PMI"] = Decimal("60")
+        again = bridge.ensure_exit("PMI", 60, Decimal("9.70"), "SCALP_MAX_HOLD", "trade-a")
+        assert again.state is PaperExitSubmissionState.WORKING
+        assert again.order_id == exit_order.order_id
+        assert len(composition.order_book.open_orders()) == 1
+        _paper_quote(composition, 3, "9.70", "9.71")
+        assert composition.order_book.get(exit_order.order_id).filled_quantity == Decimal("100")
+        assert not composition.order_book.open_orders()
+    finally:
+        composition.close()
 
 
 def test_target_coordinates_with_protection_and_authoritative_partial_remainder() -> None:
