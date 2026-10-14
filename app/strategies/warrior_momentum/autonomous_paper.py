@@ -291,6 +291,7 @@ class AutonomousPaperExecutionBridge:
     position_quantity_source: Callable[[str], Decimal] | None = None
     management_context_source: Callable[[str], str | None] | None = None
     protection_amender: Callable[..., bool] | None = None
+    strategy_provenance_source: Callable[[object], dict] | None = None
     _seen_entries: OrderedDict[str, None] = field(default_factory=OrderedDict, init=False)
     _active_by_symbol: dict[str, str] = field(default_factory=dict, init=False)
     _entry_orders: dict[str, str] = field(default_factory=dict, init=False)
@@ -307,6 +308,29 @@ class AutonomousPaperExecutionBridge:
     def __post_init__(self) -> None:
         if self.mode.strip().upper() != "PAPER":
             self.enabled = False
+
+    def _strategy_metadata(self, signal):
+        from app.asset_modules.equity_policy_attribution import FIELDS
+        try:
+            values = self.strategy_provenance_source(signal) if self.strategy_provenance_source else {}
+            if (not isinstance(values, dict) or any(k not in FIELDS for k in values)
+                    or any(not isinstance(v, str) or not 1 <= len(v) <= 512 for v in values.values())):
+                return {}
+            return dict(values)
+        except Exception:
+            # Passive attribution must not introduce an entry/protection gate.
+            return {}
+
+    def _lifecycle_strategy_metadata(self, identity):
+        from app.asset_modules.equity_policy_attribution import inherited_metadata
+        if self.order_book is None:
+            return {}
+        entries = [o for o in self.order_book.history()
+                   if o.request.strategy_lifecycle_id == identity and o.side is OrderSide.BUY]
+        if not entries:
+            return {}
+        original = min(entries, key=lambda o: (o.created_at, o.order_id))
+        return inherited_metadata(original.request.metadata)
 
     @property
     def readiness(self) -> AutonomousPaperReadiness:
@@ -1164,6 +1188,7 @@ class AutonomousPaperExecutionBridge:
                         stop_price=None, time_in_force="DAY",
                         strategy_lifecycle_id=identity,
                         metadata={
+                            **self._strategy_metadata(signal),
                             "source": "autonomous-paper",
                             "reason": "ENTRY",
                             "provenance": provenance,
@@ -1411,6 +1436,7 @@ class AutonomousPaperExecutionBridge:
                     stop_price=None, time_in_force="DAY",
                     strategy_lifecycle_id=identity,
                     metadata={
+                        **self._lifecycle_strategy_metadata(identity),
                         "source": "autonomous-paper",
                         "reason": "AUTONOMOUS_ADD_ON_ENTRY",
                         "provenance": "AUTONOMOUS_ADD_ON_ENTRY",
@@ -1660,6 +1686,7 @@ class AutonomousPaperExecutionBridge:
                         stop_price=None, time_in_force="DAY",
                         strategy_lifecycle_id=identity,
                         metadata={
+                            **self._lifecycle_strategy_metadata(identity),
                             "source": "autonomous-paper",
                             "reason": "ENTRY_REPLACEMENT",
                             "provenance": "AUTONOMOUS_ADAPTIVE_ENTRY_REPLACEMENT",
@@ -2440,6 +2467,7 @@ class AutonomousPaperExecutionBridge:
                         time_in_force="GTC",
                         strategy_lifecycle_id=identity,
                         metadata={
+                            **self._lifecycle_strategy_metadata(identity),
                             "source": "autonomous-paper",
                             "reason": reason_key,
                             "lifecycle_id": identity,

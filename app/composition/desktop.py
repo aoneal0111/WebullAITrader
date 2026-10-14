@@ -372,6 +372,18 @@ def create_desktop_composition(
             ),
             clock=paper_clock or utc_now,
         )
+        from dataclasses import asdict
+        from hashlib import sha256
+        from app.asset_modules.equity_policy_attribution import EquityPolicyAttribution
+        from app.strategies.warrior_momentum.forward_models import canonical_json
+        scalper_configuration = sha256(canonical_json({
+            "scalper": asdict(quick_scalper_runtime.config),
+            "shared_warrior_configuration": warrior_configuration_fingerprint,
+        }).encode()).hexdigest()
+        autonomous_paper_bridge.strategy_provenance_source = EquityPolicyAttribution({
+            "WARRIOR_MOMENTUM_V1": warrior_configuration_fingerprint,
+            "QUICK_SCALPER": scalper_configuration,
+        })
 
     entry_opportunity_value_observer = create_entry_opportunity_value_observer(
         operational_configuration=operational_configuration,
