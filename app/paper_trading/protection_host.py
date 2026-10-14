@@ -177,6 +177,20 @@ class PaperProtectionHost:
             if not self._bridge.ensure_exit(symbol, int(quantity), stop, "STOP", identity).protection_active:
                 raise RuntimeError("Protection could not be reconciled")
 
+    def pause_matching(self):
+        """Revoke supplied status after transport loss; preserve all orders.
+
+        This is a local interruption, not a fabricated exchange HALT. A new
+        provider status must be newer than this barrier before matching resumes.
+        """
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Protection host closed")
+            at = self._clock()
+            self._halted.update(self._symbols)
+            for symbol in self._symbols:
+                self._last_status[symbol] = max(self._last_status.get(symbol, at), at)
+
     def process(self, event):
         with self._lock:
             if self._closed:
