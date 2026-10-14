@@ -485,6 +485,10 @@ def load_configuration(env=None):
         crypto_shared_allocation_enabled=_bool(e.get("ATLAS_CRYPTO_SHARED_ALLOCATION_ENABLED", "false")),
         grok_paper_entries_enabled=_bool(e.get("ATLAS_GROK_PAPER_ENTRIES_ENABLED", "false")),
         crypto_completed_bar_capture_enabled=_bool(e.get("ATLAS_CRYPTO_COMPLETED_BAR_CAPTURE_ENABLED", "false")),
+        learning_outcome_collection_enabled=_bool(e.get("ATLAS_LEARNING_OUTCOME_COLLECTION_ENABLED", "false")),
+        learning_outcome_journal_path=Path(e.get("ATLAS_LEARNING_OUTCOME_JOURNAL_PATH", "").strip()
+            or "data/research/learning/learning.sqlite3").resolve(),
+        learning_outcome_collection_seconds=_int(e, "ATLAS_LEARNING_OUTCOME_COLLECTION_SECONDS", 60),
     )
 
 
