@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
@@ -333,7 +334,15 @@ def test_enabled_and_disabled_shadow_leave_production_decision_unchanged(tmp_pat
         ))
         assert bool(store.records(record_type=CaptureRecordType.SHADOW_EVALUATION)) is enabled
     assert results[0] == results[1]
-    assert record_sets[0] == record_sets[1]
+    # Lifecycle diagnostics use a separate queue and may be persisted before
+    # or after the critical batch. Preserve critical ordering and compare every
+    # diagnostic payload with multiplicity, without assuming cross-queue order.
+    critical = [tuple(r for r in records if r[0] is not CaptureRecordType.SETUP_LIFECYCLE)
+                for records in record_sets]
+    diagnostics = [Counter(r for r in records if r[0] is CaptureRecordType.SETUP_LIFECYCLE)
+                   for records in record_sets]
+    assert critical[0] == critical[1]
+    assert diagnostics[0] == diagnostics[1]
 
 
 def test_shadow_has_no_paper_or_live_execution_surface() -> None:

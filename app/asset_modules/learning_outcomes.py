@@ -161,6 +161,7 @@ def read_equity_outcomes(path):
 
 
 def outcome_summary(outcomes):
+    from app.asset_modules.outcome_metrics import outcome_metrics
     groups = defaultdict(list)
     for o in outcomes:
         validate_outcome(o)
@@ -174,9 +175,7 @@ def outcome_summary(outcomes):
             pnls = [amount(o["net_pnl"]) for o in rows]
             stats.append({"campaign": campaign, "engine": engine, "policy_version": policy,
                           "strategy_family": setup,
-                          "closed_lifecycles": len(rows), "net_pnl": str(sum(pnls, Decimal(0))),
-                          "wins": sum(p > 0 for p in pnls), "losses": sum(p < 0 for p in pnls),
-                          "breakeven": sum(p == 0 for p in pnls),
+                          "closed_lifecycles": len(rows), **outcome_metrics(pnls),
                           "cost_scope": rows[0]["cost_scope"], "source_kind": rows[0]["source_kind"]})
     return {"scope": "OBSERVATIONAL_OUTCOMES_NOT_PAIRED_OR_INDEPENDENT_HOLDOUT_EVIDENCE",
             "groups": stats, "promotion": "NONE"}
