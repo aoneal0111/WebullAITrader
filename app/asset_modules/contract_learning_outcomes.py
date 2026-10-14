@@ -19,6 +19,9 @@ FIELDS = {"ledger_id", "engine", "intent_id", "instrument", "opened_at", "closed
 
 
 def validate_proxy_outcome(o):
+    if isinstance(o, dict) and o.get("engine") == "CRYPTO":
+        from app.asset_modules.crypto_learning_outcomes import validate_crypto_outcome
+        return validate_crypto_outcome(o)
     if not isinstance(o, dict) or set(o) != FIELDS:
         raise ValueError("Invalid proxy outcome fields")
     for k in FIELDS:
@@ -136,9 +139,13 @@ def proxy_summary(outcomes):
         raise ValueError("Proxy feedback group limit exceeded")
     stats = []
     with localcontext() as ctx:
-        ctx.prec = 50
+        ctx.prec = 150
         for (engine, ledger, evidence, reconciliation), rows in sorted(groups.items()):
-            pnls = [amount(o["net_pnl"]) for o in rows]
+            if engine == "CRYPTO":
+                from app.asset_modules.crypto_learning_outcomes import crypto_amount
+                pnls = [crypto_amount(o["net_pnl"]) for o in rows]
+            else:
+                pnls = [amount(o["net_pnl"]) for o in rows]
             stats.append(dict(engine=engine, ledger_id=ledger, evidence_kind=evidence,
                               reconciliation_scope=reconciliation, policy_version="UNKNOWN",
                               strategy_family="UNKNOWN", closed_intents=len(rows),
