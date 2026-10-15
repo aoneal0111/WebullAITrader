@@ -5,6 +5,10 @@
 through this gate. It creates no SDK client, subscription, thread, GUI or service.
 Installing it does not start protection against the user's actual ledger.
 
+The optional [periodic monitor](paper-protection-periodic-monitor.md) now
+supplies health polling during silence and terminal feed shutdown. It is
+explicitly started and does not install a provider adapter or online service.
+
 Every connection receives a new process-local identity token. Callbacks from an
 older connection cannot fill orders, refresh health, or disconnect the new one.
 Connecting pauses all owned symbols. It does not infer tradability from quotes.
