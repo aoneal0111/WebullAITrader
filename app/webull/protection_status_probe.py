@@ -6,9 +6,38 @@ from threading import Lock
 from app.webull.options_data_probe import Observation, OptionsDataProbe, SENSITIVE
 
 SYMBOL = re.compile(r"[A-Z][A-Z0-9.\-]{0,14}\Z")
+PERMISSION_CODES = {"OC": "TRADABLE_PERMISSION", "CO": "LIQUIDATE_ONLY_PERMISSION",
+                    "NT": "NON_TRADABLE_PERMISSION"}
 STATUS_CODES = {"1": "ACTIVE", "2": "INACTIVE", "3": "HALTED",
-                "ACTIVE": "ACTIVE", "INACTIVE": "INACTIVE", "HALTED": "HALTED"}
+                "ACTIVE": "ACTIVE", "INACTIVE": "INACTIVE", "HALTED": "HALTED",
+                **PERMISSION_CODES}
 TIME_FIELDS = ("timestamp", "status_timestamp", "status_time", "update_time", "updated_at")
+
+
+def event_protocol_observation(protocol=None):
+    """Inspect the installed account-event protobuf, never construct its client.
+
+    A matching schema would still not establish permissions, delivery or halts.
+    Broker instrument events and individual order events use different schemas.
+    """
+    report = {"scope": "OFFLINE_ACCOUNT_EVENT_PROTOBUF_NOT_ENTITLEMENT_CHECK",
+              "status_channel_access": "UNVERIFIED", "status_authorization": "NONE"}
+    try:
+        if protocol is None:
+            from webull.trade.events import events_pb2 as protocol
+        request = set(protocol.SubscribeRequest.DESCRIPTOR.fields_by_name)
+        response = set(protocol.SubscribeResponse.DESCRIPTOR.fields_by_name)
+        account = {"subscribeType", "timestamp", "contentType", "payload", "accounts"}
+        broker_request = {"events", "timestamp"}
+        broker_response = {"type", "id", "eventType", "position", "timestamp", "version", "payload"}
+        report.update(state="ACCOUNT_SUBSCRIPTION_SCHEMA" if request == account else "OTHER_SCHEMA",
+                      account_subscription_field="accounts" in request,
+                      instrument_event_list_field="events" in request,
+                      replay_cursor_field="position" in response,
+                      broker_instrument_schema_match=(broker_request <= request and broker_response <= response))
+    except (ImportError, AttributeError, TypeError):
+        report["state"] = "PROTOBUF_SCHEMA_UNAVAILABLE"
+    return report
 
 
 def validate_symbols(symbols):
@@ -64,6 +93,8 @@ def inspect_profiles(payload, requested):
         sample = {"symbol": symbol, "status_present": "status" in row,
                   "status_type": type(status).__name__,
                   "status_label": recognized or "UNKNOWN",
+                  "status_domain": ("TRADING_PERMISSION" if code in PERMISSION_CODES
+                                    else "INSTRUMENT_STATUS" if recognized is not None else "UNKNOWN"),
                   "fields": [k for k in list(row)[:64] if isinstance(k, str)
                              and re.fullmatch(r"[a-z][a-z0-9_]{0,39}", k) and not SENSITIVE.search(k)],
                   "time_fields": {k: _time_shape(row[k]) for k in TIME_FIELDS if k in row}}

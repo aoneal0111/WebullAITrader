@@ -57,6 +57,45 @@ is shown without asserting timestamp units, provider clock freshness or that an
 update time represents a status transition. A profile response's receipt time
 is a local observation, not an exchange status-event timestamp.
 
+## Confirmed permission codes and event protocol boundary
+
+The operator's production read-only response at 2026-10-15 00:02 UTC returned
+`status: OC` for both SPY and QQQ, with no selected status/update time fields.
+The original numeric/ACTIVE-only diagnostic displayed UNKNOWN. The permanent
+diagnostic now retains OC, CO and NT as TRADABLE_PERMISSION,
+LIQUIDATE_ONLY_PERMISSION and NON_TRADABLE_PERMISSION. A separate `status_domain`
+identifies TRADING_PERMISSION versus the legacy INSTRUMENT_STATUS code family.
+CO is a close-only permission, not an exchange halt. NT is a permission denial,
+not proof of an exchange halt reason. None of these labels creates a RESUME,
+authorizes matching or changes the scanner's production tradability logic.
+
+Additional primary sources reviewed on 2026-10-15 UTC:
+
+- [Broker API Instrument Events](https://developer.webull.com/apis/docs/reference/fd-events/instruments-events/)
+  defines OC/CO/NT and timestamped property-change notifications keyed by
+  instrument_id. It does not establish exchange halt/resume coverage or this
+  individual account's entitlement.
+- [Broker Event Subscription Guide](https://developer.webull.com/apis/docs/reference/fd-events/subscribe-events/)
+  uses an `events` subscription list and response fields including event type,
+  timestamp, position cursor and payload.
+- [Individual Subscribe Trade Events](https://developer.webull.com/apis/docs/reference/custom/subscribe-trade-events/)
+  documents account-based order fill, cancellation and modification events.
+
+The installed 2.0.14 account-event protobuf has `accounts`, `subscribeType` and
+`timestamp` request fields, rather than the Broker guide's `events` list.
+`protection_status_check` now reports this local schema distinction offline by
+reading protobuf descriptors. It constructs no event client, socket or account
+subscription, and never invokes the SDK trade-event request builder, which
+prints signed request details in this installed version. No event-client
+credentials are accessed by the descriptor observation.
+
+This observation inspects one installed account-event module, not every possible
+Webull product or account permission. Missing Broker fields do not prove the
+account was denied access; even a matching protocol would leave access
+UNVERIFIED. A supported endpoint/protocol, individual-account entitlement,
+initial status and replay/reconnect guarantees, plus exchange halt/resume
+coverage, still need provider confirmation before the feed adapter is enabled.
+
 ```powershell
 & .\.venv\Scripts\python.exe -m app.paper_trading.protection_status_check
 & .\.venv\Scripts\python.exe -m app.paper_trading.protection_status_check --online --symbols "SPY,QQQ"
