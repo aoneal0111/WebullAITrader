@@ -31,7 +31,11 @@ class StrategyOrdersPage(QWidget):
         layout.addWidget(self.orders_panel)
 
     def render_state(self, state):
-        orders = tuple(o for o in project_orders_read_model(state).orders
+        self.render_orders(project_orders_read_model(state))
+
+    def render_orders(self, snapshot):
+        """Render a read-only saved snapshot without an application runtime."""
+        orders = tuple(o for o in snapshot.orders
                        if lifecycle_owner(o.lifecycle_id) is self.engine)
         self.orders_panel.render(format_orders(OrdersReadModelSnapshot(orders)))
         net = defaultdict(Decimal)
