@@ -15,6 +15,40 @@ from app.paper_trading.protection_host import PaperProtectionHost
 from app.paper_trading.protection_host_check import T0, seed, quote
 
 
+@pytest.mark.parametrize("field,price", [
+    ("average_fill_price", "7.386313043478260869565217391"),
+    ("limit_price", "6.492555171742912076174199652"),
+    ("stop_price", "2.197237569060773480662983425"),
+])
+def test_saved_computed_prices_preserve_canonical_precision(tmp_path, field, price):
+    path = tmp_path / "paper.sqlite3"
+    seed(path)
+    with sqlite3.connect(path) as db:
+        identity, raw = db.execute("SELECT order_id,payload FROM orders WHERE json_extract(payload,'$.request.side')='BUY'").fetchone()
+        value = json.loads(raw)
+        container = value if field == "average_fill_price" else value["request"]
+        container[field] = price
+        db.execute("UPDATE orders SET payload=? WHERE order_id=?", (json.dumps(value), identity))
+    before = path.read_bytes()
+    view = PaperLedgerReader(path).read()
+    assert view.status == "AVAILABLE"
+    assert getattr(next(o for o in view.orders.orders if o.order_id == identity), field) == price
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("price", ["0", "-1", "NaN", "Infinity", "1e13", "1e-65", "x", "1" * 65, 10])
+def test_saved_price_bounds_remain_enforced(tmp_path, price):
+    path = tmp_path / "paper.sqlite3"
+    seed(path)
+    with sqlite3.connect(path) as db:
+        identity, raw = db.execute("SELECT order_id,payload FROM orders LIMIT 1").fetchone()
+        value = json.loads(raw)
+        value["average_fill_price"] = price
+        db.execute("UPDATE orders SET payload=? WHERE order_id=?", (json.dumps(value), identity))
+    view = PaperLedgerReader(path).read()
+    assert view.status == "INVALID" and view.report()["saved_orders"] is None
+
+
 def test_reads_existing_orders_without_mutation_while_protection_host_owns_ledger(tmp_path):
     path = tmp_path / "paper-execution.sqlite3"
     seed(path)

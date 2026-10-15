@@ -64,3 +64,10 @@ needs Webull credentials nor loads application configuration. Tests construct
 temporary ledgers and verify reads during canonical host ownership, source
 preservation, invalid/busy handling, refresh after fills, Qt-free CLI inspection
 and reuse of existing strategy views. They do not establish strategy returns.
+
+Computed target prices and weighted average fill prices retain their saved
+Decimal precision. The viewer accepts positive finite price strings up to 64
+characters, magnitude 1e12 and exponent -64 through 12, without rounding the
+saved value. Quantity and commission validation keep their existing bounds.
+This accommodates canonical computed prices with more than 12 decimal places;
+it does not rewrite the source ledger or change execution prices.
