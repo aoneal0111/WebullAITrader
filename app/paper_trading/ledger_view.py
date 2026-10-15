@@ -27,8 +27,15 @@ def _optional(value):
 
 
 def _price(value):
-    if value is not None and amount(value) <= 0:
-        raise ValueError("Invalid saved price")
+    if value is not None:
+        # Canonical weighted averages and computed targets retain Decimal
+        # precision; the learning amount parser's 12-place bound is narrower.
+        if not isinstance(value, str) or not 0 < len(value) <= 64:
+            raise ValueError("Invalid saved price")
+        price = Decimal(value)
+        if (not price.is_finite() or not Decimal(0) < price <= Decimal('1e12')
+                or not -64 <= price.as_tuple().exponent <= 12):
+            raise ValueError("Invalid saved price")
     return value
 
 
