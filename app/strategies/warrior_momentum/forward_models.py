@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
+from functools import lru_cache
 from hashlib import sha256
 import json
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Iterable, Iterator
 
 from app.configuration.models import PaperSymbolAuthorizationMode
 from app.market_data.models import BookLevel
@@ -316,7 +318,7 @@ def _json_safe(value: Any) -> Any:
         return value.isoformat()
     if isinstance(value, StrEnum):
         return value.value
-    if isinstance(value, Mapping):
+    if isinstance(value, dict) or isinstance(value, Mapping):
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (frozenset, set)):
         return [_json_safe(item) for item in sorted(value, key=str)]
@@ -327,11 +329,19 @@ def _json_safe(value: Any) -> Any:
     raise TypeError(f"unsupported capture value: {type(value).__name__}")
 
 
+@lru_cache(maxsize=256)
+def _sensitive_name(name: str) -> bool:
+    return any(part in name for part in _SENSITIVE_PARTS)
+
+
 def _reject_sensitive(value: Any, path: str = "payload") -> None:
-    if isinstance(value, Mapping):
+    if isinstance(value, dict) or isinstance(value, Mapping):
         for key, item in value.items():
             name = str(key).lower()
-            if any(part in name for part in _SENSITIVE_PARTS):
+            # Cache schema names only, never field values or unbounded names.
+            sensitive = (_sensitive_name(name) if len(name) <= 64
+                         else any(part in name for part in _SENSITIVE_PARTS))
+            if sensitive:
                 raise ValueError(f"sensitive field is forbidden: {path}.{key}")
             _reject_sensitive(item, f"{path}.{key}")
     elif isinstance(value, (tuple, list)):
