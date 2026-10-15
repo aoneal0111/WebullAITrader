@@ -5,7 +5,7 @@ from importlib.metadata import version
 import json
 from pathlib import Path
 
-from app.webull.protection_status_probe import ProtectionStatusProbe, validate_symbols
+from app.webull.protection_status_probe import ProtectionStatusProbe, event_protocol_observation, validate_symbols
 
 
 def main(argv=None):
@@ -22,7 +22,7 @@ def main(argv=None):
                   sdk_version=version("webull-openapi-python-sdk"), online=args.online,
                   requested_symbols=list(symbols), entries_enabled=False,
                   live_feed_validated=False, status_authorization="NONE", sdk_operation_attempts=0,
-                  orders=0)
+                  orders=0, installed_event_protocol=event_protocol_observation())
     if not args.online:
         report.update(state="OFFLINE_NO_REQUESTS", network_requests=0)
         print(json.dumps(report, indent=2))

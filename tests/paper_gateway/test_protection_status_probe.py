@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from app.paper_trading.protection_host_check import T0
-from app.webull.protection_status_probe import ProtectionStatusProbe, inspect_profiles
+from app.webull.protection_status_probe import ProtectionStatusProbe, event_protocol_observation, inspect_profiles
 
 
 def sdk(payload=None, status=200):
@@ -59,6 +59,47 @@ def test_missing_status_never_defaults_to_active_and_duplicate_rows_remain_visib
     assert schema["unexpected_rows"] == 1 and schema["malformed_rows"] == 1
     assert schema["missing_symbols"] == ["QQQ"]
     assert "UNREQUESTED" not in json.dumps(schema)
+
+
+@pytest.mark.parametrize("code,label", [("OC","TRADABLE_PERMISSION"),
+    ("CO","LIQUIDATE_ONLY_PERMISSION"), ("NT","NON_TRADABLE_PERMISSION")])
+def test_permission_codes_remain_separate_from_exchange_halts_or_authorization(code, label):
+    schema, _ = inspect_profiles([{"symbol":"SPY", "status":code}], ("SPY",))
+    row = schema["rows"][0]
+    assert row["status_code"] == code and row["status_label"] == label
+    assert row["status_domain"] == "TRADING_PERMISSION"
+    assert row["time_fields"] == {} and schema["status_authorization"] == "NONE"
+    legacy, _ = inspect_profiles([{"symbol":"SPY", "status":3}], ("SPY",))
+    assert legacy["rows"][0]["status_domain"] == "INSTRUMENT_STATUS"
+
+
+def test_installed_event_schema_does_not_imply_instrument_stream_access():
+    report = event_protocol_observation()
+    assert report["state"] == "ACCOUNT_SUBSCRIPTION_SCHEMA"
+    assert report["account_subscription_field"] is True
+    assert report["instrument_event_list_field"] is False
+    assert report["broker_instrument_schema_match"] is False
+    assert report["status_channel_access"] == "UNVERIFIED"
+    assert report["status_authorization"] == "NONE"
+
+
+@pytest.mark.parametrize("broker", [True, False])
+def test_even_compatible_protocol_shape_never_authorizes_a_status_channel(broker):
+    def message(names):
+        return SimpleNamespace(DESCRIPTOR=SimpleNamespace(fields_by_name=dict.fromkeys(names)))
+    protocol = SimpleNamespace(
+        SubscribeRequest=message(["events","timestamp"] if broker else ["unknown"]),
+        SubscribeResponse=message(["type","id","eventType","position","timestamp","version","payload"]))
+    report = event_protocol_observation(protocol)
+    assert report["broker_instrument_schema_match"] is broker
+    assert report["status_channel_access"] == "UNVERIFIED"
+    assert report["status_authorization"] == "NONE"
+
+
+def test_unavailable_protocol_is_not_guessed_or_reported_as_entitlement_failure():
+    report = event_protocol_observation(SimpleNamespace())
+    assert report["state"] == "PROTOBUF_SCHEMA_UNAVAILABLE"
+    assert report["status_channel_access"] == "UNVERIFIED"
 
 
 def test_bounded_time_syntax_and_no_private_provider_values_are_printed():
