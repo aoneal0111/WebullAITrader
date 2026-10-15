@@ -18,6 +18,8 @@ inside one read transaction. It checks the dedicated PAPER account, schema and
 active campaign; validates saved order/fill quantities, timestamps, prices and
 ownership consistency; and constructs immutable order read models. It never
 opens the durable store's writer/recovery class or submits repair commands.
+Basic envelopes are checked before campaign filtering so damaged records cannot
+silently disappear into the legacy-campaign fallback.
 SQLite may use existing WAL/shared-memory facilities for a concurrent reader;
 read-only SQL does not promise the absence of all SQLite sidecar activity.
 

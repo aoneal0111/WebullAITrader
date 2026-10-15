@@ -57,10 +57,10 @@ class PaperLedgerReader:
         at = datetime.now(timezone.utc).isoformat()
         def failure(status, notice):
             return PaperLedgerView(status, at, notice)
-        if not self.path.is_file():
-            return failure("NOT_FOUND", "Saved PAPER ledger not found; inventory is unknown.")
         deadline = time.monotonic() + .75
         try:
+            if not self.path.is_file():
+                return failure("NOT_FOUND", "Saved PAPER ledger not found; inventory is unknown.")
             with closing(sqlite3.connect(self.path.as_uri()+"?mode=ro", uri=True, timeout=.05)) as db:
                 db.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
                 db.execute("PRAGMA query_only=ON")
@@ -75,6 +75,14 @@ class PaperLedgerReader:
                 campaign = _text(meta["active_campaign_id"], 180)
                 if campaign == "no-active-paper-campaign":
                     raise ValueError("No active campaign")
+                # A damaged envelope must not silently disappear into the
+                # legacy-campaign fallback before its order can be validated.
+                damaged = db.execute("""SELECT 1 FROM orders WHERE NOT json_valid(payload)
+                    OR COALESCE(json_type(payload),'') <> 'object'
+                    OR COALESCE(json_type(payload,'$.request'),'') <> 'object'
+                    OR COALESCE(json_type(payload,'$.fills'),'') <> 'array' LIMIT 1""").fetchone()
+                if damaged:
+                    raise ValueError("Invalid saved envelope")
                 cursor = db.execute("""SELECT order_id, CASE WHEN length(payload)<=131072 THEN payload ELSE NULL END
                     FROM orders WHERE COALESCE(json_extract(payload,'$.paper_campaign_id'),'legacy-paper-campaign')=?
                     ORDER BY order_id LIMIT 5001""", (campaign,))
@@ -88,6 +96,9 @@ class PaperLedgerReader:
                         if size > 32_000_000:
                             raise ValueError("Saved byte limit")
                         value = json.loads(raw)
+                        if (not isinstance(value, dict) or not isinstance(value.get("request"), dict)
+                                or not isinstance(value.get("fills"), list)):
+                            raise ValueError("Invalid saved record shape")
                         r = value["request"]
                         metadata = r.get("metadata") or {}
                         if not isinstance(metadata, dict):
@@ -142,5 +153,7 @@ class PaperLedgerReader:
             if getattr(exc, "sqlite_errorcode", 0) & 255 in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
                 return failure("BUSY", "Saved ledger is busy; inventory is unknown. Refresh to retry.")
             return failure("UNAVAILABLE", "Saved ledger could not be read within limits; inventory is unknown.")
-        except (sqlite3.DatabaseError, OSError, ValueError, TypeError, KeyError, ArithmeticError, RecursionError):
+        except OSError:
+            return failure("UNAVAILABLE", "Saved ledger could not be accessed; inventory is unknown.")
+        except (sqlite3.DatabaseError, ValueError, TypeError, KeyError, ArithmeticError, RecursionError):
             return failure("INVALID", "Saved ledger failed validation; inventory is unknown.")

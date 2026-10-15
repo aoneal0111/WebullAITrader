@@ -3,6 +3,8 @@ import json
 import sqlite3
 import subprocess
 import sys
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -49,7 +51,9 @@ def test_read_only_sql_connections_never_initialize_source_or_lock_file(tmp_path
         connection = original(database, **kwargs)
         connection.set_trace_callback(queries.append)
         return connection
-    monkeypatch.setattr("app.paper_trading.ledger_view.sqlite3.connect", connect)
+    proxy = SimpleNamespace(**vars(sqlite3))
+    proxy.connect = connect
+    monkeypatch.setattr("app.paper_trading.ledger_view.sqlite3", proxy)
     before = path.read_bytes()
     assert PaperLedgerReader(path).read().status == "AVAILABLE"
     assert path.read_bytes() == before
@@ -77,7 +81,7 @@ def test_busy_source_has_unknown_counts_not_zero_and_retry_recovers(tmp_path):
     assert PaperLedgerReader(path).read().status == "AVAILABLE"
 
 
-@pytest.mark.parametrize("change", ["identity","quantity","fill","timestamp","owner","asset","metadata","size"])
+@pytest.mark.parametrize("change", ["identity","quantity","fill","timestamp","owner","asset","metadata","size","request","payload"])
 def test_invalid_saved_records_never_become_empty_authoritative_positions(tmp_path, change):
     path = tmp_path / "paper.sqlite3"
     seed(path)
@@ -92,10 +96,20 @@ def test_invalid_saved_records_never_become_empty_authoritative_positions(tmp_pa
         if change == "asset": value["request"]["asset_class"] = "CRYPTO"
         if change == "metadata": value["request"]["metadata"] = ["bad"]
         if change == "size": value["padding"] = "x"*131073
+        if change == "request": value["request"] = []
+        if change == "payload": value = []
         db.execute("UPDATE orders SET payload=? WHERE order_id=?", (json.dumps(value),identity))
     result = PaperLedgerReader(path).read()
     assert result.status == "INVALID"
     assert not result.orders.orders and result.report()["saved_orders"] is None
+
+
+def test_inaccessible_path_returns_unknown_without_raising(tmp_path):
+    reader = PaperLedgerReader(tmp_path/"paper.sqlite3")
+    reader.path = SimpleNamespace(is_file=Mock(side_effect=PermissionError("not printed")))
+    result = reader.read()
+    assert result.status == "UNAVAILABLE" and result.report()["saved_orders"] is None
+    assert "not printed" not in json.dumps(result.report())
 
 
 def test_active_campaign_filter_excludes_other_campaign_orders(tmp_path):
