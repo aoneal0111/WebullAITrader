@@ -30,7 +30,19 @@ class PaperProtectionFeed:
         self._deadline = None
         self._last_clock = None
         self._state = "DISCONNECTED"
+        self._closed = False
+        self._monitor_claimed = False
         host.pause_matching()
+
+    @property
+    def silence_seconds(self):
+        return self._limit
+
+    def _claim_monitor(self):
+        with self._lock:
+            if self._closed or self._monitor_claimed:
+                raise RuntimeError("Protection feed monitor already claimed or closed")
+            self._monitor_claimed = True
 
     def _pause(self, state):
         self._token, self._deadline, self._state = None, None, state
@@ -50,6 +62,8 @@ class PaperProtectionFeed:
     def connect(self):
         """Start a fresh generation; connection success never implies RESUME."""
         with self._lock:
+            if self._closed:
+                raise RuntimeError("Protection feed closed")
             self._pause("DISCONNECTED")
             at = self._now()
             self._token = object()
@@ -67,6 +81,8 @@ class PaperProtectionFeed:
     def check_health(self):
         """Called by the future transport loop even when no messages arrive."""
         with self._lock:
+            if self._closed:
+                return "CLOSED"
             at = self._now()
             if self._token is not None and at >= self._deadline:
                 self._pause("FEED_SILENT")
@@ -111,3 +127,10 @@ class PaperProtectionFeed:
             return dict(scope="CANONICAL_FEED_LIFECYCLE_NOT_PROVIDER_VALIDATION",
                         state=self._state, connected=self._token is not None,
                         entries_enabled=False, live_feed_validated=False)
+
+    def close(self):
+        """Terminally revoke callbacks and pause matching; preserve the host."""
+        with self._lock:
+            if not self._closed:
+                self._closed = True
+                self._pause("CLOSED")

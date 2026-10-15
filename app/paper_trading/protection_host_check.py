@@ -7,6 +7,8 @@ import multiprocessing
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
+from time import monotonic
 from types import SimpleNamespace
 
 from app.composition.runtime_projection_pipeline import create_runtime_projection_pipeline
@@ -16,6 +18,7 @@ from app.operations_core import OperationsBus
 from app.paper_trading.command_composition import create_paper_trading_command_composition, PAPER_ACCOUNT_ID
 from app.paper_trading.protection_host import PaperProtectionHost
 from app.paper_trading.protection_feed import PaperProtectionFeed
+from app.paper_trading.protection_monitor import PaperProtectionMonitor
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
 
 T0 = datetime(2026, 10, 14, 15, 0, tzinfo=timezone.utc)
@@ -51,6 +54,7 @@ def seed(path, *, stop=True, partial=True, lifecycle="WARRIOR_MOMENTUM_V1|DEMO|S
 
 def _worker(path, pipe):
     host = None
+    monitor = None
     try:
         now = T0 + timedelta(seconds=2)
         host = PaperProtectionHost(path, environment="PAPER", clock=lambda: now)
@@ -60,13 +64,20 @@ def _worker(path, pipe):
         mono = [100.0]
         feed = PaperProtectionFeed(host, source="synthetic-protection-check",
                                    silence_seconds=5, clock=lambda: mono[0])
+        monitor = PaperProtectionMonitor(feed, poll_seconds=.01)
+        monitor.start()
         old = feed.connect()
         now += timedelta(seconds=1)
         feed.process(old, MarketEvent(2, now, "DEMO", "synthetic-protection-check",
                                      MarketEventType.RESUME, ResumePayload("synthetic")))
         now += timedelta(seconds=5)
         mono[0] += 5
-        silence_paused = feed.check_health() == "FEED_SILENT" and host._quantity("DEMO") == 10
+        deadline = monotonic() + 2
+        pause = Event()
+        while monitor.snapshot()["last_feed_state"] != "FEED_SILENT" and monotonic() < deadline:
+            pause.wait(.005)
+        silence_paused = (monitor.snapshot()["last_feed_state"] == "FEED_SILENT"
+                          and host._quantity("DEMO") == 10)
         token = feed.connect()
         now += timedelta(seconds=1)
         old_blocked = feed.process(old, quote(now)) == "OLD_CONNECTION"
@@ -76,14 +87,21 @@ def _worker(path, pipe):
                                        MarketEventType.RESUME, ResumePayload("synthetic")))
         now += timedelta(seconds=1)
         outcome = feed.process(token, quote(now))
+        monitor_stopped = monitor.close()
+        closed_callbacks_blocked = feed.process(token, quote(now)) == "OLD_CONNECTION"
         pipe.send({"outcome": outcome, **host.snapshot(),
                    "silence_paused": silence_paused, "old_connection_blocked": old_blocked,
                    "reconnect_requires_status": status_required,
+                   "periodic_silence_check": silence_paused,
+                   "monitor_stopped": monitor_stopped,
+                   "closed_callbacks_blocked": closed_callbacks_blocked,
                    "qt_widgets_imported": "PySide6.QtWidgets" in sys.modules,
                    "working_buys": sum(o.request.side.value == "BUY" for o in host._commands.order_book.open_orders())})
     except Exception as exc:
         pipe.send({"error": type(exc).__name__})
     finally:
+        if monitor is not None:
+            monitor.close()
         if host is not None:
             host.close()
         pipe.close()
@@ -119,6 +137,8 @@ def synthetic_check():
                       and result.get("silence_paused") is True
                       and result.get("old_connection_blocked") is True
                       and result.get("reconnect_requires_status") is True
+                      and result.get("monitor_stopped") is True
+                      and result.get("closed_callbacks_blocked") is True
                       and result.get("working_buys") == 0)
             return dict(scope="SYNTHETIC_HEADLESS_PROTECTION_NOT_LIVE_FEED_OR_PERFORMANCE",
                         passed=passed, separate_process=True, original_command_runtime_closed=True,
@@ -127,6 +147,9 @@ def synthetic_check():
                         silence_paused=result.get("silence_paused"),
                         old_connection_blocked=result.get("old_connection_blocked"),
                         reconnect_requires_status=result.get("reconnect_requires_status"),
+                        periodic_silence_check=result.get("periodic_silence_check"),
+                        monitor_stopped=result.get("monitor_stopped"),
+                        closed_callbacks_blocked=result.get("closed_callbacks_blocked"),
                         entries_enabled=False, live_feed_validated=False, network_requests=0)
         finally:
             if worker.is_alive():
