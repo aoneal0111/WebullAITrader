@@ -149,6 +149,16 @@ class PaperProtectionHost:
         return sum((Decimal(p.quantity) for p in self._projection.position_projection.snapshot.positions
                     if p.symbol == symbol), Decimal(0))
 
+    @property
+    def protection_symbols(self):
+        """Immutable current subscription inventory; never introduces symbols."""
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Protection host closed")
+            working = {o.symbol for o in self._commands.order_book.open_orders()}
+            return tuple(sorted(s for s in self._symbols
+                                if self._quantity(s) > 0 or s in working))
+
     def _average_cost(self, symbol):
         return next((Decimal(p.average_cost) for p in self._projection.position_projection.snapshot.positions
                      if p.symbol == symbol), None)
