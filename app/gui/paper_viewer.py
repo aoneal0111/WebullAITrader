@@ -29,6 +29,7 @@ def create_window(reader):
             self.notice.setWordWrap(True)
             layout.addWidget(self.notice)
             refresh = QPushButton("Refresh saved ledger")
+            refresh.setObjectName("secondaryButton")
             refresh.clicked.connect(self.refresh)
             layout.addWidget(refresh)
             self.tabs = QTabWidget()
