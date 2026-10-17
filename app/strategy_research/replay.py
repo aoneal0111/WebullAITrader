@@ -118,6 +118,11 @@ def replay(bars: tuple[Bar, ...], candidate: Candidate, costs: Costs, *,
 
 
 def metrics(trades: tuple[Trade, ...]) -> dict:
+    all_trades = trades
+    boundary_marks = tuple(t for t in trades if t.reason == "EVALUATION_BOUNDARY")
+    # Ending a supplied file is not a strategy exit. Keep these marks visible
+    # without manufacturing winners or losers in the headline hit rate.
+    trades = tuple(t for t in trades if t.reason != "EVALUATION_BOUNDARY")
     n = len(trades)
     wins = sum(t.net_pnl_per_share > 0 for t in trades)
     losses = sum(t.net_pnl_per_share < 0 for t in trades)
@@ -145,7 +150,9 @@ def metrics(trades: tuple[Trade, ...]) -> dict:
         "expectancy_r": cumulative / n if n else None,
         "profit_factor_r": positive / negative if negative else None,
         "closed_trade_drawdown_r": drawdown,
-        "trades": [asdict(t) for t in trades],
+        "evaluation_boundary_marks": len(boundary_marks),
+        "boundary_mark_net_r": sum((t.net_r for t in boundary_marks), D(0)),
+        "trades": [asdict(t) for t in all_trades],
     }
 
 

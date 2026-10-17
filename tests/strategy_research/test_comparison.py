@@ -158,6 +158,14 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(m["closed_trade_drawdown_r"], 1)
         self.assertEqual(m["profit_factor_r"], 1)
 
+    def test_truncated_file_mark_is_not_a_strategy_win(self):
+        mark = Trade("a", "b", "c", D(100), D(110), D(99), D(10), D(10), "EVALUATION_BOUNDARY")
+        result = metrics((mark,))
+        self.assertEqual(result["closed_positions"], 0)
+        self.assertIsNone(result["win_rate"])
+        self.assertEqual(result["evaluation_boundary_marks"], 1)
+        self.assertEqual(result["boundary_mark_net_r"], 10)
+
     def test_compare_no_authorization_and_all_variants_reported(self):
         bars = session() + session(START + timedelta(days=1))
         report = compare(bars, ZERO_COST, timeframe="minute", split_at=bars[30].opened)

@@ -95,6 +95,10 @@ This exports every reconciled closed lifecycle in the active campaign and all
 exclusion counts, rather than selecting only losses. It cannot report older
 campaigns or reconstruct missing historical candles. Summary groups preserve
 engine, frozen policy version and recorded strategy family.
+`tools/capture-strategy-audit.ps1` automates the Windows verification/export in
+a separate detached worktree using the existing virtual environment. It does
+not switch the runtime checkout or launch Atlas. Its ZIP contains only the
+audit and reviewed revision, not the source database, environment or credentials.
 
 CSV columns:
 
@@ -143,8 +147,10 @@ cost validation. Pre-split data may warm indicators but never seeds pending
 orders or open positions across the split. Intraday splits require a session
 boundary. Open histories should include independent provider quality checks.
 
-Metrics count complete positions after modeled costs, including breakevens in
-the denominator. P&L per share and risk-unit profit factor/expectancy are
+Metrics count complete strategy exits after modeled costs, including breakevens
+in the denominator. Marks forced solely by an evaluation/file boundary are
+reported separately and excluded from hit rate, profit factor, expectancy and
+closed-trade drawdown. P&L per share and risk-unit profit factor/expectancy are
 screening quantities, not realized account profit. Closed-trade drawdown omits
 intratrade equity drawdowns. Wilson intervals are descriptive and assume
 independent trades; correlated trades require session-block resampling.

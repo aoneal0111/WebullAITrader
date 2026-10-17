@@ -5,6 +5,7 @@ import argparse
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+import sqlite3
 
 
 def main(argv=None) -> int:
@@ -14,13 +15,17 @@ def main(argv=None) -> int:
     # Reuse the canonical read-only snapshot and lifecycle reconciliation.
     # Do not use learning_outcomes.main: it writes a separate learning journal.
     from app.asset_modules.learning_outcomes import read_equity_outcomes, outcome_summary
-    report = read_equity_outcomes(args.ledger)
+    try:
+        report = read_equity_outcomes(args.ledger)
+        summary = outcome_summary(report["outcomes"])
+    except (ValueError, KeyError, TypeError, OSError, sqlite3.Error) as exc:
+        parser.exit(2, f"Equity audit failed: {exc}\n")
     print(json.dumps({
         "version": "STRATEGY_RESEARCH_EQUITY_AUDIT_V1",
         "captured_at": datetime.now(UTC).isoformat(),
         "selection": "ALL_RECONCILED_CLOSED_ACTIVE_CAMPAIGN_EQUITY_LIFECYCLES",
         "source": report,
-        "summary": outcome_summary(report["outcomes"]),
+        "summary": summary,
         "orders": 0, "network_requests": 0, "execution_authorized": False,
         "limitations": ["Active campaign only; excluded/unresolved lifecycles are reported separately.",
                         "Recorded commissions only; source PAPER provenance is unverified.",
