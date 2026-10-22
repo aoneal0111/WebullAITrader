@@ -145,3 +145,24 @@ git -C $Repo show FETCH_HEAD:tools/capture-intraday-research.ps1 |
 if ($LASTEXITCODE -ne 0) { throw "Script extraction failed." }
 & $Script -Repo $Repo
 ```
+
+### Saved-data export version2
+
+The equity reader now uses bounded integer-primary-key sequence windows instead
+of a combined record-type/date query that could sort a large matching history
+before producing its first rows. The SQLite query plan is checked to use the
+sequence range without a temporary sort even when the source has a type/time
+index. No index is created and no source table is modified. The scan visits at
+most250,000 sequence slots in2,000-slot pages and retains the existing50,000-row,
+32MiB and read-time bounds. Gaps/pruning can exhaust the slot budget; the manifest
+reports scan limits and truncation rather than declaring complete coverage.
+
+Failures now include a fixed stage and SQLite's numeric/symbolic error code
+when available, without raw exception messages, SQL contents, host paths or
+record payloads. This distinguishes interruption, locking and schema errors on
+the next workstation run; an old generic OperationalError cannot establish
+which occurred. A failed source produces PARTIAL_SOURCE_EXPORT or
+SOURCE_EXPORT_FAILED and a nonzero CLI exit. The wrapper still selects a produced
+diagnostic ZIP before reporting the failure, so it remains reviewable. Missing
+sources remain explicit; they are not synthesized. The shared ten-second query
+progress deadline and read-only connection guards are unchanged.

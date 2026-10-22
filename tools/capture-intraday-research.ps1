@@ -33,10 +33,13 @@ try {
         & $Python -m unittest tests.strategy_research.test_intraday_export -q
         if ($LASTEXITCODE -ne 0) { throw "Read-only export verification failed." }
         & $Python -m app.strategy_research.intraday_export --output $OutputDirectory --equity $EquityCapture --crypto $CryptoCapture --days $Days
-        if ($LASTEXITCODE -ne 0) { throw "Saved-data export failed." }
+        $ExportExit = $LASTEXITCODE
         $ZipPath = [System.IO.Path]::ChangeExtension($OutputDirectory, ".zip")
-        Write-Host "INTRADAY_ZIP=$ZipPath"
-        & explorer.exe "/select,`"$ZipPath`""
+        if (Test-Path -LiteralPath $ZipPath -PathType Leaf) {
+            Write-Host "INTRADAY_ZIP=$ZipPath"
+            & explorer.exe "/select,`"$ZipPath`""
+        }
+        if ($ExportExit -ne 0) { throw "One or more source reads failed. Send the selected ZIP; its manifest contains safe SQLite error codes and stages." }
     }
     finally { Pop-Location }
 }

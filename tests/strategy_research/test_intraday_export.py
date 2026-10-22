@@ -4,13 +4,15 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 import json
+import contextlib
+import io
 import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
 from zipfile import ZipFile
 
-from app.strategy_research.intraday_export import export_sources
+from app.strategy_research.intraday_export import export_sources, EQUITY_PAGE_QUERY
 
 AT = datetime(2026, 10, 22, 16, tzinfo=UTC)
 
@@ -19,7 +21,7 @@ def equity(path):
     with closing(sqlite3.connect(path)) as db, db:
         db.execute('CREATE TABLE capture_metadata(singleton INTEGER, schema_version INTEGER)')
         db.execute('INSERT INTO capture_metadata VALUES(1,1)')
-        db.execute('CREATE TABLE capture_records(sequence INTEGER, record_type TEXT, symbol TEXT, timestamp TEXT, payload_json TEXT)')
+        db.execute('CREATE TABLE capture_records(sequence INTEGER PRIMARY KEY, record_type TEXT, symbol TEXT, timestamp TEXT, payload_json TEXT)')
         bar = dict(bar_timestamp=(AT-timedelta(minutes=1)).isoformat(), completion_timestamp=AT.isoformat(),
                    interval='1m', completed=True, open='100', high='101', low='99', close='100.5', volume='1000',
                    private_extra='PRIVATE_VALUE')
@@ -85,6 +87,104 @@ class ExportTests(unittest.TestCase):
                 row=json.loads(z.read('crypto-saved-market-data.jsonl'))
                 self.assertIsNone(row['volume'])
                 self.assertEqual(row['availability_basis'],'CRYPTO_RECORDED_DURABLE_AVAILABILITY')
+
+    def test_equity_query_uses_sequence_range_without_sorting_entire_type_history(self):
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'source';equity(path)
+            with closing(sqlite3.connect(path)) as db,db:
+                db.execute('CREATE INDEX capture_type_time ON capture_records(record_type,timestamp,sequence)')
+                rows=db.execute('EXPLAIN QUERY PLAN '+EQUITY_PAGE_QUERY,
+                    (-1,2,'MINUTE_BAR','EXECUTION_PRICE_PATH',(AT-timedelta(days=1)).isoformat(),AT.isoformat(),100)).fetchall()
+                plan=' '.join(str(r[-1]) for r in rows)
+                self.assertIn('INTEGER PRIMARY KEY',plan)
+                self.assertNotIn('TEMP B-TREE',plan)
+
+    def test_sparse_sequence_scan_stops_at_explicit_budget(self):
+        with tempfile.TemporaryDirectory() as root, patch('app.strategy_research.intraday_export.MAX_SEQUENCE_SLOTS',4), patch('app.strategy_research.intraday_export.PAGE_SLOTS',2):
+            root=Path(root);db=root/'source';equity(db)
+            with closing(sqlite3.connect(db)) as c,c:
+                c.execute('INSERT INTO capture_records VALUES(?,?,?,?,?)',(1000000,'PAPER_FILL','TEST',AT.isoformat(),'{}'))
+            result,_=export_sources(root/'out',equity=db,crypto=root/'missing',at=AT)
+            source=result['sources'][0]
+            self.assertEqual(source['status'],'EXPORTED')
+            self.assertEqual(source['sequence_slots_scanned'],4)
+            self.assertTrue(source['scan_limited'])
+            self.assertTrue(source['truncated'])
+            self.assertEqual(source['exported'],0)
+
+    def test_source_error_records_safe_sqlite_code_stage_and_failing_status(self):
+        def failing_read(db,*args):
+            return db.execute('SELECT * FROM PRIVATE_SQLITE_MESSAGE').fetchall()
+        with tempfile.TemporaryDirectory() as root, patch('app.strategy_research.intraday_export._equity_rows',side_effect=failing_read):
+            root=Path(root);db=root/'source';equity(db)
+            result,archive=export_sources(root/'out',equity=db,crypto=root/'missing',at=AT)
+            source=result['sources'][0]
+            self.assertEqual(source['error_type'],'OperationalError')
+            self.assertEqual(source['sqlite_errorcode'],sqlite3.SQLITE_ERROR)
+            self.assertEqual(source['sqlite_errorname'],'SQLITE_ERROR')
+            self.assertEqual(source['error_stage'],'EQUITY_RECORD_READ')
+            self.assertEqual(result['status'],'SOURCE_EXPORT_FAILED')
+            with ZipFile(archive) as z:
+                self.assertNotIn(b'PRIVATE_SQLITE_MESSAGE',z.read('manifest.json'))
+
+    def test_legacy_non_primary_sequence_schema_is_reported_not_scanned(self):
+        with tempfile.TemporaryDirectory() as root:
+            root=Path(root);db=root/'source'
+            with closing(sqlite3.connect(db)) as c,c:
+                c.execute('CREATE TABLE capture_metadata(singleton INTEGER,schema_version INTEGER)')
+                c.execute('INSERT INTO capture_metadata VALUES(1,1)')
+                c.execute('CREATE TABLE capture_records(sequence INTEGER)')
+            result,_=export_sources(root/'out',equity=db,crypto=root/'missing',at=AT)
+            self.assertEqual(result['sources'][0]['validation_reason'],'UNKNOWN_EQUITY_SEQUENCE_SCHEMA')
+
+    def test_partial_source_failure_returns_nonzero_and_retains_shareable_diagnostic_zip(self):
+        from app.strategy_research.intraday_export import main
+        class Clock:
+            fromisoformat=staticmethod(datetime.fromisoformat)
+            now=staticmethod(lambda zone: AT)
+        def failing_read(db,*args):
+            return db.execute('SELECT * FROM PRIVATE_SQLITE_MESSAGE').fetchall()
+        with tempfile.TemporaryDirectory() as root:
+            root=Path(root);eq=root/'equity';cr=root/'crypto';equity(eq)
+            payload=dict(symbol='BTC/USD',interval='M1',opened_at=(AT-timedelta(minutes=1)).isoformat(),
+                         closed_at=AT.isoformat(),open='100',high='101',low='99',close='100',volume=None)
+            with closing(sqlite3.connect(cr)) as db,db:
+                db.execute('PRAGMA application_id=0x41544342')
+                db.execute('CREATE TABLE capture_metadata(key TEXT,value TEXT)')
+                db.execute("INSERT INTO capture_metadata VALUES('schema','CRYPTO_COMPLETED_BAR_CAPTURE_V1')")
+                db.execute('CREATE TABLE completed_bars(identity TEXT,interval TEXT,symbol TEXT,available_at TEXT,payload TEXT)')
+                db.execute('INSERT INTO completed_bars VALUES(?,?,?,?,?)',('one','M1','BTC/USD',AT.isoformat(),json.dumps(payload)))
+            output=io.StringIO()
+            with patch('app.strategy_research.intraday_export.datetime',Clock), patch('app.strategy_research.intraday_export._equity_rows',side_effect=failing_read), contextlib.redirect_stdout(output):
+                code=main(['--output',str(root/'out'),'--equity',str(eq),'--crypto',str(cr)])
+            self.assertEqual(code,2)
+            self.assertIn('INTRADAY_ZIP=',output.getvalue())
+            with ZipFile(root/'out.zip') as z:
+                result=json.loads(z.read('manifest.json'))
+                self.assertEqual(result['status'],'PARTIAL_SOURCE_EXPORT')
+                self.assertIn('crypto-saved-market-data.jsonl',z.namelist())
+                self.assertNotIn(b'PRIVATE_SQLITE_MESSAGE',z.read('manifest.json'))
+
+    def test_query_interrupt_keeps_timeout_failure_visible_and_safe(self):
+        from app.read_only_sqlite import read_database as original_read
+        @contextlib.contextmanager
+        def interrupt_page(path):
+            with original_read(path) as db:
+                class Connection:
+                    def execute(self,query,args=()):
+                        if query==EQUITY_PAGE_QUERY:
+                            db.set_progress_handler(lambda:1,1)
+                        return db.execute(query,args)
+                yield Connection()
+        with tempfile.TemporaryDirectory() as root:
+            root=Path(root);db=root/'source';equity(db)
+            with patch('app.strategy_research.intraday_export.read_database',side_effect=interrupt_page):
+                result,_=export_sources(root/'out',equity=db,crypto=root/'missing',at=AT)
+            error=result['sources'][0]
+            self.assertEqual(error['sqlite_errorcode'],sqlite3.SQLITE_INTERRUPT)
+            self.assertEqual(error['sqlite_errorname'],'SQLITE_INTERRUPT')
+            self.assertEqual(error['error_stage'],'EQUITY_RECORD_READ')
+            self.assertEqual(result['status'],'SOURCE_EXPORT_FAILED')
 
 
 if __name__=='__main__':unittest.main()

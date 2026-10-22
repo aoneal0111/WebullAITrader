@@ -16,6 +16,43 @@ from app.read_only_sqlite import bounded_rows, read_database
 
 LIMIT = 50000
 BYTE_LIMIT = 32*1024*1024
+PAGE_SLOTS = 2000
+MAX_SEQUENCE_SLOTS = 250000
+EQUITY_PAGE_QUERY = (
+    'SELECT record_type,symbol,timestamp,payload_json FROM capture_records NOT INDEXED '
+    'WHERE sequence>? AND sequence<=? AND record_type IN (?,?) '
+    'AND julianday(timestamp)>=julianday(?) AND julianday(timestamp)<=julianday(?) '
+    'ORDER BY sequence DESC LIMIT ?'
+)
+
+
+def _equity_rows(db, cutoff, at, info):
+    """Bound the rowid ranges visited; avoid sorting all matching history."""
+    columns = db.execute('PRAGMA table_info(capture_records)').fetchall()
+    if not any(c[1]=='sequence' and c[2].upper()=='INTEGER' and c[5]==1 for c in columns):
+        raise ValueError('UNKNOWN_EQUITY_SEQUENCE_SCHEMA')
+    last = db.execute('SELECT sequence FROM capture_records ORDER BY sequence DESC LIMIT 1').fetchone()
+    first = db.execute('SELECT sequence FROM capture_records ORDER BY sequence ASC LIMIT 1').fetchone()
+    info.update(query_strategy='BOUNDED_SEQUENCE_WINDOWS_V2', sequence_slots_scanned=0, scan_limited=False)
+    if last is None:
+        return []
+    high, floor = last[0], first[0]
+    rows, size = [], 0
+    while high >= floor and info['sequence_slots_scanned'] < MAX_SEQUENCE_SLOTS and len(rows) <= LIMIT:
+        width = min(PAGE_SLOTS, MAX_SEQUENCE_SLOTS-info['sequence_slots_scanned'])
+        lower = max(floor-1, high-width)
+        page = bounded_rows(db,EQUITY_PAGE_QUERY,
+            (lower,high,'MINUTE_BAR','EXECUTION_PRICE_PATH',cutoff.isoformat(),at.isoformat(),LIMIT+1-len(rows)),
+            LIMIT+1-len(rows),BYTE_LIMIT)
+        size += sum(len(str(v).encode()) for row in page for v in row)
+        if size > BYTE_LIMIT:
+            raise ValueError('DATABASE_RESULT_LIMIT')
+        rows.extend(page)
+        info['sequence_slots_scanned'] += high-lower
+        high = lower
+    info['scan_limited'] = high >= floor and len(rows) <= LIMIT
+    info['truncated'] = high >= floor or len(rows) > LIMIT
+    return rows
 
 
 def _time(value):
@@ -50,7 +87,7 @@ def export_sources(directory, *, equity, crypto, at, days=45):
         raise FileExistsError('Use a new output path')
     directory.mkdir(parents=True, exist_ok=False)
     cutoff = at-timedelta(days=days)
-    manifest = {'schema_version': 1, 'execution_authorized': False, 'orders': 0,
+    manifest = {'schema_version': 1, 'export_version': 2, 'execution_authorized': False, 'orders': 0,
         'captured_at': at.isoformat(), 'cutoff': cutoff.isoformat(), 'sources': [], 'files': [],
         'limitations': ['Saved captures can have gaps, duplicate observations and selection bias.',
                        'Quote paths cover observed owned positions, not all candidate opportunities.',
@@ -64,29 +101,30 @@ def export_sources(directory, *, equity, crypto, at, days=45):
         if not source.is_file():
             continue
         records = []
+        stage = 'OPEN_READ_ONLY_SOURCE'
         try:
             with read_database(source) as db:
                 db.execute('BEGIN')
                 if kind == 'EQUITY':
+                    stage = 'EQUITY_SCHEMA'
                     if db.execute('SELECT schema_version FROM capture_metadata WHERE singleton=1').fetchone() != (1,):
                         raise ValueError('Unknown equity capture schema')
-                    rows = bounded_rows(db,
-                        'SELECT record_type,symbol,timestamp,payload_json FROM capture_records '
-                        'WHERE record_type IN (?,?) AND julianday(timestamp)>=julianday(?) '
-                        'AND julianday(timestamp)<=julianday(?) ORDER BY sequence DESC LIMIT ?',
-                        ('MINUTE_BAR','EXECUTION_PRICE_PATH',cutoff.isoformat(),at.isoformat(),LIMIT+1),
-                        LIMIT+1,BYTE_LIMIT)
+                    stage = 'EQUITY_RECORD_READ'
+                    rows = _equity_rows(db,cutoff,at,info)
                 else:
+                    stage = 'CRYPTO_SCHEMA'
                     if (db.execute('PRAGMA application_id').fetchone()[0] != 0x41544342
                             or db.execute("SELECT value FROM capture_metadata WHERE key='schema'").fetchone()
                             != ('CRYPTO_COMPLETED_BAR_CAPTURE_V1',)):
                         raise ValueError('Unknown crypto capture schema')
+                    stage = 'CRYPTO_RECORD_READ'
                     rows = bounded_rows(db,
                         'SELECT interval,symbol,available_at,payload FROM completed_bars '
                         'WHERE julianday(available_at)>=julianday(?) AND julianday(available_at)<=julianday(?) '
                         'ORDER BY available_at DESC,identity DESC LIMIT ?',
                         (cutoff.isoformat(),at.isoformat(),LIMIT+1),LIMIT+1,BYTE_LIMIT)
-                info['truncated'] = len(rows) > LIMIT
+                info['truncated'] = info['truncated'] or len(rows) > LIMIT
+                stage = 'SANITIZE_MARKET_RECORDS'
                 for record_type, symbol, available, payload in reversed(rows[:LIMIT]):
                     try:
                         p = json.loads(payload); symbol = _symbol(symbol); available = _time(available)
@@ -135,6 +173,14 @@ def export_sources(directory, *, equity, crypto, at, days=45):
         except Exception as exc:
             # Avoid propagating arbitrary source text or host paths into output.
             info['status'] = 'SOURCE_ERROR';info['error_type'] = type(exc).__name__
+            info['error_stage'] = stage
+            code,name = getattr(exc,'sqlite_errorcode',None),getattr(exc,'sqlite_errorname',None)
+            if type(code) is int:
+                info['sqlite_errorcode'] = code
+            if isinstance(name,str) and re.fullmatch(r'SQLITE_[A-Z_]{1,64}',name):
+                info['sqlite_errorname'] = name
+            if isinstance(exc,ValueError) and str(exc) in {'UNKNOWN_EQUITY_SEQUENCE_SCHEMA','DATABASE_RESULT_LIMIT'}:
+                info['validation_reason'] = str(exc)
         if records:
             name = kind.lower()+'-saved-market-data.jsonl'
             data = ''.join(json.dumps(r,sort_keys=True)+'\n' for r in records).encode()
@@ -142,6 +188,8 @@ def export_sources(directory, *, equity, crypto, at, days=45):
             info['exported'] = len(records)
             manifest['files'].append({'name':name,'sha256':sha256(data).hexdigest(),'records':len(records)})
     manifest['status'] = 'EXPORTED_FOR_COVERAGE_REVIEW' if manifest['files'] else 'NO_USABLE_SAVED_DATA'
+    if any(s['status']=='SOURCE_ERROR' for s in manifest['sources']):
+        manifest['status'] = 'PARTIAL_SOURCE_EXPORT' if manifest['files'] else 'SOURCE_EXPORT_FAILED'
     (directory/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
     with archive.open('xb') as out, ZipFile(out,'w',ZIP_DEFLATED) as zipped:
         for name in ['manifest.json',*[f['name'] for f in manifest['files']]]:
@@ -160,7 +208,7 @@ def main(argv=None):
         result,archive=export_sources(args.output,equity=args.equity,crypto=args.crypto,at=datetime.now(UTC),days=args.days)
         print('INTRADAY_ZIP='+str(archive.resolve()))
         print('STATUS='+result['status'])
-        return 0
+        return 2 if any(s['status']=='SOURCE_ERROR' for s in result['sources']) else 0
     except Exception as exc:
         print('EXPORT_FAILED='+type(exc).__name__)
         return 2
