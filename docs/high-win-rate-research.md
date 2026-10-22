@@ -67,6 +67,8 @@ needed for this screening command. Do not commit private capture contents.
 | RSI2_VWAP_PULLBACK | Intraday RSI2 rebounds from below10, price above rising session VWAP and above prior close. | Fixed reward, stop, time limit, or session end. |
 | VWAP_BAND_REENTRY | Prior close below prior session VWAP minus2 weighted standard deviations; bullish close returns inside current lower band. | Same fixed-risk exit comparison. |
 | FAILED_BREAKDOWN_RECLAIM | Sweeps prior20-bar low and closes above it with a bullish candle. | Same fixed-risk exit comparison. |
+| OPENING_RANGE_RETEST | Bullish first five-minute range; completed breakout, retest and bullish reclaim through retest high. | Same fixed-risk/time/session exits; eight-bar warmup. |
+| TREND_VWAP_PULLBACK | Rising session VWAP and20-bar SMA; pullback touches prior VWAP, then bullish close clears prior high. | Same fixed-risk/time/session exits. |
 | BREAKOUT_CONTROL | Close-confirmed break over prior20-bar high. | Same fixed-risk exit comparison. This is not a reproduction of Warrior. |
 
 Intraday definitions are experimental Atlas hypotheses, not published high-win
@@ -205,10 +207,11 @@ independent trades; correlated trades require session-block resampling.
    protection dependencies are checked. No production deletion is justified
    by the selected six-loss export alone.
 
-Remaining work: all-trades audit, complete historical data adapter,
-production-equivalent replay integration, limit-entry ETF Bollinger variant,
-cost/partial-exit comparisons for current engines, portfolio validation and
-PAPER observation. This first change does not finish the requested overhaul.
+Remaining performance work: complete market-specific historical datasets,
+production-equivalent quote/tick replay, cost/partial-exit comparisons for the
+current engines, portfolio validation and PAPER forward observation. Audit and
+daily Bollinger screening mechanics are implemented; no profitable replacement
+has yet been established.
 
 
 ## October 22 execution repairs and audit findings
@@ -292,3 +295,6 @@ all repository tests. A local research stress-test timeout was not reproduced
 in CI; the local remaining tests passed in a fresh process excluding only that
 stress case. Capture tests use synthetic data and establish data-handling
 mechanics only, not an improved strategy win rate.
+
+
+The five-market follow-up is documented in [multi-asset-strategy-research.md](multi-asset-strategy-research.md). Intraday screening now reports eighteen fixed variants across six candidate/control definitions. These additions do not change daily screening outputs or activate any runtime strategy.

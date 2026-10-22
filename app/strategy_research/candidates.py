@@ -21,6 +21,8 @@ class Candidate(StrEnum):
     VWAP_BAND_REENTRY = "VWAP_BAND_REENTRY"
     FAILED_BREAKDOWN_RECLAIM = "FAILED_BREAKDOWN_RECLAIM"
     BREAKOUT_CONTROL = "BREAKOUT_CONTROL"
+    OPENING_RANGE_RETEST = "OPENING_RANGE_RETEST"
+    TREND_VWAP_PULLBACK = "TREND_VWAP_PULLBACK"
 
 
 DAILY = frozenset({Candidate.RSI2_DAILY, Candidate.IMPROVED_R2_DAILY,
@@ -129,7 +131,8 @@ def _vwap(bars: tuple[Bar, ...]) -> tuple[Decimal, Decimal] | None:
 
 def entry_signal(history: tuple[Bar, ...], candidate: Candidate) -> Signal | None:
     """Only completed history is accepted; no future bar or execution price."""
-    if len(history) < (200 if candidate in DAILY else 22):
+    warmup = 200 if candidate in DAILY else (8 if candidate is Candidate.OPENING_RANGE_RETEST else 22)
+    if len(history) < warmup:
         return None
     closes = tuple(b.close for b in history)
     b = history[-1]
@@ -149,12 +152,24 @@ def entry_signal(history: tuple[Bar, ...], candidate: Candidate) -> Signal | Non
     else:
         # Each session/gap gets fresh feature history; no overnight VWAP or
         # patterns that bridge missing candles.
+        if any(x.closed-x.opened != timedelta(minutes=1) for x in history):
+            raise ValueError('Intraday candidates require completed one-minute bars')
         if any(a.closed != z.opened or a.session_end != z.session_end
                for a, z in zip(history, history[1:])):
             raise ValueError("intraday signal history must be contiguous within session")
         prior = history[-21:-1]
         previous = history[-2]
-        if candidate is Candidate.FAILED_BREAKDOWN_RECLAIM:
+        if candidate is Candidate.OPENING_RANGE_RETEST:
+            from zoneinfo import ZoneInfo
+            opening = history[0].opened.astimezone(ZoneInfo('America/New_York'))
+            level = max(x.high for x in history[:5])
+            breakout, retest = history[-3:-1]
+            triggered = (opening.hour == 9 and opening.minute == 30
+                         and history[4].close > history[0].open
+                         and breakout.close > level
+                         and retest.low <= level <= retest.close
+                         and b.close > retest.high and b.close > b.open)
+        elif candidate is Candidate.FAILED_BREAKDOWN_RECLAIM:
             level = min(x.low for x in prior)
             triggered = b.low < level < b.close and b.close > b.open
         elif candidate is Candidate.BREAKOUT_CONTROL:
@@ -170,6 +185,12 @@ def entry_signal(history: tuple[Bar, ...], candidate: Candidate) -> Signal | Non
                 values = rsi(closes, 2)
                 triggered = (values[-2] < 10 <= values[-1] and b.close > vw
                              and vw >= pv and b.close > previous.close)
+            elif candidate is Candidate.TREND_VWAP_PULLBACK:
+                slow = sum(closes[-20:]) / 20
+                prior_slow = sum(closes[-21:-1]) / 20
+                triggered = (vw >= pv and slow > prior_slow
+                             and previous.low <= pv and b.close > vw
+                             and b.close > previous.high and b.close > b.open)
             else:
                 triggered = (ps > 0 and previous.close < pv - 2 * ps
                              and b.close > vw - 2 * sd and b.close > b.open)

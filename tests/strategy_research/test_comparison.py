@@ -170,7 +170,7 @@ class ComparisonTests(unittest.TestCase):
         bars = session() + session(START + timedelta(days=1))
         report = compare(bars, ZERO_COST, timeframe="minute", split_at=bars[30].opened)
         self.assertFalse(report["execution_authorized"])
-        self.assertEqual(report["variants_tested"], 12)
+        self.assertEqual(report["variants_tested"], 18)
         self.assertTrue(all("validation_double_cost" in r for r in report["results"]))
         with self.assertRaisesRegex(ValueError, "between sessions"):
             compare(bars, ZERO_COST, timeframe="minute", split_at=bars[10].opened)
