@@ -8,13 +8,16 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from app.strategy_research.audit import main
 from app.read_only_sqlite import bounded_rows, read_database
 
 
 def make_ledger(path):
-    with sqlite3.connect(path) as db:
+    # Connection.__exit__ commits/rolls back but does not close the handle.
+    # Close deterministically so Windows can delete the temporary database.
+    with contextlib.closing(sqlite3.connect(path)) as db, db:
         db.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT)")
         db.execute("INSERT INTO metadata VALUES('active_campaign_id','current')")
         db.execute("CREATE TABLE orders(order_id INTEGER PRIMARY KEY, payload TEXT)")
@@ -32,6 +35,26 @@ def make_ledger(path):
 
 
 class StandaloneAuditTests(unittest.TestCase):
+    def test_fixture_closes_connection_before_returning(self):
+        connect = sqlite3.connect
+        connections = []
+        def record_connection(*args, **kwargs):
+            connection = connect(*args, **kwargs)
+            connections.append(connection)
+            return connection
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "ledger.sqlite3"
+            with patch(__name__ + ".sqlite3.connect", side_effect=record_connection):
+                make_ledger(path)
+            self.assertEqual(len(connections), 1)
+            try:
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    connections[0].execute("SELECT 1")
+            finally:
+                connections[0].close()
+            # This operation requires the handle to be closed on Windows.
+            path.unlink()
+
     def test_export_reconciles_partial_fills_and_preserves_source(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "ledger.sqlite3"

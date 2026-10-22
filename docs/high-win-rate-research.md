@@ -99,13 +99,17 @@ engine, frozen policy version and recorded strategy family.
 a separate detached worktree using the existing virtual environment. It does
 not switch the runtime checkout or launch Atlas. Its ZIP contains only the
 audit and reviewed revision, not the source database, environment or credentials.
-The capture verification runs four standalone `unittest` checks for the audit,
+The capture verification runs five standalone `unittest` checks for the audit,
 not repository pytest/conftest or strategy-performance tests. The canonical
 equity reconciler imports bounded read-only SQLite helpers directly from
 `app.read_only_sqlite`; the old capture-export module retains those exports
 for compatibility. The audit needs only Python's standard library and does
 not load pandas, NumPy, Qt or the trading runtime. A subprocess test verifies
 that export works with those imports rejected and site packages disabled.
+The synthetic ledger fixture closes its connection explicitly; the SQLite
+transaction context alone does not release a Windows file handle. A regression
+check holds a reference to that connection and verifies it is already closed
+before the fixture returns, then deletes the temporary database.
 This dependency isolation does not repair a blocked pandas installation or
 change Windows Application Control. Strategy comparison/full-runtime checks
 still require their normal dependencies to load under the host policy.
