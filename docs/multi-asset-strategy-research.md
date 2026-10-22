@@ -188,3 +188,39 @@ modified. Missing/incompatible indexes use the bounded sequence fallback. The sa
 10-second connection deadline, aggregate byte cap and completed-page timeout
 handling remain. Counts/truncation are explicit; this does not guarantee older
 history exists or that captured data meets replay requirements.
+
+
+### Complete historical equity sessions
+
+`tools/capture-history-sessions.ps1` runs a separate reviewed source worktree and
+uses the workstation's existing market-data configuration. It requests explicit
+session windows through the pinned Webull SDK's `get_history_bar` method. Defaults
+are 12 completed NYSE sessions ending before today and a fixed current liquid
+sample: SPY/QQQ ETFs plus AAPL/MSFT/NVDA/TSLA stocks. Six to twenty sessions may be
+requested, with at most 120 history calls and 1.1 seconds between calls, no retry,
+10-second configured request timeout and abort after three consecutive exceptions.
+No credential, account, order or GUI data is written to the archive.
+
+Every requested session must contain all calendar-expected minutes, including early
+closes. Missing sessions are reported and excluded from the CSV, without filling
+candles or stitching fragments. Identical duplicates are counted; conflicts, naive
+or unaligned times, wrong symbols and invalid OHLCV fail validation. Only explicit
+CSV fields plus a manifest are archived, with hashes and a common calendar split.
+The ZIP remains available after an incomplete capture. Existing output is preserved.
+
+The provider `time` is treated as the minute bar's open; this convention requires
+independent confirmation before treating research fills as valid. The SDK documents
+start/end parameters in Unix milliseconds, a 1200-bar maximum and unadjusted minute
+bars; collection uses one session per request and a count matching its minutes.
+The official history reference is
+https://developer.webull.com/apis/docs/reference/broker-market-data-api/bars-using-get/.
+The pinned 2.0.14 wheel's `webull/data/quotes/market_data.py` was also inspected for
+the exact `start_time`/`end_time` call signature. Timestamp input accepts aware ISO,
+10-digit Unix seconds or 13-digit Unix milliseconds. Out-of-session rows are counted
+and excluded, never relabeled. Historical retrieval time does not establish original
+live availability; successful collection is not execution validation. The fixed
+liquid sample does not establish a point-in-time small-cap movers universe. Historical
+quotes, futures contracts and option chains remain separate data requirements.
+
+Run the freshly extracted wrapper with `-Repo "$env:USERPROFILE\WebullAITrader"`.
+It writes and selects a Desktop ZIP and leaves the runtime checkout unchanged.
