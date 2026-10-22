@@ -199,5 +199,62 @@ class ComparisonTests(unittest.TestCase):
                 Costs(adverse, fee)
 
 
+class DailyLimitTests(unittest.TestCase):
+    def bars(self):
+        return tuple(replace(b, opened=START + timedelta(days=i),
+            closed=START + timedelta(days=i, hours=6),
+            session_end=START + timedelta(days=i, hours=6))
+            for i, b in enumerate(session(count=8)))
+
+    def run_limit(self, bars):
+        def signal(history, candidate):
+            return Signal(D(95), 'limit_fixture', D(98)) if len(history) == 1 else None
+        with patch('app.strategy_research.replay.entry_signal', side_effect=signal):
+            return replay(tuple(bars), Candidate.BOLLINGER_PERCENT_B_DAILY_LIMIT,
+                          ZERO_COST, timeframe='daily', max_hold=2)
+
+    def test_limit_must_penetrate_and_expires_after_one_session(self):
+        bars = list(self.bars())
+        bars[1] = replace(bars[1], low=D(98))
+        bars[2] = replace(bars[2], low=D(97))
+        self.assertEqual(self.run_limit(bars), ())
+
+    def test_limit_gets_no_optimistic_gap_improvement(self):
+        bars = list(self.bars())
+        bars[1] = replace(bars[1], open=D(97), low=D(96))
+        trades = self.run_limit(bars)
+        self.assertEqual(trades[0].entry_price, D(98))
+
+    def test_entry_bar_stop_wins_over_ambiguous_rebound(self):
+        bars = list(self.bars())
+        bars[1] = replace(bars[1], low=D(94))
+        trades = self.run_limit(bars)
+        self.assertEqual(trades[0].reason, 'STOP_FIRST')
+        self.assertEqual(trades[0].net_r, -1)
+        self.assertEqual(trades[0].entry_time_precision, 'BAR_WINDOW')
+
+    def test_flat_bands_have_no_signal_and_exit_uses_completed_close(self):
+        from app.strategy_research.candidates import percent_b, exit_signal
+        self.assertIsNone(percent_b((D(100),) * 5))
+        bars = list(self.bars())
+        bars[-1] = replace(bars[-1], close=D(110), high=D(111))
+        self.assertTrue(exit_signal(tuple(bars), Candidate.BOLLINGER_PERCENT_B_DAILY_LIMIT))
+
+
+    def test_published_setup_requires_three_oversold_closes_trend_and_liquidity(self):
+        prices = [D(100)] * 200 + list(map(D, [200, 200, 200, 200, 199, 195, 180]))
+        template = self.bars()[0]
+        bars = tuple(replace(template, close=p, open=p, high=p*D('1.05'),
+                             low=p*D('0.95'), volume=D(200000)) for p in prices)
+        candidate = Candidate.BOLLINGER_PERCENT_B_DAILY_LIMIT
+        signal = entry_signal(bars, candidate)
+        self.assertEqual(signal.entry_limit, D('176.4'))
+        self.assertIsNone(entry_signal(bars[:-1], candidate))
+        thin = (*bars[:-1], replace(bars[-1], volume=D(49999)))
+        self.assertIsNone(entry_signal(thin, candidate))
+        below_trend = tuple(replace(b, close=D(300)) for b in bars[:200]) + bars[200:]
+        self.assertIsNone(entry_signal(below_trend, candidate))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,8 +1,8 @@
 # Atlas high win-rate strategy research
 
 Research date: 2026-10-16. First implementation: offline candidate screening.
-No production replacement, strategy deletion, activation, or profit validation
-has occurred. The user's objective is materially more winning positions and
+Session-aware scalp admission and setup attribution repairs are now included;
+no strategy activation or profit validation has occurred. The user's objective is materially more winning positions and
 better net profits. No advertised win rate is an Atlas performance estimate.
 
 ## Evidence shortlist
@@ -14,7 +14,7 @@ hundreds of sources were fully reviewed.
 
 | Source | Reported evidence | Decision |
 | --- | --- | --- |
-| [Connors Research, CMT June 2013, pp.27–33](https://cmtassociation.org/wp-content/uploads/2025/08/june2013.pdf) | ETF Bollinger(5,1) pullback variant: 92.23% winners, 103 trades, 4.55 days average hold; January 2006–April 2013. Selected from a parameter search, with a next-day limit entry. | Highest reproducible headline in this review; swing research only. Requires a tested limit-fill model and modern replication, not an intraday transplant. |
+| [Connors Research, CMT June 2013, pp.27–33](https://cmtassociation.org/wp-content/uploads/2025/08/june2013.pdf) | ETF Bollinger(5,1) pullback variant: 92.23% winners, 103 trades, 4.55 days average hold; January 2006–April 2013. Selected from a parameter search, with a next-day limit entry. | Highest reproducible headline in this review; swing research only. A conservative daily limit-entry adaptation is implemented for screening; modern ETF replication is still required. |
 | [Larry Connors, Improved R2](https://tradingmarkets.com/recent/the_improved_r2_strategy_84_correct_with_just_6_rules_-674361) | 84.31%, 102 simulated trades, 5.76 days average hold, 1995–2006. | Implement daily hypothesis with explicit deviations; do not inherit the rate. |
 | [ConnorsRSI original guide](https://alvarezquanttrading.com/wp-content/uploads/2016/05/ConnorsRSIGuidebook.pdf) | Selected variants near 80%; 2001–September 2012. Guide says slippage/commission omitted. | Further swing candidate; distinct from RSI(2). No headline copied into Atlas. |
 | [Cesar Alvarez: entry timing](https://alvarezquanttrading.com/blog/mean-reversion-entry-timing/) | 2007–2017 comparisons: roughly 65% winners with RSI exits versus 29% with an N-day-low exit in one comparison. | Evidence to test entry and exit jointly. “Intraday pullback” describes an entry into a multiday strategy. |
@@ -63,6 +63,7 @@ needed for this screening command. Do not commit private capture contents.
 | --- | --- | --- |
 | RSI2_DAILY | Daily close above SMA200 and Wilder RSI2 below10. | RSI exit: close above SMA5, execute next open. |
 | IMPROVED_R2_DAILY | Above SMA200; RSI2 from two bars ago below65, then two successive lower readings. | RSI2 above75, execute next open. |
+| BOLLINGER_PERCENT_B_DAILY_LIMIT | Above SMA200; Bollinger(5,1) %b below -0.2 for three closes; 21-day average volume at least125,000 and minimum50,000. Next-session limit2% below setup close. | %b above1, execute next open; structural stop and holding limit retained. |
 | RSI2_VWAP_PULLBACK | Intraday RSI2 rebounds from below10, price above rising session VWAP and above prior close. | Fixed reward, stop, time limit, or session end. |
 | VWAP_BAND_REENTRY | Prior close below prior session VWAP minus2 weighted standard deviations; bullish close returns inside current lower band. | Same fixed-risk exit comparison. |
 | FAILED_BREAKDOWN_RECLAIM | Sweeps prior20-bar low and closes above it with a bullish candle. | Same fixed-risk exit comparison. |
@@ -70,7 +71,15 @@ needed for this screening command. Do not commit private capture contents.
 
 Intraday definitions are experimental Atlas hypotheses, not published high-win
 systems. Three reward variants (0.75R, 1R, 1.5R) are reported for each intraday
-candidate. Daily variants use indicator exits, no fixed target. Every entry
+candidate. Daily variants use indicator exits, no fixed target. The Bollinger limit expires
+after one session and requires strict low-price penetration; a touch gets no
+fill. Fills receive no favorable opening-gap improvement and still pay modeled
+costs. Population standard deviation is explicit. Unlike the publication, Atlas
+retains its structural stop, delays the close-confirmed exit to the next open,
+and applies a maximum holding period. This is an adaptation, not a reproduction
+of the 92.23% result. The caller must supply a verified eligible equity ETF
+universe (no leveraged, inverse, commodity or bond ETFs); CSV prices alone do
+not establish eligibility. Every entry
 uses a frozen five-bar-low stop buffered by 0.05%. That stop, next-open daily
 execution and maximum holding period modify the published systems.
 
@@ -145,7 +154,10 @@ Costs above are illustrative, not measured Webull execution costs. Both cost
 arguments are mandatory. Spread plus slippage is one adverse per-side bps
 allowance, with a separate per-share fee. A doubled-cost run is reported too.
 
-Signals use completed history and fill the next bar open. Stop gaps use the
+Signals use completed history. Market-entry candidates fill the next bar open;
+the daily Bollinger candidate waits for penetration of its next-session limit.
+`entry_time_precision=BAR_WINDOW` labels intrabar limit entries: `entry_at`
+identifies that bar’s start, not an observed fill instant. Stop gaps use the
 worse open; ambiguous OHLC bars take the stop before the target. Only one
 position per candidate is open at a time. Zero-volume entry bars do not fill.
 Intraday positions exit at known session close; missing sessions are not
@@ -197,3 +209,36 @@ Remaining work: all-trades audit, complete historical data adapter,
 production-equivalent replay integration, limit-entry ETF Bollinger variant,
 cost/partial-exit comparisons for current engines, portfolio validation and
 PAPER observation. This first change does not finish the requested overhaul.
+
+
+## October 22 execution repairs and audit findings
+
+The complete uploaded campaign audit reconciled 132 closed positions: 25 wins,
+107 losses, net -$2,202.92. Warrior was16/91 (17.58%), net -$1,686.29;
+Quick Scalper9/37 (24.32%), net -$320.28; four unassigned losses totaled
+-$196.35. All legacy strategy families/versions were UNKNOWN; the audit does
+not identify which current setup/version should be removed. Recorded fees
+were zero and PAPER execution provenance remains unverified.
+
+The MANE scalp entered two seconds before the regular close. Its $178.30
+loss exceeded the $26.86 planned structural risk as stop fills crossed the
+session boundary. This supports fixing entry timing; it does not prove a
+strategy's future win rate or justify capping simulated stop losses.
+
+Quick Scalper now requires enough time in the original premarket, regular,
+or after-hours session for its configured maximum holding budget. The NYSE
+calendar supplies actual early closes and Eastern DST. Runtime authorization
+rejects stale session labels. Prepared entries persist the original last-entry
+time and holding budget. The trusted controller rechecks this deadline after
+review, and the PAPER gateway bounds working BUY remainders, including legacy
+recovery, before matching. Filled-share SELL protection retains its authority.
+This cannot ensure an exit during a quote outage and does not alter adverse
+stop fills. Stream and bar scalp setups now retain separate frozen policy
+identities instead of always appearing as the bar momentum family.
+
+No blanket removal of extended-hours trading, higher stop tolerance,
+averaging down, or reduction of existing hard safety controls is included.
+The new daily Bollinger challenger, RSI2 and Improved R2 must earn promotion
+on modern, costed, unseen ETF data and canonical execution replay. The supplied
+outcome ZIP lacks the historical OHLC/quote paths needed to run those strategies
+against the same opportunities. No new performance percentage is asserted.

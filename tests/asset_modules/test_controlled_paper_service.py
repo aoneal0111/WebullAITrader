@@ -254,3 +254,60 @@ finally:
         capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_delayed_scalper_review_cannot_cross_original_session(setup):
+    commands, bridge, service, account, quote, clock = setup
+    deadline = NOW - timedelta(seconds=1)
+    request = placement(commands, engine='QUICK_SCALPER',
+        scalp_entry_session_deadline=deadline.isoformat())
+    assert not service.place_order(request).success
+    assert service.last_reason == 'SCALP_SESSION_WINDOW'
+    assert not commands.order_book.open_orders()
+    # Management does not inherit the entry window.
+    sell = placement(commands, engine='QUICK_SCALPER', side='SELL',
+        reason='STOP', scalp_entry_session_deadline=deadline.isoformat())
+    from unittest.mock import patch
+    marker = object()
+    with patch.object(service.service, 'place_order', return_value=marker) as delegate:
+        assert service.place_order(sell) is marker
+        delegate.assert_called_once_with(sell)
+
+
+def test_scalper_prepared_receipt_uses_capped_deadline_and_can_be_adopted(setup):
+    from tests.asset_modules.test_native_entry_preparation import signal
+    from app.asset_modules.engine_catalog import EngineId
+    commands, bridge, service, account, quote, clock = setup
+    # Original review hypothesis has 30 seconds left although its ordinary
+    # one-bar validity would last a minute. Both immutable identities agree.
+    a = signal(EngineId.SCALPER)
+    a.timestamp = NOW
+    a.entry_session_deadline = NOW + timedelta(seconds=30)
+    a.maximum_holding_seconds = 45
+    prepared = bridge.prepare_entry_decision(a, 10, D(1))
+    metadata = prepared.placement.order.metadata
+    assert metadata['opportunity_deadline'] == a.entry_session_deadline.isoformat()
+    assert metadata['scalp_maximum_holding_seconds'] == '45'
+    result = service.place_order(prepared.placement)
+    assert result.success
+    assert bridge.adopt_entry_acknowledgement(prepared.placement, result)
+    assert commands.order_book.get(result.broker_order_id).request.entry_valid_until == a.entry_session_deadline
+
+
+def test_scalper_replacement_inherits_original_session_budget(setup):
+    from tests.asset_modules.test_native_entry_preparation import signal
+    from app.asset_modules.engine_catalog import EngineId
+    commands, bridge, service, account, quote, clock = setup
+    a = signal(EngineId.SCALPER)
+    a.entry_session_deadline = NOW + timedelta(seconds=30)
+    a.maximum_holding_seconds = 45
+    assert bridge.submit_entry_decision(a, 10, D(1)).authorized
+    decision = bridge.replace_entry_order(lifecycle_id=a.lifecycle_id,
+        replacement_limit=D(6), structural_stop=D('5.9'), original_risk_budget=D(1),
+        account_equity=D(10000), buying_power=D(10000), maximum_quantity=10,
+        revalidate=lambda: True, now=NOW)
+    assert decision.replacement_order_id
+    order = commands.order_book.get(decision.replacement_order_id)
+    assert order.request.metadata['scalp_entry_session_deadline'] == a.entry_session_deadline.isoformat()
+    assert order.request.metadata['scalp_maximum_holding_seconds'] == '45'
+    assert order.request.entry_valid_until == a.entry_session_deadline

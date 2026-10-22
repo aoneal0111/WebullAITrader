@@ -1180,6 +1180,9 @@ class AutonomousPaperExecutionBridge:
                 signal_timestamp = getattr(signal, "timestamp", None)
                 if isinstance(signal_timestamp, datetime):
                     deadline = signal_timestamp + BAR_INTERVAL
+            session_deadline = getattr(signal, "entry_session_deadline", None)
+            if strategy_owner == "QUICK_SCALPER" and session_deadline is not None:
+                deadline = min(deadline, session_deadline) if deadline is not None else session_deadline
             if trigger > min(
                 anchor * (Decimal("1") + max_displacement_percent / Decimal("100")),
                 anchor + max_displacement_absolute,
@@ -1243,6 +1246,13 @@ class AutonomousPaperExecutionBridge:
                             "entry_validity_seconds": str(
                                 int(BAR_INTERVAL.total_seconds())
                             ),
+                            **({
+                                "scalp_entry_session_deadline": (
+                                    signal.entry_session_deadline.isoformat()
+                                    if getattr(signal, "entry_session_deadline", None) else None
+                                ),
+                                "scalp_maximum_holding_seconds": str(getattr(signal, "maximum_holding_seconds", 300)),
+                            } if strategy_owner == "QUICK_SCALPER" else {}),
                         },
                     )
                 )
@@ -1697,6 +1707,9 @@ class AutonomousPaperExecutionBridge:
                             "provenance": "AUTONOMOUS_ADAPTIVE_ENTRY_REPLACEMENT",
                             "lifecycle_id": identity,
                             "predecessor_order_id": predecessor.order_id,
+                            **{k: predecessor.request.metadata[k] for k in (
+                                "scalp_entry_session_deadline", "scalp_maximum_holding_seconds"
+                            ) if k in predecessor.request.metadata},
                             "replacement_sequence": str(sequence),
                             "replacement_reason": normalized_reason,
                             "original_planned_entry": str(original_planned),

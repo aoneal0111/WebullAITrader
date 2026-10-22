@@ -16,13 +16,15 @@ D = Decimal
 class Candidate(StrEnum):
     RSI2_DAILY = "RSI2_DAILY"
     IMPROVED_R2_DAILY = "IMPROVED_R2_DAILY"
+    BOLLINGER_PERCENT_B_DAILY_LIMIT = "BOLLINGER_PERCENT_B_DAILY_LIMIT"
     RSI2_VWAP_PULLBACK = "RSI2_VWAP_PULLBACK"
     VWAP_BAND_REENTRY = "VWAP_BAND_REENTRY"
     FAILED_BREAKDOWN_RECLAIM = "FAILED_BREAKDOWN_RECLAIM"
     BREAKOUT_CONTROL = "BREAKOUT_CONTROL"
 
 
-DAILY = frozenset({Candidate.RSI2_DAILY, Candidate.IMPROVED_R2_DAILY})
+DAILY = frozenset({Candidate.RSI2_DAILY, Candidate.IMPROVED_R2_DAILY,
+                   Candidate.BOLLINGER_PERCENT_B_DAILY_LIMIT})
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,17 @@ def validate_bars(bars: tuple[Bar, ...], timeframe: str) -> None:
 class Signal:
     stop: Decimal
     reason: str
+    entry_limit: Decimal | None = None
+
+
+def percent_b(closes: tuple[Decimal, ...]) -> Decimal | None:
+    """Five closes, one population standard deviation on either side."""
+    if len(closes) < 5:
+        return None
+    sample = closes[-5:]
+    mean = sum(sample, D(0)) / 5
+    deviation = (sum(((p - mean) ** 2 for p in sample), D(0)) / 5).sqrt()
+    return (sample[-1] - mean + deviation) / (2 * deviation) if deviation else None
 
 
 def _vwap(bars: tuple[Bar, ...]) -> tuple[Decimal, Decimal] | None:
@@ -125,8 +138,14 @@ def entry_signal(history: tuple[Bar, ...], candidate: Candidate) -> Signal | Non
         values = rsi(closes, 2)
         if candidate is Candidate.RSI2_DAILY:
             triggered = trend and values[-1] < 10
-        else:
+        elif candidate is Candidate.IMPROVED_R2_DAILY:
             triggered = trend and values[-3] < 65 and values[-3] > values[-2] > values[-1]
+        else:
+            volumes = tuple(x.volume for x in history[-21:])
+            readings = tuple(percent_b(closes[:len(closes)-i]) for i in (2, 1, 0))
+            triggered = (trend and min(volumes) >= 50000
+                         and sum(volumes) / 21 >= 125000
+                         and all(x is not None and x < D('-0.2') for x in readings))
     else:
         # Each session/gap gets fresh feature history; no overnight VWAP or
         # patterns that bridge missing candles.
@@ -159,10 +178,14 @@ def entry_signal(history: tuple[Bar, ...], candidate: Candidate) -> Signal | Non
     # Structural stop retained in every variant. This changes published daily
     # systems which had no stop; do not attach their headline rates to ours.
     stop = min(x.low for x in history[-5:]) * D("0.9995")
-    return Signal(stop, candidate.value) if 0 < stop < b.close else None
+    limit = b.close * D('0.98') if candidate is Candidate.BOLLINGER_PERCENT_B_DAILY_LIMIT else None
+    return Signal(stop, candidate.value, limit) if 0 < stop < (limit or b.close) else None
 
 
 def exit_signal(history: tuple[Bar, ...], candidate: Candidate) -> bool:
+    if candidate is Candidate.BOLLINGER_PERCENT_B_DAILY_LIMIT:
+        value = percent_b(tuple(b.close for b in history))
+        return value is not None and value > 1
     if candidate is Candidate.RSI2_DAILY:
         return history[-1].close > sum((b.close for b in history[-5:]), D(0)) / 5
     if candidate is Candidate.IMPROVED_R2_DAILY:

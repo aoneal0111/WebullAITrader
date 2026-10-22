@@ -15,6 +15,7 @@ from typing import Callable
 from uuid import uuid4
 
 from app.configuration import PaperSymbolAuthorizationMode
+from app.market.scalp_session import scalp_entry_window
 from app.paper_trading.order_book import PaperOrderBook
 from app.paper_trading.order_models import OrderSide, OrderType
 from app.momentum_scanner.models import ScannerObservation
@@ -87,6 +88,8 @@ class QuickScalperExecutionIntent:
     stream_upward_updates: int | None = None
     stream_price_change_updates: int | None = None
     observed_ask_advance: Decimal | None = None
+    entry_session_deadline: datetime | None = None
+    maximum_holding_seconds: int = 300
 
     def __post_init__(self) -> None:
         if self.entry_trigger <= self.stop_price or self.risk_per_share <= ZERO:
@@ -601,6 +604,11 @@ class QuickScalperPaperRuntimeAdapter:
                 "quick_scalper_stale_preview_refresh_available"
             )
         evaluated_at = self._clock()
+        window = scalp_entry_window(evaluated_at, self.config.maximum_holding_seconds)
+        if window is None or evaluated_at >= window[1] or source.session != window[0]:
+            performance_diagnostics.increment("quick_scalper_rejections")
+            self._record_quote_decision(evaluated_at, quote, "REJECTED", "SCALP_SESSION_WINDOW")
+            return CanonicalScalpSubmission(False, False, False, False, "SCALP_SESSION_WINDOW")
         refreshed = replace(
             source, decision_at=evaluated_at, observed_at=evaluated_at,
             last=quote.last, bid=quote.bid, ask=quote.ask,
@@ -710,6 +718,9 @@ class QuickScalperPaperRuntimeAdapter:
         )
         intent = QuickScalperExecutionIntent(
             symbol=refreshed.symbol, timestamp=evaluated_at,
+            setup_type=refreshed.setup_type,
+            entry_session_deadline=window[1],
+            maximum_holding_seconds=self.config.maximum_holding_seconds,
             session=refreshed.session, entry_trigger=quote.ask,
             reference_price=quote.ask, stop_price=refreshed.structural_stop,
             risk_per_share=risk, adaptive_target=confirmed.target_price,

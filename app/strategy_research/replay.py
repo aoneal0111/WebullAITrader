@@ -43,6 +43,7 @@ class Trade:
     net_pnl_per_share: Decimal
     net_r: Decimal
     reason: str
+    entry_time_precision: str = "BAR_OPEN"
 
 
 def replay(bars: tuple[Bar, ...], candidate: Candidate, costs: Costs, *,
@@ -71,13 +72,21 @@ def replay(bars: tuple[Bar, ...], candidate: Candidate, costs: Costs, *,
         if i >= start and position is None and pending is not None:
             signal, signal_bar = pending
             pending = None
-            entry = costs.buy(b.open)
+            raw_entry = b.open
+            if signal.entry_limit is not None:
+                # One-session limit, strict penetration (a touch is no fill).
+                # No favorable opening-gap improvement or unlimited patience.
+                raw_entry = signal.entry_limit
+            entry = costs.buy(raw_entry)
             # Do not buy an opening gap through the precommitted stop.
-            if b.open > signal.stop and b.volume > 0:
+            if (b.open > signal.stop and b.volume > 0
+                    and (signal.entry_limit is None or b.low < signal.entry_limit)
+                    and entry > signal.stop):
                 risk = entry - signal.stop
-                position = (entry, risk, signal.stop, i, signal_bar)
+                precision = "BAR_WINDOW" if signal.entry_limit is not None and b.open > signal.entry_limit else "BAR_OPEN"
+                position = (entry, risk, signal.stop, i, signal_bar, precision)
         if position is not None:
-            entry, risk, stop, entry_i, signal_bar = position
+            entry, risk, stop, entry_i, signal_bar, precision = position
             target = entry + risk * target_r
             raw_exit = None
             reason = ""
@@ -102,7 +111,7 @@ def replay(bars: tuple[Bar, ...], candidate: Candidate, costs: Costs, *,
                 price = costs.sell(raw_exit)
                 net = price - entry - 2 * costs.fee_per_share
                 trades.append(Trade(signal_bar.closed.isoformat(), bars[entry_i].opened.isoformat(),
-                                    exit_at.isoformat(), entry, price, stop, net, net / risk, reason))
+                                    exit_at.isoformat(), entry, price, stop, net, net / risk, reason, precision))
                 position = None
                 close_pending = False
         history.append(b)
@@ -185,6 +194,8 @@ def compare(bars: tuple[Bar, ...], costs: Costs, *, timeframe: str,
             "costs_per_side": asdict(costs), "max_hold_bars": max_hold,
             "variants_tested": len(results), "results": results,
             "limitations": ["Modeled costs, not observed quotes or queue/partial-fill simulation.",
+                            "BAR_WINDOW entry timestamps identify a daily bar's start, not an observed intraday fill time.",
+                            "Bollinger daily limit requires caller-verified eligible equity ETFs; CSV does not establish eligibility.",
                             "Per-symbol one-unit screening, not portfolio P&L or capacity.",
                             "Validation is visible research data, not an untouched final holdout.",
                             "Wilson intervals assume independence; not proof of an edge.",

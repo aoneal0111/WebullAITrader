@@ -9,6 +9,7 @@ from app.asset_modules.admission_controller import EntryReservation
 from app.asset_modules.engine_catalog import EngineId, lifecycle_owner
 from app.asset_modules.paper_controller_router import ControllerEntryRefused, PaperControllerRouter
 from app.configuration.models import PaperSymbolAuthorizationMode
+from app.market.scalp_session import scalp_entry_deadline
 from app.order_placement import (AcknowledgementState, NormalizedOrderStatus, OrderPlacementDecision,
                                  OrderPlacementResult)
 from app.performance_diagnostics import performance_diagnostics
@@ -108,6 +109,10 @@ class ControlledPaperTradingService:
                 metadata = dict(r.metadata)
                 deadline = metadata.get("chase_deadline") or metadata.get("opportunity_deadline")
                 expiry = datetime.fromisoformat(str(deadline)) if deadline else now + timedelta(seconds=60)
+                if engine is EngineId.SCALPER:
+                    expiry = min(expiry, scalp_entry_deadline(now, metadata))
+                    if now >= expiry:
+                        return self._refused(placement, "SCALP_SESSION_WINDOW")
                 # Metadata provenance is part of immutable command identity.
                 signature = sha256(json.dumps(metadata, sort_keys=True, default=str).encode()).hexdigest()
                 sequence = str(metadata.get("replacement_sequence", "0"))
