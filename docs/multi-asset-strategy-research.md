@@ -175,3 +175,16 @@ remains `SOURCE_ERROR` with `SQLITE_INTERRUPT`, `partial_read`, `scan_limited` a
 `truncated` flags; the command still returns nonzero. A partial ZIP is for coverage
 review only. No retry, deadline extension or source mutation occurs. If no usable
 completed page exists, the original source-failure behavior remains.
+
+
+Exporter v4 uses the existing `capture_type_time(record_type,timestamp,sequence)`
+index when its columns match. It reads each market-record type separately, with
+keyset pages and half the result allowance per type (25,000 rows each at defaults).
+It avoids spending the sequence-scan allowance on unrelated runtime events. Date
+filtering remains offset-aware; cursor ordering follows SQLite's exact timestamp
+text/sequence index order. Text timestamp ordering across mixed offsets is not a
+promise of chronological selection when truncated. Indexes are never created or
+modified. Missing/incompatible indexes use the bounded sequence fallback. The same
+10-second connection deadline, aggregate byte cap and completed-page timeout
+handling remain. Counts/truncation are explicit; this does not guarantee older
+history exists or that captured data meets replay requirements.

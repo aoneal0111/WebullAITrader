@@ -27,11 +27,66 @@ EQUITY_PAGE_QUERY = (
 )
 
 
+EQUITY_INDEX_QUERY = (
+    'SELECT record_type,symbol,timestamp,payload_json,sequence '
+    'FROM capture_records INDEXED BY capture_type_time '
+    'WHERE record_type=? AND (timestamp,sequence)<(?,?) '
+    'AND julianday(timestamp)>=julianday(?) AND julianday(timestamp)<=julianday(?) '
+    'ORDER BY timestamp DESC,sequence DESC LIMIT ?'
+)
+
+
+def _equity_index_rows(db, cutoff, at, info):
+    """Read market types independently so unrelated events cannot consume the cap.
+
+    The timestamp predicate uses julianday for offset-aware filtering. The keyset
+    cursor uses the index's exact text/integer ordering, not a presumed UTC format.
+    Each type receives half the result budget; missing types cannot starve bars.
+    """
+    info.update(query_strategy='MARKET_TYPE_TIME_INDEX_V4', scan_limited=False,
+                type_rows_read={})
+    rows, size = [], 0
+    budget = max(1, LIMIT//2)
+    for kind in ('MINUTE_BAR', 'EXECUTION_PRICE_PATH'):
+        cursor = ('\uffff', 9223372036854775807)
+        read = 0
+        while read <= budget:
+            count = min(PAGE_SLOTS, budget+1-read)
+            try:
+                page = bounded_rows(db, EQUITY_INDEX_QUERY,
+                    (kind, *cursor, cutoff.isoformat(), at.isoformat(), count), count, BYTE_LIMIT)
+            except sqlite3.OperationalError as exc:
+                if getattr(exc, 'sqlite_errorcode', None) != sqlite3.SQLITE_INTERRUPT or not rows:
+                    raise
+                info.update(status='SOURCE_ERROR', error_type='OperationalError',
+                            error_stage='EQUITY_RECORD_READ', sqlite_errorcode=sqlite3.SQLITE_INTERRUPT,
+                            sqlite_errorname='SQLITE_INTERRUPT', partial_read=True,
+                            scan_limited=True, truncated=True)
+                return rows
+            size += sum(len(str(v).encode()) for row in page for v in row)
+            if size > BYTE_LIMIT:
+                raise ValueError('DATABASE_RESULT_LIMIT')
+            remaining = budget-read
+            rows.extend(row[:4] for row in page[:remaining])
+            read += len(page)
+            info['type_rows_read'][kind] = read
+            if read > budget:
+                info.update(scan_limited=True, truncated=True)
+                break
+            if len(page) < count:
+                break
+            cursor = (page[-1][2], page[-1][4])
+    return rows
+
+
 def _equity_rows(db, cutoff, at, info):
     """Bound the rowid ranges visited; avoid sorting all matching history."""
     columns = db.execute('PRAGMA table_info(capture_records)').fetchall()
     if not any(c[1]=='sequence' and c[2].upper()=='INTEGER' and c[5]==1 for c in columns):
         raise ValueError('UNKNOWN_EQUITY_SEQUENCE_SCHEMA')
+    index_columns = [r[2] for r in db.execute('PRAGMA index_info(capture_type_time)').fetchall()]
+    if index_columns == ['record_type', 'timestamp', 'sequence']:
+        return _equity_index_rows(db, cutoff, at, info)
     last = db.execute('SELECT sequence FROM capture_records ORDER BY sequence DESC LIMIT 1').fetchone()
     first = db.execute('SELECT sequence FROM capture_records ORDER BY sequence ASC LIMIT 1').fetchone()
     info.update(query_strategy='BOUNDED_SEQUENCE_WINDOWS_V2', sequence_slots_scanned=0, scan_limited=False)
@@ -98,7 +153,7 @@ def export_sources(directory, *, equity, crypto, at, days=45):
         raise FileExistsError('Use a new output path')
     directory.mkdir(parents=True, exist_ok=False)
     cutoff = at-timedelta(days=days)
-    manifest = {'schema_version': 1, 'export_version': 3, 'execution_authorized': False, 'orders': 0,
+    manifest = {'schema_version': 1, 'export_version': 4, 'execution_authorized': False, 'orders': 0,
         'captured_at': at.isoformat(), 'cutoff': cutoff.isoformat(), 'sources': [], 'files': [],
         'limitations': ['Saved captures can have gaps, duplicate observations and selection bias.',
                        'Quote paths cover observed owned positions, not all candidate opportunities.',

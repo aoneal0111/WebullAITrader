@@ -1,6 +1,6 @@
 """Read-only source, bounds and export privacy checks; stdlib only."""
 from contextlib import closing
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 import json
@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 from zipfile import ZipFile
 
-from app.strategy_research.intraday_export import export_sources, EQUITY_PAGE_QUERY
+from app.strategy_research.intraday_export import export_sources, EQUITY_PAGE_QUERY, EQUITY_INDEX_QUERY
 
 AT = datetime(2026, 10, 22, 16, tzinfo=UTC)
 
@@ -207,7 +207,7 @@ class ExportTests(unittest.TestCase):
             with patch('app.strategy_research.intraday_export.read_database',side_effect=interrupt_second_page), patch('app.strategy_research.intraday_export.PAGE_SLOTS',2):
                 result,archive=export_sources(root/'out',equity=db,crypto=root/'missing',at=AT)
             source=result['sources'][0]
-            self.assertEqual(result['export_version'],3)
+            self.assertEqual(result['export_version'],4)
             self.assertEqual(result['status'],'PARTIAL_SOURCE_EXPORT')
             self.assertEqual(source['status'],'SOURCE_ERROR')
             self.assertEqual(source['sqlite_errorname'],'SQLITE_INTERRUPT')
@@ -223,6 +223,72 @@ class ExportTests(unittest.TestCase):
                 self.assertEqual(rows[0]['kind'],'QUOTE')
                 self.assertNotIn(b'PRIVATE_',z.read('equity-saved-market-data.jsonl'))
             db.unlink()
+
+
+    def test_existing_index_reaches_older_market_rows_past_unrelated_event_cap(self):
+        with tempfile.TemporaryDirectory() as root:
+            root=Path(root);path=root/'source';equity(path)
+            with closing(sqlite3.connect(path)) as db, db:
+                db.execute('CREATE INDEX capture_type_time ON capture_records(record_type,timestamp,sequence)')
+                db.execute('INSERT INTO capture_records VALUES(?,?,?,?,?)',(1000000,'PAPER_FILL','TEST',AT.isoformat(),'{}'))
+                plan=' '.join(str(r[-1]) for r in db.execute('EXPLAIN QUERY PLAN '+EQUITY_INDEX_QUERY,
+                    ('MINUTE_BAR','z',9223372036854775807,(AT-timedelta(days=45)).isoformat(),AT.isoformat(),2000)))
+                self.assertIn('capture_type_time',plan)
+                self.assertNotIn('TEMP B-TREE',plan)
+            before=sha256(path.read_bytes()).hexdigest()
+            result,_=export_sources(root/'out',equity=path,crypto=root/'missing',at=AT)
+            source=result['sources'][0]
+            self.assertEqual(source['query_strategy'],'MARKET_TYPE_TIME_INDEX_V4')
+            self.assertEqual(source['exported'],2)
+            self.assertFalse(source['truncated'])
+            self.assertEqual(source['type_rows_read'],{'MINUTE_BAR':1,'EXECUTION_PRICE_PATH':1})
+            self.assertEqual(sha256(path.read_bytes()).hexdigest(),before)
+
+    def test_index_keyset_handles_timestamp_ties_offsets_and_per_type_truncation(self):
+        with tempfile.TemporaryDirectory() as root:
+            root=Path(root);path=root/'source';equity(path)
+            with closing(sqlite3.connect(path)) as db,db:
+                db.execute('CREATE INDEX capture_type_time ON capture_records(record_type,timestamp,sequence)')
+                bar=db.execute("SELECT payload_json FROM capture_records WHERE record_type='MINUTE_BAR'").fetchone()[0]
+                for i,stamp in enumerate([AT.isoformat(),AT.isoformat(),AT.astimezone(timezone(timedelta(hours=-4))).isoformat(),(AT+timedelta(days=1)).isoformat()],3):
+                    db.execute('INSERT INTO capture_records VALUES(?,?,?,?,?)',(i,'MINUTE_BAR','TEST',stamp,bar))
+            with patch('app.strategy_research.intraday_export.PAGE_SLOTS',1),patch('app.strategy_research.intraday_export.LIMIT',10):
+                result,archive=export_sources(root/'out',equity=path,crypto=root/'missing',at=AT)
+            self.assertEqual(result['sources'][0]['exported'],5)
+            self.assertFalse(result['sources'][0]['truncated'])
+            with patch('app.strategy_research.intraday_export.PAGE_SLOTS',1),patch('app.strategy_research.intraday_export.LIMIT',4):
+                result,_=export_sources(root/'capped',equity=path,crypto=root/'missing',at=AT)
+            self.assertEqual(result['sources'][0]['exported'],3)
+            self.assertTrue(result['sources'][0]['truncated'])
+
+    def test_index_interrupt_preserves_completed_page_and_source_failure(self):
+        from app.read_only_sqlite import read_database as original_read
+        @contextlib.contextmanager
+        def interrupt_second(path):
+            with original_read(path) as db:
+                class Connection:
+                    pages=0
+                    def execute(self,query,args=()):
+                        if query==EQUITY_INDEX_QUERY:
+                            self.pages+=1
+                            if self.pages==2:
+                                db.set_progress_handler(lambda:1,1)
+                        return db.execute(query,args)
+                yield Connection()
+        with tempfile.TemporaryDirectory() as root:
+            root=Path(root);path=root/'source';equity(path)
+            with closing(sqlite3.connect(path)) as db,db:
+                db.execute('CREATE INDEX capture_type_time ON capture_records(record_type,timestamp,sequence)')
+            with patch('app.strategy_research.intraday_export.read_database',side_effect=interrupt_second),patch('app.strategy_research.intraday_export.PAGE_SLOTS',1):
+                result,archive=export_sources(root/'out',equity=path,crypto=root/'missing',at=AT)
+            source=result['sources'][0]
+            self.assertEqual(source['exported'],1)
+            self.assertEqual(source['sqlite_errorname'],'SQLITE_INTERRUPT')
+            self.assertTrue(source['partial_read'])
+            self.assertEqual(result['status'],'PARTIAL_SOURCE_EXPORT')
+            with ZipFile(archive) as z:
+                self.assertIn('equity-saved-market-data.jsonl',z.namelist())
+            path.unlink()
 
 
 if __name__=='__main__':unittest.main()
