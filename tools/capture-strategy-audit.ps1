@@ -17,7 +17,6 @@ if (-not $OutputDirectory) {
 $null = New-Item -ItemType Directory -Path $OutputDirectory -Force
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $Worktree = Join-Path $OutputDirectory "review-source"
-$TestRoot = Join-Path $OutputDirectory "pytest"
 
 # Fetch and test review code in a separate checkout. The operator's current
 # branch and runtime checkout are not switched or modified.
@@ -30,7 +29,9 @@ if ($LASTEXITCODE -ne 0) { throw "Review checkout creation failed." }
 
 Push-Location $Worktree
 try {
-    & $Python -m pytest tests/strategy_research tests/asset_modules/test_learning_outcomes.py tests/test_indicators.py -q --basetemp $TestRoot
+    # Verify the audit's own stdlib-only SQLite path. Strategy comparison and
+    # repository-wide pytest validation are separate from a ledger export.
+    & $Python -m unittest tests.strategy_research.test_audit_stdlib -v
     if ($LASTEXITCODE -ne 0) { throw "Strategy audit verification failed." }
     $AuditLines = & $Python -m app.strategy_research.audit --ledger $Ledger
     if ($LASTEXITCODE -ne 0) { throw "Read-only equity audit failed." }
