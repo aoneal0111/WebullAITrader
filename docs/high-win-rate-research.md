@@ -237,3 +237,58 @@ The new daily Bollinger challenger, RSI2 and Improved R2 must earn promotion
 on modern, costed, unseen ETF data and canonical execution replay. The supplied
 outcome ZIP lacks the historical OHLC/quote paths needed to run those strategies
 against the same opportunities. No new performance percentage is asserted.
+
+## Capture and screen the daily ETF challengers on the workstation
+
+`tools/capture-strategy-screening.ps1` fetches reviewed source into a disposable
+worktree, verifies capture/screening mechanics and uses only the configured
+market-data client to request daily history. It keeps `.env` resolution in the
+existing repository; it does not copy credentials, access accounts, switch the
+runtime checkout, place orders or launch Atlas. It removes only its temporary
+source checkout when finished. Output stays on the Windows Desktop and Explorer
+selects the ZIP, including when a partial capture produced diagnostic output.
+
+The frozen sample is SPY, QQQ, IWM, DIA, EFA, EEM, XLF and XLV. Each request is
+bounded to1,200 daily bars; there is one request per symbol, paced without
+retries. Today's potentially incomplete daily bar is always excluded. The
+provider timestamp's written date is treated as its daily session label, and
+actual NYSE opens/closes are reconstructed. Missing trading dates, conflicting
+duplicates, naive/future labels, short history and invalid OHLCV are rejected.
+This date convention is explicit and must be reviewed against captured coverage;
+it is not an assertion of observed fill times. Daily prices are provider
+forward-adjusted; this is an additional point-in-time limitation.
+
+The default split is midnight Eastern365 calendar days before capture, with
+at least250 development bars and100 validation bars required. The first200
+bars warm indicators. All three daily candidates are reported with a10-bar
+maximum hold and double-cost stress; no optimizer selects a winner. The fixed
+current ETF sample introduces selection/survivorship bias and correlated trades.
+The bundle contains per-symbol CSVs, full screening reports, a summary and a
+manifest with data/report/code hashes, dates, cost assumptions and sanitized
+errors. No raw provider response, account record, `.env` or signed request is
+included. An incomplete bundle is labeled INCOMPLETE and exits with code2.
+
+```powershell
+$Repo = "$env:USERPROFILE\WebullAITrader"
+git -C $Repo fetch origin research/high-win-rate-comparison
+if ($LASTEXITCODE -ne 0) { throw "Fetch failed." }
+$Script = Join-Path $env:TEMP "capture-strategy-screening.ps1"
+git -C $Repo show FETCH_HEAD:tools/capture-strategy-screening.ps1 |
+    Set-Content -LiteralPath $Script -Encoding UTF8
+if ($LASTEXITCODE -ne 0) { throw "Script extraction failed." }
+& $Script -Repo $Repo -AdverseBpsPerSide "10" -FeePerSharePerSide "0.005"
+```
+
+The defaults10bps per side plus$0.005/share per side are illustrative modeling
+assumptions, not measured brokerage costs. Pass explicit alternatives to record
+other assumptions. OpenAPI market-data permission and working Python/SDK/calendar
+dependencies are required. This does not repair Windows Application Control
+blocking a scientific dependency and does not recommend disabling that policy.
+The PowerShell wrapper still requires a workstation verification; provider
+responses and credentials are deliberately unavailable in the cloud test run.
+
+The current execution-repair revision passed both GitHub CI runs, including
+all repository tests. A local research stress-test timeout was not reproduced
+in CI; the local remaining tests passed in a fresh process excluding only that
+stress case. Capture tests use synthetic data and establish data-handling
+mechanics only, not an improved strategy win rate.
