@@ -213,17 +213,12 @@ PAPER observation. This first change does not finish the requested overhaul.
 
 ## October 22 execution repairs and audit findings
 
-The complete uploaded campaign audit reconciled 132 closed positions: 25 wins,
-107 losses, net -$2,202.92. Warrior was16/91 (17.58%), net -$1,686.29;
-Quick Scalper9/37 (24.32%), net -$320.28; four unassigned losses totaled
--$196.35. All legacy strategy families/versions were UNKNOWN; the audit does
-not identify which current setup/version should be removed. Recorded fees
-were zero and PAPER execution provenance remains unverified.
-
-The MANE scalp entered two seconds before the regular close. Its $178.30
-loss exceeded the $26.86 planned structural risk as stop fills crossed the
-session boundary. This supports fixing entry timing; it does not prove a
-strategy's future win rate or justify capping simulated stop losses.
+The private campaign audit showed weak aggregate results, while legacy strategy
+families and policy versions were UNKNOWN. Those outcomes do not establish
+which current setup/version should be removed. A reviewed loss crossed a
+liquidity-session boundary after a late scalp entry. This supports fixing entry
+timing; it does not prove a future win rate or justify capping simulated losses.
+Detailed private campaign figures and individual trade diagnostics are omitted.
 
 Quick Scalper now requires enough time in the original premarket, regular,
 or after-hours session for its configured maximum holding budget. The NYSE
