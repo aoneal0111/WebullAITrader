@@ -187,4 +187,42 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(result['status'],'SOURCE_EXPORT_FAILED')
 
 
+    def test_timeout_after_completed_page_keeps_validated_rows_and_failure(self):
+        from app.read_only_sqlite import read_database as original_read
+        @contextlib.contextmanager
+        def interrupt_second_page(path):
+            with original_read(path) as db:
+                class Connection:
+                    pages=0
+                    def execute(self,query,args=()):
+                        if query==EQUITY_PAGE_QUERY:
+                            self.pages+=1
+                            if self.pages==2:
+                                db.set_progress_handler(lambda:1,1)
+                        return db.execute(query,args)
+                yield Connection()
+        with tempfile.TemporaryDirectory() as root:
+            root=Path(root);db=root/'source';equity(db)
+            before=sha256(db.read_bytes()).hexdigest()
+            with patch('app.strategy_research.intraday_export.read_database',side_effect=interrupt_second_page), patch('app.strategy_research.intraday_export.PAGE_SLOTS',2):
+                result,archive=export_sources(root/'out',equity=db,crypto=root/'missing',at=AT)
+            source=result['sources'][0]
+            self.assertEqual(result['export_version'],3)
+            self.assertEqual(result['status'],'PARTIAL_SOURCE_EXPORT')
+            self.assertEqual(source['status'],'SOURCE_ERROR')
+            self.assertEqual(source['sqlite_errorname'],'SQLITE_INTERRUPT')
+            self.assertTrue(source['partial_read'])
+            self.assertTrue(source['truncated'])
+            self.assertTrue(source['scan_limited'])
+            self.assertEqual(source['sequence_slots_scanned'],2)
+            self.assertEqual(source['exported'],1)
+            self.assertEqual(sha256(db.read_bytes()).hexdigest(),before)
+            with ZipFile(archive) as z:
+                rows=[json.loads(r) for r in z.read('equity-saved-market-data.jsonl').splitlines()]
+                self.assertEqual(len(rows),1)
+                self.assertEqual(rows[0]['kind'],'QUOTE')
+                self.assertNotIn(b'PRIVATE_',z.read('equity-saved-market-data.jsonl'))
+            db.unlink()
+
+
 if __name__=='__main__':unittest.main()

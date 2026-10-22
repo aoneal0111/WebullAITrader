@@ -10,6 +10,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import re
+import sqlite3
 from zipfile import ZipFile, ZIP_DEFLATED
 
 from app.read_only_sqlite import bounded_rows, read_database
@@ -41,9 +42,19 @@ def _equity_rows(db, cutoff, at, info):
     while high >= floor and info['sequence_slots_scanned'] < MAX_SEQUENCE_SLOTS and len(rows) <= LIMIT:
         width = min(PAGE_SLOTS, MAX_SEQUENCE_SLOTS-info['sequence_slots_scanned'])
         lower = max(floor-1, high-width)
-        page = bounded_rows(db,EQUITY_PAGE_QUERY,
-            (lower,high,'MINUTE_BAR','EXECUTION_PRICE_PATH',cutoff.isoformat(),at.isoformat(),LIMIT+1-len(rows)),
-            LIMIT+1-len(rows),BYTE_LIMIT)
+        try:
+            page = bounded_rows(db,EQUITY_PAGE_QUERY,
+                (lower,high,'MINUTE_BAR','EXECUTION_PRICE_PATH',cutoff.isoformat(),at.isoformat(),LIMIT+1-len(rows)),
+                LIMIT+1-len(rows),BYTE_LIMIT)
+        except sqlite3.OperationalError as exc:
+            if getattr(exc, 'sqlite_errorcode', None) != sqlite3.SQLITE_INTERRUPT or not rows:
+                raise
+            # Only completed pages survive. Never retry or extend the read deadline.
+            info.update(status='SOURCE_ERROR', error_type='OperationalError',
+                        error_stage='EQUITY_RECORD_READ', sqlite_errorcode=sqlite3.SQLITE_INTERRUPT,
+                        sqlite_errorname='SQLITE_INTERRUPT', partial_read=True,
+                        scan_limited=True, truncated=True)
+            return rows
         size += sum(len(str(v).encode()) for row in page for v in row)
         if size > BYTE_LIMIT:
             raise ValueError('DATABASE_RESULT_LIMIT')
@@ -87,7 +98,7 @@ def export_sources(directory, *, equity, crypto, at, days=45):
         raise FileExistsError('Use a new output path')
     directory.mkdir(parents=True, exist_ok=False)
     cutoff = at-timedelta(days=days)
-    manifest = {'schema_version': 1, 'export_version': 2, 'execution_authorized': False, 'orders': 0,
+    manifest = {'schema_version': 1, 'export_version': 3, 'execution_authorized': False, 'orders': 0,
         'captured_at': at.isoformat(), 'cutoff': cutoff.isoformat(), 'sources': [], 'files': [],
         'limitations': ['Saved captures can have gaps, duplicate observations and selection bias.',
                        'Quote paths cover observed owned positions, not all candidate opportunities.',
@@ -169,7 +180,8 @@ def export_sources(directory, *, equity, crypto, at, days=45):
                         records.append(r)
                     except (ValueError, KeyError, TypeError, ArithmeticError):
                         info['rejected'] += 1
-            info['status'] = 'EXPORTED'
+            if info['status'] != 'SOURCE_ERROR':
+                info['status'] = 'EXPORTED'
         except Exception as exc:
             # Avoid propagating arbitrary source text or host paths into output.
             info['status'] = 'SOURCE_ERROR';info['error_type'] = type(exc).__name__

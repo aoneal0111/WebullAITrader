@@ -166,3 +166,12 @@ SOURCE_EXPORT_FAILED and a nonzero CLI exit. The wrapper still selects a produce
 diagnostic ZIP before reporting the failure, so it remains reviewable. Missing
 sources remain explicit; they are not synthesized. The shared ten-second query
 progress deadline and read-only connection guards are unchanged.
+
+
+Exporter v3 preserves completed equity pages when a later page reaches the existing
+SQLite progress deadline. The interrupted page is discarded, the connection closes,
+and only completed pages pass through the normal allowlist and validation. The source
+remains `SOURCE_ERROR` with `SQLITE_INTERRUPT`, `partial_read`, `scan_limited` and
+`truncated` flags; the command still returns nonzero. A partial ZIP is for coverage
+review only. No retry, deadline extension or source mutation occurs. If no usable
+completed page exists, the original source-failure behavior remains.
