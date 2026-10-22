@@ -25,9 +25,10 @@ class HistoryOnly:
     def __init__(self):self.calls=[]
     def get_history_bar(self,*args,**kw):
         self.calls.append((args,kw))
-        opened=datetime.fromtimestamp(kw['start_time']/1000,UTC)
-        closed=datetime.fromtimestamp((kw['end_time']+1)/1000,UTC)
-        return minute_rows(opened,closed)
+        from app.market.calendar import NYSE
+        day=datetime.fromtimestamp(kw['start_time']/1000,UTC).date()
+        schedule=NYSE.schedule(start_date=day,end_date=day).iloc[0]
+        return minute_rows(schedule.market_open.to_pydatetime(),schedule.market_close.to_pydatetime())
 
 
 class SessionCaptureTests(unittest.TestCase):
@@ -80,7 +81,7 @@ class SessionCaptureTests(unittest.TestCase):
             self.assertEqual(manifest['datasets'][0]['complete_sessions'],6)
             self.assertEqual(provider.calls[0][0],('SPY','US_ETF','M1'))
             self.assertFalse(provider.calls[0][1]['real_time_required'])
-            self.assertEqual(provider.calls[0][1]['count'],'390')
+            self.assertEqual(provider.calls[0][1]['count'],'396')
             with ZipFile(archive) as z:
                 self.assertEqual(set(z.namelist()),{'manifest.json','SPY-minute.csv'})
                 self.assertNotIn(b'SECRET_VALUE',z.read('SPY-minute.csv'))
@@ -96,8 +97,16 @@ class SessionCaptureTests(unittest.TestCase):
             manifest,archive=capture_sessions(Path(root)/'out',Missing(),tuple,captured_at=AT,count=6,pause=lambda _:None)
             self.assertEqual(manifest['status'],'INCOMPLETE')
             self.assertFalse(manifest['datasets'])
+            self.assertEqual(manifest['requests'],3)
+            self.assertEqual(manifest['abort_reason'],'THREE_CONSECUTIVE_INCOMPLETE_SESSIONS')
+            self.assertFalse(manifest['aborted_after_consecutive_errors'])
             self.assertTrue(all(r['missing_minutes']==1 for r in manifest['sessions']))
-            with ZipFile(archive) as z:self.assertEqual(z.namelist(),['manifest.json'])
+            self.assertEqual(manifest['diagnostic_datasets'][0]['bars'],3*389)
+            self.assertFalse(manifest['diagnostic_datasets'][0]['screening_eligible'])
+            self.assertTrue(all(r['missing_minute_examples']==[r['opened']] for r in manifest['sessions']))
+            with ZipFile(archive) as z:
+                self.assertEqual(set(z.namelist()),{'manifest.json','SPY-incomplete-minute.csv'})
+                self.assertNotIn(b'SECRET_VALUE',z.read('SPY-incomplete-minute.csv'))
 
     def test_provider_errors_stop_after_three_and_do_not_export_request_secrets(self):
         class Failing:
@@ -123,6 +132,41 @@ class SessionCaptureTests(unittest.TestCase):
                     return super().get_history_bar(*a,**kw)
             _,archive=capture_sessions(directory,Extra(),tuple,captured_at=AT,count=6,pause=lambda _:None)
             with ZipFile(archive) as z:self.assertNotIn('.env',z.namelist())
+
+
+    def test_padding_covers_exclusive_start_and_minute_rounded_end(self):
+        for mode in ('exclusive_start','rounded_end'):
+            with self.subTest(mode=mode):
+                class BoundaryProvider(HistoryOnly):
+                    def get_history_bar(self,*args,**kw):
+                        rows=super().get_history_bar(*args,**kw)
+                        start=kw['start_time']/1000
+                        end=(kw['end_time']//60000)*60 if mode=='rounded_end' else kw['end_time']/1000
+                        return [r for r in rows if (start <= datetime.fromisoformat(r['time']).timestamp() < end
+                            if mode=='rounded_end' else start < datetime.fromisoformat(r['time']).timestamp() <= end)]
+                provider=BoundaryProvider()
+                opened,closed=session_windows(AT,count=6)[0]
+                old=provider.get_history_bar('SPY','US_ETF','M1',count='390',
+                    start_time=int(opened.timestamp()*1000),end_time=int(closed.timestamp()*1000)-1)
+                self.assertEqual(len(old),389)
+                with tempfile.TemporaryDirectory() as root,patch('app.strategy_research.session_capture.SYMBOLS',(('SPY','US_ETF'),)):
+                    manifest,_=capture_sessions(Path(root)/'out',provider,tuple,captured_at=AT,count=6,pause=lambda _:None)
+                self.assertEqual(manifest['status'],'COMPLETE')
+                self.assertEqual(manifest['datasets'][0]['bars'],6*390)
+                self.assertTrue(all(r['missing_minutes']==0 for r in manifest['sessions']))
+
+    def test_interior_gap_stays_missing_and_invalid_partial_rows_are_not_retained(self):
+        opened,closed=session_windows(AT,count=6)[0]
+        rows=minute_rows(opened,closed);missing=rows.pop(100);partial=[]
+        bars,coverage=session_bars('SPY',rows,opened,closed,partial_sink=partial)
+        self.assertFalse(bars);self.assertEqual(len(partial),389)
+        self.assertEqual(coverage['missing_minute_examples'],[missing['time']])
+        self.assertEqual(coverage['first_received_open'],opened.isoformat())
+        self.assertEqual(coverage['last_received_open'],(closed-timedelta(minutes=1)).isoformat())
+        rows[0]['close']='200';partial=[]
+        with self.assertRaises(SessionDataError):
+            session_bars('SPY',rows,opened,closed,partial_sink=partial)
+        self.assertFalse(partial)
 
 
 if __name__=='__main__':unittest.main()

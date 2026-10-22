@@ -224,3 +224,26 @@ quotes, futures contracts and option chains remain separate data requirements.
 
 Run the freshly extracted wrapper with `-Repo "$env:USERPROFILE\WebullAITrader"`.
 It writes and selects a Desktop ZIP and leaves the runtime checkout unchanged.
+
+
+Historical-session collector v2 pads requests two minutes before/after the actual
+calendar session and asks for six extra bars (still below the SDK's 1200 limit).
+It filters against the original session without shifting timestamps or synthesizing
+missing bars. This handles exclusive/rounded request boundaries without presuming
+which convention a provider uses. Regression tests reproduce incomplete results with
+exclusive starts and rounded ends before checking the padded request. The actual
+workstation cause still requires the returned timestamp diagnostics.
+
+Coverage now includes first/last received in-session opens and up to twelve missing
+minute timestamps, with a flag if examples were truncated. Validated rows from
+incomplete sessions are preserved only in separate `*-incomplete-minute.csv` files
+under `diagnostic_datasets`, marked `screening_eligible=false`. They never enter the
+complete-session CSVs. Each retained partial row passes price/volume, symbol and
+timestamp checks; conflicts or invalid data retain no rows from that session. The
+ZIP remains allowlisted and hashed; request counts and safety boundaries are unchanged.
+
+Three consecutive incomplete sessions now also stop the run, with a distinct abort
+reason, so a systemic coverage failure does not consume the full request budget.
+The manifest includes first/last timestamps from the entire response as well as
+in-session timestamps; this helps distinguish endpoint boundaries from bar-label
+conventions. These diagnostic timestamps never relabel the provider's bars.

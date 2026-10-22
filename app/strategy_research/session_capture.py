@@ -23,6 +23,7 @@ from .candidates import Bar, validate_bars
 SYMBOLS = (('SPY', 'US_ETF'), ('QQQ', 'US_ETF'), ('AAPL', 'US_STOCK'),
            ('MSFT', 'US_STOCK'), ('NVDA', 'US_STOCK'), ('TSLA', 'US_STOCK'))
 MAX_RESPONSE = 1200
+REQUEST_PADDING = timedelta(minutes=2)
 
 
 class SessionDataError(ValueError):
@@ -55,34 +56,49 @@ def _timestamp(value):
     return stamp
 
 
-def session_bars(symbol, rows, opened, closed):
+def session_bars(symbol, rows, opened, closed, *, partial_sink=None):
     if not isinstance(rows, (list, tuple)) or not 0 < len(rows) <= MAX_RESPONSE:
         raise SessionDataError('empty or oversized response')
     expected = int((closed-opened).total_seconds()//60)
     values = {}
     outside = duplicates = 0
+    response_times = []
     for row in rows:
         if row.get('symbol', symbol) != symbol:
             raise SessionDataError('response symbol mismatch')
         stamp = _timestamp(row['time'])
+        response_times.append(stamp)
         if not opened <= stamp < closed:
             outside += 1
             continue
         if stamp.second or stamp.microsecond:
             raise SessionDataError('unaligned minute timestamp')
         numbers = tuple(Decimal(str(row[k])) for k in ('open','high','low','close','volume'))
+        o,h,l,c,v = numbers
+        if (not all(x.is_finite() for x in numbers) or v < 0
+                or not 0 < l <= min(o,c) <= max(o,c) <= h):
+            raise SessionDataError('invalid minute OHLCV')
         if stamp in values:
             if values[stamp] != numbers:
                 raise SessionDataError('conflicting minute duplicate')
             duplicates += 1
         values[stamp] = numbers
-    missing = sum(opened+timedelta(minutes=i) not in values for i in range(expected))
+    missing = [opened+timedelta(minutes=i) for i in range(expected)
+               if opened+timedelta(minutes=i) not in values]
     coverage = dict(expected_minutes=expected, received_minutes=len(values),
-                    missing_minutes=missing, outside_session_rows=outside, identical_duplicates=duplicates)
-    if missing:
-        return (), coverage
+                    missing_minutes=len(missing), outside_session_rows=outside, identical_duplicates=duplicates,
+                    missing_minute_examples=[t.isoformat() for t in missing[:12]],
+                    missing_examples_truncated=len(missing)>12,
+                    first_received_open=min(values).isoformat() if values else None,
+                    last_received_open=max(values).isoformat() if values else None,
+                    first_response_time=min(response_times).isoformat(),
+                    last_response_time=max(response_times).isoformat())
     bars = tuple(Bar(symbol, stamp, stamp+timedelta(minutes=1), *values[stamp], closed)
                  for stamp in sorted(values))
+    if missing:
+        if partial_sink is not None:
+            partial_sink.extend(bars)
+        return (), coverage
     validate_bars(bars, 'minute')
     return bars, coverage
 
@@ -96,7 +112,7 @@ def capture_sessions(directory, market_data, response_rows, *, captured_at, coun
         raise FileExistsError('use a new output path')
     directory.mkdir(parents=True)
     split = windows[len(windows)//2][0]
-    manifest = dict(schema_version=1, execution_authorized=False, orders=0,
+    manifest = dict(schema_version=1, capture_version=2, execution_authorized=False, orders=0,
         source='WEBULL_OPENAPI_MARKET_DATA_HISTORY', interval='M1',
         captured_at=captured_at.isoformat(), split_at=split.isoformat(),
         timestamp_convention='PROVIDER_TIME_AS_BAR_OPEN_REQUIRES_EXTERNAL_VERIFICATION',
@@ -105,7 +121,8 @@ def capture_sessions(directory, market_data, response_rows, *, captured_at, coun
         selection='FIXED_CURRENT_LIQUID_SAMPLE_NOT_POINT_IN_TIME_MOVERS',
         request_limit=len(SYMBOLS)*len(windows), requests=0, no_retries=True,
         requested_sessions=[dict(opened=o.isoformat(),closed=c.isoformat()) for o,c in windows],
-        symbols=[s for s,_ in SYMBOLS], sessions=[], datasets=[], errors=[],
+        symbols=[s for s,_ in SYMBOLS], sessions=[], datasets=[], diagnostic_datasets=[], errors=[],
+        request_padding_seconds=int(REQUEST_PADDING.total_seconds()),
         limitations=['Historical bar time convention requires independent confirmation.',
                      'Backfill retrieval time is not historical live availability.',
                      'No historical executable quotes, queue, partial fills or capacity evidence.',
@@ -115,9 +132,12 @@ def capture_sessions(directory, market_data, response_rows, *, captured_at, coun
                      'No strategy performance or readiness is inferred from successful collection.'])
     names = ['manifest.json']
     failures = 0
+    incomplete_run = 0
     aborted = False
+    abort_reason = None
     for symbol, category in SYMBOLS:
         accepted = []
+        partial = []
         for opened, closed in windows:
             if manifest['requests']:
                 pause(1.1)
@@ -126,13 +146,19 @@ def capture_sessions(directory, market_data, response_rows, *, captured_at, coun
             manifest['sessions'].append(info)
             try:
                 expected = int((closed-opened).total_seconds()//60)
+                # Padding avoids depending on inclusive/exclusive or rounded
+                # provider boundaries. Never shift returned bar timestamps.
+                start_ms = int((opened-REQUEST_PADDING).timestamp()*1000)
+                end_ms = int((closed+REQUEST_PADDING).timestamp()*1000)
+                info.update(request_start_ms=start_ms, request_end_ms=end_ms)
                 rows = response_rows(market_data.get_history_bar(symbol, category, 'M1',
-                    count=str(expected), real_time_required=False,
-                    start_time=int(opened.timestamp()*1000), end_time=int(closed.timestamp()*1000)-1))
-                bars, coverage = session_bars(symbol, rows, opened, closed)
+                    count=str(expected+6), real_time_required=False,
+                    start_time=start_ms, end_time=end_ms))
+                bars, coverage = session_bars(symbol, rows, opened, closed, partial_sink=partial)
                 info.update(coverage, status='COMPLETE' if bars else 'INCOMPLETE')
                 accepted.extend(bars)
                 failures = 0
+                incomplete_run = 0 if bars else incomplete_run+1
             except Exception as exc:
                 info.update(status='ERROR', error_type=type(exc).__name__)
                 if isinstance(exc, SessionDataError):
@@ -140,23 +166,35 @@ def capture_sessions(directory, market_data, response_rows, *, captured_at, coun
                 manifest['errors'].append(dict(symbol=symbol, opened=opened.isoformat(),
                                                error_type=type(exc).__name__))
                 failures += 1
+                incomplete_run = 0
             if progress:
                 progress(symbol, opened.date().isoformat(), info['status'], info.get('received_minutes',0))
-            if failures >= 3:
+            if failures >= 3 or incomplete_run >= 3:
                 aborted = True
-                break  # Failures often share credentials/SDK/permission issues.
-        if accepted:
-            name = symbol+'-minute.csv'
+                abort_reason = ('THREE_CONSECUTIVE_REQUEST_ERRORS' if failures >= 3
+                                else 'THREE_CONSECUTIVE_INCOMPLETE_SESSIONS')
+                break  # Preserve diagnostics instead of repeating a systemic failure.
+        for records, suffix, bucket in ((accepted, '-minute.csv', 'datasets'),
+                                         (partial, '-incomplete-minute.csv', 'diagnostic_datasets')):
+            if not records:
+                continue
+            name = symbol+suffix
             with (directory/name).open('x',newline='',encoding='utf-8') as out:
-                writer=csv.DictWriter(out,fieldnames=asdict(accepted[0]))
-                writer.writeheader();writer.writerows(asdict(b) for b in accepted)
+                writer=csv.DictWriter(out,fieldnames=asdict(records[0]))
+                writer.writeheader();writer.writerows(asdict(b) for b in records)
             names.append(name)
-            manifest['datasets'].append(dict(symbol=symbol,csv=name,
-                csv_sha256=sha256((directory/name).read_bytes()).hexdigest(), bars=len(accepted),
-                complete_sessions=sum(b.closed==b.session_end for b in accepted)))
+            dataset = dict(symbol=symbol,csv=name,
+                csv_sha256=sha256((directory/name).read_bytes()).hexdigest(), bars=len(records))
+            if bucket == 'datasets':
+                dataset['complete_sessions'] = sum(b.closed==b.session_end for b in records)
+            else:
+                dataset['screening_eligible'] = False
+                dataset['reason'] = 'INCOMPLETE_SESSIONS_DIAGNOSTIC_ONLY'
+            manifest[bucket].append(dataset)
         if aborted:
             break
-    manifest['aborted_after_consecutive_errors'] = aborted
+    manifest['aborted_after_consecutive_errors'] = failures >= 3
+    manifest['abort_reason'] = abort_reason
     manifest['status'] = ('COMPLETE' if len(manifest['sessions'])==manifest['request_limit']
         and all(s['status']=='COMPLETE' for s in manifest['sessions']) else 'INCOMPLETE')
     manifest['implementation_sha256'] = sha256(b''.join(Path(__file__).with_name(n).read_bytes()
