@@ -32,7 +32,7 @@ def spread():
 
 def evidence(**changes):
     return replace(ReviewEvidence(PROFILES[0].candidate, 200, 130, D('.2'), D('.1'), D('1.4'), D(4),
-                                  3, True, True, True, True, True), **changes)
+                                  3, True, True, True, True, True, portfolio_replay_passed=True), **changes)
 
 
 class MultiAssetTests(unittest.TestCase):
@@ -112,6 +112,20 @@ class MultiAssetTests(unittest.TestCase):
         self.assertEqual(review(evidence())['decision'], 'ELIGIBLE_FOR_MANUAL_REVIEW')
         self.assertFalse(review(evidence())['execution_authorized'])
         with self.assertRaises(ValueError): evidence(expectancy_r=D('NaN'))
+
+    def test_portfolio_verification_is_explicit_and_old_evidence_fails_closed(self):
+        supplied = evidence(portfolio_replay_passed=False)
+        result = review(supplied)
+        self.assertIn('PORTFOLIO_REPLAY_PASSED_MISSING', result['reasons'])
+        self.assertEqual(result['decision'], 'INSUFFICIENT_EVIDENCE')
+        values = {k: v for k, v in supplied.__dict__.items() if k != 'portfolio_replay_passed'}
+        legacy = ReviewEvidence(**values)
+        self.assertFalse(legacy.portfolio_replay_passed)
+        self.assertEqual(review(legacy)['decision'], 'INSUFFICIENT_EVIDENCE')
+        for value in (1, 'true', None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                evidence(portfolio_replay_passed=value)
+        self.assertFalse(review(evidence())['execution_authorized'])
 
     def test_opening_range_retest_uses_completed_opening_range(self):
         start = datetime(2026, 10, 22, 13, 30, tzinfo=UTC); end = start+timedelta(hours=6, minutes=30)

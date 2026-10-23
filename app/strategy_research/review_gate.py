@@ -26,6 +26,9 @@ class ReviewEvidence:
     canonical_replay_passed: bool
     paper_forward_passed: bool
     asset_constraints_verified: bool
+    # Reconciled shared-capital sizing, concurrent exposure and marked equity.
+    # Older evidence intentionally remains insufficient until this is supplied.
+    portfolio_replay_passed: bool = False
 
     def __post_init__(self):
         if self.candidate not in {p.candidate for p in PROFILES}:
@@ -38,7 +41,7 @@ class ReviewEvidence:
         if any(not isinstance(v, D) or not v.is_finite() for v in values) or min(values[2:]) < 0:
             raise ValueError('Finite Decimal statistics required')
         flags = (self.source_verified, self.costs_verified, self.canonical_replay_passed,
-                 self.paper_forward_passed, self.asset_constraints_verified)
+                 self.paper_forward_passed, self.asset_constraints_verified, self.portfolio_replay_passed)
         if any(type(v) is not bool for v in flags):
             raise ValueError('Explicit evidence verification flags required')
 
@@ -68,7 +71,7 @@ def review(evidence):
     if e.independent_date_windows < 3:
         reasons.append('FEWER_THAN_THREE_UNSEEN_DATE_WINDOWS')
     for name in ('source_verified', 'costs_verified', 'canonical_replay_passed',
-                 'paper_forward_passed', 'asset_constraints_verified'):
+                 'paper_forward_passed', 'asset_constraints_verified', 'portfolio_replay_passed'):
         if not getattr(e, name):
             reasons.append(name.upper()+'_MISSING')
     return {'candidate': e.candidate, 'scope': 'RESEARCH_REVIEW_NOT_EXECUTION_AUTHORIZATION',

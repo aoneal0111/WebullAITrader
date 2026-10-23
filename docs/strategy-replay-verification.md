@@ -39,3 +39,10 @@ mark-to-market drawdown, untouched dates, and frozen-rule forward paper evidence
 Excluding end-of-file marks from closed-trade win rates can censor unresolved
 positions; those marks remain visible and must be included in a portfolio equity
 assessment. No verification test authorizes trading or establishes profitability.
+
+The research evidence gate requires an explicit Boolean
+`portfolio_replay_passed`, defaulting to false for older evidence. This is an
+externally reconciled attestation, not a portfolio simulator or automatic audit.
+It may be set true only after checking shared capital, risk-based share sizing,
+concurrent exposures, fees and marked open positions. Passing still permits
+manual review only.
