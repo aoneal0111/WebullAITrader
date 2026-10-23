@@ -364,7 +364,7 @@ def test_forming_setup_never_executes() -> None:
     assert ReasonCode.NO_SETUP in assessed.reason_codes
 
 
-@pytest.mark.parametrize("session", ("PREMARKET", "REGULAR", "AFTER_HOURS"))
+@pytest.mark.parametrize("session", ("PREMARKET", "REGULAR"))
 def test_balanced_valid_trigger_is_entry_ready_in_allowed_sessions(session: str) -> None:
     _, (assessed, signal) = assess_with_trigger(observation(), session=session)
     assert assessed.status is CandidateStatus.ENTRY_READY

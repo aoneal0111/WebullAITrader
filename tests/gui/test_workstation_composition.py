@@ -126,3 +126,11 @@ def test_market_overview_is_honest_when_projection_is_unavailable(application) -
     overview = dashboard.market_workspace.market_overview
     assert tuple(overview._rows) == ("SPY", "QQQ", "DIA", "VIX")
     assert all(value.text() == "--" for row in overview._values.values() for key, value in row.items() if key != "Instrument")
+
+
+def test_equity_entry_pause_is_visible_separately_from_runtime_health(application):
+    dashboard=DashboardPage()
+    assert dashboard.entry_admission_notice.objectName()=='equityEntryAdmissionNotice'
+    assert 'BUYs paused' in dashboard.entry_admission_notice.text()
+    assert 'Position protection remains available' in dashboard.entry_admission_notice.text()
+    assert not dashboard.entry_admission_notice.isHidden()

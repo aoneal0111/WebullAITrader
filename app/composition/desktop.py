@@ -312,6 +312,16 @@ def create_desktop_composition(
         )
 
 
+    # A single desktop dispatch boundary covers Warrior, Scalper, controller,
+    # prepared AI dispatch and add-ons even when optional controller flags vary.
+    from app.equity_overhaul.admission import production_policy, QualifiedEquityTradingService
+    equity_qualification = production_policy()
+    qualified_equity_service = None
+    if paper_trading_commands is not None:
+        qualified_equity_service = QualifiedEquityTradingService(
+            paper_trading_commands.trading_service, equity_qualification)
+        paper_trading_commands = replace(paper_trading_commands, trading_service=qualified_equity_service)
+
     autonomous_paper_bridge = None
     paper_controller_service = None
     quick_scalper_runtime = None
@@ -331,6 +341,8 @@ def create_desktop_composition(
             protection_amender=paper_trading_commands.gateway.amend_protective_stop,
             position_quantity_source=trading_state_sources.position_quantity,
             management_context_source=warrior_management_context_source,
+            entry_qualification=lambda signal: equity_qualification.permits(
+                autonomous_paper_bridge._strategy_metadata(signal)),
         )
         # Restore the read model from the authoritative PAPER order book before
         # any management/protection callbacks can observe a live quote.  The
@@ -345,7 +357,12 @@ def create_desktop_composition(
         )
         autonomous_paper_bridge.begin_reconciliation()
         autonomous_paper_bridge.reconcile()
+        quarantine_ok = qualified_equity_service.quarantine_working_buys(
+            paper_trading_commands.order_book, paper_trading_commands.order_command_factory)
         autonomous_paper_bridge.reconcile_protection()
+        if not quarantine_ok:
+            paper_trading_commands.close()
+            raise RuntimeError("Unqualified working BUY cancellation is unconfirmed; desktop startup stopped")
         if operational_configuration.paper_controller_enabled:
             if not paper_environment or operational_configuration.live_trading_enabled:
                 raise ValueError("The entry controller is PAPER-only with live trading disabled")
@@ -527,8 +544,10 @@ def create_desktop_composition(
         symbol_intelligence=symbol_intelligence,
         memory_observability=memory_observability,
     )
-    if paper_controller_service is not None:
-        trading_service = paper_controller_service
+    if paper_trading_commands is not None:
+        trading_service = paper_trading_commands.trading_service
+    elif configuration.runtime_mode.value == "PAPER":
+        trading_service = QualifiedEquityTradingService(trading_service, equity_qualification)
 
     result = DesktopComposition(
         learning_collector=learning_collector,

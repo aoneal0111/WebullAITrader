@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from app.gui.models import DashboardSnapshot
 from app.gui.widgets.market_workspace import MarketWorkspace
@@ -35,6 +35,11 @@ class DashboardPage(QWidget):
         self.mission_status = self.market_workspace.mission_status
         self.infrastructure = self.market_workspace.infrastructure
         self.main_splitter = self.market_workspace.splitter
+        self.entry_admission_notice = QLabel(
+            "PAPER equity BUYs paused: no qualified replacement strategy. Position protection remains available.")
+        self.entry_admission_notice.setObjectName("equityEntryAdmissionNotice")
+        self.entry_admission_notice.setWordWrap(True)
+        root.addWidget(self.entry_admission_notice)
         root.addWidget(self.runtime_header)
         root.addWidget(self.market_workspace, 1)
         # The legacy metadata footer duplicated the visible runtime/status

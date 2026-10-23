@@ -73,6 +73,7 @@ class PaperEntryAuthorizationReason(StrEnum):
     EXECUTION_DATA_UNAVAILABLE = "EXECUTION_DATA_UNAVAILABLE"
     AUTHORIZATION_OUTCOME_UNAVAILABLE = "AUTHORIZATION_OUTCOME_UNAVAILABLE"
     EXECUTION_NOT_PERMITTED = "EXECUTION_NOT_PERMITTED"
+    STRATEGY_NOT_QUALIFIED = "STRATEGY_NOT_QUALIFIED"
     ACCOUNT_NOT_READY = "ACCOUNT_NOT_READY"
     SYMBOL_NOT_ALLOWED = "SYMBOL_NOT_ALLOWED"
     SPREAD_WIDE = "SPREAD_WIDE"
@@ -297,6 +298,9 @@ class AutonomousPaperExecutionBridge:
     management_context_source: Callable[[str], str | None] | None = None
     protection_amender: Callable[..., bool] | None = None
     strategy_provenance_source: Callable[[object], dict] | None = None
+    # Desktop always injects release qualification. Standalone mechanical
+    # bridges retain their existing dependency-injected test/research contract.
+    entry_qualification: Callable[[object], bool] | None = None
     _seen_entries: OrderedDict[str, None] = field(default_factory=OrderedDict, init=False)
     _active_by_symbol: dict[str, str] = field(default_factory=dict, init=False)
     _entry_orders: dict[str, str] = field(default_factory=dict, init=False)
@@ -1119,6 +1123,14 @@ class AutonomousPaperExecutionBridge:
                 tuple(gates), constructed, attempted, placement,
             )
             return PaperEntryPreparation(decision, None) if prepare_only else decision
+
+        if self.entry_qualification is not None:
+            try:
+                qualified = self.entry_qualification(signal) is True
+            except Exception:
+                qualified = False
+            if not gate("strategy_qualification", qualified, qualified, True):
+                return refused(PaperEntryAuthorizationReason.STRATEGY_NOT_QUALIFIED)
 
         if not gate("environment", self.mode.strip().upper() == "PAPER", self.mode, "PAPER"):
             return refused(PaperEntryAuthorizationReason.ENVIRONMENT_MISMATCH)
