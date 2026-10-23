@@ -114,3 +114,26 @@ Keep raw data, credentials and result files private. Repository publication
 contains only code, synthetic tests and this protocol. Hashes prove byte
 reproducibility, not the authenticity of a user-supplied manifest. Software tests
 use synthetic data and establish mechanics; they are not profitability evidence.
+
+## Capture timezone repair
+
+The HTTP request and response checks now use the same half-open interval:
+midnight in America/New_York on the first requested exchange date, through
+midnight on the exclusive end date, converted separately to UTC. This matters
+when the two boundaries have different DST offsets. The API's inclusive end is
+one second before that exclusive instant; accepted minute timestamps are never
+shifted. Extended-hours, weekend and holiday rows within the interval are
+excluded from regular-session inputs. Truly out-of-request rows still stop
+capture and now record a sanitized timestamp/boundary diagnostic.
+
+The original request started at UTC midnight while checking Eastern dates. A
+valid prior-Eastern-evening row at the front of that UTC request could cause
+`BAR_OUTSIDE_REQUEST`. A request-filtering synthetic provider reproduces that
+failure on the original implementation. The repair is covered by that regression,
+strict start/end violations, non-session exclusion and separate winter/summer
+boundary offsets. This is a code-level reproduction, not inspection of any
+operator's raw failed response.
+
+After updating, freeze a new plan in a new output directory: the collector
+source hash changed. Preserve the previous partial directory and diagnostics.
+No strategy rules, costs, screening thresholds or equity admission change.

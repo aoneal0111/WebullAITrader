@@ -56,11 +56,20 @@ def capture(root, plan_document, credentials, *, fetch=request_page, pause=time.
         raise CaptureError('LOCAL_ALPACA_DATA_CREDENTIALS_REQUIRED')
     start = date.fromisoformat(PLAN['windows'][0]['start'])-timedelta(days=PLAN['warmup_calendar_days'])
     end = date.fromisoformat(PLAN['windows'][-1]['end_exclusive'])
+    # The plan uses exchange dates. UTC midnight can include the previous
+    # Eastern evening, so both request and validation must share these exact
+    # New York midnight instants (with each boundary's own DST offset).
+    eastern = ZoneInfo('America/New_York')
+    request_start = datetime.combine(start, datetime.min.time(), eastern).astimezone(UTC)
+    request_end = datetime.combine(end, datetime.min.time(), eastern).astimezone(UTC)
     days = schedule(start, end)
     root = Path(root); root.mkdir(parents=True, exist_ok=False)
     manifest = {'source': 'ALPACA_SIP_MINUTE_RAW', 'adjustment': 'raw', 'feed': 'sip',
                 'selection': 'FIXED_LIQUID_SAMPLE_NOT_POINT_IN_TIME_MOVERS',
                 'captured_at': datetime.now(UTC).isoformat(), 'plan_document': plan_document,
+                'date_basis': 'AMERICA_NEW_YORK_EXCHANGE_DATES',
+                'request_start_inclusive': request_start.isoformat(),
+                'request_end_exclusive': request_end.isoformat(),
                 'responses': [], 'normalized_inputs': [], 'coverage': [],
                 'execution_authorized': False, 'status': 'PARTIAL', 'error': None,
                 'limits': {'max_pages': MAX_PAGES, 'max_page_bytes': MAX_PAGE_BYTES},
@@ -71,9 +80,9 @@ def capture(root, plan_document, credentials, *, fetch=request_page, pause=time.
     try:
         for index in range(MAX_PAGES):
             params = {'symbols': ','.join(SYMBOLS), 'timeframe': '1Min',
-                      'start': start.isoformat()+'T00:00:00Z',
+                      'start': request_start.isoformat(),
                       # API end is inclusive; request the last whole second before our exclusive date.
-                      'end': (datetime.combine(end, datetime.min.time(), UTC)-timedelta(seconds=1)).isoformat(),
+                      'end': (request_end-timedelta(seconds=1)).isoformat(),
                       'feed': 'sip', 'adjustment': 'raw', 'asof': '-', 'sort': 'asc', 'limit': 10000}
             if token is not None: params['page_token'] = token
             if index: pause(.35)
@@ -93,8 +102,13 @@ def capture(root, plan_document, credentials, *, fetch=request_page, pause=time.
                     stamp = datetime.fromisoformat(item['t'].replace('Z', '+00:00'))
                     if stamp.utcoffset() is None or stamp.second or stamp.microsecond:
                         raise CaptureError('UNALIGNED_OR_UNDATED_BAR')
-                    day = stamp.astimezone(ZoneInfo('America/New_York')).date()
-                    if not start <= day < end: raise CaptureError('BAR_OUTSIDE_REQUEST')
+                    if not request_start <= stamp < request_end:
+                        manifest['timestamp_rejection'] = {'symbol': symbol,
+                            'observed_at': stamp.isoformat(),
+                            'request_start_inclusive': request_start.isoformat(),
+                            'request_end_exclusive': request_end.isoformat()}
+                        raise CaptureError('BAR_OUTSIDE_REQUEST')
+                    day = stamp.astimezone(eastern).date()
                     if day not in days or not days[day][0] <= stamp < days[day][1]: continue
                     numbers = tuple(D(str(item[k])) for k in ('o', 'h', 'l', 'c', 'v'))
                     o, h, l, c, v = numbers

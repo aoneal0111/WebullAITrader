@@ -107,3 +107,51 @@ def test_http_read_is_bounded_and_only_uses_fixed_data_host():
     response.read.assert_called_once_with(h.MAX_PAGE_BYTES+1)
     request = opener.open.call_args.args[0]
     assert request.full_url.startswith(h.ENDPOINT+'?') and request.get_method() == 'GET'
+
+
+def test_request_uses_exchange_dates_so_valid_utc_prior_evening_cannot_abort_capture(tmp_path):
+    from datetime import datetime
+    # The frozen warmup begins Saturday Nov 23, 2024. UTC midnight includes
+    # Friday Nov 22 after-hours bars (19:00-20:00 Eastern), which the old
+    # exchange-date validator rejected even when they matched its HTTP query.
+    candidates = [
+        {'t': '2024-11-23T00:30:00Z', 'o': 100, 'h': 101, 'l': 99, 'c': 100, 'v': 10},
+        {'t': '2024-11-25T14:30:00Z', 'o': 100, 'h': 101, 'l': 99, 'c': 100, 'v': 10},
+    ]
+    seen = []
+    def provider(params, credentials):
+        seen.append(params)
+        lower = datetime.fromisoformat(params['start'].replace('Z', '+00:00'))
+        upper = datetime.fromisoformat(params['end'].replace('Z', '+00:00'))
+        return page({'SPY': [r for r in candidates if lower <=
+                    datetime.fromisoformat(r['t'].replace('Z', '+00:00')) <= upper]})
+    result = h.capture(tmp_path/'capture', v.frozen_plan(), ('key', 'secret'),
+                       fetch=provider, progress=lambda *a, **kw: None)
+    assert result['error'] is None
+    assert result['status'] == 'INCOMPLETE_SESSION_COVERAGE'
+    assert datetime.fromisoformat(seen[0]['start']).isoformat() == '2024-11-23T05:00:00+00:00'
+    assert datetime.fromisoformat(seen[0]['end']).isoformat() == '2026-09-25T03:59:59+00:00'
+
+
+@pytest.mark.parametrize('stamp', ['2024-11-23T04:59:00Z', '2026-09-25T04:00:00Z'])
+def test_true_request_boundary_violations_still_fail_closed_with_safe_diagnostics(tmp_path, stamp):
+    row = {'t': stamp, 'o': 100, 'h': 101, 'l': 99, 'c': 100, 'v': 1000}
+    result = run(tmp_path, [page({'SPY': [row]})])
+    assert result['error'] == 'BAR_OUTSIDE_REQUEST' and result['status'] == 'PARTIAL'
+    assert result['normalized_inputs'] == []
+    rejection = result['timestamp_rejection']
+    assert rejection['observed_at'] == stamp.replace('Z', '+00:00')
+    assert rejection['request_start_inclusive'] == '2024-11-23T05:00:00+00:00'
+    assert rejection['request_end_exclusive'] == '2026-09-25T04:00:00+00:00'
+    assert 'LOCAL_SECRET' not in json.dumps(result)
+
+
+def test_non_session_rows_inside_request_are_excluded_without_time_shifts(tmp_path):
+    # Includes exact start, early-morning UTC prior-calendar-date bars on the
+    # last permitted Eastern evening, and the final included aligned minute.
+    stamps = ['2024-11-23T05:00:00Z', '2026-09-25T00:30:00Z', '2026-09-25T03:59:00Z']
+    rows = [{'t': stamp, 'o': 100, 'h': 101, 'l': 99, 'c': 100, 'v': 1000} for stamp in stamps]
+    result = run(tmp_path, [page({'SPY': rows})])
+    assert result['error'] is None and result['status'] == 'INCOMPLETE_SESSION_COVERAGE'
+    assert result['normalized_inputs'] == []
+    assert all(c['status'] == 'EXCLUDED_INCOMPLETE' for c in result['coverage'])
