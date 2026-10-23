@@ -46,3 +46,37 @@ externally reconciled attestation, not a portfolio simulator or automatic audit.
 It may be set true only after checking shared capital, risk-based share sizing,
 concurrent exposures, fees and marked open positions. Passing still permits
 manual review only.
+
+## Shared-capital daily screen
+
+`app.strategy_research.portfolio_replay.portfolio_replay` accepts a mapping of
+symbol to daily `Bar` tuples, one frozen `Adaptation`, explicit `Costs` and
+`PortfolioLimits`, and an optional integer start/end window. It recomputes
+signals and positions under shared capital; it does not discard losing trades
+from a previously calculated trade list.
+
+Limits specify initial cash, per-entry risk fraction, total reserved initial-risk
+fraction, per-symbol notional fraction, gross notional fraction and maximum
+positions. All fractions are positive Decimals, leverage is excluded, and all
+symbols must have identical supplied calendars. Quantity is rounded down to
+whole shares. Entry sizing includes the stop's modeled sell execution and both
+fees. Cash and exposure calculations reserve immediate liquidation costs.
+
+Opening gap and prior-close signal exits release cash before same-open entries.
+Intrabar stops and holding-time close exits release cash afterwards. Same-open
+entry priority is alphabetical, fixed before results are seen. Opening sizing
+uses opening marks, not that day's future close or total volume. Prior completed
+signal bars must have positive volume. This intentionally avoids the older
+single-symbol screen's retrospective entry-day volume check; comparisons of
+the two engines must account for zero-volume entry bars.
+
+Open inventory is retained at the evaluation boundary. Both cash and liquidation
+marked equity are reported, including exit costs, along with realized/open P&L,
+closed-trade win rates, sampled open/close equity drawdown, exposure, rejection
+reasons and every accepted trade. Sampled drawdown is not intrabar worst loss.
+Different quantities and entry rejections change later equity, sizing and trades.
+
+This simulator does not establish live fill quality, portfolio diversification,
+settlement feasibility, or future profitability. Its result explicitly retains
+`portfolio_verification_complete=False`; it cannot set the review gate's evidence
+flag. Initial limits are caller-supplied scenarios, not account configuration.
