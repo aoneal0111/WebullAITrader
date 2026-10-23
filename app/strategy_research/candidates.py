@@ -14,6 +14,8 @@ D = Decimal
 
 
 class Candidate(StrEnum):
+    IBS_DAILY_REVERSION = "IBS_DAILY_REVERSION"
+    DONCHIAN20_DAILY = "DONCHIAN20_DAILY"
     RSI2_DAILY = "RSI2_DAILY"
     IMPROVED_R2_DAILY = "IMPROVED_R2_DAILY"
     BOLLINGER_PERCENT_B_DAILY_LIMIT = "BOLLINGER_PERCENT_B_DAILY_LIMIT"
@@ -25,7 +27,8 @@ class Candidate(StrEnum):
     TREND_VWAP_PULLBACK = "TREND_VWAP_PULLBACK"
 
 
-DAILY = frozenset({Candidate.RSI2_DAILY, Candidate.IMPROVED_R2_DAILY,
+DAILY = frozenset({Candidate.IBS_DAILY_REVERSION, Candidate.DONCHIAN20_DAILY,
+                   Candidate.RSI2_DAILY, Candidate.IMPROVED_R2_DAILY,
                    Candidate.BOLLINGER_PERCENT_B_DAILY_LIMIT})
 
 
@@ -138,8 +141,13 @@ def entry_signal(history: tuple[Bar, ...], candidate: Candidate) -> Signal | Non
     b = history[-1]
     if candidate in DAILY:
         trend = b.close > sum(closes[-200:]) / 200
-        values = rsi(closes, 2)
-        if candidate is Candidate.RSI2_DAILY:
+        values = rsi(closes, 2) if candidate in {Candidate.RSI2_DAILY, Candidate.IMPROVED_R2_DAILY} else None
+        if candidate is Candidate.IBS_DAILY_REVERSION:
+            width = b.high-b.low
+            triggered = trend and width > 0 and (b.close-b.low)/width < D('0.2')
+        elif candidate is Candidate.DONCHIAN20_DAILY:
+            triggered = trend and b.close > max(x.high for x in history[-21:-1])
+        elif candidate is Candidate.RSI2_DAILY:
             triggered = trend and values[-1] < 10
         elif candidate is Candidate.IMPROVED_R2_DAILY:
             triggered = trend and values[-3] < 65 and values[-3] > values[-2] > values[-1]
@@ -204,6 +212,10 @@ def entry_signal(history: tuple[Bar, ...], candidate: Candidate) -> Signal | Non
 
 
 def exit_signal(history: tuple[Bar, ...], candidate: Candidate) -> bool:
+    if candidate is Candidate.IBS_DAILY_REVERSION:
+        return len(history) >= 2 and history[-1].close > history[-2].high
+    if candidate is Candidate.DONCHIAN20_DAILY:
+        return len(history) >= 21 and history[-1].close < min(x.low for x in history[-21:-1])
     if candidate is Candidate.BOLLINGER_PERCENT_B_DAILY_LIMIT:
         value = percent_b(tuple(b.close for b in history))
         return value is not None and value > 1

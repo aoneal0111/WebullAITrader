@@ -247,3 +247,15 @@ reason, so a systemic coverage failure does not consume the full request budget.
 The manifest includes first/last timestamps from the entire response as well as
 in-session timestamps; this helps distinguish endpoint boundaries from bar-label
 conventions. These diagnostic timestamps never relabel the provider's bars.
+
+
+### Public repository research candidates
+
+The pinned source audit and exact adaptation differences are documented in
+[public-repository-strategy-review.md](public-repository-strategy-review.md).
+The daily comparison now includes IBS mean reversion and twenty-bar Donchian
+trend hypotheses. Separate crypto functions provide a completed-six-hour
+Donchian signal and an hourly IFR2-inspired cloud/Hilbert hypothesis.
+These are research-only implementations; external reported win rates do not
+transfer to them. `python -m app.strategy_research.repository_candidates` prints
+the catalog. The Hilbert backend is isolated in an optional research extra.

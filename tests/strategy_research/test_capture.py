@@ -65,7 +65,7 @@ class CaptureTests(unittest.TestCase):
                 self.assertEqual(set(zipped.namelist()), {'SPY-daily.csv', 'SPY-screening.json', 'summary.json', 'manifest.json'})
                 comparison = json.loads(zipped.read('SPY-screening.json'))
                 self.assertFalse(comparison['execution_authorized'])
-                self.assertEqual(len(comparison['results']), 3)
+                self.assertEqual(len(comparison['results']), 5)
                 # Flat synthetic input cannot manufacture a performance claim.
                 self.assertTrue(all(x['validation']['win_rate'] is None for x in comparison['results']))
             before = len(provider.calls)
