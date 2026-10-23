@@ -7,15 +7,30 @@ from app.strategy_research.replay import Costs
 from .strategies import RULES, signal, exit_due, rule_fingerprint
 
 
-def replay(bars,policy,costs):
+def replay(bars,policy,costs,*,evaluate_from=None,evaluate_until=None):
     validate_bars(bars,'minute')
     if policy not in RULES or not isinstance(costs,Costs):raise ValueError('fixed policy and costs required')
+    # Half-open session-date windows. Earlier sessions warm indicators but may
+    # neither submit a signal nor carry a position into the evaluation window.
+    from datetime import date
+    if any(x is not None and type(x) is not date for x in (evaluate_from,evaluate_until)):
+        raise ValueError('evaluation boundaries must be dates')
+    if evaluate_from is not None and evaluate_until is not None and evaluate_from>=evaluate_until:
+        raise ValueError('ordered evaluation boundaries required')
     history=[];pending=None;position=None;trades=[];counts={};close_pending=False;cooldown=0
     for i,b in enumerate(bars):
+        trading_date=b.opened.astimezone(ZoneInfo('America/New_York')).date()
+        if evaluate_until is not None and trading_date>=evaluate_until:break
+        eligible=evaluate_from is None or trading_date>=evaluate_from
         if i and bars[i-1].session_end!=b.session_end:
             if position:raise ValueError('position must close within original session')
             pending=None;close_pending=False
             if policy != "NOISE_BAND_LONG_V1":history=[]
+            elif history:
+                # Trim once per session, not by rescanning up to 8,580 bars
+                # after every minute in a multi-year replay.
+                keep=sorted({x.session_end for x in history})[-21:]
+                history=[x for x in history if x.session_end>=keep[0]]
         day=b.session_end.isoformat()
         exited=False
         if position is None and pending is not None and counts.get(day,0)<RULES[policy]['max_trades'] and i>=cooldown:
@@ -46,14 +61,11 @@ def replay(bars,policy,costs):
                 position=None;close_pending=False;exited=True;cooldown=i+3
         history.append(b)
         # At most 21 complete previous sessions plus the current session.
-        while len({x.session_end for x in history})>22:
-            oldest=history[0].session_end
-            history=[x for x in history if x.session_end!=oldest]
         if position:
             local=b.closed.astimezone(ZoneInfo('America/New_York'))
             if policy=='NOISE_BAND_LONG_V1' and (local.hour*60+local.minute-570)%30==0:
                 close_pending=exit_due(tuple(history),policy,at=b.closed)
-        elif not exited and b.closed<b.session_end and i>=cooldown and counts.get(day,0)<RULES[policy]['max_trades']:
+        elif eligible and not exited and b.closed<b.session_end and i>=cooldown and counts.get(day,0)<RULES[policy]['max_trades']:
             local=b.closed.astimezone(ZoneInfo('America/New_York'))
             minute=local.hour*60+local.minute
             due=(policy!='NOISE_BAND_LONG_V1' or (minute-570)%30==0)
