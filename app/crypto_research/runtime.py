@@ -29,6 +29,7 @@ from .strategies import CryptoDiscoveryContext
 from .persistence import CryptoJsonLinesStore, CryptoResearchStore
 from .bar_capture import CryptoBarCapture
 from .provider import (
+    CryptoRateLimitError, CryptoBusinessRequestError,
     MalformedCryptoQuoteError,
     UnsupportedCryptoSymbolError,
     WebullCryptoResearchProvider,
@@ -823,6 +824,10 @@ def _observation_signature(observation: CryptoObservation) -> tuple[object, ...]
 
 
 def _failure_category(exc: Exception) -> str:
+    if isinstance(exc, CryptoRateLimitError):
+        return "RATE_LIMITED"
+    if isinstance(exc, CryptoBusinessRequestError):
+        return "BUSINESS_REQUEST_ERROR"
     if isinstance(exc, UnsupportedCryptoSymbolError):
         return "UNSUPPORTED_SYMBOL"
     if isinstance(exc, MalformedCryptoQuoteError):
