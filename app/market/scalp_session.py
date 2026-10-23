@@ -7,7 +7,7 @@ from app.market.calendar import EASTERN, trading_day_schedule
 def scalp_entry_window(at: datetime, holding_seconds: int = 300) -> tuple[str, datetime] | None:
     """Return (session, last entry time), leaving the full holding budget.
 
-    Session changes are execution-regime changes, including early closes.
+    Premarket and regular entries only, respecting early closes.
     This is entry admission only; it never cancels protection for filled shares.
     """
     if at.utcoffset() is None or holding_seconds <= 0:
@@ -17,15 +17,13 @@ def scalp_entry_window(at: datetime, holding_seconds: int = 300) -> tuple[str, d
     if schedule is None:
         return None
     start = datetime.combine(local.date(), time(4), EASTERN)
-    end = datetime.combine(local.date(), time(20), EASTERN)
+    end = schedule.market_close
     if not start <= local < end:
         return None
     if local < schedule.market_open:
         session, boundary = "PREMARKET", schedule.market_open
-    elif local < schedule.market_close:
-        session, boundary = "REGULAR", schedule.market_close
     else:
-        session, boundary = "AFTER_HOURS", end
+        session, boundary = "REGULAR", schedule.market_close
     return session, boundary - timedelta(seconds=holding_seconds)
 
 

@@ -311,3 +311,23 @@ def test_scalper_replacement_inherits_original_session_budget(setup):
     assert order.request.metadata['scalp_entry_session_deadline'] == a.entry_session_deadline.isoformat()
     assert order.request.metadata['scalp_maximum_holding_seconds'] == '45'
     assert order.request.entry_valid_until == a.entry_session_deadline
+
+
+def test_after_hours_scalp_buy_is_refused_while_protective_sell_is_delegated(setup):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from unittest.mock import patch
+    commands, bridge, service, account, quote, clock = setup
+    at=datetime(2026,10,8,17,tzinfo=ZoneInfo('America/New_York'))
+    clock[0]=at
+    quote[0]=replace(quote[0],last_timestamp=at,bid_timestamp=at,ask_timestamp=at)
+    request=placement(commands,engine='QUICK_SCALPER',
+        chase_deadline=(at+timedelta(minutes=1)).isoformat())
+    assert not service.place_order(request).success
+    assert service.last_reason=='SCALP_SESSION_WINDOW'
+    assert not commands.order_book.open_orders()
+    sell=placement(commands,engine='QUICK_SCALPER',side='SELL',reason='STOP')
+    marker=object()
+    with patch.object(service.service,'place_order',return_value=marker) as delegate:
+        assert service.place_order(sell) is marker
+        delegate.assert_called_once_with(sell)

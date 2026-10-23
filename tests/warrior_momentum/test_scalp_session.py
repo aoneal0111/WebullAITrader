@@ -13,7 +13,6 @@ ET = ZoneInfo('America/New_York')
 @pytest.mark.parametrize('at,session,deadline', [
     ('2026-10-08T09:20', 'PREMARKET', '2026-10-08T09:25'),
     ('2026-10-08T15:59:58', 'REGULAR', '2026-10-08T15:55'),
-    ('2026-10-08T19:59', 'AFTER_HOURS', '2026-10-08T19:55'),
     ('2026-11-27T12:59', 'REGULAR', '2026-11-27T12:55'),
     ('2026-11-02T15:50', 'REGULAR', '2026-11-02T15:55'),
 ])
@@ -24,7 +23,8 @@ def test_calendar_boundaries_include_early_close_and_dst(at, session, deadline):
     assert until == datetime.fromisoformat(deadline).replace(tzinfo=ET)
 
 
-@pytest.mark.parametrize('at', ['2026-10-10T12:00', '2026-12-25T12:00', '2026-10-08T20:00'])
+@pytest.mark.parametrize('at', ['2026-10-10T12:00', '2026-12-25T12:00', '2026-10-08T20:00',
+    '2026-10-08T16:00', '2026-10-08T19:59', '2026-11-27T13:00'])
 def test_no_entry_window_outside_supported_trading_cycle(at):
     assert scalp_entry_window(datetime.fromisoformat(at).replace(tzinfo=ET)) is None
 
@@ -69,3 +69,16 @@ def test_runtime_keeps_stream_setup_and_original_deadline_in_intent():
 def test_corrupt_recovered_entry_metadata_expires_without_stopping_management(metadata):
     at = datetime(2026, 10, 8, 15, 50, tzinfo=ET)
     assert scalp_entry_deadline(at, metadata) == at
+
+
+def test_default_equity_entry_policies_exclude_after_hours_but_keep_premarket():
+    from app.strategies.warrior_momentum.configuration import WARRIOR_ENTRY_ALLOWED_SESSIONS
+    from app.strategies.warrior_momentum.quick_scalper import QuickScalperConfig
+    for sessions in (WARRIOR_ENTRY_ALLOWED_SESSIONS, QuickScalperConfig().allowed_sessions):
+        assert sessions == frozenset({'PREMARKET','REGULAR'})
+
+
+def test_recovered_after_hours_scalp_authority_expires_even_with_future_metadata():
+    at=datetime(2026,10,8,17,tzinfo=ET)
+    assert scalp_entry_deadline(at,{'scalp_entry_session_deadline':
+        datetime(2026,10,8,19,55,tzinfo=ET).isoformat()}) == at

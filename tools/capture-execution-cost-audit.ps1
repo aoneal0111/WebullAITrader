@@ -30,10 +30,14 @@ try {
     Push-Location $Worktree
     try {
         # The cost audit uses only stdlib imports, including under Windows policy.
-        & $Python -S -m unittest tests.strategy_research.test_execution_cost_audit -q
+        & $Python -S -m unittest tests.strategy_research.test_execution_cost_audit tests.strategy_research.test_installed_source_audit -q
         if ($LASTEXITCODE -ne 0) { throw "Execution cost audit verification failed." }
         $Lines = & $Python -S -m app.strategy_research.execution_cost_audit --ledger $Ledger --max-quote-age-ms $MaxQuoteAgeMs --max-fill-delay-ms $MaxFillDelayMs
         if ($LASTEXITCODE -ne 0) { throw "Read-only execution cost audit failed. No report ZIP was produced." }
+        $SourceLines = & $Python -S -m app.strategy_research.installed_source_audit --installed-root $Repo --review-root $Worktree
+        if ($LASTEXITCODE -ne 0) { throw "Installed source comparison failed." }
+        $SourceJson = $SourceLines -join [Environment]::NewLine
+        $SourceReport = $SourceJson | ConvertFrom-Json
         $Json = $Lines -join [Environment]::NewLine
         $Report = $Json | ConvertFrom-Json
         if ($Report.execution_authorized -ne $false -or $Report.costs_verified -ne $false -or $Report.orders -ne 0) {
@@ -45,7 +49,10 @@ try {
         $RevisionPath = Join-Path $OutputDirectory "source-revision.txt"
         [System.IO.File]::WriteAllText($ReportPath,$Json,$Utf8)
         [System.IO.File]::WriteAllText($RevisionPath,$Revision,$Utf8)
-        Compress-Archive -LiteralPath @($ReportPath,$RevisionPath) -DestinationPath $ZipPath
+        $SourcePath = Join-Path $OutputDirectory "installed-source-audit.json"
+        [System.IO.File]::WriteAllText($SourcePath,$SourceJson,$Utf8)
+        Compress-Archive -LiteralPath @($ReportPath,$RevisionPath,$SourcePath) -DestinationPath $ZipPath
+        Write-Host "INSTALLED_SOURCE_MATCHES_REVIEW=$($SourceReport.all_files_match_review)"
         Write-Host "FILLS=$($Report.fills) DECISION_REFERENCE_MATCHES=$($Report.decision_reference_matches) UNMATCHED=$($Report.unmatched_fills)"
         Write-Host "STATUS=$($Report.status)"
         Write-Host "COST_AUDIT_ZIP=$ZipPath"

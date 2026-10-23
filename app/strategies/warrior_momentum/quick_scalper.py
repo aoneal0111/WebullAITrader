@@ -41,7 +41,7 @@ class QuickScalperConfig:
     minimum_price: Decimal = Decimal('1.00')
     maximum_price: Decimal | None = None
     allowed_sessions: frozenset[str] = frozenset(
-        {"PREMARKET", "REGULAR", "AFTER_HOURS"}
+        {"PREMARKET", "REGULAR"}
     )
     provider_freshness_seconds: Decimal = Decimal("5")
     absolute_minimum_move: Decimal = Decimal("0.05")

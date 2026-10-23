@@ -61,3 +61,17 @@ availability timestamps, matched broker fills and order submission/acknowledgmen
 times for both sides, representative sessions and verified fee/provenance data.
 Paper matches do not supply that evidence. No candidate is promoted and no
 cost allowance is lowered automatically from this report.
+
+## Installed-source comparison
+
+The collector also writes `installed-source-audit.json`, comparing a fixed list
+of session, entry, gateway and profit-management source files in the operator's
+checkout with the reviewed worktree. Only LF-normalized hashes are exported;
+credentials, environment files, source contents and account details are excluded.
+Missing, inaccessible, oversized or outside-root paths remain explicit.
+
+Matching source bytes do not establish that a running GUI loaded those bytes,
+or that effective settings/environment match defaults. The report therefore
+keeps `runtime_loaded_version_verified` and `effective_configuration_verified`
+false. A mismatch is a deployment diagnostic, not a collector failure. The
+collector does not install the reviewed code into the operator's checkout.
