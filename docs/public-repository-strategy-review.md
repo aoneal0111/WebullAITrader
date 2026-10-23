@@ -78,3 +78,37 @@ rejection, Hilbert fail-closed behavior and non-executable structural-risk resul
 Historical performance comparisons remain private research artifacts. Existing
 visible dates are exploratory; independently measured costs, new date windows,
 untouched holdouts and PAPER execution evidence remain required for review.
+
+
+## Frozen adaptation comparison
+
+`app.strategy_research.adaptations` compares four named variants together:
+IBS baseline (five-bar structure, ten-bar hold), IBS adaptation (ten-bar structure,
+five-bar hold), Donchian baseline (five-bar structure, ten-bar hold), and Donchian
+adaptation (twenty-bar structure, thirty-bar hold). These small, predeclared changes
+match mean-reversion and trend holding behavior without a parameter optimizer or
+automatic selection. All retain the same entry/exit rules, modeled normal costs,
+double-cost stress, structural risk and boundary-mark exclusions.
+
+`replay(..., stop_lookback=5)` preserves its previous default behavior. A custom
+lookback is restricted to the two daily repository candidates, bounded from five
+to fifty bars, and computed from completed signal-time history. It changes only
+the initial precommitted stop; the stop is never loosened after entry. Intraday
+policies and runtime stop authority are untouched. A wider initial stop implies
+smaller share quantities for equal monetary risk; the research replay remains
+one unit and does not simulate a capital-constrained correlated ETF portfolio.
+
+Run, for example:
+
+```powershell
+python -m app.strategy_research.adaptations SPY-daily.csv --split-at 2025-10-22T00:00:00-04:00 --adverse-bps-per-side 10 --fee-per-share-per-side 0.005
+```
+
+The command accepts at most 5,000 daily bars / 8 MiB, requires at least 250
+nonoverlapping development bars and 100 later bars, reports every frozen variant,
+and cannot authorize execution or choose a winner. It includes initial risk per
+share, return in basis points, holding duration and drawdown alongside win rate and
+expectancy. Existing inspected dates are explicitly marked exploratory; they do
+not become a fresh holdout through retuning. New dates, independently measured
+costs and PAPER evidence remain necessary for promotion. Longer daily holding
+periods are not a substitute for a quick scalper's intraday holding constraints.

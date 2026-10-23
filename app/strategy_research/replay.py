@@ -5,7 +5,7 @@ risk units allow comparison without implying portfolio profits or capacity.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from decimal import Decimal
 from math import sqrt
 
@@ -48,7 +48,8 @@ class Trade:
 
 def replay(bars: tuple[Bar, ...], candidate: Candidate, costs: Costs, *,
            timeframe: str, start: int = 0, end: int | None = None,
-           target_r: Decimal = D("1"), max_hold: int = 10) -> tuple[Trade, ...]:
+           target_r: Decimal = D("1"), max_hold: int = 10,
+           stop_lookback: int = 5) -> tuple[Trade, ...]:
     validate_bars(bars, timeframe)
     if not isinstance(candidate, Candidate) or (candidate in DAILY) != (timeframe == "daily"):
         raise ValueError("candidate/timeframe mismatch")
@@ -57,6 +58,10 @@ def replay(bars: tuple[Bar, ...], candidate: Candidate, costs: Costs, *,
         raise ValueError("invalid evaluation interval")
     if not isinstance(target_r, D) or not target_r.is_finite() or target_r <= 0 or max_hold <= 0:
         raise ValueError("positive target and holding period required")
+    if type(stop_lookback) is not int or not 5 <= stop_lookback <= 50:
+        raise ValueError('integer structural stop lookback from five to fifty required')
+    if stop_lookback != 5 and candidate not in {Candidate.IBS_DAILY_REVERSION, Candidate.DONCHIAN20_DAILY}:
+        raise ValueError('custom structural stop is restricted to daily repository research')
     trades = []
     pending = None
     position = None
@@ -122,6 +127,14 @@ def replay(bars: tuple[Bar, ...], candidate: Candidate, costs: Costs, *,
             close_pending = exit_signal(completed, candidate)
         elif b.volume > 0 and (timeframe == "daily" or b.closed < b.session_end):
             signal = entry_signal(completed, candidate)
+            if signal is not None and stop_lookback != 5:
+                # Precommit structure using only completed signal-time history.
+                # The position's stop is never widened after entry.
+                if len(completed) < stop_lookback:
+                    signal = None
+                else:
+                    stop = min(x.low for x in completed[-stop_lookback:])*D('0.9995')
+                    signal = replace(signal, stop=stop) if 0 < stop < (signal.entry_limit or b.close) else None
             pending = (signal, b) if signal else None
     return tuple(trades)
 
