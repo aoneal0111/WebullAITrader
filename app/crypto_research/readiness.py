@@ -54,7 +54,9 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--repo',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--reliability',action='store_true',help='Run the fixed five-minute read-only capture')
+    mode=p.add_mutually_exclusive_group()
+    mode.add_argument('--reliability',action='store_true',help='Run the fixed five-minute read-only capture')
+    mode.add_argument('--bar-alignment',action='store_true',help='Check native completed bars against fresh quotes')
     p.add_argument('--online-read',action='store_true',help='Allow bounded authenticated market-data GETs')
     args=p.parse_args()
     if args.output.exists():p.error('output exists; use a new filename')
@@ -74,13 +76,18 @@ def main():
         data=market_data_configuration(config)
         client=MarketDataClientFactory(data).create(timeout_seconds=5)
         provider=WebullCryptoResearchProvider(client,retry_attempts=0,maximum_symbols=2,maximum_pages=1)
-        if args.reliability:
+        if args.bar_alignment:
+            from .bar_alignment import check as check_alignment
+            report=check_alignment(provider)
+        elif args.reliability:
             from .reliability import capture
             report=capture(provider)
         else:report=check(provider)
         report['market_data_environment']=data.environment.value
     except Exception:
-        report=dict(scope='READ_ONLY_CRYPTO_QUOTE_RELIABILITY_V1' if args.reliability else 'READ_ONLY_CRYPTO_QUOTE_READINESS',status='LOCAL_CONFIGURATION_OR_CLIENT_FAILED',
+        scope=('READ_ONLY_CRYPTO_BAR_QUOTE_ALIGNMENT_V1' if args.bar_alignment else
+               'READ_ONLY_CRYPTO_QUOTE_RELIABILITY_V1' if args.reliability else 'READ_ONLY_CRYPTO_QUOTE_READINESS')
+        report=dict(scope=scope,status='LOCAL_CONFIGURATION_OR_CLIENT_FAILED',
                     ready=False,orders=0,grok_requests=0,strategy_changes=0)
     with args.output.open('x',encoding='utf-8') as f:json.dump(report,f,indent=2)
     print('CRYPTO_READINESS='+report['status']);print('UPLOAD_SUMMARY='+str(args.output.resolve()))

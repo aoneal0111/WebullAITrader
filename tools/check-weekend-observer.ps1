@@ -1,5 +1,6 @@
-param([string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'), [string]$Revision, [switch]$CryptoRead, [switch]$CryptoReliability)
+param([string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'), [string]$Revision, [switch]$CryptoRead, [switch]$CryptoReliability, [switch]$CryptoBars)
 $ErrorActionPreference = 'Stop'
+if ($CryptoBars -and ($CryptoRead -or $CryptoReliability)) { throw 'Choose one crypto check mode.' }
 $Repo = (Resolve-Path -LiteralPath $Repo).Path
 $Python = Join-Path $Repo '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) { throw 'Atlas Python is missing.' }
@@ -35,20 +36,24 @@ raise SystemExit(0 if safe else 2)
 '@
         $Check | & $Python - $Repo
         if ($LASTEXITCODE -ne 0) { throw 'Observation flags are not safe. No settings were changed.' }
-        & $Python -m pytest tests/asset_modules/test_grok_observer.py tests/asset_modules/test_grok_observer_input.py tests/crypto_research/test_snapshot_readiness.py tests/crypto_research/test_readiness.py tests/crypto_research/test_reliability.py --basetemp (Join-Path $Root 'tests') -q
+        & $Python -m pytest tests/asset_modules/test_grok_observer.py tests/asset_modules/test_grok_observer_input.py tests/crypto_research/test_snapshot_readiness.py tests/crypto_research/test_readiness.py tests/crypto_research/test_reliability.py tests/crypto_research/test_bar_alignment.py --basetemp (Join-Path $Root 'tests') -q
         if ($LASTEXITCODE -ne 0) { throw 'Observer fixture tests failed.' }
         & $Python -m app.asset_modules.grok_observer
         if ($LASTEXITCODE -ne 0) { throw 'Disconnected observer check failed.' }
         Write-Host 'READY=OFFLINE_FIXTURES_ONLY; ONLINE_TRIAL=NOT_ENABLED; BASELINE=UNCHANGED'
-        if ($CryptoRead -or $CryptoReliability) {
+        if ($CryptoRead -or $CryptoReliability -or $CryptoBars) {
             $Desktop = [Environment]::GetFolderPath('Desktop')
             if (-not $Desktop) { $Desktop = $env:USERPROFILE }
-            $Prefix = if ($CryptoReliability) { 'atlas-crypto-reliability-' } else { 'atlas-crypto-readiness-' }
+            $Prefix = if ($CryptoBars) { 'atlas-crypto-bars-' } elseif ($CryptoReliability) { 'atlas-crypto-reliability-' } else { 'atlas-crypto-readiness-' }
             $Output = Join-Path $Desktop ($Prefix + [guid]::NewGuid().ToString('N') + '.json')
             $ReadArgs = @('-m','app.crypto_research.readiness','--repo',$Repo,'--output',$Output,'--online-read')
             if ($CryptoReliability) {
                 Write-Host 'Starting approximately five minutes of crypto data reads. No Atlas launch, Grok requests or orders.'
                 $ReadArgs += '--reliability'
+            }
+            if ($CryptoBars) {
+                Write-Host 'Starting approximately two minutes of completed-bar and fresh-quote reads. No orders or Grok requests.'
+                $ReadArgs += '--bar-alignment'
             }
             & $Python @ReadArgs
             $ReadExit = $LASTEXITCODE
