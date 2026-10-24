@@ -7,6 +7,25 @@ from .provider import (CryptoRateLimitError,UnsupportedCryptoSymbolError,
     MalformedCryptoQuoteError,CryptoBusinessRequestError,CryptoProviderError)
 
 
+def evaluate_snapshot(pairs,rows,now):
+    by_pair={}
+    for row in rows:by_pair.setdefault(row.pair.canonical_symbol,[]).append(row)
+    sample=dict(at=now.isoformat(),symbols=[],complete=True)
+    for pair in pairs:
+        items=by_pair.get(pair.canonical_symbol,[])
+        if len(items)!=1:
+            sample['symbols'].append(dict(symbol=pair.canonical_symbol,status='MISSING_OR_DUPLICATE'))
+            sample['complete']=False;continue
+        row=items[0];age=(now-row.timestamp).total_seconds()
+        bid_ask=row.bid is not None and row.ask is not None and 0<row.bid<=row.ask
+        fresh=bid_ask and 0<=age<=2
+        sample['symbols'].append(dict(symbol=pair.canonical_symbol,quote_age_seconds=age,
+            bid_ask_present=bid_ask,entry_fresh_2s=fresh,research_fresh_120s=0<=age<=120))
+        sample['complete'] &= fresh
+    if set(by_pair)-{p.canonical_symbol for p in pairs}:sample['complete']=False
+    return sample
+
+
 def check(provider,*,clock=lambda:datetime.now(UTC)):
     requested=(CryptoPair.configured('BTC/USD'),CryptoPair.configured('ETH/USD'))
     report=dict(scope='READ_ONLY_CRYPTO_QUOTE_READINESS',orders=0,grok_requests=0,
@@ -17,22 +36,7 @@ def check(provider,*,clock=lambda:datetime.now(UTC)):
             raise UnsupportedCryptoSymbolError('discovery coverage mismatch')
         for _ in range(3):
             report['snapshot_attempts']+=1
-            rows=provider.snapshots(pairs);now=clock();by_pair={}
-            for row in rows:by_pair.setdefault(row.pair.canonical_symbol,[]).append(row)
-            sample=dict(at=now.isoformat(),symbols=[],complete=True)
-            for pair in pairs:
-                items=by_pair.get(pair.canonical_symbol,[])
-                if len(items)!=1:
-                    sample['symbols'].append(dict(symbol=pair.canonical_symbol,status='MISSING_OR_DUPLICATE'))
-                    sample['complete']=False;continue
-                row=items[0];age=(now-row.timestamp).total_seconds()
-                bid_ask=row.bid is not None and row.ask is not None and 0<row.bid<=row.ask
-                fresh=bid_ask and 0<=age<=2
-                sample['symbols'].append(dict(symbol=pair.canonical_symbol,quote_age_seconds=age,
-                    bid_ask_present=bid_ask,entry_fresh_2s=fresh,research_fresh_120s=0<=age<=120))
-                sample['complete'] &= fresh
-            if set(by_pair)-{p.canonical_symbol for p in pairs}:sample['complete']=False
-            report['samples'].append(sample)
+            report['samples'].append(evaluate_snapshot(pairs,provider.snapshots(pairs),clock()))
         report['ready']=all(s['complete'] for s in report['samples'])
         report['status']='BOUNDED_SAMPLES_FRESH' if report['ready'] else 'COVERAGE_OR_FRESHNESS_FAILED'
     except Exception as exc:
@@ -50,6 +54,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--repo',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--reliability',action='store_true',help='Run the fixed five-minute read-only capture')
     p.add_argument('--online-read',action='store_true',help='Allow bounded authenticated market-data GETs')
     args=p.parse_args()
     if args.output.exists():p.error('output exists; use a new filename')
@@ -69,9 +74,13 @@ def main():
         data=market_data_configuration(config)
         client=MarketDataClientFactory(data).create(timeout_seconds=5)
         provider=WebullCryptoResearchProvider(client,retry_attempts=0,maximum_symbols=2,maximum_pages=1)
-        report=check(provider);report['market_data_environment']=data.environment.value
+        if args.reliability:
+            from .reliability import capture
+            report=capture(provider)
+        else:report=check(provider)
+        report['market_data_environment']=data.environment.value
     except Exception:
-        report=dict(scope='READ_ONLY_CRYPTO_QUOTE_READINESS',status='LOCAL_CONFIGURATION_OR_CLIENT_FAILED',
+        report=dict(scope='READ_ONLY_CRYPTO_QUOTE_RELIABILITY_V1' if args.reliability else 'READ_ONLY_CRYPTO_QUOTE_READINESS',status='LOCAL_CONFIGURATION_OR_CLIENT_FAILED',
                     ready=False,orders=0,grok_requests=0,strategy_changes=0)
     with args.output.open('x',encoding='utf-8') as f:json.dump(report,f,indent=2)
     print('CRYPTO_READINESS='+report['status']);print('UPLOAD_SUMMARY='+str(args.output.resolve()))

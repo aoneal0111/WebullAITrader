@@ -1,4 +1,4 @@
-param([string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'), [string]$Revision, [switch]$CryptoRead)
+param([string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'), [string]$Revision, [switch]$CryptoRead, [switch]$CryptoReliability)
 $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path -LiteralPath $Repo).Path
 $Python = Join-Path $Repo '.venv\Scripts\python.exe'
@@ -35,16 +35,22 @@ raise SystemExit(0 if safe else 2)
 '@
         $Check | & $Python - $Repo
         if ($LASTEXITCODE -ne 0) { throw 'Observation flags are not safe. No settings were changed.' }
-        & $Python -m pytest tests/asset_modules/test_grok_observer.py tests/asset_modules/test_grok_observer_input.py tests/crypto_research/test_snapshot_readiness.py tests/crypto_research/test_readiness.py --basetemp (Join-Path $Root 'tests') -q
+        & $Python -m pytest tests/asset_modules/test_grok_observer.py tests/asset_modules/test_grok_observer_input.py tests/crypto_research/test_snapshot_readiness.py tests/crypto_research/test_readiness.py tests/crypto_research/test_reliability.py --basetemp (Join-Path $Root 'tests') -q
         if ($LASTEXITCODE -ne 0) { throw 'Observer fixture tests failed.' }
         & $Python -m app.asset_modules.grok_observer
         if ($LASTEXITCODE -ne 0) { throw 'Disconnected observer check failed.' }
         Write-Host 'READY=OFFLINE_FIXTURES_ONLY; ONLINE_TRIAL=NOT_ENABLED; BASELINE=UNCHANGED'
-        if ($CryptoRead) {
+        if ($CryptoRead -or $CryptoReliability) {
             $Desktop = [Environment]::GetFolderPath('Desktop')
             if (-not $Desktop) { $Desktop = $env:USERPROFILE }
-            $Output = Join-Path $Desktop ('atlas-crypto-readiness-' + [guid]::NewGuid().ToString('N') + '.json')
-            & $Python -m app.crypto_research.readiness --repo $Repo --output $Output --online-read
+            $Prefix = if ($CryptoReliability) { 'atlas-crypto-reliability-' } else { 'atlas-crypto-readiness-' }
+            $Output = Join-Path $Desktop ($Prefix + [guid]::NewGuid().ToString('N') + '.json')
+            $ReadArgs = @('-m','app.crypto_research.readiness','--repo',$Repo,'--output',$Output,'--online-read')
+            if ($CryptoReliability) {
+                Write-Host 'Starting approximately five minutes of crypto data reads. No Atlas launch, Grok requests or orders.'
+                $ReadArgs += '--reliability'
+            }
+            & $Python @ReadArgs
             $ReadExit = $LASTEXITCODE
             if (Test-Path -LiteralPath $Output -PathType Leaf) { & explorer.exe "/select,`"$Output`"" }
             if ($ReadExit -ne 0) { throw 'Crypto reads did not pass. Send the small readiness JSON; no trading settings changed.' }
