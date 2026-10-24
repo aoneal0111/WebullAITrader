@@ -2,7 +2,8 @@ param(
     [string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'),
     [string]$ResearchRoot,
     [string]$Revision,
-    [string]$OutputFile
+    [string]$OutputFile,
+    [ValidateSet('AuditV1','ResearchV2')][string]$Mode = 'AuditV1'
 )
 $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path -LiteralPath $Repo).Path
@@ -49,7 +50,8 @@ Write-Host "LOCAL_RESEARCH=$ResearchRoot"
 if (-not $OutputFile) {
     $Desktop = [Environment]::GetFolderPath('Desktop')
     if (-not $Desktop) { $Desktop = $env:USERPROFILE }
-    $OutputFile = Join-Path $Desktop ('atlas-local-audit-' + [guid]::NewGuid().ToString('N') + '.json')
+    $Prefix = if ($Mode -eq 'ResearchV2') { 'atlas-v2-research-' } else { 'atlas-local-audit-' }
+    $OutputFile = Join-Path $Desktop ($Prefix + [guid]::NewGuid().ToString('N') + '.json')
 }
 $OutputFile = [IO.Path]::GetFullPath($OutputFile)
 if (Test-Path -LiteralPath $OutputFile) { throw 'Output exists; use a new filename.' }
@@ -70,9 +72,11 @@ try {
     Push-Location $Worktree
     try {
         $TestTemp = Join-Path $SourceRoot 'tests'
-        & $Python -m pytest tests/equity_overhaul/test_local_audit.py --basetemp $TestTemp -q
+        $Test = if ($Mode -eq 'ResearchV2') { 'tests/equity_overhaul/test_research_v2.py' } else { 'tests/equity_overhaul/test_local_audit.py' }
+        $Tool = if ($Mode -eq 'ResearchV2') { 'tools/screen-equity-v2.py' } else { 'tools/audit-equity-local-history.py' }
+        & $Python -m pytest $Test --basetemp $TestTemp -q
         if ($LASTEXITCODE -ne 0) { throw 'Local audit verification failed.' }
-        & $Python tools/audit-equity-local-history.py --history $History --report $Report --output $OutputFile
+        & $Python $Tool --history $History --report $Report --output $OutputFile
         $AuditExit = $LASTEXITCODE
         if (Test-Path -LiteralPath $OutputFile -PathType Leaf) {
             Write-Host "UPLOAD_SUMMARY=$OutputFile"
