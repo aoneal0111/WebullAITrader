@@ -1,5 +1,6 @@
-param([string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'), [string]$Revision, [switch]$CryptoRead, [switch]$CryptoReliability, [switch]$CryptoBars, [switch]$CryptoWorker, [switch]$CryptoProviderWorker, [switch]$GrokContext)
+param([string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'), [string]$Revision, [switch]$CryptoRead, [switch]$CryptoReliability, [switch]$CryptoBars, [switch]$CryptoWorker, [switch]$CryptoProviderWorker, [switch]$GrokContext, [switch]$GrokExport)
 $ErrorActionPreference = 'Stop'
+if ($GrokExport -and ($CryptoRead -or $CryptoReliability -or $CryptoBars -or $CryptoWorker -or $CryptoProviderWorker)) { throw 'Run the offline observer archive separately from crypto probes.' }
 if ($CryptoBars -and ($CryptoRead -or $CryptoReliability)) { throw 'Choose one crypto check mode.' }
 if ($CryptoWorker -and ($CryptoRead -or $CryptoReliability -or $CryptoBars -or $CryptoProviderWorker)) { throw 'The disconnected worker check cannot be combined with online reads.' }
 if ($CryptoProviderWorker -and ($CryptoRead -or $CryptoReliability -or $CryptoBars)) { throw 'Choose one online crypto check mode.' }
@@ -49,6 +50,18 @@ raise SystemExit(0 if safe else 2)
             & $Python -m app.asset_modules.grok_observer_context
             if ($LASTEXITCODE -ne 0) { throw 'Disconnected context fixtures failed.' }
             Write-Host 'CONTEXT_READY=OFFLINE_FIXTURES_ONLY; ONLINE_TRIAL=NOT_ENABLED; BASELINE=UNCHANGED'
+        }
+        if ($GrokExport) {
+            & $Python -m pytest tests/asset_modules/test_grok_observer_export.py --basetemp (Join-Path $Root 'export-tests') -q
+            if ($LASTEXITCODE -ne 0) { throw 'Read-only context export tests failed.' }
+            $Desktop = [Environment]::GetFolderPath('Desktop')
+            if (-not $Desktop) { $Desktop = $env:USERPROFILE }
+            $Output = Join-Path $Desktop ('atlas-observer-export-' + [guid]::NewGuid().ToString('N'))
+            & $Python -m app.asset_modules.grok_observer_export --repo $Repo --output $Output
+            $ExportExit = $LASTEXITCODE
+            $Summary = Join-Path $Output 'summary.json'
+            if (Test-Path -LiteralPath $Summary -PathType Leaf) { & explorer.exe "/select,`"$Summary`"" }
+            if ($ExportExit -ne 0) { throw 'Context archive is missing or incomplete. Send summary.json only; private market evidence stays local.' }
         }
         if ($CryptoProviderWorker) {
             & $Python -m pytest tests/crypto_research/test_provider_worker.py tests/asset_modules/test_crypto_worker.py --basetemp (Join-Path $Root 'provider-worker-tests') -q
