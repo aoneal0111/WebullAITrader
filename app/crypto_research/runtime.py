@@ -89,6 +89,9 @@ class CryptoResearchMetrics:
     completed_bar_capture_stored: int = 0
     completed_bar_capture_duplicates: int = 0
     completed_bar_capture_failures: int = 0
+    future_quotes: int = 0
+    snapshot_symbols_missing: int = 0
+    snapshot_symbols_fresh: int = 0
 
 
 class CryptoResearchRuntime:
@@ -189,6 +192,9 @@ class CryptoResearchRuntime:
         self._malformed_quotes = 0
         self._unsupported_symbols = 0
         self._stale_quotes = 0
+        self._future_quotes = 0
+        self._snapshot_symbols_missing = 0
+        self._snapshot_symbols_fresh = 0
         self._queue_rejections = 0
         self._persistence_failures = 0
         self._history_admissions = 0
@@ -469,6 +475,7 @@ class CryptoResearchRuntime:
             received = 0
             succeeded = 0
             failed = 0
+            deficient = False
             last_failure_category: str | None = None
             for offset in range(0, len(self._pairs), 20):
                 batch = self._pairs[offset : offset + 20]
@@ -494,12 +501,34 @@ class CryptoResearchRuntime:
                     self._snapshot_symbols_returned += len(observations)
                 succeeded += 1
                 received += len(observations)
-                accepted += sum(1 for item in observations if self.admit(item))
-            if failed and received:
+                expected = {pair for pair in batch}
+                returned = {item.pair for item in observations if item.pair in expected}
+                fresh = set()
+                for item in observations:
+                    if item.pair not in expected:
+                        deficient = True
+                        last_failure_category = 'UNEXPECTED_SNAPSHOT_SYMBOL'
+                        continue
+                    age = (self._clock() - item.timestamp).total_seconds()
+                    quote_ok = (0 <= age <= self._maximum_quote_age_seconds
+                                and item.bid is not None and item.ask is not None)
+                    with self._lock:
+                        duplicate = _observation_signature(item) in self._admission_signatures
+                    admitted = self.admit(item)
+                    accepted += int(admitted)
+                    if quote_ok and (admitted or duplicate):
+                        fresh.add(item.pair)
+                with self._lock:
+                    self._snapshot_symbols_missing += len(expected-returned)
+                    self._snapshot_symbols_fresh += len(fresh)
+                if fresh != expected:
+                    deficient = True
+                    last_failure_category = 'SNAPSHOT_COVERAGE_OR_FRESHNESS'
+            if (failed or deficient) and succeeded:
                 with self._lock:
                     self._refreshes_partial += 1
                 self._publish_status(
-                    CryptoResearchStatus.PARTIAL_DATA,
+                    CryptoResearchStatus.PARTIAL_DATA if received else CryptoResearchStatus.AWAITING_DATA,
                     last_failure_category,
                 )
             elif failed:
@@ -534,7 +563,12 @@ class CryptoResearchRuntime:
         if not self.enabled:
             return False
         now = self._clock()
-        if (now - observation.timestamp).total_seconds() > self._maximum_quote_age_seconds:
+        age = (now - observation.timestamp).total_seconds()
+        if age < 0:
+            with self._lock:
+                self._future_quotes += 1
+            return False
+        if age > self._maximum_quote_age_seconds:
             with self._lock:
                 self._stale_quotes += 1
             return False
@@ -635,6 +669,9 @@ class CryptoResearchRuntime:
                 self._completed_bar_capture_stored,
                 self._completed_bar_capture_duplicates,
                 self._completed_bar_capture_failures,
+                self._future_quotes,
+                self._snapshot_symbols_missing,
+                self._snapshot_symbols_fresh,
             )
 
     def memory_metrics(self) -> dict[str, int]:
@@ -666,6 +703,9 @@ class CryptoResearchRuntime:
                 "crypto_snapshot_batches_failed": metrics.snapshot_batches_failed,
                 "crypto_snapshot_symbols_requested": metrics.snapshot_symbols_requested,
                 "crypto_snapshot_symbols_returned": metrics.snapshot_symbols_returned,
+                "crypto_snapshot_symbols_missing": metrics.snapshot_symbols_missing,
+                "crypto_snapshot_symbols_fresh": metrics.snapshot_symbols_fresh,
+                "crypto_future_quotes": metrics.future_quotes,
                 "crypto_refreshes_partial": metrics.refreshes_partial,
                 "crypto_refreshes_complete": metrics.refreshes_complete,
                 "crypto_malformed_quotes": metrics.malformed_quotes,

@@ -141,6 +141,7 @@ def test_retained_symbols_history_signatures_and_memory_metrics_are_bounded() ->
         "crypto_unsupported_symbols", "crypto_snapshot_batches_requested",
         "crypto_snapshot_batches_succeeded", "crypto_snapshot_batches_failed",
         "crypto_snapshot_symbols_requested", "crypto_snapshot_symbols_returned",
+        "crypto_snapshot_symbols_missing", "crypto_snapshot_symbols_fresh", "crypto_future_quotes",
         "crypto_refreshes_partial", "crypto_refreshes_complete",
         "crypto_history_total_observation_count",
         "crypto_history_max_observations_per_symbol",

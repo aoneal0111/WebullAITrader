@@ -25,7 +25,7 @@ Present in source (including the earlier `5d8ea1a` repair):
   deterministic entry signal's two-second policy.
 - Crypto proposal activation defaults off independently of research collection.
 
-Remaining readiness gaps found in code inspection:
+Readiness gaps found in the original `55a3612` inspection (follow-up status below):
 
 1. `CryptoResearchRuntime.admit` checks old age but does not reject negative age
    (future timestamps) at research admission. Downstream deterministic entry and
@@ -46,6 +46,16 @@ live timestamps, subscription permissions, symbol coverage and active local
 settings were not read. Earlier successful tests establish code behavior, not
 current provider availability. Keep crypto proposals disabled pending that
 verification. These review findings do not change the frozen PAPER baseline.
+
+Follow-up: research admission now rejects future quotes, and complete refreshes
+require every requested pair to have a usable, fresh bid/ask and successful
+admission (or a known duplicate). Missing symbols, stale/future quotes, queue
+rejection and unexpected pairs no longer yield complete status. New counters
+separate future quotes, missing pairs and research-fresh pairs. Research freshness
+still uses its configured limit (default120seconds); it is not the2second entry
+standard. Default polling cadence and every execution freshness/risk limit are
+unchanged. `-CryptoRead` on the updated check script performs a bounded local
+provider probe without starting Atlas; see `crypto-snapshot-readiness-check.md`.
 
 ## Strictly non-executing observer prototype
 
@@ -80,6 +90,11 @@ baseline manifest. Keep it out of GUI, quote/protection and native entry paths.
 Do not introduce a candidate unless the deterministic baseline already produces
 it; disabled/quarantined strategies remain disabled. Pair later outcomes by
 original owner/event identity and keep those records private.
+
+Follow-up: `grok_observer_input` now supplies the bounded read-only snapshot-file
+adapter. It validates all input before the first injected observer call. No
+file tailer, automatic data export, online client construction, usage accounting
+or desktop binding has been enabled. Those remain prerequisites for a live trial.
 
 `ATLAS_GROK_PAPER_ENTRIES_ENABLED` is the existing **order-review path**.
 It must remain false. Turning it on is not an observer trial. There is no new
