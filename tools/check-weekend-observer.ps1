@@ -1,6 +1,7 @@
-param([string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'), [string]$Revision, [switch]$CryptoRead, [switch]$CryptoReliability, [switch]$CryptoBars)
+param([string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'), [string]$Revision, [switch]$CryptoRead, [switch]$CryptoReliability, [switch]$CryptoBars, [switch]$CryptoWorker)
 $ErrorActionPreference = 'Stop'
 if ($CryptoBars -and ($CryptoRead -or $CryptoReliability)) { throw 'Choose one crypto check mode.' }
+if ($CryptoWorker -and ($CryptoRead -or $CryptoReliability -or $CryptoBars)) { throw 'The disconnected worker check cannot be combined with online reads.' }
 $Repo = (Resolve-Path -LiteralPath $Repo).Path
 $Python = Join-Path $Repo '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) { throw 'Atlas Python is missing.' }
@@ -41,6 +42,18 @@ raise SystemExit(0 if safe else 2)
         & $Python -m app.asset_modules.grok_observer
         if ($LASTEXITCODE -ne 0) { throw 'Disconnected observer check failed.' }
         Write-Host 'READY=OFFLINE_FIXTURES_ONLY; ONLINE_TRIAL=NOT_ENABLED; BASELINE=UNCHANGED'
+        if ($CryptoWorker) {
+            & $Python -m pytest tests/asset_modules/test_crypto_worker.py tests/asset_modules/test_crypto_durable_intents.py tests/asset_modules/test_crypto_allocation.py tests/crypto_research/test_worker_readiness.py --basetemp (Join-Path $Root 'worker-tests') -q
+            if ($LASTEXITCODE -ne 0) { throw 'Disconnected worker and ledger tests failed.' }
+            $Desktop = [Environment]::GetFolderPath('Desktop')
+            if (-not $Desktop) { $Desktop = $env:USERPROFILE }
+            $Output = Join-Path $Desktop ('atlas-crypto-worker-' + [guid]::NewGuid().ToString('N') + '.json')
+            & $Python -m app.crypto_research.worker_readiness --output $Output
+            $WorkerExit = $LASTEXITCODE
+            Write-Host "UPLOAD_SUMMARY=$Output"
+            if (Test-Path -LiteralPath $Output -PathType Leaf) { & explorer.exe "/select,`"$Output`"" }
+            if ($WorkerExit -ne 0) { throw 'Synthetic worker check failed; no installed trading settings changed.' }
+        }
         if ($CryptoRead -or $CryptoReliability -or $CryptoBars) {
             $Desktop = [Environment]::GetFolderPath('Desktop')
             if (-not $Desktop) { $Desktop = $env:USERPROFILE }
