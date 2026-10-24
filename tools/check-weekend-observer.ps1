@@ -1,4 +1,4 @@
-param([string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'), [string]$Revision, [switch]$CryptoRead, [switch]$CryptoReliability, [switch]$CryptoBars, [switch]$CryptoWorker, [switch]$CryptoProviderWorker)
+param([string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'), [string]$Revision, [switch]$CryptoRead, [switch]$CryptoReliability, [switch]$CryptoBars, [switch]$CryptoWorker, [switch]$CryptoProviderWorker, [switch]$GrokContext)
 $ErrorActionPreference = 'Stop'
 if ($CryptoBars -and ($CryptoRead -or $CryptoReliability)) { throw 'Choose one crypto check mode.' }
 if ($CryptoWorker -and ($CryptoRead -or $CryptoReliability -or $CryptoBars -or $CryptoProviderWorker)) { throw 'The disconnected worker check cannot be combined with online reads.' }
@@ -43,6 +43,13 @@ raise SystemExit(0 if safe else 2)
         & $Python -m app.asset_modules.grok_observer
         if ($LASTEXITCODE -ne 0) { throw 'Disconnected observer check failed.' }
         Write-Host 'READY=OFFLINE_FIXTURES_ONLY; ONLINE_TRIAL=NOT_ENABLED; BASELINE=UNCHANGED'
+        if ($GrokContext) {
+            & $Python -m pytest tests/asset_modules/test_grok_observer_context.py --basetemp (Join-Path $Root 'context-tests') -q
+            if ($LASTEXITCODE -ne 0) { throw 'Observer strategy-context tests failed.' }
+            & $Python -m app.asset_modules.grok_observer_context
+            if ($LASTEXITCODE -ne 0) { throw 'Disconnected context fixtures failed.' }
+            Write-Host 'CONTEXT_READY=OFFLINE_FIXTURES_ONLY; ONLINE_TRIAL=NOT_ENABLED; BASELINE=UNCHANGED'
+        }
         if ($CryptoProviderWorker) {
             & $Python -m pytest tests/crypto_research/test_provider_worker.py tests/asset_modules/test_crypto_worker.py --basetemp (Join-Path $Root 'provider-worker-tests') -q
             if ($LASTEXITCODE -ne 0) { throw 'Provider worker fixture tests failed.' }

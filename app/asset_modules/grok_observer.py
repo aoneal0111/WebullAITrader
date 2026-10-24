@@ -73,6 +73,7 @@ class Observation:
     view: str | None
     reason: str
     execution_authorized: bool=False
+    context_sha256: str | None=None
 
 
 class GrokObserverTrial:
@@ -88,11 +89,12 @@ class GrokObserverTrial:
         self._client=client;self._baseline=baseline_sha256;self._clock=clock
         self._seen=set();self._next={};self._requests=0;self._lock=Lock()
 
-    def observe(self,snapshot):
+    def observe(self,snapshot,*,strategy_context=None):
         if not isinstance(snapshot,Snapshot):raise ValueError('typed snapshot required')
+        context_hash=None
         def record(status,view=None,reason=''):
             return Observation(snapshot.engine.value,snapshot.event_id,snapshot.symbol,
-                               self._baseline,status,view,reason)
+                               self._baseline,status,view,reason,context_sha256=context_hash)
         if not self._lock.acquire(blocking=False):return record('BUSY')
         try:
             now=self._clock();aware(now)
@@ -107,8 +109,19 @@ class GrokObserverTrial:
                 bid_at=snapshot.bid_at.isoformat(),ask_at=snapshot.ask_at.isoformat(),
                 captured_at=snapshot.captured_at.isoformat(),baseline_sha256=self._baseline,
                 source=snapshot.source,execution_authorized=False)
+            instruction=PROMPT
+            if strategy_context is not None:
+                from .grok_observer_context import StrategyContext
+                if not isinstance(strategy_context,StrategyContext):
+                    raise ValueError('Typed strategy evidence required')
+                evidence=strategy_context.payload(snapshot)
+                context_hash=sha256(json.dumps(evidence,sort_keys=True).encode()).hexdigest()
+                context['strategy_evidence']=evidence
+                instruction=PROMPT.replace('Evaluate the supplied quote only.',
+                    'Evaluate only the supplied quote and completed-bar strategy evidence.')
+                instruction+=' '+evidence['role_focus']
             self._seen.add(identity);self._requests+=1;self._next[snapshot.engine]=now.timestamp()+60
-            try:reply=self._client.request(snapshot.engine.value,PROMPT,context,SCHEMA)
+            try:reply=self._client.request(snapshot.engine.value,instruction,context,SCHEMA)
             except GrokUnavailable:return record('PROVIDER_UNAVAILABLE')
             finished=self._clock();aware(finished)
             if finished<now or not snapshot.fresh(finished):return record('ADVICE_EXPIRED')
