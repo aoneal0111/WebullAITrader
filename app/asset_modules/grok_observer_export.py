@@ -12,7 +12,7 @@ from app.read_only_sqlite import bounded_rows, read_database
 ROW_LIMIT=1000
 SEQUENCE_WINDOW=20000
 BYTE_LIMIT=8*1024*1024
-BASELINE_FILES=('app/strategies/warrior_momentum/strategy.py',
+BASELINE_FILES=('app/strategies/warrior_momentum/setups.py',
     'app/strategies/warrior_momentum/quick_scalper.py',
     'app/strategies/warrior_momentum/configuration.py','app/equity_overhaul/admission.py')
 
@@ -47,8 +47,9 @@ def archive(repo,source,directory):
         status='SOURCE_MISSING',online_observer_ready=False,orders=0,network_requests=0,grok_requests=0,
         baseline_modified=False,source_opened_read_only=False,rows_read=0,rejected_rows=0,
         bars_exported=0,quotes_exported=0,scan_limited=False,selected_rows_truncated=False,
+        exporter_version=2,rejection_counts={},skipped_non_quote_rows=0,lookahead_rows=0,
         source_code_hashes={},files=[],
-        blockers=['INDEPENDENT_BID_ASK_TIMESTAMP_PROVENANCE_MISSING',
+        blockers=['RECORDED_QUOTE_TIMESTAMP_PROVENANCE_INSUFFICIENT',
                   'COMPLETE_WARRIOR_AND_SCALPER_CONTEXT_NOT_RECORDED',
                   'RECORDED_HISTORY_IS_NOT_FRESH_ONLINE_CONTEXT'],
         limitations=['Execution paths cover owned positions, not all scanner opportunities',
@@ -79,6 +80,7 @@ def archive(repo,source,directory):
                     'ORDER BY sequence DESC LIMIT ?',
                     (low,high,'MINUTE_BAR','EXECUTION_PRICE_PATH',ROW_LIMIT+1),ROW_LIMIT+1,BYTE_LIMIT)
                 summary['selected_rows_truncated']=len(rows)>ROW_LIMIT
+                summary['lookahead_rows']=max(0,len(rows)-ROW_LIMIT)
                 summary['rows_read']=len(rows)
                 for kind,symbol,observed,payload in reversed(rows[:ROW_LIMIT]):
                     try:
@@ -101,7 +103,9 @@ def archive(repo,source,directory):
                             if not l<=min(o,c)<=max(o,c)<=h:raise ValueError('Invalid OHLC')
                             summary['bars_exported']+=1
                         else:
-                            if p.get('action')!='QUOTE':continue
+                            if p.get('action')!='QUOTE':
+                                summary['skipped_non_quote_rows']+=1
+                                continue
                             timestamp=_time(p['quote_timestamp'])
                             bid,ask=_number(p['bid']),_number(p['ask'])
                             if Decimal(bid)>Decimal(ask) or timestamp>at:raise ValueError('Invalid or future quote')
@@ -114,7 +118,26 @@ def archive(repo,source,directory):
                                 independent_side_timestamps='UNAVAILABLE',setup_state='UNRECORDED',baseline_result='UNRECORDED')
                             summary['quotes_exported']+=1
                         records.append(row)
-                    except (ValueError,KeyError,TypeError,ArithmeticError,AttributeError):summary['rejected_rows']+=1
+                    except (ValueError,KeyError,TypeError,ArithmeticError,AttributeError) as exc:
+                        summary['rejected_rows']+=1
+                        safe_reasons={'Canonical equity symbol required':'INVALID_SYMBOL',
+                            'Oversized capture payload':'PAYLOAD_TOO_LARGE',
+                            'Object payload required':'INVALID_PAYLOAD_SHAPE',
+                            'Duplicate JSON field':'DUPLICATE_JSON_FIELD',
+                            'Recorded timestamp required':'INVALID_TIMESTAMP',
+                            'Aware recorded timestamp required':'INVALID_TIMESTAMP',
+                            'Exact source decimal required':'INVALID_NUMBER',
+                            'Bounded source decimal required':'INVALID_NUMBER',
+                            'Completed M1 bar required':'BAR_NOT_COMPLETED_M1',
+                            'Causal minute bar required':'INVALID_BAR_TIMING',
+                            'Invalid OHLC':'INVALID_OHLC',
+                            'Invalid or future quote':'INVALID_OR_FUTURE_QUOTE'}
+                        reason=('MISSING_FIELD' if isinstance(exc,KeyError) else
+                            'INVALID_JSON' if isinstance(exc,json.JSONDecodeError) else
+                            'MISSING_OR_OVERSIZED_PAYLOAD' if payload is None else
+                            'INVALID_NUMBER' if isinstance(exc,ArithmeticError) else
+                            safe_reasons.get(str(exc),'INVALID_RECORD'))
+                        counts=summary['rejection_counts'];counts[reason]=counts.get(reason,0)+1
             summary['status']='ARCHIVE_ONLY_NOT_ONLINE_READY' if records else 'NO_USABLE_MARKET_EVIDENCE'
     except Exception as exc:
         summary.update(status='SOURCE_READ_FAILED',error_type=type(exc).__name__)

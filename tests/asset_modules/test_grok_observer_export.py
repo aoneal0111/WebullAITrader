@@ -63,6 +63,8 @@ def test_bad_rows_are_counted_without_copying_payloads(tmp_path):
     db=tmp_path/'capture.sqlite3';source(db,bad=True)
     report=archive(tmp_path,db,tmp_path/'output')
     assert report['rejected_rows']==1 and report['bars_exported']==1
+    assert report['rejection_counts']=={'INVALID_JSON':1} and report['skipped_non_quote_rows']==1
+    assert report['rows_read']==report['bars_exported']+report['quotes_exported']+report['rejected_rows']+report['skipped_non_quote_rows']+report['lookahead_rows']
     assert 'PRIVATE_' not in (tmp_path/'output'/'summary.json').read_text()
 
 

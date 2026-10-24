@@ -1,6 +1,7 @@
-param([string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'), [string]$Revision, [switch]$CryptoRead, [switch]$CryptoReliability, [switch]$CryptoBars, [switch]$CryptoWorker, [switch]$CryptoProviderWorker, [switch]$GrokContext, [switch]$GrokExport)
+param([string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'), [string]$Revision, [switch]$CryptoRead, [switch]$CryptoReliability, [switch]$CryptoBars, [switch]$CryptoWorker, [switch]$CryptoProviderWorker, [switch]$GrokContext, [switch]$GrokExport, [switch]$GrokCapture)
 $ErrorActionPreference = 'Stop'
 if ($GrokExport -and ($CryptoRead -or $CryptoReliability -or $CryptoBars -or $CryptoWorker -or $CryptoProviderWorker)) { throw 'Run the offline observer archive separately from crypto probes.' }
+if ($GrokCapture -and ($CryptoRead -or $CryptoReliability -or $CryptoBars -or $CryptoWorker -or $CryptoProviderWorker)) { throw 'Run offline observer capture tests separately from crypto probes.' }
 if ($CryptoBars -and ($CryptoRead -or $CryptoReliability)) { throw 'Choose one crypto check mode.' }
 if ($CryptoWorker -and ($CryptoRead -or $CryptoReliability -or $CryptoBars -or $CryptoProviderWorker)) { throw 'The disconnected worker check cannot be combined with online reads.' }
 if ($CryptoProviderWorker -and ($CryptoRead -or $CryptoReliability -or $CryptoBars)) { throw 'Choose one online crypto check mode.' }
@@ -50,6 +51,11 @@ raise SystemExit(0 if safe else 2)
             & $Python -m app.asset_modules.grok_observer_context
             if ($LASTEXITCODE -ne 0) { throw 'Disconnected context fixtures failed.' }
             Write-Host 'CONTEXT_READY=OFFLINE_FIXTURES_ONLY; ONLINE_TRIAL=NOT_ENABLED; BASELINE=UNCHANGED'
+        }
+        if ($GrokCapture) {
+            & $Python -m pytest tests/asset_modules/test_grok_observer_capture.py --basetemp (Join-Path $Root 'capture-tests') -q
+            if ($LASTEXITCODE -ne 0) { throw 'One-way capture fixture tests failed.' }
+            Write-Host 'CAPTURE=STAGED_COMPONENT_ONLY; DESKTOP_WIRING=OFF; ONLINE_TRIAL=NOT_ENABLED; BASELINE=UNCHANGED'
         }
         if ($GrokExport) {
             & $Python -m pytest tests/asset_modules/test_grok_observer_export.py --basetemp (Join-Path $Root 'export-tests') -q
