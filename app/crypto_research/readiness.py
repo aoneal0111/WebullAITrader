@@ -57,6 +57,7 @@ def main():
     mode=p.add_mutually_exclusive_group()
     mode.add_argument('--reliability',action='store_true',help='Run the fixed five-minute read-only capture')
     mode.add_argument('--bar-alignment',action='store_true',help='Check native completed bars against fresh quotes')
+    mode.add_argument('--provider-worker',action='store_true',help='Check actual inputs through a worker with temporary entries disabled')
     p.add_argument('--online-read',action='store_true',help='Allow bounded authenticated market-data GETs')
     args=p.parse_args()
     if args.output.exists():p.error('output exists; use a new filename')
@@ -76,7 +77,10 @@ def main():
         data=market_data_configuration(config)
         client=MarketDataClientFactory(data).create(timeout_seconds=5)
         provider=WebullCryptoResearchProvider(client,retry_attempts=0,maximum_symbols=2,maximum_pages=1)
-        if args.bar_alignment:
+        if args.provider_worker:
+            from .provider_worker import check as check_worker
+            report=check_worker(provider)
+        elif args.bar_alignment:
             from .bar_alignment import check as check_alignment
             report=check_alignment(provider)
         elif args.reliability:
@@ -85,7 +89,8 @@ def main():
         else:report=check(provider)
         report['market_data_environment']=data.environment.value
     except Exception:
-        scope=('READ_ONLY_CRYPTO_BAR_QUOTE_ALIGNMENT_V1' if args.bar_alignment else
+        scope=('READ_ONLY_CRYPTO_PROVIDER_WORKER_V1' if args.provider_worker else
+               'READ_ONLY_CRYPTO_BAR_QUOTE_ALIGNMENT_V1' if args.bar_alignment else
                'READ_ONLY_CRYPTO_QUOTE_RELIABILITY_V1' if args.reliability else 'READ_ONLY_CRYPTO_QUOTE_READINESS')
         report=dict(scope=scope,status='LOCAL_CONFIGURATION_OR_CLIENT_FAILED',
                     ready=False,orders=0,grok_requests=0,strategy_changes=0)

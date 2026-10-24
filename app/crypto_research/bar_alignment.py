@@ -1,7 +1,8 @@
 """Read-only provider bars -> native crypto adapter -> unchanged signal rules.
 
-No runtime, worker controller, supervisor, ledger, model or order service starts.
+By default no runtime, worker controller, supervisor, ledger, model or order service starts.
 Any hypothetical proposal returned by the pure signal function is discarded.
+The provider-worker diagnostic can inject a disabled temporary handoff explicitly.
 """
 from collections import Counter
 from dataclasses import asdict
@@ -18,7 +19,7 @@ from .models import CryptoPair
 from .reliability import category
 
 
-def check(provider,*,clock=lambda:datetime.now(UTC),timer=monotonic,sleeper=sleep,progress=print):
+def check(provider,*,clock=lambda:datetime.now(UTC),timer=monotonic,sleeper=sleep,progress=print,handoff=None):
     settings=CryptoSignalSettings();baseline=asdict(settings)
     report=dict(scope='READ_ONLY_CRYPTO_BAR_QUOTE_ALIGNMENT_V1',policy=POLICY,
         settings_sha256=sha256(json.dumps(baseline,default=str,sort_keys=True).encode()).hexdigest(),
@@ -79,10 +80,14 @@ def check(provider,*,clock=lambda:datetime.now(UTC),timer=monotonic,sleeper=slee
                 clean=(frame.status=='READY' and n.incomplete_rows<=1
                        and not(n.malformed_rows or n.duplicate_rows or off_grid or revisions[symbol]))
                 reason='NOT_ASSESSED';hypothetical=False
+                handoff_result=None
                 if clean:
                     q=CryptoQuote(symbol,quote.bid,quote.ask,quote.timestamp)
                     proposal,reason=propose(frame.history,q,now,settings)
                     hypothetical=proposal is not None # Deliberately discard every proposal.
+                    if handoff is not None:
+                        handoff_result=handoff(frame.history,quote,settings)
+                        clean &= handoff_result['ready'] is True
                 previous_end=previous_ends.get(symbol)
                 advanced=None if cycle_number==0 else bool(bars and previous_end and bars[-1].closed_at>previous_end)
                 previous_ends[symbol]=bars[-1].closed_at if bars else None
@@ -94,6 +99,8 @@ def check(provider,*,clock=lambda:datetime.now(UTC),timer=monotonic,sleeper=slee
                     latest_bar_age_seconds=None if not bars else (now-bars[-1].closed_at).total_seconds(),
                     latest_bar_advanced=advanced,
                     signal_assessment=reason,hypothetical_proposal=hypothetical))
+                if handoff_result is not None:
+                    cycle['symbols'][-1]['handoff']=handoff_result
             wall=clock();mono=timer()
             if abs((wall-last_wall).total_seconds()-(mono-last_mono))>.25:clock_steps+=1
             last_wall,last_mono=wall,mono
