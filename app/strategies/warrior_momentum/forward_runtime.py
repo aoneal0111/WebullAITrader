@@ -403,7 +403,13 @@ class WarriorForwardCaptureService:
         paper_acknowledgement_adopter: Callable[..., bool] | None = None,
         paper_entry_reviewer: Callable[..., object] | None = None,
         paper_entry_review_refresher: Callable[..., object] | None = None,
+        observer_context_tap: object | None = None,
     ) -> None:
+        if observer_context_tap is not None:
+            from app.asset_modules.grok_observer_runtime_tap import RuntimeContextTap
+            if not isinstance(observer_context_tap,RuntimeContextTap):
+                raise TypeError('Passive RuntimeContextTap required')
+        self._observer_context_tap = observer_context_tap
         self.store = store
         self.writer = writer
         self.config = config
@@ -861,6 +867,7 @@ class WarriorForwardCaptureService:
     ) -> tuple[MomentumCandidate, MomentumEntrySignal | None]:
         observation = value.observation
         symbol = observation.symbol.strip().upper()
+        observer_quote = None
         downstream_clear_reason: str | None = None
         self._remember_latest_observation(symbol, value, account)
         with _service_stage("execution_price_path", symbol=symbol):
@@ -889,6 +896,12 @@ class WarriorForwardCaptureService:
         with _service_stage("completed_bar_handling", symbol=symbol):
             completed_snapshot = self._completed_bar_snapshot(value)
             completed = completed_snapshot.completed
+            if self._observer_context_tap is not None:
+                try:
+                    self._observer_context_tap.remember_bars(symbol,completed,
+                        known_at=value.evaluation_timestamp or observation.timestamp)
+                except Exception:
+                    pass
             completed_version = (
                 completed_snapshot.session,
                 completed_snapshot.cutoff_minute,
@@ -1076,6 +1089,7 @@ class WarriorForwardCaptureService:
                     refreshed = self._execution_quote_source(symbol)
                 except Exception:
                     refreshed = None
+                observer_quote = refreshed
                 performance_diagnostics.record_entry_funnel(
                     symbol, stage="EXECUTION_QUOTE_RETURNED",
                     outcome="AVAILABLE" if refreshed is not None else "UNAVAILABLE",
@@ -2020,6 +2034,18 @@ class WarriorForwardCaptureService:
                 records.append(execution_record)
 
         setup = assessed.setup
+        if self._observer_context_tap is not None and observer_quote is not None:
+            try:
+                from app.asset_modules.engine_catalog import EngineId
+                self._observer_context_tap.record(engine=EngineId.WARRIOR,
+                    quote=observer_quote,source=self._execution_quote_source,
+                    at=value.evaluation_timestamp or observation.timestamp,
+                    baseline_result=('ENTRY_CANDIDATE' if signal is not None else
+                                     'BLOCKED' if technical_signal is not None else 'NO_ENTRY'),
+                    setup_state=('TRIGGERED' if setup is not None and setup.state is SetupState.TRIGGERED
+                                 else 'FORMING' if setup is not None else 'UNKNOWN'))
+            except Exception:
+                pass
         if (
             setup is not None and setup.state is SetupState.TRIGGERED
             and assessed.score.total >= self.config.entry.minimum_momentum_score

@@ -308,7 +308,9 @@ class WarriorDesktopSidecar:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         paper_order_source: Callable[[str], object] | None = None,
         paper_acknowledgement_adopter: Callable[..., bool] | None = None,
+        observer_context_tap: object | None = None,
     ) -> None:
+        self._observer_context_tap = observer_context_tap
         self.enabled = bool(enabled)
         self.storage_path = Path(storage_path)
         self.environment = str(environment).strip().upper() or "UNKNOWN"
@@ -735,6 +737,7 @@ class WarriorDesktopSidecar:
                 self._service = WarriorForwardCaptureService(
                     self._store, self._writer, self.strategy_config,
                     self.capture_config,
+                    observer_context_tap=self._observer_context_tap,
                     configuration_fingerprint=self.configuration_fingerprint,
                     paper_entry_submitter=self._paper_entry_submitter,
                     paper_entry_reviewer=None if self._grok_native_producer is None else self._grok_native_producer.warrior_offer,

@@ -53,9 +53,9 @@ raise SystemExit(0 if safe else 2)
             Write-Host 'CONTEXT_READY=OFFLINE_FIXTURES_ONLY; ONLINE_TRIAL=NOT_ENABLED; BASELINE=UNCHANGED'
         }
         if ($GrokCapture) {
-            & $Python -m pytest tests/asset_modules/test_grok_observer_capture.py --basetemp (Join-Path $Root 'capture-tests') -q
+            & $Python -m pytest tests/asset_modules/test_grok_observer_capture.py tests/asset_modules/test_grok_observer_runtime_tap.py --basetemp (Join-Path $Root 'capture-tests') -q
             if ($LASTEXITCODE -ne 0) { throw 'One-way capture fixture tests failed.' }
-            Write-Host 'CAPTURE=STAGED_COMPONENT_ONLY; DESKTOP_WIRING=OFF; ONLINE_TRIAL=NOT_ENABLED; BASELINE=UNCHANGED'
+            Write-Host 'CAPTURE=NATIVE_HOOKS_TESTED_OFFLINE; DESKTOP_ACTIVATION=OFF; ONLINE_TRIAL=NOT_ENABLED; BASELINE=UNCHANGED'
         }
         if ($GrokExport) {
             & $Python -m pytest tests/asset_modules/test_grok_observer_export.py --basetemp (Join-Path $Root 'export-tests') -q

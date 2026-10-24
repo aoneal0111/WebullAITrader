@@ -107,7 +107,7 @@ class ContextCapture:
         self._stop.set();self._thread.join(timeout=2)
         with self._lock:
             summary=dict(scope='LOCAL_OBSERVER_CONTEXT_CAPTURE_V1',orders=0,grok_requests=0,network_requests=0,
-                online_observer_ready=False,desktop_wiring=False,baseline_modified=False,
+                online_observer_ready=False,desktop_wiring='NOT_ATTESTED',baseline_modified=False,
                 writer_stopped=not self._thread.is_alive(),writer_failed=self._failed,
                 counts=dict(self._counts),records_by_engine=dict(self._owners),bytes_enqueued=self._bytes)
         if not self._thread.is_alive():

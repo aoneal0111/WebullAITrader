@@ -143,7 +143,13 @@ class QuickScalperPaperRuntimeAdapter:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         paper_entry_reviewer: Callable[..., object] | None = None,
         paper_entry_review_refresher: Callable[..., object] | None = None,
+        observer_context_tap: object | None = None,
     ) -> None:
+        if observer_context_tap is not None:
+            from app.asset_modules.grok_observer_runtime_tap import RuntimeContextTap
+            if not isinstance(observer_context_tap,RuntimeContextTap):
+                raise TypeError('Passive RuntimeContextTap required')
+        self._observer_context_tap = observer_context_tap
         self.config = config
         self._paper_entry_reviewer = paper_entry_reviewer
         self.bridge = bridge
@@ -207,6 +213,12 @@ class QuickScalperPaperRuntimeAdapter:
             # is exhausted, without adding production files or provider calls.
             self._emit("SCALP_ASSESSED", candidate.symbol)
             self._manage_open_position(point, candidate)
+            if self._observer_context_tap is not None:
+                try:
+                    self._observer_context_tap.remember_bars(candidate.symbol,point.bars,
+                        known_at=point.evaluation_timestamp or point.observation.timestamp)
+                except Exception:
+                    pass
             if not execution_permitted:
                 return None
             snapshot = self._snapshot(point, candidate)
@@ -624,6 +636,17 @@ class QuickScalperPaperRuntimeAdapter:
             ),
         )
         confirmed = self.scalper.policy.assess(refreshed)
+        if self._observer_context_tap is not None:
+            try:
+                from app.asset_modules.engine_catalog import EngineId
+                self._observer_context_tap.record(engine=EngineId.SCALPER,quote=quote,
+                    source=self.execution_quote_source,at=evaluated_at,
+                    baseline_result=('ENTRY_CANDIDATE' if confirmed.decision is ScalpDecision.EXECUTABLE
+                                     else 'WAIT' if confirmed.decision is ScalpDecision.WAIT else 'BLOCKED'),
+                    setup_state=('TRIGGERED' if confirmed.decision is ScalpDecision.EXECUTABLE
+                                 else 'FORMING' if confirmed.decision is ScalpDecision.WAIT else 'UNKNOWN'))
+            except Exception:
+                pass
         if (
             confirmed.decision is not ScalpDecision.EXECUTABLE
             and confirmed.reason == "PROVIDER_DATA_STALE"

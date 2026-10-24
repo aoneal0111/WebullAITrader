@@ -47,7 +47,8 @@ def archive(repo,source,directory):
         status='SOURCE_MISSING',online_observer_ready=False,orders=0,network_requests=0,grok_requests=0,
         baseline_modified=False,source_opened_read_only=False,rows_read=0,rejected_rows=0,
         bars_exported=0,quotes_exported=0,scan_limited=False,selected_rows_truncated=False,
-        exporter_version=2,rejection_counts={},skipped_non_quote_rows=0,lookahead_rows=0,
+        exporter_version=3,rejection_counts={},skipped_non_quote_rows=0,lookahead_rows=0,
+        quote_anomalies={'crossed':0,'future':0,'both':0},future_offset_seconds_min=None,future_offset_seconds_max=None,
         source_code_hashes={},files=[],
         blockers=['RECORDED_QUOTE_TIMESTAMP_PROVENANCE_INSUFFICIENT',
                   'COMPLETE_WARRIOR_AND_SCALPER_CONTEXT_NOT_RECORDED',
@@ -108,7 +109,17 @@ def archive(repo,source,directory):
                                 continue
                             timestamp=_time(p['quote_timestamp'])
                             bid,ask=_number(p['bid']),_number(p['ask'])
-                            if Decimal(bid)>Decimal(ask) or timestamp>at:raise ValueError('Invalid or future quote')
+                            crossed,future=Decimal(bid)>Decimal(ask),timestamp>at
+                            if crossed or future:
+                                summary['quote_anomalies']['crossed']+=int(crossed)
+                                summary['quote_anomalies']['future']+=int(future)
+                                summary['quote_anomalies']['both']+=int(crossed and future)
+                                if future:
+                                    offset=(timestamp-at).total_seconds()
+                                    for key,fn in (('future_offset_seconds_min',min),('future_offset_seconds_max',max)):
+                                        summary[key]=offset if summary[key] is None else fn(summary[key],offset)
+                                raise ValueError('Crossed and future quote' if crossed and future else
+                                                 'Crossed quote' if crossed else 'Future quote')
                             lifecycle=p.get('lifecycle_id')
                             owner=next((engine for engine in ('WARRIOR_MOMENTUM_V1','QUICK_SCALPER')
                                 if isinstance(lifecycle,str) and lifecycle.startswith(engine+'|')),None)
@@ -132,6 +143,8 @@ def archive(repo,source,directory):
                             'Causal minute bar required':'INVALID_BAR_TIMING',
                             'Invalid OHLC':'INVALID_OHLC',
                             'Invalid or future quote':'INVALID_OR_FUTURE_QUOTE'}
+                        safe_reasons.update({'Crossed and future quote':'CROSSED_AND_FUTURE_QUOTE',
+                                             'Crossed quote':'CROSSED_QUOTE','Future quote':'FUTURE_QUOTE'})
                         reason=('MISSING_FIELD' if isinstance(exc,KeyError) else
                             'INVALID_JSON' if isinstance(exc,json.JSONDecodeError) else
                             'MISSING_OR_OVERSIZED_PAYLOAD' if payload is None else

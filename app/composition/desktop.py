@@ -154,6 +154,7 @@ def create_desktop_composition(
     paper_clock: Callable[[], datetime] | None = None,
     catalyst_providers: Sequence[object] = (),
     shadow_runtime_factory: Callable[..., SecShadowRuntimeComposition] = create_sec_shadow_runtime,
+    observer_context_tap: object | None = None,
 ) -> DesktopComposition:
     """Construct the desktop application dependency graph."""
 
@@ -167,6 +168,14 @@ def create_desktop_composition(
         )
 
     operational_configuration = load_configuration()
+    if observer_context_tap is not None:
+        from app.asset_modules.grok_observer_runtime_tap import RuntimeContextTap
+        if (not isinstance(observer_context_tap,RuntimeContextTap)
+                or configuration.runtime_mode.value!='PAPER'
+                or operational_configuration.environment.value!='PAPER'
+                or operational_configuration.live_trading_enabled
+                or operational_configuration.grok_paper_entries_enabled):
+            raise ValueError('Passive context capture requires explicit injection and safe PAPER flags')
     from app.composition.learning_collection import create_learning_collector
     learning_collector = create_learning_collector(operational_configuration,
         configuration.runtime_mode, paper_persistence_path=paper_persistence_path)
@@ -377,6 +386,7 @@ def create_desktop_composition(
             )
             paper_trading_commands = replace(paper_trading_commands, trading_service=paper_controller_service)
         quick_scalper_runtime = QuickScalperPaperRuntimeAdapter(
+            observer_context_tap=observer_context_tap,
             config=QuickScalperConfig(
                 enabled=operational_configuration.quick_scalper_enabled,
             ),
@@ -460,6 +470,7 @@ def create_desktop_composition(
         decision_intelligence_observer=decision_intelligence_observer,
         paper_entry_intelligence=paper_entry_intelligence,
         quick_scalper_observer=quick_scalper_runtime,
+        observer_context_tap=observer_context_tap,
         strategy_ownership=shared_strategy_ownership,
         async_observation_records=True,
         async_decision_intelligence=True,

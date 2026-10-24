@@ -1,5 +1,8 @@
 # One-way context capture staging
 
+Follow-up: passive native hooks now exist behind explicit dependency injection;
+see `grok-observer-native-hooks.md`. Default desktop activation remains off.
+
 This change adds a capture component, strict private-file reader and canonical
 Webull quote adapter. It does not attach either engine to that component, add an
 activation flag, start Atlas, or construct an online model client. PAPER strategy

@@ -90,3 +90,17 @@ def test_existing_output_is_not_overwritten(tmp_path):
     db=tmp_path/'capture.sqlite3';source(db)
     output=tmp_path/'output';archive(tmp_path,db,output)
     with pytest.raises(FileExistsError):archive(tmp_path,db,output)
+
+
+@pytest.mark.parametrize('crossed,future,reason',[(True,False,'CROSSED_QUOTE'),(False,True,'FUTURE_QUOTE'),(True,True,'CROSSED_AND_FUTURE_QUOTE')])
+def test_quote_anomaly_causes_and_offsets_are_separate(tmp_path,crossed,future,reason):
+    db=tmp_path/'capture.sqlite3';source(db)
+    with closing(sqlite3.connect(db)) as connection,connection:
+        p=json.loads(connection.execute('SELECT payload_json FROM capture_records WHERE sequence=2').fetchone()[0])
+        p['bid']='101' if crossed else '100'
+        p['quote_timestamp']=(NOW+timedelta(seconds=1.3) if future else NOW).isoformat()
+        connection.execute('UPDATE capture_records SET payload_json=? WHERE sequence=2',(json.dumps(p),))
+    report=archive(tmp_path,db,tmp_path/'output')
+    assert report['rejection_counts']=={reason:1}
+    assert report['quote_anomalies']==dict(crossed=int(crossed),future=int(future),both=int(crossed and future))
+    assert report['future_offset_seconds_max']==(1.3 if future else None)
