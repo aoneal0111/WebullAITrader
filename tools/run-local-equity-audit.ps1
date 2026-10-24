@@ -3,7 +3,7 @@ param(
     [string]$ResearchRoot,
     [string]$Revision,
     [string]$OutputFile,
-    [ValidateSet('AuditV1','ResearchV2')][string]$Mode = 'AuditV1'
+    [ValidateSet('AuditV1','ResearchV2','HistoryCheck','EntryTiming')][string]$Mode = 'AuditV1'
 )
 $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path -LiteralPath $Repo).Path
@@ -50,7 +50,7 @@ Write-Host "LOCAL_RESEARCH=$ResearchRoot"
 if (-not $OutputFile) {
     $Desktop = [Environment]::GetFolderPath('Desktop')
     if (-not $Desktop) { $Desktop = $env:USERPROFILE }
-    $Prefix = if ($Mode -eq 'ResearchV2') { 'atlas-v2-research-' } else { 'atlas-local-audit-' }
+    $Prefix = if ($Mode -eq 'EntryTiming') { 'atlas-early-entry-research-' } elseif ($Mode -eq 'HistoryCheck') { 'atlas-history-check-' } elseif ($Mode -eq 'ResearchV2') { 'atlas-v2-research-' } else { 'atlas-local-audit-' }
     $OutputFile = Join-Path $Desktop ($Prefix + [guid]::NewGuid().ToString('N') + '.json')
 }
 $OutputFile = [IO.Path]::GetFullPath($OutputFile)
@@ -72,9 +72,10 @@ try {
     Push-Location $Worktree
     try {
         $TestTemp = Join-Path $SourceRoot 'tests'
-        $Test = if ($Mode -eq 'ResearchV2') { 'tests/equity_overhaul/test_research_v2.py' } else { 'tests/equity_overhaul/test_local_audit.py' }
-        $Tool = if ($Mode -eq 'ResearchV2') { 'tools/screen-equity-v2.py' } else { 'tools/audit-equity-local-history.py' }
-        & $Python -m pytest $Test --basetemp $TestTemp -q
+        $Test = if ($Mode -eq 'EntryTiming') { @('tests/equity_overhaul/test_history_crosscheck.py','tests/equity_overhaul/test_early_momentum.py') } elseif ($Mode -eq 'HistoryCheck') { 'tests/equity_overhaul/test_history_crosscheck.py' } elseif ($Mode -eq 'ResearchV2') { 'tests/equity_overhaul/test_research_v2.py' } else { 'tests/equity_overhaul/test_local_audit.py' }
+        $Tool = if ($Mode -eq 'EntryTiming') { 'tools/research-equity-entry-timing.py' } elseif ($Mode -eq 'HistoryCheck') { 'tools/check-equity-history.py' } elseif ($Mode -eq 'ResearchV2') { 'tools/screen-equity-v2.py' } else { 'tools/audit-equity-local-history.py' }
+        $Test = @($Test)
+        & $Python -m pytest @Test --basetemp $TestTemp -q
         if ($LASTEXITCODE -ne 0) { throw 'Local audit verification failed.' }
         & $Python $Tool --history $History --report $Report --output $OutputFile
         $AuditExit = $LASTEXITCODE

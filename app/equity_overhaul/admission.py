@@ -7,13 +7,33 @@ No environment variable, Grok response or metadata can add a registry entry.
 from dataclasses import dataclass
 import logging
 from threading import RLock
+from types import MappingProxyType
 
 from app.order_placement import (AcknowledgementState, NormalizedOrderStatus,
                                  OrderPlacementDecision, OrderPlacementResult)
 from app.performance_diagnostics import performance_diagnostics
 
 POLICY_VERSION = 'EQUITY_QUALIFICATION_V1'
-CANDIDATES = ('ORB5_LONG_V1', 'NOISE_BAND_LONG_V1', 'VWAP_RECLAIM_SCALP_V1')
+CANDIDATE_OWNERS = MappingProxyType({
+    'ORB5_LONG_V1': 'WARRIOR_MOMENTUM',
+    'NOISE_BAND_LONG_V1': 'WARRIOR_MOMENTUM',
+    'VWAP_RECLAIM_SCALP_V1': 'QUICK_SCALPER',
+})
+CANDIDATES = tuple(CANDIDATE_OWNERS)
+
+
+def engine_owner(signal):
+    owner = str(getattr(signal, 'strategy_owner', None) or
+                getattr(signal, 'strategy_id', 'WARRIOR_MOMENTUM_V1')).strip().upper()
+    return 'WARRIOR_MOMENTUM' if owner in {'WARRIOR_MOMENTUM', 'WARRIOR_MOMENTUM_V1'} else owner
+
+
+def lifecycle_matches_owner(lifecycle, owner):
+    if not isinstance(lifecycle, str): return False
+    parts = lifecycle.split('|')
+    if len(parts) < 3 or not all(parts): return False
+    allowed = {'WARRIOR_MOMENTUM', 'WARRIOR_MOMENTUM_V1'} if owner == 'WARRIOR_MOMENTUM' else {'QUICK_SCALPER'} if owner == 'QUICK_SCALPER' else set()
+    return parts[0] in allowed
 
 
 @dataclass(frozen=True)
@@ -47,6 +67,9 @@ class EquityQualificationPolicy:
     def permits(self, metadata):
         if not isinstance(metadata,dict):return False
         identity = metadata.get('strategy_policy_version')
+        if not isinstance(identity, str): return False
+        if metadata.get('strategy_owner') != CANDIDATE_OWNERS.get(identity) or identity not in CANDIDATE_OWNERS:
+            return False
         return any(identity==p.policy_id
                    and metadata.get('strategy_code_fingerprint')==p.code_fingerprint
                    and metadata.get('strategy_configuration_fingerprint')==p.configuration_fingerprint
@@ -56,6 +79,8 @@ class EquityQualificationPolicy:
         return dict(policy=POLICY_VERSION, entry_mode='QUALIFIED_ONLY',
                     approved_policies=[p.policy_id for p in self._promotions],
                     replacement_candidates=list(CANDIDATES),
+                    candidates_by_engine={owner: [p for p,o in CANDIDATE_OWNERS.items() if o == owner]
+                        for owner in ('WARRIOR_MOMENTUM', 'QUICK_SCALPER')},
                     legacy_entries='QUARANTINED', protective_sells='AVAILABLE',
                     reason='NO_QUALIFIED_EQUITY_STRATEGY' if not self._promotions else 'REVIEWED_RELEASE_REGISTRY')
 
@@ -83,7 +108,9 @@ class QualifiedEquityTradingService:
         if placement.order.side.value!='BUY':
             return self.service.place_order(placement)
         with self._lock:
-            if not self.policy.permits(dict(placement.order.metadata)):
+            metadata = dict(placement.order.metadata)
+            if (not self.policy.permits(metadata) or
+                    not lifecycle_matches_owner(placement.order.strategy_lifecycle_id, metadata.get('strategy_owner'))):
                 self.last_reason='STRATEGY_NOT_QUALIFIED'
                 performance_diagnostics.record_entry_funnel(symbol=placement.order.symbol,
                     stage='STRATEGY_QUALIFICATION',outcome='REJECTED',reason=self.last_reason)
@@ -104,7 +131,8 @@ class QualifiedEquityTradingService:
         """
         success=True
         for order in order_book.open_orders():
-            if order.request.side.value!='BUY' or self.policy.permits(dict(order.request.metadata)):
+            if order.request.side.value!='BUY' or (self.policy.permits(dict(order.request.metadata)) and
+                    lifecycle_matches_owner(order.request.strategy_lifecycle_id, order.request.metadata.get('strategy_owner'))):
                 continue
             request=factory.create_cancellation_request(order.order_id,order.request.client_order_id,
                 source='equity-strategy-quarantine')

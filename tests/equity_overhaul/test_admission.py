@@ -48,7 +48,7 @@ def test_registry_requires_exact_reviewed_rule_and_config_and_report_hashes():
     with pytest.raises(ValueError):Promotion('QUICK_SCALPER','a'*64,'b'*64,'c'*64)
     with pytest.raises(ValueError):Promotion('ORB5_LONG_V1','not-a-hash','b'*64,'c'*64)
     p=EquityQualificationPolicy((Promotion('ORB5_LONG_V1','a'*64,'b'*64,'c'*64),))
-    m=dict(strategy_policy_version='ORB5_LONG_V1',strategy_code_fingerprint='a'*64,
+    m=dict(strategy_policy_version='ORB5_LONG_V1',strategy_owner='WARRIOR_MOMENTUM',strategy_code_fingerprint='a'*64,
            strategy_configuration_fingerprint='b'*64)
     assert p.permits(m)
     assert not p.permits({**m,'strategy_code_fingerprint':'d'*64})
@@ -122,3 +122,38 @@ def test_entry_qualification_exception_fails_closed():
     def broken(_):raise RuntimeError('synthetic unavailable evidence')
     bridge=AutonomousPaperExecutionBridge(Mock(),Mock(),entry_qualification=broken)
     assert bridge.submit_entry_decision(Signal(),10,D(10)).reason.value=='STRATEGY_NOT_QUALIFIED'
+
+
+@pytest.mark.parametrize('policy,owner,wrong',[
+    ('ORB5_LONG_V1','WARRIOR_MOMENTUM','QUICK_SCALPER'),
+    ('NOISE_BAND_LONG_V1','WARRIOR_MOMENTUM','QUICK_SCALPER'),
+    ('VWAP_RECLAIM_SCALP_V1','QUICK_SCALPER','WARRIOR_MOMENTUM'),
+])
+def test_release_approval_is_bound_to_its_own_engine(policy,owner,wrong):
+    p=EquityQualificationPolicy((Promotion(policy,'a'*64,'b'*64,'c'*64),))
+    m=dict(strategy_policy_version=policy,strategy_owner=owner,
+        strategy_code_fingerprint='a'*64,strategy_configuration_fingerprint='b'*64)
+    assert p.permits(m)
+    assert not p.permits({**m,'strategy_owner':wrong})
+    assert not p.permits({k:v for k,v in m.items() if k!='strategy_owner'})
+    from app.equity_overhaul.admission import lifecycle_matches_owner
+    assert lifecycle_matches_owner(owner+'|PMI|one',owner)
+    assert not lifecycle_matches_owner(wrong+'|PMI|one',owner)
+    assert not lifecycle_matches_owner(owner+'|PMI|',owner)
+
+
+def test_final_service_denies_correct_approval_with_other_engines_lifecycle():
+    c=create_session_paper_composition()
+    try:
+        p=EquityQualificationPolicy((Promotion('VWAP_RECLAIM_SCALP_V1','a'*64,'b'*64,'c'*64),))
+        original=Mock();wrapped=QualifiedEquityTradingService(original,p)
+        request=placement(c.order_command_factory,metadata=dict(strategy_policy_version='VWAP_RECLAIM_SCALP_V1',
+            strategy_owner='QUICK_SCALPER',strategy_code_fingerprint='a'*64,strategy_configuration_fingerprint='b'*64))
+        assert not wrapped.place_order(request).success
+        original.place_order.assert_not_called()
+        # Approved scalper metadata cannot preserve a wrongly owned inherited BUY either.
+        order=SimpleNamespace(request=request.order,order_id='synthetic')
+        original.cancel_order.return_value=SimpleNamespace(success=True)
+        assert wrapped.quarantine_working_buys(SimpleNamespace(open_orders=lambda:(order,)),Mock())
+        original.cancel_order.assert_called_once()
+    finally:c.close()

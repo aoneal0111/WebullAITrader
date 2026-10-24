@@ -314,7 +314,7 @@ def create_desktop_composition(
 
     # A single desktop dispatch boundary covers Warrior, Scalper, controller,
     # prepared AI dispatch and add-ons even when optional controller flags vary.
-    from app.equity_overhaul.admission import production_policy, QualifiedEquityTradingService
+    from app.equity_overhaul.admission import engine_owner, production_policy, QualifiedEquityTradingService
     equity_qualification = production_policy()
     qualified_equity_service = None
     if paper_trading_commands is not None:
@@ -342,7 +342,8 @@ def create_desktop_composition(
             position_quantity_source=trading_state_sources.position_quantity,
             management_context_source=warrior_management_context_source,
             entry_qualification=lambda signal: equity_qualification.permits(
-                autonomous_paper_bridge._strategy_metadata(signal)),
+                {**autonomous_paper_bridge._strategy_metadata(signal),
+                 'strategy_owner': engine_owner(signal)}),
         )
         # Restore the read model from the authoritative PAPER order book before
         # any management/protection callbacks can observe a live quote.  The
