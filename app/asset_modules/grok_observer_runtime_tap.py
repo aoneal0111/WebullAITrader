@@ -23,6 +23,7 @@ class RuntimeContextTap:
         self._capture,self._baseline=capture,baseline
         self._queue=Queue(maxsize=16);self._stop=Event();self._lock=Lock()
         self._closed=False;self._counts=Counter();self._bars=OrderedDict()
+        self._timing={}
         self._thread=Thread(target=self._run,name='atlas-observer-native-evidence',daemon=True)
         self._thread.start()
 
@@ -46,6 +47,11 @@ class RuntimeContextTap:
     def _count(self,key):
         with self._lock:self._counts[key]+=1
 
+    def _measure(self,name,value):
+        with self._lock:
+            old=self._timing.setdefault(name,dict(min=value,max=value,samples=0))
+            old['min']=min(old['min'],value);old['max']=max(old['max'],value);old['samples']+=1
+
     def _run(self):
         while not self._stop.is_set() or not self._queue.empty():
             try:item=self._queue.get(timeout=.05)
@@ -61,6 +67,15 @@ class RuntimeContextTap:
                 if (not isinstance(source,WebullExecutionQuoteSource) or not isinstance(quote,ExecutionQuoteSnapshot)
                         or quote.bid_timestamp!=quote.ask_timestamp):
                     self._count('unsupported_quote_provenance');continue
+                captured_now=self._capture._clock()
+                assessed_age=(at-quote.bid_timestamp).total_seconds()
+                current_age=(captured_now-quote.bid_timestamp).total_seconds()
+                self._measure('quote_age_at_assessment_seconds',assessed_age)
+                self._measure('quote_age_at_capture_seconds',current_age)
+                self._measure('observer_queue_delay_seconds',(captured_now-at).total_seconds())
+                if assessed_age<0:self._count('future_quote_at_assessment')
+                if current_age<0:self._count('future_quote_at_capture')
+                if current_age>2:self._count('stale_quote_at_capture')
                 if quote.symbol not in self._bars:
                     self._count('missing_shared_market_history');continue
                 bars,known=self._bars[quote.symbol]
@@ -83,6 +98,6 @@ class RuntimeContextTap:
         with self._lock:self._closed=True
         self._stop.set();self._thread.join(timeout=2)
         report=self._capture.close()
-        with self._lock:counts=dict(self._counts)
+        with self._lock:counts=dict(self._counts);timing={k:dict(v) for k,v in self._timing.items()}
         return dict(scope='PASSIVE_NATIVE_ENGINE_CONTEXT_HOOKS',tap_stopped=not self._thread.is_alive(),
-                    tap_counts=counts,capture=report,online_observer_ready=False)
+                    tap_counts=counts,timing=timing,capture=report,online_observer_ready=False)

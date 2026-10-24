@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from queue import Queue, Full, Empty
 from threading import Event, Lock, Thread
+from time import monotonic
 
 from .engine_catalog import EngineId
 from .grok_observer import Snapshot
@@ -58,11 +59,12 @@ class ContextCapture:
     No entry/exit callbacks or providers are accepted. This is not wired to Atlas.
     submit never propagates validation/storage exceptions into its caller.
     """
-    def __init__(self,directory,baseline,*,clock):
+    def __init__(self,directory,baseline,*,clock,deadline=None,timer=monotonic):
         import re
         if not isinstance(baseline,str) or not re.fullmatch('[0-9a-f]{64}',baseline):
             raise ValueError('Frozen baseline fingerprint required')
         self._baseline,self._clock=baseline,clock
+        self._deadline,self._timer=deadline,timer
         self._queue=Queue(maxsize=16);self._stop=Event();self._lock=Lock()
         self._counts=Counter();self._owners=Counter();self._seen=set();self._bytes=0
         self._closed=False;self._failed=False
@@ -72,6 +74,9 @@ class ContextCapture:
 
     def submit(self,snapshot,context,*,quote_basis=None):
         try:
+            if self._deadline is not None and self._timer()>=self._deadline:
+                with self._lock:self._counts['deadline_rejections']+=1
+                return False
             data=_encode(snapshot,context,self._baseline,self._clock(),quote_basis)
             identity=(snapshot.engine.value,snapshot.event_id)
             with self._lock:
