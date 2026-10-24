@@ -7952,7 +7952,9 @@ def _recover_entry_payload(
             return None, f"{field.upper()}_UNRECOVERABLE"
 
     session = str(payload.get("session") or "").strip().upper()
-    if session not in WARRIOR_ENTRY_ALLOWED_SESSIONS:
+    # Recovery restores already-owned exposure, not permission to open a trade.
+    # Tightening today's entry sessions must not discard a historical position.
+    if session not in {"PREMARKET", "REGULAR", "AFTER_HOURS", "OVERNIGHT"}:
         return None, "SESSION_INVALID"
     payload["session"] = session
     try:

@@ -15,7 +15,6 @@ from app.live_scanner.session import ScannerSession
 WARRIOR_ENTRY_ALLOWED_SESSIONS = frozenset({
     ScannerSession.PREMARKET.value,
     ScannerSession.REGULAR.value,
-    ScannerSession.AFTER_HOURS.value,
 })
 BALANCED_POLICY_VERSION = "BALANCED_V1"
 CONSERVATIVE_POLICY_VERSION = "CONSERVATIVE_V1"

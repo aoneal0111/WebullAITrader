@@ -73,6 +73,7 @@ class PaperEntryAuthorizationReason(StrEnum):
     EXECUTION_DATA_UNAVAILABLE = "EXECUTION_DATA_UNAVAILABLE"
     AUTHORIZATION_OUTCOME_UNAVAILABLE = "AUTHORIZATION_OUTCOME_UNAVAILABLE"
     EXECUTION_NOT_PERMITTED = "EXECUTION_NOT_PERMITTED"
+    STRATEGY_NOT_QUALIFIED = "STRATEGY_NOT_QUALIFIED"
     ACCOUNT_NOT_READY = "ACCOUNT_NOT_READY"
     SYMBOL_NOT_ALLOWED = "SYMBOL_NOT_ALLOWED"
     SPREAD_WIDE = "SPREAD_WIDE"
@@ -297,6 +298,9 @@ class AutonomousPaperExecutionBridge:
     management_context_source: Callable[[str], str | None] | None = None
     protection_amender: Callable[..., bool] | None = None
     strategy_provenance_source: Callable[[object], dict] | None = None
+    # Desktop always injects release qualification. Standalone mechanical
+    # bridges retain their existing dependency-injected test/research contract.
+    entry_qualification: Callable[[object], bool] | None = None
     _seen_entries: OrderedDict[str, None] = field(default_factory=OrderedDict, init=False)
     _active_by_symbol: dict[str, str] = field(default_factory=dict, init=False)
     _entry_orders: dict[str, str] = field(default_factory=dict, init=False)
@@ -1120,6 +1124,14 @@ class AutonomousPaperExecutionBridge:
             )
             return PaperEntryPreparation(decision, None) if prepare_only else decision
 
+        if self.entry_qualification is not None:
+            try:
+                qualified = self.entry_qualification(signal) is True
+            except Exception:
+                qualified = False
+            if not gate("strategy_qualification", qualified, qualified, True):
+                return refused(PaperEntryAuthorizationReason.STRATEGY_NOT_QUALIFIED)
+
         if not gate("environment", self.mode.strip().upper() == "PAPER", self.mode, "PAPER"):
             return refused(PaperEntryAuthorizationReason.ENVIRONMENT_MISMATCH)
         if not gate("paper_enabled", self.enabled, self.enabled, True):
@@ -1180,6 +1192,9 @@ class AutonomousPaperExecutionBridge:
                 signal_timestamp = getattr(signal, "timestamp", None)
                 if isinstance(signal_timestamp, datetime):
                     deadline = signal_timestamp + BAR_INTERVAL
+            session_deadline = getattr(signal, "entry_session_deadline", None)
+            if strategy_owner == "QUICK_SCALPER" and session_deadline is not None:
+                deadline = min(deadline, session_deadline) if deadline is not None else session_deadline
             if trigger > min(
                 anchor * (Decimal("1") + max_displacement_percent / Decimal("100")),
                 anchor + max_displacement_absolute,
@@ -1243,6 +1258,13 @@ class AutonomousPaperExecutionBridge:
                             "entry_validity_seconds": str(
                                 int(BAR_INTERVAL.total_seconds())
                             ),
+                            **({
+                                "scalp_entry_session_deadline": (
+                                    signal.entry_session_deadline.isoformat()
+                                    if getattr(signal, "entry_session_deadline", None) else None
+                                ),
+                                "scalp_maximum_holding_seconds": str(getattr(signal, "maximum_holding_seconds", 300)),
+                            } if strategy_owner == "QUICK_SCALPER" else {}),
                         },
                     )
                 )
@@ -1697,6 +1719,9 @@ class AutonomousPaperExecutionBridge:
                             "provenance": "AUTONOMOUS_ADAPTIVE_ENTRY_REPLACEMENT",
                             "lifecycle_id": identity,
                             "predecessor_order_id": predecessor.order_id,
+                            **{k: predecessor.request.metadata[k] for k in (
+                                "scalp_entry_session_deadline", "scalp_maximum_holding_seconds"
+                            ) if k in predecessor.request.metadata},
                             "replacement_sequence": str(sequence),
                             "replacement_reason": normalized_reason,
                             "original_planned_entry": str(original_planned),

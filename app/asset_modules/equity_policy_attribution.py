@@ -17,6 +17,7 @@ SHARED = (
     "strategies/warrior_momentum/opportunity_engine.py", "paper_gateway/gateway.py",
     "composition/desktop.py", "strategies/warrior_momentum/desktop_sidecar.py",
     "services/trading_service.py",
+    "market/scalp_session.py",
 )
 SOURCE_FILES = {
     EngineId.WARRIOR.value: SHARED + (
@@ -40,7 +41,8 @@ def source_fingerprint(root, paths):
 
 def family(signal, engine):
     if engine == EngineId.SCALPER.value:
-        return "QUICK_SCALP_MOMENTUM"
+        setup = getattr(signal, "setup_type", None)
+        return setup if setup in {"QUICK_SCALP_STREAM", "QUICK_SCALP_MOMENTUM"} else "QUICK_SCALP_MOMENTUM"
     primary = getattr(signal, "taxonomy_strategy_id", None)
     if primary:
         value = getattr(primary, "value", primary)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+import logging
 from threading import Lock
 from time import monotonic, sleep
 
@@ -17,6 +18,29 @@ class CryptoProviderError(RuntimeError):
 
 class UnsupportedCryptoSymbolError(CryptoProviderError):
     pass
+
+
+class CryptoRateLimitError(CryptoProviderError):
+    pass
+
+
+class CryptoBusinessRequestError(CryptoProviderError):
+    pass
+
+
+def _http_status(value):
+    if type(value) is int and 100 <= value <= 599:
+        return value
+    if isinstance(value,str) and len(value)==3 and value.isascii() and value.isdigit():
+        return _http_status(int(value))
+    return None
+
+
+def _exception_status(error):
+    for name in ('http_status','status_code','code'):
+        status=_http_status(getattr(error,name,None))
+        if status is not None:return status
+    return _http_status(getattr(getattr(error,'response',None),'status_code',None))
 
 
 class MalformedCryptoQuoteError(CryptoProviderError):
@@ -52,6 +76,7 @@ class WebullCryptoResearchProvider:
         self._sleep = sleeper
         self._rate_lock = Lock()
         self._last_request_at: float | None = None
+        self._cooldown_until = 0.0
 
     def discover(
         self, configured: Sequence[CryptoPair] = ()
@@ -150,26 +175,52 @@ class WebullCryptoResearchProvider:
         return getter() if callable(getter) else self._client
 
     def _request(self, operation: str, call: Callable[[], object]) -> object:
-        last_error: Exception | None = None
+        # The official SDK raises ServerException(http_status=...), so checking
+        # returned responses alone loses permission/rate/business classification.
         for attempt in range(self._retry_attempts + 1):
+            with self._rate_lock:
+                if self._monotonic() < self._cooldown_until:
+                    raise CryptoRateLimitError("Webull crypto request deferred after rate limit")
             self._rate_limit()
+            status = None
+            code = None
             try:
                 response = call()
-                status = getattr(response, "status_code", 200)
-                if status == 417:
-                    raise UnsupportedCryptoSymbolError(operation + " rejected a symbol")
-                if not isinstance(status, int) or status < 400:
+                status = _http_status(getattr(response, "status_code", 200))
+                if status is not None and status < 400:
                     return response
-                if status in {401, 403}:
-                    raise PermissionError(f"Webull crypto {operation} is not entitled")
-                raise CryptoProviderError(f"Webull crypto {operation} failed: HTTP {status}")
-            except (UnsupportedCryptoSymbolError, PermissionError):
-                raise
+                if status == 417:
+                    try:
+                        body = response.json()
+                        code = body.get('error_code') if isinstance(body,dict) else None
+                    except Exception:
+                        pass
             except Exception as exc:
-                last_error = exc
-                if attempt == self._retry_attempts:
-                    break
-        raise CryptoProviderError(f"Webull crypto {operation} failed") from last_error
+                status = _exception_status(exc)
+                code = getattr(exc,'error_code',None)
+                if isinstance(exc,PermissionError):status=403
+            category = ('PERMISSION_DENIED' if status in {401,403} else
+                        'RATE_LIMITED' if status==429 else
+                        'BUSINESS_REQUEST_ERROR' if status==417 else
+                        'REQUEST_REJECTED' if status is not None and 400<=status<500 and status!=408 else
+                        'SERVER_ERROR' if status is not None and status>=500 else 'TRANSPORT_ERROR')
+            logging.getLogger(__name__).warning(
+                'crypto_provider_failure operation=%s category=%s http_status=%s attempt=%s',
+                operation,category,status if status is not None else 'UNAVAILABLE',attempt+1)
+            # Never print provider messages, bodies, request IDs or credentials.
+            if status in {401,403}:
+                raise PermissionError('Webull crypto request is not entitled') from None
+            if status==429:
+                with self._rate_lock:self._cooldown_until=self._monotonic()+60
+                raise CryptoRateLimitError('Webull crypto request rate limited; deferred') from None
+            if status==417:
+                if isinstance(code,str) and code in {'UNSUPPORTED_SYMBOL','INVALID_SYMBOL','SYMBOL_NOT_FOUND'}:
+                    raise UnsupportedCryptoSymbolError(operation+' rejected a symbol') from None
+                raise CryptoBusinessRequestError('Webull crypto business request rejected') from None
+            if status is not None and 400<=status<500 and status!=408:
+                raise CryptoBusinessRequestError('Webull crypto request rejected') from None
+            if attempt==self._retry_attempts:
+                raise CryptoProviderError('Webull crypto '+operation+' failed') from None
 
     def _rate_limit(self) -> None:
         with self._rate_lock:
@@ -286,7 +337,7 @@ def _decimal(
 
 def _timestamp(value: object, adopted_at: datetime) -> datetime:
     if value is None:
-        return adopted_at
+        raise ValueError("provider timestamp required; receipt time is not quote time")
     if isinstance(value, datetime):
         return value
     if isinstance(value, (int, float, Decimal)) or str(value).isdigit():
@@ -299,6 +350,8 @@ def _timestamp(value: object, adopted_at: datetime) -> datetime:
 
 
 __all__ = [
+    "CryptoRateLimitError",
+    "CryptoBusinessRequestError",
     "CryptoProviderError",
     "MalformedCryptoQuoteError",
     "UnsupportedCryptoSymbolError",

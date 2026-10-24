@@ -96,6 +96,7 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
     monkeypatch, tmp_path,
 ) -> None:
     """Acceptance proof through the real desktop PAPER composition root."""
+    _permit_synthetic_legacy_mechanics(monkeypatch)
     monkeypatch.setenv("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED", "false")
     intelligence_path = tmp_path / "intelligence.sqlite3"
     configuration = load_configuration({
@@ -277,6 +278,7 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
 def test_legacy_triggered_callback_assigns_before_ineligible_treatment(
     monkeypatch, tmp_path,
 ) -> None:
+    _permit_synthetic_legacy_mechanics(monkeypatch)
     monkeypatch.setenv("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED", "false")
     configuration = load_configuration({
         "WEBULL_TRADING_ENVIRONMENT": "PAPER",
@@ -332,6 +334,7 @@ def test_legacy_triggered_callback_assigns_before_ineligible_treatment(
 def test_di_entry_callback_exception_is_visible_and_fail_closed(
     monkeypatch, tmp_path,
 ) -> None:
+    _permit_synthetic_legacy_mechanics(monkeypatch)
     monkeypatch.setenv("ATLAS_WARRIOR_ADAPTIVE_CONTEXT_ENABLED", "false")
     configuration = load_configuration({
         "WEBULL_TRADING_ENVIRONMENT": "PAPER",
@@ -655,3 +658,16 @@ def test_simulation_mode_does_not_construct_configured_broker_stream(
         assert composition.runtime_service.wait(2.0)
     finally:
         composition.close(timeout_seconds=1.0)
+
+
+def _permit_synthetic_legacy_mechanics(monkeypatch):
+    """Explicit test-only admission for pre-existing DI lifecycle mechanics.
+
+    Production qualification is verified separately, with zero release entries.
+    This fixture does not modify any environment or shipped promotion registry.
+    """
+    from app.equity_overhaul import admission
+    class SyntheticAdmission:
+        def permits(self, metadata):return True
+        def status(self):return {'approved_policies':['SYNTHETIC_MECHANICS_ONLY']}
+    monkeypatch.setattr(admission, 'production_policy', SyntheticAdmission)
