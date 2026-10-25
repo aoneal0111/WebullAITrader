@@ -15,13 +15,23 @@ def create_asset_modules(composition):
     from app.composition.crypto_allocation import validate_crypto_allocation, attach_crypto_allocation
     configuration = load_configuration()
     shared_service = validate_crypto_allocation(configuration, composition)
+    native_observer = configuration.crypto_native_observer_enabled
+    if native_observer:
+        from app.crypto_research.runtime import CryptoResearchRuntime
+        if (shared_service is None or configuration.grok_paper_entries_enabled
+                or not isinstance(composition.crypto_research_runtime, CryptoResearchRuntime)):
+            raise ValueError('Native crypto observer requires shared PAPER allocation, research runtime and disabled Grok order review')
     execution_path = Path(configuration.execution_database_path)
     paper = CryptoPaper(execution_path.with_name('crypto-paper.sqlite3'))
     try:
         router = None if shared_service is None else attach_crypto_allocation(shared_service, paper)
         grok = getattr(composition, "grok_suite", None) or configured_suite()
-        supervisor = CryptoSupervisor(paper, composition.crypto_research_runtime.latest,
-                                      grok.crypto if grok is not None else None, entry_router=router)
+        if native_observer:
+            from app.asset_modules.crypto_native_observer import NativeCryptoObserver
+            supervisor = NativeCryptoObserver(paper, composition.crypto_research_runtime,entry_router=router)
+        else:
+            supervisor = CryptoSupervisor(paper, composition.crypto_research_runtime.latest,
+                                          grok.crypto if grok is not None else None, entry_router=router)
     except Exception:
         paper.close()
         raise

@@ -32,22 +32,43 @@ if ($LASTEXITCODE -ne 0 -or $Installed -ne $Revision) { throw 'Installed revisio
 Push-Location $Repo
 try {
     $TestTemp = Join-Path $env:TEMP ('atlas-profit-ack-tests-' + [guid]::NewGuid().ToString('N'))
-    & $Python -m pytest `
-        tests/warrior_momentum/test_exit_request_acknowledgement.py `
-        tests/warrior_momentum/test_point_setup_continuity.py `
-        tests/warrior_momentum/test_durable_target_reconciliation.py `
-        tests/strategies/test_autonomous_paper_bridge.py `
-        tests/equity_overhaul/test_admission.py `
-        --basetemp $TestTemp -q
+    $Checks = @(
+        'tests/warrior_momentum/test_exit_request_acknowledgement.py'
+        'tests/warrior_momentum/test_point_setup_continuity.py'
+        'tests/warrior_momentum/test_durable_target_reconciliation.py'
+        'tests/strategies/test_autonomous_paper_bridge.py'
+        'tests/equity_overhaul/test_admission.py'
+    )
+    if (Test-Path -LiteralPath 'tests/asset_modules/test_crypto_native_observer.py') {
+        $Checks += @(
+            'tests/asset_modules/test_crypto_native_observer.py'
+            'tests/asset_modules/test_native_crypto_desktop_composition.py'
+            'tests/asset_modules/test_desktop_crypto_allocation.py'
+        )
+    }
+    & $Python -m pytest @Checks --basetemp $TestTemp -q
     if ($LASTEXITCODE -ne 0) {
         throw "Windows checks failed. Keep Atlas closed; BACKUP_BRANCH=$Backup. No automatic reset was performed."
     }
     Write-Host "UPDATE_VERIFIED=$Installed"
+    $FlagCheck = @'
+import sys
+from pathlib import Path
+from dotenv import load_dotenv
+repo = Path(sys.argv[1])
+load_dotenv(dotenv_path=repo / '.env', override=False)
+from app.configuration import load_configuration
+c = load_configuration()
+for name in ('paper_controller_enabled', 'crypto_shared_allocation_enabled', 'crypto_native_observer_enabled'):
+    print(name.upper() + '=' + str(getattr(c, name)))
+'@
+    $FlagCheck | & $Python - $Repo
+    if ($LASTEXITCODE -ne 0) { throw 'Local flag check failed. No settings were edited.' }
     # The old capture receipt is intentionally not reused after source changes.
     $Output = Join-Path $env:LOCALAPPDATA ('AtlasResearch\atlas-fresh-equity-capture-' + [guid]::NewGuid().ToString('N'))
     & (Join-Path $Repo 'tools\prepare-observer-session.ps1') `
         -Repo $Repo -Revision $Revision -OutputDirectory $Output
     if ($LASTEXITCODE -ne 0) { throw 'Capture preparation did not pass. Atlas was not started.' }
-    Write-Host 'REPAIRS_INSTALLED; FRESH_CAPTURE_PREPARED; ATLAS_NOT_STARTED'
+    Write-Host 'UPDATE_INSTALLED; FRESH_CAPTURE_PREPARED; ATLAS_NOT_STARTED; NATIVE_CRYPTO_FLAG_UNCHANGED'
 }
 finally { Pop-Location }
