@@ -113,3 +113,20 @@ A full source-copy preparation with PAPER/live-off/Grok-review-off and the nativ
 flag enabled also passed its offline compatibility check without GUI/network
 execution. These are synthetic/local correctness checks, not measurements of
 live reliability, profitable performance or a newly approved strategy.
+
+### Windows settlement-test synchronization
+
+The initial Windows run observed a locally flat crypto ledger while its shared
+allocation command was still active. The protective SELL transaction commits
+before `CryptoAllocationRouter.protect` calls shared reconciliation; these are
+separate durable steps. The test previously asserted settlement immediately
+upon seeing the local position disappear, so legitimate scheduling could fail it.
+
+The corrected check waits for both a flat ledger and zero active commands, then
+verifies zero reserved capital. A deterministic barrier variant pauses between
+local close and reconciliation, proves capital remains reserved in that window,
+and releases the barrier before waiting for settlement. Worker failure notification
+also precedes owner-thread cleanup, so thread termination is awaited explicitly.
+The test does not call reconciliation on behalf of the protection thread or
+release capital early. Production code, flags and strategy rules are unchanged.
+The focused observer/allocation/worker/desktop regression run passed 99 tests.

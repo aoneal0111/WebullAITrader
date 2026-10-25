@@ -1,7 +1,7 @@
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal as D
-from threading import get_ident
+from threading import Event,get_ident
 from types import SimpleNamespace
 import time
 
@@ -102,7 +102,8 @@ def test_bad_cached_inputs_never_reach_worker(native,case,expected):
     assert not paper.snapshot()['positions'] and not router.enabled
 
 
-def test_worker_failure_never_stops_independent_protection_or_releases_early(native):
+@pytest.mark.parametrize('pause_settlement',[False,True])
+def test_worker_failure_never_stops_independent_protection_or_releases_early(native,monkeypatch,pause_settlement):
     observer,shared,paper,router,runtime,q=native
     router.set_enabled(True)
     assert router.submit({**buy(),'id':'held-before-observer','target':'120'},{'BTC/USD':q},now=NOW)['entry']=='OPENED'
@@ -114,8 +115,32 @@ def test_worker_failure_never_stops_independent_protection_or_releases_early(nat
     until(lambda:observer.metrics()['worker_failures']>0)
     assert observer.protection_thread.is_alive()
     assert paper.snapshot()['positions']  # Existing reservation remains until exit evidence.
-    runtime.admit(replace(q,bid=D(130),ask=D('130.1'),price=D(130)))
-    until(lambda:not paper.snapshot()['positions'])
-    assert shared.snapshot('pool')['active_commands']==0
-    assert not router.enabled
-    assert not observer.thread.is_alive()  # No automatic worker restart.
+    assert shared.snapshot('pool')['active_commands']==1
+    closed_locally,allow_settlement=Event(),Event()
+    original_reconcile=router.reconcile
+    def reconcile_after_local_close():
+        # Deterministically expose the real two-transaction window. No lock is
+        # held here: native local SELL committed before shared settlement starts.
+        if not paper.snapshot()['positions'] and shared.snapshot('pool')['active_commands']:
+            closed_locally.set()
+            if not allow_settlement.wait(5):
+                raise AssertionError('Settlement barrier was not released')
+        return original_reconcile()
+    if pause_settlement:
+        monkeypatch.setattr(router,'reconcile',reconcile_after_local_close)
+    try:
+        runtime.admit(replace(q,bid=D(130),ask=D('130.1'),price=D(130)))
+        if pause_settlement:
+            assert closed_locally.wait(5)
+            assert not paper.snapshot()['positions']
+            assert shared.snapshot('pool')['active_commands']==1
+            assert shared.snapshot('pool')['reserved_capital']>0
+            allow_settlement.set()
+        # A flat local ledger alone is not acknowledgement of shared settlement.
+        until(lambda:not paper.snapshot()['positions']
+              and shared.snapshot('pool')['active_commands']==0)
+        assert shared.snapshot('pool')['reserved_capital']==0
+        assert not router.enabled
+        until(lambda:not observer.thread.is_alive())  # Failure notification precedes cleanup.
+    finally:
+        allow_settlement.set()
