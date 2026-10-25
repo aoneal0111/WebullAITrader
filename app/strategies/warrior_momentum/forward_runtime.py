@@ -5166,11 +5166,7 @@ class WarriorForwardCaptureService:
                 state, bid, quantity, role,
             )
             active = (
-                result.state in {
-                    PaperExitSubmissionState.SUBMITTED,
-                    PaperExitSubmissionState.WORKING,
-                    PaperExitSubmissionState.COMPLETED,
-                }
+                result.request_succeeded
                 if isinstance(result, PaperExitSubmissionDecision)
                 else bool(result)
             )
@@ -5208,7 +5204,7 @@ class WarriorForwardCaptureService:
                 state, desired_stop, state.remaining, "STOP",
             )
             active = (
-                result.protection_active
+                result.requested_order_active
                 if isinstance(result, PaperExitSubmissionDecision)
                 else bool(result)
             )
@@ -6278,7 +6274,10 @@ class WarriorForwardCaptureService:
             if reason == "STOP":
                 self._capture_stop_activation(state, result, bar)
             active = (
-                result.protection_active
+                # A previously triggered stop must remain EXIT_WORKING even
+                # when the bridge refuses to replace that same protective leg.
+                (result.protection_active if reason == "STOP"
+                 else result.requested_order_active)
                 if isinstance(result, PaperExitSubmissionDecision)
                 else bool(result)
             )
@@ -6367,7 +6366,7 @@ class WarriorForwardCaptureService:
                         defense_submission_reason,
                     )
                     defense_active = (
-                        defense_result.protection_active
+                        defense_result.requested_order_active
                         if isinstance(
                             defense_result, PaperExitSubmissionDecision
                         )
@@ -6410,7 +6409,7 @@ class WarriorForwardCaptureService:
                     state, trailing_stop, quantity, "STOP",
                 )
                 active = (
-                    result.protection_active
+                    result.requested_order_active
                     if isinstance(result, PaperExitSubmissionDecision)
                     else bool(result)
                 )
@@ -6506,12 +6505,9 @@ class WarriorForwardCaptureService:
                 )
             role = self._exit_role_for_reason(reason)
             if role is not None and (
-                not isinstance(result, PaperExitSubmissionDecision)
-                or result.state in {
-                    PaperExitSubmissionState.SUBMITTED,
-                    PaperExitSubmissionState.WORKING,
-                    PaperExitSubmissionState.COMPLETED,
-                }
+                result.request_succeeded
+                if isinstance(result, PaperExitSubmissionDecision)
+                else bool(result)
             ):
                 state.active_exit_role = role
                 state.active_exit_order_id = getattr(result, "order_id", None)
@@ -6596,7 +6592,7 @@ class WarriorForwardCaptureService:
                 price = evidence.best_bid
             result = self._submit_exit(state, price, quantity, "SESSION_CLOSE")
             submitted = (
-                result.state in {PaperExitSubmissionState.SUBMITTED, PaperExitSubmissionState.WORKING}
+                result.requested_order_active
                 if isinstance(result, PaperExitSubmissionDecision) else bool(result)
             )
             outcome = "SESSION_CLOSE_SUBMITTED" if submitted else "SESSION_CLOSE_UNAVAILABLE"
@@ -6629,7 +6625,7 @@ class WarriorForwardCaptureService:
                 state, price, quantity, "OVERNIGHT_CAPABILITY_LOST",
             )
             submitted = (
-                result.state in {PaperExitSubmissionState.SUBMITTED, PaperExitSubmissionState.WORKING}
+                result.requested_order_active
                 if isinstance(result, PaperExitSubmissionDecision) else bool(result)
             )
             outcomes.append((
@@ -6819,10 +6815,7 @@ class WarriorForwardCaptureService:
                     state.active_exit_role = None
                     state.active_exit_order_id = None
                 submitted = (
-                    target_result.state in {
-                        PaperExitSubmissionState.SUBMITTED,
-                        PaperExitSubmissionState.WORKING,
-                    }
+                    target_result.requested_order_active
                     if isinstance(target_result, PaperExitSubmissionDecision)
                     else bool(target_result)
                 )

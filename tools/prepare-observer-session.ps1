@@ -1,4 +1,4 @@
-param([string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'), [string]$Revision)
+param([string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'), [string]$Revision, [string]$OutputDirectory)
 $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path -LiteralPath $Repo).Path
 $Python = Join-Path $Repo '.venv\Scripts\python.exe'
@@ -24,14 +24,27 @@ try {
     try {
         & $Python -m pytest tests/asset_modules/test_grok_observer_session.py --basetemp (Join-Path $Root 'tests') -q
         if ($LASTEXITCODE -ne 0) { throw 'Observer preparation tests failed.' }
-        $Desktop = [Environment]::GetFolderPath('Desktop')
-        if (-not $Desktop) { $Desktop = $env:USERPROFILE }
-        $Output = Join-Path $Desktop ('atlas-fresh-equity-capture-' + [guid]::NewGuid().ToString('N'))
+        if ($OutputDirectory) {
+            $Output = [IO.Path]::GetFullPath($OutputDirectory)
+        }
+        else {
+            $Desktop = [Environment]::GetFolderPath('Desktop')
+            if (-not $Desktop) { $Desktop = $env:USERPROFILE }
+            $Output = Join-Path $Desktop ('atlas-fresh-equity-capture-' + [guid]::NewGuid().ToString('N'))
+        }
         & $Python -m app.asset_modules.grok_observer_session --repo $Repo --output $Output
         $PrepareExit = $LASTEXITCODE
         $Summary = Join-Path $Output 'preparation-summary.json'
         if (Test-Path -LiteralPath $Summary -PathType Leaf) { & explorer.exe "/select,`"$Summary`"" }
         if ($PrepareExit -ne 0) { throw 'Observer source preparation failed. Send preparation-summary.json only.' }
+        foreach ($Required in @('Start-Observer-Capture.ps1', 'bootstrap-observer.py', 'private-baseline-receipt.json')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $Output $Required) -PathType Leaf)) {
+                throw "Prepared artifact is missing: $Required. Nothing was started."
+            }
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $Output 'frozen-source') -PathType Container)) {
+            throw 'Prepared source folder is missing. Nothing was started.'
+        }
         Write-Host 'PREPARED_ONLY; ATLAS_NOT_STARTED; NO_MARKET_DATA_OR_GROK_REQUESTS'
         Write-Host "LOCAL_START_SCRIPT=$(Join-Path $Output 'Start-Observer-Capture.ps1')"
         Write-Host 'The local start script is for a regular session only. Start scanning normally in Atlas; this tool never auto-starts trading.'

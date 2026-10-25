@@ -566,17 +566,13 @@ class QuickScalperPaperRuntimeAdapter:
             state.symbol, quantity, state.initial_stop, "STOP",
             state.lifecycle_id, strategy_owner=OWNER,
         )
-        if not protection.protection_active:
+        if not protection.requested_order_active:
             return
         target = self.bridge.ensure_exit(
             state.symbol, quantity, state.target_price, "SCALP_TARGET",
             state.lifecycle_id, target_stage_only=True, strategy_owner=OWNER,
         )
-        if target.state in {
-            PaperExitSubmissionState.SUBMITTED,
-            PaperExitSubmissionState.WORKING,
-            PaperExitSubmissionState.COMPLETED,
-        }:
+        if target.request_succeeded:
             self._emit("SCALP_PROTECTION_ACTIVE", state.symbol,
                        generation=state.generation_id, qty=quantity)
             self.engine.mark_protected(
@@ -1064,16 +1060,20 @@ class QuickScalperPaperRuntimeAdapter:
             executable_bid=executable_bid, observed_at=observed_at,
             momentum_stalled=momentum_stalled,
         )
+        prior_profit_state = state.profit_state
         state.peak_bid = decision.position.peak_executable_bid
         state.profit_state = decision.position.state
         if (
             decision.action is ProfitAction.TIGHTEN_STOP
             and decision.desired_stop is not None
         ):
-            self.bridge.ensure_exit(
+            result = self.bridge.ensure_exit(
                 state.symbol, quantity, decision.desired_stop, "STOP",
                 state.lifecycle_id, strategy_owner=OWNER,
             )
+            if not result.requested_order_active:
+                state.profit_state = prior_profit_state
+                return
             self._emit(
                 "SCALP_PROFIT_DEFENSE", state.symbol,
                 generation=state.generation_id, reason=decision.reason,
@@ -1087,18 +1087,17 @@ class QuickScalperPaperRuntimeAdapter:
                 )
             finally:
                 state.full_exit_submitting = False
-            if result.state in {
-                PaperExitSubmissionState.SUBMITTED,
-                PaperExitSubmissionState.WORKING,
-            }:
-                self._emit(
-                    "SCALP_EXIT_REQUESTED", state.symbol,
-                    generation=state.generation_id,
-                    reason=decision.reason, qty=quantity,
-                )
-                self.engine.mark_exit_requested(
-                    state.symbol, state.generation_id, at=observed_at,
-                )
+            if not result.requested_order_active:
+                state.profit_state = prior_profit_state
+                return
+            self._emit(
+                "SCALP_EXIT_REQUESTED", state.symbol,
+                generation=state.generation_id,
+                reason=decision.reason, qty=quantity,
+            )
+            self.engine.mark_exit_requested(
+                state.symbol, state.generation_id, at=observed_at,
+            )
 
     def _current_stop(self, state: _ScalpPositionState) -> Decimal:
         values = [

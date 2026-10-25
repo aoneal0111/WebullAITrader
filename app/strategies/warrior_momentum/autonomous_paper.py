@@ -173,6 +173,20 @@ class PaperExitSubmissionDecision:
         }
 
 
+    @property
+    def requested_order_active(self) -> bool:
+        """The requested action worked; retaining an older exit is not success."""
+        return self.failure_reason is None and self.protection_active
+
+    @property
+    def request_succeeded(self) -> bool:
+        return self.failure_reason is None and self.state in {
+            PaperExitSubmissionState.SUBMITTED,
+            PaperExitSubmissionState.WORKING,
+            PaperExitSubmissionState.COMPLETED,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class PaperEntryGateDecision:
     gate: str
