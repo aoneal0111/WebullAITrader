@@ -46,7 +46,7 @@ def test_http_status_only_is_counted_and_body_closed(code):
     (b'x'*65537,'RESPONSE_TOO_LARGE'),
     (response({},status='incomplete'),'INCOMPLETE_RESPONSE'),
     (response({},error={'message':'PRIVATE'}),'PROVIDER_RESPONSE_ERROR'),
-])
+], ids=['invalid-json','oversized-response','incomplete-response','provider-error'])
 def test_response_failures_distinguished_from_transport(raw,category):
     c=GrokClient('PRIVATE_KEY','grok-test',transport=lambda _:raw)
     with pytest.raises(GrokUnavailable):c.request('MASTER','',{'mode':'PAPER'},{})
