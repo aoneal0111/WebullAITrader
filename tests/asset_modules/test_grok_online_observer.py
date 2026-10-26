@@ -131,6 +131,7 @@ assert r['orders']==0 and len(calls)==1 and r['stop_reason']=='TIME_LIMIT'
 @pytest.mark.parametrize('case',['bad_scope','wrong_capture','wrong_hash'])
 def test_manifest_setup_rejects_unbound_input_before_constructing_provider(tmp_path,monkeypatch,case):
     from app.asset_modules.grok_online_observer import main
+    monkeypatch.chdir(tmp_path)
     manifest=tmp_path/'observer-manifest.json'
     data=dict(scope='NATIVE_OBSERVER_SESSION_MANIFEST_V1',baseline_sha256=BASE,
         source_sha256='a'*64,settings_sha256='b'*64)
