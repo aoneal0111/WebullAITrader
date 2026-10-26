@@ -116,8 +116,9 @@ and fixed failure categories. HTTP failures expose only numeric 400–599 status
 codes. Timeout, network/TLS, oversized/invalid/incomplete responses and provider
 response errors are counted separately. No provider body, URL, exception text,
 header, prompt, key or model answer is copied into those diagnostics. HTTP error
-bodies are closed without reading them. Diagnostics do not retry requests or
-alter the 15-second transport timeout, freshness rules, schema or order controls.
+bodies are closed without reading them. Diagnostics do not retry requests or alter freshness rules, schema or order controls.
+The execution-review transport retains its 15-second timeout; the explicit
+background observer transport below uses 30 seconds.
 Counters describe this client lifetime; the manual launcher creates a fresh client.
 
 `startup_wait_seconds` and `active_observation_seconds` separate waiting for the
@@ -128,3 +129,48 @@ endpoint/schema compatibility, not availability during a prior failure, live
 context performance or the ability to act on a two-second quote. The regression
 test explicitly records such a delayed answer as ADVICE_EXPIRED with execution
 unauthorized. Native scalping and protective exits must not wait on model calls.
+
+## Background advisory transport (V2)
+
+The manual online CLI now calls `run_background` rather than the synchronous
+reference `run`. Warrior and Quick Scalper have independent advisory lanes in
+the separate observer process. One shared GrokClient still limits concurrency
+to two, each role to one attempt per minute, and the trial to at most twenty
+reserved requests in total. Capture ingestion never waits for either model.
+Each owner holds at most one latest pending context; newer evidence replaces
+older pending evidence. Old/equal context cannot supersede a newer admitted
+context. Pending context is rechecked immediately before request launch and
+again inside the real observer serializer; stale data is never retimed.
+
+The observer transport timeout is thirty seconds, isolated from the default
+fifteen-second execution-review transport. This can allow a slow response to
+finish; it does not make that response executable or promise provider success.
+Stop prevents further scheduling and drops pending contexts without waiting for
+a model. The CLI allows up to 31 seconds for already-admitted calls to settle
+and records any still in flight with `accounting_final=false`; those calls may
+still incur charges. Native protection is in a different process and lane.
+
+A schema-valid delayed answer retains its view/reason in the private observation
+log with `status=ADVICE_EXPIRED`, `advisory_only=true`, original evidence capture
+time, response completion time and evidence age. Invalid output is not retained
+as an answer. No old capture or completed answer becomes a fresh quote. The
+private-advisory-state.json file is an atomic research view of up to twenty
+latest completed engine/symbol notes; it is not a desktop decision input and
+must remain local. Summary.json exposes counts and timings only, not reasons,
+symbols or performance. The source/settings receipt checks remain mandatory.
+
+This version establishes working asynchronous communication between the native
+capture and two background advisers. It does not connect those notes to live
+or PAPER trade decisions, enable the seven-role council automatically, approve
+a strategy or wire missing Options/Futures adapters. Connecting a council plan
+to actual orders still requires qualified native candidates and current native
+quote/risk/ownership checks. Do not enable the Grok order-review flag for this
+trial. No external bot framework is required for this bounded adapter.
+
+Validation uses blocking fake providers to prove Scalper completes while
+Warrior is waiting, capture ingestion continues, queues remain bounded, stop
+does not wait, stale pending contexts make no request, requests stop at twenty,
+invalid commands remain invalid, and delayed reasoning remains expired. A real
+subprocess test blocks all networking and exercises the actual background
+serializer and file writer. No paid inference, GUI launch or broker order is
+performed during development. Windows preparation runs these tests locally.

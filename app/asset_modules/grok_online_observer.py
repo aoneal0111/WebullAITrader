@@ -135,9 +135,13 @@ def main():
                     or _digest(dict(source=manifest['source_sha256'],settings=manifest['settings_sha256']))!=manifest['baseline_sha256']):
                 raise ValueError('Frozen source/configuration/identity mismatch')
             baseline=manifest['baseline_sha256']
-        client=configured_client(env)
+        from functools import partial
+        from .grok import _post
+        from .grok_background_observer import run_background
+        # Observer-only timeout; the default execution-review client stays at 15s.
+        client=configured_client(env,transport=partial(_post,timeout=30))
         if client is None:raise ValueError('Missing credentials')
-        report=run(args.capture,baseline,args.output,client)
+        report=run_background(args.capture,baseline,args.output,client)
         report['native_manifest_verified']=receipt is not None
         if receipt is not None:
             try:

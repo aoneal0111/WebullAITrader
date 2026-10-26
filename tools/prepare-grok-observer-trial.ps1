@@ -23,7 +23,7 @@ $Source = Join-Path $Root 'observer-source'
 if ($LASTEXITCODE -ne 0) { throw 'Pinned observer source checkout failed.' }
 Push-Location $Source
 try {
-    & $Python -m pytest tests/asset_modules/test_grok_online_observer.py tests/asset_modules/test_grok_request_diagnostics.py tests/asset_modules/test_grok_decision_council.py tests/asset_modules/test_grok_observer_session.py --basetemp (Join-Path $Root 'checks') -q
+    & $Python -m pytest tests/asset_modules/test_grok_online_observer.py tests/asset_modules/test_grok_background_observer.py tests/asset_modules/test_grok_request_diagnostics.py tests/asset_modules/test_grok_decision_council.py tests/asset_modules/test_grok_observer_session.py --basetemp (Join-Path $Root 'checks') -q
     if ($LASTEXITCODE -ne 0) { throw 'Observer checks failed. Nothing was launched.' }
     $Capture = Join-Path $Root 'capture'
     & $Python -m app.asset_modules.grok_observer_session --repo $Repo --output $Capture
@@ -54,4 +54,4 @@ Write-Host "MANUAL_ATLAS_CAPTURE=$(Join-Path $Capture 'Start-Observer-Capture.ps
 Write-Host "MANUAL_GROK_OBSERVER=$(Join-Path $Root 'Start-Grok-Observer.ps1')"
 Write-Host 'PREPARED_ONLY; NO_GUI_OR_API_REQUESTS; INSTALLED_SOURCE_AND_SETTINGS_UNCHANGED'
 Write-Host 'Run the Atlas capture manually first, click START, then run the Grok observer in a separate PowerShell window.'
-Write-Host 'Observer: up to 20 paid requests, five active minutes, 15-minute startup wait; no order dispatch or automatic policy changes.'
+Write-Host 'Background observer: two independent lanes, up to 20 paid requests, five active minutes, 15-minute startup wait, up to 31 seconds completion grace; no decision/order dispatch.'

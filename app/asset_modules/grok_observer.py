@@ -74,6 +74,10 @@ class Observation:
     reason: str
     execution_authorized: bool=False
     context_sha256: str | None=None
+    evidence_captured_at: str | None=None
+    response_completed_at: str | None=None
+    evidence_age_ms: int | None=None
+    advisory_only: bool=True
 
 
 class GrokObserverTrial:
@@ -91,10 +95,13 @@ class GrokObserverTrial:
 
     def observe(self,snapshot,*,strategy_context=None):
         if not isinstance(snapshot,Snapshot):raise ValueError('typed snapshot required')
-        context_hash=None
+        context_hash=None;finished=None
         def record(status,view=None,reason=''):
             return Observation(snapshot.engine.value,snapshot.event_id,snapshot.symbol,
-                               self._baseline,status,view,reason,context_sha256=context_hash)
+                               self._baseline,status,view,reason,context_sha256=context_hash,
+                               evidence_captured_at=snapshot.captured_at.isoformat(),
+                               response_completed_at=None if finished is None else finished.isoformat(),
+                               evidence_age_ms=None if finished is None else round((finished-snapshot.captured_at).total_seconds()*1000))
         if not self._lock.acquire(blocking=False):return record('BUSY')
         try:
             now=self._clock();aware(now)
@@ -124,10 +131,11 @@ class GrokObserverTrial:
             try:reply=self._client.request(snapshot.engine.value,instruction,context,SCHEMA)
             except GrokUnavailable:return record('PROVIDER_UNAVAILABLE')
             finished=self._clock();aware(finished)
-            if finished<now or not snapshot.fresh(finished):return record('ADVICE_EXPIRED')
             if (not isinstance(reply,dict) or set(reply)!={'view','reason'} or
                     reply['view'] not in ('WATCH','PASS') or not isinstance(reply['reason'],str) or
                     len(reply['reason'])>300):return record('INVALID_ADVICE')
+            if finished<now or not snapshot.fresh(finished):
+                return record('ADVICE_EXPIRED',reply['view'],reply['reason'])
             return record('OBSERVED',reply['view'],reply['reason'])
         finally:self._lock.release()
 

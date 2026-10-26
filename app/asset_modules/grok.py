@@ -27,8 +27,8 @@ class _NoRedirect(HTTPRedirectHandler):
         raise GrokUnavailable("GROK_REDIRECT_REJECTED")
 
 
-def _post(request):
-    with build_opener(_NoRedirect()).open(request, timeout=15) as response:
+def _post(request, *, timeout=15):
+    with build_opener(_NoRedirect()).open(request, timeout=timeout) as response:
         return response.read(65537)
 
 
@@ -203,8 +203,8 @@ class GrokProposalProvider:
         return proposals
 
 
-def configured_client(environment=None):
+def configured_client(environment=None, *, transport=_post):
     environment = os.environ if environment is None else environment
     key = environment.get("XAI_API_KEY", "").strip()
     model = environment.get("ATLAS_GROK_MODEL", "").strip()
-    return GrokClient(key, model) if key and model else None
+    return GrokClient(key, model, transport=transport) if key and model else None
