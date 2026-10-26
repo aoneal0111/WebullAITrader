@@ -43,20 +43,38 @@ Protective exits remain on their normal paths. Normal PAPER strategy behavior
 is retained; observer order counts must not be read as counts of all ordinary
 PAPER activity. To use the normal launcher later, close this process normally.
 
-Capture starts when desktop composition is constructed. It accepts records for
-at most five minutes, 100 records, the existing byte budget, or the remaining
-regular session, whichever limit occurs first. Producers check the monotonic
-deadline before enqueueing; a short monitor interval closes only the observer
-threads/files. Atlas is not stopped, positions are not closed and working orders
-are not cancelled by capture shutdown. Missing bars, absent native quote paths,
-disabled engines, quarantine, backpressure or stale input can yield zero records
-or incomplete owner coverage. No quotes are requested or signals fabricated to
-fill the capture. Click normal START promptly if appropriate; the five-minute
-window does not wait indefinitely for user activity.
+The observer attaches during desktop construction but waits for the existing
+runtime service to report RUNNING after the user's normal START action. This
+state is sampled every half second; the observer never starts the runtime.
+A separate monotonic 15-minute startup timeout bounds an unattended GUI.
+Waiting and capture are both capped at the remaining regular-session time.
+Once RUNNING is observed, the five-minute observation budget starts; a later
+STOP/START cannot extend or restart it. Pending startup accepts no records.
+
+Capture accepts at most 100 records, the existing byte budget, or five active
+minutes, whichever limit occurs first. Producers check the monotonic deadline
+before enqueueing; the monitor closes only observer threads/files. Scheduling
+or writer draining can delay the final summary beyond the submission deadline.
+Atlas is not stopped, positions are not closed and working orders are not
+cancelled by capture shutdown. Missing bars, absent native quote paths, disabled
+engines, quarantine, backpressure or stale input can still yield zero records.
+No quotes are requested or signals fabricated to fill the capture.
+
+The 2026-10-26 empty capture exposed the old timer defect: it ended at
+15:42:06 UTC, before runtime startup at 15:42:17 UTC. Regression tests now
+simulate six idle GUI minutes followed by a full five-minute capture, bounded
+startup without START, a RUNNING transition at monotonic zero, and market close
+while waiting or collecting. These tests do not launch the real GUI.
 
 `session-summary.json` contains owner counts, dropped/refused outcomes, quote
 ages at native assessment and observer receipt, queue-delay ranges, monotonic
-duration/wall-clock comparison and before/after source/policy checks. Future
+duration/wall-clock comparison and before/after source/policy checks. It also
+separates `startup_wait_seconds`, `observation_started_at` and
+`observation_elapsed_seconds`. `evidence_status` distinguishes
+`NO_ENGINE_RECORDS`, `PARTIAL_ENGINE_RECORDS` and `BOTH_ENGINES_RECORDED`.
+`TIME_LIMIT` means the observation window elapsed; `STARTUP_TIMEOUT` means the
+runtime never became RUNNING; `SESSION_END` caps either phase. None of these
+status values alone validates input provenance or a strategy. Future
 or stale quote measurements remain visible. Timing ranges are diagnostic, not
 proof of a particular provider/clock defect or hard real-time latency. The
 summary deliberately requires review and never sets online observer readiness.

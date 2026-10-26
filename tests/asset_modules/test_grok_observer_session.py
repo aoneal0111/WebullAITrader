@@ -75,14 +75,15 @@ class Policy:enabled:bool=False
 
 
 def composition():
-    return SimpleNamespace(quick_scalper_runtime=SimpleNamespace(config=Policy(),_observer_context_tap=None),
+    return SimpleNamespace(runtime_service=SimpleNamespace(status='STOPPED'),quick_scalper_runtime=SimpleNamespace(config=Policy(),_observer_context_tap=None),
         warrior_forward_sidecar=SimpleNamespace(strategy_config=Policy(),_observer_context_tap=None,_service=None))
 
 
 def test_bounded_session_closes_only_observer_and_reports_no_fake_samples(tmp_path):
     repo=tmp_path/'repo';(repo/'app').mkdir(parents=True);(repo/'app'/'x.py').write_text('x=1')
     receipt=dict(repo=str(repo),source_sha256=session._digest(session.source_manifest(repo)))
-    c=composition();runner=session.BoundedSession(c,tmp_path/'output',receipt,seconds=0,clock=lambda:NOW)
+    c=composition();c.runtime_service.status='RUNNING'
+    runner=session.BoundedSession(c,tmp_path/'output',receipt,seconds=0,clock=lambda:NOW)
     runner._thread.join(timeout=5)
     report=runner.close()
     assert report['stop_reason']=='TIME_LIMIT' and not report['observed_both_engines']
@@ -182,3 +183,91 @@ def test_capture_is_one_shot_without_launching_a_second_gui(tmp_path,monkeypatch
     (tmp_path/'preparation-summary.json').write_text(json.dumps(dict(ready=True)))
     (tmp_path/'private-capture').mkdir()
     assert session.prepared_main(tmp_path,['--start'])==2
+
+
+@pytest.fixture
+def timed_session(tmp_path):
+    repo=tmp_path/'repo';(repo/'app').mkdir(parents=True);(repo/'app'/'x.py').write_text('x=1')
+    receipt=dict(repo=str(repo),source_sha256=session._digest(session.source_manifest(repo)))
+    timer=[0.0];c=composition()
+    runner=session.BoundedSession(c,tmp_path/'output',receipt,clock=lambda:NOW+timedelta(seconds=timer[0]),
+        timer=lambda:timer[0],start_monitor=False)
+    try:yield runner,c,timer
+    finally:runner.close()
+
+
+def test_six_minute_gui_delay_preserves_full_capture_and_deadline(timed_session):
+    from dataclasses import replace
+    runner,c,timer=timed_session
+    timer[0]=360
+    assert runner._poll() is None and runner._observation_started is None
+    # Startup has elapsed beyond the old five-minute timeout, but cannot write.
+    assert not runner._capture.submit(snap(),evidence())
+    c.runtime_service.status='STARTING'
+    assert runner._poll() is None and runner._observation_started is None
+    c.runtime_service.status='RUNNING'
+    assert runner._poll() is None and runner._deadline==660
+    baseline=runner._capture._baseline
+    s=replace(snap(),baseline_sha256=baseline,bid_at=NOW+timedelta(seconds=360),
+        ask_at=NOW+timedelta(seconds=360),captured_at=NOW+timedelta(seconds=360))
+    # Encoding itself is already covered by real context tests. Here use the
+    # actual writer with valid evidence and the active clock/deadline.
+    e=replace(evidence(s),baseline_sha256=baseline,captured_at=s.captured_at,
+        bars=tuple(replace(b,closed_at=b.closed_at+timedelta(seconds=360),
+            available_at=b.available_at+timedelta(seconds=360)) for b in evidence(s).bars))
+    assert runner._capture.submit(s,e)
+    timer[0]=659
+    assert runner._poll() is None
+    # Stopping/restarting the runtime does not extend the observation budget.
+    c.runtime_service.status='STOPPED';assert runner._poll() is None
+    c.runtime_service.status='RUNNING';timer[0]=660
+    assert runner._poll()=='TIME_LIMIT'
+    assert not runner._capture.submit(s,e)
+    r=runner.close('TIME_LIMIT')
+    assert r['startup_wait_seconds']==360 and r['observation_elapsed_seconds']==300
+    assert r['capture']['counts']['written']==1 and not r['observed_both_engines']
+    assert r['evidence_status']=='PARTIAL_ENGINE_RECORDS'
+    assert r['settings_unchanged'] and r['installed_source_unchanged']
+
+
+def test_no_start_is_bounded_and_empty_capture_is_explicit(timed_session):
+    runner,c,timer=timed_session
+    timer[0]=899;assert runner._poll() is None
+    timer[0]=900;assert runner._poll()=='STARTUP_TIMEOUT'
+    r=runner.close('STARTUP_TIMEOUT')
+    assert r['observation_started_at'] is None and r['observation_elapsed_seconds']==0
+    assert r['evidence_status']=='NO_ENGINE_RECORDS' and not r['observed_both_engines']
+    assert c.runtime_service.status=='STOPPED'
+
+
+def test_start_at_zero_is_not_confused_with_no_start(timed_session):
+    runner,c,timer=timed_session
+    c.runtime_service.status='RUNNING';assert runner._poll() is None
+    timer[0]=300;assert runner._poll()=='TIME_LIMIT'
+    r=runner.close('TIME_LIMIT');assert r['startup_wait_seconds']==0
+    assert r['observation_elapsed_seconds']==300
+
+
+def test_market_close_caps_wait_and_active_capture(tmp_path):
+    repo=tmp_path/'repo';(repo/'app').mkdir(parents=True);(repo/'app'/'x.py').write_text('x=1')
+    receipt=dict(repo=str(repo),source_sha256=session._digest(session.source_manifest(repo)))
+    for started in (False,True):
+        timer=[0.0];c=composition()
+        runner=session.BoundedSession(c,tmp_path/str(started),receipt,clock=lambda:NOW+timedelta(seconds=timer[0]),
+            timer=lambda:timer[0],session_end=NOW+timedelta(seconds=120),start_monitor=False)
+        try:
+            if started:
+                timer[0]=100;c.runtime_service.status='RUNNING'
+                assert runner._poll() is None and runner._deadline==120
+            timer[0]=120;assert runner._poll()=='SESSION_END'
+            assert runner.close('SESSION_END')['observation_elapsed_seconds']==(20 if started else 0)
+        finally:runner.close()
+
+
+
+def test_storage_failure_while_waiting_stops_observer_without_starting_runtime(timed_session):
+    runner,c,timer=timed_session
+    with runner._capture._lock:runner._capture._failed=True
+    assert runner._poll()=='STORAGE_FAILED'
+    assert runner.close('STORAGE_FAILED')['observation_started_at'] is None
+    assert c.runtime_service.status=='STOPPED'

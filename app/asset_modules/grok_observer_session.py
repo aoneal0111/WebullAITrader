@@ -199,7 +199,8 @@ raise SystemExit(prepared_main(root,sys.argv[1:]))
                 ps_quote(directory/'bootstrap-observer.py')+" --start\n")
         (directory/'Start-Observer-Capture.ps1').write_text(launch,encoding='utf-8')
         summary.update(ready=True,status='PREPARED_NOT_STARTED',source_files=len(before),source_sha256=receipt['source_sha256'],
-                       compatibility_check='OFFLINE_FIXTURES_PASSED',max_seconds=300,max_records=100)
+                       compatibility_check='OFFLINE_FIXTURES_PASSED',max_seconds=300,max_records=100,
+                       startup_timeout_seconds=900,capture_timer_start='RUNTIME_RUNNING')
     except Exception as exc:
         summary['status']=str(exc) if isinstance(exc,PreparationError) else 'PREPARATION_FAILED'
         summary['error_type']=type(exc).__name__
@@ -223,32 +224,62 @@ def _settings(composition):
 
 
 class BoundedSession:
-    def __init__(self,composition,directory,receipt,*,seconds=300,clock=lambda:datetime.now(UTC),model_block=None):
+    def __init__(self,composition,directory,receipt,*,seconds=300,clock=lambda:datetime.now(UTC),model_block=None,
+                 startup_seconds=900,session_end=None,timer=monotonic,start_monitor=True):
         from .grok_observer_capture import ContextCapture,MAX_RECORDS
         from .grok_observer_runtime_tap import RuntimeContextTap
         self._composition,self._directory,self._receipt=composition,Path(directory),receipt
         self._initial_settings=_digest(_settings(composition));self._clock=clock
         self._model_block=model_block
         self._lock=Lock();self._stop=Event();self._report=None
-        self._started=monotonic();self._deadline=self._started+seconds;self._limit=MAX_RECORDS
+        if not 0 <= seconds <= 300 or not 0 <= startup_seconds <= 900:
+            raise ValueError('Capture and startup durations exceed bounds')
+        self._timer=timer;self._seconds=seconds
+        self._started=timer();self._limit=MAX_RECORDS
         self._started_wall=clock()
+        remaining=(session_end-self._started_wall).total_seconds() if session_end is not None else startup_seconds+seconds
+        self._session_deadline=self._started+max(0,remaining)
+        self._startup_deadline=min(self._started+startup_seconds,self._session_deadline)
+        self._observation_started=None;self._observation_wall=None
+        # Refuse writes while awaiting a manual runtime START. The monitor
+        # opens the bounded capture only after the runtime reports RUNNING.
+        self._deadline=None
         baseline=_digest(dict(source=receipt['source_sha256'],settings=self._initial_settings))
-        self._capture=ContextCapture(self._directory/'private-capture',baseline,clock=clock,deadline=self._deadline)
+        self._capture=ContextCapture(self._directory/'private-capture',baseline,clock=clock,deadline=self._started,timer=timer)
         self._tap=RuntimeContextTap(self._capture,baseline)
         composition.quick_scalper_runtime._observer_context_tap=self._tap
         composition.warrior_forward_sidecar._observer_context_tap=self._tap
         service=composition.warrior_forward_sidecar._service
         if service is not None:service._observer_context_tap=self._tap
         self._thread=Thread(target=self._monitor,name='atlas-bounded-observer-session',daemon=True)
-        self._thread.start()
+        if start_monitor:self._thread.start()
 
-    def _monitor(self):
-        while not self._stop.wait(.5):
+    def _poll(self):
+        """Observe runtime state only; never invoke start/stop/order methods."""
+        with self._lock:
+            if self._report is not None:return None
+            now=self._timer()
+            with self._capture._lock:
+                if self._capture._failed:return 'STORAGE_FAILED'
+            if now>=self._session_deadline:return 'SESSION_END'
+            if self._observation_started is None:
+                if now>=self._startup_deadline:return 'STARTUP_TIMEOUT'
+                runtime=getattr(self._composition,'runtime_service',None)
+                if getattr(runtime,'status',None)!='RUNNING':return None
+                self._observation_started=now;self._observation_wall=self._clock()
+                self._deadline=min(now+self._seconds,self._session_deadline)
+                with self._capture._lock:self._capture._deadline=self._deadline
+            if now>=self._deadline:return 'TIME_LIMIT'
             with self._capture._lock:
                 full=self._capture._counts['enqueued']>=self._limit or self._capture._counts['limit_rejections']>0
                 failed=self._capture._failed
-            if full or failed or monotonic()>=self._deadline:
-                self.close('CAPACITY_REACHED' if full else 'STORAGE_FAILED' if failed else 'TIME_LIMIT')
+            return 'CAPACITY_REACHED' if full else 'STORAGE_FAILED' if failed else None
+
+    def _monitor(self):
+        while not self._stop.wait(.5):
+            reason=self._poll()
+            if reason:
+                self.close(reason)
                 return
 
     def close(self,reason='ATLAS_CLOSED'):
@@ -260,10 +291,14 @@ class BoundedSession:
             try:stable_source=_digest(source_manifest(Path(self._receipt['repo'])))==self._receipt['source_sha256']
             except Exception:pass
             owners=report['capture']['records_by_engine']
-            elapsed=monotonic()-self._started
+            elapsed=self._timer()-self._started
             finished_wall=self._clock()
             clock_delta=(finished_wall-self._started_wall).total_seconds()-elapsed
             report.update(scope='BOUNDED_NATIVE_EQUITY_CAPTURE_SESSION_V1',stop_reason=reason,
+                observation_started_at=None if self._observation_wall is None else self._observation_wall.isoformat(),
+                observation_elapsed_seconds=0 if self._observation_started is None else round(self._timer()-self._observation_started,3),
+                startup_wait_seconds=round((self._timer() if self._observation_started is None else self._observation_started)-self._started,3),
+                evidence_status='BOTH_ENGINES_RECORDED' if all(owners.get(e,0)>0 for e in ('WARRIOR_MOMENTUM_V1','QUICK_SCALPER')) else 'PARTIAL_ENGINE_RECORDS' if owners else 'NO_ENGINE_RECORDS',
                 elapsed_seconds=round(elapsed,3),started_at=self._started_wall.isoformat(),finished_at=finished_wall.isoformat(),
                 wall_minus_monotonic_seconds=round(clock_delta,6),clock_discontinuity_observed=abs(clock_delta)>.25,
                 settings_unchanged=stable_settings,
@@ -304,7 +339,7 @@ def run_local_capture(directory,receipt):
         remaining=min(300,(schedule.market_close-datetime.now(UTC)).total_seconds())
         try:
             if remaining<5:raise PreparationError('INSUFFICIENT_SESSION_TIME')
-            sessions.append(BoundedSession(composition,directory,receipt,seconds=remaining,model_block=model_block))
+            sessions.append(BoundedSession(composition,directory,receipt,seconds=300,session_end=schedule.market_close,model_block=model_block))
         except Exception:
             composition.close();raise
         return composition
