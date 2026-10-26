@@ -105,8 +105,8 @@ def test_policy_change_is_visible_without_restoring_or_changing_it(tmp_path):
 def test_closed_session_refuses_before_gui_import_or_launch(tmp_path,monkeypatch):
     from app.market import calendar
     monkeypatch.setattr(session,'safe_configuration',lambda:None)
-    monkeypatch.setattr(calendar,'market_session',lambda _:calendar.MarketSession.CLOSED)
-    with pytest.raises(session.PreparationError,match='REGULAR_MARKET_SESSION_REQUIRED'):
+    monkeypatch.setattr(session,'capture_session_window',lambda _:None)
+    with pytest.raises(session.PreparationError,match='EQUITY_MARKET_SESSION_REQUIRED'):
         session.run_local_capture(tmp_path,{'configuration_sha256':session.configuration_digest(None)})
 
 
@@ -145,7 +145,8 @@ def test_prepared_source_tampering_refuses_start(tmp_path):
         session.verify_receipt(tmp_path)
 
 
-def test_local_gui_entrypoint_uses_stub_and_restores_request_and_factory_hooks(tmp_path,monkeypatch):
+@pytest.mark.parametrize('session_name',['PREMARKET','CORE','AFTER_HOURS'])
+def test_local_gui_entrypoint_uses_stub_and_restores_request_and_factory_hooks(tmp_path,monkeypatch,session_name):
     import sys
     from types import ModuleType
     from app.market import calendar
@@ -164,12 +165,12 @@ def test_local_gui_entrypoint_uses_stub_and_restores_request_and_factory_hooks(t
     fake.main=main;package=ModuleType('app.gui');package.app=fake
     monkeypatch.setitem(sys.modules,'app.gui',package)
     monkeypatch.setattr(session,'safe_configuration',lambda:None)
-    monkeypatch.setattr(calendar,'market_session',lambda _:calendar.MarketSession.CORE)
-    monkeypatch.setattr(calendar,'trading_day_schedule',lambda _:SimpleNamespace(market_close=session.datetime.now(session.UTC)+timedelta(minutes=10)))
+    monkeypatch.setattr(session,'capture_session_window',lambda _:(session_name,session.datetime.now(session.UTC)+timedelta(minutes=10)))
     assert session.run_local_capture(tmp_path/'output',receipt)==0
     assert fake.create_desktop_composition is original and fake.load_dotenv is original_dotenv
     assert GrokClient.request is original_request and calls==[dict(dotenv_path=repo/'.env',override=False)]
     report=json.loads((tmp_path/'output'/'session-summary.json').read_text())
+    assert report['capture_session_at_start']==session_name
     assert report['stop_reason']=='ATLAS_CLOSED' and report['tap_stopped'] and report['grok_requests']==0
 
 
@@ -344,3 +345,40 @@ def test_session_reports_disabled_scalper_without_enabling_it(timed_session):
     assert report['scalper_readiness']['configured_enabled'] is False
     assert c.quick_scalper_runtime.config.enabled is False
     assert 'entry_diagnostics' in report and report['grok_requests']==0
+
+
+@pytest.mark.parametrize('date,hour,minute,expected,end_hour',[
+    ('2026-10-26',3,59,None,None),
+    ('2026-10-26',4,0,'PREMARKET',20),
+    ('2026-10-26',9,29,'PREMARKET',20),
+    ('2026-10-26',9,30,'CORE',20),
+    ('2026-10-26',15,59,'CORE',20),
+    ('2026-10-26',16,0,'AFTER_HOURS',20),
+    ('2026-10-26',19,59,'AFTER_HOURS',20),
+    ('2026-10-26',20,0,None,None),
+    ('2026-10-25',10,0,None,None),
+    ('2026-11-26',10,0,None,None),
+    ('2026-11-27',12,59,'CORE',17),
+    ('2026-11-27',13,0,'AFTER_HOURS',17),
+    ('2026-11-27',16,59,'AFTER_HOURS',17),
+    ('2026-11-27',17,0,None,None),
+    ('2026-11-02',4,0,'PREMARKET',20),
+], ids=['overnight-before','premarket-open','before-core','core-open','before-close',
+        'after-hours-open','before-extended-close','extended-close','weekend','holiday',
+        'before-early-close','early-after-hours','before-early-extended-close',
+        'early-extended-close','after-dst-change'])
+def test_capture_window_supports_extended_hours_calendar_and_dst(date,hour,minute,expected,end_hour):
+    from datetime import datetime,UTC
+    from zoneinfo import ZoneInfo
+    local=datetime.fromisoformat(date).replace(hour=hour,minute=minute,tzinfo=ZoneInfo('America/New_York'))
+    result=session.capture_session_window(local.astimezone(UTC))
+    if expected is None:assert result is None
+    else:
+        assert result[0]==expected
+        assert result[1].astimezone(ZoneInfo('America/New_York')).hour==end_hour
+        assert result[1].date()==local.date()
+
+
+def test_capture_window_rejects_naive_time():
+    from datetime import datetime
+    with pytest.raises(ValueError,match='Aware'):session.capture_session_window(datetime(2026,10,26,16))

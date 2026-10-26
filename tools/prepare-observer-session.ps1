@@ -47,7 +47,7 @@ try {
         }
         Write-Host 'PREPARED_ONLY; ATLAS_NOT_STARTED; NO_MARKET_DATA_OR_GROK_REQUESTS'
         Write-Host "LOCAL_START_SCRIPT=$(Join-Path $Output 'Start-Observer-Capture.ps1')"
-        Write-Host 'The local start script is for a regular session only. Click normal START within 15 minutes; the five-minute capture begins at the first new scanner evaluation. This tool never auto-starts trading.'
+        Write-Host 'The local start script supports premarket, regular and after-hours equity sessions. Click normal START within 15 minutes; the five-minute capture begins at the first new scanner evaluation. This tool never auto-starts trading.'
     }
     finally { Pop-Location }
 }

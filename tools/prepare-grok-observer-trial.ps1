@@ -53,5 +53,6 @@ Write-Host "TRIAL_DIRECTORY=$Root"
 Write-Host "MANUAL_ATLAS_CAPTURE=$(Join-Path $Capture 'Start-Observer-Capture.ps1')"
 Write-Host "MANUAL_GROK_OBSERVER=$(Join-Path $Root 'Start-Grok-Observer.ps1')"
 Write-Host 'PREPARED_ONLY; NO_GUI_OR_API_REQUESTS; INSTALLED_SOURCE_AND_SETTINGS_UNCHANGED'
+Write-Host 'CAPTURE_SESSIONS=PREMARKET,CORE,AFTER_HOURS; TRADING_PERMISSIONS_UNCHANGED'
 Write-Host 'Run the Atlas capture manually first, click START, then run the Grok observer in a separate PowerShell window.'
 Write-Host 'Background observer: two independent lanes, up to 20 paid requests, five active minutes, 15-minute startup wait, up to 31 seconds completion grace; no decision/order dispatch.'

@@ -1,6 +1,6 @@
 """Prepare a private copy of the installed baseline; manual bounded capture only."""
 from dataclasses import asdict
-from datetime import UTC,datetime
+from datetime import UTC,datetime,time
 from hashlib import sha256
 import argparse
 import inspect
@@ -200,6 +200,7 @@ raise SystemExit(prepared_main(root,sys.argv[1:]))
         (directory/'Start-Observer-Capture.ps1').write_text(launch,encoding='utf-8')
         summary.update(ready=True,status='PREPARED_NOT_STARTED',source_files=len(before),source_sha256=receipt['source_sha256'],
                        compatibility_check='OFFLINE_FIXTURES_PASSED',max_seconds=300,max_records=100,
+                       capture_sessions=['PREMARKET','CORE','AFTER_HOURS'],
                        startup_timeout_seconds=900,capture_timer_start='SCANNER_FIRST_EVALUATION')
     except Exception as exc:
         summary['status']=str(exc) if isinstance(exc,PreparationError) else 'PREPARATION_FAILED'
@@ -249,7 +250,7 @@ def _scanner_activity_marker():
 
 class BoundedSession:
     def __init__(self,composition,directory,receipt,*,seconds=300,clock=lambda:datetime.now(UTC),model_block=None,
-                 startup_seconds=900,session_end=None,timer=monotonic,start_monitor=True,activity_source=None):
+                 startup_seconds=900,session_end=None,timer=monotonic,start_monitor=True,activity_source=None,session_name=None):
         from .grok_observer_capture import ContextCapture,MAX_RECORDS
         from .grok_observer_runtime_tap import RuntimeContextTap
         self._composition,self._directory,self._receipt=composition,Path(directory),receipt
@@ -264,6 +265,7 @@ class BoundedSession:
         self._initial_activity=self._activity_source()
         self._started=timer();self._limit=MAX_RECORDS
         self._started_wall=clock()
+        self._session_name=session_name;self._session_end=session_end
         remaining=(session_end-self._started_wall).total_seconds() if session_end is not None else startup_seconds+seconds
         self._session_deadline=self._started+max(0,remaining)
         self._startup_deadline=min(self._started+startup_seconds,self._session_deadline)
@@ -334,6 +336,8 @@ class BoundedSession:
                     runtime_enabled=getattr(self._composition.quick_scalper_runtime,'enabled',None),
                     execution_permitted=getattr(self._composition.warrior_forward_sidecar,'_accept_execution',None)),
                 capture_timer_start='SCANNER_FIRST_EVALUATION',
+                capture_session_at_start=self._session_name,
+                capture_session_end=None if self._session_end is None else self._session_end.isoformat(),
                 observation_started_at=None if self._observation_wall is None else self._observation_wall.isoformat(),
                 observation_elapsed_seconds=0 if self._observation_started is None else round(self._timer()-self._observation_started,3),
                 startup_wait_seconds=round((self._timer() if self._observation_started is None else self._observation_started)-self._started,3),
@@ -352,16 +356,34 @@ class BoundedSession:
             return report
 
 
+def capture_session_window(at):
+    """Read-only equity capture hours; independent of entry permission.
+
+    Webull: 04:00–20:00 ET on trading days, ending 17:00 ET on early-close
+    dates. Overnight, weekends and holidays are not capture sessions.
+    """
+    from app.market.calendar import EASTERN,trading_day_schedule
+    if at.utcoffset() is None:raise ValueError('Aware capture time required')
+    local=at.astimezone(EASTERN)
+    schedule=trading_day_schedule(local)
+    if schedule is None:return None
+    start=datetime.combine(local.date(),time(4),EASTERN)
+    end=datetime.combine(local.date(),time(17 if schedule.is_early_close else 20),EASTERN)
+    if not start<=local<end:return None
+    name=('PREMARKET' if local<schedule.market_open else
+          'CORE' if local<schedule.market_close else 'AFTER_HOURS')
+    return name,end
+
+
 def run_local_capture(directory,receipt):
     c=safe_configuration()
     if configuration_digest(c)!=receipt['configuration_sha256']:
         raise PreparationError('EFFECTIVE_CONFIGURATION_CHANGED_REPREPARE')
-    from app.market.calendar import market_session,MarketSession,trading_day_schedule
-    from zoneinfo import ZoneInfo
     now=datetime.now(UTC)
-    if market_session(now)!=MarketSession.CORE:raise PreparationError('REGULAR_MARKET_SESSION_REQUIRED')
-    schedule=trading_day_schedule(now.astimezone(ZoneInfo('America/New_York')))
-    seconds=min(300,(schedule.market_close-now).total_seconds())
+    window=capture_session_window(now)
+    if window is None:raise PreparationError('EQUITY_MARKET_SESSION_REQUIRED')
+    session_name,session_end=window
+    seconds=min(300,(session_end-now).total_seconds())
     if seconds<5:raise PreparationError('INSUFFICIENT_SESSION_TIME')
     # The user invokes this entrypoint locally. Codex never executes it.
     model_block=ModelRequestBlocker()
@@ -375,10 +397,10 @@ def run_local_capture(directory,receipt):
     def compose(*args,**kwargs):
         safe_configuration()
         composition=original(*args,**kwargs)
-        remaining=min(300,(schedule.market_close-datetime.now(UTC)).total_seconds())
+        remaining=min(300,(session_end-datetime.now(UTC)).total_seconds())
         try:
             if remaining<5:raise PreparationError('INSUFFICIENT_SESSION_TIME')
-            sessions.append(BoundedSession(composition,directory,receipt,seconds=300,session_end=schedule.market_close,model_block=model_block))
+            sessions.append(BoundedSession(composition,directory,receipt,seconds=300,session_end=session_end,session_name=session_name,model_block=model_block))
         except Exception:
             composition.close();raise
         return composition

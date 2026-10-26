@@ -174,3 +174,24 @@ invalid commands remain invalid, and delayed reasoning remains expired. A real
 subprocess test blocks all networking and exercises the actual background
 serializer and file writer. No paid inference, GUI launch or broker order is
 performed during development. Windows preparation runs these tests locally.
+
+## Premarket and after-hours observation
+
+The manual capture launcher accepts PREMARKET, CORE and AFTER_HOURS by default.
+On ordinary U.S. equity trading days the capture window is 04:00–20:00 ET;
+on NYSE early-close dates it ends at 17:00 ET. Holidays, weekends and overnight
+remain closed. America/New_York time-zone conversion handles daylight saving;
+the existing trading calendar determines holidays and early closes.
+
+The capture can cross the regular opening/closing bell and keeps its existing
+15-minute startup wait and five-minute active bound, capped at extended-hours
+end. Reports record the session at launch and that end boundary. This changes
+capture availability, not trading permissions, policy qualification, protective
+exits or order-review flags. Native engine assessments, current provider quotes
+and causal completed bars remain required. Sparse extended-hours data or an
+engine that emits no assessments can yield partial or empty coverage; no old
+quote is substituted. The tools do not provide continuous or scheduled capture.
+
+Official hours checked October 26, 2026:
+https://www.webull.com/help/faq/10960 and
+https://www.webull.com/help/faq/11110-Market-Closures.
