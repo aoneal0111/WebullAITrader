@@ -51,6 +51,7 @@ class GrokClient:
         self._lock, self._slots = Lock(), BoundedSemaphore(2)
         self._next = {}
         self.requests = 0
+        self._usage = {"input_tokens":0,"output_tokens":0,"responses_with_usage":0,"responses_without_usage":0}
 
     def request(self, role, instruction, context, schema):
         if role not in ROLES or context.get("mode") != "PAPER":
@@ -82,6 +83,13 @@ class GrokClient:
                 if len(raw) > 65536:
                     raise ValueError("Oversized response")
                 body = _json(raw)
+                usage=body.get('usage')
+                with self._lock:
+                    if (isinstance(usage,dict) and all(type(usage.get(k)) is int and usage[k]>=0
+                            for k in ('input_tokens','output_tokens'))):
+                        for k in ('input_tokens','output_tokens'):self._usage[k]+=usage[k]
+                        self._usage['responses_with_usage']+=1
+                    else:self._usage['responses_without_usage']+=1
                 if body.get("status") != "completed" or body.get("error"):
                     raise ValueError("Incomplete response")
                 outputs = []
@@ -101,6 +109,11 @@ class GrokClient:
                 raise GrokUnavailable("GROK_REQUEST_FAILED") from None
         finally:
             self._slots.release()
+
+
+    def usage(self):
+        """Provider-reported token totals only; missing usage is not zero cost."""
+        with self._lock:return dict(self._usage)
 
 
 CRYPTO_PROMPT = (

@@ -133,7 +133,11 @@ def _unique(items):
 def load_capture(path,baseline):
     """Validate the whole bounded private file before any injected model call."""
     with Path(path).open('rb') as stream:raw=stream.read(MAX_BYTES+1)
-    if len(raw)>MAX_BYTES:raise ValueError('Capture exceeds byte bound')
+    return decode_capture(raw,baseline)
+
+
+def decode_capture(raw,baseline):
+    if not isinstance(raw,bytes) or len(raw)>MAX_BYTES:raise ValueError('Capture exceeds byte bound')
     lines=raw.splitlines()
     if not 1<=len(lines)<=MAX_RECORDS:raise ValueError('Bounded nonempty capture required')
     results=[];seen=set();last={}

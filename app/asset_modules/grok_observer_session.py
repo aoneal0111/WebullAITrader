@@ -273,6 +273,13 @@ class BoundedSession:
         self._deadline=None
         baseline=_digest(dict(source=receipt['source_sha256'],settings=self._initial_settings))
         self._capture=ContextCapture(self._directory/'private-capture',baseline,clock=clock,deadline=self._started,timer=timer)
+        try:
+            with (self._directory/'observer-manifest.json').open('x',encoding='utf-8') as stream:
+                json.dump(dict(scope='NATIVE_OBSERVER_SESSION_MANIFEST_V1',baseline_sha256=baseline,
+                    source_sha256=receipt['source_sha256'],settings_sha256=self._initial_settings),stream)
+        except Exception:
+            self._capture.close()
+            raise
         self._tap=RuntimeContextTap(self._capture,baseline)
         composition.quick_scalper_runtime._observer_context_tap=self._tap
         composition.warrior_forward_sidecar._observer_context_tap=self._tap
