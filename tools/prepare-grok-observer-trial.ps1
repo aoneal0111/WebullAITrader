@@ -23,7 +23,7 @@ $Source = Join-Path $Root 'observer-source'
 if ($LASTEXITCODE -ne 0) { throw 'Pinned observer source checkout failed.' }
 Push-Location $Source
 try {
-    & $Python -m pytest tests/asset_modules/test_grok_online_observer.py tests/asset_modules/test_grok_decision_council.py tests/asset_modules/test_grok_observer_session.py --basetemp (Join-Path $Root 'checks') -q
+    & $Python -m pytest tests/asset_modules/test_grok_online_observer.py tests/asset_modules/test_grok_request_diagnostics.py tests/asset_modules/test_grok_decision_council.py tests/asset_modules/test_grok_observer_session.py --basetemp (Join-Path $Root 'checks') -q
     if ($LASTEXITCODE -ne 0) { throw 'Observer checks failed. Nothing was launched.' }
     $Capture = Join-Path $Root 'capture'
     & $Python -m app.asset_modules.grok_observer_session --repo $Repo --output $Capture

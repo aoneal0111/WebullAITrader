@@ -5,8 +5,10 @@ No credentials enter engine messages. No network request occurs at construction.
 import json
 import os
 import re
+import ssl
 from threading import BoundedSemaphore, Lock
 from time import monotonic
+from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from app.asset_modules.engine_catalog import EngineId
@@ -43,11 +45,14 @@ def _json(raw):
 
 
 class GrokClient:
-    def __init__(self, key, model, *, transport=_post, clock=monotonic):
+    def __init__(self, key, model, *, transport=_post, clock=monotonic, latency_clock=monotonic):
         if not key or not isinstance(model, str) or not re.fullmatch(r"grok-[a-zA-Z0-9._-]{1,100}", model):
             raise ValueError("Configure XAI_API_KEY and ATLAS_GROK_MODEL")
         self._key, self.model = key, model
         self._transport, self._clock = transport, clock
+        self._latency_clock = latency_clock
+        self._diagnostics = dict(attempts_completed=0, responses_received=0, answers_parsed=0,
+                                 latency_ms_total=0, latency_ms_max=0, failures={})
         self._lock, self._slots = Lock(), BoundedSemaphore(2)
         self._next = {}
         self.requests = 0
@@ -78,9 +83,15 @@ class GrokClient:
             request = Request("https://api.x.ai/v1/responses", data=json.dumps(payload).encode(),
                               headers={"Content-Type": "application/json",
                                        "Authorization": "Bearer " + self._key}, method="POST")
+            started = self._latency_clock()
+            received = False
+            failure = 'TRANSPORT_OTHER'
             try:
                 raw = self._transport(request)
+                received = True
+                failure = 'RESPONSE_VALIDATION'
                 if len(raw) > 65536:
+                    failure = 'RESPONSE_TOO_LARGE'
                     raise ValueError("Oversized response")
                 body = _json(raw)
                 usage=body.get('usage')
@@ -91,6 +102,7 @@ class GrokClient:
                         self._usage['responses_with_usage']+=1
                     else:self._usage['responses_without_usage']+=1
                 if body.get("status") != "completed" or body.get("error"):
+                    failure = 'PROVIDER_RESPONSE_ERROR' if body.get('error') else 'INCOMPLETE_RESPONSE'
                     raise ValueError("Incomplete response")
                 outputs = []
                 for item in body["output"]:
@@ -104,12 +116,42 @@ class GrokClient:
                         outputs.append(part["text"])
                 if len(outputs) != 1:
                     raise ValueError("Exactly one structured answer required")
-                return _json(outputs[0])
-            except Exception:
+                answer = _json(outputs[0])
+                failure = None
+                return answer
+            except Exception as exc:
+                # Only fixed categories and numeric HTTP statuses leave here.
+                # Never inspect/log error bodies, URLs, headers or exception text.
+                if not received:
+                    if isinstance(exc, HTTPError):
+                        code = exc.code
+                        failure = 'HTTP_' + str(code) if type(code) is int and 400 <= code <= 599 else 'HTTP_OTHER'
+                        try:exc.close()
+                        except Exception:pass
+                    elif isinstance(exc, TimeoutError):failure = 'TIMEOUT'
+                    elif isinstance(exc, ssl.SSLError):failure = 'TLS_ERROR'
+                    elif isinstance(exc, URLError):
+                        failure = ('TIMEOUT' if isinstance(exc.reason, TimeoutError) else
+                                   'TLS_ERROR' if isinstance(exc.reason, ssl.SSLError) else 'NETWORK_ERROR')
                 raise GrokUnavailable("GROK_REQUEST_FAILED") from None
+            finally:
+                elapsed = max(0, round((self._latency_clock() - started) * 1000))
+                with self._lock:
+                    d = self._diagnostics
+                    d['attempts_completed'] += 1
+                    d['responses_received'] += int(received)
+                    d['answers_parsed'] += int(failure is None)
+                    d['latency_ms_total'] += elapsed
+                    d['latency_ms_max'] = max(d['latency_ms_max'], elapsed)
+                    if failure is not None:d['failures'][failure] = d['failures'].get(failure, 0) + 1
         finally:
             self._slots.release()
 
+
+    def diagnostics(self):
+        """Redacted client-lifetime counts; no response content or credentials."""
+        with self._lock:
+            return {**self._diagnostics, 'failures':dict(self._diagnostics['failures'])}
 
     def usage(self):
         """Provider-reported token totals only; missing usage is not zero cost."""

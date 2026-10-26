@@ -107,3 +107,24 @@ management ownership contracts, caller-mutation isolation, duplicate/stop/busy
 handling, stale/future/native-source validation and usage accounting. Those
 checks establish software mechanics, not profitable performance or installed
 workstation activation.
+
+## Request failure and latency diagnostics
+
+The observer summary includes `client_diagnostics`: completed attempt counts,
+received responses, parsed answers, total/maximum request latency in milliseconds,
+and fixed failure categories. HTTP failures expose only numeric 400–599 status
+codes. Timeout, network/TLS, oversized/invalid/incomplete responses and provider
+response errors are counted separately. No provider body, URL, exception text,
+header, prompt, key or model answer is copied into those diagnostics. HTTP error
+bodies are closed without reading them. Diagnostics do not retry requests or
+alter the 15-second transport timeout, freshness rules, schema or order controls.
+Counters describe this client lifetime; the manual launcher creates a fresh client.
+
+`startup_wait_seconds` and `active_observation_seconds` separate waiting for the
+first fresh record from the five-minute observation period. A request in progress
+may finish after the active deadline; its original freshness is still enforced.
+A successful synthetic schema request taking 6.42 seconds proves that request's
+endpoint/schema compatibility, not availability during a prior failure, live
+context performance or the ability to act on a two-second quote. The regression
+test explicitly records such a delayed answer as ADVICE_EXPIRED with execution
+unauthorized. Native scalping and protective exits must not wait on model calls.
