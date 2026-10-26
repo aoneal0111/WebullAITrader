@@ -38,6 +38,9 @@ def test_native_queue_preserves_two_owners_and_only_shares_market_bars(tmp_path)
     finally:report=tap.close()
     assert report['tap_stopped'] and report['capture']['writer_stopped']
     assert report['tap_counts']['captured']==2 and source.calls==0
+    assert report['tap_counts']['bars_queued']==1 and report['tap_counts']['assessments_queued']==2
+    assert report['tap_counts']['assessments_queued_WARRIOR_MOMENTUM_V1']==1
+    assert report['tap_counts']['assessments_queued_QUICK_SCALPER']==1
     records=load_capture(tmp_path/'capture'/'private-observer-context.jsonl',BASE)
     assert records[0][1].baseline_result=='BLOCKED' and records[1][1].baseline_result=='WAIT'
     assert records[0][0].engine is EngineId.WARRIOR and records[1][0].engine is EngineId.SCALPER
@@ -132,3 +135,15 @@ def test_composition_rejects_unsafe_capture_before_provider_construction(monkeyp
     monkeypatch.setattr(desktop,'load_configuration',lambda:config)
     with pytest.raises(ValueError,match='safe PAPER flags'):
         desktop.create_desktop_composition(observer_context_tap=SpyTap())
+
+
+
+def test_bar_only_capture_is_explicitly_not_an_engine_assessment(tmp_path):
+    capture=ContextCapture(tmp_path/'capture',BASE,clock=lambda:NOW)
+    tap=RuntimeContextTap(capture,BASE)
+    try:
+        for _ in range(3):assert tap.remember_bars('AAPL',bars(),known_at=NOW)
+    finally:report=tap.close()
+    assert report['tap_counts']['queued']==report['tap_counts']['bars_queued']==3
+    assert report['tap_counts']['assessments_queued']==0
+    assert report['capture']['records_by_engine']=={}

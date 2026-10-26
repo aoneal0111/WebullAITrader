@@ -75,7 +75,7 @@ class Policy:enabled:bool=False
 
 
 def composition():
-    return SimpleNamespace(runtime_service=SimpleNamespace(status='STOPPED'),quick_scalper_runtime=SimpleNamespace(config=Policy(),_observer_context_tap=None),
+    return SimpleNamespace(runtime_service=SimpleNamespace(status='STOPPED'),scanner_marker=None,quick_scalper_runtime=SimpleNamespace(config=Policy(),_observer_context_tap=None),
         warrior_forward_sidecar=SimpleNamespace(strategy_config=Policy(),_observer_context_tap=None,_service=None))
 
 
@@ -83,7 +83,8 @@ def test_bounded_session_closes_only_observer_and_reports_no_fake_samples(tmp_pa
     repo=tmp_path/'repo';(repo/'app').mkdir(parents=True);(repo/'app'/'x.py').write_text('x=1')
     receipt=dict(repo=str(repo),source_sha256=session._digest(session.source_manifest(repo)))
     c=composition();c.runtime_service.status='RUNNING'
-    runner=session.BoundedSession(c,tmp_path/'output',receipt,seconds=0,clock=lambda:NOW)
+    markers=iter((None,'actual-scanner-activity'))
+    runner=session.BoundedSession(c,tmp_path/'output',receipt,seconds=0,clock=lambda:NOW,activity_source=lambda:next(markers))
     runner._thread.join(timeout=5)
     report=runner.close()
     assert report['stop_reason']=='TIME_LIMIT' and not report['observed_both_engines']
@@ -191,7 +192,7 @@ def timed_session(tmp_path):
     receipt=dict(repo=str(repo),source_sha256=session._digest(session.source_manifest(repo)))
     timer=[0.0];c=composition()
     runner=session.BoundedSession(c,tmp_path/'output',receipt,clock=lambda:NOW+timedelta(seconds=timer[0]),
-        timer=lambda:timer[0],start_monitor=False)
+        timer=lambda:timer[0],start_monitor=False,activity_source=lambda:c.scanner_marker)
     try:yield runner,c,timer
     finally:runner.close()
 
@@ -205,7 +206,7 @@ def test_six_minute_gui_delay_preserves_full_capture_and_deadline(timed_session)
     assert not runner._capture.submit(snap(),evidence())
     c.runtime_service.status='STARTING'
     assert runner._poll() is None and runner._observation_started is None
-    c.runtime_service.status='RUNNING'
+    c.runtime_service.status='RUNNING';c.scanner_marker='first-evaluation'
     assert runner._poll() is None and runner._deadline==660
     baseline=runner._capture._baseline
     s=replace(snap(),baseline_sha256=baseline,bid_at=NOW+timedelta(seconds=360),
@@ -242,7 +243,7 @@ def test_no_start_is_bounded_and_empty_capture_is_explicit(timed_session):
 
 def test_start_at_zero_is_not_confused_with_no_start(timed_session):
     runner,c,timer=timed_session
-    c.runtime_service.status='RUNNING';assert runner._poll() is None
+    c.runtime_service.status='RUNNING';c.scanner_marker='first-evaluation';assert runner._poll() is None
     timer[0]=300;assert runner._poll()=='TIME_LIMIT'
     r=runner.close('TIME_LIMIT');assert r['startup_wait_seconds']==0
     assert r['observation_elapsed_seconds']==300
@@ -254,10 +255,10 @@ def test_market_close_caps_wait_and_active_capture(tmp_path):
     for started in (False,True):
         timer=[0.0];c=composition()
         runner=session.BoundedSession(c,tmp_path/str(started),receipt,clock=lambda:NOW+timedelta(seconds=timer[0]),
-            timer=lambda:timer[0],session_end=NOW+timedelta(seconds=120),start_monitor=False)
+            timer=lambda:timer[0],session_end=NOW+timedelta(seconds=120),start_monitor=False,activity_source=lambda:c.scanner_marker)
         try:
             if started:
-                timer[0]=100;c.runtime_service.status='RUNNING'
+                timer[0]=100;c.runtime_service.status='RUNNING';c.scanner_marker='first-evaluation'
                 assert runner._poll() is None and runner._deadline==120
             timer[0]=120;assert runner._poll()=='SESSION_END'
             assert runner.close('SESSION_END')['observation_elapsed_seconds']==(20 if started else 0)
@@ -271,3 +272,49 @@ def test_storage_failure_while_waiting_stops_observer_without_starting_runtime(t
     assert runner._poll()=='STORAGE_FAILED'
     assert runner.close('STORAGE_FAILED')['observation_started_at'] is None
     assert c.runtime_service.status=='STOPPED'
+
+
+
+def test_background_running_does_not_start_capture_until_scanner_evaluates(timed_session):
+    runner,c,timer=timed_session
+    c.runtime_service.status='RUNNING'
+    timer[0]=9.119
+    assert runner._poll() is None and runner._observation_started is None
+    timer[0]=300
+    assert runner._poll() is None and runner._observation_started is None
+    timer[0]=300.767;c.scanner_marker='new-scanner-evaluation'
+    assert runner._poll() is None
+    assert runner._deadline==600.767
+    timer[0]=600.766;assert runner._poll() is None
+    timer[0]=600.767;assert runner._poll()=='TIME_LIMIT'
+
+
+def test_prior_scanner_marker_cannot_start_new_capture(tmp_path):
+    repo=tmp_path/'repo';(repo/'app').mkdir(parents=True);(repo/'app'/'x.py').write_text('x=1')
+    receipt=dict(repo=str(repo),source_sha256=session._digest(session.source_manifest(repo)))
+    timer=[0.0];marker=['old-run'];c=composition()
+    runner=session.BoundedSession(c,tmp_path/'out',receipt,clock=lambda:NOW,timer=lambda:timer[0],
+        start_monitor=False,activity_source=lambda:marker[0])
+    try:
+        timer[0]=300;assert runner._poll() is None and runner._observation_started is None
+        marker[0]='new-run';assert runner._poll() is None and runner._deadline==600
+    finally:runner.close()
+
+
+
+def test_default_activity_source_uses_real_scanner_diagnostic_not_runtime_state(tmp_path,monkeypatch):
+    from app import performance_diagnostics as module
+    diag=module.PerformanceDiagnostics()
+    monkeypatch.setattr(module,'performance_diagnostics',diag)
+    repo=tmp_path/'repo';(repo/'app').mkdir(parents=True);(repo/'app'/'x.py').write_text('x=1')
+    receipt=dict(repo=str(repo),source_sha256=session._digest(session.source_manifest(repo)))
+    timer=[0.0];c=composition();c.runtime_service.status='RUNNING'
+    runner=session.BoundedSession(c,tmp_path/'out',receipt,clock=lambda:NOW,
+        timer=lambda:timer[0],start_monitor=False)
+    try:
+        diag.record_startup_stage('runtime_started')
+        timer[0]=300;assert runner._poll() is None and runner._observation_started is None
+        diag.record_startup_stage('first_scanner_evaluation')
+        assert runner._poll() is None and runner._deadline==600
+        assert runner.close()['capture_timer_start']=='SCANNER_FIRST_EVALUATION'
+    finally:runner.close()

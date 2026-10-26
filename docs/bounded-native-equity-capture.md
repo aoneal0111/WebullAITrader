@@ -44,11 +44,14 @@ is retained; observer order counts must not be read as counts of all ordinary
 PAPER activity. To use the normal launcher later, close this process normally.
 
 The observer attaches during desktop construction but waits for the existing
-runtime service to report RUNNING after the user's normal START action. This
-state is sampled every half second; the observer never starts the runtime.
+first new scanner evaluation diagnostic after attachment. The background
+runtime service's RUNNING flag is explicitly insufficient: it was observed
+before manual scanner START in the second empty 2026-10-26 capture.
+The existing diagnostic is sampled every half second; the observer never
+starts the runtime or requests quotes.
 A separate monotonic 15-minute startup timeout bounds an unattended GUI.
 Waiting and capture are both capped at the remaining regular-session time.
-Once RUNNING is observed, the five-minute observation budget starts; a later
+Once a new scanner evaluation is observed, the five-minute observation budget starts; a later
 STOP/START cannot extend or restart it. Pending startup accepts no records.
 
 Capture accepts at most 100 records, the existing byte budget, or five active
@@ -63,7 +66,7 @@ No quotes are requested or signals fabricated to fill the capture.
 The 2026-10-26 empty capture exposed the old timer defect: it ended at
 15:42:06 UTC, before runtime startup at 15:42:17 UTC. Regression tests now
 simulate six idle GUI minutes followed by a full five-minute capture, bounded
-startup without START, a RUNNING transition at monotonic zero, and market close
+startup without START, scanner activity at monotonic zero, and market close
 while waiting or collecting. These tests do not launch the real GUI.
 
 `session-summary.json` contains owner counts, dropped/refused outcomes, quote
@@ -73,7 +76,7 @@ separates `startup_wait_seconds`, `observation_started_at` and
 `observation_elapsed_seconds`. `evidence_status` distinguishes
 `NO_ENGINE_RECORDS`, `PARTIAL_ENGINE_RECORDS` and `BOTH_ENGINES_RECORDED`.
 `TIME_LIMIT` means the observation window elapsed; `STARTUP_TIMEOUT` means the
-runtime never became RUNNING; `SESSION_END` caps either phase. None of these
+scanner never produced a new evaluation; `SESSION_END` caps either phase. None of these
 status values alone validates input provenance or a strategy. Future
 or stale quote measurements remain visible. Timing ranges are diagnostic, not
 proof of a particular provider/clock defect or hard real-time latency. The
@@ -85,3 +88,20 @@ Saturday preparation is useful; starting a fresh equity capture must wait for
 the regular-session gate. Offline fixtures and a source-copy compatibility pass
 do not establish real capture throughput, quote freshness, strategy performance
 or online Grok behavior. No automated or scheduled GUI launch is created.
+
+
+The second empty summary began observation at 16:49:28 UTC, while its associated
+log records scanner runtime startup at 16:54:12 UTC. Its three queued items and
+absent quote timing are consistent with shared bar updates, not three captured
+engine assessments. The corrected marker is `SCANNER_FIRST_EVALUATION` in both
+preparation and session summaries. An unchanged marker from an earlier run
+cannot start this capture. Tests exercise the actual PerformanceDiagnostics
+marker, including runtime startup without any scanner evaluation.
+
+Tap summaries now separate `bars_queued` from `assessments_queued`, with
+per-engine assessment counts. These measure calls to the existing observer
+hooks, not all possible engine decisions. Current context hooks remain on
+execution-quote confirmation paths: disabled strategies, qualification gates
+and missing execution quotes can yield zero assessable records even after
+timing is repaired. The observer never requests data or bypasses gates to
+manufacture records. A zero-record result is not a strategy performance test.

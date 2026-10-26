@@ -200,7 +200,7 @@ raise SystemExit(prepared_main(root,sys.argv[1:]))
         (directory/'Start-Observer-Capture.ps1').write_text(launch,encoding='utf-8')
         summary.update(ready=True,status='PREPARED_NOT_STARTED',source_files=len(before),source_sha256=receipt['source_sha256'],
                        compatibility_check='OFFLINE_FIXTURES_PASSED',max_seconds=300,max_records=100,
-                       startup_timeout_seconds=900,capture_timer_start='RUNTIME_RUNNING')
+                       startup_timeout_seconds=900,capture_timer_start='SCANNER_FIRST_EVALUATION')
     except Exception as exc:
         summary['status']=str(exc) if isinstance(exc,PreparationError) else 'PREPARATION_FAILED'
         summary['error_type']=type(exc).__name__
@@ -223,9 +223,16 @@ def _settings(composition):
                 scalper=asdict(composition.quick_scalper_runtime.config))
 
 
+def _scanner_activity_marker():
+    # RuntimeService.RUNNING can precede manual market-data START. Use the
+    # existing scanner ingestion diagnostic, without touching runtime methods.
+    from app.performance_diagnostics import performance_diagnostics
+    return performance_diagnostics.startup_metrics().get('first_scanner_evaluation_at')
+
+
 class BoundedSession:
     def __init__(self,composition,directory,receipt,*,seconds=300,clock=lambda:datetime.now(UTC),model_block=None,
-                 startup_seconds=900,session_end=None,timer=monotonic,start_monitor=True):
+                 startup_seconds=900,session_end=None,timer=monotonic,start_monitor=True,activity_source=None):
         from .grok_observer_capture import ContextCapture,MAX_RECORDS
         from .grok_observer_runtime_tap import RuntimeContextTap
         self._composition,self._directory,self._receipt=composition,Path(directory),receipt
@@ -235,6 +242,8 @@ class BoundedSession:
         if not 0 <= seconds <= 300 or not 0 <= startup_seconds <= 900:
             raise ValueError('Capture and startup durations exceed bounds')
         self._timer=timer;self._seconds=seconds
+        self._activity_source=activity_source or _scanner_activity_marker
+        self._initial_activity=self._activity_source()
         self._started=timer();self._limit=MAX_RECORDS
         self._started_wall=clock()
         remaining=(session_end-self._started_wall).total_seconds() if session_end is not None else startup_seconds+seconds
@@ -242,7 +251,7 @@ class BoundedSession:
         self._startup_deadline=min(self._started+startup_seconds,self._session_deadline)
         self._observation_started=None;self._observation_wall=None
         # Refuse writes while awaiting a manual runtime START. The monitor
-        # opens the bounded capture only after the runtime reports RUNNING.
+        # opens the bounded capture only after new scanner evaluation evidence.
         self._deadline=None
         baseline=_digest(dict(source=receipt['source_sha256'],settings=self._initial_settings))
         self._capture=ContextCapture(self._directory/'private-capture',baseline,clock=clock,deadline=self._started,timer=timer)
@@ -264,8 +273,8 @@ class BoundedSession:
             if now>=self._session_deadline:return 'SESSION_END'
             if self._observation_started is None:
                 if now>=self._startup_deadline:return 'STARTUP_TIMEOUT'
-                runtime=getattr(self._composition,'runtime_service',None)
-                if getattr(runtime,'status',None)!='RUNNING':return None
+                activity=self._activity_source()
+                if activity is None or activity==self._initial_activity:return None
                 self._observation_started=now;self._observation_wall=self._clock()
                 self._deadline=min(now+self._seconds,self._session_deadline)
                 with self._capture._lock:self._capture._deadline=self._deadline
@@ -295,6 +304,7 @@ class BoundedSession:
             finished_wall=self._clock()
             clock_delta=(finished_wall-self._started_wall).total_seconds()-elapsed
             report.update(scope='BOUNDED_NATIVE_EQUITY_CAPTURE_SESSION_V1',stop_reason=reason,
+                capture_timer_start='SCANNER_FIRST_EVALUATION',
                 observation_started_at=None if self._observation_wall is None else self._observation_wall.isoformat(),
                 observation_elapsed_seconds=0 if self._observation_started is None else round(self._timer()-self._observation_started,3),
                 startup_wait_seconds=round((self._timer() if self._observation_started is None else self._observation_started)-self._started,3),

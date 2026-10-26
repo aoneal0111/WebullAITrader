@@ -22,7 +22,7 @@ class RuntimeContextTap:
             raise ValueError('Matching private capture and frozen baseline required')
         self._capture,self._baseline=capture,baseline
         self._queue=Queue(maxsize=16);self._stop=Event();self._lock=Lock()
-        self._closed=False;self._counts=Counter();self._bars=OrderedDict()
+        self._closed=False;self._counts=Counter(queued=0,bars_queued=0,assessments_queued=0);self._bars=OrderedDict()
         self._timing={}
         self._thread=Thread(target=self._run,name='atlas-observer-native-evidence',daemon=True)
         self._thread.start()
@@ -33,7 +33,13 @@ class RuntimeContextTap:
                 if self._closed:self._counts['closed']+=1;return False
                 try:self._queue.put_nowait(item)
                 except Full:self._counts['queue_full']+=1;return False
-                self._counts['queued']+=1;return True
+                self._counts['queued']+=1
+                if item[0]=='BARS':self._counts['bars_queued']+=1
+                else:
+                    self._counts['assessments_queued']+=1
+                    if isinstance(item[1],EngineId):
+                        self._counts['assessments_queued_'+item[1].value]+=1
+                return True
         except Exception:return False
 
     def remember_bars(self,symbol,bars,*,known_at):
