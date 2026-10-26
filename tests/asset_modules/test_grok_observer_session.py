@@ -318,3 +318,29 @@ def test_default_activity_source_uses_real_scanner_diagnostic_not_runtime_state(
         assert runner._poll() is None and runner._deadline==600
         assert runner.close()['capture_timer_start']=='SCANNER_FIRST_EVALUATION'
     finally:runner.close()
+
+
+
+def test_entry_counter_export_is_redacted_and_delta_is_reset_aware(monkeypatch):
+    from app import performance_diagnostics as module
+    diag=module.PerformanceDiagnostics()
+    monkeypatch.setattr(module,'performance_diagnostics',diag)
+    before=session._entry_diagnostic_counts()
+    diag.increment('quick_scalper_assessments',3)
+    diag.increment('quick_scalper_initial_insufficient_edge',2)
+    diag.record_entry_funnel('PRIVATE_SYMBOL','EXECUTION_QUOTE_REQUESTED')
+    delta=session._entry_diagnostic_delta(before,session._entry_diagnostic_counts())
+    assert delta['counts']['quick_scalper_assessments']==3
+    assert delta['counts']['quick_scalper_initial_insufficient_edge']==2
+    assert delta['counts']['equity_funnel_EXECUTION_QUOTE_REQUESTED']==1
+    assert 'PRIVATE_SYMBOL' not in str(delta)
+    assert not session._entry_diagnostic_delta({'x':2},{'x':1})['counts']
+    assert session._entry_diagnostic_delta({'x':2},{'x':1})['counter_reset_observed']
+
+
+def test_session_reports_disabled_scalper_without_enabling_it(timed_session):
+    runner,c,timer=timed_session
+    report=runner.close()
+    assert report['scalper_readiness']['configured_enabled'] is False
+    assert c.quick_scalper_runtime.config.enabled is False
+    assert 'entry_diagnostics' in report and report['grok_requests']==0

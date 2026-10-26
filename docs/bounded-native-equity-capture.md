@@ -105,3 +105,48 @@ execution-quote confirmation paths: disabled strategies, qualification gates
 and missing execution quotes can yield zero assessable records even after
 timing is repaired. The observer never requests data or bypasses gates to
 manufacture records. A zero-record result is not a strategy performance test.
+
+## Quote timing and early Scalper diagnostics
+
+Warrior's native event timestamp may precede a synchronous REST quote request.
+The execution path already evaluates provider ages against `confirmed_at`.
+The observer now uses that same confirmation time for the recorded quote
+assessment and retains the earlier native-event age as a separate diagnostic.
+A quote arriving after the native event is not by itself a future-dated quote
+at confirmation. Provider times remain unchanged; genuinely future or stale
+quotes still fail the original two-second capture contract.
+
+`observer_queue_delay_seconds` now measures enqueue-to-worker time. Previously
+its interval began at the native event and could include the REST request and
+other native processing. `native_event_to_confirmation_seconds` and
+`confirmation_to_capture_seconds` expose those other intervals separately.
+No request timestamps are inferred from the event; request duration itself is
+not measured by these intervals. Existing short bar-history availability checks
+still use the original native event cutoff, so later bars are not admitted.
+
+`entry_diagnostics` exports only cumulative numeric Quick Scalper counters and
+equity funnel stage counts, with deltas since observer attachment. Counter
+reset detection invalidates the delta rather than presenting negative counts.
+Maximum-age gauges are not subtracted as though they were event counts. No
+symbols, setup records, fills, account values, credentials or PnL are included.
+`scalper_readiness` states configured enabled, runtime enabled and sidecar
+execution-permitted values, without modifying them. Unknown fixture attributes
+remain null. These are observations at summary close, not activation authority.
+
+In the current source, `QUICK_SCALPER_ENABLED` defaults false. Enabled Scalper
+stream assessment is independent of Warrior breakouts; a missing observer
+confirmation record does not establish why that path stopped. Compare stream
+observations, assessments, opportunities, initial-policy waits, authorization,
+quote availability, reconfirmation, risk and bridge counters before changing
+strategy behavior. An existing `%TEMP%/atlas-performance/*.json` checkpoint
+already exposes these counters and can be read while Atlas runs. Its capture
+and runtime timestamps must match the run under investigation. Inspect only
+numeric counters rather than sharing the private artifact wholesale.
+
+The empty equity release registry still denies new BUYs from either engine.
+A diagnostic repair or a public scalping example does not qualify a policy.
+No settings, live execution, release approvals, provider requests or protective
+exit behavior changed in this patch. The provider's old quote timestamps were
+not repaired or replaced with receipt time; fresh native input still requires
+provider evidence. Tests cover post-request timing, real future timestamps,
+45-second-old quotes, counter deltas/reset and disabled configuration reporting.

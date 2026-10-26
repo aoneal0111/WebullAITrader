@@ -147,3 +147,40 @@ def test_bar_only_capture_is_explicitly_not_an_engine_assessment(tmp_path):
     assert report['tap_counts']['queued']==report['tap_counts']['bars_queued']==3
     assert report['tap_counts']['assessments_queued']==0
     assert report['capture']['records_by_engine']=={}
+
+
+
+def test_post_request_quote_uses_confirmation_time_and_keeps_native_event_order(tmp_path):
+    now=NOW+timedelta(seconds=.1)
+    capture=ContextCapture(tmp_path/'capture',BASE,clock=lambda:now)
+    tap=RuntimeContextTap(capture,BASE)
+    q=replace(quote(),confirmed_at=NOW-timedelta(seconds=.1))
+    try:
+        tap.remember_bars('AAPL',bars(),known_at=NOW-timedelta(seconds=.4))
+        tap.record(engine=EngineId.WARRIOR,quote=q,source=FixtureSource(),at=NOW-timedelta(seconds=.3),
+            baseline_result='BLOCKED',setup_state='FORMING')
+    finally:report=tap.close()
+    assert report['tap_counts']['captured']==1
+    assert report['tap_counts']['quote_after_native_event']==1
+    assert report['tap_counts'].get('future_quote_at_assessment',0)==0
+    assert report['timing']['quote_age_at_native_event_seconds']['min']==-.1
+    assert report['timing']['quote_age_at_confirmation_seconds']['min']==.1
+    assert report['timing']['observer_queue_delay_seconds']['min']==0
+    records=load_capture(tmp_path/'capture'/'private-observer-context.jsonl',BASE)
+    assert records[0][0].captured_at==q.confirmed_at
+    assert records[0][0].bid_at==NOW-timedelta(seconds=.2)  # Original provider time is preserved.
+
+
+def test_truly_future_or_stale_provider_quote_remains_refused(tmp_path):
+    for label,provider_time in [('old',NOW-timedelta(seconds=45)),('future',NOW+timedelta(seconds=1))]:
+        capture=ContextCapture(tmp_path/label,BASE,clock=lambda:NOW)
+        tap=RuntimeContextTap(capture,BASE)
+        q=replace(quote(),bid_timestamp=provider_time,ask_timestamp=provider_time,confirmed_at=NOW)
+        try:
+            tap.remember_bars('AAPL',bars(),known_at=NOW)
+            tap.record(engine=EngineId.WARRIOR,quote=q,source=FixtureSource(),at=NOW,
+                baseline_result='BLOCKED',setup_state='FORMING')
+        finally:report=tap.close()
+        assert report['tap_counts']['capture_refused']==1
+        assert report['capture']['records_by_engine']=={}
+        assert report['timing']['quote_age_at_confirmation_seconds']['min']==(45 if label=='old' else -1)

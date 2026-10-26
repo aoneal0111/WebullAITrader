@@ -48,7 +48,7 @@ class RuntimeContextTap:
         except Exception:return False
 
     def record(self,*,engine,quote,source,at,baseline_result,setup_state):
-        return self._put(('ASSESS',engine,quote,source,at,baseline_result,setup_state))
+        return self._put(('ASSESS',engine,quote,source,at,baseline_result,setup_state,self._capture._clock()))
 
     def _count(self,key):
         with self._lock:self._counts[key]+=1
@@ -68,17 +68,26 @@ class RuntimeContextTap:
                     self._bars.pop(symbol,None);self._bars[symbol]=(bars,known)
                     if len(self._bars)>128:self._bars.popitem(last=False)
                     continue
-                _,engine,quote,source,at,result,setup=item
+                _,engine,quote,source,native_at,result,setup,enqueued_at=item
                 from app.strategies.warrior_momentum.execution_quote import ExecutionQuoteSnapshot,WebullExecutionQuoteSource
                 if (not isinstance(source,WebullExecutionQuoteSource) or not isinstance(quote,ExecutionQuoteSnapshot)
                         or quote.bid_timestamp!=quote.ask_timestamp):
                     self._count('unsupported_quote_provenance');continue
                 captured_now=self._capture._clock()
+                # The native market event can precede the synchronous REST
+                # confirmation. Keep both clocks; never rewrite provider time.
+                at=quote.confirmed_at if quote.confirmed_at is not None else native_at
+                native_age=(native_at-quote.bid_timestamp).total_seconds()
                 assessed_age=(at-quote.bid_timestamp).total_seconds()
+                self._measure('quote_age_at_native_event_seconds',native_age)
+                self._measure('quote_age_at_confirmation_seconds',assessed_age)
+                self._measure('native_event_to_confirmation_seconds',(at-native_at).total_seconds())
+                if native_age<0:self._count('quote_after_native_event')
                 current_age=(captured_now-quote.bid_timestamp).total_seconds()
                 self._measure('quote_age_at_assessment_seconds',assessed_age)
                 self._measure('quote_age_at_capture_seconds',current_age)
-                self._measure('observer_queue_delay_seconds',(captured_now-at).total_seconds())
+                self._measure('observer_queue_delay_seconds',(captured_now-enqueued_at).total_seconds())
+                self._measure('confirmation_to_capture_seconds',(captured_now-at).total_seconds())
                 if assessed_age<0:self._count('future_quote_at_assessment')
                 if current_age<0:self._count('future_quote_at_capture')
                 if current_age>2:self._count('stale_quote_at_capture')
@@ -88,7 +97,7 @@ class RuntimeContextTap:
                 from app.strategies.warrior_momentum.models import MinuteBar
                 if any(not isinstance(b,MinuteBar) or b.symbol!=quote.symbol for b in bars):
                     self._count('history_symbol_or_type_mismatch');continue
-                if known>at:
+                if known>native_at:
                     self._count('history_not_available_at_assessment');continue
                 completed=tuple(ContextBar(b.timestamp+timedelta(minutes=1),known,
                     b.open,b.high,b.low,b.close,b.volume) for b in bars if b.timestamp+timedelta(minutes=1)<=known)

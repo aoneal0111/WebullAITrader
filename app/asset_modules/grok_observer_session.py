@@ -223,6 +223,23 @@ def _settings(composition):
                 scalper=asdict(composition.quick_scalper_runtime.config))
 
 
+def _entry_diagnostic_counts():
+    """Only fixed numeric counters; never export symbols, orders or PnL."""
+    from app.performance_diagnostics import performance_diagnostics
+    snapshot=performance_diagnostics.snapshot()
+    counts={k:getattr(snapshot,k) for k in snapshot.__dataclass_fields__
+            if k.startswith('quick_scalper_') and not k.endswith('_max') and type(getattr(snapshot,k)) is int}
+    funnel=performance_diagnostics.entry_conversion_metrics().get('funnel_counts',{})
+    counts.update({'equity_funnel_'+k:v for k,v in funnel.items() if type(v) is int})
+    return counts
+
+
+def _entry_diagnostic_delta(before,after):
+    reset=any(after.get(k,0)<v for k,v in before.items())
+    return dict(scope='SINCE_OBSERVER_ATTACHMENT',counter_reset_observed=reset,
+        counts={} if reset else {k:v-before.get(k,0) for k,v in after.items()})
+
+
 def _scanner_activity_marker():
     # RuntimeService.RUNNING can precede manual market-data START. Use the
     # existing scanner ingestion diagnostic, without touching runtime methods.
@@ -238,6 +255,7 @@ class BoundedSession:
         self._composition,self._directory,self._receipt=composition,Path(directory),receipt
         self._initial_settings=_digest(_settings(composition));self._clock=clock
         self._model_block=model_block
+        self._entry_counts_before=_entry_diagnostic_counts()
         self._lock=Lock();self._stop=Event();self._report=None
         if not 0 <= seconds <= 300 or not 0 <= startup_seconds <= 900:
             raise ValueError('Capture and startup durations exceed bounds')
@@ -304,6 +322,10 @@ class BoundedSession:
             finished_wall=self._clock()
             clock_delta=(finished_wall-self._started_wall).total_seconds()-elapsed
             report.update(scope='BOUNDED_NATIVE_EQUITY_CAPTURE_SESSION_V1',stop_reason=reason,
+                entry_diagnostics=_entry_diagnostic_delta(self._entry_counts_before,_entry_diagnostic_counts()),
+                scalper_readiness=dict(configured_enabled=getattr(self._composition.quick_scalper_runtime.config,'enabled',None),
+                    runtime_enabled=getattr(self._composition.quick_scalper_runtime,'enabled',None),
+                    execution_permitted=getattr(self._composition.warrior_forward_sidecar,'_accept_execution',None)),
                 capture_timer_start='SCANNER_FIRST_EVALUATION',
                 observation_started_at=None if self._observation_wall is None else self._observation_wall.isoformat(),
                 observation_elapsed_seconds=0 if self._observation_started is None else round(self._timer()-self._observation_started,3),
