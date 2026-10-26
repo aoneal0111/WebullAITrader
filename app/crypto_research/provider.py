@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from collections import deque
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 import logging
@@ -26,6 +27,13 @@ class CryptoRateLimitError(CryptoProviderError):
 
 class CryptoBusinessRequestError(CryptoProviderError):
     pass
+
+
+def _safe_business_code(value):
+    # Exact vocabulary only: arbitrary provider strings may contain secrets.
+    allowed = {'INVALID_PARAMETER', 'UNAUTHORIZED', 'SYSTEM_ERROR',
+               'UNSUPPORTED_SYMBOL', 'INVALID_SYMBOL', 'SYMBOL_NOT_FOUND'}
+    return value if type(value) is str and value in allowed else 'UNRECOGNIZED'
 
 
 def _http_status(value):
@@ -77,6 +85,12 @@ class WebullCryptoResearchProvider:
         self._rate_lock = Lock()
         self._last_request_at: float | None = None
         self._cooldown_until = 0.0
+        self._failures = deque(maxlen=32)
+
+    def failure_diagnostics(self):
+        """Bounded redacted evidence; never expose raw SDK exception contents."""
+        with self._rate_lock:
+            return [dict(item) for item in self._failures]
 
     def discover(
         self, configured: Sequence[CryptoPair] = ()
@@ -205,8 +219,13 @@ class WebullCryptoResearchProvider:
                         'REQUEST_REJECTED' if status is not None and 400<=status<500 and status!=408 else
                         'SERVER_ERROR' if status is not None and status>=500 else 'TRANSPORT_ERROR')
             logging.getLogger(__name__).warning(
-                'crypto_provider_failure operation=%s category=%s http_status=%s attempt=%s',
-                operation,category,status if status is not None else 'UNAVAILABLE',attempt+1)
+                'crypto_provider_failure operation=%s category=%s http_status=%s attempt=%s business_code=%s',
+                operation,category,status if status is not None else 'UNAVAILABLE',attempt+1,
+                _safe_business_code(code))
+            with self._rate_lock:
+                self._failures.append(dict(operation=operation, category=category,
+                    http_status=status, attempt=attempt+1,
+                    business_code=_safe_business_code(code)))
             # Never print provider messages, bodies, request IDs or credentials.
             if status in {401,403}:
                 raise PermissionError('Webull crypto request is not entitled') from None

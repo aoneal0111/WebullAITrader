@@ -342,3 +342,25 @@ def test_receipt_time_cannot_make_an_undated_quote_fresh():
     del row['last_trade_time']
     with pytest.raises(MalformedCryptoQuoteError):
         observation_from_webull(pair_from_webull(instrument()), row, datetime.now(UTC))
+
+
+@pytest.mark.parametrize('raised',[False,True])
+@pytest.mark.parametrize('code,label',[('INVALID_PARAMETER','INVALID_PARAMETER'),
+    ('secret-token\nforged log','UNRECOGNIZED'),({'nested':'secret'},'UNRECOGNIZED')])
+def test_business_diagnostics_are_bounded_redacted_and_copied(raised,code,label,caplog):
+    from webull.core.exception.exceptions import ServerException
+    client=Client([instrument()],[])
+    def fail(*args):
+        if raised:raise ServerException(code,'private-body',http_status=417,request_id='private-id')
+        return Response({'error_code':code,'message':'private-body'},417)
+    client.crypto_market_data.get_crypto_snapshot=fail
+    p=WebullCryptoResearchProvider(client,minimum_request_interval_seconds=0,retry_attempts=3)
+    for _ in range(35):
+        with pytest.raises(CryptoProviderError):p.snapshots((CryptoPair.configured('BTC/USD'),))
+    records=p.failure_diagnostics()
+    assert len(records)==32 and all(r['business_code']==label for r in records)
+    assert all(r['attempt']==1 and r['http_status']==417 for r in records)
+    records[0]['business_code']='tampered'
+    assert p.failure_diagnostics()[0]['business_code']==label
+    for secret in ('secret-token','forged log','private-body','private-id','nested'):
+        assert secret not in str(p.failure_diagnostics())+caplog.text

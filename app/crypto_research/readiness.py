@@ -60,6 +60,7 @@ def main():
     mode.add_argument('--provider-worker',action='store_true',help='Check actual inputs through a worker with temporary entries disabled')
     p.add_argument('--online-read',action='store_true',help='Allow bounded authenticated market-data GETs')
     args=p.parse_args()
+    provider = None
     if args.output.exists():p.error('output exists; use a new filename')
     if not args.online_read:p.error('--online-read is required; no requests were made')
     # Resolve exactly the local scoped market-data identity. Never print config,
@@ -94,6 +95,8 @@ def main():
                'READ_ONLY_CRYPTO_QUOTE_RELIABILITY_V1' if args.reliability else 'READ_ONLY_CRYPTO_QUOTE_READINESS')
         report=dict(scope=scope,status='LOCAL_CONFIGURATION_OR_CLIENT_FAILED',
                     ready=False,orders=0,grok_requests=0,strategy_changes=0)
+    if provider is not None:
+        report['provider_failures'] = provider.failure_diagnostics()
     with args.output.open('x',encoding='utf-8') as f:json.dump(report,f,indent=2)
     print('CRYPTO_READINESS='+report['status']);print('UPLOAD_SUMMARY='+str(args.output.resolve()))
     return 0 if report['ready'] else 2
