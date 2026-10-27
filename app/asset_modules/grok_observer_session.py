@@ -93,7 +93,16 @@ def apply_hooks(root,patch):
         text=target.read_text(encoding='utf-8')
         if old and text.count(old)==1:text=text.replace(old,new,1)
         elif new and text.count(new)==1 and text.count(old)==0:pass # already instrumented
-        else:raise PreparationError('OBSERVER_PATCH_BASELINE_MISMATCH')
+        else:
+            # Accept only the exact prior passive Scalper hook, not arbitrary
+            # workstation edits. Existing frozen captures used this signature.
+            current='source=self.execution_quote_source,at=evaluated_at,preview=source,'
+            previous=(new.replace(current,'source=self.execution_quote_source,at=evaluated_at,')
+                if path=='app/strategies/warrior_momentum/quick_scalper_runtime.py' else new)
+            if (previous!=new and new.count(current)==1
+                    and text.count(previous)==1 and text.count(old)==0):
+                text=text.replace(previous,new,1)
+            else:raise PreparationError('OBSERVER_PATCH_BASELINE_MISMATCH')
         target.write_text(text,encoding='utf-8',newline='\n');touched.add(path)
     if touched!=HOOK_FILES:raise PreparationError('OBSERVER_PATCH_INCOMPLETE')
 

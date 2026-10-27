@@ -382,3 +382,60 @@ def test_capture_window_supports_extended_hours_calendar_and_dst(date,hour,minut
 def test_capture_window_rejects_naive_time():
     from datetime import datetime
     with pytest.raises(ValueError,match='Aware'):session.capture_session_window(datetime(2026,10,26,16))
+
+
+@pytest.mark.parametrize('revision',[
+    '50c41d9b147aeb42ca5b3aa37578ac612e9fde71',
+    'c74a74106d66522bd178cb9110f0e55b74445860',
+    'd7d913a1389138aa9084fba947a2208c936cee53',
+],ids=['previous-observer','previous-probe','paired-observer'])
+def test_passive_hook_upgrade_accepts_previous_instrumented_baselines(tmp_path,revision):
+    import subprocess
+    root=Path(__file__).resolve().parents[2]
+    patch=json.loads((root/'app/asset_modules/observer_native_hooks.json').read_text())['patch']
+    before={}
+    for name in session.HOOK_FILES:
+        data=subprocess.check_output(['git','show',revision+':'+name],cwd=root)
+        target=tmp_path/name;target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes(data);before[name]=target.read_text()
+    session.apply_hooks(tmp_path,patch)
+    after={name:(tmp_path/name).read_text() for name in session.HOOK_FILES}
+    session.apply_hooks(tmp_path,patch)
+    assert after=={name:(tmp_path/name).read_text() for name in session.HOOK_FILES}
+    for name in session.HOOK_FILES:
+        expected=before[name]
+        if name.endswith('/quick_scalper_runtime.py'):
+            expected=expected.replace('source=self.execution_quote_source,at=evaluated_at,\n',
+                'source=self.execution_quote_source,at=evaluated_at,preview=source,\n')
+        assert after[name]==expected
+
+
+@pytest.mark.parametrize('mode',['edited-hook','duplicate-hook'])
+def test_passive_hook_upgrade_still_refuses_changed_or_ambiguous_old_hook(tmp_path,mode):
+    import subprocess
+    root=Path(__file__).resolve().parents[2]
+    patch=json.loads((root/'app/asset_modules/observer_native_hooks.json').read_text())['patch']
+    for name in session.HOOK_FILES:
+        target=tmp_path/name;target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes(subprocess.check_output(['git','show',
+            'c74a74106d66522bd178cb9110f0e55b74445860:'+name],cwd=root))
+    target=tmp_path/'app/strategies/warrior_momentum/quick_scalper_runtime.py'
+    text=target.read_text()
+    if mode=='edited-hook':
+        text=text.replace('source=self.execution_quote_source,at=evaluated_at,',
+            'source=self.execution_quote_source,at=evaluated_at,unknown=True,')
+    else:
+        # Duplicate the complete exact hunk context, not only its middle.
+        for hunk in patch.split('@@ ')[1:]:
+            if 'source=self.execution_quote_source,at=evaluated_at,preview=source,' in hunk:
+                lines=hunk.split('diff --git ',1)[0].splitlines(keepends=True)[1:]
+                previous=''.join(line[1:] for line in lines if line.startswith((' ','+')))
+                previous=previous.replace('source=self.execution_quote_source,at=evaluated_at,preview=source,',
+                    'source=self.execution_quote_source,at=evaluated_at,')
+                assert text.count(previous)==1
+                text+='\n'+previous
+                break
+        else:raise AssertionError('Expected confirmation hunk')
+    target.write_text(text)
+    with pytest.raises(session.PreparationError,match='OBSERVER_PATCH_BASELINE_MISMATCH'):
+        session.apply_hooks(tmp_path,patch)
