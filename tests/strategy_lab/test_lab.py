@@ -288,3 +288,67 @@ def test_bootstrap_renewal_never_exceeds_short_lease_or_deadline(lab):
     bootstrap.run(root,clock=clock.wall,timer=clock.mono,wait=clock.wait,progress=None)
     assert leases and all(0<d['expires_at']-d['issued_at']<=90 for d in leases)
     assert max(d['expires_at'] for d in leases)<=NOW+3600
+
+
+def test_diagnostic_lab_copies_pins_without_modifying_original(lab,tmp_path):
+    from app.strategy_lab.diagnostic_prepare import prepare_diagnostics
+    root,m,_=lab
+    before={str(p.relative_to(root)):p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    new=tmp_path/'diagnostic'
+    r=prepare_diagnostics(root,new)
+    assert not r['execution_authorized'] and r['network_requests']==0
+    assert manager.verify(new)['lab_id']!=m['lab_id']
+    assert (new/'user_data/DIAGNOSTICS_ENABLED').is_file()
+    assert {str(p.relative_to(root)):p.read_bytes() for p in root.rglob('*') if p.is_file()}==before
+    with pytest.raises(ValueError,match='SEPARATE'):prepare_diagnostics(root,root/'nested')
+
+
+def test_diagnostic_marker_rejects_even_valid_allow_lease(lab,wrapper):
+    root,m,_=lab
+    manager.write_control(root,m['lab_id'],'ALLOW',NOW)
+    control=root/'user_data/grok-control.json'
+    assert wrapper.entry_lease(control,m['lab_id'],NOW+1)
+    (root/'user_data/DIAGNOSTICS_ENABLED').write_text('OBSERVE')
+    assert not wrapper.entry_lease(control,m['lab_id'],NOW+1)
+
+
+def test_diagnostics_preserve_pipeline_return_values_and_exceptions(lab,wrapper,monkeypatch):
+    import pandas as pd
+    root,m,_=lab
+    cfg=json.loads((root/'user_data/config.json').read_text())
+    cfg['user_data_dir']=root/'user_data'
+    (root/'user_data/DIAGNOSTICS_ENABLED').write_text('OBSERVE')
+    native=wrapper.AtlasNFILab(cfg)
+    base=wrapper.NostalgiaForInfinityX8
+    df=pd.DataFrame({'date':[datetime.now(UTC)],'enter_long':[1],'close':[12345.67]})
+    monkeypatch.setattr(base,'populate_indicators',lambda self,d,meta:d,raising=False)
+    monkeypatch.setattr(base,'populate_entry_trend',lambda self,d,meta:d,raising=False)
+    result=('long','private_tag')
+    monkeypatch.setattr(base,'get_entry_signal',lambda self,*a:result,raising=False)
+    assert native.populate_indicators(df,{'pair':'BTC/USD'}) is df
+    assert native.populate_entry_trend(df,{'pair':'BTC/USD'}) is df
+    assert native.get_entry_signal('BTC/USD','5m',df) is result
+    native._diagnostic_written_at=float('-inf')
+    native.bot_loop_start(current_time=datetime.now(UTC))
+    state=json.loads((root/'user_data/native-diagnostics.json').read_text())
+    assert state['stages']['indicators_completed']==1
+    assert state['pairs']['BTC/USD']['last_row_enter_long']
+    assert state['pairs']['BTC/USD']['last_entry_signal_checked_outcome']
+    assert not state['entry_lease_accepted_now']
+    assert '12345.67' not in json.dumps(state) and 'private_tag' not in json.dumps(state)
+    def fail(*a):raise RuntimeError('native failure')
+    monkeypatch.setattr(base,'populate_indicators',fail)
+    with pytest.raises(RuntimeError,match='native failure'):native.populate_indicators(df,{'pair':'BTC/USD'})
+    assert native._diagnostic_state['stages']['indicators_failed']==1
+    assert native.confirm_trade_exit(None,None,None,None,None,None,'stop_loss',datetime.now(UTC))
+
+
+def test_telemetry_write_failure_does_not_change_native_result(lab,wrapper,monkeypatch):
+    root,m,_=lab
+    cfg=json.loads((root/'user_data/config.json').read_text());cfg['user_data_dir']=root/'user_data'
+    (root/'user_data/DIAGNOSTICS_ENABLED').write_text('OBSERVE')
+    native=wrapper.AtlasNFILab(cfg)
+    (root/'user_data/native-diagnostics.tmp').mkdir()
+    monkeypatch.setattr(wrapper.NostalgiaForInfinityX8,'populate_indicators',lambda self,d,meta:d,raising=False)
+    sentinel=object()
+    assert native.populate_indicators(sentinel,{'pair':'BTC/USD'}) is sentinel
