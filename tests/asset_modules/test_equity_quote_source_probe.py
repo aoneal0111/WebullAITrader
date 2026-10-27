@@ -15,7 +15,7 @@ class Market:
         return dict(data=[dict(symbol=kw['symbols'][0],quote_time=at,bid='PRIVATE_PRICE',secret='PRIVATE_SECRET')])
     def get_quotes(self,*args,**kw):
         self.calls.append(('DEPTH',args,kw))
-        return dict(data=dict(timestamp=NOW.isoformat(),bids=[dict(price='PRIVATE_PRICE',size='5')],
+        return dict(data=dict(quote_time=NOW.isoformat(),bids=[dict(price='PRIVATE_PRICE',size='5')],
                               asks=[dict(price='PRIVATE_PRICE',size='6')]))
 
 
@@ -83,3 +83,90 @@ def test_http_error_bodies_are_never_read():
         def get_quotes(self,*a,**k):return Response()
     report=run(Denied(),clock=lambda:NOW,wait=lambda _:None)
     assert all(r['diagnostics']=={'http_status':403} for r in report['records'])
+
+
+def checkpoint(tmp_path,*,captured=NOW,record_at=NOW,age=15,symbol='FAST',status='CHECKPOINT',reason='QUOTE_REJECTED_BID_STALE'):
+    value=dict(status=status,captured_at=captured.isoformat(),runtime_started_at=(NOW-timedelta(hours=1)).isoformat(),
+        secret='PRIVATE',entry_conversion=dict(funnel_records=[dict(symbol=symbol,
+            timestamp=record_at.isoformat(),stage='EXECUTION_QUOTE_REJECTED',outcome=reason,
+            bid_timestamp_age=age,price='PRIVATE_PRICE',account='PRIVATE_ACCOUNT')]))
+    path=tmp_path/'current.json';path.write_text(json.dumps(value));return path
+
+
+def test_selects_recent_native_stale_bid_rejections_and_exports_no_private_fields(tmp_path):
+    from app.webull.equity_quote_source_probe import select_recent_rejections
+    path=checkpoint(tmp_path);value=json.loads(path.read_text())
+    records=value['entry_conversion']['funnel_records']
+    records.append({**records[0],'symbol':'OTHER','timestamp':(NOW-timedelta(seconds=1)).isoformat()})
+    records.append({**records[0],'timestamp':(NOW-timedelta(seconds=2)).isoformat()})
+    path.write_text(json.dumps(value))
+    result=select_recent_rejections(tmp_path,now=NOW)
+    assert result['symbols']==['FAST','OTHER'] and len(result['evidence'])==2
+    assert result['status']=='RECENT_STALE_QUOTE_REJECTIONS_SELECTED'
+    assert result['evidence'][0]['recorded_bid_age_ms']==15000
+    assert 'PRIVATE' not in json.dumps(result) and 'price' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('changes',[
+    {'captured':NOW-timedelta(seconds=121)}, {'captured':NOW+timedelta(seconds=1)},
+    {'record_at':NOW-timedelta(seconds=301)}, {'record_at':NOW+timedelta(seconds=1)},
+    {'age':-.5}, {'age':5}, {'reason':'QUOTE_REJECTED_LAST_TRADE_STALE'},
+    {'status':'FINAL'}, {'symbol':'INVALID/SECRET'},
+],ids=['stale-checkpoint','future-checkpoint','old-record','future-record','future-quote',
+       'not-stale','last-only','stopped-runtime','invalid-symbol'])
+def test_old_unrelated_or_invalid_evidence_never_selects_a_symbol(tmp_path,changes):
+    from app.webull.equity_quote_source_probe import select_recent_rejections
+    checkpoint(tmp_path,**changes)
+    assert select_recent_rejections(tmp_path,now=NOW)['symbols']==[]
+
+
+def test_two_rounds_have_eight_reads_with_counterbalanced_endpoint_order():
+    market=Market();waits=[]
+    report=run(market,symbols=('FAST','OTHER'),rounds=2,clock=lambda:NOW,wait=waits.append)
+    assert len(market.calls)==report['market_data_attempts']==8 and waits==[1]*7
+    assert [r['operation'] for r in report['records']]==[
+        'SNAPSHOT','DEPTH','SNAPSHOT','DEPTH','DEPTH','SNAPSHOT','DEPTH','SNAPSHOT']
+    assert all(r['quote_time_samples']==2 and not r['quote_time_advanced'] for r in report['source_summary'])
+    assert not report['execution_authorized']
+
+
+@pytest.mark.parametrize('symbols,rounds',[(('A','B','C'),1),(('A','A'),1),(('bad',),1),(('A',),3),(('A',),True)])
+def test_invalid_request_bounds_fail_before_any_call(symbols,rounds):
+    market=Market()
+    with pytest.raises(ValueError):run(market,symbols=symbols,rounds=rounds,wait=lambda _:None)
+    assert market.calls==[]
+
+
+def test_missing_directory_and_byte_bound_are_explicit(tmp_path):
+    from app.webull.equity_quote_source_probe import select_recent_rejections
+    assert select_recent_rejections(tmp_path/'absent',now=NOW)['status']=='CHECKPOINT_DIRECTORY_MISSING'
+    (tmp_path/'large.json').write_bytes(b'x'*(16*1024*1024+1))
+    result=select_recent_rejections(tmp_path,now=NOW)
+    assert result['status']=='CHECKPOINT_BYTE_LIMIT' and result['symbols']==[]
+
+
+def test_no_matching_rejections_constructs_no_client_or_market_request(tmp_path,monkeypatch):
+    from app.webull.equity_quote_source_probe import main
+    from types import SimpleNamespace
+    monkeypatch.chdir(tmp_path)
+    c=SimpleNamespace(environment=SimpleNamespace(value='PAPER'),live_trading_enabled=False,
+        grok_paper_entries_enabled=False,market_data=SimpleNamespace(api_key='PRIVATE',api_secret='PRIVATE',
+            api_base_url='https://api.webull.com',environment=SimpleNamespace(value='PRODUCTION')))
+    monkeypatch.setattr('app.configuration.loader.load_configuration',lambda _:c)
+    monkeypatch.setattr('app.webull.sdk_market_data.create_official_data_client',lambda **k:pytest.fail('No client'))
+    monkeypatch.setattr('sys.argv',['probe','--repo',str(tmp_path),'--output',str(tmp_path/'report.json'),
+        '--checkpoint-directory',str(tmp_path/'missing'),'--rounds','2','--read'])
+    assert main()==0
+    report=json.loads((tmp_path/'report.json').read_text())
+    assert report['market_data_attempts']==0 and report['selection']['symbols']==[]
+    assert 'PRIVATE' not in json.dumps(report)
+
+
+def test_selection_does_not_fall_back_to_another_runtime_when_latest_has_no_rejection(tmp_path):
+    from app.webull.equity_quote_source_probe import select_recent_rejections
+    import os
+    path=checkpoint(tmp_path);old=tmp_path/'old.json';path.rename(old)
+    latest=checkpoint(tmp_path,reason='QUOTE_REJECTED_LAST_TRADE_STALE')
+    os.utime(old,(10,10));os.utime(latest,(20,20))
+    result=select_recent_rejections(tmp_path,now=NOW)
+    assert result['symbols']==[] and result['status']=='NO_RECENT_STALE_QUOTE_REJECTIONS'

@@ -43,3 +43,36 @@ Offline fixtures verify four attempts, no retry, redaction, bounded schema
 inspection, future/old timestamp reporting, opt-in gating, response cleanup,
 and rejection of HTTP error bodies. Successful response parsing alone never
 sets execution_authorized=true or activates a new data source.
+
+## Recent rejected movers
+
+`probe-equity-quote-sources.ps1 -RecentRejections` requires a running Atlas
+process but does not attach to or control it. It reads the existing local
+performance checkpoint directory. Selection is explicitly checkpoint evidence,
+not runtime-process attestation: the checkpoint must be CHECKPOINT rather than
+FINAL, at most 120 seconds old, have a runtime start, and contain native
+EXECUTION_QUOTE_REJECTED / QUOTE_REJECTED_BID_STALE records no older than five
+minutes. Records with future/invalid times, BID age at or below five seconds,
+or LAST-only failures are excluded. The freshest affected record per symbol
+is retained and at most two symbols are selected. Only one checkpoint is used;
+there is no fallback to another runtime when the newest eligible checkpoint
+contains no qualifying rejection.
+
+The reader examines at most 512 directory entries and five candidate files,
+with a combined 16 MiB read bound and an 8,192-record bound. It exports only the
+selected symbols, rejection times/ages and checkpoint age. No other checkpoint
+fields, prices, account data, file paths or private performance are exported.
+Missing or unsuitable evidence produces a zero-request report; it never falls
+back to SPY/AAPL or old screenshots. Selection currently comes from the native
+Warrior execution-quote funnel, not a claim that these exact symbols were the
+Scalper failures. The comparison is useful for the shared confirmation source.
+
+For each selected symbol, two rounds compare SNAPSHOT with depth=1, at most
+eight method attempts with a one-second pause between attempts. Endpoint order
+is reversed in the second round to reduce ordering bias. Source summaries show
+observed quote_time ages and whether that timestamp advanced across the two
+samples. This is still sequential sampling, not a simultaneous market replay
+or proof of continuous quote coverage. There is no automatic source switch.
+An explicit -Symbols parameter (at most two canonical equity symbols) is also
+available; it never mixes with automatic selection. The original default SPY/
+AAPL one-round control comparison remains unchanged when neither is supplied.
