@@ -308,6 +308,9 @@ class QuickScalperPaperRuntimeAdapter:
             )
             performance_diagnostics.increment("quick_scalper_opportunities")
             preview = self.scalper.policy.assess(snapshot)
+            if self._observer_context_tap is not None:
+                try:self._observer_context_tap.record_scalper_preview(snapshot,preview)
+                except Exception:pass
             self._emit(
                 'SCALP_ARMED', snapshot.symbol,
                 generation=snapshot.generation_id,

@@ -195,3 +195,32 @@ quote is substituted. The tools do not provide continuous or scheduled capture.
 Official hours checked October 26, 2026:
 https://www.webull.com/help/faq/10960 and
 https://www.webull.com/help/faq/11110-Market-Closures.
+
+## Initial Scalper freshness diagnosis
+
+The passive frozen-source hook now measures initial QUICK_SCALP_STREAM policy
+rejections before any authoritative quote request. Previously the component
+freshness counters were populated only after reaching confirmation; zeroes
+there could not explain initial rejections. `scalper_preview_freshness` now
+reports fixed numeric counters, the first blocking component in current policy
+order, and exact signed component ages in microseconds. Negative ages remain
+future timestamps. Old LAST is informational; current policy permits old LAST
+when executable BID/ASK are current, but rejects future LAST. BID/ASK older than
+five seconds or future remain rejected. A future component blocks the existing
+stale-preview refresh path; this patch measures that condition without changing
+it or issuing another provider request. Initial policy rejection samples are
+not executions, fills or independently confirmed quotes.
+
+No symbols, prices, provider rows, account details or model reasons are exported
+in this added summary. The hook returns no replacement assessment and does not
+alter provider timestamps, result objects, settings or order admission. Existing
+native-quote observer records still require authoritative confirmation, so a
+Scalper stopped at the initial policy gate may have diagnostic samples but zero
+Grok context records. This instrumentation does not manufacture coverage.
+
+Compare signed provider ages with an independent workstation clock check.
+A stable wall/monotonic interval proves absence of clock jumps during capture,
+not absolute UTC accuracy. Source timestamp semantics or a stable host/provider
+offset remain separate possibilities until measured. Do not relax future/stale
+limits or adjust provider timestamps to obtain passing results. The observed
+Grok latency is a separate issue from upstream quote admission.

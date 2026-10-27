@@ -184,3 +184,45 @@ def test_truly_future_or_stale_provider_quote_remains_refused(tmp_path):
         assert report['tap_counts']['capture_refused']==1
         assert report['capture']['records_by_engine']=={}
         assert report['timing']['quote_age_at_confirmation_seconds']['min']==(45 if label=='old' else -1)
+
+
+@pytest.mark.parametrize('last_age,bid_age,ask_age,first',[
+    (-.0001,0,0,'LAST_FUTURE'),(0,-.5,-.5,'BID_FUTURE'),
+    (0,0,-.5,'ASK_FUTURE'),(0,6,6,'BID_STALE'),
+    (0,0,6,'ASK_STALE'),(60,6,6,'BID_STALE'),
+],ids=['submillisecond-last-future','quotes-future','ask-future','quotes-old','ask-old','last-old-informational'])
+def test_initial_preview_diagnostics_measure_exact_blocker_without_mutating_policy(tmp_path,last_age,bid_age,ask_age,first):
+    from tests.warrior_momentum.test_quick_scalper_runtime import snapshot
+    from app.strategies.warrior_momentum.quick_scalper import QuickScalperPolicy
+    value=replace(snapshot(),setup_type='QUICK_SCALP_STREAM')
+    value=replace(value,**{name+'_timestamp':value.decision_at-timedelta(seconds=age)
+        for name,age in [('last',last_age),('bid',bid_age),('ask',ask_age)]})
+    policy=QuickScalperPolicy();before=policy.assess(value)
+    assert before.reason=='PROVIDER_DATA_STALE'
+    capture=ContextCapture(tmp_path/'capture',BASE,clock=lambda:NOW)
+    tap=RuntimeContextTap(capture,BASE)
+    tap.record_scalper_preview(value,before)
+    after=policy.assess(value);r=tap.close()
+    assert after==before
+    d=r['scalper_preview_freshness']
+    assert d['counts']['samples']==1 and d['counts']['first_blocker_'+first]==1
+    assert d['age_microseconds']['last']['min']==round(last_age*1000000)
+    assert not d['provider_timestamps_modified'] and not d['policy_results_modified']
+    assert 'FAST' not in json.dumps(d) and 'AAPL' not in json.dumps(d)
+    assert r['capture']['counts'].get('written',0)==0
+
+
+def test_initial_stream_hook_records_future_rejection_without_confirmation_or_order(tmp_path):
+    from tests.warrior_momentum.test_quick_scalper_runtime import adapter,stream_observation,NOW as AT
+    runtime,bridge,source=adapter()
+    capture=ContextCapture(tmp_path/'capture',BASE,clock=lambda:NOW)
+    tap=RuntimeContextTap(capture,BASE);runtime._observer_context_tap=tap
+    try:
+        first=stream_observation('4.95',-1)
+        second=replace(stream_observation('5.00',0),quote_timestamp=AT+timedelta(seconds=.5))
+        runtime.observe_stream_event(first,decision_at=AT-timedelta(seconds=1),session='REGULAR')
+        result=runtime.observe_stream_event(second,decision_at=AT,session='REGULAR')
+        assert result.reason=='PROVIDER_DATA_STALE' and source.calls==0 and bridge.entries==[]
+    finally:r=tap.close()
+    assert r['scalper_preview_freshness']['counts']['first_blocker_BID_FUTURE']==1
+    assert r['capture']['counts'].get('written',0)==0

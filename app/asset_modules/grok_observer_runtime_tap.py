@@ -23,7 +23,7 @@ class RuntimeContextTap:
         self._capture,self._baseline=capture,baseline
         self._queue=Queue(maxsize=16);self._stop=Event();self._lock=Lock()
         self._closed=False;self._counts=Counter(queued=0,bars_queued=0,assessments_queued=0);self._bars=OrderedDict()
-        self._timing={}
+        self._timing={};self._preview_counts=Counter(samples=0);self._preview_ages={}
         self._thread=Thread(target=self._run,name='atlas-observer-native-evidence',daemon=True)
         self._thread.start()
 
@@ -49,6 +49,35 @@ class RuntimeContextTap:
 
     def record(self,*,engine,quote,source,at,baseline_result,setup_state):
         return self._put(('ASSESS',engine,quote,source,at,baseline_result,setup_state,self._capture._clock()))
+
+    def record_scalper_preview(self,snapshot,assessment):
+        """Numeric initial-stream rejection diagnostics; no requests or authority."""
+        try:
+            from app.strategies.warrior_momentum.quick_scalper import QuickScalpSnapshot,QuickScalpAssessment
+            if (not isinstance(snapshot,QuickScalpSnapshot) or not isinstance(assessment,QuickScalpAssessment)
+                    or snapshot.setup_type!='QUICK_SCALP_STREAM' or assessment.reason!='PROVIDER_DATA_STALE'):
+                return
+            unit=timedelta(microseconds=1)
+            ages={name:int((snapshot.decision_at-getattr(snapshot,name+'_timestamp'))//unit)
+                  for name in ('last','bid','ask')}
+            # Match the current policy's order; old LAST alone is permitted.
+            first=('LAST_FUTURE' if ages['last']<0 else
+                   'BID_FUTURE' if ages['bid']<0 else 'BID_STALE' if ages['bid']>5000000 else
+                   'ASK_FUTURE' if ages['ask']<0 else 'ASK_STALE' if ages['ask']>5000000 else 'UNCLASSIFIED')
+            with self._lock:
+                if self._closed:return
+                self._preview_counts['samples']+=1
+                self._preview_counts['first_blocker_'+first]+=1
+                if any(age<0 for age in ages.values()):self._preview_counts['future_component_prevents_refresh']+=1
+                for name,age in ages.items():
+                    for flag,test in (('future',age<0),('older_than_five_seconds',age>5000000)):
+                        if test:self._preview_counts[name+'_'+flag]+=1
+                    old=self._preview_ages.setdefault(name,dict(min=age,max=age))
+                    old['min']=min(old['min'],age);old['max']=max(old['max'],age)
+        except Exception:
+            # Diagnostics must not change the policy result or cause an order.
+            try:self._count('preview_diagnostics_failed')
+            except Exception:pass
 
     def _count(self,key):
         with self._lock:self._counts[key]+=1
@@ -113,6 +142,10 @@ class RuntimeContextTap:
         with self._lock:self._closed=True
         self._stop.set();self._thread.join(timeout=2)
         report=self._capture.close()
-        with self._lock:counts=dict(self._counts);timing={k:dict(v) for k,v in self._timing.items()}
+        with self._lock:
+            counts=dict(self._counts);timing={k:dict(v) for k,v in self._timing.items()}
+            preview=dict(scope='INITIAL_STREAM_POLICY_FRESHNESS_REJECTIONS',
+                counts=dict(self._preview_counts),age_microseconds={k:dict(v) for k,v in self._preview_ages.items()},
+                provider_timestamps_modified=False,policy_results_modified=False)
         return dict(scope='PASSIVE_NATIVE_ENGINE_CONTEXT_HOOKS',tap_stopped=not self._thread.is_alive(),
-                    tap_counts=counts,timing=timing,capture=report,online_observer_ready=False)
+                    tap_counts=counts,timing=timing,scalper_preview_freshness=preview,capture=report,online_observer_ready=False)
