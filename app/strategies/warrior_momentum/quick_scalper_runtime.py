@@ -639,7 +639,7 @@ class QuickScalperPaperRuntimeAdapter:
             try:
                 from app.asset_modules.engine_catalog import EngineId
                 self._observer_context_tap.record(engine=EngineId.SCALPER,quote=quote,
-                    source=self.execution_quote_source,at=evaluated_at,
+                    source=self.execution_quote_source,at=evaluated_at,preview=source,
                     baseline_result=('ENTRY_CANDIDATE' if confirmed.decision is ScalpDecision.EXECUTABLE
                                      else 'WAIT' if confirmed.decision is ScalpDecision.WAIT else 'BLOCKED'),
                     setup_state=('TRIGGERED' if confirmed.decision is ScalpDecision.EXECUTABLE

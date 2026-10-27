@@ -24,6 +24,7 @@ class RuntimeContextTap:
         self._queue=Queue(maxsize=16);self._stop=Event();self._lock=Lock()
         self._closed=False;self._counts=Counter(queued=0,bars_queued=0,assessments_queued=0);self._bars=OrderedDict()
         self._timing={};self._preview_counts=Counter(samples=0);self._preview_ages={}
+        self._confirmation_counts=Counter(samples=0);self._confirmation_ages={}
         self._thread=Thread(target=self._run,name='atlas-observer-native-evidence',daemon=True)
         self._thread.start()
 
@@ -47,8 +48,8 @@ class RuntimeContextTap:
         try:return self._put(('BARS',symbol,tuple(bars[-30:]),known_at))
         except Exception:return False
 
-    def record(self,*,engine,quote,source,at,baseline_result,setup_state):
-        return self._put(('ASSESS',engine,quote,source,at,baseline_result,setup_state,self._capture._clock()))
+    def record(self,*,engine,quote,source,at,baseline_result,setup_state,preview=None):
+        return self._put(('ASSESS',engine,quote,source,at,baseline_result,setup_state,self._capture._clock(),preview))
 
     def record_scalper_preview(self,snapshot,assessment):
         """Numeric initial-stream rejection diagnostics; no requests or authority."""
@@ -79,6 +80,38 @@ class RuntimeContextTap:
             try:self._count('preview_diagnostics_failed')
             except Exception:pass
 
+    def _compare_scalper_confirmation(self,preview,quote,at):
+        """Compare the exact authorization input with its returned REST quote."""
+        from app.strategies.warrior_momentum.quick_scalper import QuickScalpSnapshot
+        if not isinstance(preview,QuickScalpSnapshot) or preview.symbol!=quote.symbol:
+            self._count('confirmation_preview_missing_or_mismatched');return
+        unit=timedelta(microseconds=1)
+        stream_ages={name:int((preview.decision_at-getattr(preview,name+'_timestamp'))//unit)
+                     for name in ('last','bid','ask')}
+        rest_ages={name:int((at-getattr(quote,name+'_timestamp'))//unit)
+                   for name in ('last','bid','ask')}
+        def state(ages):
+            if any(age<0 for age in ages.values()):return 'FUTURE'
+            return 'STALE' if any(ages[n]>5000000 for n in ('bid','ask')) else 'FRESH'
+        deltas={name:int((getattr(quote,name+'_timestamp')-getattr(preview,name+'_timestamp'))//unit)
+                for name in ('bid','ask')}
+        values={**{'stream_'+n+'_age':v for n,v in stream_ages.items()},
+                **{'rest_'+n+'_age':v for n,v in rest_ages.items()},
+                **{n+'_timestamp_advance':v for n,v in deltas.items()},
+                'preview_to_confirmation':int((at-preview.decision_at)//unit)}
+        with self._lock:
+            self._confirmation_counts['samples']+=1
+            self._confirmation_counts['STREAM_'+state(stream_ages)+'_REST_'+state(rest_ages)]+=1
+            for name,delta in deltas.items():
+                self._confirmation_counts[name+'_timestamp_'+('NEWER' if delta>0 else 'OLDER' if delta<0 else 'SAME')]+=1
+            if quote.bid==preview.bid and quote.ask==preview.ask:
+                self._confirmation_counts['same_bid_and_ask_prices']+=1
+            if all(v==0 for v in deltas.values()) and (quote.bid!=preview.bid or quote.ask!=preview.ask):
+                self._confirmation_counts['changed_prices_with_same_quote_timestamps']+=1
+            for name,value in values.items():
+                old=self._confirmation_ages.setdefault(name,dict(min=value,max=value))
+                old['min']=min(old['min'],value);old['max']=max(old['max'],value)
+
     def _count(self,key):
         with self._lock:self._counts[key]+=1
 
@@ -97,7 +130,7 @@ class RuntimeContextTap:
                     self._bars.pop(symbol,None);self._bars[symbol]=(bars,known)
                     if len(self._bars)>128:self._bars.popitem(last=False)
                     continue
-                _,engine,quote,source,native_at,result,setup,enqueued_at=item
+                _,engine,quote,source,native_at,result,setup,enqueued_at,preview=item
                 from app.strategies.warrior_momentum.execution_quote import ExecutionQuoteSnapshot,WebullExecutionQuoteSource
                 if (not isinstance(source,WebullExecutionQuoteSource) or not isinstance(quote,ExecutionQuoteSnapshot)
                         or quote.bid_timestamp!=quote.ask_timestamp):
@@ -106,6 +139,8 @@ class RuntimeContextTap:
                 # The native market event can precede the synchronous REST
                 # confirmation. Keep both clocks; never rewrite provider time.
                 at=quote.confirmed_at if quote.confirmed_at is not None else native_at
+                if engine is EngineId.SCALPER and preview is not None:
+                    self._compare_scalper_confirmation(preview,quote,native_at)
                 native_age=(native_at-quote.bid_timestamp).total_seconds()
                 assessed_age=(at-quote.bid_timestamp).total_seconds()
                 self._measure('quote_age_at_native_event_seconds',native_age)
@@ -147,5 +182,12 @@ class RuntimeContextTap:
             preview=dict(scope='INITIAL_STREAM_POLICY_FRESHNESS_REJECTIONS',
                 counts=dict(self._preview_counts),age_microseconds={k:dict(v) for k,v in self._preview_ages.items()},
                 provider_timestamps_modified=False,policy_results_modified=False)
+            confirmation=dict(scope='PAIRED_SCALPER_STREAM_AND_REST_CONFIRMATION_V1',
+                counts=dict(self._confirmation_counts),
+                microseconds={k:dict(v) for k,v in self._confirmation_ages.items()},
+                provider_timestamps_modified=False,policy_results_modified=False,
+                extra_provider_requests=0,
+                limitations=['Five-second book-age classification only; not full policy approval',
+                             'Sequential native preview and REST confirmation; not simultaneous quotes'])
         return dict(scope='PASSIVE_NATIVE_ENGINE_CONTEXT_HOOKS',tap_stopped=not self._thread.is_alive(),
-                    tap_counts=counts,timing=timing,scalper_preview_freshness=preview,capture=report,online_observer_ready=False)
+                    tap_counts=counts,timing=timing,scalper_preview_freshness=preview,scalper_confirmation_comparison=confirmation,capture=report,online_observer_ready=False)

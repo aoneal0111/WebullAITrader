@@ -107,6 +107,7 @@ def test_scalper_native_hook_does_not_change_submission_or_provider_calls(fail):
         results.append((result.decision,len(bridge.entries),source.calls))
         if tap is not None:
             assert len(tap.assessments)==1 and tap.assessments[0]['engine'] is EngineId.SCALPER
+            assert tap.assessments[0]['preview'] is value
     assert results[0]==results[1] and results[0][2]==1
 
 
@@ -226,3 +227,48 @@ def test_initial_stream_hook_records_future_rejection_without_confirmation_or_or
     finally:r=tap.close()
     assert r['scalper_preview_freshness']['counts']['first_blocker_BID_FUTURE']==1
     assert r['capture']['counts'].get('written',0)==0
+
+
+@pytest.mark.parametrize('stream_age,rest_age,expected,advance',[
+    (20,20,'STREAM_STALE_REST_STALE','SAME'),
+    (20,.2,'STREAM_STALE_REST_FRESH','NEWER'),
+    (30,10,'STREAM_STALE_REST_STALE','NEWER'),
+    (.2,10,'STREAM_FRESH_REST_STALE','OLDER'),
+    (5,5,'STREAM_FRESH_REST_FRESH','SAME'),
+    (20,-.001,'STREAM_STALE_REST_FUTURE','NEWER'),
+],ids=['same-old','refreshed','newer-still-old','rest-older','exact-boundary','future-rest'])
+def test_paired_confirmation_distinguishes_stream_and_rest_without_extra_requests(tmp_path,stream_age,rest_age,expected,advance):
+    from tests.warrior_momentum.test_quick_scalper_runtime import snapshot
+    value=replace(snapshot(),symbol='AAPL',decision_at=NOW,last_timestamp=NOW,
+        bid_timestamp=NOW-timedelta(seconds=stream_age),ask_timestamp=NOW-timedelta(seconds=stream_age))
+    q=replace(quote(),bid=value.bid,ask=value.ask,last_timestamp=NOW,
+        bid_timestamp=NOW-timedelta(seconds=rest_age),ask_timestamp=NOW-timedelta(seconds=rest_age))
+    original=(value,q);source=FixtureSource()
+    capture=ContextCapture(tmp_path/'capture',BASE,clock=lambda:NOW)
+    tap=RuntimeContextTap(capture,BASE)
+    tap.record(engine=EngineId.SCALPER,quote=q,source=source,at=NOW,
+        baseline_result='BLOCKED',setup_state='UNKNOWN',preview=value)
+    result=tap.close();d=result['scalper_confirmation_comparison']
+    assert d['counts']['samples']==1 and d['counts'][expected]==1
+    assert d['counts']['bid_timestamp_'+advance]==1
+    assert d['counts']['same_bid_and_ask_prices']==1
+    assert d['microseconds']['rest_bid_age']['min']==round(rest_age*1000000)
+    assert d['extra_provider_requests']==source.calls==0
+    assert original==(value,q) and 'AAPL' not in json.dumps(d)
+    # Comparison survives missing bars/stale context, without fabricating advice.
+    assert result['capture']['counts'].get('written',0)==0
+
+
+def test_paired_confirmation_refuses_foreign_symbol_and_reports_changed_price_same_time(tmp_path):
+    from tests.warrior_momentum.test_quick_scalper_runtime import snapshot
+    value=replace(snapshot(),symbol='AAPL',decision_at=NOW,last_timestamp=NOW,
+        bid_timestamp=NOW-timedelta(seconds=.2),ask_timestamp=NOW-timedelta(seconds=.2))
+    capture=ContextCapture(tmp_path/'capture',BASE,clock=lambda:NOW)
+    tap=RuntimeContextTap(capture,BASE)
+    for preview in (replace(value,symbol='FOREIGN'),value):
+        tap.record(engine=EngineId.SCALPER,quote=quote(),source=FixtureSource(),at=NOW,
+            baseline_result='BLOCKED',setup_state='UNKNOWN',preview=preview)
+    r=tap.close()
+    assert r['tap_counts']['confirmation_preview_missing_or_mismatched']==1
+    assert r['scalper_confirmation_comparison']['counts']['samples']==1
+    assert r['scalper_confirmation_comparison']['counts']['changed_prices_with_same_quote_timestamps']==1
