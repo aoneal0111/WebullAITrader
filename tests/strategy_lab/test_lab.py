@@ -196,3 +196,95 @@ def test_manual_pause_cannot_be_overridden_by_inflight_or_next_model(lab,wrapper
     assert not wrapper.entry_lease(root/'user_data/grok-control.json',m['lab_id'],NOW)
     c=Client()
     assert manager.cycle(root,c,clock=lambda:NOW)['status']=='MANUAL_PAUSE' and not c.calls
+
+
+def test_flat_ledger_reports_zero_unrealized_exposure(lab):
+    root,m,_=lab;make_db(root)
+    d=manager.evidence(root)
+    assert d['open_positions']==0 and d['open_stake']==0 and d['unrealized_pnl']==0
+    assert d['total_trades']==d['unreconciled_closed_trades']==0
+
+
+class BootstrapClock:
+    def __init__(self):self.elapsed=0;self.after_wait=None
+    def wall(self):return NOW+self.elapsed
+    def mono(self):return self.elapsed
+    def wait(self,seconds):
+        self.elapsed+=seconds
+        if self.after_wait:self.after_wait()
+
+
+def test_empty_sample_collects_under_native_lease_without_any_model_call(lab,wrapper,monkeypatch):
+    from app.strategy_lab import bootstrap
+    root,m,_=lab;make_db(root);clock=BootstrapClock();seen=[]
+    monkeypatch.setattr(manager,'configured_client',lambda *a,**k:pytest.fail('No model for bootstrap'))
+    def native_trial():
+        seen.append(wrapper.entry_lease(root/'user_data/grok-control.json',m['lab_id'],clock.wall()))
+        with sqlite3.connect(root/'user_data/lab-trades.sqlite') as db:
+            db.executemany('INSERT INTO trades VALUES(?,?,?,?)',[('AtlasNFILab',0,p,50) for p in (1,-1,0)])
+    clock.after_wait=native_trial
+    r=bootstrap.run(root,clock=clock.wall,timer=clock.mono,wait=clock.wait,progress=None)
+    assert seen==[True] and r['status']=='INITIAL_SAMPLE_COLLECTED'
+    assert r['grok_requests']==0 and r['final_evidence']['closed_trades']==3
+    assert not wrapper.entry_lease(root/'user_data/grok-control.json',m['lab_id'],clock.wall())
+    assert not (root/'manager.lock').exists()
+
+
+@pytest.mark.parametrize('mode',['timeout','manual-pause','loss','source-change','clock-jump','interrupt'])
+def test_bootstrap_revokes_lease_on_all_stop_paths(lab,mode):
+    from app.strategy_lab import bootstrap
+    root,m,_=lab;make_db(root);clock=BootstrapClock()
+    def event():
+        if mode=='manual-pause':(root/'user_data/PAUSE_REQUESTED').touch()
+        elif mode=='loss':
+            with sqlite3.connect(root/'user_data/lab-trades.sqlite') as db:
+                db.execute("INSERT INTO trades VALUES('AtlasNFILab',0,-20,50)")
+        elif mode=='source-change':(root/'compose.json').write_text('changed')
+        elif mode=='interrupt':raise KeyboardInterrupt
+    clock.after_wait=event
+    r=bootstrap.run(root,clock=(lambda:clock.wall()+3 if clock.elapsed else NOW) if mode=='clock-jump' else clock.wall,
+        timer=clock.mono,wait=clock.wait,progress=None)
+    assert r['status']=={'timeout':'TIME_LIMIT','manual-pause':'MANUAL_PAUSE','loss':'REALIZED_LOSS_LIMIT',
+        'source-change':'CHECK_FAILED_OR_REVOKED','clock-jump':'CLOCK_DISCONTINUITY','interrupt':'OPERATOR_STOP'}[mode]
+    assert r['elapsed_seconds']<=3600 and r['entries_paused']
+    assert json.loads((root/'user_data/grok-control.json').read_text())['action']=='PAUSE'
+    assert not (root/'manager.lock').exists()
+
+
+@pytest.mark.parametrize('rows,expected',[
+    ([('AtlasNFILab',1,None,50)],'FLAT_START_REQUIRED'),
+    ([('AtlasNFILab',0,1,50)]*3,'SAMPLE_ALREADY_AVAILABLE'),
+    ([('AtlasNFILab',0,None,50)],'UNRECONCILED_NATIVE_LEDGER'),
+    ([('AtlasNFILab',1,None,101)],'EXPOSURE_LIMIT'),
+])
+def test_bootstrap_refuses_unready_start_without_widening_permissions(lab,rows,expected):
+    from app.strategy_lab import bootstrap
+    root,m,_=lab;make_db(root,rows);clock=BootstrapClock()
+    r=bootstrap.run(root,clock=clock.wall,timer=clock.mono,wait=lambda _:pytest.fail('Must not wait'),progress=None)
+    assert r['status']==expected and r['entries_paused']
+
+
+def test_bootstrap_uses_shared_manager_lock_and_requires_explicit_restart_after_manual_pause(lab):
+    from app.strategy_lab import bootstrap
+    root,m,_=lab;make_db(root);clock=BootstrapClock();lock=root/'manager.lock';lock.write_text('other')
+    with pytest.raises(ValueError,match='MANAGER_ALREADY_RUNNING'):
+        bootstrap.run(root,clock=clock.wall,timer=clock.mono,wait=clock.wait,progress=None)
+    assert lock.read_text()=='other';lock.unlink()
+    (root/'user_data/PAUSE_REQUESTED').touch()
+    r=bootstrap.run(root,clock=clock.wall,timer=clock.mono,wait=clock.wait,progress=None)
+    assert r['status']=='MANUAL_PAUSE'
+    clock.after_wait=lambda:(root/'user_data/PAUSE_REQUESTED').touch()
+    r=bootstrap.run(root,new_trial=True,clock=clock.wall,timer=clock.mono,wait=clock.wait,progress=None)
+    assert r['elapsed_seconds']==30 and r['status']=='MANUAL_PAUSE'
+
+
+def test_bootstrap_renewal_never_exceeds_short_lease_or_deadline(lab):
+    from app.strategy_lab import bootstrap
+    root,m,_=lab;make_db(root);clock=BootstrapClock();leases=[]
+    def observe():
+        control=json.loads((root/'user_data/grok-control.json').read_text())
+        leases.append(control)
+    clock.after_wait=observe
+    bootstrap.run(root,clock=clock.wall,timer=clock.mono,wait=clock.wait,progress=None)
+    assert leases and all(0<d['expires_at']-d['issued_at']<=90 for d in leases)
+    assert max(d['expires_at'] for d in leases)<=NOW+3600
