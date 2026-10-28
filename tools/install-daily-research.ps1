@@ -27,6 +27,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Review checkout failed.' }
 Push-Location $Source
 try {
     $Checks = @(
+        'tests/equity_overhaul/test_cent_portfolio.py'
+        'tests/equity_overhaul/test_cent_scalper.py'
+        'tests/warrior_momentum/test_desktop_sidecar.py'
         'tests/asset_modules/test_daily_research.py'
         'tests/asset_modules/test_daily_observer_protocol.py'
         'tests/asset_modules/test_grok_observer_capture.py'

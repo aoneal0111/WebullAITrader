@@ -46,7 +46,7 @@ def run(session,output):
     protocol=frozen_protocol()
     (output/'frozen-protocol.json').write_text(json.dumps(protocol,default=str,indent=2),encoding='utf-8')
     portfolios=[Portfolio(Protocol(target=target,slippage=slip)) for target in (D('.05'),D('.10')) for slip in (D('.005'),D('.01'))]
-    eligibility={};halted=set();counts=Counter();sessions=Counter();previous='0'*64;sequence=0;last_tick=None
+    coverage={};eligibility={};halted=set();counts=Counter();sessions=Counter();previous='0'*64;sequence=0;last_tick=None
     date=None;wall=None;monotonic=None;clock_fault=False;state_sources_verified=False
     for path in sorted((root/'journal').glob('events-*.jsonl')):
         with path.open('rb') as stream:
@@ -62,7 +62,7 @@ def run(session,output):
                 if wall is not None and abs(D(str((now-wall).total_seconds()))-(tick-monotonic))>D('.25'):
                     clock_fault=True;counts['clock_discontinuity']+=1
                     for engine in portfolios:
-                        for symbol in tuple(engine.pending):engine.invalidate(symbol)
+                        for symbol in tuple(engine.pending):engine.invalidate(symbol,'CLOCK_DISCONTINUITY',sequence)
                 wall,monotonic=now,tick
                 for engine in portfolios:engine.last_tick=tick
                 session_name=market_session(now).value
@@ -83,7 +83,7 @@ def run(session,output):
                     if p['halted']:
                         halted.add(symbol)
                         for engine in portfolios:
-                            engine.invalidate(symbol);engine.unmarkable.add(symbol)
+                            engine.invalidate(symbol,'HALTED',sequence);engine.unmarkable.add(symbol)
                     if p['tradable'] and not p['halted'] and at<=now<=at+timedelta(seconds=2):
                         eligibility[symbol]=at+timedelta(seconds=2);counts['market_state_heartbeats']+=1
                     else:eligibility.pop(symbol,None)
@@ -103,14 +103,14 @@ def run(session,output):
                 if kind=='TRADING_HALT':
                     halted.add(symbol);eligibility.pop(symbol,None);counts['halt_events']+=1
                     for engine in portfolios:
-                        engine.invalidate(symbol);engine.unmarkable.add(symbol)
+                        engine.invalidate(symbol,'HALTED',sequence);engine.unmarkable.add(symbol)
                     continue
                 if kind in ('MARKET_STATUS','RESUME','SESSION_CHANGE'):
                     # Resume removes a known halt, but does not itself establish
                     # account tradability. A new native proof is still required.
                     if kind=='RESUME':halted.discard(symbol)
                     eligibility.pop(symbol,None);counts['state_changes']+=1
-                    for engine in portfolios:engine.invalidate(symbol)
+                    for engine in portfolios:engine.invalidate(symbol,'MARKET_STATE_CHANGED',sequence)
                     continue
                 if kind not in ('QUOTE','BOOK_SNAPSHOT'):
                     counts['non_book_market_events']+=1;continue
@@ -124,13 +124,24 @@ def run(session,output):
                 except (ValueError,KeyError,IndexError,TypeError):
                     counts['invalid_or_missing_sized_book']+=1;continue
                 allowed=not clock_fault and symbol not in halted and now<=eligibility.get(symbol,now-timedelta(seconds=1))
+                if symbol not in coverage and len(coverage)>=10000:raise ValueError('SYMBOL_BOUND_EXCEEDED')
+                book=coverage.setdefault(symbol,Counter())
+                book['quotes']+=1
+                age=(now-provider).total_seconds()
+                fresh=0<=age<=2;tight=D(0)<ask-bid<=D('.01');priced=ask>=1
+                book['fresh_quotes']+=int(fresh);book['tight_spread_quotes']+=int(tight)
+                book['eligible_quotes']+=int(allowed)
+                book['fresh_tight_priced_quotes']+=int(fresh and tight and priced)
+                book['fresh_tight_priced_eligible_quotes']+=int(fresh and tight and priced and allowed)
                 counts['book_quotes']+=1;sessions[session_name]+=1
                 counts['book_with_causal_native_eligibility' if allowed else 'book_without_current_eligibility']+=1
                 for engine in portfolios:engine.feed(q,tick,sequence,eligible=allowed,session=session_name,halted=symbol in halted)
     if previous!=journal['chain_head'] or sequence!=journal['records']:raise ValueError('JOURNAL_CHANGED_DURING_REPLAY')
     cases=[]
     for index,engine in enumerate(portfolios):
-        result=engine.result();trades=result.pop('trades')
+        result=engine.result()
+        if not result['signal_accounting']['reconciled']:raise ValueError('SIGNAL_ACCOUNTING_MISMATCH')
+        trades=result.pop('trades')
         path=output/f'private-trades-case-{index+1}.json'
         path.write_text(json.dumps(trades,default=str,indent=2),encoding='utf-8')
         result.update(trades_file_sha256=sha256(path.read_bytes()).hexdigest(),trade_examples=trades[:10])
@@ -140,6 +151,13 @@ def run(session,output):
         implementation_sha256=sha256(Path(__file__).with_name('cent_portfolio.py').read_bytes()).hexdigest(),
         native_eligibility_source_verified=True,market_state_sources_verified=state_sources_verified,input_counts=dict(counts),quotes_by_session=dict(sessions),
         recorded_baseline_entry_diagnostics=summary.get('entry_diagnostics'),
+        coverage=dict(scope='OBSERVED_BOOK_COVERAGE_NOT_INDEPENDENT_UNIVERSE',
+            symbols=len(coverage),totals=dict(sum(coverage.values(),Counter())),
+            symbols_with_fresh_tight_priced_quotes=sum(c['fresh_tight_priced_quotes']>0 for c in coverage.values()),
+            symbols_with_fresh_tight_priced_eligible_quotes=sum(c['fresh_tight_priced_eligible_quotes']>0 for c in coverage.values()),
+            symbol_examples=[dict(symbol=s,**dict(c)) for s,c in sorted(coverage.items(),
+                key=lambda item:(-item[1]['fresh_tight_priced_eligible_quotes'],item[0]))[:20]],
+            symbol_examples_limit=20,counts_overlap=True),
         cases=cases,
         promotion='NONE',baseline_modified=False,orders=0,network_requests=0,grok_requests=0,
         limitations=['Retrospective short single-date sample, no independent validation or promotion',

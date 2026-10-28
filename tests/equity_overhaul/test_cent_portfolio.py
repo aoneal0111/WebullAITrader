@@ -216,3 +216,59 @@ def test_real_sidecar_records_state_before_any_rising_quote_setup(tmp_path):
     rows=[json.loads(line) for path in (tmp_path/'journal').glob('events-*.jsonl') for line in path.read_text().splitlines()]
     state=next(row['payload'] for row in rows if row['kind']=='MARKET_ELIGIBILITY')
     assert state['tradable'] is True and state['halted'] is False
+
+
+@pytest.mark.parametrize('mode,reason',[
+    ('gap','PROVIDER_GAP'),('unknown','UNKNOWN_OR_INELIGIBLE_STATE'),
+    ('wide','PRICE_OR_SPREAD'),('halt','HALTED'),('future','FUTURE_QUOTE'),
+    ('reverse','BID_REVERSED'),('consumed','MOVE_ALREADY_CONSUMED'),
+    ('session','SESSION_CHANGED'),('size','CASH_OR_DISPLAYED_SIZE'),
+    ('filled','FILLED')])
+def test_each_armed_signal_has_one_explained_resolution(mode,reason):
+    engine=Portfolio(Protocol())
+    for sec,bid in enumerate(('10','10.01','10.02')):feed(engine,sec,bid)
+    assert engine.result()['signal_accounting']['pending']==1
+    sec=6 if mode=='gap' else 3
+    changes={}
+    if mode=='wide':changes['ask']=D('10.10')
+    if mode=='future':changes['quoted_at']=T+timedelta(seconds=20)
+    if mode=='size':changes.update(bid_size=D(1),ask_size=D(1))
+    bid='10.01' if mode=='reverse' else '10.08' if mode=='consumed' else '10.03'
+    feed(engine,sec,bid,eligible=mode!='unknown',halted=mode=='halt',
+        session='AFTER_HOURS' if mode=='session' else 'CORE',quote_changes=changes)
+    # A duplicate must not resolve the old signal a second time.
+    feed(engine,sec,bid)
+    result=engine.result()['signal_accounting']
+    assert result['formed']==result['resolved']==1 and result['pending']==0
+    assert result['reconciled'] and result['outcomes']=={reason:1}
+    assert result['examples'][0]['signal_sequence']==201
+    assert result['examples'][0]['resolution_sequence']==int(sec*100)+1
+
+
+def test_end_of_recording_pending_is_reported_without_fabricating_cancellation():
+    engine=Portfolio(Protocol())
+    for sec,bid in enumerate(('10','10.01','10.02')):feed(engine,sec,bid)
+    result=engine.result()['signal_accounting']
+    assert result['reconciled'] and result['resolved']==0 and result['pending']==1
+    assert result['pending_examples'][0]['reason']=='END_OF_RECORDING_WITHOUT_RESOLUTION'
+    assert engine.result()['signal_accounting']==result
+
+
+def test_coverage_distinguishes_book_quality_from_missing_eligibility(tmp_path):
+    report=run(session_fixture(tmp_path,False),tmp_path/'result')
+    coverage=report['coverage']
+    assert coverage['totals']['quotes']==coverage['totals']['fresh_tight_priced_quotes']==6
+    assert coverage['totals'].get('fresh_tight_priced_eligible_quotes',0)==0
+    assert coverage['symbols_with_fresh_tight_priced_quotes']==1
+    assert coverage['symbols_with_fresh_tight_priced_eligible_quotes']==0
+    assert all(c['result']['signal_accounting']['reconciled'] for c in report['cases'])
+
+
+def test_non_rising_books_report_window_failure_without_creating_signal():
+    engine=Portfolio(Protocol())
+    for sec in range(3):feed(engine,sec)
+    counts=engine.result()['counts']
+    assert counts['three_quote_windows_without_signal']==1
+    assert counts['window_failure_BID_NOT_RISING']==counts['window_failure_ASK_NOT_RISING']==1
+    assert counts['window_failure_BID_ADVANCE_TOO_SMALL']==1
+    assert engine.result()['signal_accounting']['formed']==0

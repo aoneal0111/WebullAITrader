@@ -29,3 +29,29 @@ The new heartbeat is not installed by running the study script, which uses an is
 `cent-portfolio-summary.json` contains every frozen case, coverage counts, signal/fill/rejection counts, closed-trade win rate/net, observed marked drawdown, cash and open inventory. Full simulated trades remain in per-case private files with hashes and at most ten examples in the small summary. No private performance values are committed to GitHub or uploaded automatically.
 
 This short, retrospective, subscribed-symbol sample cannot qualify a strategy or establish year-long profits. Fills assume displayed quotes and do not model broker latency, historical depth consumption, queue priority, market impact, account-specific fees or all Atlas production gates. The new candidate must receive separately frozen history validation and forward paper execution evidence before activation. Do not weaken stale/future quote, halt, account, ownership, loss or qualification controls to make a replay produce trades.
+
+
+## Signal reconciliation and coverage diagnostics
+
+Every armed signal now reconciles to a fill, a named cancellation, or an
+explicit unresolved signal at the end of the recording. The first applicable
+cancellation reason wins; these are not exhaustive counterfactual explanations.
+Provider gaps, future/stale quotes, halt/state changes, expired eligibility,
+spread/price, consumed moves, reversal and capital/size limits retain reasons.
+Aggregate counts are complete; private examples are capped at 100 per case.
+Duplicate provider updates do not resolve or fill a pending signal. A recording
+ending with a pending signal is not a cancellation or a simulated trade.
+
+Coverage reports count fresh books, tight spreads, eligible state and their
+intersection separately, with up to 20 stock examples. Counts overlap and
+only describe subscribed observations, not all available stocks or independent
+trading opportunities. All four strategy protocols remain unchanged. The
+original recording can be replayed again offline without market data or Grok.
+
+For future recordings the existing `install-daily-research.ps1` installer now
+also checks the passive eligibility heartbeat and portfolio tests before its
+backup and fast-forward update. This installs recording coverage, not candidate
+entry permissions. Atlas must be closed for installation, then opened normally
+by the operator. There is no reason to start another paid observer to diagnose
+these quote and eligibility gaps. Old journals are never rewritten to add
+missing heartbeat evidence.

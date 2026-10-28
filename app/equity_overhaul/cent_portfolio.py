@@ -48,10 +48,19 @@ class Portfolio:
     def __init__(self,rules):
         self.rules=rules;self.cash=rules.wallet;self.realized=D(0)
         self.positions={};self.windows={};self.pending={};self.last={};self.cooldown={};self.attempts={}
+        self.signal_outcomes=Counter();self.signal_examples=[]
         self.trades=[];self.counts=Counter();self.peak=rules.wallet;self.drawdown=D(0);self.last_tick=None;self.unmarkable=set()
 
-    def invalidate(self,symbol):
-        self.pending.pop(symbol,None);self.windows.pop(symbol,None)
+    def resolve_signal(self,symbol,pending,reason,sequence=None):
+        self.signal_outcomes[reason]+=1
+        if len(self.signal_examples)<100:
+            self.signal_examples.append(dict(symbol=symbol,signal_sequence=pending['sequence'],
+                signal_at=pending['at'],resolution_sequence=sequence,reason=reason))
+
+    def invalidate(self,symbol,reason='STATE_INVALIDATED',sequence=None):
+        pending=self.pending.pop(symbol,None)
+        if pending is not None:self.resolve_signal(symbol,pending,reason,sequence)
+        self.windows.pop(symbol,None)
 
     def feed(self,q,tick,sequence,*,eligible,session,halted=False):
         if not isinstance(q,Quote) or type(eligible) is not bool or type(halted) is not bool:
@@ -59,10 +68,10 @@ class Portfolio:
         if self.last_tick is not None and tick<self.last_tick:raise ValueError('JOURNAL_MONOTONIC_TIME_REGRESSED')
         self.last_tick=tick;self.counts['quotes']+=1
         halted=halted or q.halted;eligible=eligible and q.tradable
-        if halted:self.unmarkable.add(q.symbol);self.invalidate(q.symbol)
+        if halted:self.unmarkable.add(q.symbol);self.invalidate(q.symbol,'HALTED',sequence)
         age=(q.received_at-q.quoted_at).total_seconds()
         if age<0:
-            self.invalidate(q.symbol);self.counts['future_quote']+=1;return
+            self.invalidate(q.symbol,'FUTURE_QUOTE',sequence);self.counts['future_quote']+=1;return
         previous=self.last.get(q.symbol)
         if previous is not None and q.quoted_at<=previous[0].quoted_at:
             self.counts['duplicate_or_older_provider_quote']+=1;return
@@ -74,7 +83,7 @@ class Portfolio:
         gap=previous is not None and (q.quoted_at-previous[0].quoted_at).total_seconds()>2
         self.counts['provider_gaps']+=int(gap)
         if not fresh or halted:
-            self.invalidate(q.symbol);self.counts['stale_future_or_halted']+=1;return
+            self.invalidate(q.symbol,'HALTED' if halted else 'STALE_QUOTE',sequence);self.counts['stale_future_or_halted']+=1;return
         position=self.positions.get(q.symbol)
         if position is not None:
             per_share=q.bid-self.rules.slippage-position['entry']-2*self.rules.fee_per_share
@@ -100,7 +109,7 @@ class Portfolio:
                 else:self.counts['exit_no_displayed_size']+=1
             self._mark(tick);return
         self._mark(tick)
-        if gap:self.invalidate(q.symbol)
+        if gap:self.invalidate(q.symbol,'PROVIDER_GAP',sequence)
         reason=('UNKNOWN_OR_INELIGIBLE_STATE' if not eligible else
             'SESSION_CLOSED' if session not in ('PREMARKET','CORE','AFTER_HOURS') else
             'PRICE_OR_SPREAD' if q.ask<D(1) or not D(0)<q.ask-q.bid<=self.rules.max_spread else
@@ -108,26 +117,35 @@ class Portfolio:
             'TRADE_RECORD_LIMIT' if len(self.trades)>=5000 else
             'SYMBOL_COOLDOWN' if tick<self.cooldown.get(q.symbol,-1) else None)
         if reason:
-            self.invalidate(q.symbol);self.counts[reason]+=1;return
+            self.invalidate(q.symbol,reason,sequence);self.counts[reason]+=1;return
         pending=self.pending.pop(q.symbol,None)
         if pending is not None:
             if (session!=pending['session'] or tick-pending['tick']>2
                     or q.ask-pending['ask']>=self.rules.target or q.bid<pending['bid']):
+                cancel_reason=('SESSION_CHANGED' if session!=pending['session'] else
+                    'PENDING_EXPIRED' if tick-pending['tick']>2 else
+                    'MOVE_ALREADY_CONSUMED' if q.ask-pending['ask']>=self.rules.target else 'BID_REVERSED')
+                self.resolve_signal(q.symbol,pending,cancel_reason,sequence)
                 self.invalidate(q.symbol);self.counts['pending_cancelled']+=1;return
             attempts=self.attempts.setdefault(q.symbol,deque())
             while attempts and tick-attempts[0]>=3600:attempts.popleft()
             if len(attempts)>=self.rules.max_entries_symbol_hour:
+                self.resolve_signal(q.symbol,pending,'SYMBOL_HOURLY_LIMIT',sequence)
                 self.counts['SYMBOL_HOURLY_LIMIT']+=1;return
             if len(self.positions)>=self.rules.max_positions:
+                self.resolve_signal(q.symbol,pending,'SHARED_POSITION_LIMIT',sequence)
                 self.counts['SHARED_POSITION_LIMIT']+=1;return
             entry=q.ask+self.rules.slippage
             unit=entry+self.rules.fee_per_share
             quantity=min(self.rules.max_shares,int(self.cash/unit),int(self.rules.max_notional/unit),
                 int(min(q.bid_size,q.ask_size)*self.rules.book_participation))
-            if quantity<=0:self.counts['CASH_OR_DISPLAYED_SIZE']+=1;return
+            if quantity<=0:
+                self.resolve_signal(q.symbol,pending,'CASH_OR_DISPLAYED_SIZE',sequence)
+                self.counts['CASH_OR_DISPLAYED_SIZE']+=1;return
             self.cash-=unit*quantity;attempts.append(tick)
             self.positions[q.symbol]=dict(entry=entry,tick=tick,at=q.received_at.isoformat(),sequence=sequence,
                 quantity=quantity,remaining=quantity,net=D(0),exit_reason=None,session=session)
+            self.resolve_signal(q.symbol,pending,'FILLED',sequence)
             self.counts['simulated_entry_fills']+=1;self.invalidate(q.symbol);self._mark(tick);return
         window=self.windows.setdefault(q.symbol,deque(maxlen=3));window.append(q)
         if len(window)<3:return
@@ -136,8 +154,16 @@ class Portfolio:
         if (1<=elapsed<=3 and a.bid<b.bid<c.bid and a.ask<b.ask<c.ask
                 and c.bid-a.bid>=D('.01') and cost<self.rules.target
                 and min(c.bid_size,c.ask_size)*self.rules.book_participation>=1):
-            self.pending[q.symbol]=dict(ask=c.ask,bid=c.bid,tick=tick,session=session)
+            self.pending[q.symbol]=dict(ask=c.ask,bid=c.bid,tick=tick,session=session,sequence=sequence,at=q.received_at.isoformat())
             self.counts['signals']+=1;window.clear()
+        else:
+            self.counts['three_quote_windows_without_signal']+=1
+            for reason,failed in (
+                ('TIMING',not 1<=elapsed<=3),('BID_NOT_RISING',not a.bid<b.bid<c.bid),
+                ('ASK_NOT_RISING',not a.ask<b.ask<c.ask),('BID_ADVANCE_TOO_SMALL',c.bid-a.bid<D('.01')),
+                ('COST_AT_OR_ABOVE_TARGET',cost>=self.rules.target),
+                ('DISPLAYED_SIZE',min(c.bid_size,c.ask_size)*self.rules.book_participation<1)):
+                if failed:self.counts['window_failure_'+reason]+=1
 
     def _mark(self,tick):
         # Mark drawdown only when every open holding has fresh observable BBO.
@@ -164,5 +190,10 @@ class Portfolio:
             current_liquidation_mark=None if self.last_tick is None else self._mark(self.last_tick),
             observed_marked_drawdown=self.drawdown,profit_factor=gain/loss if loss else None,
             open_positions=[dict(symbol=s,**p) for s,p in self.positions.items()],
+            signal_accounting=dict(formed=self.counts['signals'],resolved=sum(self.signal_outcomes.values()),
+                pending=len(self.pending),reconciled=self.counts['signals']==sum(self.signal_outcomes.values())+len(self.pending),
+                outcomes=dict(self.signal_outcomes),examples=list(self.signal_examples),examples_limit=100,
+                pending_examples=[dict(symbol=s,signal_sequence=p['sequence'],signal_at=p['at'],
+                    reason='END_OF_RECORDING_WITHOUT_RESOLUTION') for s,p in sorted(self.pending.items())[:100]]),
             pending_signals=len(self.pending),counts=dict(self.counts),trades=self.trades,
             execution_authorized=False,orders=0,qualified=False)
