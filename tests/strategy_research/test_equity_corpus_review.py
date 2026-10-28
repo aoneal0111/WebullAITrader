@@ -1,5 +1,7 @@
 """Standalone checks; no scientific dependencies or trading runtime imports."""
 from copy import deepcopy
+from contextlib import redirect_stdout
+import io
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -95,7 +97,8 @@ class CorpusReviewTests(unittest.TestCase):
             repo=Path(d);source=repo/REPORT;source.parent.mkdir(parents=True)
             p=fixture();p['metadata']['DO_NOT_EXPORT']='private secret'
             source.write_text(json.dumps(p));before=sha256(source.read_bytes()).hexdigest()
-            r=run(repo,repo/'output')
+            with redirect_stdout(io.StringIO()):
+                r=run(repo,repo/'output')
             self.assertEqual(before,sha256(source.read_bytes()).hexdigest())
             self.assertNotIn('private secret',(repo/'output/equity-23-repository-review.json').read_text())
             self.assertEqual(r['source_report_sha256'],before)
