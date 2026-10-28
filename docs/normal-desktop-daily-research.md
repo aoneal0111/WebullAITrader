@@ -51,3 +51,11 @@ The new archive can support future adapters using the events actually subscribed
 ## Validation and rollout
 
 Local tests cover the normal desktop composition with recording enabled and runtime still stopped, fixed baseline configuration, separate engine taps, preserved stale-quote rejection, hash-chain tampering/truncation, queue pressure, storage caps, credential-field exclusion, policy-change detection, historical causal input identity, explicit paid-request boundaries, and private configuration backup. Synthetic tests demonstrate software behavior only. Windows checks, a normal visible desktop run, sustained data coverage, actual latency and venue-specific forward-paper results remain operator validation steps.
+
+## Native observer lifecycle correction
+
+The first normal-desktop recorder wrapped the native market observer in a function. Although market calls reached that function and raw events were saved, the function hid the original observer's dynamic protocol: `start`, `stop`, scanner/decision/profile binding, history preload, retained symbols, session policy and failure handling. The broker driver discovers these methods with `getattr`; losing them prevented normal native engine initialization. Earlier construction-only tests did not exercise this lifecycle boundary.
+
+`RecordingMarketObserver` now delegates attribute lookup to the original observer and intercepts only market calls for the optional journal. Original callback results and exceptions are preserved; recorder failures cannot prevent native dispatch. Regression checks start and bind both a real CompositeMarketEventObserver/Warrior sidecar and the observer passed by the normal desktop composition, then deliver synthetic market events and require native bar evidence in the journal. They do not launch the GUI or connect a broker.
+
+`engine-readiness.json` now reports lifecycle/tap binding and native evidence counts during recording. The final summary separately labels sessions with no engine evidence as `NO_ENGINE_EVIDENCE_REVIEW_REQUIRED`, even if their raw journal was loss-free, and retains numeric entry-funnel diagnostics. Raw journal integrity is not evidence that strategy evaluation ran. Existing recordings and settings are preserved; the installer enables recording only and does not change strategy eligibility or entry authorization.

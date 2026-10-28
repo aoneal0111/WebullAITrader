@@ -535,12 +535,10 @@ def create_desktop_composition(
         )
 
     if daily_research is not None:
-        native_market_observer = market_event_observer
-        def recorded_market_event(event):
-            daily_research.journal.observe_market_event(event)
-            if native_market_observer is not None:
-                return native_market_observer(event)
-        market_event_observer = recorded_market_event
+        from app.asset_modules.daily_research_journal import RecordingMarketObserver
+        market_event_observer = RecordingMarketObserver(
+            market_event_observer, daily_research.journal,
+        )
 
     # Markets are activated explicitly from the desktop market controls.
 

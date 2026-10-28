@@ -33,6 +33,9 @@ class DailyResearch:
             self.tap=RuntimeContextTap(self.capture,self.baseline,journal=self.journal)
             self._stop=Event();self._closed=False
             self._composition=None;self._settings_hash=None;self._policy_changed=False
+            from .grok_observer_session import _entry_diagnostic_counts
+            self._entry_counts_before=_entry_diagnostic_counts()
+            self._last_active_readiness=None
             self._deadline=monotonic()+seconds
             manifest=dict(scope='NORMAL_DESKTOP_DAILY_RESEARCH_V1',baseline_sha256=self.baseline,
                 source_sha256=source_hash,configuration_sha256=config_hash,source_files=source,
@@ -64,6 +67,7 @@ class DailyResearch:
         settings=_settings(composition)
         self._settings_hash=sha256(canonical(safe_settings(settings))).hexdigest()
         self.journal.submit('NATIVE_POLICY_BASELINE',dict(settings=settings,settings_sha256=self._settings_hash))
+        self._write_readiness()
 
     def _check_policy(self):
         if self._composition is None:return
@@ -73,12 +77,36 @@ class DailyResearch:
             self._policy_changed=True
             self.journal.submit('NATIVE_POLICY_CHANGED',dict(initial_sha256=self._settings_hash,current_sha256=current))
 
+    def _write_readiness(self):
+        composition=self._composition
+        warrior=getattr(composition,'warrior_forward_sidecar',None)
+        scalper=getattr(composition,'quick_scalper_runtime',None)
+        service=getattr(warrior,'_service',None)
+        with self.tap._lock:counts=dict(self.tap._counts)
+        report=dict(scope='DAILY_NATIVE_ENGINE_READINESS_V1',updated_at=datetime.now(UTC).isoformat(),
+            warrior_enabled=getattr(warrior,'enabled',None),
+            warrior_service_running=service is not None,
+            warrior_scanner_bound=getattr(warrior,'_adapter',None) is not None,
+            warrior_health=str(getattr(warrior,'_health','UNKNOWN')),
+            warrior_tap_bound=getattr(warrior,'_observer_context_tap',None) is self.tap,
+            service_tap_bound=service is not None and getattr(service,'_observer_context_tap',None) is self.tap,
+            scalper_enabled=getattr(scalper,'enabled',None),
+            scalper_tap_bound=getattr(scalper,'_observer_context_tap',None) is self.tap,
+            tap_counts=counts,engine_evidence_seen=counts.get('bars_queued',0)>0 or counts.get('assessments_queued',0)>0,
+            orders_dispatched=0,grok_requests=0)
+        if service is not None:self._last_active_readiness=report
+        target=self.directory/'engine-readiness.json';temporary=target.with_suffix('.tmp')
+        temporary.write_text(json.dumps(report,indent=2),encoding='utf-8');temporary.replace(target)
+        return report
+
     def _monitor(self):
         while not self._stop.wait(2):
             try:self._check_policy()
             except Exception:
                 self.journal.submit('POLICY_CHECK_FAILED',{})
                 self._policy_changed=True
+            try:self._write_readiness()
+            except Exception:self.journal.submit('READINESS_CHECK_FAILED',{})
             if monotonic()>=self._deadline:
                 self.close('TIME_LIMIT');return
 
@@ -90,12 +118,17 @@ class DailyResearch:
         except Exception:
             self._policy_changed=True
             self.journal.submit('POLICY_CHECK_FAILED',{})
+        from .grok_observer_session import _entry_diagnostic_counts,_entry_diagnostic_delta
+        entry_diagnostics=_entry_diagnostic_delta(self._entry_counts_before,_entry_diagnostic_counts())
         capture=self.tap.close();journal=self.journal.close()
         context_path=self.directory/'private-capture/private-observer-context.jsonl'
         context_sha=sha256(context_path.read_bytes()).hexdigest() if context_path.exists() else None
         report=dict(context_sha256=context_sha,scope='NORMAL_DESKTOP_DAILY_RESEARCH_SUMMARY_V1',reason=reason,
             baseline_sha256=self.baseline,journal=journal,context_capture=capture,
-            policy_unchanged=not self._policy_changed,
+            policy_unchanged=not self._policy_changed,entry_diagnostics=entry_diagnostics,
+            last_active_engine_readiness=self._last_active_readiness,
+            engine_evidence_status=('ENGINE_EVIDENCE_RECORDED' if capture['tap_counts'].get('bars_queued',0)>0
+                or capture['tap_counts'].get('assessments_queued',0)>0 else 'NO_ENGINE_EVIDENCE_REVIEW_REQUIRED'),
             orders_dispatched=0,grok_requests=0,execution_authorized=False)
         (self.directory/'research-summary.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
         return journal.get('writer_stopped',False) and capture.get('tap_stopped',False)

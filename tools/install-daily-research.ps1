@@ -28,6 +28,7 @@ Push-Location $Source
 try {
     $Checks = @(
         'tests/asset_modules/test_daily_research.py'
+        'tests/asset_modules/test_daily_observer_protocol.py'
         'tests/asset_modules/test_grok_observer_capture.py'
         'tests/asset_modules/test_grok_observer_runtime_tap.py'
         'tests/asset_modules/test_grok_observer_session.py'
@@ -36,6 +37,9 @@ try {
         'tests/composition/test_desktop_composition.py'
         'tests/equity_overhaul/test_admission.py'
         'tests/warrior_momentum/test_execution_quote_confirmation.py'
+        'tests/test_desktop_broker_runtime.py'
+        'tests/test_desktop_runtime_bootstrap_composition.py'
+        'tests/test_broker_runtime_factory.py'
     )
     & $Python -m pytest @Checks --basetemp (Join-Path $Root 'checks') -q
     if ($LASTEXITCODE -ne 0) { throw 'Windows checks failed. Installed source and settings unchanged.' }

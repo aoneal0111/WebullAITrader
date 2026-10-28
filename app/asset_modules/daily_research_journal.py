@@ -174,3 +174,24 @@ def verify_journal(directory):
         raise ValueError('FINAL_RECEIPT_MISMATCH_OR_NOT_CLOSED')
     return dict(records=sequence,bytes=total,chain_head=previous,baseline_sha256=receipt['baseline_sha256'],
         evidence_complete=receipt['evidence_complete'],execution_authorized=False)
+
+
+class RecordingMarketObserver:
+    """Preserve the native observer protocol, not just its call operator.
+
+    Broker composition discovers start/stop, scanner binding, protection,
+    history preload and retained-symbol methods dynamically with getattr.
+    A function closure hides those methods and leaves engines uninitialized.
+    """
+    def __init__(self,native,journal):
+        self._native=native
+        self._journal=journal
+
+    def __getattr__(self,name):
+        return getattr(self._native,name)
+
+    def __call__(self,event):
+        try:self._journal.observe_market_event(event)
+        except Exception:pass  # Optional evidence never changes native dispatch.
+        if self._native is not None:return self._native(event)
+        return None
