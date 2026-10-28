@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from app.strategy_research.episode_price_study import (
-    PriceBar,DayWallet,BarCache,POLICIES,FAMILIES,build_index,aggregate,prefix_ok,run,plan,VERSION)
+    PriceBar,DayWallet,BarCache,POLICIES,FAMILIES,build_index,aggregate,prefix_ok,prefix_evidence,normalized_prefix_matches,run,plan,VERSION)
 from app.strategy_research.episode_exit_mechanics import ExitPolicy,replay_long,next_minute_entry
 from app.strategy_research.equity_corpus_review import REPORT
 from tests.strategy_research.test_equity_corpus_review import fixture
@@ -33,7 +33,8 @@ def event(identity='a',symbol='ABC',at=T):
 def source_row(identity='a'):
     e=event(identity);return dict(episode_id=identity,symbol='ABC',trading_date=DAY,
         detected_timestamp=e['detected_at'],trigger_timestamp=e['detected_at'],trigger_price='10',structural_stop='9',
-        strategy_memberships=[FAMILIES[0]],bar_window=[dict(timestamp=(T-timedelta(minutes=2)).isoformat())])
+        strategy_memberships=[FAMILIES[0]],provenance=dict(decision_cutoff=e['detected_at']),
+        bar_window=[dict(symbol='ABC',timestamp=e['detected_at'],open='10',high='10.1',low='9.9',close='10',volume='10000')])
 
 
 def file_bars(path,values):
@@ -136,7 +137,7 @@ class EpisodePriceTests(unittest.TestCase):
             corpus=root/'corpus_repaired';corpus.mkdir();source=corpus/'episodes.jsonl'
             source.write_text(json.dumps(source_row())+'\n');digest=sha256(source.read_bytes()).hexdigest()
             normalized=root/'normalized';normalized.mkdir()
-            values=(replace(bars()[0],timestamp=T-timedelta(minutes=1)),)+bars()
+            values=(replace(bars()[0],timestamp=T-timedelta(minutes=2)),replace(bars()[0],timestamp=T-timedelta(minutes=1)))+bars()
             file_bars(normalized/f'ABC_{DAY}.jsonl',values)
             original=build_index
             def index(*args,**kwargs):return original(*args,**kwargs,expected_sha=digest)
@@ -147,6 +148,8 @@ class EpisodePriceTests(unittest.TestCase):
             self.assertTrue((repo/'output/frozen-plan.json').is_file())
             self.assertEqual(result['promotion'],'NONE')
             self.assertEqual(len(result['common_resolved_dates'][FAMILIES[0]]),1)
+            self.assertEqual(result['evidence_status'],'PRICE_REPLAY_WITH_ENTRIES')
+            self.assertGreater(sum(c['counts'].get('entries',0) for c in result['cases']),0)
             self.assertEqual(plan()['version'],VERSION)
 
 
@@ -177,3 +180,26 @@ class StudyCoverageTests(unittest.TestCase):
                 values=list(db.execute('SELECT entry_time FROM events ORDER BY entry_time,id'))
                 self.assertEqual(values[0],values[1]);self.assertTrue(values[0][0].endswith('+00:00'))
             finally:db.close()
+
+
+class CompletedPrefixRegressionTests(unittest.TestCase):
+    def test_completion_at_decision_requires_exact_ohlcv_match_and_keeps_future_block(self):
+        row=source_row();at=datetime.fromisoformat(row['detected_timestamp'])
+        proof=prefix_evidence(row,at)
+        self.assertTrue(proof['ok'])
+        values=(replace(bars()[0],timestamp=at-timedelta(minutes=1)),)+bars()
+        self.assertTrue(normalized_prefix_matches(proof,values))
+        self.assertFalse(normalized_prefix_matches(proof,values[1:]))
+        changed=(replace(values[0],close=D('10.01')),)+values[1:]
+        self.assertFalse(normalized_prefix_matches(proof,changed))
+        row['bar_window'][-1]['timestamp']=(at+timedelta(minutes=1)).isoformat()
+        self.assertFalse(prefix_ok(row,at))
+
+    def test_failed_prefix_is_not_a_complete_evidence_day(self):
+        lane=DayWallet(FAMILIES[0],POLICIES[0],D('.01'),lambda r:None)
+        lane.consider(dict(event(),prefix_ok=False),bars(),T)
+        day=lane.finish(DAY);r=aggregate([day])
+        self.assertFalse(day['signal_evidence_complete'])
+        self.assertEqual(r['excluded_signal_evidence_days'],1)
+        self.assertEqual(r['headline_complete_days'],0)
+        self.assertIsNone(r['win_rate_resolved_days'])

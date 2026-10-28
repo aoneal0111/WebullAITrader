@@ -32,6 +32,7 @@ def plan():
         selection='Lowest SHA256(version|symbol|date), up to 200 eligible symbol-days per month; all their family episodes',
         dates='2026-06-01 through 2026-08-31; already inspected historical period',
         entry='Exact minute after detection minute; source history bars must be completed at detection',
+        prefix_adapter='COMPLETED_EPISODE_TIMES_V2_NORMALIZED_OHLCV_DIGEST_MATCH',
         wallet_per_case_per_day='1000',max_positions=2,max_notional='500',risk_with_cost='10',
         max_hold_minutes=60,volume_participation='1% of preceding completed minute volume',
         capital='Full entry cash reserved until complete exit; partial proceeds not reinvested',
@@ -52,13 +53,48 @@ class PriceBar:
     volume:D
 
 
-def prefix_ok(row,at):
+def canonical_bar(at,values):
+    numbers=[D(str(v)) for v in values]
+    if any(not n.is_finite() for n in numbers):raise ValueError('FINITE_PREFIX_PRICES_REQUIRED')
+    return [at.astimezone(UTC).isoformat(),*[format(n.normalize(),'f') for n in numbers]]
+
+
+def prefix_evidence(row,at):
+    """Episode timestamps are completion times, unlike normalized open times.
+
+    This contract is from mining._candidate, not a freshness allowance. The
+    resulting digest must also match the normalized history before any entry.
+    """
     bars=row.get('bar_window')
-    if not isinstance(bars,list) or not bars:return False
+    if not isinstance(bars,list) or not bars:return dict(ok=False,status='MISSING_WINDOW')
     try:
-        ends=[datetime.fromisoformat(b['timestamp'])+timedelta(minutes=1) for b in bars]
-        return all(t.utcoffset() is not None and t<=at for t in ends)
-    except (KeyError,TypeError,ValueError):return False
+        cutoff=datetime.fromisoformat(row['provenance']['decision_cutoff'])
+        if cutoff.utcoffset() is None or cutoff!=at:return dict(ok=False,status='CUTOFF_MISMATCH')
+        opens=[];values=[];previous=None
+        for bar in bars:
+            end=datetime.fromisoformat(bar['timestamp'])
+            if (end.utcoffset() is None or end>at or end.second or end.microsecond
+                    or previous is not None and end<=previous or bar['symbol']!=row['symbol']):
+                return dict(ok=False,status='FUTURE_OR_UNORDERED_WINDOW')
+            opened=end-timedelta(minutes=1)
+            values.append(canonical_bar(opened,[bar[k] for k in ('open','high','low','close','volume')]))
+            opens.append(opened);previous=end
+        return dict(ok=True,status='COMPLETED_TIMESTAMPS_REQUIRE_PRICE_MATCH',count=len(values),
+            first_open=opens[0].astimezone(UTC).isoformat(),last_open=opens[-1].astimezone(UTC).isoformat(),
+            sha256=sha256(json.dumps(values,separators=(',',':')).encode()).hexdigest())
+    except (KeyError,TypeError,ValueError,ArithmeticError):return dict(ok=False,status='INVALID_WINDOW_SCHEMA')
+
+
+def prefix_ok(row,at):
+    return prefix_evidence(row,at)['ok']
+
+
+def normalized_prefix_matches(proof,bars):
+    if not proof or not proof.get('ok'):return False
+    start=datetime.fromisoformat(proof['first_open']);end=datetime.fromisoformat(proof['last_open'])
+    values=[canonical_bar(b.timestamp,(b.open,b.high,b.low,b.close,b.volume)) for b in bars if start<=b.timestamp<=end]
+    return (len(values)==proof['count'] and
+        sha256(json.dumps(values,separators=(',',':')).encode()).hexdigest()==proof['sha256'])
 
 
 def build_index(source,db,expected_counts,expected_episodes,*,expected_sha=SOURCE_SHA,progress=print):
@@ -82,12 +118,14 @@ def build_index(source,db,expected_counts,expected_episodes,*,expected_sha=SOURC
                     raise ValueError('EPISODE_IDENTITY_OR_DATE')
                 entry=(at.replace(second=0,microsecond=0)+timedelta(minutes=1)).astimezone(UTC)
                 trigger=row.get('trigger_timestamp')
-                safe=prefix_ok(row,at)
+                proof=prefix_evidence(row,at);safe=proof['ok']
+                counts['source_prefix_valid' if safe else 'source_prefix_invalid']+=1
+                counts['prefix_'+proof['status']]+=1
                 if trigger is not None:
                     trigger=datetime.fromisoformat(trigger)
                     safe=safe and trigger.utcoffset() is not None and trigger<=at
                 body=dict(episode_id=row['episode_id'],symbol=symbol,day=day,detected_at=at.isoformat(),
-                    planned_price=str(row['trigger_price']),stop=str(row['structural_stop']),families=chosen,prefix_ok=safe)
+                    planned_price=str(row['trigger_price']),stop=str(row['structural_stop']),families=chosen,prefix_ok=safe,prefix_evidence=proof)
                 db.execute('INSERT INTO events VALUES (?,?,?,?,?)',(row['episode_id'],symbol,day,entry.isoformat(),json.dumps(body)))
                 rank=sha256(f'{VERSION}|{symbol}|{day}'.encode()).hexdigest()
                 db.execute('INSERT OR IGNORE INTO partitions VALUES (?,?,?)',(symbol,day,rank))
@@ -186,6 +224,7 @@ class DayWallet:
                 fills=[asdict(f) for f in p['result'].fills]))
         return dict(day=day,counts=dict(self.counts),fully_resolved=not self.active,
             input_complete=not self.counts['INVALID_OR_MISSING_PRICE_PARTITION'],
+            signal_evidence_complete=not self.counts['UNVERIFIED_SIGNAL_PREFIX'],
             closed_trades=len(self.closed),wins=sum(x>0 for x in self.closed),losses=sum(x<0 for x in self.closed),
             closed_net=sum(self.closed,D(0)),positive_net=sum((x for x in self.closed if x>0),D(0)),
             negative_net=-sum((x for x in self.closed if x<0),D(0)),ending_uncommitted_cash=self.cash,
@@ -194,10 +233,11 @@ class DayWallet:
 
 
 def aggregate(days):
-    clean=[d for d in days if d['fully_resolved'] and d['input_complete']];n=sum(d['closed_trades'] for d in clean);wins=sum(d['wins'] for d in clean)
+    clean=[d for d in days if d['fully_resolved'] and d['input_complete'] and d.get('signal_evidence_complete',True)];n=sum(d['closed_trades'] for d in clean);wins=sum(d['wins'] for d in clean)
     gain=sum((d['positive_net'] for d in clean),D(0));loss=sum((d['negative_net'] for d in clean),D(0))
-    return dict(independent_days=len(days),fully_resolved_days=len(clean),excluded_unresolved_days=sum(not d['fully_resolved'] for d in days),
+    return dict(independent_days=len(days),fully_resolved_days=sum(d['fully_resolved'] for d in days),headline_complete_days=len(clean),excluded_unresolved_days=sum(not d['fully_resolved'] for d in days),
         excluded_price_error_days=sum(not d['input_complete'] for d in days),
+        excluded_signal_evidence_days=sum(not d.get('signal_evidence_complete',True) for d in days),
         closed_trades_resolved_days=n,win_rate_resolved_days=D(wins)/n if n else None,
         net_resolved_days=gain-loss,profit_factor_resolved_days=gain/loss if loss else None,
         all_days_closed_net_conditional=sum((d['closed_net'] for d in days),D(0)),
@@ -212,7 +252,7 @@ def run(repo,output,*,progress=print):
     frozen=plan();frozen['source_files']={p.name:sha256(p.read_bytes()).hexdigest() for p in (Path(__file__),Path(__file__).with_name('episode_exit_mechanics.py'))}
     (output/'frozen-plan.json').write_text(json.dumps(frozen,default=str,indent=2),encoding='utf-8')
     report,rhash=read_json(repo/REPORT,MAX_REPORT);review=review_report(report);root=(repo/REPORT).parent.parent
-    db=sqlite3.connect(output/'private-episode-index.sqlite3');case_days={};cache=BarCache(root/'normalized')
+    db=sqlite3.connect(output/'private-episode-index.sqlite3');case_days={};cache=BarCache(root/'normalized');prefix_counts=Counter()
     try:
         provenance=build_index(root/'corpus_repaired/episodes.jsonl',db,
             {r['strategy']:r['whole_sample_memberships'] for r in review['strategies']},report['metadata']['records_ingested'],progress=progress)
@@ -233,13 +273,15 @@ def run(repo,output,*,progress=print):
                         for (f,_,_),lane in lanes.items():
                             if f in e['families']:lane.counts['INVALID_OR_MISSING_PRICE_PARTITION']+=1
                         continue
+                    e['prefix_ok']=e['prefix_ok'] and normalized_prefix_matches(e.get('prefix_evidence'),bars)
+                    prefix_counts['matched' if e['prefix_ok'] else 'unverified_or_mismatched']+=1
                     for (f,_,_),lane in lanes.items():
                         if f in e['families']:lane.consider(e,bars,at)
                 for key,lane in lanes.items():case_days.setdefault(key,[]).append(lane.finish(day))
                 progress('REPLAY_DATE='+day,flush=True)
         cache.verify_stable()
         if read_json(repo/REPORT,MAX_REPORT)[1]!=rhash:raise ValueError('REPORT_CHANGED')
-        common={f:set.intersection(*({d['day'] for d in days if d['fully_resolved'] and d['input_complete']}
+        common={f:set.intersection(*({d['day'] for d in days if d['fully_resolved'] and d['input_complete'] and d.get('signal_evidence_complete',True)}
             for (family,_,_),days in case_days.items() if family==f)) for f in FAMILIES} if case_days else {}
         cases=[dict(family=f,policy=p,cost_per_share_per_side=c,**aggregate(days),
             paired_common_day_metrics=aggregate([d for d in days if d['day'] in common[f]]),
@@ -247,7 +289,10 @@ def run(repo,output,*,progress=print):
             for (f,p,c),days in case_days.items()]
         for (f,p,c),days in case_days.items():
             (output/f'private-days-{f}-{p}-{c}.json').write_text(json.dumps(days,default=str),encoding='utf-8')
-        result=dict(common_resolved_dates={f:sorted(dates) for f,dates in common.items()},scope=VERSION,plan_sha256=sha256((output/'frozen-plan.json').read_bytes()).hexdigest(),
+        entries=sum(c['counts'].get('entries',0) for c in cases)
+        evidence_status=('PRICE_REPLAY_WITH_ENTRIES' if entries else
+            'NO_VALIDATED_SIGNAL_PREFIXES' if prefix_counts['matched']==0 else 'NO_ENTRIES_AFTER_OTHER_FILTERS')
+        result=dict(evidence_status=evidence_status,prefix_validation=dict(prefix_counts),common_resolved_dates={f:sorted(dates) for f,dates in common.items()},scope=VERSION,plan_sha256=sha256((output/'frozen-plan.json').read_bytes()).hexdigest(),
             source_report_sha256=rhash,corpus=provenance,price_partitions_read=len(cache.proofs),cases=cases,
             promotion='NONE',orders=0,network_requests=0,grok_requests=0,execution_authorized=False,
             limitations=['Sampled historical case study, selected after reviewing family aggregates; not fresh holdout or full quarter portfolio',
@@ -261,6 +306,7 @@ def run(repo,output,*,progress=print):
                 'No new strategy qualification or changes to Warrior, Scalper, protective exits or Grok'])
         (output/'private-price-inputs.json').write_text(json.dumps({f'{s}_{d}':p for (s,d),p in cache.proofs.items()}),encoding='utf-8')
         path=output/'episode-price-study-summary.json';path.write_text(json.dumps(result,default=str,indent=2),encoding='utf-8')
+        progress('EVIDENCE_STATUS='+evidence_status,flush=True)
         progress('UPLOAD_SUMMARY='+str(path),flush=True)
         return result
     except Exception as exc:

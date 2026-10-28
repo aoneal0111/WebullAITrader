@@ -17,7 +17,7 @@ $Source = Join-Path $Root 'review-source'
 if ($LASTEXITCODE -ne 0) { throw 'Research checkout failed.' }
 Push-Location $Source
 try {
-    & $Python -m pytest tests/trade_intelligence/test_chronological_exit_replay.py tests/trade_intelligence/test_exit_replay_entry_sizing.py tests/equity_overhaul/test_whole_share_exit_replay.py tests/strategy_research/test_episode_price_study.py tests/strategy_research/test_equity_corpus_reconcile.py tests/strategy_research/test_equity_corpus_review.py tests/equity_overhaul/test_metric_semantics_audit.py --basetemp (Join-Path $Root 'checks') -q
+    & $Python -m pytest tests/trade_intelligence/test_chronological_exit_replay.py tests/trade_intelligence/test_exit_replay_entry_sizing.py tests/equity_overhaul/test_whole_share_exit_replay.py tests/strategy_research/test_episode_price_study.py tests/strategy_research/test_episode_miner_prefix_contract.py tests/strategy_research/test_equity_corpus_reconcile.py tests/strategy_research/test_equity_corpus_review.py tests/equity_overhaul/test_metric_semantics_audit.py --basetemp (Join-Path $Root 'checks') -q
     if ($LASTEXITCODE -ne 0) { throw 'Offline replay checks failed. Installed Atlas unchanged.' }
     Write-Host 'FROZEN_PRICE_STUDY; FIVE_FAMILIES; FOUR_EXIT_METHODS; TWO_ASSUMED_COSTS; NO_BOT_STARTED'
     Write-Host 'INDEXING_VERIFIED_22GB_CORPUS_THEN_REPLAYING_UP_TO_600_SYMBOL_DAYS'

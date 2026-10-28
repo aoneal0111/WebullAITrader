@@ -94,3 +94,37 @@ checkout. Do not launch Atlas through this tool. The actual operator corpus and
 prices are unavailable to the development host; its local checks use synthetic
 mechanics fixtures and do not claim strategy performance. Attach only
 `episode-price-study-summary.json`. Preserve `failure.json` if the run fails.
+
+## Completed-timestamp adapter correction
+
+The first price-study adapter treated `bar_window.timestamp` as an opening
+stamp and added one minute. The actual producer, `mining._candidate`, writes
+`CompletedBar.completed_at` into the episode's HistoricalBar.timestamp field.
+That field is already completed at detection; normalized partition timestamps
+are instead minute opens. The extra minute rejected valid source prefixes and
+made the initial study non-evaluable. Synthetic fixtures had not exercised the
+real producer's boundary convention.
+
+The corrected adapter requires matching decision-cutoff provenance, ordered
+aware completed timestamps no later than detection, and a canonical digest of
+the entire stored OHLCV prefix. In memory only, those completed timestamps are
+mapped to normalized open stamps one minute earlier. The sampled normalized
+bars must reproduce the count and digest before entry is allowed. No corpus,
+normalized prices, provider timestamp or trading freshness policy is rewritten.
+Future bars, schema gaps or price mismatches still block evaluation.
+
+The correction adds `prefix_adapter` to the frozen plan, with adapter identity
+`COMPLETED_EPISODE_TIMES_V2_NORMALIZED_OHLCV_DIGEST_MATCH`. It keeps the original
+V1 selection seed, all five families, costs, exit rules and wallet settings.
+Therefore it selects the same symbol-days rather than searching for a new
+sample. The source must be reindexed because the old compact index retained
+only a failed boolean, not the history needed for a trustworthy repair.
+
+`evidence_status` and `prefix_validation` distinguish a replay with entries from
+a run lacking validated prefixes. Days with unverified signal evidence are
+excluded from headline and common-day comparisons, with counts retained.
+`fully_resolved_days` alone describes position resolution;
+`headline_complete_days` additionally requires usable price and signal evidence.
+A real-miner regression generates corpus episodes using `build_corpus` and tests
+completion-time boundary acceptance, normalized OHLCV equality, mutated-price
+rejection and future-bar rejection. Prior non-evaluable output is preserved.
