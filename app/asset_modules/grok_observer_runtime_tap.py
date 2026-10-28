@@ -26,6 +26,7 @@ class RuntimeContextTap:
         self._closed=False;self._counts=Counter(queued=0,bars_queued=0,assessments_queued=0);self._bars=OrderedDict()
         self._timing={};self._preview_counts=Counter(samples=0);self._preview_ages={}
         self._confirmation_counts=Counter(samples=0);self._confirmation_ages={}
+        self._eligibility_cache=OrderedDict()
         self._thread=Thread(target=self._run,name='atlas-observer-native-evidence',daemon=True)
         self._thread.start()
 
@@ -42,6 +43,33 @@ class RuntimeContextTap:
                     if isinstance(item[1],EngineId):
                         self._counts['assessments_queued_'+item[1].value]+=1
                 return True
+        except Exception:return False
+
+    def record_market_eligibility(self,symbol,*,tradable,halted,at):
+        """One-way market-state evidence before setup/entry filters, at most 1Hz.
+
+        State changes bypass coalescing. No eligibility, risk, source timestamp
+        or provider request is changed by recording this heartbeat.
+        """
+        try:
+            if getattr(self,'_journal',None) is None:return False
+            if type(tradable) is not bool or type(halted) is not bool or at.utcoffset() is None:return False
+            symbol=symbol.strip().upper()
+            if not symbol or len(symbol)>32:return False
+            with self._lock:
+                if self._closed:return False
+                previous=self._eligibility_cache.get(symbol)
+                if (previous is not None and previous[0:2]==(tradable,halted)
+                        and timedelta(0)<=at-previous[2]<timedelta(seconds=1)):
+                    self._counts['eligibility_unchanged_coalesced']+=1;return False
+                accepted=self._journal.submit('MARKET_ELIGIBILITY',dict(symbol=symbol,
+                    tradable=tradable,halted=halted,known_at=at,source='NATIVE_SCANNER_OBSERVATION'))
+                if accepted:
+                    self._eligibility_cache.pop(symbol,None)
+                    self._eligibility_cache[symbol]=(tradable,halted,at)
+                    if len(self._eligibility_cache)>1024:self._eligibility_cache.popitem(last=False)
+                    self._counts['eligibility_submitted']+=1
+                return accepted
         except Exception:return False
 
     def remember_bars(self,symbol,bars,*,known_at):

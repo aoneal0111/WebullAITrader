@@ -1403,6 +1403,14 @@ class WarriorDesktopSidecar:
         symbol = event.symbol.strip().upper()
         lookup_started = perf_counter()
         observation = adapter.observation_for(symbol)
+        if self._observer_context_tap is not None and observation is not None:
+            try:
+                self._observer_context_tap.record_market_eligibility(
+                    symbol, tradable=observation.tradable,
+                    halted=observation.halted, at=self._aware_now(),
+                )
+            except Exception:
+                pass
         if event.event_type is MarketEventType.QUOTE and isinstance(event.payload, QuotePayload):
             # Execution forensics must see raw quotes even when Warrior has no
             # completed bar, qualified candidate, or complete reference data.
