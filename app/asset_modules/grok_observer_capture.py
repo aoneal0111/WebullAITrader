@@ -59,10 +59,15 @@ class ContextCapture:
     No entry/exit callbacks or providers are accepted. This is not wired to Atlas.
     submit never propagates validation/storage exceptions into its caller.
     """
-    def __init__(self,directory,baseline,*,clock,deadline=None,timer=monotonic):
+    def __init__(self,directory,baseline,*,clock,deadline=None,timer=monotonic,max_records=None,max_bytes=None):
         import re
         if not isinstance(baseline,str) or not re.fullmatch('[0-9a-f]{64}',baseline):
             raise ValueError('Frozen baseline fingerprint required')
+        max_records=MAX_RECORDS if max_records is None else max_records
+        max_bytes=MAX_BYTES if max_bytes is None else max_bytes
+        if not 1<=max_records<=10000 or not 1<=max_bytes<=64*1024*1024:
+            raise ValueError('Capture bounds exceeded')
+        self._max_records,self._max_bytes=max_records,max_bytes
         self._baseline,self._clock=baseline,clock
         self._deadline,self._timer=deadline,timer
         self._queue=Queue(maxsize=16);self._stop=Event();self._lock=Lock()
@@ -84,7 +89,7 @@ class ContextCapture:
                     self._counts['closed_or_failed']+=1;return False
                 if identity in self._seen:
                     self._counts['duplicates']+=1;return False
-                if self._counts['enqueued']>=MAX_RECORDS or self._bytes+len(data)>MAX_BYTES:
+                if self._counts['enqueued']>=self._max_records or self._bytes+len(data)>self._max_bytes:
                     self._counts['limit_rejections']+=1;return False
                 try:self._queue.put_nowait((snapshot.engine.value,data))
                 except Full:self._counts['queue_full']+=1;return False

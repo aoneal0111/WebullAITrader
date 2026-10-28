@@ -17,10 +17,11 @@ class RuntimeContextTap:
     No model, execution, provider request or runtime-setting method exists here.
     The owner must close this outside engine/protection callbacks.
     """
-    def __init__(self,capture,baseline):
+    def __init__(self,capture,baseline,*,journal=None):
         if not isinstance(capture,ContextCapture) or baseline!=capture._baseline:
             raise ValueError('Matching private capture and frozen baseline required')
         self._capture,self._baseline=capture,baseline
+        self._journal=journal
         self._queue=Queue(maxsize=16);self._stop=Event();self._lock=Lock()
         self._closed=False;self._counts=Counter(queued=0,bars_queued=0,assessments_queued=0);self._bars=OrderedDict()
         self._timing={};self._preview_counts=Counter(samples=0);self._preview_ages={}
@@ -45,15 +46,25 @@ class RuntimeContextTap:
 
     def remember_bars(self,symbol,bars,*,known_at):
         # Copy a bounded tuple; no history sorting/serialization or disk I/O here.
-        try:return self._put(('BARS',symbol,tuple(bars[-30:]),known_at))
+        try:
+            if self._journal is not None:
+                self._journal.submit('BARS',dict(symbol=symbol,bars=tuple(bars[-30:]),known_at=known_at))
+            return self._put(('BARS',symbol,tuple(bars[-30:]),known_at))
         except Exception:return False
 
     def record(self,*,engine,quote,source,at,baseline_result,setup_state,preview=None):
-        return self._put(('ASSESS',engine,quote,source,at,baseline_result,setup_state,self._capture._clock(),preview))
+        event_id=uuid4().hex
+        if self._journal is not None:
+            self._journal.submit('ASSESSMENT',dict(event_id=event_id,engine=engine,quote=quote,
+                assessed_at=at,baseline_result=baseline_result,setup_state=setup_state,preview=preview))
+        return self._put(('ASSESS',engine,quote,source,at,baseline_result,setup_state,self._capture._clock(),preview,event_id))
 
     def record_scalper_preview(self,snapshot,assessment):
         """Numeric initial-stream rejection diagnostics; no requests or authority."""
         try:
+            if self._journal is not None:
+                self._journal.submit('STREAM_ASSESSMENT',dict(engine='QUICK_SCALPER',snapshot=snapshot,
+                    decision=assessment.decision,reason=assessment.reason))
             from app.strategies.warrior_momentum.quick_scalper import QuickScalpSnapshot,QuickScalpAssessment
             if (not isinstance(snapshot,QuickScalpSnapshot) or not isinstance(assessment,QuickScalpAssessment)
                     or snapshot.setup_type!='QUICK_SCALP_STREAM' or assessment.reason!='PROVIDER_DATA_STALE'):
@@ -130,7 +141,7 @@ class RuntimeContextTap:
                     self._bars.pop(symbol,None);self._bars[symbol]=(bars,known)
                     if len(self._bars)>128:self._bars.popitem(last=False)
                     continue
-                _,engine,quote,source,native_at,result,setup,enqueued_at,preview=item
+                _,engine,quote,source,native_at,result,setup,enqueued_at,preview,event_id=item
                 from app.strategies.warrior_momentum.execution_quote import ExecutionQuoteSnapshot,WebullExecutionQuoteSource
                 if (not isinstance(source,WebullExecutionQuoteSource) or not isinstance(quote,ExecutionQuoteSnapshot)
                         or quote.bid_timestamp!=quote.ask_timestamp):
@@ -165,7 +176,7 @@ class RuntimeContextTap:
                     self._count('history_not_available_at_assessment');continue
                 completed=tuple(ContextBar(b.timestamp+timedelta(minutes=1),known,
                     b.open,b.high,b.low,b.close,b.volume) for b in bars if b.timestamp+timedelta(minutes=1)<=known)
-                snapshot=Snapshot(engine,uuid4().hex,quote.symbol,quote.bid,quote.ask,
+                snapshot=Snapshot(engine,event_id,quote.symbol,quote.bid,quote.ask,
                     quote.bid_timestamp,quote.ask_timestamp,at,self._baseline,'WEBULL_OPENAPI')
                 context=StrategyContext(engine,snapshot.event_id,quote.symbol,self._baseline,at,
                     'WEBULL_OPENAPI',setup,result,completed)

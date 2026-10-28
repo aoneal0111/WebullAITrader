@@ -133,6 +133,7 @@ class DesktopComposition:
     daily_review_exporter: DailyReviewExporter | None = None
     paper_validation_capture: PaperValidationCapture | None = None
     learning_collector: object | None = None
+    daily_research: object | None = None
 
     def close(self, *, timeout_seconds: float = 5.0) -> bool:
         from .desktop_lifecycle import close_desktop_composition
@@ -168,6 +169,10 @@ def create_desktop_composition(
         )
 
     operational_configuration = load_configuration()
+    from app.asset_modules.daily_research import configured_research
+    daily_research = configured_research(operational_configuration, configuration.runtime_mode, observer_context_tap)
+    if daily_research is not None:
+        observer_context_tap = daily_research.tap
     if observer_context_tap is not None:
         from app.asset_modules.grok_observer_runtime_tap import RuntimeContextTap
         if (not isinstance(observer_context_tap,RuntimeContextTap)
@@ -255,6 +260,8 @@ def create_desktop_composition(
     warrior_forward_sidecar = None
     if placement_runtime is None:
         def paper_runtime_event_sink(event: PaperRuntimeEvent) -> None:
+            if daily_research is not None:
+                daily_research.journal.observe_paper_event(event)
             runtime_projections.sink(event)
             symbol = event.symbol
             if symbol is None:
@@ -527,6 +534,14 @@ def create_desktop_composition(
             async_warrior_observation=True,
         )
 
+    if daily_research is not None:
+        native_market_observer = market_event_observer
+        def recorded_market_event(event):
+            daily_research.journal.observe_market_event(event)
+            if native_market_observer is not None:
+                return native_market_observer(event)
+        market_event_observer = recorded_market_event
+
     # Markets are activated explicitly from the desktop market controls.
 
     # D2B1 consumes the existing D1 predicate.  Repository opening is local;
@@ -575,6 +590,7 @@ def create_desktop_composition(
             else paper_trading_commands.execution_engine
         ),
         paper_trading_commands=paper_trading_commands,
+        daily_research=daily_research,
         runtime_projections=runtime_projections,
         chart_market_data_service=chart_market_data_service,
         chart_default_symbol=chart_default_symbol,
@@ -606,6 +622,8 @@ def create_desktop_composition(
             ),
         ),
     )
+    if daily_research is not None:
+        daily_research.bind_baseline(result)
     result.symbol_intelligence_activation_state = (
         start_desktop_symbol_intelligence(symbol_intelligence_bundle)
     )

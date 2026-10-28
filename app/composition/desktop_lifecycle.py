@@ -158,6 +158,13 @@ def close_desktop_composition(
             ),
         )
 
+    recorder = getattr(composition, "daily_research", None)
+    if recorder is not None:
+        try:
+            _shutdown_stage("daily_research", recorder.close)
+        except Exception:
+            pass  # Research failure never changes native protective exits.
+
     _shutdown_stage("state_store", composition.state_store.close)
 
     try:

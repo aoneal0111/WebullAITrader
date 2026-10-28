@@ -345,6 +345,7 @@ class OperationalConfiguration:
     quick_scalper_enabled: bool = False
     paper_controller_enabled: bool = False
     crypto_shared_allocation_enabled: bool = False
+    daily_research_enabled: bool = False
     crypto_native_observer_enabled: bool = False
     grok_paper_entries_enabled: bool = False
     crypto_completed_bar_capture_enabled: bool = False
