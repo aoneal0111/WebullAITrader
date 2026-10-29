@@ -118,6 +118,16 @@ class QualifiedEquityTradingService:
                     AcknowledgementState.NOT_SENT, NormalizedOrderStatus.NOT_SUBMITTED,
                     OrderPlacementDecision.ORDER_REJECTED, self.last_reason,(),
                     {'source':'equity-qualification','qualification_reason':self.last_reason})
+            claim = getattr(self.policy,'claim_order',None)
+            if claim is not None and not claim(placement):
+                self.last_reason='PAPER_EXPERIMENT_LIMIT_OR_EXPIRED'
+                performance_diagnostics.record_entry_funnel(symbol=placement.order.symbol,
+                    stage='STRATEGY_QUALIFICATION',outcome='REJECTED',reason=self.last_reason)
+                return OrderPlacementResult(placement.order.request_id, placement.order.client_order_id,'',
+                    AcknowledgementState.NOT_SENT, NormalizedOrderStatus.NOT_SUBMITTED,
+                    OrderPlacementDecision.ORDER_REJECTED,self.last_reason,(),{'source':'paper-experiment'})
+            constrain=getattr(self.policy,'constrain_placement',None)
+            if constrain is not None:placement=constrain(placement)
             return self.service.place_order(placement)
 
     def cancel_order(self,request):
@@ -142,6 +152,6 @@ class QualifiedEquityTradingService:
             except Exception:
                 success=False
         logging.getLogger(__name__).warning(
-            'equity_strategy_admission mode=QUALIFIED_ONLY approved_policies=%s inherited_buys_cancelled=%s protective_sells=AVAILABLE',
-            len(self.policy.status()['approved_policies']),success)
+            'equity_strategy_admission mode=%s approved_policies=%s inherited_buys_cancelled=%s protective_sells=AVAILABLE',
+            self.policy.status().get('entry_mode','UNSPECIFIED_POLICY'),len(self.policy.status()['approved_policies']),success)
         return success

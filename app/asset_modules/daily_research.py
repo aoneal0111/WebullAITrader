@@ -22,12 +22,21 @@ class DailyResearch:
         source=source_manifest(Path(__file__).resolve().parents[2])
         source_hash=sha256(canonical(source)).hexdigest()
         config_hash=configuration_digest(configuration)
-        self.baseline=sha256(canonical(dict(source=source_hash,configuration=config_hash))).hexdigest()
+        from app.equity_overhaul.paper_experiment import ENV, load
+        experiment_path=os.environ.get(ENV,'').strip()
+        experiment=load(experiment_path)[1] if experiment_path else None
+        baseline_material=dict(source=source_hash,configuration=config_hash)
+        if experiment:baseline_material['paper_experiment']=experiment
+        self.baseline=sha256(canonical(baseline_material)).hexdigest()
         root=Path(root) if root is not None else Path(os.environ.get('LOCALAPPDATA',str(Path.home())))/'AtlasResearch'
         self.directory=root/('daily-research-'+datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')+'-'+uuid4().hex)
         self.directory.mkdir(parents=True,exist_ok=False)
         try:
-            self.journal=DailyJournal(self.directory/'journal',self.baseline,clock=clock)
+            self.journal=DailyJournal(self.directory/'journal',self.baseline,clock=clock,
+                **({'max_bytes':4*1024*1024*1024,'max_records':8_000_000} if experiment else {}))
+            if experiment:
+                pointer=Path(experiment_path).with_name('recording-session.json')
+                pointer.write_text(json.dumps({'session':str(self.directory),'trial_id':experiment['trial_id']}),encoding='utf-8')
             self.capture=ContextCapture(self.directory/'private-capture',self.baseline,clock=clock,
                 max_records=10000,max_bytes=64*1024*1024)
             self.tap=RuntimeContextTap(self.capture,self.baseline,journal=self.journal)
@@ -37,7 +46,7 @@ class DailyResearch:
             self._entry_counts_before=_entry_diagnostic_counts()
             self._last_active_readiness=None
             self._deadline=monotonic()+seconds
-            manifest=dict(scope='NORMAL_DESKTOP_DAILY_RESEARCH_V1',baseline_sha256=self.baseline,
+            manifest=dict(scope='NORMAL_DESKTOP_DAILY_RESEARCH_V1',paper_experiment=experiment,baseline_sha256=self.baseline,
                 source_sha256=source_hash,configuration_sha256=config_hash,source_files=source,
                 started_at=clock().isoformat(),max_seconds=seconds,live_trading_enabled=False,
                 grok_order_review_enabled=False,automatic_grok_requests=0,
@@ -48,7 +57,7 @@ class DailyResearch:
                 limitations=['No unobserved symbols, pre-start ticks, options chains or news invented',
                     'Fresh context sample limited to 10000 records/64MiB; raw journal continues if context fills',
                     'Raw journal bounded to 512MiB/one million records; queue drops invalidate complete replay',
-                    'Qualified-only strategy admission remains unchanged; zero approved policies still blocks buys'])
+                    'Recording grants no entries; native admission or an explicit bounded PAPER experiment controls buys'])
             (self.directory/'research-manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
             self._thread=Thread(target=self._monitor,name='atlas-daily-recording-lifecycle',daemon=True)
             self._thread.start()

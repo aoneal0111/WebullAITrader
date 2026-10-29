@@ -230,7 +230,9 @@ def verify_receipt(directory):
 
 def _settings(composition):
     return dict(warrior=asdict(composition.warrior_forward_sidecar.strategy_config),
-                scalper=asdict(composition.quick_scalper_runtime.config))
+                scalper=asdict(composition.quick_scalper_runtime.config),
+                paper_experiment=(composition.equity_paper_experiment.status()
+                    if getattr(composition,'equity_paper_experiment',None) is not None else None))
 
 
 def _entry_diagnostic_counts():

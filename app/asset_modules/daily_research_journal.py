@@ -12,8 +12,10 @@ from threading import Event, Lock, Thread
 from time import monotonic
 from uuid import UUID
 
-MAX_BYTES=512*1024*1024
-MAX_RECORDS=1_000_000
+DEFAULT_BYTES=512*1024*1024
+MAX_BYTES=4*1024*1024*1024
+DEFAULT_RECORDS=1_000_000
+MAX_RECORDS=8_000_000
 SEGMENT_BYTES=16*1024*1024
 MAX_LINE=128*1024
 
@@ -41,7 +43,7 @@ def canonical(value):
 
 class DailyJournal:
     def __init__(self,directory,baseline,*,clock=lambda:datetime.now(UTC),timer=monotonic,
-                 max_bytes=MAX_BYTES,max_records=MAX_RECORDS):
+                 max_bytes=DEFAULT_BYTES,max_records=DEFAULT_RECORDS):
         if len(baseline)!=64 or any(c not in '0123456789abcdef' for c in baseline):raise ValueError('BASELINE_HASH_REQUIRED')
         if not 1<=max_bytes<=MAX_BYTES or not 1<=max_records<=MAX_RECORDS:raise ValueError('JOURNAL_BOUND_REQUIRED')
         self.directory=Path(directory);self.directory.mkdir(parents=True,exist_ok=False)

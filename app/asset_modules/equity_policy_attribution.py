@@ -6,7 +6,7 @@ import re
 
 from app.asset_modules.engine_catalog import EngineId
 
-FIELDS = ("strategy_family", "strategy_policy_version", "strategy_code_fingerprint",
+FIELDS = ("strategy_trial_id", "strategy_family", "strategy_policy_version", "strategy_code_fingerprint",
           "strategy_configuration_fingerprint", "strategy_attribution_scope")
 
 # Explicit source scope: deliberately not presented as a full repository hash.
@@ -17,7 +17,7 @@ SHARED = (
     "strategies/warrior_momentum/opportunity_engine.py", "paper_gateway/gateway.py",
     "composition/desktop.py", "strategies/warrior_momentum/desktop_sidecar.py",
     "services/trading_service.py",
-    "market/scalp_session.py",
+    "market/scalp_session.py", "equity_overhaul/paper_experiment.py", "equity_overhaul/admission.py",
 )
 SOURCE_FILES = {
     EngineId.WARRIOR.value: SHARED + (
@@ -76,7 +76,7 @@ class EquityPolicyAttribution:
                 and isinstance(config, str) and re.fullmatch(r"[0-9a-f]{64}", config)):
             material = json.dumps(["EQUITY_POLICY_ATTRIBUTION_V1", engine, setup, code, config])
             version = "EQUITY_POLICY_V1:" + sha256(material.encode()).hexdigest()
-        return dict(zip(FIELDS, (setup, version, code, config,
+        return dict(zip(tuple(k for k in FIELDS if k != "strategy_trial_id"), (setup, version, code, config,
                                 "DECLARED_SOURCE_AND_ENGINE_CONFIG_V1")))
 
 
