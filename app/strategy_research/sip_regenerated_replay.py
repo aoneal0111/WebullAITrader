@@ -12,8 +12,9 @@ from app.opportunity_discovery import CompletedBar, DetectionState, DiscoveryCon
 from .episode_price_study import BarCache, NY, FAMILIES, POLICIES, COSTS, DayWallet, aggregate
 from .episode_gap_audit import bounded_json
 
-VERSION = 'SIP_REGENERATED_FIVE_FAMILY_REPLAY_V1'
-FIRED = {DetectionState.DETECTED, DetectionState.TRIGGER_ARMED, DetectionState.STRENGTHENING}
+VERSION = 'SIP_CONFIRMED_FIVE_FAMILY_REPLAY_V2'
+# A reference/armed setup is not a trigger. Filter before recording deduplication.
+FIRED = {DetectionState.DETECTED}
 
 
 def generate(bars, *, registry=None):
@@ -65,7 +66,7 @@ def generate(bars, *, registry=None):
 def frozen_plan():
     return dict(scope=VERSION, families=FAMILIES, exits=[p.name for p in POLICIES], costs=[str(c) for c in COSTS],
         detector_context='Existing five registry detectors; last 64 observed completed bars, sessions from source open time',
-        firing_states=sorted(s.value for s in FIRED), dedupe='First fired state per family/anchor within symbol-day',
+        firing_states=sorted(s.value for s in FIRED), excluded_states='Armed/forming/strengthening are not execution triggers', dedupe='First fired state per family/anchor within symbol-day',
         prior_close='Unavailable; never estimated from this day',
         entry='Exact minute after detection minute; same next-open proxy and 1% preceding-volume sizing as prior study',
         wallet='Independent $1000 day per family/exit/cost; max two positions, $500 per entry, $10 risk, 60-minute hold',
@@ -142,7 +143,7 @@ def run(history, output, *, progress=print):
             orders=0,network_requests=0,grok_requests=0,promotion='NONE',execution_authorized=False,
             limitations=['Retrospective sample selected from previously inspected IEX episodes; not a new holdout or whole-market test.',
                 'SIP signals regenerated from completed-bar prefixes; no old episode outcome labels used.',
-                'Existing detector firing states include armed setups; this is a detector research protocol, not production qualification.',
+                'Only DETECTED states enter; armed/forming states remain diagnostics and do not consume an anchor.',
                 'Family/anchor deduplication is independent per family; no claim of identical multi-family miner grouping.',
                 'Session HOD and opening references use the existing 64-observed-bar context, not a new full-session detector.',
                 'Missing rows may reflect no eligible trades; no bars filled or gaps skipped.',

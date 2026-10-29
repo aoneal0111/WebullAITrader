@@ -9,7 +9,10 @@ from pathlib import Path
 import pytest
 
 from app.strategy_research.episode_price_study import PriceBar
-from app.strategy_research.sip_regenerated_replay import generate, run, frozen_plan
+from app.strategy_research.sip_regenerated_replay import generate, run, frozen_plan, FIRED
+from app.opportunity_discovery import DetectionState
+from app.strategy_research.episode_price_study import FAMILIES
+from types import SimpleNamespace
 from tests.strategy_research.test_episode_price_study import file_bars
 
 
@@ -38,6 +41,8 @@ def test_real_detectors_generate_signal_without_old_labels():
     assert events
     assert len({(e['families'][0],e['anchor']) for e in events})==len(events)
     assert all(e['prefix_ok'] and e['context_sha256'] for e in events)
+    assert all(e['detector_state']=='DETECTED' for e in events)
+    assert counts.get('HIGH_OF_DAY_BREAKOUT:TRIGGER_ARMED',0)>0
     assert all(datetime.fromisoformat(e['entry_at']) > datetime.fromisoformat(e['detected_at']) for e in events)
 
 
@@ -82,3 +87,25 @@ def test_plan_preserves_retrospective_and_nonexecuting_scope():
     assert 'not a fresh holdout' in plan['selection']
     assert plan['costs']==['0.01','0.02']
     assert len(plan['families'])==5 and len(plan['exits'])==4
+
+
+def test_armed_state_never_enters_or_consumes_later_confirmed_anchor():
+    values=fixture_bars()[:3]
+    class Detector:
+        def __init__(self, family):
+            self.definition=SimpleNamespace(strategy_id=family)
+        def detect(self, context):
+            state=(DetectionState.TRIGGER_ARMED if len(context.completed_bars)==1 else DetectionState.DETECTED)
+            if self.definition.strategy_id!=FAMILIES[0]:
+                state=DetectionState.NOT_DETECTED
+            return SimpleNamespace(strategy_id=self.definition.strategy_id,state=state,
+                trigger_level=D(2),structural_stop=D(1),opportunity_anchor='unchanged',strategy_version='test')
+    registry=SimpleNamespace(detectors=tuple(Detector(f) for f in FAMILIES))
+    events,counts=generate(values,registry=registry)
+    assert len(events)==1
+    assert events[0]['detector_state']=='DETECTED'
+    assert datetime.fromisoformat(events[0]['detected_at'])==values[1].timestamp+timedelta(minutes=1)
+    assert counts[FAMILIES[0]+':TRIGGER_ARMED']==1
+    assert counts['REPEATED_FAMILY_ANCHOR']==1
+    assert FIRED=={DetectionState.DETECTED}
+    assert frozen_plan()['firing_states']==['DETECTED']
