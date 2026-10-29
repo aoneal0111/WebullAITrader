@@ -20,6 +20,9 @@ def test_manual_launchers_are_prepared_without_mutating_config_or_starting_anyth
     assert 'PRIVATE_PLACEHOLDER' not in atlas+grok
     assert 'grok_day_proposals' in grok
     assert "'ATLAS_GROK_PAPER_ENTRIES_ENABLED' = 'false'" in atlas
+    # Both processes must bind the same explicit engine authorization profile.
+    for launcher in (atlas,grok):
+        assert "'PAPER_SYMBOL_AUTHORIZATION_MODE' = 'DYNAMIC_WARRIOR_AND_QUICK_SCALPER'" in launcher
     assert not (tmp_path/'trial/experiment.json').exists()
 
 
