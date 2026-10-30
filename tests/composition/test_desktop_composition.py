@@ -199,6 +199,9 @@ def test_production_desktop_historical_treatment_full_lifecycle_survives_restart
         reports = composition.paper_trading_commands.gateway.process_market_event(quote)
         assert reports and reports[0].fills
         assert reports[0].fills[0].order_id == order.order_id
+        from app.performance_diagnostics import performance_diagnostics
+        counts = performance_diagnostics.entry_conversion_metrics()['funnel_counts']
+        assert counts['FILL'] + counts['PARTIAL_FILL'] == 1
         projection = composition.runtime_projections.position_projection.snapshot
         assert any(item.symbol == "XYZ" and D(item.quantity) > 0 for item in projection.positions)
 

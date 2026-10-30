@@ -272,7 +272,14 @@ def create_desktop_composition(
     market_event_observer = None
     warrior_forward_sidecar = None
     if placement_runtime is None:
+        from app.asset_modules.native_fill_funnel import NativeFillFunnel
+        native_fill_funnel = NativeFillFunnel(
+            lambda order_id: paper_order_book.get(order_id),
+            performance_diagnostics.record_entry_funnel,
+            started_at=(paper_clock or utc_now)(),
+        )
         def paper_runtime_event_sink(event: PaperRuntimeEvent) -> None:
+            native_fill_funnel.observe(event)
             if daily_research is not None:
                 daily_research.journal.observe_paper_event(event)
             runtime_projections.sink(event)
