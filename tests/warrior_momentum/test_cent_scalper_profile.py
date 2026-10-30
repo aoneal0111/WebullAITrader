@@ -37,6 +37,43 @@ def test_risk_or_cost_cannot_be_hidden_by_stretching_target_or_stop(ask,bid,stop
     assert result.target_move==D('.10') and value.structural_stop==D(stop)
 
 
+def test_cent_target_selects_viable_whole_cent_inside_band_before_rejecting():
+    # $0.10 of demonstrated movement, a $0.04 structural risk and $0.03
+    # modeled costs need a $0.07 target, not the old $0.06 cost-only choice.
+    value=snapshot(ask='2.23',bid='2.22',stop='2.19',short_range='.10')
+    result=QuickScalperPolicy(config()).assess(value)
+    assert result.target_move==D('.07')
+    assert result.decision is ScalpDecision.EXECUTABLE
+    assert value.structural_stop==D('2.19')
+    assert result.target_move-result.round_trip_cost>=D('.04')*result.required_net_target_reward_r
+
+
+def test_selected_cent_target_covers_confidence_penalty_without_rounding_down():
+    value=replace(snapshot(ask='2.23',bid='2.22',stop='2.19',short_range='.10'),
+        stream_sample_count=14,stream_elapsed_seconds=D('29.382'),
+        stream_upward_updates=3,stream_price_change_updates=4)
+    result=QuickScalperPolicy(config()).assess(value)
+    floor=D('.04')*result.required_net_target_reward_r+result.round_trip_cost
+    assert D('.07')<floor<=D('.08')
+    assert result.target_move==D('.08')
+    assert result.decision is ScalpDecision.EXECUTABLE
+
+
+def test_recorded_ncpl_geometry_still_waits_for_demonstrated_move_after_band_fix():
+    # Geometry from the Oct 30 summary, without claiming a full journal replay.
+    value=replace(snapshot(ask='2.23',bid='2.22',stop='2.19',short_range='.03'),
+        observed_bid_advance=D('.03'),observed_ask_advance=D('.01'),
+        stream_sample_count=14,stream_elapsed_seconds=D('29.382'),
+        stream_upward_updates=3,stream_price_change_updates=4,
+        setup_quality=D('40.72'),momentum_priority=D('42.39667757416570326220816877'),
+        relative_volume=D('.3806327980435806739198170528'),catalyst_context='FALSE')
+    result=QuickScalperPolicy(config()).assess(value)
+    assert result.target_move==D('.08')
+    assert result.decision is ScalpDecision.WAIT
+    assert result.reason=='INSUFFICIENT_NET_EXECUTABLE_EDGE'
+    assert result.expected_move==D('.01')
+
+
 def test_freshness_and_price_safety_still_override_cent_economics():
     value=snapshot(ask='5',bid='4.99',stop='4.98',short_range='.2')
     assert QuickScalperPolicy(config()).assess(replace(value,bid_timestamp=NOW-timedelta(seconds=6))).decision is ScalpDecision.REJECTED_HARD_SAFETY

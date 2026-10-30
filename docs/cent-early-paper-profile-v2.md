@@ -24,8 +24,17 @@ The profile selects an entry-relative gross target from $0.05 through $0.10 per
 share, rounded up to a whole-cent move. Estimated spread/slippage and native
 momentum-confidence discounts remain. A setup waits if the bounded target
 cannot cover those modeled costs and at least 1R net reward, or if demonstrated
-price movement does not support reaching it. The target is not expanded and
+price movement does not support reaching it. The target never exceeds $0.10 and
 the structural stop is not tightened to force approval.
+
+The within-band selection includes the modeled risk/reward floor before
+rounding up. The first V2 implementation omitted that floor when selecting the
+target, then checked it afterward. It could choose $0.06 and reject it even
+when a $0.07 or $0.08 target satisfied the same $0.10 ceiling. Correcting that
+selection does not waive quote freshness or the demonstrated-movement check.
+The October 30 NCPL geometry shown in the recording summary still waits on
+insufficient demonstrated movement after this correction; this is not proof
+that correcting target selection alone would have produced a trade.
 
 The selected target move is persisted as `scalp_cent_target_move`. After fills,
 the working full-quantity sell LIMIT is anchored to the actual weighted entry
@@ -66,3 +75,28 @@ Preparation does not start Atlas, create the lease, make provider/model calls,
 change `.env`, or place orders. The operator uses the newly printed Atlas
 launcher and clicks START normally. Retain all earlier results and compare
 completed-trade payoffs, not win rate alone, across the distinct profiles.
+
+`update-existing-paper-trial.ps1 -Repo ... -Revision <exact SHA> -Trial ...`
+updates clean source for an existing, still-valid V2 trial after offline Windows
+checks. It requires Atlas and Grok closed, preserves and hash-checks the trial
+spec, entry-budget database and sidecars, launchers, recording pointer, pause
+flags and `.env`, and does not create a new lease or replenish entry attempts.
+An expired trial is refused. Old recordings and Grok results are retained.
+The separate Grok launcher still refuses an existing output directory; the
+repair reports that condition instead of deleting previous results or starting
+another paid invocation.
+
+## October 30 diagnosis boundaries
+
+The supplied run ended at 14:40 UTC (09:40 Central), before its 21:17 UTC lease
+expiry. Both native engines were running; the Scalper recorded zero submissions.
+Of 2,128 non-executable confirmations, 1,987 reported stale provider data and
+141 insufficient edge. These are repeated assessments, not independent trades.
+The counter `quick_scalper_stale_preview_refresh_advanced` increments only when
+the entire refreshed assessment becomes executable. Zero does not establish
+that provider timestamps never advanced. Use the saved paired-confirmation
+summary or the exact-source `audit-recorded-scalper.ps1` replay to distinguish
+stale stream, stale REST, and REST timestamp regressions before changing a feed.
+No cache, timestamp interpretation, source substitution or quote-age threshold
+is changed by the target-selection correction. Exit-fill counts alone cannot
+establish the run's completed-trade profitability.

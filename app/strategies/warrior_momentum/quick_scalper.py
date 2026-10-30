@@ -196,6 +196,7 @@ class QuickScalperPolicy:
                 self.config.cent_target_minimum,
                 value.short_horizon_range * self.config.volatility_move_fraction,
                 cost * self.config.execution_cost_multiple,
+                risk * required_reward_r + cost,
             ).quantize(Decimal('0.01'),rounding=ROUND_CEILING))
             cent_economics_fit = (
                 target_move >= risk * required_reward_r + cost
