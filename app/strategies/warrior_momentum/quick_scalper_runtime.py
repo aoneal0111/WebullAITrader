@@ -91,6 +91,8 @@ class QuickScalperExecutionIntent:
     entry_session_deadline: datetime | None = None
     maximum_holding_seconds: int = 300
     cent_target_move: Decimal | None = None
+    support_source: str = 'WINDOW_LOW'
+    support_timestamp: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.entry_trigger <= self.stop_price or self.risk_per_share <= ZERO:
@@ -788,6 +790,8 @@ class QuickScalperPaperRuntimeAdapter:
             stream_price_change_updates=refreshed.stream_price_change_updates,
             observed_ask_advance=refreshed.observed_ask_advance,
             cent_target_move=(confirmed.target_move if self.config.cent_target_minimum is not None else None),
+            support_source=refreshed.support_source,
+            support_timestamp=refreshed.support_timestamp,
         )
         if self._paper_entry_reviewer is not None:
             from app.asset_modules.grok_native_review import NativeReviewReceipt
@@ -914,10 +918,21 @@ class QuickScalperPaperRuntimeAdapter:
             velocity / first.ask * Decimal('100')
             if first.ask > ZERO else ZERO
         )
-        structural_stop = min(item.bid for item in samples)
+        window_low = min(item.bid for item in samples)
+        structural_stop = window_low
+        support_source = 'WINDOW_LOW'
+        support_timestamp = None
+        if self.config.cent_pullback_support_enabled:
+            # Risk is anchored to an actual, subsequently confirmed local
+            # pullback, independently of the earlier impulse measurement.
+            # No price is invented or moved merely to fit the cent ceiling.
+            support = self._confirmed_cent_support(samples)
+            if support is not None:
+                structural_stop, support_timestamp = support
+                support_source = 'CONFIRMED_MICRO_PULLBACK'
         if structural_stop <= ZERO or structural_stop >= observation.ask:
             return None
-        short_range = max(item.bid for item in samples) - structural_stop
+        short_range = max(item.bid for item in samples) - window_low
         changes = [right.bid - left.bid for left, right in zip(samples, list(samples)[1:])]
         generation_started = self._stream_generation_started.setdefault(
             symbol, first.provider_timestamp,
@@ -969,7 +984,26 @@ class QuickScalperPaperRuntimeAdapter:
             session=session,
             relative_volume_status=relative_volume_status,
             executable_ask_size=observation.ask_size,
+            support_source=support_source,
+            support_timestamp=support_timestamp,
         )
+
+    @staticmethod
+    def _confirmed_cent_support(samples):
+        """Most recent strict trough with a later bounce and no subsequent touch.
+
+        Samples already represent distinct, nonregressing provider instants in
+        the native 30-second window. A monotonic rise, repeated same-instant
+        callbacks, broken trough or unconfirmed last sample supplies no support.
+        """
+        values = list(samples)
+        later_low = values[-1].bid if values else ZERO
+        for index in range(len(values)-2, 0, -1):
+            low = values[index]
+            if values[index-1].bid > low.bid and later_low > low.bid:
+                return low.bid, low.provider_timestamp
+            later_low = min(later_low, low.bid)
+        return None
 
     def _snapshot(
         self, point: PointInTimeObservation, candidate: MomentumCandidate,
@@ -1188,6 +1222,7 @@ class QuickScalperPaperRuntimeAdapter:
         mapping = {
             "INSUFFICIENT_NET_EXECUTABLE_EDGE": "quick_scalper_initial_insufficient_edge",
             "CENT_TARGET_ECONOMICS_WAIT": "quick_scalper_initial_insufficient_edge",
+            "CENT_SUPPORT_FORMING": "quick_scalper_initial_insufficient_edge",
             "PROVIDER_DATA_STALE": "quick_scalper_initial_provider_data_stale",
             "INVALID_EXECUTION_QUOTE": "quick_scalper_initial_invalid_execution_quote",
             "SESSION_NOT_ALLOWED": "quick_scalper_initial_session_not_allowed",
@@ -1203,6 +1238,7 @@ class QuickScalperPaperRuntimeAdapter:
         mapping = {
             "INSUFFICIENT_NET_EXECUTABLE_EDGE": "quick_scalper_reconfirm_insufficient_edge",
             "CENT_TARGET_ECONOMICS_WAIT": "quick_scalper_reconfirm_insufficient_edge",
+            "CENT_SUPPORT_FORMING": "quick_scalper_reconfirm_insufficient_edge",
             "PROVIDER_DATA_STALE": "quick_scalper_reconfirm_provider_data_stale",
             "INVALID_EXECUTION_QUOTE": "quick_scalper_reconfirm_invalid_execution_quote",
             "SESSION_NOT_ALLOWED": "quick_scalper_reconfirm_session_not_allowed",

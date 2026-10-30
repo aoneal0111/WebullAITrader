@@ -28,6 +28,7 @@ def test_v1_spec_stays_readable_and_v2_is_explicit_and_immutable(tmp_path):
     assert c.setups.allowed_setup_types==frozenset(V2_FAMILIES['WARRIOR_MOMENTUM'])
     q=p.scalper_config(QuickScalperConfig(enabled=True))
     assert (q.cent_target_minimum,q.cent_target_maximum,q.minimum_net_target_reward_r)==(D('.05'),D('.10'),D(1))
+    assert q.cent_pullback_support_enabled
     spec['cent_policy']['maximum']='1';path.write_text(json.dumps(spec))
     with pytest.raises(ValueError):load(path,lambda:NOW)
 

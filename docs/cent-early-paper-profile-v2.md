@@ -42,6 +42,54 @@ price. Reconciliation retains this behavior from persisted metadata, including
 when the adapter is restarted with the ordinary config. Previously opened
 positions without this metadata retain their original target logic.
 
+### Corrected native entry structure
+
+Target rounding alone did not establish executable native stream geometry.
+The additional adapter regression below identifies a mathematical
+incompatibility independently of provider availability or strategy performance.
+
+The original cent stream geometry was internally incompatible. Its stop was
+the minimum BID of the entire 30-second window, so entry ASK minus that low
+always exceeded current BID minus the first BID. Yet target selection required
+at least 1R plus costs and the observed BID advance was required to cover that
+still-larger target plus spread and slippage. Increasing the cent target within
+the approved band did not resolve this contradiction. Earlier tests constructed
+policy snapshots with independently chosen ranges and stops; they did not
+establish that the native stream adapter could produce executable geometry.
+
+The explicit V2 experiment now enables `cent_pullback_support_enabled` in its
+effective Scalper config. It uses an actual local BID trough, with an earlier
+higher quote and a later higher quote at a distinct provider instant, as the
+new-entry structural stop. Any subsequent quote at or below the trough
+invalidates that support. The most recent surviving trough is selected in one
+linear pass over the bounded 64-sample/30-second window. Flat trough plateaus
+are conservatively left unconfirmed. The full-window impulse range and BID/ASK
+advances remain separate, unchanged movement measurements. The stop is never
+calculated backward from a desired target, chosen quantity or risk allowance.
+
+No confirmed support gives `CENT_SUPPORT_FORMING`. A continuous rise alone does
+not invent a tighter stop. The same independent 1R/cost, cent-ceiling, observed
+movement, freshness, session, account, ownership and risk checks still apply.
+Stale previews without confirmed support do not spend a REST confirmation call;
+formed candidates retain the original authoritative confirmation requirement.
+Soft support/economic waits remain recoverable on the same native generation.
+Bar-only `QUICK_SCALP_MOMENTUM` assessments do not invent tick-level support.
+Normal Scalper configurations keep the previous window-low behavior.
+
+Snapshots and canonical entry metadata retain `support_source` and the original
+provider `support_timestamp`. Existing positions retain their persisted stops
+and fill-anchored targets; this entry change does not tighten them retroactively.
+The same trial ID, expiry and durable attempt database remain in place during
+the existing-trial source update, and the new effective config/source hashes
+distinguish subsequent recordings. Warrior's setup rules are unchanged.
+
+Regression tests now feed the actual native adapter a synthetic impulse,
+pullback and confirmation, then exercise canonical PAPER entry fills, durable
+support metadata, the protective STOP and the cent LIMIT exit. Monotonic rises,
+same-timestamp callbacks, touched support, excessive real stop distance, and
+stale/future/unavailable confirmation quotes do not force entries. Synthetic
+fills verify mechanics; no historical or forward profitability is inferred.
+
 For a cent-profile position, a momentum-stall opinion does not cancel the
 working LIMIT target in favor of a market profit exit. Existing protective
 stops, profit-defense stop amendments and maximum-hold exits still apply.

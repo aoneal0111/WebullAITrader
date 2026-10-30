@@ -60,7 +60,7 @@ Push-Location $Source
 try {
     $Validate | & $Python - $Trial
     if ($LASTEXITCODE -ne 0) { throw 'Existing trial expired or invalid. No renewal or source update performed.' }
-    & $Python -m pytest tests/warrior_momentum/test_cent_scalper_profile.py tests/warrior_momentum/test_quick_scalper.py tests/warrior_momentum/test_quick_scalper_runtime.py tests/asset_modules/test_scalper_evidence_audit.py tests/equity_overhaul/test_cent_early_profile.py tests/equity_overhaul/test_paper_experiment.py tests/asset_modules/test_native_fill_funnel.py tests/warrior_momentum/test_execution_quote_confirmation.py tests/paper_gateway/test_session_aware_entry_validity.py tests/asset_modules/test_daily_research.py tests/composition/test_desktop_composition.py -q --basetemp (Join-Path $Root 'checks')
+    & $Python -m pytest tests/warrior_momentum/test_cent_stream_support.py tests/warrior_momentum/test_cent_scalper_profile.py tests/warrior_momentum/test_quick_scalper.py tests/warrior_momentum/test_quick_scalper_runtime.py tests/asset_modules/test_scalper_evidence_audit.py tests/equity_overhaul/test_cent_early_profile.py tests/equity_overhaul/test_paper_experiment.py tests/asset_modules/test_native_fill_funnel.py tests/warrior_momentum/test_execution_quote_confirmation.py tests/paper_gateway/test_session_aware_entry_validity.py tests/asset_modules/test_daily_research.py tests/composition/test_desktop_composition.py -q --basetemp (Join-Path $Root 'checks')
     if ($LASTEXITCODE -ne 0) { throw 'Windows checks failed. Installed source and trial unchanged.' }
     $Validate | & $Python - $Trial
     if ($LASTEXITCODE -ne 0) { throw 'Trial expired during checks. No source update performed.' }

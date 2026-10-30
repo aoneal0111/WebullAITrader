@@ -1258,6 +1258,7 @@ class AutonomousPaperExecutionBridge:
                                     "required_net_target_reward_r", "stream_upward_updates",
                                     "stream_price_change_updates",
                                     "cent_target_move",
+                                    "support_source", "support_timestamp",
                                     "execution_quote_timestamp", "provider_bid_timestamp",
                                     "provider_ask_timestamp",
                                 )

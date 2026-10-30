@@ -82,7 +82,7 @@ class PaperExperiment(EquityQualificationPolicy):
     def scalper_config(self,config):
         if not self.cent_early:return config
         return replace(config,cent_target_minimum=D('0.05'),cent_target_maximum=D('0.10'),
-            minimum_net_target_reward_r=D('1'))
+            minimum_net_target_reward_r=D('1'),cent_pullback_support_enabled=True)
 
     def active(self):
         try:
@@ -146,7 +146,7 @@ class PaperExperiment(EquityQualificationPolicy):
 
     def notice(self):
         state='entry trial enabled, subject to native checks' if self.active() else 'new entries paused, expired or capture unavailable'
-        profile='Early native Warrior; cent-target Scalper. ' if self.cent_early else ''
+        profile='Early native Warrior; cent-pullback Scalper. ' if self.cent_early else ''
         return ('EXPERIMENTAL PAPER: '+profile+state+'. Max 10 shares / $100 position / $1 modeled initial risk; '
                 '50 entry attempts; expires '+self.spec['expires_at']+'. Grok orders OFF. Position protection remains available.')
 
