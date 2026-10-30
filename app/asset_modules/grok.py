@@ -16,6 +16,7 @@ from app.asset_modules.engine_catalog import EngineId
 MASTER = "MASTER"
 LEARNING = "LEARNING"
 ROLES = frozenset({engine.value for engine in EngineId} | {MASTER, LEARNING})
+REASONING_MODELS = frozenset({'grok-4.5','grok-4.6','grok-4.7'})
 
 
 class GrokUnavailable(RuntimeError):
@@ -45,10 +46,14 @@ def _json(raw):
 
 
 class GrokClient:
-    def __init__(self, key, model, *, transport=_post, clock=monotonic, latency_clock=monotonic):
+    def __init__(self, key, model, *, transport=_post, clock=monotonic, latency_clock=monotonic, reasoning_effort=None):
         if not key or not isinstance(model, str) or not re.fullmatch(r"grok-[a-zA-Z0-9._-]{1,100}", model):
             raise ValueError("Configure XAI_API_KEY and ATLAS_GROK_MODEL")
         self._key, self.model = key, model
+        if reasoning_effort is not None and (model not in REASONING_MODELS or reasoning_effort not in {'low','medium','high','xhigh'}
+                or model=='grok-4.5' and reasoning_effort=='xhigh'):
+            raise ValueError('Reasoning effort requires an explicitly supported model and level')
+        self.reasoning_effort=reasoning_effort
         self.maximum_output_tokens = 2048
         self._transport, self._clock = transport, clock
         self._latency_clock = latency_clock
@@ -81,6 +86,7 @@ class GrokClient:
                                  {"role": "user", "content": encoded}],
                        "text": {"format": {"type": "json_schema", "name": "atlas_paper_decision",
                                             "schema": schema, "strict": True}}}
+            if self.reasoning_effort is not None:payload['reasoning']={'effort':self.reasoning_effort}
             request = Request("https://api.x.ai/v1/responses", data=json.dumps(payload).encode(),
                               headers={"Content-Type": "application/json",
                                        "Authorization": "Bearer " + self._key}, method="POST")
@@ -215,8 +221,8 @@ class GrokProposalProvider:
         return proposals
 
 
-def configured_client(environment=None, *, transport=_post):
+def configured_client(environment=None, *, transport=_post, reasoning_effort=None):
     environment = os.environ if environment is None else environment
     key = environment.get("XAI_API_KEY", "").strip()
     model = environment.get("ATLAS_GROK_MODEL", "").strip()
-    return GrokClient(key, model, transport=transport) if key and model else None
+    return GrokClient(key, model, transport=transport, reasoning_effort=reasoning_effort) if key and model else None

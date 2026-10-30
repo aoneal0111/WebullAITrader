@@ -103,6 +103,18 @@ class ExecutionLease:
                 and not any((self.root/name).exists() for name in ('STOP_GROK','PAUSE_ENTRIES','PAUSE_GROK_EXECUTION')))
         except Exception:return False
 
+    def research_active(self):
+        """Explicit disconnected probe permission; never an entry authorization."""
+        try:
+            now=self.clock();d=self.doc
+            return (self.path.is_file() and json.loads(self.path.read_text(encoding='utf-8-sig'))==d
+                and self._read_parent()==self._parent
+                and datetime.fromisoformat(d['created_at'])<=now<datetime.fromisoformat(self._parent['expires_at'])
+                and self._timer()>=self._timer_start
+                and abs((now-self._wall_start).total_seconds()-(self._timer()-self._timer_start))<=2
+                and not any((self.root/name).exists() for name in ('STOP_GROK','PAUSE_ENTRIES','PAUSE_GROK_EXECUTION')))
+        except Exception:return False
+
     def request_count(self):
         with closing(sqlite3.connect(self.db_path)) as db:
             return self.doc['prior_paid_attempts']+db.execute('SELECT COUNT(*) FROM requests').fetchone()[0]
@@ -114,8 +126,13 @@ class ExecutionLease:
             paid_attempts_limit=20,paid_attempts_used=self.request_count(),requests_by_role=roles,
             mode=self.doc['mode'],backtest_promotion='NONE',broker_orders=0)
 
-    def reserve_request(self,role,context):
-        if role not in ROLES or context.get('mode')!='PAPER' or not self.active():raise GrokUnavailable('GROK_TRIAL_NOT_ACTIVE')
+    def reserve_request(self,role,context,*,research_only=False):
+        if type(research_only) is not bool:raise GrokUnavailable('EXPLICIT_REQUEST_PERMISSION_REQUIRED')
+        if research_only and (role!='LEARNING' or context.get('purpose')!='HISTORICAL_LOW_REASONING_PROBE_V1'
+                or context.get('execution_authorized') is not False or context.get('historical_review_only') is not True):
+            raise GrokUnavailable('DISCONNECTED_RESEARCH_SCOPE_REQUIRED')
+        permitted=self.research_active if research_only else self.active
+        if role not in ROLES or context.get('mode')!='PAPER' or not permitted():raise GrokUnavailable('GROK_TRIAL_NOT_ACTIVE')
         raw=json.dumps(safe(context),allow_nan=False,separators=(',',':'))
         if len(raw.encode())>65536:raise GrokUnavailable('GROK_TRIAL_INPUT_BOUND')
         now=self.clock();identity=uuid4().hex
@@ -126,7 +143,7 @@ class ExecutionLease:
             if count>=20:raise GrokUnavailable('GROK_TRIAL_PAID_LIMIT')
             if previous and not (now-datetime.fromisoformat(previous[0])).total_seconds()>=60:
                 raise GrokUnavailable('GROK_TRIAL_ROLE_COOLDOWN')
-            if not self.active():raise GrokUnavailable('GROK_TRIAL_REVOKED')
+            if not permitted():raise GrokUnavailable('GROK_TRIAL_REVOKED')
             db.execute('INSERT INTO requests VALUES (?,?,?,?,NULL)',(identity,role,now.isoformat(),raw));db.commit()
         return identity
 
@@ -162,8 +179,9 @@ class ExecutionLease:
 
 class BudgetClient:
     """Shares one durable allowance across equity, crypto, Master and Learning."""
-    def __init__(self,client,lease):
+    def __init__(self,client,lease,*,research_only=False):
         self.client,self.lease=client,lease
+        self.research_only=research_only
         from .grok_compact_context import ContextPacker
         self.packer=ContextPacker()
     @property
@@ -177,16 +195,19 @@ class BudgetClient:
         context=self.packer.pack(context)
         encoding=dict(kind='LOSSLESS_CANDLE_PACKING_V1',original_context_bytes=original_bytes,
             sent_context_bytes=len(canonical(context)))
-        identity=self.lease.reserve_request(role,context)
+        identity=self.lease.reserve_request(role,context,research_only=self.research_only)
         started=monotonic()
         try:
             answer=self.client.request(role,instruction,context,schema)
-            if not self.lease.active():raise GrokUnavailable('GROK_TRIAL_REVOKED')
+            permitted=self.lease.research_active if self.research_only else self.lease.active
+            if not permitted():raise GrokUnavailable('GROK_TRIAL_REVOKED')
         except Exception:
             self.lease.finish_request(identity,dict(status='FAILED_OR_REVOKED',diagnostics=self.client.diagnostics(),usage=self.client.usage(),
+                model=self.client.model,reasoning_effort=getattr(self.client,'reasoning_effort',None),
                 encoding=encoding,latency_ms=max(0,round((monotonic()-started)*1000))))
             raise
         self.lease.finish_request(identity,dict(status='ANSWER_RECEIVED',answer=answer,usage=self.client.usage(),diagnostics=self.client.diagnostics(),
+            model=self.client.model,reasoning_effort=getattr(self.client,'reasoning_effort',None),
             encoding=encoding,latency_ms=max(0,round((monotonic()-started)*1000))))
         return answer
 
@@ -207,18 +228,20 @@ def configured(configuration,*,clock=lambda:datetime.now(UTC)):
 
 def preflight(repo,root,*,clock=lambda:datetime.now(UTC)):
     from dotenv import dotenv_values
-    from .grok import configured_client
+    from .grok import configured_client, REASONING_MODELS
     from app.equity_overhaul.paper_experiment import load
     root=Path(root).resolve();_,parent=load(root/'experiment.json',clock)
     if parent.get('profile')!='CENT_EARLY_V2' or not (root/'entry-attempts.sqlite3').is_file():
         raise ValueError('EXISTING_CENT_TRIAL_AND_ENTRY_BUDGET_REQUIRED')
     environment={**dotenv_values(Path(repo)/'.env'),**os.environ}
-    if configured_client(environment) is None:raise ValueError('LOCAL_XAI_CONFIGURATION_REQUIRED')
+    client=configured_client(environment)
+    if client is None:raise ValueError('LOCAL_XAI_CONFIGURATION_REQUIRED')
     path=root/'grok-execution-lease.json'
     used=ExecutionLease(path,clock=clock).request_count() if path.exists() else prior_attempts(root)
     if used>=20:raise ValueError('SHARED_GROK_PAID_BUDGET_EXHAUSTED_NO_RESET')
     return dict(scope='GROK_EXECUTION_PREFLIGHT_NO_NETWORK',parent_trial_id=parent['trial_id'],
         parent_expires_at=parent['expires_at'],prior_paid_attempts=used,paid_attempts_remaining=20-used,
+        configured_model=client.model,execution_reasoning_effort='low' if client.model in REASONING_MODELS else 'PROVIDER_DEFAULT_UNVERIFIED',
         credentials_present=True,credentials_validated_online=False,orders=0,network_requests=0)
 
 
@@ -258,6 +281,7 @@ def write_launchers(repo,root,*,clock=lambda:datetime.now(UTC)):
     (root/'Pause-Grok-Execution.ps1').write_text("$null = New-Item -ItemType File -Force -Path "+quote(root/'PAUSE_GROK_EXECUTION')+"\nWrite-Host 'New Grok admission revoked. Keep Atlas and crypto data running for existing protection.'\n",encoding='utf-8')
     report.update(prepared_only=True,lease_created_on_manual_launch=True,live_trading_enabled=False,
         latency_profile=dict(equity_review='ONE_COMBINED_ENGINE_AND_MASTER_CALL',maximum_execution_output_tokens=2048,
+            reasoning_effort=report['execution_reasoning_effort'],
             reason_characters=240,context='LOSSLESS_COMPLETED_CANDLE_PACKING',cached_trade_decisions=False,
             model_changed=False,online_speed_validated=False),
         roles=dict(equity='Select immutable native candidates; cannot create arbitrary equity signals',

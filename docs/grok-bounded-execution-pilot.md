@@ -50,6 +50,11 @@ online. An untested low total-output ceiling can produce incomplete responses
 instead of usable decisions. The independent backtest reviewer keeps its normal
 analytical response format. Incomplete responses are refused with no retry.
 
+For the exact verified Grok 4.5/4.6/4.7 model IDs, explicit execution calls now
+request low reasoning effort. Default non-pilot and backtest calls retain their
+provider defaults. See [reasoning verification and the disconnected one-call
+probe](grok-reasoning-latency.md). This change is not an online latency guarantee.
+
 Completed candle windows are packed losslessly as named columns, common metadata
 and rows. Original prices, timestamps and provenance remain present. A bounded
 32-window local cache reuses only these encoded bar windows, keyed by their full
