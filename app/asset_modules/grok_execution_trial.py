@@ -162,7 +162,10 @@ class ExecutionLease:
 
 class BudgetClient:
     """Shares one durable allowance across equity, crypto, Master and Learning."""
-    def __init__(self,client,lease):self.client,self.lease=client,lease
+    def __init__(self,client,lease):
+        self.client,self.lease=client,lease
+        from .grok_compact_context import ContextPacker
+        self.packer=ContextPacker()
     @property
     def model(self):return self.client.model
     @property
@@ -170,14 +173,21 @@ class BudgetClient:
     def usage(self):return self.client.usage()
     def diagnostics(self):return self.client.diagnostics()
     def request(self,role,instruction,context,schema):
+        original_bytes=len(canonical(safe(context)))
+        context=self.packer.pack(context)
+        encoding=dict(kind='LOSSLESS_CANDLE_PACKING_V1',original_context_bytes=original_bytes,
+            sent_context_bytes=len(canonical(context)))
         identity=self.lease.reserve_request(role,context)
+        started=monotonic()
         try:
             answer=self.client.request(role,instruction,context,schema)
             if not self.lease.active():raise GrokUnavailable('GROK_TRIAL_REVOKED')
         except Exception:
-            self.lease.finish_request(identity,dict(status='FAILED_OR_REVOKED',diagnostics=self.client.diagnostics(),usage=self.client.usage()))
+            self.lease.finish_request(identity,dict(status='FAILED_OR_REVOKED',diagnostics=self.client.diagnostics(),usage=self.client.usage(),
+                encoding=encoding,latency_ms=max(0,round((monotonic()-started)*1000))))
             raise
-        self.lease.finish_request(identity,dict(status='ANSWER_RECEIVED',answer=answer,usage=self.client.usage(),diagnostics=self.client.diagnostics()))
+        self.lease.finish_request(identity,dict(status='ANSWER_RECEIVED',answer=answer,usage=self.client.usage(),diagnostics=self.client.diagnostics(),
+            encoding=encoding,latency_ms=max(0,round((monotonic()-started)*1000))))
         return answer
 
 
@@ -241,8 +251,15 @@ def write_launchers(repo,root,*,clock=lambda:datetime.now(UTC)):
     # Different filenames preserve the original native-only launchers/results.
     (root/'Start-Atlas-Grok-Execution.ps1').write_text(atlas,encoding='utf-8')
     (root/'Review-Grok-Backtest.ps1').write_text(backtest,encoding='utf-8')
+    latency="$ErrorActionPreference = 'Stop'\nPush-Location "+quote(repo)+"\ntry {\n"
+    latency+='    & '+quote(python)+' -m app.asset_modules.grok_latency_report --trial '+quote(root)+'\n'
+    latency+="    if ($LASTEXITCODE -ne 0) { throw 'Latency ledger is unavailable; no API request was made.' }\n} finally { Pop-Location }\n"
+    (root/'Show-Grok-Latency.ps1').write_text(latency,encoding='utf-8')
     (root/'Pause-Grok-Execution.ps1').write_text("$null = New-Item -ItemType File -Force -Path "+quote(root/'PAUSE_GROK_EXECUTION')+"\nWrite-Host 'New Grok admission revoked. Keep Atlas and crypto data running for existing protection.'\n",encoding='utf-8')
     report.update(prepared_only=True,lease_created_on_manual_launch=True,live_trading_enabled=False,
+        latency_profile=dict(equity_review='ONE_COMBINED_ENGINE_AND_MASTER_CALL',maximum_execution_output_tokens=2048,
+            reason_characters=240,context='LOSSLESS_COMPLETED_CANDLE_PACKING',cached_trade_decisions=False,
+            model_changed=False,online_speed_validated=False),
         roles=dict(equity='Select immutable native candidates; cannot create arbitrary equity signals',
             crypto='Owned USD spot proposals through shared admission and local simulator',
             backtest='Review frozen ENGINE_COMPARISON_V1 inputs; no automatic policy promotion',
@@ -251,6 +268,7 @@ def write_launchers(repo,root,*,clock=lambda:datetime.now(UTC)):
     target=root/'grok-execution-preparation.json';target.write_text(json.dumps(report,indent=2),encoding='utf-8')
     print('MANUAL_GROK_ATLAS='+str(root/'Start-Atlas-Grok-Execution.ps1'))
     print('MANUAL_BACKTEST_REVIEW='+str(root/'Review-Grok-Backtest.ps1'))
+    print('READ_ONLY_LATENCY='+str(root/'Show-Grok-Latency.ps1'))
     print('UPLOAD_SUMMARY='+str(target))
     return report
 

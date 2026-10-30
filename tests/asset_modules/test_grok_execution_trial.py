@@ -190,6 +190,8 @@ def test_real_desktop_pilot_shares_budget_capture_controller_and_crypto_without_
     try:
         modules=markets.create_asset_modules(composition)
         client=composition.grok_suite.client
+        assert composition.grok_suite.single_pass and composition.grok_suite.crypto.compact
+        assert client.client.maximum_output_tokens==2048
         assert isinstance(client,BudgetClient) and client.lease.request_count()==0 and client.requests==0
         assert modules.grok_suite.client is client
         assert modules.crypto_supervisor.provider.client is client

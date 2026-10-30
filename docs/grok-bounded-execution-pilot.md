@@ -7,7 +7,7 @@ No extra bot repository or second order owner is installed.
 
 | Component | Evidence and decisions | Execution authority |
 |---|---|---|
-| Warrior and Quick Scalper | Separate advisers review exact native candidates, sizing, stops, targets and up to 32 retained completed native bars. Missing history is labeled unavailable. | Master may select supplied candidates. Models cannot invent an equity signal, rewrite its price/shares/stop, or bypass native gates. |
+| Warrior and Quick Scalper | A combined review evaluates their separate native candidates, sizing, stops, targets and up to 32 retained completed native bars. Missing history is labeled unavailable. | Master may select supplied candidates. Models cannot invent an equity signal, rewrite its price/shares/stop, or bypass native gates. |
 | Crypto | Existing Grok crypto proposal provider receives discovered BTC/USD and ETH/USD observations, available completed provider bars, local exposure and trial limits. | BUY/SELL proposals pass through existing shared allocation and the local durable simulator. The visible crypto module and AI-entry switches remain manual. |
 | Execution | Existing controller rechecks account, ownership, capital, risk, current native authorization and fresh quotes after the model returns. | Successful equity submissions are adopted by native position management. Crypto uses its existing protection thread and durable ledger. |
 | Backtest review | Existing LearningJournal imports a raw `ENGINE_COMPARISON_V1` experiment and reviews paired, cost-inclusive evidence. | Research nominations only. It does not generate historical prices, recompute a strategy backtest, place orders or promote policies. With no valid imported comparison it remains IDLE without a paid call. |
@@ -30,7 +30,9 @@ the ledger still independently validates costs and risk.
 
 One dedicated durable request ledger limits all five roles (Warrior, Scalper,
 Crypto, Master and Learning) to 20 paid attempts combined, with a persistent
-60-second per-role cooldown. Engine and Master requests count separately. Prior
+60-second per-role cooldown. In this explicit pilot, one combined Master request
+replaces the sequential equity engine-then-Master calls. The default non-pilot
+suite retains its separate advisers. Crypto and Learning calls remain separate. Prior
 retained Grok intentions summaries in the same trial count against this total.
 Missing final accounting blocks preparation. Failed, timed-out and crashed calls
 consume reservations. No automatic retries or allowance resets are provided.
@@ -39,6 +41,37 @@ those snapshots as independent token totals.
 
 The shared budget constrains calls, not dollars. Model pricing and provider
 billing remain external. This pilot makes no subscription purchase.
+
+## Compact context and latency measurements
+
+The pilot caps decision reasons at 240 characters. The model, endpoint and
+2,048-token output ceiling are unchanged until a lower ceiling is validated
+online. An untested low total-output ceiling can produce incomplete responses
+instead of usable decisions. The independent backtest reviewer keeps its normal
+analytical response format. Incomplete responses are refused with no retry.
+
+Completed candle windows are packed losslessly as named columns, common metadata
+and rows. Original prices, timestamps and provenance remain present. A bounded
+32-window local cache reuses only these encoded bar windows, keyed by their full
+contents. It does not cache BUY/SELL decisions, quotes, account state, candidate
+IDs or authorizations. Changed candles get a new key. This is not provider-side
+prompt caching and does not eliminate the model request. The current requests
+ledger retains the exact packed context sent to Grok; the daily journal retains
+the full captured market evidence. Logs are for audit and research, not an
+instruction to upload an entire day's history with every decision.
+
+Each new request records its own measured duration and original/sent input bytes.
+`Show-Grok-Latency.ps1` reads the dedicated ledger without API calls and reports
+median, p95, maximum, failure/unfinalized counts and input sizes. Older records
+without per-request timing remain unknown. It exports no prompts, answers,
+positions or trading PnL. Input-byte reduction and fewer model calls are verified
+offline; actual online response speed and decision quality still need measurement.
+
+This update does not turn Grok into an independent whole-equity strategy or a
+free-form position manager. It reviews the existing native entry candidates;
+native deterministic exits continue to manage equity positions. Crypto retains
+its own bounded BUY/SELL proposal path. Broader model-owned equity proposal and
+management behavior requires its own explicit PAPER experiment and evidence.
 
 ## Freshness, latency and protection
 
@@ -69,7 +102,7 @@ positions need protection. Do not kill processes to end this experiment.
    Tracked user edits or changed trial/private files stop installation.
 2. Preparation writes new filenames, preserving original native launchers and
    results: `Start-Atlas-Grok-Execution.ps1`, `Review-Grok-Backtest.ps1` and
-   `Pause-Grok-Execution.ps1`. No GUI, Grok or market-data request is started.
+   `Pause-Grok-Execution.ps1`, plus `Show-Grok-Latency.ps1`. No GUI, Grok or market-data request is started.
 3. Launch the NEW Atlas execution script manually and click START normally.
    Confirm PAPER and the Grok order-review notice. For crypto, start the visible
    crypto module/data and enable its AI entries explicitly. There is no second
