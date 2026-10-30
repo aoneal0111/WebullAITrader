@@ -163,7 +163,8 @@ def test_current_native_and_master_path_still_crosses_qualification_and_shared_b
     with sqlite3.connect(root/'entry-attempts.sqlite3') as db:assert db.execute('SELECT COUNT(*) FROM attempts').fetchone()[0]==1
 
 
-def test_real_desktop_pilot_shares_budget_capture_controller_and_crypto_without_starting(pilot,tmp_path,monkeypatch):
+@pytest.mark.parametrize('new_window',[False,True])
+def test_real_desktop_pilot_shares_budget_capture_controller_and_crypto_without_starting(pilot,tmp_path,monkeypatch,new_window):
     import app.composition.desktop as desktop
     import app.composition.asset_modules as markets
     import app.configuration as config_module
@@ -172,25 +173,31 @@ def test_real_desktop_pilot_shares_budget_capture_controller_and_crypto_without_
     import app.asset_modules.daily_research as recording
     from app.asset_modules.daily_research import DailyResearch
     root,lease,_=pilot
+    at=NOW+timedelta(minutes=31) if new_window else NOW
+    monkeypatch.setenv('XAI_API_KEY','offline-test-secret');monkeypatch.setenv('ATLAS_GROK_MODEL','grok-4.7')
+    if new_window:
+        from app.asset_modules.grok_execution_trial import prepare_next_window
+        path,_=prepare_next_window(tmp_path,root,clock=lambda:at)
+        lease=ExecutionLease(path,clock=lambda:at)
     class FrozenDatetime(datetime):
         @classmethod
-        def now(cls,tz=None):return NOW
+        def now(cls,tz=None):return at
     monkeypatch.setattr(execution_module,'datetime',FrozenDatetime)
     monkeypatch.setattr(experiment_module,'datetime',FrozenDatetime)
     monkeypatch.setenv(ENV,str(lease.path));monkeypatch.setenv(PARENT_ENV,str(root/'experiment.json'))
-    monkeypatch.setenv('XAI_API_KEY','offline-test-secret');monkeypatch.setenv('ATLAS_GROK_MODEL','grok-test')
     config=configuration(EXECUTION_DATABASE_PATH=str(tmp_path/'execution.db'),
         WARRIOR_FORWARD_CAPTURE_PATH=str(tmp_path/'warrior.db'),CRYPTO_DISCOVERY_PATH=str(tmp_path/'crypto.jsonl'),
         QUICK_SCALPER_ENABLED='true',WARRIOR_FORWARD_PAPER_ENABLED='true')
     monkeypatch.setattr(desktop,'load_configuration',lambda:config)
     monkeypatch.setattr(config_module,'load_configuration',lambda:config)
-    monkeypatch.setattr(recording,'configured_research',lambda *args:DailyResearch(config,root=tmp_path/'recordings',clock=lambda:NOW))
-    composition=desktop.create_desktop_composition(paper_persistence_path=tmp_path/'paper.db',paper_clock=lambda:NOW)
+    monkeypatch.setattr(recording,'configured_research',lambda *args:DailyResearch(config,root=tmp_path/'recordings',clock=lambda:at))
+    composition=desktop.create_desktop_composition(paper_persistence_path=tmp_path/'paper.db',paper_clock=lambda:at)
     modules=None
     try:
         modules=markets.create_asset_modules(composition)
         client=composition.grok_suite.client
         assert composition.grok_suite.single_pass and composition.grok_suite.crypto.compact
+        assert client.client.reasoning_effort=='low' and client.lease._registered_window==new_window
         assert client.client.maximum_output_tokens==2048
         assert isinstance(client,BudgetClient) and client.lease.request_count()==0 and client.requests==0
         assert modules.grok_suite.client is client

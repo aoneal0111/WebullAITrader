@@ -1,7 +1,8 @@
 param(
     [string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'),
     [Parameter(Mandatory=$true)][string]$Revision,
-    [Parameter(Mandatory=$true)][string]$Trial
+    [Parameter(Mandatory=$true)][string]$Trial,
+    [switch]$NextWindow
 )
 $ErrorActionPreference = 'Stop'
 if ($Revision -notmatch '^[0-9a-f]{40}$') { throw 'Exact reviewed revision required.' }
@@ -17,7 +18,8 @@ function Assert-Closed {
 function Preserved-State {
     $Files = @('experiment.json','entry-attempts.sqlite3','entry-attempts.sqlite3-wal','entry-attempts.sqlite3-shm',
         'entry-attempts.sqlite3-journal','PAUSE_ENTRIES','STOP_GROK','recording-session.json',
-        'Start-Atlas-Paper-Trial.ps1','Start-Grok-Intentions.ps1')
+        'Start-Atlas-Paper-Trial.ps1','Start-Grok-Intentions.ps1','grok-execution-lease.json',
+        'Start-Atlas-Grok-Execution.ps1','Review-Grok-Backtest.ps1','Show-Grok-Latency.ps1','Pause-Grok-Execution.ps1')
     $Rows = foreach ($Name in $Files) {
         $Path = Join-Path $Trial $Name
         if (Test-Path -LiteralPath $Path -PathType Leaf) {
@@ -45,11 +47,12 @@ git -C $Repo worktree add --detach $Source $Revision
 if ($LASTEXITCODE -ne 0) { throw 'Pinned review checkout failed.' }
 Push-Location $Source
 try {
-    & $Python -m app.asset_modules.grok_execution_trial --repo $Repo --trial $Trial --preflight
+    $Preflight = if ($NextWindow) { '--next-window-preflight' } else { '--preflight' }
+    & $Python -m app.asset_modules.grok_execution_trial --repo $Repo --trial $Trial $Preflight
     if ($LASTEXITCODE -ne 0) { throw 'Execution preflight failed. Source unchanged; no settings changed or paid requests.' }
-    & $Python -m pytest tests/asset_modules/test_grok_reasoning_probe.py tests/asset_modules/test_grok_compact_review.py tests/asset_modules/test_grok_execution_trial.py tests/asset_modules/test_grok_execution_crypto.py tests/asset_modules/test_grok_paper_entries.py tests/asset_modules/test_grok_native_review.py tests/asset_modules/test_grok_entry_ownership.py tests/asset_modules/test_grok_desktop_producer.py tests/asset_modules/test_grok_desktop_completions.py tests/asset_modules/test_grok_desktop_configuration.py tests/asset_modules/test_grok_decision_council.py tests/asset_modules/test_grok_learning.py tests/asset_modules/test_crypto_allocation.py tests/asset_modules/test_crypto_durable_intents.py tests/asset_modules/test_crypto_supervisor_allocation.py tests/asset_modules/test_daily_research.py tests/asset_modules/test_daily_observer_protocol.py tests/equity_overhaul/test_paper_experiment.py tests/equity_overhaul/test_cent_early_profile.py tests/composition/test_desktop_composition.py tests/asset_modules/test_native_crypto_desktop_composition.py tests/warrior_momentum/test_cent_stream_support.py tests/asset_modules/test_supervisor.py tests/crypto_research/test_runtime.py tests/crypto_research/test_provider.py tests/asset_modules/test_grok.py tests/gui/test_workstation_composition.py tests/asset_modules/test_crypto_quote_ownership.py tests/asset_modules/test_crypto_native_observer.py tests/asset_modules/test_crypto_worker.py tests/asset_modules/test_crypto_learning_outcomes.py tests/asset_modules/test_desktop_crypto_allocation.py tests/asset_modules/test_desktop_markets.py tests/asset_modules/test_market_analysis.py tests/asset_modules/test_markets.py -q --basetemp (Join-Path $Root 'checks')
+    & $Python -m pytest tests/asset_modules/test_grok_next_window.py tests/asset_modules/test_grok_reasoning_probe.py tests/asset_modules/test_grok_compact_review.py tests/asset_modules/test_grok_execution_trial.py tests/asset_modules/test_grok_execution_crypto.py tests/asset_modules/test_grok_paper_entries.py tests/asset_modules/test_grok_native_review.py tests/asset_modules/test_grok_entry_ownership.py tests/asset_modules/test_grok_desktop_producer.py tests/asset_modules/test_grok_desktop_completions.py tests/asset_modules/test_grok_desktop_configuration.py tests/asset_modules/test_grok_decision_council.py tests/asset_modules/test_grok_learning.py tests/asset_modules/test_crypto_allocation.py tests/asset_modules/test_crypto_durable_intents.py tests/asset_modules/test_crypto_supervisor_allocation.py tests/asset_modules/test_daily_research.py tests/asset_modules/test_daily_observer_protocol.py tests/equity_overhaul/test_paper_experiment.py tests/equity_overhaul/test_cent_early_profile.py tests/composition/test_desktop_composition.py tests/asset_modules/test_native_crypto_desktop_composition.py tests/warrior_momentum/test_cent_stream_support.py tests/asset_modules/test_supervisor.py tests/crypto_research/test_runtime.py tests/crypto_research/test_provider.py tests/asset_modules/test_grok.py tests/gui/test_workstation_composition.py tests/asset_modules/test_crypto_quote_ownership.py tests/asset_modules/test_crypto_native_observer.py tests/asset_modules/test_crypto_worker.py tests/asset_modules/test_crypto_learning_outcomes.py tests/asset_modules/test_desktop_crypto_allocation.py tests/asset_modules/test_desktop_markets.py tests/asset_modules/test_market_analysis.py tests/asset_modules/test_markets.py -q --basetemp (Join-Path $Root 'checks')
     if ($LASTEXITCODE -ne 0) { throw 'Windows checks failed. Installed source unchanged; keep Atlas closed.' }
-    & $Python -m app.asset_modules.grok_execution_trial --repo $Repo --trial $Trial --preflight
+    & $Python -m app.asset_modules.grok_execution_trial --repo $Repo --trial $Trial $Preflight
     if ($LASTEXITCODE -ne 0) { throw 'Preflight no longer valid. Nothing installed.' }
 } finally { Pop-Location }
 Assert-Closed
@@ -61,7 +64,8 @@ git -C $Repo merge --ff-only $Revision
 if ($LASTEXITCODE -ne 0) { throw 'Update failed. No reset performed.' }
 Push-Location $Repo
 try {
-    & $Python -m app.asset_modules.grok_execution_trial --repo $Repo --trial $Trial --write-launchers
+    $Preparation = if ($NextWindow) { '--prepare-next-window' } else { '--write-launchers' }
+    & $Python -m app.asset_modules.grok_execution_trial --repo $Repo --trial $Trial $Preparation
     if ($LASTEXITCODE -ne 0) { throw 'Source installed but pilot preparation failed. Nothing launched; original launchers retained.' }
 } finally { Pop-Location }
 if ((Preserved-State) -cne $Before) { throw 'Preserved state verification failed. Keep Atlas closed; no automatic reset.' }

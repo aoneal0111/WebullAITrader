@@ -74,13 +74,23 @@ class ExecutionLease:
         if (start.utcoffset() is None or end.utcoffset() is None or not timedelta(0)<end-start<=timedelta(minutes=30)
             or end>datetime.fromisoformat(self._parent['expires_at'])):raise ValueError('INVALID_GROK_LEASE_TIME')
         self.db_path=self.root/'grok-request-budget.sqlite3'
+        if self.path.name!='grok-execution-lease.json' and not self.db_path.is_file():
+            raise ValueError('EXISTING_SHARED_GROK_BUDGET_REQUIRED')
         with closing(sqlite3.connect(self.db_path)) as db:
             marker=db.execute('PRAGMA application_id').fetchone()[0]
             names={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if marker not in (0,0x41474742) or (marker==0 and names):raise ValueError('DEDICATED_GROK_BUDGET_REQUIRED')
             db.execute('CREATE TABLE IF NOT EXISTS identity (id INTEGER PRIMARY KEY,digest TEXT NOT NULL)')
             digest=sha256(canonical(d)).hexdigest();old=db.execute('SELECT digest FROM identity WHERE id=1').fetchone()
-            if old and old[0]!=digest:raise ValueError('GROK_BUDGET_IDENTITY_CONFLICT')
+            self._registered_window=bool(old and old[0]!=digest)
+            self._budget_anchor=old[0] if old else digest
+            if self._registered_window:
+                anchor=json.loads((self.root/'grok-execution-lease.json').read_text(encoding='utf-8-sig'))
+                registered=(db.execute('SELECT digest,anchor FROM execution_windows WHERE id=?',(d['id'],)).fetchone()
+                    if 'execution_windows' in names else None)
+                if (sha256(canonical(anchor)).hexdigest()!=old[0] or registered!=(digest,old[0])
+                    or any(anchor[k]!=d[k] for k in ('trial_id','parent_sha256','prior_paid_attempts','limits','mode'))):
+                    raise ValueError('GROK_BUDGET_IDENTITY_CONFLICT')
             db.execute('INSERT OR IGNORE INTO identity VALUES (1,?)',(digest,))
             db.execute('CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY,role TEXT NOT NULL,at TEXT NOT NULL,context TEXT NOT NULL,result TEXT)')
             db.execute('PRAGMA application_id=0x41474742');db.commit()
@@ -92,11 +102,22 @@ class ExecutionLease:
             or sha256(canonical(parent)).hexdigest()!=self.doc['parent_sha256']):raise ValueError('GROK_PARENT_TRIAL_CHANGED')
         return parent
 
+    def _window_authorized(self):
+        if not self._registered_window:return True
+        try:
+            anchor=json.loads((self.root/'grok-execution-lease.json').read_text(encoding='utf-8-sig'))
+            if sha256(canonical(anchor)).hexdigest()!=self._budget_anchor:return False
+            with closing(sqlite3.connect(self.db_path.as_uri()+'?mode=ro',uri=True,timeout=.5)) as db:
+                row=db.execute('SELECT digest,anchor,created_at,expires_at FROM execution_windows WHERE id=?',(self.doc['id'],)).fetchone()
+            return row==(sha256(canonical(self.doc)).hexdigest(),self._budget_anchor,self.doc['created_at'],self.doc['expires_at'])
+        except Exception:return False
+
     def active(self):
         try:
             now=self.clock();d=self.doc
             return (self.path.is_file() and json.loads(self.path.read_text(encoding='utf-8-sig'))==d
                 and self._read_parent()==self._parent
+                and self._window_authorized()
                 and datetime.fromisoformat(d['created_at'])<=now<datetime.fromisoformat(d['expires_at'])
                 and self._timer()>=self._timer_start
                 and abs((now-self._wall_start).total_seconds()-(self._timer()-self._timer_start))<=2
@@ -109,6 +130,7 @@ class ExecutionLease:
             now=self.clock();d=self.doc
             return (self.path.is_file() and json.loads(self.path.read_text(encoding='utf-8-sig'))==d
                 and self._read_parent()==self._parent
+                and self._window_authorized()
                 and datetime.fromisoformat(d['created_at'])<=now<datetime.fromisoformat(self._parent['expires_at'])
                 and self._timer()>=self._timer_start
                 and abs((now-self._wall_start).total_seconds()-(self._timer()-self._timer_start))<=2
@@ -245,15 +267,96 @@ def preflight(repo,root,*,clock=lambda:datetime.now(UTC)):
         credentials_present=True,credentials_validated_online=False,orders=0,network_requests=0)
 
 
-def write_launchers(repo,root,*,clock=lambda:datetime.now(UTC)):
+def _latest_window_deadline(db,root,anchor):
+    latest=datetime.fromisoformat(anchor['expires_at'])
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_windows'").fetchone():return latest
+    rows=db.execute('SELECT id,digest,anchor,created_at,expires_at FROM execution_windows LIMIT 33').fetchall()
+    if len(rows)>32:raise ValueError('WINDOW_REGISTRY_BOUND')
+    digest=sha256(canonical(anchor)).hexdigest()
+    for identity,expected,base,created,expires in rows:
+        if len(identity)!=32 or any(c not in '0123456789abcdef' for c in identity):raise ValueError('INVALID_REGISTERED_WINDOW')
+        path=Path(root)/('grok-execution-window-'+identity+'.json')
+        if path.stat().st_size>16384:raise ValueError('WINDOW_DOCUMENT_BOUND')
+        document=json.loads(path.read_text(encoding='utf-8-sig'))
+        if (sha256(canonical(document)).hexdigest()!=expected or base!=digest
+            or document['id']!=identity or document['created_at']!=created or document['expires_at']!=expires
+            or any(document[k]!=anchor[k] for k in ('scope','trial_id','parent_sha256','prior_paid_attempts','limits','mode'))):
+            raise ValueError('REGISTERED_WINDOW_CHANGED')
+        start,end=datetime.fromisoformat(created),datetime.fromisoformat(expires)
+        if not timedelta(0)<end-start<=timedelta(minutes=30):raise ValueError('REGISTERED_WINDOW_TIME_INVALID')
+        latest=max(latest,end)
+    return latest
+
+
+def next_window_preflight(repo,root,*,clock=lambda:datetime.now(UTC)):
+    root=Path(root).resolve();report=preflight(repo,root,clock=clock)
+    original=ExecutionLease(root/'grok-execution-lease.json',clock=clock)
+    if not original.research_active():raise ValueError('UNCHANGED_UNPAUSED_PARENT_REQUIRED')
+    with closing(sqlite3.connect(original.db_path.as_uri()+'?mode=ro',uri=True)) as db:
+        latest=_latest_window_deadline(db,root,original.doc)
+    if clock()<latest:raise ValueError('EXISTING_EXECUTION_WINDOW_NOT_EXPIRED')
+    with closing(sqlite3.connect((root/'entry-attempts.sqlite3').as_uri()+'?mode=ro',uri=True)) as db:
+        rows=db.execute('SELECT notional FROM attempts WHERE trial=?',(original.doc['trial_id'],)).fetchall()
+    notional=sum((D(row[0]) for row in rows),D(0))
+    if not notional.is_finite() or not 0<=notional<=5000:raise ValueError('ENTRY_BUDGET_RECONCILIATION_REQUIRED')
+    if len(rows)>=50 or notional>=5000:raise ValueError('ORIGINAL_ENTRY_BUDGET_EXHAUSTED_NO_RESET')
+    report.update(scope='NEXT_GROK_WINDOW_PREFLIGHT_NO_NETWORK',entry_attempts_used=len(rows),
+        entry_attempts_remaining=50-len(rows),entry_notional_used=str(notional),entry_notional_remaining=str(5000-notional),
+        previous_window_deadline=latest.isoformat(),next_window_minutes_max=30,budgets_reset=False)
+    return report
+
+
+def prepare_next_window(repo,root,*,clock=lambda:datetime.now(UTC)):
+    root=Path(root).resolve();preparation=next_window_preflight(repo,root,clock=clock)
+    original=ExecutionLease(root/'grok-execution-lease.json',clock=clock)
+    now=clock();document=dict(original.doc,id=uuid4().hex,created_at=now.isoformat(),
+        expires_at=min(now+timedelta(minutes=30),datetime.fromisoformat(original._parent['expires_at'])).isoformat())
+    path=root/('grok-execution-window-'+document['id']+'.json')
+    with closing(sqlite3.connect(original.db_path,timeout=2)) as db:
+        db.execute('BEGIN IMMEDIATE')
+        if not original.research_active() or clock()<_latest_window_deadline(db,root,original.doc):
+            raise ValueError('WINDOW_PERMISSION_CHANGED')
+        requests=db.execute('SELECT * FROM requests ORDER BY id').fetchall()
+        if original.doc['prior_paid_attempts']+len(requests)>=20:raise ValueError('SHARED_GROK_PAID_BUDGET_EXHAUSTED_NO_RESET')
+        db.execute('CREATE TABLE IF NOT EXISTS execution_windows (id TEXT PRIMARY KEY,digest TEXT NOT NULL,anchor TEXT NOT NULL,created_at TEXT NOT NULL,expires_at TEXT NOT NULL)')
+        db.execute('INSERT INTO execution_windows VALUES (?,?,?,?,?)',(document['id'],sha256(canonical(document)).hexdigest(),
+            sha256(canonical(original.doc)).hexdigest(),document['created_at'],document['expires_at']))
+        with path.open('x',encoding='utf-8') as stream:json.dump(document,stream,indent=2)
+        if db.execute('SELECT * FROM requests ORDER BY id').fetchall()!=requests:raise ValueError('CALL_BUDGET_CHANGED')
+        db.commit()
+    report=write_launchers(repo,root,clock=clock,lease_path=path)
+    from .paper_day_setup import quote
+    launcher=root/('Start-Atlas-Grok-Execution-'+document['id']+'.ps1')
+    start=root/'Start-Atlas-Grok-Next-Window.ps1'
+    start.write_text("$ErrorActionPreference = 'Stop'\n& "+quote(launcher)+'\n',encoding='utf-8')
+    latency=root/'Show-Grok-Next-Window-Latency.ps1'
+    latency.write_text("$ErrorActionPreference = 'Stop'\n& "+quote(root/('Show-Grok-Latency-'+document['id']+'.ps1'))+'\n',encoding='utf-8')
+    report.update(continuation_preflight=preparation,original_request_rows_unchanged=True)
+    (root/('grok-execution-preparation-'+document['id']+'.json')).write_text(json.dumps(report,indent=2),encoding='utf-8')
+    print('WINDOW_DOCUMENT='+str(path));print('WINDOW_EXPIRES_AT='+document['expires_at'])
+    print('MANUAL_WINDOW_START='+str(start))
+    print('WINDOW_LATENCY_REPORT='+str(latency))
+    print('NEXT_WINDOW_PREPARED; ORIGINAL_PARENT_AND_ENTRY_BUDGET_RETAINED; SHARED_CALL_ROWS_UNCHANGED; NOTHING_STARTED')
+    return path,report
+
+
+def write_launchers(repo,root,*,clock=lambda:datetime.now(UTC),lease_path=None):
     from .paper_day_setup import FLAGS,quote
     repo,root=Path(repo).resolve(),Path(root).resolve()
     report=preflight(repo,root,clock=clock)
+    selected=Path(lease_path).resolve() if lease_path else root/'grok-execution-lease.json'
+    suffix=''
+    if lease_path:
+        if selected.parent!=root:raise ValueError('WINDOW_MUST_USE_EXISTING_BUDGET_DIRECTORY')
+        lease=ExecutionLease(selected,clock=clock)
+        if not lease.active() or not lease._registered_window:raise ValueError('APPROVED_ACTIVE_WINDOW_REQUIRED')
+        suffix='-'+lease.doc['id']
+        report.update(execution_window=lease.doc,paid_attempts_used=lease.request_count(),budgets_reset=False)
     environment={**FLAGS,'ATLAS_PAPER_CONTROLLER_ENABLED':'true','ATLAS_GROK_PAPER_ENTRIES_ENABLED':'true',
         'ATLAS_CRYPTO_SHARED_ALLOCATION_ENABLED':'true','ATLAS_CRYPTO_NATIVE_OBSERVER_ENABLED':'false',
         'CRYPTO_DISCOVERY_ENABLED':'true','CRYPTO_DISCOVERY_SYMBOLS':'BTC/USD,ETH/USD',
         'CRYPTO_INTELLIGENCE_RESEARCH_ENABLED':'true','ATLAS_CRYPTO_COMPLETED_BAR_CAPTURE_ENABLED':'true',
-        'ATLAS_EQUITY_PAPER_EXPERIMENT':str(root/'experiment.json'),ENV:str(root/'grok-execution-lease.json'),
+        'ATLAS_EQUITY_PAPER_EXPERIMENT':str(root/'experiment.json'),ENV:str(selected),
         'ATLAS_LEARNING_OUTCOME_JOURNAL_PATH':str(root/'grok-learning-outcomes.json')}
     python=repo/'.venv/Scripts/python.exe'
     common="$ErrorActionPreference = 'Stop'\n$TrialEnvironment = @{\n"+'\n'.join('    '+quote(k)+' = '+quote(v) for k,v in environment.items())+"\n}\n"
@@ -272,14 +375,19 @@ def write_launchers(repo,root,*,clock=lambda:datetime.now(UTC)):
     backtest+='    & '+quote(python)+' @BacktestArgs\n'
     backtest+="    if ($LASTEXITCODE -ne 0) { throw 'Backtest reviewer stopped. No policy promotion or order authority.' }\n"+final
     # Different filenames preserve the original native-only launchers/results.
-    (root/'Start-Atlas-Grok-Execution.ps1').write_text(atlas,encoding='utf-8')
-    (root/'Review-Grok-Backtest.ps1').write_text(backtest,encoding='utf-8')
+    atlas_path=root/('Start-Atlas-Grok-Execution'+suffix+'.ps1')
+    backtest_path=root/('Review-Grok-Backtest'+suffix+'.ps1')
+    atlas_path.write_text(atlas,encoding='utf-8')
+    backtest_path.write_text(backtest,encoding='utf-8')
     latency="$ErrorActionPreference = 'Stop'\nPush-Location "+quote(repo)+"\ntry {\n"
-    latency+='    & '+quote(python)+' -m app.asset_modules.grok_latency_report --trial '+quote(root)+'\n'
+    latency+='    & '+quote(python)+' -m app.asset_modules.grok_latency_report --trial '+quote(root)
+    if lease_path:latency+=' --window '+quote(selected)
+    latency+='\n'
     latency+="    if ($LASTEXITCODE -ne 0) { throw 'Latency ledger is unavailable; no API request was made.' }\n} finally { Pop-Location }\n"
-    (root/'Show-Grok-Latency.ps1').write_text(latency,encoding='utf-8')
-    (root/'Pause-Grok-Execution.ps1').write_text("$null = New-Item -ItemType File -Force -Path "+quote(root/'PAUSE_GROK_EXECUTION')+"\nWrite-Host 'New Grok admission revoked. Keep Atlas and crypto data running for existing protection.'\n",encoding='utf-8')
-    report.update(prepared_only=True,lease_created_on_manual_launch=True,live_trading_enabled=False,
+    latency_path=root/('Show-Grok-Latency'+suffix+'.ps1')
+    latency_path.write_text(latency,encoding='utf-8')
+    (root/('Pause-Grok-Execution'+suffix+'.ps1')).write_text("$null = New-Item -ItemType File -Force -Path "+quote(root/'PAUSE_GROK_EXECUTION')+"\nWrite-Host 'New Grok admission revoked. Keep Atlas and crypto data running for existing protection.'\n",encoding='utf-8')
+    report.update(prepared_only=True,lease_created_on_manual_launch=not bool(lease_path),live_trading_enabled=False,
         latency_profile=dict(equity_review='ONE_COMBINED_ENGINE_AND_MASTER_CALL',maximum_execution_output_tokens=2048,
             reasoning_effort=report['execution_reasoning_effort'],
             reason_characters=240,context='LOSSLESS_COMPLETED_CANDLE_PACKING',cached_trade_decisions=False,
@@ -289,10 +397,10 @@ def write_launchers(repo,root,*,clock=lambda:datetime.now(UTC)):
             backtest='Review frozen ENGINE_COMPARISON_V1 inputs; no automatic policy promotion',
             execution='Master selects native equity commands; deterministic controller rechecks capital and current quotes'),
         original_trial_and_budget_unchanged=True)
-    target=root/'grok-execution-preparation.json';target.write_text(json.dumps(report,indent=2),encoding='utf-8')
-    print('MANUAL_GROK_ATLAS='+str(root/'Start-Atlas-Grok-Execution.ps1'))
-    print('MANUAL_BACKTEST_REVIEW='+str(root/'Review-Grok-Backtest.ps1'))
-    print('READ_ONLY_LATENCY='+str(root/'Show-Grok-Latency.ps1'))
+    target=root/('grok-execution-preparation'+suffix+'.json');target.write_text(json.dumps(report,indent=2),encoding='utf-8')
+    print('MANUAL_GROK_ATLAS='+str(atlas_path))
+    print('MANUAL_BACKTEST_REVIEW='+str(backtest_path))
+    print('READ_ONLY_LATENCY='+str(latency_path))
     print('UPLOAD_SUMMARY='+str(target))
     return report
 
@@ -302,12 +410,18 @@ def main():
     p.add_argument('--prepare',action='store_true');p.add_argument('--backtest-input',type=Path);p.add_argument('--backtest-review',action='store_true')
     p.add_argument('--repo',type=Path,default=Path.cwd());p.add_argument('--preflight',action='store_true')
     p.add_argument('--write-launchers',action='store_true');p.add_argument('--watch',action='store_true')
+    p.add_argument('--next-window-preflight',action='store_true');p.add_argument('--prepare-next-window',action='store_true')
     a=p.parse_args()
     if a.preflight:print(json.dumps(preflight(a.repo,a.trial),indent=2));return
+    if a.next_window_preflight:print(json.dumps(next_window_preflight(a.repo,a.trial),indent=2));return
+    if a.prepare_next_window:prepare_next_window(a.repo,a.trial);return
     if a.write_launchers:write_launchers(a.repo,a.trial);return
     if a.prepare:
-        path=a.trial/'grok-execution-lease.json'
-        if not path.exists():create(a.trial)
+        root=a.trial.resolve();path=Path(os.environ.get(ENV,str(root/'grok-execution-lease.json'))).resolve()
+        if path.parent!=root:raise ValueError('CURRENT_WINDOW_DIRECTORY_REQUIRED')
+        if not path.exists():
+            if path.name!='grok-execution-lease.json':raise ValueError('APPROVED_WINDOW_DOCUMENT_MISSING')
+            create(root)
         lease=ExecutionLease(path)
         if not lease.active():raise ValueError('GROK_LEASE_NOT_ACTIVE_NO_RENEWAL')
         print(json.dumps(dict(scope=SCOPE,expires_at=lease.doc['expires_at'],paid_attempts_used=lease.request_count(),
