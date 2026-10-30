@@ -19,12 +19,19 @@ FAMILIES={'WARRIOR_MOMENTUM':('FIRST_PULLBACK','HOD_RECLAIM','HIGH_OF_DAY_BREAKO
           'QUICK_SCALPER':('QUICK_SCALP_STREAM','QUICK_SCALP_MOMENTUM')}
 LIMITS=dict(hours=8,maximum_entry_attempts=50,maximum_quantity=10,maximum_position_dollars='100',
             maximum_initial_risk='1',maximum_total_entry_notional='5000')
+V2_FAMILIES={'WARRIOR_MOMENTUM':('MICRO_PULLBACK','MOMENTUM_REACCELERATION','RECLAIM_CONTINUATION'),
+             'QUICK_SCALPER':FAMILIES['QUICK_SCALPER']}
+V2_CENT_POLICY=dict(minimum='0.05',maximum='0.10',minimum_net_reward_r='1')
+PROFILES=('LEGACY_V1','CENT_EARLY_V2')
 
 
-def create(directory,clock=lambda:datetime.now(UTC)):
+def create(directory,clock=lambda:datetime.now(UTC),*,profile='LEGACY_V1'):
+    if profile not in PROFILES:raise ValueError('UNKNOWN_EXPERIMENT_PROFILE')
     root=Path(directory);root.mkdir(parents=True,exist_ok=True)
     now=clock();spec=dict(scope='NATIVE_PAPER_EXPERIMENT_V1',trial_id=uuid4().hex,
         created_at=now.isoformat(),expires_at=(now+timedelta(hours=8)).isoformat(),limits=LIMITS,families=FAMILIES)
+    if profile=='CENT_EARLY_V2':
+        spec.update(scope='NATIVE_PAPER_EXPERIMENT_V2',profile=profile,families=V2_FAMILIES,cent_policy=V2_CENT_POLICY)
     with (root/'experiment.json').open('x',encoding='utf-8') as f:json.dump(spec,f,indent=2)
     return spec
 
@@ -33,8 +40,12 @@ def load(path,clock=lambda:datetime.now(UTC)):
     path=Path(path).resolve()
     if path.stat().st_size>16384:raise ValueError('EXPERIMENT_SPEC_BOUND')
     spec=json.loads(path.read_text(encoding='utf-8'))
-    if (spec.get('scope')!='NATIVE_PAPER_EXPERIMENT_V1' or spec.get('limits')!=LIMITS
-        or spec.get('families')!={k:list(v) for k,v in FAMILIES.items()}
+    v2=spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V2'
+    families=V2_FAMILIES if v2 else FAMILIES
+    if (spec.get('scope') not in {'NATIVE_PAPER_EXPERIMENT_V1','NATIVE_PAPER_EXPERIMENT_V2'}
+        or (v2 and (spec.get('profile')!='CENT_EARLY_V2' or spec.get('cent_policy')!=V2_CENT_POLICY))
+        or spec.get('limits')!=LIMITS
+        or spec.get('families')!={k:list(v) for k,v in families.items()}
         or len(spec.get('trial_id',''))!=32):raise ValueError('EXPERIMENT_SPEC_INVALID')
     start,end=(datetime.fromisoformat(spec[k]) for k in ('created_at','expires_at'))
     if start.utcoffset() is None or end.utcoffset() is None or end-start!=timedelta(hours=8) or not start<=clock()<end:
@@ -60,6 +71,19 @@ class PaperExperiment(EquityQualificationPolicy):
         with closing(sqlite3.connect(self.db_path)) as db:
             db.execute('CREATE TABLE IF NOT EXISTS attempts (trial TEXT,request TEXT,notional TEXT,record TEXT,PRIMARY KEY(trial,request))');db.commit()
 
+    @property
+    def cent_early(self):return self.spec['scope']=='NATIVE_PAPER_EXPERIMENT_V2'
+
+    def warrior_config(self,config):
+        if not self.cent_early:return config
+        return replace(config,setups=replace(config.setups,
+            allowed_setup_types=frozenset(V2_FAMILIES['WARRIOR_MOMENTUM'])))
+
+    def scalper_config(self,config):
+        if not self.cent_early:return config
+        return replace(config,cent_target_minimum=D('0.05'),cent_target_maximum=D('0.10'),
+            minimum_net_target_reward_r=D('1'))
+
     def active(self):
         try:
             # Removal/revocation/expiry all stop new entries; never affect SELLs.
@@ -79,7 +103,7 @@ class PaperExperiment(EquityQualificationPolicy):
         if not isinstance(metadata,dict) or not self.active():return False
         owner=metadata.get('strategy_owner');binding=self._bindings.get(owner)
         return bool(binding and metadata.get('strategy_trial_id')==self.spec['trial_id']
-            and metadata.get('strategy_family') in FAMILIES.get(owner,())
+            and metadata.get('strategy_family') in self.spec['families'].get(owner,())
             and binding==(metadata.get('strategy_code_fingerprint'),metadata.get('strategy_configuration_fingerprint')))
 
     def claim_order(self,placement):
@@ -122,20 +146,24 @@ class PaperExperiment(EquityQualificationPolicy):
 
     def notice(self):
         state='entry trial enabled, subject to native checks' if self.active() else 'new entries paused, expired or capture unavailable'
-        return ('EXPERIMENTAL PAPER: '+state+'. Max 10 shares / $100 position / $1 modeled initial risk; '
+        profile='Early native Warrior; cent-target Scalper. ' if self.cent_early else ''
+        return ('EXPERIMENTAL PAPER: '+profile+state+'. Max 10 shares / $100 position / $1 modeled initial risk; '
                 '50 entry attempts; expires '+self.spec['expires_at']+'. Grok orders OFF. Position protection remains available.')
 
     def status(self):
-        return dict(policy='NATIVE_PAPER_EXPERIMENT_V1',entry_mode='BOUNDED_PAPER_EXPERIMENT',approved_policies=[],
-            trial_id=self.spec['trial_id'],expires_at=self.spec['expires_at'],limits=LIMITS,families=FAMILIES,
+        return dict(policy=self.spec['scope'],entry_mode='BOUNDED_PAPER_EXPERIMENT',approved_policies=[],
+            trial_id=self.spec['trial_id'],expires_at=self.spec['expires_at'],limits=LIMITS,families=self.spec['families'],
             protective_sells='AVAILABLE',reason='EXPERIMENTAL_NOT_RELEASE_QUALIFIED')
 
 
 def main():
     import argparse
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--create',required=True)
+    p.add_argument('--profile',choices=PROFILES,default='LEGACY_V1')
     args=p.parse_args();root=Path(args.create)
-    spec=load(root/'experiment.json')[1] if (root/'experiment.json').exists() else create(root)
+    spec=load(root/'experiment.json')[1] if (root/'experiment.json').exists() else create(root,profile=args.profile)
+    if (spec['scope']=='NATIVE_PAPER_EXPERIMENT_V2') != (args.profile=='CENT_EARLY_V2'):
+        raise ValueError('EXISTING_EXPERIMENT_PROFILE_MISMATCH')
     print('PAPER_EXPERIMENT_ID='+spec['trial_id']);print('EXPERIMENT_EXPIRES_AT='+spec['expires_at'])
 
 

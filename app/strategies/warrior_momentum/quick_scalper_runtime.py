@@ -90,12 +90,19 @@ class QuickScalperExecutionIntent:
     observed_ask_advance: Decimal | None = None
     entry_session_deadline: datetime | None = None
     maximum_holding_seconds: int = 300
+    cent_target_move: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.entry_trigger <= self.stop_price or self.risk_per_share <= ZERO:
             raise ValueError("Quick Scalper intent requires positive structural risk")
         if self.adaptive_target <= self.entry_trigger:
             raise ValueError("Quick Scalper target must exceed entry")
+        if self.cent_target_move is not None and (
+            not self.cent_target_move.is_finite()
+            or not Decimal('0.05') <= self.cent_target_move <= Decimal('0.10')
+            or self.adaptive_target-self.entry_trigger != self.cent_target_move
+        ):
+            raise ValueError('Cent target intent must match its bounded entry-relative move')
         object.__setattr__(self, "target_levels", (self.adaptive_target,))
         object.__setattr__(self, "taxonomy_execution_identity", self.lifecycle_id)
         object.__setattr__(self, "taxonomy_opportunity_id", self.opportunity_id)
@@ -113,6 +120,8 @@ class _ScalpPositionState:
     peak_bid: Decimal
     profit_state: ProfitState = ProfitState.NO_PROFIT
     full_exit_submitting: bool = False
+    cent_target_move: Decimal | None = None
+    last_exit_diagnostic_second: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -501,6 +510,11 @@ class QuickScalperPaperRuntimeAdapter:
                 metadata = entry.request.metadata
                 stop = self._decimal(metadata.get("structural_stop"))
                 target = self._decimal(metadata.get("adaptive_target"))
+                cent_move = self._decimal(metadata.get('scalp_cent_target_move'))
+                if cent_move is not None:
+                    if entry_price is None or not cent_move.is_finite() or not Decimal('0.05') <= cent_move <= Decimal('0.10'):
+                        continue
+                    target = entry_price + cent_move
                 if entry_price is None or stop is None or target is None:
                     continue
                 generation = str(
@@ -516,8 +530,13 @@ class QuickScalperPaperRuntimeAdapter:
                     state = _ScalpPositionState(
                         current_symbol, identity, generation, entry_price, stop,
                         target, entered_at, entry_price,
+                        cent_target_move=cent_move,
                     )
                     self._positions[current_symbol] = state
+                elif cent_move is not None:
+                    state.entry_price = entry_price
+                    state.target_price = target
+                    state.cent_target_move = cent_move
                 if any(not item.is_terminal for item in buys):
                     self.engine.mark_partially_filled(
                         current_symbol, generation, at=self._clock(),
@@ -768,6 +787,7 @@ class QuickScalperPaperRuntimeAdapter:
             stream_upward_updates=refreshed.stream_upward_updates,
             stream_price_change_updates=refreshed.stream_price_change_updates,
             observed_ask_advance=refreshed.observed_ask_advance,
+            cent_target_move=(confirmed.target_move if self.config.cent_target_minimum is not None else None),
         )
         if self._paper_entry_reviewer is not None:
             from app.asset_modules.grok_native_review import NativeReviewReceipt
@@ -1061,8 +1081,25 @@ class QuickScalperPaperRuntimeAdapter:
                 self._current_stop(state), state.peak_bid, state.profit_state,
             ),
             executable_bid=executable_bid, observed_at=observed_at,
-            momentum_stalled=momentum_stalled,
+            # Cent-profile profit-taking uses its working LIMIT target. A
+            # stalled move cannot cancel that target in favor of a market
+            # profit exit. Protective stops and max-hold exits still apply.
+            momentum_stalled=momentum_stalled and state.cent_target_move is None,
         )
+        if decision.action is not ProfitAction.NONE and state.last_exit_diagnostic_second != int(observed_at.timestamp()):
+            state.last_exit_diagnostic_second = int(observed_at.timestamp())
+            try:
+                evidence=dict(symbol=state.symbol,engine=OWNER,lifecycle_id=state.lifecycle_id,
+                    observed_at=observed_at,provider_bid_timestamp=quote_timestamp,
+                    decision_bid=executable_bid,entry_price=state.entry_price,
+                    initial_stop=state.initial_stop,action=decision.action.value,
+                    reason=decision.reason,desired_stop=decision.desired_stop)
+                performance_diagnostics.record_entry_funnel(symbol=state.symbol,stage='EXIT_DECISION',
+                    outcome='INTENT_ONLY',timestamp=observed_at,
+                    **{k:v for k,v in evidence.items() if k!='symbol'})
+                recorder=getattr(self._observer_context_tap,'record_exit_decision',None)
+                if callable(recorder):recorder(evidence)
+            except Exception:pass
         prior_profit_state = state.profit_state
         state.peak_bid = decision.position.peak_executable_bid
         state.profit_state = decision.position.state
@@ -1150,6 +1187,7 @@ class QuickScalperPaperRuntimeAdapter:
     def _increment_initial_reason(reason: str | None) -> None:
         mapping = {
             "INSUFFICIENT_NET_EXECUTABLE_EDGE": "quick_scalper_initial_insufficient_edge",
+            "CENT_TARGET_ECONOMICS_WAIT": "quick_scalper_initial_insufficient_edge",
             "PROVIDER_DATA_STALE": "quick_scalper_initial_provider_data_stale",
             "INVALID_EXECUTION_QUOTE": "quick_scalper_initial_invalid_execution_quote",
             "SESSION_NOT_ALLOWED": "quick_scalper_initial_session_not_allowed",
@@ -1164,6 +1202,7 @@ class QuickScalperPaperRuntimeAdapter:
     def _increment_reconfirm_reason(reason: str | None) -> None:
         mapping = {
             "INSUFFICIENT_NET_EXECUTABLE_EDGE": "quick_scalper_reconfirm_insufficient_edge",
+            "CENT_TARGET_ECONOMICS_WAIT": "quick_scalper_reconfirm_insufficient_edge",
             "PROVIDER_DATA_STALE": "quick_scalper_reconfirm_provider_data_stale",
             "INVALID_EXECUTION_QUOTE": "quick_scalper_reconfirm_invalid_execution_quote",
             "SESSION_NOT_ALLOWED": "quick_scalper_reconfirm_session_not_allowed",

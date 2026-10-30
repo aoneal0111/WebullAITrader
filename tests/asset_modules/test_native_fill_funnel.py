@@ -54,3 +54,18 @@ def test_diagnostic_failure_does_not_escape():
     order,event=fixture()
     def fail(**_):raise RuntimeError('diagnostic failure')
     NativeFillFunnel(lambda _:order,fail,started_at=NOW).observe(event)
+
+
+def test_exit_gap_is_recorded_without_changing_fill_or_counting_entry():
+    order,event=fixture(side='SELL');records=[];journal=[]
+    order.request.side.value='SELL'
+    order.request.order_type=NS(value='STOP')
+    order.request.stop_price=D('20.67');order.request.limit_price=None
+    order.request.execution_reason='STOP'
+    event.fill.fill_price=D('19.62');order.fills[0].price=D('19.62')
+    observer=NativeFillFunnel(lambda _:order,lambda **k:records.append(k),started_at=NOW,
+        evidence_sink=lambda kind,data:journal.append((kind,data)))
+    observer.observe(event);observer.observe(event)
+    assert len(records)==1 and records[0]['stage']=='EXIT_FILL'
+    assert records[0]['adverse_from_reference']==D('1.05')
+    assert journal[0][0]=='EXIT_FILL' and event.fill.fill_price==D('19.62')

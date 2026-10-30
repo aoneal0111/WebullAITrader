@@ -63,6 +63,8 @@ def extract(session, audit, output, symbols=None):
                         timestamp = datetime.fromisoformat(payload['timestamp'])
                         if not start <= timestamp <= end:
                             continue
+                    elif kind in {'EXIT_DECISION','EXIT_FILL'}:
+                        pass
                     elif kind not in {'MARKET_EVENT', 'BARS', 'ASSESSMENT', 'STREAM_ASSESSMENT', 'MARKET_ELIGIBILITY'}:
                         continue
                     else:

@@ -17,6 +17,11 @@ class RuntimeContextTap:
     No model, execution, provider request or runtime-setting method exists here.
     The owner must close this outside engine/protection callbacks.
     """
+    def record_exit_decision(self,payload):
+        if self._journal is not None:
+            return self._journal.submit('EXIT_DECISION',dict(payload))
+        return False
+
     def __init__(self,capture,baseline,*,journal=None):
         if not isinstance(capture,ContextCapture) or baseline!=capture._baseline:
             raise ValueError('Matching private capture and frozen baseline required')

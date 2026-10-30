@@ -39,11 +39,11 @@ def source_fingerprint(root, paths):
     return sha256(json.dumps(manifest, separators=(",", ":")).encode()).hexdigest()
 
 
-def family(signal, engine):
+def family(signal, engine, *, native_only=False):
     if engine == EngineId.SCALPER.value:
         setup = getattr(signal, "setup_type", None)
         return setup if setup in {"QUICK_SCALP_STREAM", "QUICK_SCALP_MOMENTUM"} else "QUICK_SCALP_MOMENTUM"
-    primary = getattr(signal, "taxonomy_strategy_id", None)
+    primary = None if native_only else getattr(signal, "taxonomy_strategy_id", None)
     if primary:
         value = getattr(primary, "value", primary)
     else:
@@ -64,12 +64,12 @@ class EquityPolicyAttribution:
             except OSError:
                 self._code[engine] = "UNKNOWN"
 
-    def __call__(self, signal):
+    def __call__(self, signal, *, native_only=False):
         owner = str(getattr(signal, "strategy_owner", None) or getattr(signal, "strategy_id", ""))
         engine = EngineId.WARRIOR.value if owner.startswith("WARRIOR_MOMENTUM") else owner
         if engine not in SOURCE_FILES:
             return {}
-        setup = family(signal, engine)
+        setup = family(signal, engine, native_only=native_only)
         code, config = self._code[engine], self._configuration.get(engine, "UNKNOWN")
         version = "UNKNOWN"
         if (setup != "UNKNOWN" and re.fullmatch(r"[0-9a-f]{64}", code)

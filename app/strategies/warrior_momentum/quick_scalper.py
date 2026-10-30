@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 from enum import StrEnum
 from threading import RLock
 from typing import Callable
@@ -60,8 +60,17 @@ class QuickScalperConfig:
     minimum_net_target_reward_r: Decimal = Decimal("0.50")
     confirmation_reward_penalty_r: Decimal = Decimal("0.25")
     stream_confirmation_seconds: Decimal = Decimal("2")
+    cent_target_minimum: Decimal | None = None
+    cent_target_maximum: Decimal | None = None
 
     def __post_init__(self) -> None:
+        cents = self.cent_target_minimum, self.cent_target_maximum
+        if any(v is not None for v in cents) and (
+            any(v is None or not v.is_finite() for v in cents)
+            or not Decimal('0.05') <= cents[0] <= cents[1] <= Decimal('0.10')
+            or any(v != v.quantize(Decimal('0.01')) for v in cents)
+        ):
+            raise ValueError('Cent targets require finite paired bounds within $0.05-$0.10')
         if self.minimum_price != Decimal('1.00'):
             raise ValueError('Quick Scalper minimum price must remain $1.00')
         if self.maximum_price is not None:
@@ -181,6 +190,17 @@ class QuickScalperPolicy:
             cost * self.config.execution_cost_multiple,
             risk * required_reward_r + cost,
         )
+        cent_economics_fit = True
+        if self.config.cent_target_minimum is not None:
+            target_move = min(self.config.cent_target_maximum, max(
+                self.config.cent_target_minimum,
+                value.short_horizon_range * self.config.volatility_move_fraction,
+                cost * self.config.execution_cost_multiple,
+            ).quantize(Decimal('0.01'),rounding=ROUND_CEILING))
+            cent_economics_fit = (
+                target_move >= risk * required_reward_r + cost
+                and target_move >= cost * self.config.execution_cost_multiple
+            )
         # A per-minute velocity is a rate, not evidence that a minute of
         # movement remains available. Use demonstrated BID movement instead
         # of extrapolating a short burst into an unobserved future minute.
@@ -206,6 +226,11 @@ class QuickScalperPolicy:
             decision = ScalpDecision.REJECTED_HARD_SAFETY
             reason = hard.value
             reasons = (hard,)
+        elif not cent_economics_fit:
+            adaptive = AdaptiveOpportunityResult.WAIT
+            decision = ScalpDecision.WAIT
+            reason = 'CENT_TARGET_ECONOMICS_WAIT'
+            reasons = (OpportunityReason.EXECUTION_QUALITY_WAIT,)
         elif expected_move < required_bid_move:
             adaptive = AdaptiveOpportunityResult.WAIT
             decision = ScalpDecision.WAIT
