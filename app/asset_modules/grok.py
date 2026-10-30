@@ -186,7 +186,10 @@ class GrokProposalProvider:
     def propose(self, context):
         if context.get("asset") != "CRYPTO":
             raise ValueError("Crypto context required")
-        result = self.client.request(EngineId.CRYPTO.value, CRYPTO_PROMPT, context, CRYPTO_SCHEMA)
+        prompt=CRYPTO_PROMPT
+        if 'execution_limits' in context:
+            prompt+=' The supplied local execution_limits are stricter and override the default size/risk examples. Use completed provider history when available; missing history is not evidence of an edge.'
+        result = self.client.request(EngineId.CRYPTO.value, prompt, context, CRYPTO_SCHEMA)
         if not isinstance(result, dict) or set(result) != {"proposals"}:
             raise GrokUnavailable("GROK_INVALID_PROPOSALS")
         proposals = result["proposals"]

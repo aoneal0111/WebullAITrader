@@ -15,8 +15,10 @@ from .grok_observer_runtime_tap import RuntimeContextTap
 
 class DailyResearch:
     def __init__(self,configuration,*,root=None,clock=lambda:datetime.now(UTC),seconds=16*3600):
+        from .grok_execution_trial import configured as configured_execution
+        self.grok_execution=configured_execution(configuration,clock=clock)
         if (configuration.environment.value!='PAPER' or configuration.live_trading_enabled
-                or configuration.grok_paper_entries_enabled):raise ValueError('DAILY_RESEARCH_REQUIRES_PAPER_OBSERVATION_FLAGS')
+                or (configuration.grok_paper_entries_enabled and self.grok_execution is None)):raise ValueError('DAILY_RESEARCH_REQUIRES_PAPER_OBSERVATION_FLAGS')
         if not 1<=seconds<=16*3600:raise ValueError('BOUNDED_DAILY_DURATION_REQUIRED')
         from .grok_observer_session import configuration_digest,source_manifest
         source=source_manifest(Path(__file__).resolve().parents[2])
@@ -49,14 +51,16 @@ class DailyResearch:
             manifest=dict(scope='NORMAL_DESKTOP_DAILY_RESEARCH_V1',paper_experiment=experiment,baseline_sha256=self.baseline,
                 source_sha256=source_hash,configuration_sha256=config_hash,source_files=source,
                 started_at=clock().isoformat(),max_seconds=seconds,live_trading_enabled=False,
-                grok_order_review_enabled=False,automatic_grok_requests=0,
+                grok_order_review_enabled=bool(self.grok_execution),automatic_grok_requests=0,
+                grok_execution_trial=None if self.grok_execution is None else self.grok_execution.doc,
+                automatic_grok_requests_on_operator_start=bool(self.grok_execution),
                 strategy_baseline_changed=False,entries_enabled_by_recorder=False,
                 coverage=['Subscribed native market events','Paper order and fill runtime events',
                     'Observed bar windows','Warrior and Scalper quote assessments',
                     'Scalper stream assessments when existing hook is reached'],
                 limitations=['No unobserved symbols, pre-start ticks, options chains or news invented',
                     'Fresh context sample limited to 10000 records/64MiB; raw journal continues if context fills',
-                    'Raw journal bounded to 512MiB/one million records; queue drops invalidate complete replay',
+                    f'Raw journal bounded to {self.journal.max_bytes} bytes/{self.journal.max_records} records; queue drops invalidate complete replay',
                     'Recording grants no entries; native admission or an explicit bounded PAPER experiment controls buys'])
             (self.directory/'research-manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
             self._thread=Thread(target=self._monitor,name='atlas-daily-recording-lifecycle',daemon=True)
@@ -138,6 +142,7 @@ class DailyResearch:
             last_active_engine_readiness=self._last_active_readiness,
             engine_evidence_status=('ENGINE_EVIDENCE_RECORDED' if capture['tap_counts'].get('bars_queued',0)>0
                 or capture['tap_counts'].get('assessments_queued',0)>0 else 'NO_ENGINE_EVIDENCE_REVIEW_REQUIRED'),
+            grok_execution_status=None if self.grok_execution is None else self.grok_execution.status(),
             orders_dispatched=0,grok_requests=0,execution_authorized=False)
         (self.directory/'research-summary.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
         return journal.get('writer_stopped',False) and capture.get('tap_stopped',False)

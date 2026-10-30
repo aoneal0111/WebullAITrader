@@ -180,7 +180,8 @@ def create_desktop_composition(
                 or configuration.runtime_mode.value!='PAPER'
                 or operational_configuration.environment.value!='PAPER'
                 or operational_configuration.live_trading_enabled
-                or operational_configuration.grok_paper_entries_enabled):
+                or (operational_configuration.grok_paper_entries_enabled
+                    and (daily_research is None or daily_research.grok_execution is None))):
             raise ValueError('Passive context capture requires explicit injection and safe PAPER flags')
     from app.composition.learning_collection import create_learning_collector
     learning_collector = create_learning_collector(operational_configuration,

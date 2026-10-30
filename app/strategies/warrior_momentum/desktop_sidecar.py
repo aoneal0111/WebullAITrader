@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from hashlib import sha256
@@ -466,8 +466,15 @@ class WarriorDesktopSidecar:
                 raise ValueError("Prior handoff requires reconciliation")
         observer.bind_native_review_callbacks(producer.scalper_offer, producer.scalper_refresh)
         producer.permitted = self.grok_native_execution_permitted
+        producer.history_source = self._grok_completed_history
         self._grok_native_producer = producer
         self._grok_runtime_handoff = producer.review.handoff
+
+    def _grok_completed_history(self, symbol, at):
+        """Copy retained bars under the native lock; never request more data."""
+        with self._lock:
+            return tuple(bar for bar in self._bars.get(symbol, ())[-32:]
+                if bar.timestamp + timedelta(minutes=1) <= at)
 
 
     def bind_grok_native_producer_factory(self, factory):

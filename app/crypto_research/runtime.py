@@ -605,6 +605,22 @@ class CryptoResearchRuntime:
                 sorted(self._latest.values(), key=lambda item: (item.rank, item.pair.canonical_symbol))
             )
 
+    def execution_snapshots(self, symbols):
+        """Bounded owned-pair refresh on a caller's non-GUI worker.
+
+        No symbol discovery, history refresh or shortlist mutation. The
+        existing provider owns request isolation, rate limits and backoff.
+        """
+        selected=tuple(symbols)
+        if len(selected)>2 or len(set(selected))!=len(selected):
+            raise ValueError('At most two unique owned crypto pairs required')
+        with self._lock:
+            if not self.enabled or self._provider is None:return ()
+            known={pair.canonical_symbol:pair for pair in self._pairs}
+            if any(symbol not in known for symbol in selected):return ()
+            pairs=tuple(known[symbol] for symbol in selected)
+        return tuple(self._provider.snapshots(pairs)) if pairs else ()
+
     def completed_bars(self, symbol: str, *, as_of: datetime,
                        interval: CryptoBarInterval = CryptoBarInterval.M1,
                        limit: int = 64) -> tuple[CryptoCompletedBar, ...]:

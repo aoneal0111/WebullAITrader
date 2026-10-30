@@ -56,17 +56,21 @@ def load(path,clock=lambda:datetime.now(UTC)):
 def configured(configuration,runtime_mode):
     value=os.environ.get(ENV,'').strip()
     if not value:return None
+    from app.asset_modules.grok_execution_trial import configured as grok_execution
+    grok_lease=grok_execution(configuration)
     if (runtime_mode!='PAPER' or configuration.environment.value!='PAPER' or configuration.live_trading_enabled
-        or configuration.grok_paper_entries_enabled or not configuration.daily_research_enabled):
+        or (configuration.grok_paper_entries_enabled and grok_lease is None) or not configuration.daily_research_enabled):
         raise ValueError('EXPERIMENT_REQUIRES_PAPER_LIVE_OFF_GROK_ORDERS_OFF_AND_CAPTURE')
     path,spec=load(value)
-    return PaperExperiment(path,spec)
+    result=PaperExperiment(path,spec);result.grok_execution=grok_lease
+    return result
 
 
 class PaperExperiment(EquityQualificationPolicy):
     def __init__(self,path,spec,clock=lambda:datetime.now(UTC),timer=monotonic):
         super().__init__();self.path=Path(path);self.spec=spec;self.clock=clock;self.timer=timer
         self._started=timer();self._wall_start=clock();self._bindings={};self._lock=RLock();self.capture_ready=None
+        self.grok_execution=None
         self.db_path=self.path.with_name('entry-attempts.sqlite3')
         with closing(sqlite3.connect(self.db_path)) as db:
             db.execute('CREATE TABLE IF NOT EXISTS attempts (trial TEXT,request TEXT,notional TEXT,record TEXT,PRIMARY KEY(trial,request))');db.commit()
@@ -90,7 +94,9 @@ class PaperExperiment(EquityQualificationPolicy):
             path,spec=load(self.path,self.clock)
             elapsed=self.timer()-self._started
             wall=(self.clock()-self._wall_start).total_seconds()
-            return bool(self.capture_ready and self.capture_ready() and not self.path.with_name('PAUSE_ENTRIES').exists() and spec==self.spec and 0<=elapsed<8*3600 and abs(wall-elapsed)<=2)
+            return bool(self.capture_ready and self.capture_ready()
+                and (self.grok_execution is None or self.grok_execution.active())
+                and not self.path.with_name('PAUSE_ENTRIES').exists() and spec==self.spec and 0<=elapsed<8*3600 and abs(wall-elapsed)<=2)
         except Exception:return False
 
     def bind(self,attribution):
@@ -134,6 +140,8 @@ class PaperExperiment(EquityQualificationPolicy):
     def constrain_placement(self,placement):
         metadata=dict(placement.order.metadata)
         deadline=min(datetime.fromisoformat(self.spec['expires_at']),self.clock()+timedelta(seconds=60))
+        if self.grok_execution is not None:
+            deadline=min(deadline,datetime.fromisoformat(self.grok_execution.doc['expires_at']))
         for key in ('chase_deadline','opportunity_deadline'):
             if metadata.get(key):
                 value=datetime.fromisoformat(str(metadata[key]))
@@ -147,8 +155,9 @@ class PaperExperiment(EquityQualificationPolicy):
     def notice(self):
         state='entry trial enabled, subject to native checks' if self.active() else 'new entries paused, expired or capture unavailable'
         profile='Early native Warrior; cent-pullback Scalper. ' if self.cent_early else ''
+        mode='Grok native order review ON; crypto requires its visible AI switch' if self.grok_execution else 'Grok orders OFF'
         return ('EXPERIMENTAL PAPER: '+profile+state+'. Max 10 shares / $100 position / $1 modeled initial risk; '
-                '50 entry attempts; expires '+self.spec['expires_at']+'. Grok orders OFF. Position protection remains available.')
+                '50 shared entry attempts; expires '+self.spec['expires_at']+'. '+mode+'. Position protection remains available.')
 
     def status(self):
         return dict(policy=self.spec['scope'],entry_mode='BOUNDED_PAPER_EXPERIMENT',approved_policies=[],

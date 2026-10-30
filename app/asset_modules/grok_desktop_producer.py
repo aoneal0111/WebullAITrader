@@ -17,10 +17,11 @@ class DesktopGrokProducer:
     from those branches, not invented by the model. No provider is invoked on
     this owner lane; NativeGrokReview submits to its bounded background worker.
     """
-    def __init__(self, review, *, permitted):
+    def __init__(self, review, *, permitted, history_source=None):
         if not isinstance(review, NativeGrokReview) or not callable(permitted):
             raise TypeError("Native PAPER review and local permission source required")
         self.review, self.permitted = review, permitted
+        self.history_source = history_source
         self._requests = {}
         review.bind_execution_permission(self._permitted)
 
@@ -48,6 +49,17 @@ class DesktopGrokProducer:
             "native_signal_timestamp": signal.timestamp.isoformat(), "session": signal.session,
             "setup": str(getattr(signal, "setup_type", "QUICK_SCALP_MOMENTUM")),
             "target_levels": [str(p) for p in getattr(signal, "target_levels", ())]}
+        if self.history_source is not None:
+            # Bounded local evidence only: no provider call or model wait here.
+            try:
+                from .daily_research_journal import safe
+                bars = tuple(self.history_source(signal.symbol, at))[-32:]
+                bars = tuple(b for b in bars if b.symbol == signal.symbol
+                    and b.timestamp + BAR_INTERVAL <= at)
+                evidence["completed_native_bars"] = safe(bars)
+                evidence["history_status"] = "RETAINED_COMPLETED_BARS" if bars else "UNAVAILABLE"
+            except Exception:
+                evidence["history_status"] = "UNAVAILABLE"
         request = self.review.prepare(signal, shares, risk, authorization=authorization,
             evidence=evidence, float_provenance=float_provenance, symbol_authorization=symbol_authorization)
         if not isinstance(request, NativeReviewRequest):
