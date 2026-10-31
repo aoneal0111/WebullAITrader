@@ -70,7 +70,7 @@ class WebullExecutionQuoteSource:
                 extend_hour_required=True,
             )
             rows = _response_rows(response)
-            row = rows[0] if rows else None
+            row = _symbol_row(normalized, rows)
             returned_at = self._clock()
             context["snapshot_return_timestamp"] = returned_at
             if row is None:
@@ -115,7 +115,7 @@ class WebullExecutionQuoteSource:
                 extend_hour_required=True,
             )
             rows = _response_rows(response)
-            row = rows[0] if rows else None
+            row = _symbol_row(normalized, rows)
             return None if row is None else parse_execution_quote(
                 normalized, row, confirmed_at=self._clock(),
             )
@@ -201,6 +201,9 @@ def parse_execution_quote(symbol: str, row: Mapping[str, object], *,
                           confirmed_at: datetime | None = None) -> ExecutionQuoteSnapshot | None:
     """Accept only prices paired with provider-authored timestamps."""
     try:
+        reported_symbol = _value(row, 'symbol')
+        if reported_symbol is not None and str(reported_symbol).strip().upper() != symbol.strip().upper():
+            return None
         last = _positive(row, "price", "last", "latest_price")
         bid = _positive(row, "bid", "bid_price", "bidPrice", "bid1")
         ask = _positive(row, "ask", "ask_price", "askPrice", "ask1")
@@ -214,6 +217,21 @@ def parse_execution_quote(symbol: str, row: Mapping[str, object], *,
         symbol.strip().upper(), last, bid, ask, last_time, quote_time,
         quote_time, confirmed_at,
     )
+
+
+def _symbol_row(symbol: str, rows: list[Mapping[str, object]]) -> Mapping[str, object] | None:
+    """Never relabel another symbol's prices as the requested instrument.
+
+    Keep the legacy single-row/no-symbol contract, but require explicit unique
+    matching identity for multi-row responses. No timestamp or price merging.
+    """
+    matches = [row for row in rows
+               if str(_value(row, 'symbol') or '').strip().upper() == symbol]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches and len(rows) == 1 and _value(rows[0], 'symbol') is None:
+        return rows[0]
+    return None
 
 
 def _value(row: Mapping[str, object], *names: str) -> object | None:

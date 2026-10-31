@@ -533,19 +533,19 @@ def test_transitions_blocked_diagnostics_and_counterfactual_are_separate(capture
     assert not store.records(record_type=CaptureRecordType.PAPER_FILL)
 
 
-def test_after_hours_risk_rejection_remains_blocked(capture) -> None:
+def test_regular_session_risk_rejection_remains_blocked(capture) -> None:
     store, writer, service = capture
     rejected_account = PaperAccountContext(
         D("50000"), D("25000"), frozenset({"XYZ"}), risk_engine_approved=False,
     )
 
     candidate, signal = service.observe(
-        point(session="AFTER_HOURS"), account=rejected_account,
+        point(session="REGULAR"), account=rejected_account,
     )
     writer.flush()
 
     assert signal is None
-    assert candidate.session == "AFTER_HOURS"
+    assert candidate.session == "REGULAR"
     transitions = [
         item.payload
         for item in store.records(record_type=CaptureRecordType.STATE_TRANSITION)
@@ -607,7 +607,7 @@ def test_each_stale_market_component_independently_blocks_paper_submission(
 
     candidate, signal = service.observe(
         point(
-            session="AFTER_HOURS",
+            session="REGULAR",
             quote_freshness_seconds=quote_age,
             last_price_freshness_seconds=last_age,
         ),
@@ -656,46 +656,19 @@ def test_stale_market_data_remains_visible_with_another_blocker(capture) -> None
     assert not store.records(record_type=CaptureRecordType.PAPER_FILL)
 
 
-def test_after_hours_signal_reaches_normal_paper_gateway_once(tmp_path: Path) -> None:
-    store = ForwardCaptureStore(tmp_path / "after-hours-forward.sqlite3")
-    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
-    after_hours = datetime(2026, 8, 10, 22, 0, tzinfo=UTC)
-    composition = create_paper_trading_command_composition(at=after_hours)
-    bridge = AutonomousPaperExecutionBridge(
-        composition.trading_service,
-        composition.order_command_factory,
-        order_book=composition.order_book,
-    )
-    service = WarriorForwardCaptureService(
-        store, writer, paper_entry_submitter=bridge.submit_entry,
-    )
+def test_after_hours_trigger_cannot_reach_paper_gateway(tmp_path: Path) -> None:
+    store=ForwardCaptureStore(tmp_path/"after-hours-forward.sqlite3")
+    writer=ForwardCaptureWriter(store,flush_interval_seconds=.01)
+    composition=create_paper_trading_command_composition(at=datetime(2026,8,10,22,0,tzinfo=UTC))
+    bridge=AutonomousPaperExecutionBridge(composition.trading_service,composition.order_command_factory,
+        order_book=composition.order_book)
+    service=WarriorForwardCaptureService(store,writer,paper_entry_submitter=bridge.submit_entry)
     try:
-        candidate, signal = service.observe(
-            point(session="AFTER_HOURS"), account=account(),
-        )
-
-        assert candidate.status.value == "ENTRY_READY"
-        assert signal is not None and signal.session == "AFTER_HOURS"
-        assert len(composition.order_book.open_orders()) == 1
-        assert bridge.submit_entry(signal, 100, D("50")) is False
-        assert len(composition.order_book.open_orders()) == 1
-
-        reports = composition.gateway.process_market_event(MarketEvent(
-            1, session_timestamp(1, at=after_hours), signal.symbol, "after-hours-test",
-            MarketEventType.QUOTE,
-            QuotePayload(
-                signal.entry_trigger - D("0.01"), signal.entry_trigger,
-                D("1000"), D("1000"),
-            ),
-        ))
-
-        assert reports and reports[0].fills
-        assert reports[0].fills[0].quantity > 0
-        assert len(composition.order_book.history()) == 1
-        assert composition.order_book.history()[0].symbol == signal.symbol
+        candidate,signal=service.observe(point(session="AFTER_HOURS"),account=account())
+        assert signal is None and candidate.status.value=="INELIGIBLE_FOR_EXECUTION"
+        assert composition.order_book.history()==()
     finally:
-        writer.close()
-        composition.close()
+        writer.close();composition.close()
 
 
 def test_adaptive_premarket_structural_entry_ignores_old_turnover_proxy(tmp_path: Path) -> None:

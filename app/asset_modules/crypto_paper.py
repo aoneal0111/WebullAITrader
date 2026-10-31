@@ -26,6 +26,7 @@ class CryptoPaper:
     slippage = D('0.001')
     max_position = D('250')
     max_loss = D('25')
+    maximum_quote_age_seconds = 90
 
     def __init__(self, path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -73,8 +74,7 @@ class CryptoPaper:
                 self.db.rollback()
                 raise
 
-    @staticmethod
-    def _quote(symbol, quote, now):
+    def _quote(self, symbol, quote, now):
         if (not isinstance(now,datetime) or now.tzinfo is None or now.utcoffset() is None):
             raise ValueError('Aware crypto execution time required')
         pair = getattr(quote,'pair',None)
@@ -84,7 +84,7 @@ class CryptoPaper:
                 or not isinstance(source_at,datetime) or source_at.tzinfo is None
                 or source_at.utcoffset() is None):
             raise ValueError('Matching USD pair and aware quote timestamp required')
-        if (not 0 <= (now-source_at).total_seconds() <= 90
+        if (not 0 <= (now-source_at).total_seconds() <= self.maximum_quote_age_seconds
                 or getattr(quote,'bid',None) is None or getattr(quote,'ask',None) is None):
             raise ValueError('Missing or stale crypto quote')
         bid,ask = number(quote.bid),number(quote.ask)

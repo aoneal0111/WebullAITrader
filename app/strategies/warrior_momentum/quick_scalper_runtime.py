@@ -15,6 +15,7 @@ from typing import Callable
 from uuid import uuid4
 
 from app.configuration import PaperSymbolAuthorizationMode
+from app.market.scalp_session import scalp_entry_window
 from app.paper_trading.order_book import PaperOrderBook
 from app.paper_trading.order_models import OrderSide, OrderType
 from app.momentum_scanner.models import ScannerObservation
@@ -87,12 +88,23 @@ class QuickScalperExecutionIntent:
     stream_upward_updates: int | None = None
     stream_price_change_updates: int | None = None
     observed_ask_advance: Decimal | None = None
+    entry_session_deadline: datetime | None = None
+    maximum_holding_seconds: int = 300
+    cent_target_move: Decimal | None = None
+    support_source: str = 'WINDOW_LOW'
+    support_timestamp: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.entry_trigger <= self.stop_price or self.risk_per_share <= ZERO:
             raise ValueError("Quick Scalper intent requires positive structural risk")
         if self.adaptive_target <= self.entry_trigger:
             raise ValueError("Quick Scalper target must exceed entry")
+        if self.cent_target_move is not None and (
+            not self.cent_target_move.is_finite()
+            or not Decimal('0.05') <= self.cent_target_move <= Decimal('0.10')
+            or self.adaptive_target-self.entry_trigger != self.cent_target_move
+        ):
+            raise ValueError('Cent target intent must match its bounded entry-relative move')
         object.__setattr__(self, "target_levels", (self.adaptive_target,))
         object.__setattr__(self, "taxonomy_execution_identity", self.lifecycle_id)
         object.__setattr__(self, "taxonomy_opportunity_id", self.opportunity_id)
@@ -110,6 +122,8 @@ class _ScalpPositionState:
     peak_bid: Decimal
     profit_state: ProfitState = ProfitState.NO_PROFIT
     full_exit_submitting: bool = False
+    cent_target_move: Decimal | None = None
+    last_exit_diagnostic_second: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,7 +154,13 @@ class QuickScalperPaperRuntimeAdapter:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         paper_entry_reviewer: Callable[..., object] | None = None,
         paper_entry_review_refresher: Callable[..., object] | None = None,
+        observer_context_tap: object | None = None,
     ) -> None:
+        if observer_context_tap is not None:
+            from app.asset_modules.grok_observer_runtime_tap import RuntimeContextTap
+            if not isinstance(observer_context_tap,RuntimeContextTap):
+                raise TypeError('Passive RuntimeContextTap required')
+        self._observer_context_tap = observer_context_tap
         self.config = config
         self._paper_entry_reviewer = paper_entry_reviewer
         self.bridge = bridge
@@ -204,6 +224,12 @@ class QuickScalperPaperRuntimeAdapter:
             # is exhausted, without adding production files or provider calls.
             self._emit("SCALP_ASSESSED", candidate.symbol)
             self._manage_open_position(point, candidate)
+            if self._observer_context_tap is not None:
+                try:
+                    self._observer_context_tap.remember_bars(candidate.symbol,point.bars,
+                        known_at=point.evaluation_timestamp or point.observation.timestamp)
+                except Exception:
+                    pass
             if not execution_permitted:
                 return None
             snapshot = self._snapshot(point, candidate)
@@ -293,6 +319,9 @@ class QuickScalperPaperRuntimeAdapter:
             )
             performance_diagnostics.increment("quick_scalper_opportunities")
             preview = self.scalper.policy.assess(snapshot)
+            if self._observer_context_tap is not None:
+                try:self._observer_context_tap.record_scalper_preview(snapshot,preview)
+                except Exception:pass
             self._emit(
                 'SCALP_ARMED', snapshot.symbol,
                 generation=snapshot.generation_id,
@@ -483,6 +512,11 @@ class QuickScalperPaperRuntimeAdapter:
                 metadata = entry.request.metadata
                 stop = self._decimal(metadata.get("structural_stop"))
                 target = self._decimal(metadata.get("adaptive_target"))
+                cent_move = self._decimal(metadata.get('scalp_cent_target_move'))
+                if cent_move is not None:
+                    if entry_price is None or not cent_move.is_finite() or not Decimal('0.05') <= cent_move <= Decimal('0.10'):
+                        continue
+                    target = entry_price + cent_move
                 if entry_price is None or stop is None or target is None:
                     continue
                 generation = str(
@@ -498,8 +532,13 @@ class QuickScalperPaperRuntimeAdapter:
                     state = _ScalpPositionState(
                         current_symbol, identity, generation, entry_price, stop,
                         target, entered_at, entry_price,
+                        cent_target_move=cent_move,
                     )
                     self._positions[current_symbol] = state
+                elif cent_move is not None:
+                    state.entry_price = entry_price
+                    state.target_price = target
+                    state.cent_target_move = cent_move
                 if any(not item.is_terminal for item in buys):
                     self.engine.mark_partially_filled(
                         current_symbol, generation, at=self._clock(),
@@ -551,17 +590,13 @@ class QuickScalperPaperRuntimeAdapter:
             state.symbol, quantity, state.initial_stop, "STOP",
             state.lifecycle_id, strategy_owner=OWNER,
         )
-        if not protection.protection_active:
+        if not protection.requested_order_active:
             return
         target = self.bridge.ensure_exit(
             state.symbol, quantity, state.target_price, "SCALP_TARGET",
             state.lifecycle_id, target_stage_only=True, strategy_owner=OWNER,
         )
-        if target.state in {
-            PaperExitSubmissionState.SUBMITTED,
-            PaperExitSubmissionState.WORKING,
-            PaperExitSubmissionState.COMPLETED,
-        }:
+        if target.request_succeeded:
             self._emit("SCALP_PROTECTION_ACTIVE", state.symbol,
                        generation=state.generation_id, qty=quantity)
             self.engine.mark_protected(
@@ -601,6 +636,11 @@ class QuickScalperPaperRuntimeAdapter:
                 "quick_scalper_stale_preview_refresh_available"
             )
         evaluated_at = self._clock()
+        window = scalp_entry_window(evaluated_at, self.config.maximum_holding_seconds)
+        if window is None or evaluated_at >= window[1] or source.session != window[0]:
+            performance_diagnostics.increment("quick_scalper_rejections")
+            self._record_quote_decision(evaluated_at, quote, "REJECTED", "SCALP_SESSION_WINDOW")
+            return CanonicalScalpSubmission(False, False, False, False, "SCALP_SESSION_WINDOW")
         refreshed = replace(
             source, decision_at=evaluated_at, observed_at=evaluated_at,
             last=quote.last, bid=quote.bid, ask=quote.ask,
@@ -616,6 +656,17 @@ class QuickScalperPaperRuntimeAdapter:
             ),
         )
         confirmed = self.scalper.policy.assess(refreshed)
+        if self._observer_context_tap is not None:
+            try:
+                from app.asset_modules.engine_catalog import EngineId
+                self._observer_context_tap.record(engine=EngineId.SCALPER,quote=quote,
+                    source=self.execution_quote_source,at=evaluated_at,preview=source,
+                    baseline_result=('ENTRY_CANDIDATE' if confirmed.decision is ScalpDecision.EXECUTABLE
+                                     else 'WAIT' if confirmed.decision is ScalpDecision.WAIT else 'BLOCKED'),
+                    setup_state=('TRIGGERED' if confirmed.decision is ScalpDecision.EXECUTABLE
+                                 else 'FORMING' if confirmed.decision is ScalpDecision.WAIT else 'UNKNOWN'))
+            except Exception:
+                pass
         if (
             confirmed.decision is not ScalpDecision.EXECUTABLE
             and confirmed.reason == "PROVIDER_DATA_STALE"
@@ -640,6 +691,24 @@ class QuickScalperPaperRuntimeAdapter:
                 "quick_scalper_stale_preview_refresh_advanced"
             )
         if confirmed.decision is not ScalpDecision.EXECUTABLE:
+            diagnostic = dict(symbol=refreshed.symbol,
+                reason=confirmed.reason,
+                preview_bid_at=source.bid_timestamp,
+                confirmation_bid_at=quote.bid_timestamp,
+                bid_age_seconds=Decimal(str((evaluated_at-quote.bid_timestamp).total_seconds())),
+                ask_age_seconds=Decimal(str((evaluated_at-quote.ask_timestamp).total_seconds())),
+                book_regressed=(quote.bid_timestamp < source.bid_timestamp
+                    or quote.ask_timestamp < source.ask_timestamp),
+                target_move=confirmed.target_move,
+                round_trip_cost=confirmed.round_trip_cost,
+                expected_move=confirmed.expected_move,
+                required_bid_move=confirmed.required_bid_move)
+            if self._observer_context_tap is not None:
+                try:
+                    self._observer_context_tap.record_scalper_confirmation(diagnostic)
+                except Exception:
+                    pass
+            self._emit('SCALP_REJECTED', refreshed.symbol, reason=confirmed.reason)
             performance_diagnostics.increment("quick_scalper_reconfirm_not_executable")
             self._increment_reconfirm_reason(confirmed.reason)
             self._record_quote_decision(
@@ -657,6 +726,8 @@ class QuickScalperPaperRuntimeAdapter:
                 False, False, False, False, "ACCOUNT_UNAVAILABLE",
             )
         risk = quote.ask - refreshed.structural_stop
+        if self.config.cent_fill_anchored_economics:
+            risk += (confirmed.round_trip_cost-(quote.ask-quote.bid))/2
         sized = size_execution_position(
             symbol=refreshed.symbol, reference_price=quote.ask,
             risk_per_share=risk, account_equity=account.equity,
@@ -710,6 +781,9 @@ class QuickScalperPaperRuntimeAdapter:
         )
         intent = QuickScalperExecutionIntent(
             symbol=refreshed.symbol, timestamp=evaluated_at,
+            setup_type=refreshed.setup_type,
+            entry_session_deadline=window[1],
+            maximum_holding_seconds=self.config.maximum_holding_seconds,
             session=refreshed.session, entry_trigger=quote.ask,
             reference_price=quote.ask, stop_price=refreshed.structural_stop,
             risk_per_share=risk, adaptive_target=confirmed.target_price,
@@ -735,6 +809,9 @@ class QuickScalperPaperRuntimeAdapter:
             stream_upward_updates=refreshed.stream_upward_updates,
             stream_price_change_updates=refreshed.stream_price_change_updates,
             observed_ask_advance=refreshed.observed_ask_advance,
+            cent_target_move=(confirmed.target_move if self.config.cent_target_minimum is not None else None),
+            support_source=refreshed.support_source,
+            support_timestamp=refreshed.support_timestamp,
         )
         if self._paper_entry_reviewer is not None:
             from app.asset_modules.grok_native_review import NativeReviewReceipt
@@ -861,10 +938,22 @@ class QuickScalperPaperRuntimeAdapter:
             velocity / first.ask * Decimal('100')
             if first.ask > ZERO else ZERO
         )
-        structural_stop = min(item.bid for item in samples)
+        window_low = min(item.bid for item in samples)
+        structural_stop = window_low
+        support_source = 'WINDOW_LOW'
+        support_timestamp = None
+        if self.config.cent_pullback_support_enabled:
+            # Risk is anchored to an actual, subsequently confirmed local
+            # pullback, independently of the earlier impulse measurement.
+            # No price is invented or moved merely to fit the cent ceiling.
+            support = self._confirmed_cent_support(samples,
+                allow_plateau=self.config.cent_fill_anchored_economics)
+            if support is not None:
+                structural_stop, support_timestamp = support
+                support_source = 'CONFIRMED_MICRO_PULLBACK'
         if structural_stop <= ZERO or structural_stop >= observation.ask:
             return None
-        short_range = max(item.bid for item in samples) - structural_stop
+        short_range = max(item.bid for item in samples) - window_low
         changes = [right.bid - left.bid for left, right in zip(samples, list(samples)[1:])]
         generation_started = self._stream_generation_started.setdefault(
             symbol, first.provider_timestamp,
@@ -916,7 +1005,37 @@ class QuickScalperPaperRuntimeAdapter:
             session=session,
             relative_volume_status=relative_volume_status,
             executable_ask_size=observation.ask_size,
+            support_source=support_source,
+            support_timestamp=support_timestamp,
         )
+
+    @staticmethod
+    def _confirmed_cent_support(samples, *, allow_plateau=False):
+        """Most recent strict trough with a later bounce and no subsequent touch.
+
+        Samples already represent distinct, nonregressing provider instants in
+        the native 30-second window. A monotonic rise, repeated same-instant
+        callbacks, broken trough or unconfirmed last sample supplies no support.
+        """
+        values = list(samples)
+        if allow_plateau:
+            # Collapse only adjacent equal-price provider observations. Retain
+            # the LAST timestamp of the trough, so a later distinct bounce is
+            # still mandatory. A later retouch remains a new, unconfirmed low.
+            compressed = []
+            for value in values:
+                if compressed and compressed[-1].bid == value.bid:
+                    compressed[-1] = value
+                else:
+                    compressed.append(value)
+            values = compressed
+        later_low = values[-1].bid if values else ZERO
+        for index in range(len(values)-2, 0, -1):
+            low = values[index]
+            if values[index-1].bid > low.bid and later_low > low.bid:
+                return low.bid, low.provider_timestamp
+            later_low = min(later_low, low.bid)
+        return None
 
     def _snapshot(
         self, point: PointInTimeObservation, candidate: MomentumCandidate,
@@ -1028,18 +1147,39 @@ class QuickScalperPaperRuntimeAdapter:
                 self._current_stop(state), state.peak_bid, state.profit_state,
             ),
             executable_bid=executable_bid, observed_at=observed_at,
-            momentum_stalled=momentum_stalled,
+            # Cent-profile profit-taking uses its working LIMIT target. A
+            # stalled move cannot cancel that target in favor of a market
+            # profit exit. Protective stops and max-hold exits still apply.
+            momentum_stalled=momentum_stalled and state.cent_target_move is None,
         )
+        if decision.action is not ProfitAction.NONE and state.last_exit_diagnostic_second != int(observed_at.timestamp()):
+            state.last_exit_diagnostic_second = int(observed_at.timestamp())
+            try:
+                evidence=dict(symbol=state.symbol,engine=OWNER,lifecycle_id=state.lifecycle_id,
+                    observed_at=observed_at,provider_bid_timestamp=quote_timestamp,
+                    decision_bid=executable_bid,entry_price=state.entry_price,
+                    initial_stop=state.initial_stop,action=decision.action.value,
+                    reason=decision.reason,desired_stop=decision.desired_stop)
+                performance_diagnostics.record_entry_funnel(symbol=state.symbol,stage='EXIT_DECISION',
+                    outcome='INTENT_ONLY',timestamp=observed_at,
+                    **{k:v for k,v in evidence.items() if k!='symbol'})
+                recorder=getattr(self._observer_context_tap,'record_exit_decision',None)
+                if callable(recorder):recorder(evidence)
+            except Exception:pass
+        prior_profit_state = state.profit_state
         state.peak_bid = decision.position.peak_executable_bid
         state.profit_state = decision.position.state
         if (
             decision.action is ProfitAction.TIGHTEN_STOP
             and decision.desired_stop is not None
         ):
-            self.bridge.ensure_exit(
+            result = self.bridge.ensure_exit(
                 state.symbol, quantity, decision.desired_stop, "STOP",
                 state.lifecycle_id, strategy_owner=OWNER,
             )
+            if not result.requested_order_active:
+                state.profit_state = prior_profit_state
+                return
             self._emit(
                 "SCALP_PROFIT_DEFENSE", state.symbol,
                 generation=state.generation_id, reason=decision.reason,
@@ -1053,18 +1193,17 @@ class QuickScalperPaperRuntimeAdapter:
                 )
             finally:
                 state.full_exit_submitting = False
-            if result.state in {
-                PaperExitSubmissionState.SUBMITTED,
-                PaperExitSubmissionState.WORKING,
-            }:
-                self._emit(
-                    "SCALP_EXIT_REQUESTED", state.symbol,
-                    generation=state.generation_id,
-                    reason=decision.reason, qty=quantity,
-                )
-                self.engine.mark_exit_requested(
-                    state.symbol, state.generation_id, at=observed_at,
-                )
+            if not result.requested_order_active:
+                state.profit_state = prior_profit_state
+                return
+            self._emit(
+                "SCALP_EXIT_REQUESTED", state.symbol,
+                generation=state.generation_id,
+                reason=decision.reason, qty=quantity,
+            )
+            self.engine.mark_exit_requested(
+                state.symbol, state.generation_id, at=observed_at,
+            )
 
     def _current_stop(self, state: _ScalpPositionState) -> Decimal:
         values = [
@@ -1114,6 +1253,8 @@ class QuickScalperPaperRuntimeAdapter:
     def _increment_initial_reason(reason: str | None) -> None:
         mapping = {
             "INSUFFICIENT_NET_EXECUTABLE_EDGE": "quick_scalper_initial_insufficient_edge",
+            "CENT_TARGET_ECONOMICS_WAIT": "quick_scalper_initial_insufficient_edge",
+            "CENT_SUPPORT_FORMING": "quick_scalper_initial_insufficient_edge",
             "PROVIDER_DATA_STALE": "quick_scalper_initial_provider_data_stale",
             "INVALID_EXECUTION_QUOTE": "quick_scalper_initial_invalid_execution_quote",
             "SESSION_NOT_ALLOWED": "quick_scalper_initial_session_not_allowed",
@@ -1128,6 +1269,8 @@ class QuickScalperPaperRuntimeAdapter:
     def _increment_reconfirm_reason(reason: str | None) -> None:
         mapping = {
             "INSUFFICIENT_NET_EXECUTABLE_EDGE": "quick_scalper_reconfirm_insufficient_edge",
+            "CENT_TARGET_ECONOMICS_WAIT": "quick_scalper_reconfirm_insufficient_edge",
+            "CENT_SUPPORT_FORMING": "quick_scalper_reconfirm_insufficient_edge",
             "PROVIDER_DATA_STALE": "quick_scalper_reconfirm_provider_data_stale",
             "INVALID_EXECUTION_QUOTE": "quick_scalper_reconfirm_invalid_execution_quote",
             "SESSION_NOT_ALLOWED": "quick_scalper_reconfirm_session_not_allowed",

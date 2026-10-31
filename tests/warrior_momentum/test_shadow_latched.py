@@ -69,7 +69,7 @@ def observation(
 
 
 def technical_case(*, setup_state: SetupState = SetupState.TRIGGERED):
-    runtime = WarriorMomentumRuntime()
+    runtime = WarriorMomentumRuntime(historical_shadow_config())
     base_value = point()
     base = runtime.discover(
         base_value.observation, base_value.bars, session=base_value.session,
@@ -150,7 +150,7 @@ def transitions(records: tuple[CaptureRecord, ...]) -> list[str]:
 
 
 def test_aehl_latched_plan_reconstructs_fast_execution_transitions_without_order() -> None:
-    tracker = ShadowLatchedPlanResearch()
+    tracker = historical_shadow_tracker()
     records = list(create_plan(tracker))
     plan = next(record for record in records if record.record_type is CaptureRecordType.SHADOW_LATCHED_PLAN)
     assert plan.payload["authority"] == "SHADOW_ONLY_NON_EXECUTABLE"
@@ -285,7 +285,7 @@ def test_aehl_latched_plan_reconstructs_fast_execution_transitions_without_order
 
 
 def test_plan_requires_triggered_candidate_and_only_execution_variable_blockers() -> None:
-    tracker = ShadowLatchedPlanResearch()
+    tracker = historical_shadow_tracker()
     for state in (SetupState.NOT_FORMED, SetupState.FORMING):
         candidate, signal, value = technical_case(setup_state=state)
         assert tracker.create(
@@ -309,7 +309,7 @@ def test_plan_requires_triggered_candidate_and_only_execution_variable_blockers(
 
 
 def test_plan_identity_and_geometry_are_frozen_across_market_observations() -> None:
-    tracker = ShadowLatchedPlanResearch()
+    tracker = historical_shadow_tracker()
     created = create_plan(tracker)
     payload = next(
         record.payload for record in created
@@ -328,7 +328,7 @@ def test_plan_identity_and_geometry_are_frozen_across_market_observations() -> N
 
 
 def test_stale_quote_records_confirmation_need_but_never_requests_rest() -> None:
-    tracker = ShadowLatchedPlanResearch()
+    tracker = historical_shadow_tracker()
     create_plan(tracker)
     at = T0 + timedelta(seconds=10)
     records = tracker.observe(observation(
@@ -343,7 +343,7 @@ def test_stale_quote_records_confirmation_need_but_never_requests_rest() -> None
 
 
 def test_unavailable_account_is_recorded_without_hypothetical_authorization() -> None:
-    tracker = ShadowLatchedPlanResearch()
+    tracker = historical_shadow_tracker()
     candidate, signal, value = technical_case()
     records = tracker.create(
         candidate, signal, value,
@@ -362,7 +362,7 @@ def test_unavailable_account_is_recorded_without_hypothetical_authorization() ->
 
 
 def test_clock_domains_persist_source_and_processing_durations_independently() -> None:
-    tracker = ShadowLatchedPlanResearch()
+    tracker = historical_shadow_tracker()
     candidate, signal, value = technical_case()
     decision_processing = T0 - timedelta(seconds=2)
     value = replace(value, evaluation_timestamp=decision_processing)
@@ -408,7 +408,7 @@ def test_clock_domains_persist_source_and_processing_durations_independently() -
 
 
 def test_missing_source_endpoint_never_manufactures_mixed_domain_duration() -> None:
-    tracker = ShadowLatchedPlanResearch()
+    tracker = historical_shadow_tracker()
     create_plan(tracker)
     processing_at = T0 + timedelta(seconds=1)
     no_source = replace(
@@ -432,7 +432,7 @@ def test_missing_source_endpoint_never_manufactures_mixed_domain_duration() -> N
 
 
 def test_stop_before_entry_is_terminal_but_replacement_gets_new_identity() -> None:
-    tracker = ShadowLatchedPlanResearch()
+    tracker = historical_shadow_tracker()
     created = create_plan(tracker)
     first_plan_id = next(
         record.payload["plan_id"] for record in created
@@ -490,7 +490,7 @@ def test_stop_before_entry_is_terminal_but_replacement_gets_new_identity() -> No
 
 
 def test_stop_after_authorization_blocks_both_policy_fill_paths() -> None:
-    tracker = ShadowLatchedPlanResearch()
+    tracker = historical_shadow_tracker()
     create_plan(tracker)
     authorized = tracker.observe(observation(
         T0 + timedelta(seconds=1),
@@ -513,7 +513,7 @@ def test_read_only_account_risk_evaluation_distinguishes_rejection_and_approval(
     rejected_account = PaperAccountContext(
         D("50000"), D("25000"), frozenset(),
     )
-    tracker = ShadowLatchedPlanResearch()
+    tracker = historical_shadow_tracker()
     rejected = create_plan(tracker, account_context=rejected_account)
     rejected_research = next(
         record.payload["account_research"] for record in rejected
@@ -531,7 +531,7 @@ def test_read_only_account_risk_evaluation_distinguishes_rejection_and_approval(
     ))
     assert rejected_account.allowed_symbols == frozenset()
 
-    approved_tracker = ShadowLatchedPlanResearch()
+    approved_tracker = historical_shadow_tracker()
     approved = create_plan(approved_tracker)
     approved_research = next(
         record.payload["account_research"] for record in approved
@@ -559,7 +559,7 @@ def test_read_only_account_risk_evaluation_distinguishes_rejection_and_approval(
 def test_market_invalidations_prevent_late_authorization_and_fill(
     market_changes: dict[str, object], expected: str,
 ) -> None:
-    tracker = ShadowLatchedPlanResearch()
+    tracker = historical_shadow_tracker()
     create_plan(tracker)
     market = observation(
         T0 + timedelta(seconds=1),
@@ -576,7 +576,7 @@ def test_market_invalidations_prevent_late_authorization_and_fill(
 
 
 def test_new_bar_invalidation_prevents_late_authorization_and_fill() -> None:
-    tracker = ShadowLatchedPlanResearch()
+    tracker = historical_shadow_tracker()
     create_plan(tracker)
     closed = tracker.invalidate(
         "AEHL", T0 + timedelta(minutes=1),
@@ -592,7 +592,7 @@ def test_new_bar_invalidation_prevents_late_authorization_and_fill() -> None:
 
 
 def test_shutdown_invalidates_once_and_prevents_late_research_activity() -> None:
-    tracker = ShadowLatchedPlanResearch()
+    tracker = historical_shadow_tracker()
     create_plan(tracker)
     closed = tracker.shutdown(T0 + timedelta(seconds=5))
     assert transitions(closed) == ["PLAN_EXPIRED"]
@@ -604,7 +604,7 @@ def test_shutdown_invalidates_once_and_prevents_late_research_activity() -> None
 
 
 def test_new_record_types_round_trip_through_existing_wal_store(tmp_path: Path) -> None:
-    tracker = ShadowLatchedPlanResearch()
+    tracker = historical_shadow_tracker()
     records = create_plan(tracker)
     store = ForwardCaptureStore(tmp_path / "shadow-latched.sqlite3")
     inserted, duplicates = store.append_batch(records)
@@ -696,3 +696,13 @@ def test_forward_service_shadow_path_cannot_submit_paper_or_request_rest(
     assert store.records(
         record_type=CaptureRecordType.SHADOW_LATCHED_TRANSITION,
     ) == ()
+
+
+def historical_shadow_config():
+    """Historical after-hours fixture is explicitly research-only, not desktop policy."""
+    from app.strategies.warrior_momentum.configuration import WarriorMomentumConfig, EntryConfig
+    return WarriorMomentumConfig(entry=EntryConfig(allowed_sessions=frozenset({"PREMARKET","REGULAR","AFTER_HOURS"})))
+
+
+def historical_shadow_tracker():
+    return ShadowLatchedPlanResearch(config=historical_shadow_config())

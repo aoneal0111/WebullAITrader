@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 from enum import StrEnum
 from threading import RLock
 from typing import Callable
@@ -41,7 +41,7 @@ class QuickScalperConfig:
     minimum_price: Decimal = Decimal('1.00')
     maximum_price: Decimal | None = None
     allowed_sessions: frozenset[str] = frozenset(
-        {"PREMARKET", "REGULAR", "AFTER_HOURS"}
+        {"PREMARKET", "REGULAR"}
     )
     provider_freshness_seconds: Decimal = Decimal("5")
     absolute_minimum_move: Decimal = Decimal("0.05")
@@ -60,8 +60,23 @@ class QuickScalperConfig:
     minimum_net_target_reward_r: Decimal = Decimal("0.50")
     confirmation_reward_penalty_r: Decimal = Decimal("0.25")
     stream_confirmation_seconds: Decimal = Decimal("2")
+    cent_target_minimum: Decimal | None = None
+    cent_target_maximum: Decimal | None = None
+    cent_pullback_support_enabled: bool = False
+    cent_fill_anchored_economics: bool = False
 
     def __post_init__(self) -> None:
+        if self.cent_fill_anchored_economics and not self.cent_pullback_support_enabled:
+            raise ValueError('Fill-anchored economics requires the explicit cent pullback profile')
+        if self.cent_pullback_support_enabled and self.cent_target_minimum is None:
+            raise ValueError('Cent pullback support requires bounded cent targets')
+        cents = self.cent_target_minimum, self.cent_target_maximum
+        if any(v is not None for v in cents) and (
+            any(v is None or not v.is_finite() for v in cents)
+            or not Decimal('0.05') <= cents[0] <= cents[1] <= Decimal('0.10')
+            or any(v != v.quantize(Decimal('0.01')) for v in cents)
+        ):
+            raise ValueError('Cent targets require finite paired bounds within $0.05-$0.10')
         if self.minimum_price != Decimal('1.00'):
             raise ValueError('Quick Scalper minimum price must remain $1.00')
         if self.maximum_price is not None:
@@ -122,6 +137,8 @@ class QuickScalpSnapshot:
     stream_upward_updates: int | None = None
     stream_price_change_updates: int | None = None
     observed_ask_advance: Decimal | None = None
+    support_source: str = 'WINDOW_LOW'
+    support_timestamp: datetime | None = None
 
     def __post_init__(self) -> None:
         if not self.symbol.strip() or not self.generation_id.strip():
@@ -132,6 +149,8 @@ class QuickScalpSnapshot:
         ):
             if value.tzinfo is None:
                 raise ValueError("scalp timestamps must be timezone-aware")
+        if self.support_timestamp is not None and self.support_timestamp.utcoffset() is None:
+            raise ValueError('support timestamp must be timezone-aware')
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +189,16 @@ class QuickScalperPolicy:
             + (self.config.slippage_per_side + liquidity_slippage) * 2
         )
         risk = value.ask - value.structural_stop
+        # Cent exits are installed at actual weighted entry fill + target_move.
+        # Entry slippage therefore increases modeled initial risk, rather than
+        # reducing that fill-relative target again. Spread remains in the
+        # acquisition-cost floor and required BID movement, exactly once each.
+        entry_slippage = self.config.slippage_per_side + liquidity_slippage
+        reward_cost = cost
+        reward_risk = risk
+        if self.config.cent_fill_anchored_economics:
+            reward_cost = entry_slippage  # conservative exit slippage reserve
+            reward_risk = risk + entry_slippage
         confidence = self._momentum_confidence(value)
         required_reward_r = (
             self.config.minimum_net_target_reward_r
@@ -181,6 +210,18 @@ class QuickScalperPolicy:
             cost * self.config.execution_cost_multiple,
             risk * required_reward_r + cost,
         )
+        cent_economics_fit = True
+        if self.config.cent_target_minimum is not None:
+            target_move = min(self.config.cent_target_maximum, max(
+                self.config.cent_target_minimum,
+                value.short_horizon_range * self.config.volatility_move_fraction,
+                cost * self.config.execution_cost_multiple,
+                reward_risk * required_reward_r + reward_cost,
+            ).quantize(Decimal('0.01'),rounding=ROUND_CEILING))
+            cent_economics_fit = (
+                target_move >= reward_risk * required_reward_r + reward_cost
+                and target_move >= cost * self.config.execution_cost_multiple
+            )
         # A per-minute velocity is a rate, not evidence that a minute of
         # movement remains available. Use demonstrated BID movement instead
         # of extrapolating a short burst into an unobserved future minute.
@@ -206,6 +247,16 @@ class QuickScalperPolicy:
             decision = ScalpDecision.REJECTED_HARD_SAFETY
             reason = hard.value
             reasons = (hard,)
+        elif self.config.cent_pullback_support_enabled and not self._cent_support_ready(value):
+            adaptive = AdaptiveOpportunityResult.WAIT
+            decision = ScalpDecision.WAIT
+            reason = 'CENT_SUPPORT_FORMING'
+            reasons = (OpportunityReason.EXECUTION_QUALITY_WAIT,)
+        elif not cent_economics_fit:
+            adaptive = AdaptiveOpportunityResult.WAIT
+            decision = ScalpDecision.WAIT
+            reason = 'CENT_TARGET_ECONOMICS_WAIT'
+            reasons = (OpportunityReason.EXECUTION_QUALITY_WAIT,)
         elif expected_move < required_bid_move:
             adaptive = AdaptiveOpportunityResult.WAIT
             decision = ScalpDecision.WAIT
@@ -226,8 +277,8 @@ class QuickScalperPolicy:
             structural_stop=value.structural_stop,
             risk_per_share=risk if risk > ZERO else Decimal("0.00000001"),
             target_levels=(value.ask + target_move,),
-            remaining_first_target_r=(target_move - cost) / risk if risk > ZERO else None,
-            remaining_final_target_r=(target_move - cost) / risk if risk > ZERO else None,
+            remaining_first_target_r=(target_move - reward_cost) / reward_risk if reward_risk > ZERO else None,
+            remaining_final_target_r=(target_move - reward_cost) / reward_risk if reward_risk > ZERO else None,
             spread_percent=spread_percent,
             execution_cost=cost,
             execution_quality="GOOD" if decision is ScalpDecision.EXECUTABLE else "POOR",
@@ -253,6 +304,13 @@ class QuickScalperPolicy:
             cost, expected_move, reason, required_bid_move,
             confidence, required_reward_r,
         )
+
+    @staticmethod
+    def _cent_support_ready(value: QuickScalpSnapshot) -> bool:
+        return bool(value.support_source == 'CONFIRMED_MICRO_PULLBACK'
+            and value.support_timestamp is not None
+            and value.support_timestamp < value.bid_timestamp
+            and value.structural_stop < value.bid)
 
     def _momentum_confidence(self, value: QuickScalpSnapshot) -> Decimal:
         # Candidate/bar snapshots retain their existing contextual assessment.
@@ -442,6 +500,8 @@ class QuickScalper:
         stale_preview_refresh = (
             assessed.decision is ScalpDecision.REJECTED_HARD_SAFETY
             and assessed.reason == OpportunityReason.PROVIDER_DATA_STALE.value
+            and (not self.config.cent_pullback_support_enabled
+                 or self.policy._cent_support_ready(snapshot))
             and not any(
                 timestamp > snapshot.decision_at
                 for timestamp in (
@@ -489,6 +549,8 @@ class QuickScalper:
             self.engine.mark_review_pending(snapshot.symbol, snapshot.generation_id, at=snapshot.decision_at)
             return assessed
         recoverable_confirmation = result.reason in {
+            'CENT_SUPPORT_FORMING',
+            'CENT_TARGET_ECONOMICS_WAIT',
             'EXECUTION_QUOTE_UNAVAILABLE',
             'INSUFFICIENT_NET_EXECUTABLE_EDGE',
             'PROVIDER_DATA_STALE',

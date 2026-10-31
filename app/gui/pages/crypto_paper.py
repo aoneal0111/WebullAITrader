@@ -26,10 +26,12 @@ class CryptoPaperPage(QWidget):
         disclosure = QLabel('Snapshot fills assume 0.1% fees and 0.1% slippage per side. Exchange queues and partial fills are not simulated.')
         disclosure.setWordWrap(True)
         layout.addWidget(disclosure)
-        self.enabled = QCheckBox('Enable AI paper proposals — shares crypto quotes and simulated account data with Grok')
+        native = getattr(supervisor,'native_observation_only',False)
+        self.enabled = QCheckBox('Native strategy observation · new crypto entries disabled'
+                                if native else 'Enable AI paper proposals — shares crypto quotes and simulated account data with Grok')
         self.enabled.setObjectName('cryptoProposalToggle')
         self.enabled.setChecked(supervisor.entries_enabled)
-        self.enabled.setEnabled(supervisor.provider is not None)
+        self.enabled.setEnabled(not native and supervisor.provider is not None)
         self.enabled.toggled.connect(self.set_enabled)
         layout.addWidget(self.enabled)
         self.state = QLabel()
@@ -65,7 +67,8 @@ class CryptoPaperPage(QWidget):
             self.quote_rows = []
         else:
             layout.addWidget(self.content, 1)
-        self.close_positions = QPushButton('Close crypto paper positions and pause AI proposals')
+        self.close_positions = QPushButton('Close crypto paper positions and pause entries'
+                                           if native else 'Close crypto paper positions and pause AI proposals')
         self.close_positions.clicked.connect(self.close_paper_positions)
         layout.addWidget(self.close_positions)
         self.timer = QTimer(self)
@@ -93,7 +96,7 @@ class CryptoPaperPage(QWidget):
                 supervisor.entry_router.reconcile()
             except Exception:
                 errors.append('shared allocation reconciliation required')
-        supervisor.status = ('Fresh quotes required to close: ' + ', '.join(errors)) if errors else 'Paper positions closed; AI proposals paused'
+        supervisor.status = ('Fresh quotes required to close: ' + ', '.join(errors)) if errors else ('Paper positions closed; entries paused' if getattr(supervisor,'native_observation_only',False) else 'Paper positions closed; AI proposals paused')
         self.refresh()
 
     def refresh(self):
@@ -103,7 +106,7 @@ class CryptoPaperPage(QWidget):
         self.enabled.setChecked(self.supervisor.entries_enabled)
         self.enabled.blockSignals(False)
         status = self.supervisor.status
-        if self.supervisor.provider is None:
+        if self.supervisor.provider is None and not getattr(self.supervisor,'native_observation_only',False):
             status = 'AI not configured. Set XAI_API_KEY and ATLAS_GROK_MODEL locally, then restart.'
         self.state.setText(f'{status}\nProtection: {self.supervisor.protection_status}')
         snapshot = self.supervisor.paper.snapshot()
@@ -156,7 +159,9 @@ class CryptoPaperPage(QWidget):
             keys = ('symbol','quantity','entry','stop','target')
         if self.title in ('Replay', 'Strategies'):
             rows = []
-            self.state.setText('Crypto replay and strategy editing are not available in this paper simulator. Use Mission Control for AI proposal controls.')
+            self.state.setText('Native crypto signals are observed with entries disabled. Strategy comparisons remain offline.'
+                               if getattr(self.supervisor,'native_observation_only',False)
+                               else 'Crypto replay and strategy editing are not available in this paper simulator. Use Mission Control for AI proposal controls.')
         self.content.setColumnCount(len(keys))
         self.content.setHorizontalHeaderLabels([key.replace('_',' ').title() for key in keys])
         self.content.setRowCount(len(rows))

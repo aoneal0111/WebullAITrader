@@ -206,7 +206,10 @@ class MainWindow(QMainWindow):
         self.asset_surface = QStackedWidget()
         self._asset_pages = {}
         self.pages = QStackedWidget()
+        from app.equity_overhaul.paper_experiment import PaperExperiment
+        admission_policy=getattr(self._trading_service,'policy',None)
         self.dashboard = DashboardPage(
+            admission_notice_provider=admission_policy.notice if isinstance(admission_policy,PaperExperiment) else None,
             warrior_observability=(
                 None if self._warrior_forward_sidecar is None
                 else getattr(self._warrior_forward_sidecar, "_observability", None)

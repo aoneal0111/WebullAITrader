@@ -6,7 +6,7 @@ import re
 
 from app.asset_modules.engine_catalog import EngineId
 
-FIELDS = ("strategy_family", "strategy_policy_version", "strategy_code_fingerprint",
+FIELDS = ("strategy_trial_id", "strategy_family", "strategy_policy_version", "strategy_code_fingerprint",
           "strategy_configuration_fingerprint", "strategy_attribution_scope")
 
 # Explicit source scope: deliberately not presented as a full repository hash.
@@ -17,6 +17,7 @@ SHARED = (
     "strategies/warrior_momentum/opportunity_engine.py", "paper_gateway/gateway.py",
     "composition/desktop.py", "strategies/warrior_momentum/desktop_sidecar.py",
     "services/trading_service.py",
+    "market/scalp_session.py", "equity_overhaul/paper_experiment.py", "equity_overhaul/admission.py",
 )
 SOURCE_FILES = {
     EngineId.WARRIOR.value: SHARED + (
@@ -38,10 +39,11 @@ def source_fingerprint(root, paths):
     return sha256(json.dumps(manifest, separators=(",", ":")).encode()).hexdigest()
 
 
-def family(signal, engine):
+def family(signal, engine, *, native_only=False):
     if engine == EngineId.SCALPER.value:
-        return "QUICK_SCALP_MOMENTUM"
-    primary = getattr(signal, "taxonomy_strategy_id", None)
+        setup = getattr(signal, "setup_type", None)
+        return setup if setup in {"QUICK_SCALP_STREAM", "QUICK_SCALP_MOMENTUM"} else "QUICK_SCALP_MOMENTUM"
+    primary = None if native_only else getattr(signal, "taxonomy_strategy_id", None)
     if primary:
         value = getattr(primary, "value", primary)
     else:
@@ -62,19 +64,19 @@ class EquityPolicyAttribution:
             except OSError:
                 self._code[engine] = "UNKNOWN"
 
-    def __call__(self, signal):
+    def __call__(self, signal, *, native_only=False):
         owner = str(getattr(signal, "strategy_owner", None) or getattr(signal, "strategy_id", ""))
         engine = EngineId.WARRIOR.value if owner.startswith("WARRIOR_MOMENTUM") else owner
         if engine not in SOURCE_FILES:
             return {}
-        setup = family(signal, engine)
+        setup = family(signal, engine, native_only=native_only)
         code, config = self._code[engine], self._configuration.get(engine, "UNKNOWN")
         version = "UNKNOWN"
         if (setup != "UNKNOWN" and re.fullmatch(r"[0-9a-f]{64}", code)
                 and isinstance(config, str) and re.fullmatch(r"[0-9a-f]{64}", config)):
             material = json.dumps(["EQUITY_POLICY_ATTRIBUTION_V1", engine, setup, code, config])
             version = "EQUITY_POLICY_V1:" + sha256(material.encode()).hexdigest()
-        return dict(zip(FIELDS, (setup, version, code, config,
+        return dict(zip(tuple(k for k in FIELDS if k != "strategy_trial_id"), (setup, version, code, config,
                                 "DECLARED_SOURCE_AND_ENGINE_CONFIG_V1")))
 
 

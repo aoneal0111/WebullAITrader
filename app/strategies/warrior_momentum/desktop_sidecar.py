@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from hashlib import sha256
@@ -308,7 +308,9 @@ class WarriorDesktopSidecar:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         paper_order_source: Callable[[str], object] | None = None,
         paper_acknowledgement_adopter: Callable[..., bool] | None = None,
+        observer_context_tap: object | None = None,
     ) -> None:
+        self._observer_context_tap = observer_context_tap
         self.enabled = bool(enabled)
         self.storage_path = Path(storage_path)
         self.environment = str(environment).strip().upper() or "UNKNOWN"
@@ -464,8 +466,15 @@ class WarriorDesktopSidecar:
                 raise ValueError("Prior handoff requires reconciliation")
         observer.bind_native_review_callbacks(producer.scalper_offer, producer.scalper_refresh)
         producer.permitted = self.grok_native_execution_permitted
+        producer.history_source = self._grok_completed_history
         self._grok_native_producer = producer
         self._grok_runtime_handoff = producer.review.handoff
+
+    def _grok_completed_history(self, symbol, at):
+        """Copy retained bars under the native lock; never request more data."""
+        with self._lock:
+            return tuple(bar for bar in self._bars.get(symbol, ())[-32:]
+                if bar.timestamp + timedelta(minutes=1) <= at)
 
 
     def bind_grok_native_producer_factory(self, factory):
@@ -735,6 +744,7 @@ class WarriorDesktopSidecar:
                 self._service = WarriorForwardCaptureService(
                     self._store, self._writer, self.strategy_config,
                     self.capture_config,
+                    observer_context_tap=self._observer_context_tap,
                     configuration_fingerprint=self.configuration_fingerprint,
                     paper_entry_submitter=self._paper_entry_submitter,
                     paper_entry_reviewer=None if self._grok_native_producer is None else self._grok_native_producer.warrior_offer,
@@ -1400,6 +1410,14 @@ class WarriorDesktopSidecar:
         symbol = event.symbol.strip().upper()
         lookup_started = perf_counter()
         observation = adapter.observation_for(symbol)
+        if self._observer_context_tap is not None and observation is not None:
+            try:
+                self._observer_context_tap.record_market_eligibility(
+                    symbol, tradable=observation.tradable,
+                    halted=observation.halted, at=self._aware_now(),
+                )
+            except Exception:
+                pass
         if event.event_type is MarketEventType.QUOTE and isinstance(event.payload, QuotePayload):
             # Execution forensics must see raw quotes even when Warrior has no
             # completed bar, qualified candidate, or complete reference data.

@@ -285,3 +285,82 @@ def test_crypto_namespace_uses_market_data_identity_only() -> None:
     assert all(record.service == "MARKET_DATA" for record in guard.records)
     assert all(record.environment == "PRODUCTION" for record in guard.records)
     assert all("crypto_market_data" in record.endpoint for record in guard.records)
+
+
+@pytest.mark.parametrize('status,expected', [(401,PermissionError),(403,PermissionError),
+    (417,CryptoProviderError),(429,CryptoProviderError)])
+@pytest.mark.parametrize('raised',[False,True])
+def test_sdk_and_response_permanent_errors_are_classified_without_retry_or_secrets(status,expected,raised,caplog):
+    from webull.core.exception.exceptions import ServerException
+    from app.crypto_research.provider import CryptoRateLimitError,CryptoBusinessRequestError
+    from app.crypto_research.runtime import _failure_category
+    client=Client([instrument()],[])
+    def fail(*args):
+        client.crypto_market_data.calls.append(args)
+        if raised:raise ServerException('OTHER_BUSINESS_CODE','private-provider-body',http_status=status,request_id='secret-request')
+        return Response({'error_code':'OTHER_BUSINESS_CODE','message':'private-provider-body'},status_code=status)
+    client.crypto_market_data.get_crypto_snapshot=fail
+    provider=WebullCryptoResearchProvider(client,minimum_request_interval_seconds=0,retry_attempts=3)
+    with pytest.raises(expected) as error:provider.snapshots((CryptoPair.configured('BTC/USD'),))
+    assert len(client.crypto_market_data.calls)==1
+    assert 'private-provider-body' not in str(error.value)+caplog.text
+    assert 'secret-request' not in str(error.value)+caplog.text
+    assert _failure_category(error.value)==({401:'PERMISSION_DENIED',403:'PERMISSION_DENIED',
+        417:'BUSINESS_REQUEST_ERROR',429:'RATE_LIMITED'}[status])
+
+
+def test_rate_limit_defers_subsequent_batches_without_network_or_sleep():
+    from app.crypto_research.provider import CryptoRateLimitError
+    client=Client([instrument()],[]);now=[100.0];calls=[]
+    def fetch(*args):
+        calls.append(args)
+        return Response({},429) if len(calls)==1 else Response([snapshot()])
+    client.crypto_market_data.get_crypto_snapshot=fetch
+    provider=WebullCryptoResearchProvider(client,minimum_request_interval_seconds=0,retry_attempts=2,
+        monotonic_clock=lambda:now[0],sleeper=lambda _:pytest.fail('no cooldown sleep'))
+    pair=(CryptoPair.configured('BTC/USD'),)
+    with pytest.raises(CryptoRateLimitError):provider.snapshots(pair)
+    with pytest.raises(CryptoRateLimitError):provider.snapshots(pair)
+    assert len(calls)==1
+    now[0]+=60
+    assert len(provider.snapshots(pair))==1
+
+
+def test_sdk_explicit_unsupported_symbol_remains_distinct_from_business_error():
+    from webull.core.exception.exceptions import ServerException
+    from app.crypto_research.provider import UnsupportedCryptoSymbolError
+    client=Client([instrument()],[])
+    def fail(*args):raise ServerException('UNSUPPORTED_SYMBOL','private',http_status=417)
+    client.crypto_market_data.get_crypto_snapshot=fail
+    provider=WebullCryptoResearchProvider(client,minimum_request_interval_seconds=0,retry_attempts=2)
+    with pytest.raises(UnsupportedCryptoSymbolError):provider.snapshots((CryptoPair.configured('BTC/USD'),))
+
+
+def test_receipt_time_cannot_make_an_undated_quote_fresh():
+    row = snapshot()
+    del row['quote_time']
+    del row['last_trade_time']
+    with pytest.raises(MalformedCryptoQuoteError):
+        observation_from_webull(pair_from_webull(instrument()), row, datetime.now(UTC))
+
+
+@pytest.mark.parametrize('raised',[False,True])
+@pytest.mark.parametrize('code,label',[('INVALID_PARAMETER','INVALID_PARAMETER'),
+    ('secret-token\nforged log','UNRECOGNIZED'),({'nested':'secret'},'UNRECOGNIZED')])
+def test_business_diagnostics_are_bounded_redacted_and_copied(raised,code,label,caplog):
+    from webull.core.exception.exceptions import ServerException
+    client=Client([instrument()],[])
+    def fail(*args):
+        if raised:raise ServerException(code,'private-body',http_status=417,request_id='private-id')
+        return Response({'error_code':code,'message':'private-body'},417)
+    client.crypto_market_data.get_crypto_snapshot=fail
+    p=WebullCryptoResearchProvider(client,minimum_request_interval_seconds=0,retry_attempts=3)
+    for _ in range(35):
+        with pytest.raises(CryptoProviderError):p.snapshots((CryptoPair.configured('BTC/USD'),))
+    records=p.failure_diagnostics()
+    assert len(records)==32 and all(r['business_code']==label for r in records)
+    assert all(r['attempt']==1 and r['http_status']==417 for r in records)
+    records[0]['business_code']='tampered'
+    assert p.failure_diagnostics()[0]['business_code']==label
+    for secret in ('secret-token','forged log','private-body','private-id','nested'):
+        assert secret not in str(p.failure_diagnostics())+caplog.text

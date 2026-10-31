@@ -1,0 +1,479 @@
+{
+  "scope": "EQUITY_23_PUBLIC_REPOSITORY_SOURCE_REVIEW_V1",
+  "reviewed_on": "2026-10-28",
+  "repositories": [
+    {
+      "id": "ORB_VOLUME",
+      "repository": "sam-bateman/trading-orb",
+      "revision": "23f2400a696296cddb00166dd429c0d048bee1bb",
+      "reviewed_on": "2026-10-28",
+      "license_review": "MIT",
+      "source_files": [
+        {
+          "path": "README.md",
+          "sha256": "7780a31829e263343db7bfb83939344942f4d4fdc9af274e6831375c754c371f",
+          "url": "https://github.com/sam-bateman/trading-orb/blob/23f2400a696296cddb00166dd429c0d048bee1bb/README.md"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "3be1d573ea5392a8c63e001897de389ca9206270895ead4a6fb89e349c04e06d",
+          "url": "https://github.com/sam-bateman/trading-orb/blob/23f2400a696296cddb00166dd429c0d048bee1bb/LICENSE"
+        },
+        {
+          "path": "src/run_max_backtest.py",
+          "sha256": "5498877baa54f1ab907be63c5b86354db39e677e01e08fec1fd8993d20ab0b26",
+          "url": "https://github.com/sam-bateman/trading-orb/blob/23f2400a696296cddb00166dd429c0d048bee1bb/src/run_max_backtest.py"
+        },
+        {
+          "path": "src/run_12m_optimization.py",
+          "sha256": "0f187d6bcd699f0fba91991707c96f330e07e04ec3d9c4a0936a1029255e7c36",
+          "url": "https://github.com/sam-bateman/trading-orb/blob/23f2400a696296cddb00166dd429c0d048bee1bb/src/run_12m_optimization.py"
+        },
+        {
+          "path": "src/backtester_v2.py",
+          "sha256": "d3505008a83f2183d3290fba3850556561e49f52d151c828ef92d6389944b061",
+          "url": "https://github.com/sam-bateman/trading-orb/blob/23f2400a696296cddb00166dd429c0d048bee1bb/src/backtester_v2.py"
+        },
+        {
+          "path": "src/intraday_data.py",
+          "sha256": "28f9efdd74d5291cee8ee7e2f10bc00f97a1f7515a24b174d6a837c42637c096",
+          "url": "https://github.com/sam-bateman/trading-orb/blob/23f2400a696296cddb00166dd429c0d048bee1bb/src/intraday_data.py"
+        }
+      ],
+      "author_evidence": "README reports 4292 trades, 50.3% win rate and PF 1.31 on a selected 20-stock universe; not reproduced here.",
+      "source_findings": [
+        "Published ten-year configuration uses a 20-minute range; orb_strategy.py contains an earlier 30-minute variant.",
+        "backtester_v2._close_position subtracts a slippage-cost term after using adversely slipped fill prices; reproduction must reconcile this accounting.",
+        "add_relative_volume includes current-bar volume in its rolling mean; use a separately specified prior-only baseline for an Atlas adaptation."
+      ],
+      "existing_atlas_research_adapters": [
+        "OPENING_RANGE_RETEST",
+        "ORB5_ACTIVITY_RUNNER_V2"
+      ],
+      "verification": "SOURCE_INSPECTED_PERFORMANCE_NOT_REPRODUCED",
+      "source_code_imported": false,
+      "execution_authorized": false
+    },
+    {
+      "id": "MULTI_INTRADAY",
+      "repository": "solste7en/strategy-research",
+      "revision": "7dae4258cf1c7859ce11d0ae57b36e2bb70557b5",
+      "reviewed_on": "2026-10-28",
+      "license_review": "NO_EXPLICIT_LICENSE_FOUND",
+      "source_files": [
+        {
+          "path": "README.md",
+          "sha256": "13dfdb1f5f697e592d385d229c4b8144bbf85990152cb4461a96b35ec5f71870",
+          "url": "https://github.com/solste7en/strategy-research/blob/7dae4258cf1c7859ce11d0ae57b36e2bb70557b5/README.md"
+        },
+        {
+          "path": "strategy/strategies/opening_range_breakout.py",
+          "sha256": "887109239a0e5d8f084a2eaf7a71c62454572545dbeb2449b4224ddfa48704f5",
+          "url": "https://github.com/solste7en/strategy-research/blob/7dae4258cf1c7859ce11d0ae57b36e2bb70557b5/strategy/strategies/opening_range_breakout.py"
+        },
+        {
+          "path": "strategy/strategies/vwap_reversion.py",
+          "sha256": "3e4cb91ae0bf8f1fc94d2b4b4bce7bce072acc07f941acc40c03b87d4337b233",
+          "url": "https://github.com/solste7en/strategy-research/blob/7dae4258cf1c7859ce11d0ae57b36e2bb70557b5/strategy/strategies/vwap_reversion.py"
+        },
+        {
+          "path": "strategy/strategies/intraday_momentum_continuation.py",
+          "sha256": "d539156d4c093364b69fbd573f8a603067aa5c873d5b770303559a2d57f3ecba",
+          "url": "https://github.com/solste7en/strategy-research/blob/7dae4258cf1c7859ce11d0ae57b36e2bb70557b5/strategy/strategies/intraday_momentum_continuation.py"
+        },
+        {
+          "path": "strategy/backtest.py",
+          "sha256": "de74bc7689551c170fc2f1b0d93e302829ec513e1a9be5b634ddc83a3299d163",
+          "url": "https://github.com/solste7en/strategy-research/blob/7dae4258cf1c7859ce11d0ae57b36e2bb70557b5/strategy/backtest.py"
+        },
+        {
+          "path": "tests/test_backtest.py",
+          "sha256": "e5121baadac85b7204bb0c6a08f8e2f94c53336264533da4323f5a3f9726d3ed",
+          "url": "https://github.com/solste7en/strategy-research/blob/7dae4258cf1c7859ce11d0ae57b36e2bb70557b5/tests/test_backtest.py"
+        }
+      ],
+      "author_evidence": "Source provides walk-forward harness and synthetic tests; result CSVs are git-ignored, so no independently reproduced profitability.",
+      "source_findings": [
+        "VWAP reversion and late-day morning-return continuation are different strategies from early small-cap pullbacks.",
+        "Do not infer SIP entitlements or fees from README; no provider calls or subscriptions are required for this review."
+      ],
+      "existing_atlas_research_adapters": [
+        "TREND_VWAP_PULLBACK"
+      ],
+      "verification": "SOURCE_INSPECTED_PERFORMANCE_NOT_REPRODUCED",
+      "source_code_imported": false,
+      "execution_authorized": false
+    },
+    {
+      "id": "BREAKOUT_RETEST",
+      "repository": "wwakeford/breakout-retest-backtest",
+      "revision": "7cb09a4e188b895af3ad088ca1557edb3c7c96f0",
+      "reviewed_on": "2026-10-28",
+      "license_review": "EDUCATIONAL_TEXT_NOT_EXPLICIT_LICENSE",
+      "source_files": [
+        {
+          "path": "README.md",
+          "sha256": "49a269bef9ecc1f420897c9bbed3c00c2b9929642586de2154c4157672f65166",
+          "url": "https://github.com/wwakeford/breakout-retest-backtest/blob/7cb09a4e188b895af3ad088ca1557edb3c7c96f0/README.md"
+        },
+        {
+          "path": "strategy.py",
+          "sha256": "71f8debcf64935f7ecc493e16849c67e72e75f05c0a7b0d414d0120d94f6ef7a",
+          "url": "https://github.com/wwakeford/breakout-retest-backtest/blob/7cb09a4e188b895af3ad088ca1557edb3c7c96f0/strategy.py"
+        },
+        {
+          "path": "indicators.py",
+          "sha256": "9008d881c9bdff77d47f824c5bcd41b3e5d8a939a1264bc896a4dd17cb838e27",
+          "url": "https://github.com/wwakeford/breakout-retest-backtest/blob/7cb09a4e188b895af3ad088ca1557edb3c7c96f0/indicators.py"
+        },
+        {
+          "path": "utils.py",
+          "sha256": "368c6c67fbd526bffc502f610c0d4212e106bb5650c767867eae2cdd0f97282b",
+          "url": "https://github.com/wwakeford/breakout-retest-backtest/blob/7cb09a4e188b895af3ad088ca1557edb3c7c96f0/utils.py"
+        },
+        {
+          "path": "config.py",
+          "sha256": "eca1dd4a4600594dd64714dd8ec15cfd40c8364388fba42593bd71f9da571866",
+          "url": "https://github.com/wwakeford/breakout-retest-backtest/blob/7cb09a4e188b895af3ad088ca1557edb3c7c96f0/config.py"
+        }
+      ],
+      "author_evidence": "README includes an example 64.29% win-rate output, not a supplied reproducible trade ledger.",
+      "source_findings": [
+        "Source combines resistance, higher lows, volume breakout, retracement and SMA200.",
+        "No source code copied or imported; README License section is educational text without a standard license grant."
+      ],
+      "existing_atlas_research_adapters": [
+        "OPENING_RANGE_RETEST"
+      ],
+      "verification": "SOURCE_INSPECTED_PERFORMANCE_NOT_REPRODUCED",
+      "source_code_imported": false,
+      "execution_authorized": false
+    },
+    {
+      "id": "CONSOLIDATION_WEEKLY",
+      "repository": "naibai101/breakout-backtester",
+      "revision": "9a705001205dd95d8f1fc39389e262d60d0344a6",
+      "reviewed_on": "2026-10-28",
+      "license_review": "NO_EXPLICIT_LICENSE_FOUND",
+      "source_files": [
+        {
+          "path": "README.md",
+          "sha256": "c57c17c2f9032034e4b18c739f20f4ab20710ed1b82b829e5fab3c836e53bc88",
+          "url": "https://github.com/naibai101/breakout-backtester/blob/9a705001205dd95d8f1fc39389e262d60d0344a6/README.md"
+        },
+        {
+          "path": "strategy.py",
+          "sha256": "635000a73e3feac4dc132709ddc5ce85708c80011f0781ace27727c0528520c2",
+          "url": "https://github.com/naibai101/breakout-backtester/blob/9a705001205dd95d8f1fc39389e262d60d0344a6/strategy.py"
+        },
+        {
+          "path": "demo.py",
+          "sha256": "9df786fad6841caad68b590b757ccc8d11be3880c0e8af11a01cffe772b24030",
+          "url": "https://github.com/naibai101/breakout-backtester/blob/9a705001205dd95d8f1fc39389e262d60d0344a6/demo.py"
+        }
+      ],
+      "author_evidence": "Default demo generates five synthetic momentum tickers; demo results are not market-data performance.",
+      "source_findings": [
+        "download_data assigns a completed weekly BullFlag to daily dates within that week; needs completed-prior-week alignment before causal replay.",
+        "Daily/weekly setup is not a minute scalper; current source pivot and parameters differ from README description."
+      ],
+      "existing_atlas_research_adapters": [],
+      "verification": "SOURCE_INSPECTED_PERFORMANCE_NOT_REPRODUCED",
+      "source_code_imported": false,
+      "execution_authorized": false
+    },
+    {
+      "id": "ORB5_REFERENCE",
+      "repository": "pderer/orb_strategy",
+      "revision": "805a0a68e7f9d84991b99d414348c9cae65d2729",
+      "reviewed_on": "2026-10-28",
+      "license_review": "NO_EXPLICIT_LICENSE_FOUND",
+      "source_files": [
+        {
+          "path": "README.md",
+          "sha256": "a8aacb5024de9ae5b31f2bb66cc336a67a003a3b7089de8a12bb6e18a967a61a",
+          "url": "https://github.com/pderer/orb_strategy/blob/805a0a68e7f9d84991b99d414348c9cae65d2729/README.md"
+        },
+        {
+          "path": "returncalc/daily_return.py",
+          "sha256": "df13811f82ec2ff36c07f4db494ead252af7f7ef456d1f08af764a71634e832a",
+          "url": "https://github.com/pderer/orb_strategy/blob/805a0a68e7f9d84991b99d414348c9cae65d2729/returncalc/daily_return.py"
+        },
+        {
+          "path": "filters/relative_volume_score.py",
+          "sha256": "c0f0fa6e202aef01e292206dab837c69059bf4407d461168b318f64b2ae8bb92",
+          "url": "https://github.com/pderer/orb_strategy/blob/805a0a68e7f9d84991b99d414348c9cae65d2729/filters/relative_volume_score.py"
+        },
+        {
+          "path": "tests/returncalc_test.py",
+          "sha256": "85815f71abb744a53e6b341b09834af5725020a944dd07722771bfee0b289048",
+          "url": "https://github.com/pderer/orb_strategy/blob/805a0a68e7f9d84991b99d414348c9cae65d2729/tests/returncalc_test.py"
+        }
+      ],
+      "author_evidence": "Inspectable ORB/RVOL calculation; positive daily return ratio is not a net per-trade win rate.",
+      "source_findings": [
+        "daily_return checks stop only from the candle after entry, omitting entry-candle stop ambiguity.",
+        "Daily ATR query ends at the trading-date end; current-day availability must be excluded explicitly.",
+        "No spread, latency or account-cost reproduction; no source imported."
+      ],
+      "existing_atlas_research_adapters": [
+        "ORB5_ACTIVITY_RUNNER_V2"
+      ],
+      "verification": "SOURCE_INSPECTED_PERFORMANCE_NOT_REPRODUCED",
+      "source_code_imported": false,
+      "execution_authorized": false
+    },
+    {
+      "id": "NOISE_BAND_REFERENCE",
+      "repository": "Ascensao/intraday-momentum-strategy",
+      "revision": "5a9e956994d1ca9ef16e5e0ae6af4ce4e04e87eb",
+      "reviewed_on": "2026-10-28",
+      "license_review": "NO_EXPLICIT_LICENSE_FOUND",
+      "source_files": [
+        {
+          "path": "README.md",
+          "sha256": "99d05e2c3811c819676dab0c06de11a414b2765a57486bd0228d518e873ea579",
+          "url": "https://github.com/Ascensao/intraday-momentum-strategy/blob/5a9e956994d1ca9ef16e5e0ae6af4ce4e04e87eb/README.md"
+        },
+        {
+          "path": "prepare_indicators.py",
+          "sha256": "d6e71a2abe77772effd1b7342f10bed29a2d781e84c1f6e178eb29bb7cdd4e0f",
+          "url": "https://github.com/Ascensao/intraday-momentum-strategy/blob/5a9e956994d1ca9ef16e5e0ae6af4ce4e04e87eb/prepare_indicators.py"
+        },
+        {
+          "path": "backtest_strategy.py",
+          "sha256": "966cf09cb58247be6b1e6cacf558546703d9bb717d3655af6fe7daa287e0dfa7",
+          "url": "https://github.com/Ascensao/intraday-momentum-strategy/blob/5a9e956994d1ca9ef16e5e0ae6af4ce4e04e87eb/backtest_strategy.py"
+        },
+        {
+          "path": "check_results.py",
+          "sha256": "74a9a0cf3f42d24261bc3aea362f9bb4ddcaac8d8688b435f4a8ae6229c2234f",
+          "url": "https://github.com/Ascensao/intraday-momentum-strategy/blob/5a9e956994d1ca9ef16e5e0ae6af4ce4e04e87eb/check_results.py"
+        }
+      ],
+      "author_evidence": "SPY noise-band replication with return charts; not independently reproduced Atlas profitability.",
+      "source_findings": [
+        "Backtest uses volatility targeting up to 4x leverage and commission minimums; Atlas long-only variants are materially different.",
+        "SPY band strategy is outside the exact 23 strategy taxonomy; kept as a separate benchmark rather than relabeled."
+      ],
+      "existing_atlas_research_adapters": [
+        "NOISE_BAND_CLOCK_V2"
+      ],
+      "verification": "SOURCE_INSPECTED_PERFORMANCE_NOT_REPRODUCED",
+      "source_code_imported": false,
+      "execution_authorized": false
+    }
+  ],
+  "strategy_mapping": [
+    {
+      "strategy": "ASCENDING_BASE_BREAKOUT",
+      "repository_ids": [
+        "CONSOLIDATION_WEEKLY",
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_STRUCTURE_DIFFERENT_TIMEFRAME_AND_RULES",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "BREAKOUT_RETEST_CONTINUATION",
+      "repository_ids": [
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_PULLBACK_OR_RETEST_NOT_EXACT_DETECTOR",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "CONSOLIDATION_BREAKOUT",
+      "repository_ids": [
+        "CONSOLIDATION_WEEKLY",
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_STRUCTURE_DIFFERENT_TIMEFRAME_AND_RULES",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "DEEP_PULLBACK_RECLAIM",
+      "repository_ids": [
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_PULLBACK_OR_RETEST_NOT_EXACT_DETECTOR",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "DIP_AND_RIP",
+      "repository_ids": [
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_LEVEL_RECLAIM_NOT_EXACT_DETECTOR",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "FAILED_BREAKOUT_RECLAIM",
+      "repository_ids": [
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_LEVEL_RECLAIM_NOT_EXACT_DETECTOR",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "FIRST_PULLBACK",
+      "repository_ids": [
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_PULLBACK_OR_RETEST_NOT_EXACT_DETECTOR",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "FLAT_TOP_BREAKOUT",
+      "repository_ids": [
+        "CONSOLIDATION_WEEKLY",
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_STRUCTURE_DIFFERENT_TIMEFRAME_AND_RULES",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "GAP_AND_GO_CONTINUATION",
+      "repository_ids": [],
+      "relationship": "NO_EXACT_SOURCE_MATCH_VERIFIED",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "HIGHER_LOW_CONTINUATION",
+      "repository_ids": [
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_PULLBACK_OR_RETEST_NOT_EXACT_DETECTOR",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "HIGH_OF_DAY_BREAKOUT",
+      "repository_ids": [
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_LEVEL_RECLAIM_NOT_EXACT_DETECTOR",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "HOD_RECLAIM",
+      "repository_ids": [
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_LEVEL_RECLAIM_NOT_EXACT_DETECTOR",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "MICRO_PULLBACK",
+      "repository_ids": [
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_PULLBACK_OR_RETEST_NOT_EXACT_DETECTOR",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "MOMENTUM_REACCELERATION",
+      "repository_ids": [
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_PULLBACK_OR_RETEST_NOT_EXACT_DETECTOR",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "MOMENTUM_SQUEEZE_EXPANSION",
+      "repository_ids": [
+        "CONSOLIDATION_WEEKLY",
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_STRUCTURE_DIFFERENT_TIMEFRAME_AND_RULES",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "OPENING_DRIVE_CONTINUATION",
+      "repository_ids": [],
+      "relationship": "NO_EXACT_SOURCE_MATCH_VERIFIED",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "OPENING_RANGE_BREAKOUT",
+      "repository_ids": [
+        "ORB_VOLUME",
+        "ORB5_REFERENCE",
+        "MULTI_INTRADAY"
+      ],
+      "relationship": "SAME_FAMILY_NOT_RULE_PARITY",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "POST_GAP_RECLAIM",
+      "repository_ids": [],
+      "relationship": "NO_EXACT_SOURCE_MATCH_VERIFIED",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "PREMARKET_CONSOLIDATION_BREAKOUT",
+      "repository_ids": [],
+      "relationship": "NO_EXACT_SOURCE_MATCH_VERIFIED",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "PREMARKET_HIGH_BREAKOUT",
+      "repository_ids": [],
+      "relationship": "NO_EXACT_SOURCE_MATCH_VERIFIED",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "RANGE_COMPRESSION_BREAKOUT",
+      "repository_ids": [
+        "CONSOLIDATION_WEEKLY",
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_STRUCTURE_DIFFERENT_TIMEFRAME_AND_RULES",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "SHALLOW_PULLBACK_CONTINUATION",
+      "repository_ids": [
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_PULLBACK_OR_RETEST_NOT_EXACT_DETECTOR",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    },
+    {
+      "strategy": "VOLUME_CONTRACTION_PULLBACK",
+      "repository_ids": [
+        "BREAKOUT_RETEST"
+      ],
+      "relationship": "RELATED_PULLBACK_OR_RETEST_NOT_EXACT_DETECTOR",
+      "exact_parity_verified": false,
+      "performance_reproduced": false
+    }
+  ],
+  "separate_benchmarks": [
+    "NOISE_BAND_REFERENCE"
+  ],
+  "orders": 0,
+  "execution_authorized": false,
+  "promotion": "NONE"
+}
