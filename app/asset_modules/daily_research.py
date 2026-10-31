@@ -24,11 +24,20 @@ class DailyResearch:
         source=source_manifest(Path(__file__).resolve().parents[2])
         source_hash=sha256(canonical(source)).hexdigest()
         config_hash=configuration_digest(configuration)
+        from .crypto_desktop_capture import ENV as CRYPTO_CAPTURE_ENV, load_request
+        crypto_capture_path=os.environ.get(CRYPTO_CAPTURE_ENV,'').strip()
+        self.crypto_observer=None
+        self.crypto_capture=None
+        if crypto_capture_path:
+            request,self.crypto_capture=load_request(crypto_capture_path,configuration,source_hash,config_hash)
+            root=request.parent/'recordings'
+            seconds=self.crypto_capture['seconds']
         from app.equity_overhaul.paper_experiment import ENV, load
         experiment_path=os.environ.get(ENV,'').strip()
         experiment=load(experiment_path,clock=clock)[1] if experiment_path else None
         baseline_material=dict(source=source_hash,configuration=config_hash)
         if experiment:baseline_material['paper_experiment']=experiment
+        if self.crypto_capture is not None:baseline_material['crypto_observation_capture']=self.crypto_capture
         self.baseline=sha256(canonical(baseline_material)).hexdigest()
         root=Path(root) if root is not None else Path(os.environ.get('LOCALAPPDATA',str(Path.home())))/'AtlasResearch'
         self.directory=root/('daily-research-'+datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')+'-'+uuid4().hex)
@@ -36,6 +45,9 @@ class DailyResearch:
         try:
             self.journal=DailyJournal(self.directory/'journal',self.baseline,clock=clock,
                 **({'max_bytes':4*1024*1024*1024,'max_records':8_000_000} if experiment else {}))
+            if self.crypto_capture is not None:
+                request.with_name('recording-session.json').write_text(json.dumps(dict(
+                    session=str(self.directory),capture_id=self.crypto_capture['id'])),encoding='utf-8')
             if experiment:
                 pointer=Path(experiment_path).with_name('recording-session.json')
                 pointer.write_text(json.dumps({'session':str(self.directory),'trial_id':experiment['trial_id']}),encoding='utf-8')
@@ -49,6 +61,7 @@ class DailyResearch:
             self._last_active_readiness=None
             self._deadline=monotonic()+seconds
             manifest=dict(scope='NORMAL_DESKTOP_DAILY_RESEARCH_V1',paper_experiment=experiment,baseline_sha256=self.baseline,
+                crypto_observation_capture=self.crypto_capture,
                 source_sha256=source_hash,configuration_sha256=config_hash,source_files=source,
                 started_at=clock().isoformat(),max_seconds=seconds,live_trading_enabled=False,
                 grok_order_review_enabled=bool(self.grok_execution),automatic_grok_requests=0,
@@ -57,7 +70,8 @@ class DailyResearch:
                 strategy_baseline_changed=False,entries_enabled_by_recorder=False,
                 coverage=['Subscribed native market events','Paper order and fill runtime events',
                     'Observed bar windows','Warrior and Scalper quote assessments',
-                    'Scalper stream assessments when existing hook is reached'],
+                    'Scalper stream assessments when existing hook is reached',
+                    'Native crypto worker inputs and results when observer is explicitly enabled'],
                 limitations=['No unobserved symbols, pre-start ticks, options chains or news invented',
                     'Fresh context sample limited to 10000 records/64MiB; raw journal continues if context fills',
                     f'Raw journal bounded to {self.journal.max_bytes} bytes/{self.journal.max_records} records; queue drops invalidate complete replay',
@@ -110,6 +124,22 @@ class DailyResearch:
         if service is not None:self._last_active_readiness=report
         target=self.directory/'engine-readiness.json';temporary=target.with_suffix('.tmp')
         temporary.write_text(json.dumps(report,indent=2),encoding='utf-8');temporary.replace(target)
+        self._write_crypto_readiness()
+        return report
+
+    def _write_crypto_readiness(self):
+        observer=self.crypto_observer
+        if observer is None:return None
+        report=dict(scope='DAILY_NATIVE_CRYPTO_READINESS_V1',updated_at=datetime.now(UTC).isoformat(),
+            baseline_sha256=self.baseline,capture_id=None if self.crypto_capture is None else self.crypto_capture['id'],
+            recording_open=not self._closed,native_observation_only=True,
+            observer=observer.metrics(),data=observer.runtime.metrics(),
+            observation_thread_alive=bool(observer.thread and observer.thread.is_alive()),
+            protection_thread_alive=bool(observer.protection_thread and observer.protection_thread.is_alive()),
+            grok_requests=0,execution_authorized=False)
+        report=safe_settings(report)
+        target=self.directory/'crypto-readiness.json';temporary=target.with_suffix('.tmp')
+        temporary.write_text(json.dumps(report,indent=2),encoding='utf-8');temporary.replace(target)
         return report
 
     def _monitor(self):
@@ -133,15 +163,20 @@ class DailyResearch:
             self.journal.submit('POLICY_CHECK_FAILED',{})
         from .grok_observer_session import _entry_diagnostic_counts,_entry_diagnostic_delta
         entry_diagnostics=_entry_diagnostic_delta(self._entry_counts_before,_entry_diagnostic_counts())
+        try:crypto_readiness=self._write_crypto_readiness()
+        except Exception:crypto_readiness=dict(status='CRYPTO_READINESS_FAILED',execution_authorized=False)
         capture=self.tap.close();journal=self.journal.close()
         context_path=self.directory/'private-capture/private-observer-context.jsonl'
         context_sha=sha256(context_path.read_bytes()).hexdigest() if context_path.exists() else None
         report=dict(context_sha256=context_sha,scope='NORMAL_DESKTOP_DAILY_RESEARCH_SUMMARY_V1',reason=reason,
             baseline_sha256=self.baseline,journal=journal,context_capture=capture,
             policy_unchanged=not self._policy_changed,entry_diagnostics=entry_diagnostics,
+            crypto_native_readiness=crypto_readiness,
+            crypto_native_records={k:v for k,v in journal.get('counts',{}).items() if k.startswith('CRYPTO_NATIVE_OBSERVER_')},
             last_active_engine_readiness=self._last_active_readiness,
             engine_evidence_status=('ENGINE_EVIDENCE_RECORDED' if capture['tap_counts'].get('bars_queued',0)>0
-                or capture['tap_counts'].get('assessments_queued',0)>0 else 'NO_ENGINE_EVIDENCE_REVIEW_REQUIRED'),
+                or capture['tap_counts'].get('assessments_queued',0)>0 else 'CRYPTO_ENGINE_EVIDENCE_RECORDED'
+                if journal.get('counts',{}).get('CRYPTO_NATIVE_OBSERVER_INPUT',0)>0 else 'NO_ENGINE_EVIDENCE_REVIEW_REQUIRED'),
             grok_execution_status=None if self.grok_execution is None else self.grok_execution.status(),
             orders_dispatched=0,grok_requests=0,execution_authorized=False)
         (self.directory/'research-summary.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
@@ -149,11 +184,15 @@ class DailyResearch:
 
 
 def configured_research(configuration,runtime_mode,existing_tap=None):
+    from .crypto_desktop_capture import ENV as CRYPTO_CAPTURE_ENV
+    if os.environ.get(CRYPTO_CAPTURE_ENV,'').strip() and not getattr(configuration,'daily_research_enabled',False):
+        raise ValueError('EXPLICIT_CRYPTO_CAPTURE_REQUIRES_RECORDING')
     if not getattr(configuration,'daily_research_enabled',False):return None
     if runtime_mode.value!='PAPER' or existing_tap is not None:
         raise ValueError('DAILY_RECORDING_REQUIRES_NORMAL_PAPER_DESKTOP_WITHOUT_SECOND_CAPTURE')
     try:return DailyResearch(configuration)
     except Exception:
+        if os.environ.get(CRYPTO_CAPTURE_ENV,'').strip():raise
         import logging
         logging.getLogger(__name__).error('Daily research recording unavailable; native strategy and protection unchanged')
         return None

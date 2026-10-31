@@ -40,7 +40,11 @@ def create_asset_modules(composition):
         grok = getattr(composition, "grok_suite", None) or configured_suite()
         if native_observer:
             from app.asset_modules.crypto_native_observer import NativeCryptoObserver
-            supervisor = NativeCryptoObserver(paper, composition.crypto_research_runtime,entry_router=router)
+            recorder=getattr(composition,'daily_research',None)
+            supervisor = NativeCryptoObserver(paper, composition.crypto_research_runtime,entry_router=router,
+                evidence_sink=None if recorder is None else recorder.journal.submit)
+            if recorder is not None:
+                recorder.crypto_observer=supervisor
         else:
             supervisor = CryptoSupervisor(paper, composition.crypto_research_runtime.latest,
                                           grok.crypto if grok is not None else None, entry_router=router,

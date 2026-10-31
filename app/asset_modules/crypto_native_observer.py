@@ -15,7 +15,7 @@ class NativeCryptoObserver(CryptoSupervisor):
     native_observation_only=True
     symbols=('BTC/USD','ETH/USD')
 
-    def __init__(self,paper,runtime,*,entry_router,clock=None):
+    def __init__(self,paper,runtime,*,entry_router,clock=None,evidence_sink=None):
         if not isinstance(runtime,CryptoResearchRuntime) or not isinstance(entry_router,CryptoAllocationRouter):
             raise ValueError('Native crypto observation requires research runtime and shared PAPER allocation')
         super().__init__(paper,runtime.latest,None,entry_router=entry_router)
@@ -24,6 +24,8 @@ class NativeCryptoObserver(CryptoSupervisor):
         self._native_controller=None
         self._cursor=0
         self._seen={}
+        self._evidence_sink=evidence_sink
+        self._evidence_outcomes={}
         self._native_metrics=dict(assessments_submitted=0,assessments_completed=0,
             qualifying_signals_blocked=0,input_waits=0,worker_failures=0,
             worker_owner_thread=None,last_outcomes={})
@@ -45,6 +47,15 @@ class NativeCryptoObserver(CryptoSupervisor):
         # All reasons come from native enums/validated worker output, never a provider error body.
         self._native_metrics['last_outcomes'][symbol]=reason
         self.status=f'Crypto strategy observation · entries disabled · {symbol}: {reason}'
+        if self._evidence_outcomes.get(symbol)!=reason:
+            self._evidence_outcomes[symbol]=reason
+            self._record('CRYPTO_NATIVE_OBSERVER_OUTCOME',dict(symbol=symbol,reason=reason,
+                at=self._clock(),policy=POLICY,entries_enabled=False,execution_authorized=False))
+
+    def _record(self,kind,payload):
+        if self._evidence_sink is not None:
+            try:self._evidence_sink(kind,payload)
+            except Exception:pass  # Observation cannot stop independent protection.
 
     def tick(self):
         # Preserve worker thread ownership: the GUI never polls this handle.
@@ -66,6 +77,10 @@ class NativeCryptoObserver(CryptoSupervisor):
                 if result['entry']=='ENTRIES_DISABLED':
                     self._native_metrics['qualifying_signals_blocked']+=1
                 self._outcome(symbol,result['entry'])
+                quote=quotes.get(symbol)
+                self._record('CRYPTO_NATIVE_OBSERVER_RESULT',dict(symbol=symbol,reason=result['entry'],
+                    at=now,quote=quote,policy=POLICY,worker_state=controller.worker.state.value,
+                    entries_enabled=False,execution_authorized=False))
                 self.paper.record_decision({'symbol':symbol,'action':'OBSERVE','reason':POLICY},result['entry'])
             if controller.worker.state in {WorkerState.FAILED,WorkerState.CLOSED}:
                 self._native_metrics['worker_failures']+=1
@@ -91,6 +106,9 @@ class NativeCryptoObserver(CryptoSupervisor):
                 if result['entry']=='PENDING_WORKER':
                     self._seen[symbol]=identity
                     self._native_metrics['assessments_submitted']+=1
+                    self._record('CRYPTO_NATIVE_OBSERVER_INPUT',dict(symbol=symbol,at=now,
+                        history=frame.history,quote=frame.quote,policy=POLICY,
+                        entries_enabled=False,execution_authorized=False))
                 self._outcome(symbol,result['entry'])
                 break
         return True
