@@ -63,8 +63,11 @@ class QuickScalperConfig:
     cent_target_minimum: Decimal | None = None
     cent_target_maximum: Decimal | None = None
     cent_pullback_support_enabled: bool = False
+    cent_fill_anchored_economics: bool = False
 
     def __post_init__(self) -> None:
+        if self.cent_fill_anchored_economics and not self.cent_pullback_support_enabled:
+            raise ValueError('Fill-anchored economics requires the explicit cent pullback profile')
         if self.cent_pullback_support_enabled and self.cent_target_minimum is None:
             raise ValueError('Cent pullback support requires bounded cent targets')
         cents = self.cent_target_minimum, self.cent_target_maximum
@@ -186,6 +189,16 @@ class QuickScalperPolicy:
             + (self.config.slippage_per_side + liquidity_slippage) * 2
         )
         risk = value.ask - value.structural_stop
+        # Cent exits are installed at actual weighted entry fill + target_move.
+        # Entry slippage therefore increases modeled initial risk, rather than
+        # reducing that fill-relative target again. Spread remains in the
+        # acquisition-cost floor and required BID movement, exactly once each.
+        entry_slippage = self.config.slippage_per_side + liquidity_slippage
+        reward_cost = cost
+        reward_risk = risk
+        if self.config.cent_fill_anchored_economics:
+            reward_cost = entry_slippage  # conservative exit slippage reserve
+            reward_risk = risk + entry_slippage
         confidence = self._momentum_confidence(value)
         required_reward_r = (
             self.config.minimum_net_target_reward_r
@@ -203,10 +216,10 @@ class QuickScalperPolicy:
                 self.config.cent_target_minimum,
                 value.short_horizon_range * self.config.volatility_move_fraction,
                 cost * self.config.execution_cost_multiple,
-                risk * required_reward_r + cost,
+                reward_risk * required_reward_r + reward_cost,
             ).quantize(Decimal('0.01'),rounding=ROUND_CEILING))
             cent_economics_fit = (
-                target_move >= risk * required_reward_r + cost
+                target_move >= reward_risk * required_reward_r + reward_cost
                 and target_move >= cost * self.config.execution_cost_multiple
             )
         # A per-minute velocity is a rate, not evidence that a minute of
@@ -264,8 +277,8 @@ class QuickScalperPolicy:
             structural_stop=value.structural_stop,
             risk_per_share=risk if risk > ZERO else Decimal("0.00000001"),
             target_levels=(value.ask + target_move,),
-            remaining_first_target_r=(target_move - cost) / risk if risk > ZERO else None,
-            remaining_final_target_r=(target_move - cost) / risk if risk > ZERO else None,
+            remaining_first_target_r=(target_move - reward_cost) / reward_risk if reward_risk > ZERO else None,
+            remaining_final_target_r=(target_move - reward_cost) / reward_risk if reward_risk > ZERO else None,
             spread_percent=spread_percent,
             execution_cost=cost,
             execution_quality="GOOD" if decision is ScalpDecision.EXECUTABLE else "POOR",

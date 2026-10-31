@@ -58,18 +58,23 @@ def reconstructed_preview(source,quote,at):
 
 def edge_terms(snapshot,policy):
     result=policy.assess(snapshot);c=policy.config
+    slippage=(result.round_trip_cost-(snapshot.ask-snapshot.bid))/2
+    reward_cost=slippage if c.cent_fill_anchored_economics else result.round_trip_cost
+    reward_risk=snapshot.ask-snapshot.structural_stop+(slippage if c.cent_fill_anchored_economics else D(0))
     terms=dict(absolute_minimum=c.absolute_minimum_move,
         range_fraction=snapshot.short_horizon_range*c.volatility_move_fraction,
         cost_multiple=result.round_trip_cost*c.execution_cost_multiple,
-        stop_risk_plus_cost=(snapshot.ask-snapshot.structural_stop)*result.required_net_target_reward_r+result.round_trip_cost)
+        stop_risk_plus_cost=reward_risk*result.required_net_target_reward_r+reward_cost)
     return result,dict(spread=snapshot.ask-snapshot.bid,stop_distance=snapshot.ask-snapshot.structural_stop,
         short_horizon_range=snapshot.short_horizon_range,
         observed_bid_advance=snapshot.observed_bid_advance,observed_ask_advance=snapshot.observed_ask_advance,
         target_move=result.target_move,round_trip_cost=result.round_trip_cost,
         modeled_slippage_both_sides=result.round_trip_cost-(snapshot.ask-snapshot.bid),
         ask_anchored_target_net_before_fees=result.target_move-(result.round_trip_cost-(snapshot.ask-snapshot.bid)),
-        policy_target_net=result.target_move-result.round_trip_cost,
-        extra_spread_reserve_in_policy_net=snapshot.ask-snapshot.bid,
+        fill_anchored_target_net_before_fees=result.target_move-slippage,
+        modeled_initial_stop_risk=reward_risk,
+        policy_target_net=result.target_move-reward_cost,
+        extra_spread_reserve_in_policy_net=D(0) if c.cent_fill_anchored_economics else snapshot.ask-snapshot.bid,
         expected_move=result.expected_move,required_bid_move=result.required_bid_move,
         edge_margin=result.expected_move-result.required_bid_move,
         momentum_confidence=result.momentum_confidence,required_reward_r=result.required_net_target_reward_r),terms

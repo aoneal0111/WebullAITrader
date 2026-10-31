@@ -17,6 +17,12 @@ class RuntimeContextTap:
     No model, execution, provider request or runtime-setting method exists here.
     The owner must close this outside engine/protection callbacks.
     """
+    def record_scalper_confirmation(self, payload):
+        """Exact native refusal details, before fresh-context sampling rejects it."""
+        if self._journal is not None:
+            return self._journal.submit('SCALPER_CONFIRMATION_DIAGNOSTIC', dict(payload))
+        return False
+
     def record_exit_decision(self,payload):
         if self._journal is not None:
             return self._journal.submit('EXIT_DECISION',dict(payload))

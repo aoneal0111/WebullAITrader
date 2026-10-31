@@ -45,7 +45,7 @@ def prior_attempts(root):
 def create(root,*,clock=lambda:datetime.now(UTC)):
     from app.equity_overhaul.paper_experiment import load
     root=Path(root).resolve();_,parent=load(root/'experiment.json',clock)
-    if parent.get('profile')!='CENT_EARLY_V2':raise ValueError('CURRENT_CENT_EARLY_V2_REQUIRED')
+    if parent.get('profile') not in {'CENT_EARLY_V2','CENT_EXECUTABLE_V3'}:raise ValueError('EXPLICIT_CENT_PAPER_PROFILE_REQUIRED')
     if not (root/'entry-attempts.sqlite3').is_file():raise ValueError('EXISTING_ENTRY_BUDGET_REQUIRED')
     now=clock();doc=dict(scope=SCOPE,id=uuid4().hex,trial_id=parent['trial_id'],
         parent_sha256=sha256(canonical(parent)).hexdigest(),created_at=now.isoformat(),
@@ -98,7 +98,7 @@ class ExecutionLease:
     def _read_parent(self):
         from app.equity_overhaul.paper_experiment import load
         _,parent=load(self.root/'experiment.json',self.clock)
-        if (parent['trial_id']!=self.doc['trial_id'] or parent.get('profile')!='CENT_EARLY_V2'
+        if (parent['trial_id']!=self.doc['trial_id'] or parent.get('profile') not in {'CENT_EARLY_V2','CENT_EXECUTABLE_V3'}
             or sha256(canonical(parent)).hexdigest()!=self.doc['parent_sha256']):raise ValueError('GROK_PARENT_TRIAL_CHANGED')
         return parent
 
@@ -253,7 +253,7 @@ def preflight(repo,root,*,clock=lambda:datetime.now(UTC)):
     from .grok import configured_client, REASONING_MODELS
     from app.equity_overhaul.paper_experiment import load
     root=Path(root).resolve();_,parent=load(root/'experiment.json',clock)
-    if parent.get('profile')!='CENT_EARLY_V2' or not (root/'entry-attempts.sqlite3').is_file():
+    if parent.get('profile') not in {'CENT_EARLY_V2','CENT_EXECUTABLE_V3'} or not (root/'entry-attempts.sqlite3').is_file():
         raise ValueError('EXISTING_CENT_TRIAL_AND_ENTRY_BUDGET_REQUIRED')
     environment={**dotenv_values(Path(repo)/'.env'),**os.environ}
     client=configured_client(environment)

@@ -26,7 +26,7 @@ class DailyResearch:
         config_hash=configuration_digest(configuration)
         from app.equity_overhaul.paper_experiment import ENV, load
         experiment_path=os.environ.get(ENV,'').strip()
-        experiment=load(experiment_path)[1] if experiment_path else None
+        experiment=load(experiment_path,clock=clock)[1] if experiment_path else None
         baseline_material=dict(source=source_hash,configuration=config_hash)
         if experiment:baseline_material['paper_experiment']=experiment
         self.baseline=sha256(canonical(baseline_material)).hexdigest()

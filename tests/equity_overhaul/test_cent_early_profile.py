@@ -87,9 +87,10 @@ def test_preparation_is_new_profile_only_and_does_not_create_lease_or_launch(tmp
     assert (repo/'.env').read_text()=='UNCHANGED=yes'
 
 
-def test_real_v2_desktop_binds_profiles_to_both_engines_and_retains_protection(monkeypatch,tmp_path,historical_intelligence_artifact):
+@pytest.mark.parametrize('profile',['CENT_EARLY_V2','CENT_EXECUTABLE_V3'])
+def test_real_v2_desktop_binds_profiles_to_both_engines_and_retains_protection(monkeypatch,tmp_path,historical_intelligence_artifact,profile):
     import app.composition.desktop as module
-    create(tmp_path/'trial',profile='CENT_EARLY_V2');monkeypatch.setenv(ENV,str(tmp_path/'trial/experiment.json'))
+    create(tmp_path/'trial',profile=profile);monkeypatch.setenv(ENV,str(tmp_path/'trial/experiment.json'))
     c=load_configuration({'WEBULL_TRADING_ENVIRONMENT':'PAPER','ATLAS_DAILY_RESEARCH_ENABLED':'true',
         'WARRIOR_FORWARD_PAPER_ENABLED':'true','QUICK_SCALPER_ENABLED':'true',
         'WARRIOR_FORWARD_CAPTURE_PATH':str(tmp_path/'capture.sqlite3'),'ALLOWED_SYMBOLS':'XYZ'})
@@ -99,6 +100,7 @@ def test_real_v2_desktop_binds_profiles_to_both_engines_and_retains_protection(m
         assert graph.equity_paper_experiment.active()
         assert graph.warrior_forward_sidecar.strategy_config.setups.allowed_setup_types==frozenset(V2_FAMILIES['WARRIOR_MOMENTUM'])
         assert graph.quick_scalper_runtime.config.cent_target_maximum==D('.10')
+        assert graph.quick_scalper_runtime.config.cent_fill_anchored_economics==(profile=='CENT_EXECUTABLE_V3')
         assert graph.quick_scalper_runtime.risk_config.maximum_quantity==10
         assert graph.equity_paper_experiment.status()['protective_sells']=='AVAILABLE'
     finally:graph.close(timeout_seconds=1)

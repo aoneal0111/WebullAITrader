@@ -129,7 +129,8 @@ def test_new_entry_support_does_not_reprice_existing_position(cent):
     assert state.entry_price==prior.entry_price and not bridge.entries
 
 
-def test_native_stream_to_durable_gateway_fill_protection_and_cent_exit(tmp_path):
+@pytest.mark.parametrize('fill_anchored',[False,True])
+def test_native_stream_to_durable_gateway_fill_protection_and_cent_exit(tmp_path,fill_anchored):
     from app.market_data.models import MarketEvent,MarketEventType,QuotePayload
     from app.paper_trading.order_models import OrderSide
     from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
@@ -144,7 +145,7 @@ def test_native_stream_to_durable_gateway_fill_protection_and_cent_exit(tmp_path
         bridge=AutonomousPaperExecutionBridge(c.trading_service,c.order_command_factory,mode='PAPER',enabled=True,
             order_book=c.order_book,protection_amender=c.gateway.amend_protective_stop,position_quantity_source=lambda _:position['qty'])
         quotes=Quotes(replace(quote(),bid=D('4.95'),ask=D('4.96'),last=D('4.96')))
-        runtime=QuickScalperPaperRuntimeAdapter(config=cent_config(),bridge=bridge,order_book=c.order_book,
+        runtime=QuickScalperPaperRuntimeAdapter(config=replace(cent_config(),cent_fill_anchored_economics=fill_anchored),bridge=bridge,order_book=c.order_book,
             risk_config=RiskConfig(configured_per_trade_risk=D(1),maximum_quantity=10,maximum_position_dollars=D(100)),
             account_context_source=account,position_quantity_source=lambda _:position['qty'],execution_quote_source=quotes,clock=lambda:NOW)
         for bid,offset in [('4.80',-10),('5.00',-6),('4.93',-3)]:

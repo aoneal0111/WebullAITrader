@@ -691,6 +691,24 @@ class QuickScalperPaperRuntimeAdapter:
                 "quick_scalper_stale_preview_refresh_advanced"
             )
         if confirmed.decision is not ScalpDecision.EXECUTABLE:
+            diagnostic = dict(symbol=refreshed.symbol,
+                reason=confirmed.reason,
+                preview_bid_at=source.bid_timestamp,
+                confirmation_bid_at=quote.bid_timestamp,
+                bid_age_seconds=Decimal(str((evaluated_at-quote.bid_timestamp).total_seconds())),
+                ask_age_seconds=Decimal(str((evaluated_at-quote.ask_timestamp).total_seconds())),
+                book_regressed=(quote.bid_timestamp < source.bid_timestamp
+                    or quote.ask_timestamp < source.ask_timestamp),
+                target_move=confirmed.target_move,
+                round_trip_cost=confirmed.round_trip_cost,
+                expected_move=confirmed.expected_move,
+                required_bid_move=confirmed.required_bid_move)
+            if self._observer_context_tap is not None:
+                try:
+                    self._observer_context_tap.record_scalper_confirmation(diagnostic)
+                except Exception:
+                    pass
+            self._emit('SCALP_REJECTED', refreshed.symbol, reason=confirmed.reason)
             performance_diagnostics.increment("quick_scalper_reconfirm_not_executable")
             self._increment_reconfirm_reason(confirmed.reason)
             self._record_quote_decision(
@@ -708,6 +726,8 @@ class QuickScalperPaperRuntimeAdapter:
                 False, False, False, False, "ACCOUNT_UNAVAILABLE",
             )
         risk = quote.ask - refreshed.structural_stop
+        if self.config.cent_fill_anchored_economics:
+            risk += (confirmed.round_trip_cost-(quote.ask-quote.bid))/2
         sized = size_execution_position(
             symbol=refreshed.symbol, reference_price=quote.ask,
             risk_per_share=risk, account_equity=account.equity,
@@ -926,7 +946,8 @@ class QuickScalperPaperRuntimeAdapter:
             # Risk is anchored to an actual, subsequently confirmed local
             # pullback, independently of the earlier impulse measurement.
             # No price is invented or moved merely to fit the cent ceiling.
-            support = self._confirmed_cent_support(samples)
+            support = self._confirmed_cent_support(samples,
+                allow_plateau=self.config.cent_fill_anchored_economics)
             if support is not None:
                 structural_stop, support_timestamp = support
                 support_source = 'CONFIRMED_MICRO_PULLBACK'
@@ -989,7 +1010,7 @@ class QuickScalperPaperRuntimeAdapter:
         )
 
     @staticmethod
-    def _confirmed_cent_support(samples):
+    def _confirmed_cent_support(samples, *, allow_plateau=False):
         """Most recent strict trough with a later bounce and no subsequent touch.
 
         Samples already represent distinct, nonregressing provider instants in
@@ -997,6 +1018,17 @@ class QuickScalperPaperRuntimeAdapter:
         callbacks, broken trough or unconfirmed last sample supplies no support.
         """
         values = list(samples)
+        if allow_plateau:
+            # Collapse only adjacent equal-price provider observations. Retain
+            # the LAST timestamp of the trough, so a later distinct bounce is
+            # still mandatory. A later retouch remains a new, unconfirmed low.
+            compressed = []
+            for value in values:
+                if compressed and compressed[-1].bid == value.bid:
+                    compressed[-1] = value
+                else:
+                    compressed.append(value)
+            values = compressed
         later_low = values[-1].bid if values else ZERO
         for index in range(len(values)-2, 0, -1):
             low = values[index]
