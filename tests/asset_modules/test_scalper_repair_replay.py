@@ -79,3 +79,56 @@ def test_confirmation_details_survive_native_tap_journal_without_fresh_context(t
     row=json.loads(next((tmp_path/'journal').glob('events-*.jsonl')).read_text().splitlines()[0])
     assert row['kind']=='SCALPER_CONFIRMATION_DIAGNOSTIC'
     assert row['payload']['book_regressed'] is True and row['payload']['bid_age_seconds']=='9'
+
+
+@pytest.mark.parametrize('variant',['CRLF','MIXED'])
+def test_windows_previous_checkout_hashes_are_recognized_without_rewriting_history(tmp_path,variant):
+    from app.asset_modules.scalper_repair_replay import PRIOR_CRLF_SOURCE
+    root=session(tmp_path,prior_schema=True)
+    path=root/'research-manifest.json'
+    manifest=json.loads(path.read_text())
+    hashes=(PRIOR_CRLF_SOURCE if variant=='CRLF' else (PRIOR_SOURCE[0],PRIOR_CRLF_SOURCE[1]))
+    manifest['source_files']=dict(zip(POLICY_FILES,hashes));path.write_text(json.dumps(manifest))
+    before={str(p):sha256(p.read_bytes()).hexdigest() for p in root.rglob('*') if p.is_file()}
+    result=compare(root)
+    assert result['source_binding']=='PRIOR_V2' and result['baseline_replay_matches']
+    assert result['recorded_source_sha256']==hashes
+    assert before=={str(p):sha256(p.read_bytes()).hexdigest() for p in root.rglob('*') if p.is_file()}
+    manifest['source_files'][POLICY_FILES[0]]='e'*64;path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError,match='RECORDED_NATIVE_POLICY_SOURCE_MISMATCH'):compare(root)
+
+
+def test_current_crlf_checkout_is_recognized_separately_from_previous_schema(tmp_path):
+    root=session(tmp_path)
+    source=Path(__file__).resolve().parents[2]
+    path=root/'research-manifest.json';manifest=json.loads(path.read_text())
+    manifest['source_files']={p:sha256((source/p).read_bytes().replace(b'\r\n',b'\n').replace(b'\n',b'\r\n')).hexdigest() for p in POLICY_FILES}
+    path.write_text(json.dumps(manifest))
+    assert compare(root)['source_binding']=='CURRENT'
+
+
+@pytest.mark.parametrize('mutation,reason',[
+    ('source','RECORDED_NATIVE_POLICY_SOURCE_MISMATCH'),
+    ('policy','RECORDED_POLICY_CHANGED'),
+    ('scope','NORMAL_DAILY_RECORDING_REQUIRED'),
+    ('baseline','RECORDED_BASELINE_HASH_MISMATCH'),
+])
+def test_failure_report_identifies_the_refused_check_without_installer_mutations(tmp_path,monkeypatch,mutation,reason):
+    import sys
+    from app.asset_modules.scalper_repair_replay import main
+    root=session(tmp_path)
+    path=root/'research-manifest.json';manifest=json.loads(path.read_text())
+    if mutation=='source':manifest['source_files'][POLICY_FILES[0]]='f'*64
+    elif mutation=='scope':manifest['scope']='OTHER'
+    elif mutation=='baseline':manifest['baseline_sha256']='b'*64
+    elif mutation=='policy':(root/'research-summary.json').write_text('{"policy_unchanged": false}')
+    path.write_text(json.dumps(manifest))
+    before={str(p):sha256(p.read_bytes()).hexdigest() for p in root.rglob('*') if p.is_file()}
+    output=tmp_path/'refusal.json'
+    monkeypatch.setattr(sys,'argv',['repair','--session',str(root),'--output',str(output)])
+    with pytest.raises(SystemExit) as exc:main()
+    assert exc.value.code==1
+    report=json.loads(output.read_text())
+    assert report['reason']==reason and report['installed_source_modified'] is False
+    assert report['orders']==report['network_requests']==report['grok_requests']==0
+    assert before=={str(p):sha256(p.read_bytes()).hexdigest() for p in root.rglob('*') if p.is_file()}

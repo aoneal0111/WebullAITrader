@@ -19,6 +19,31 @@ PRIOR_SOURCE = (
     '13696be266177ac0f0f6bce5b4e30ed78a80f941d52c0bcad38e375ff85b0e00',
     '41c5e7b215dbf2801b1aca406d5a047f29d08e88e3785010c4e8fb5933f951c1',
 )
+# Git's core.autocrlf checkout of those exact reviewed blobs. These hashes
+# authorize line-ending variants only; never normalize or rewrite evidence.
+PRIOR_CRLF_SOURCE = (
+    'c24be7930d912d7ef974f0e0ed37de67afd24975f11dde5dc2f44666260a991a',
+    '078d0d3fde267492f85bd1430f738bc8653554db4a5460772a8a1a2ca8a966f6',
+)
+
+
+def source_binding(recorded, source_root):
+    """Match exact, reviewed per-file hashes, including Windows checkouts."""
+    if len(recorded) != len(POLICY_FILES) or any(
+            not isinstance(value, str) or len(value) != 64
+            or any(c not in '0123456789abcdef' for c in value) for value in recorded):
+        raise ValueError('RECORDED_NATIVE_POLICY_SOURCE_MISMATCH')
+    prior = all(value in (PRIOR_SOURCE[i], PRIOR_CRLF_SOURCE[i])
+                for i, value in enumerate(recorded))
+    if prior:
+        return 'PRIOR_V2'
+    for name, value in zip(POLICY_FILES, recorded):
+        raw = (source_root/name).read_bytes()
+        lf = raw.replace(b'\r\n', b'\n')
+        accepted = {sha256(form).hexdigest() for form in (raw, lf, lf.replace(b'\n', b'\r\n'))}
+        if value not in accepted:
+            raise ValueError('RECORDED_NATIVE_POLICY_SOURCE_MISMATCH')
+    return 'CURRENT'
 
 
 def compare(session):
@@ -29,12 +54,15 @@ def compare(session):
     source_root = Path(__file__).resolve().parents[2]
     current = tuple(sha256((source_root/p).read_bytes()).hexdigest() for p in POLICY_FILES)
     recorded = tuple(manifest.get('source_files', {}).get(p) for p in POLICY_FILES)
-    if (receipt['evidence_complete'] is not True
-            or recorded not in (PRIOR_SOURCE, current)
-            or summary.get('policy_unchanged') is not True
-            or manifest.get('scope') != 'NORMAL_DESKTOP_DAILY_RESEARCH_V1'
-            or manifest.get('baseline_sha256') != receipt['baseline_sha256']):
-        raise ValueError('REVIEWED_FROZEN_SOURCE_REQUIRED')
+    if receipt['evidence_complete'] is not True:
+        raise ValueError('INCOMPLETE_JOURNAL_EVIDENCE')
+    if summary.get('policy_unchanged') is not True:
+        raise ValueError('RECORDED_POLICY_CHANGED')
+    if manifest.get('scope') != 'NORMAL_DESKTOP_DAILY_RESEARCH_V1':
+        raise ValueError('NORMAL_DAILY_RECORDING_REQUIRED')
+    if manifest.get('baseline_sha256') != receipt['baseline_sha256']:
+        raise ValueError('RECORDED_BASELINE_HASH_MISMATCH')
+    binding = source_binding(recorded, source_root)
     baseline = candidate = None
     counts = {'stream': Counter(), 'confirmation': Counter()}
     revised = {'stream': Counter(), 'confirmation': Counter()}
@@ -57,7 +85,7 @@ def compare(session):
                     if baseline is not None:
                         raise ValueError('MULTIPLE_BASELINES')
                     raw = dict(p['settings']['scalper'])
-                    if recorded == PRIOR_SOURCE and 'cent_fill_anchored_economics' in raw:
+                    if binding == 'PRIOR_V2' and 'cent_fill_anchored_economics' in raw:
                         raise ValueError('PRIOR_POLICY_SCHEMA_CHANGED')
                     # Sole reviewed additive schema change, default OFF in V2.
                     raw.setdefault('cent_fill_anchored_economics', False)
@@ -99,6 +127,7 @@ def compare(session):
         baseline_replay_matches=True, evidence_complete=receipt['evidence_complete'],
         baseline_sha256=receipt['baseline_sha256'], journal_chain_head=receipt['chain_head'],
         recorded_source_sha256=recorded,
+        source_binding=binding,
         implementation_sha256=current,
         baseline_reasons={k:dict(v) for k,v in counts.items()},
         fill_anchored_reasons={k:dict(v) for k,v in revised.items()},
@@ -118,7 +147,21 @@ def main():
     p.add_argument('--session', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
     args = p.parse_args()
-    result = compare(args.session)
+    try:
+        result = compare(args.session)
+    except ValueError as exc:
+        # Preserve a small, shareable failure reason before the installer stops.
+        # No raw journal data, account details or provider payloads are exported.
+        code = str(exc)
+        if not code or any(c not in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789' for c in code):
+            code = 'EVIDENCE_VALIDATION_ERROR'
+        with args.output.open('x', encoding='utf-8') as f:
+            json.dump(dict(scope='OFFLINE_SCALPER_REPAIR_PREFLIGHT_FAILURE_V1',
+                status='REFUSED',reason=code,orders=0,network_requests=0,
+                grok_requests=0,installed_source_modified=False), f, indent=2)
+        print('REPAIR_REPLAY=REFUSED; REASON='+code)
+        print('UPLOAD_SUMMARY='+str(args.output.resolve()))
+        raise SystemExit(1) from None
     with args.output.open('x', encoding='utf-8') as f:
         json.dump(result, f, indent=2, default=str, allow_nan=False)
     print('REPAIR_REPLAY=COMPLETE; PROMOTION=NONE; ORDERS=0')

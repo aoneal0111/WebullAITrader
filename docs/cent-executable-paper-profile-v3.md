@@ -101,3 +101,17 @@ lease/call-budget boundaries. The recorder also uses its supplied clock for
 parent-trial validation, keeping capture and expiry checks on one time source.
 PowerShell has not been executed locally; the installer runs its focused Windows
 checks before applying source changes. No GUI or paid API was started in testing.
+
+### Windows source-binding compatibility
+
+The replay accepts exact LF and Git CRLF hashes for the pinned prior V2 files,
+including checkouts where the two files use different endings. The original
+manifest hashes and journal are never changed. Current reviewed source receives
+the same exact-byte variant check. Unknown hashes, changed code, incomplete
+journals and changed policy remain refused. The prior schema is still enforced
+for either historical line-ending variant.
+
+A refused comparison now writes a small report identifying the specific failed
+check instead of combining scope, hash, policy and completeness checks into one
+error. The installer still stops before merge, backup/trial creation or settings
+changes. The review worktree and failure report remain available for inspection.
