@@ -56,12 +56,8 @@ def write(path, value):
     Path(path).write_text(json.dumps(value, indent=2, allow_nan=False) + '\n', encoding='utf-8')
 
 
-def prepare(source, output):
-    source, output = Path(source).resolve(), Path(output).resolve()
-    for name, expected in HASHES.items():
-        path = source / name
-        if path.is_symlink() or digest(path) != expected:
-            raise ValueError('PINNED_SOURCE_MISMATCH:' + name)
+def isolated_config(source):
+    source = Path(source)
     config = {}
     for name in CONFIGS:
         merge(config, jsonc((source / name).read_text(encoding='utf-8')))
@@ -70,12 +66,26 @@ def prepare(source, output):
         raise ValueError('UPSTREAM_CONFIG_MISMATCH')
     # API/telegram and forced entries are irrelevant to backtesting. Disable them
     # without overriding stoploss, stake, grinding, sizing, entry or exit rules.
-    config.update(dry_run=True, force_entry_enable=False, api_server={'enabled': False},
-                  telegram={'enabled': False}, user_data_dir='/work',
+    # Disabled nested sections still have required schema fields. Preserve the
+    # upstream blank token/chat_id and API fields rather than replacing objects.
+    config['api_server']['enabled'] = False
+    config['telegram']['enabled'] = False
+    config.update(dry_run=True, force_entry_enable=False, user_data_dir='/work',
                   strategy_path='/work/strategies', datadir='/history/binance')
     for name in ('key', 'secret', 'password', 'walletAddress', 'privateKey'):
         if config['exchange'].get(name):
             raise ValueError('UPSTREAM_CONFIG_CONTAINS_CREDENTIALS')
+    return config
+
+
+def prepare(source, output):
+    source, output = Path(source).resolve(), Path(output).resolve()
+    for name, expected in HASHES.items():
+        path = source / name
+        if path.is_symlink() or digest(path) != expected:
+            raise ValueError('PINNED_SOURCE_MISMATCH:' + name)
+    config = isolated_config(source)
+    pairs = config['exchange']['pair_whitelist']
     output.mkdir(parents=True, exist_ok=False)
     (output / 'strategies').mkdir()
     for name in ('NostalgiaForInfinityX8.py', 'LICENSE'):
@@ -128,6 +138,25 @@ def history_check(work, history):
     return result
 
 
+def repair_prepare(source, previous_work, output):
+    previous_work = Path(previous_work)
+    manifest = json.loads((previous_work / 'source-run-manifest.json').read_text())
+    if manifest.get('source_commit') != COMMIT or manifest.get('scope') != 'UNMODIFIED_NFI_SOURCE_BACKTEST_V1':
+        raise ValueError('EXACT_PREVIOUS_SOURCE_RUN_REQUIRED')
+    for name, expected in manifest['prepared_hashes'].items():
+        path = previous_work / name
+        if path.is_symlink() or digest(path) != expected:
+            raise ValueError('PREVIOUS_SOURCE_RUN_CHANGED')
+    before = json.loads((previous_work / 'config.json').read_text())
+    after = isolated_config(source)
+    omit = lambda c: {k: v for k, v in c.items() if k not in {'telegram', 'api_server'}}
+    if omit(before) != omit(after):
+        raise ValueError('REPAIR_MUST_PRESERVE_TRADING_CONFIGURATION')
+    if digest(previous_work / 'strategies/NostalgiaForInfinityX8.py') != HASHES['NostalgiaForInfinityX8.py']:
+        raise ValueError('PREVIOUS_STRATEGY_CHANGED')
+    return prepare(source, output)
+
+
 def summarize(work):
     work = Path(work)
     archives = list((work / 'backtest_results').glob('*.zip'))
@@ -167,6 +196,7 @@ def summarize(work):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source', type=Path)
+    p.add_argument('--previous-work', type=Path)
     p.add_argument('--work', type=Path, required=True)
     p.add_argument('--history', type=Path)
     p.add_argument('--summarize', action='store_true')
@@ -178,6 +208,8 @@ def main():
         if result['missing']:
             print('NFI_HISTORY=MISSING_FILES; SEE=history-inventory.json')
             raise SystemExit(2)
+    elif a.source and a.previous_work:
+        result = repair_prepare(a.source, a.previous_work, a.work)
     elif a.source:
         result = prepare(a.source, a.work)
     else:

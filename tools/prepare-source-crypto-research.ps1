@@ -39,17 +39,17 @@ finally { Pop-Location }
 $Quote = { param($Value) "'" + $Value.Replace("'", "''") + "'" }
 $Backtest = @'
 $ErrorActionPreference = 'Stop'
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw 'Docker Desktop Linux engine required.' }
 Push-Location __SOURCE__
 try {
-    & __PYTHON__ -m app.strategy_lab.nfi_source_reproduction --work __WORK__ --history __HISTORY__
-    if ($LASTEXITCODE -ne 0) { throw 'Historical files incomplete or prepared source changed. See history-inventory.json.' }
     $Image = 'freqtradeorg/freqtrade:2026.9@sha256:989aff5636d8f0213ed44fe334c3314a194a51c0c755d16866960247aafd2eae'
-    & docker run --rm --read-only --tmpfs /tmp --entrypoint freqtrade --mount __WORKMOUNT__ --mount __DATAMOUNT__ $Image backtesting --config /work/config.json --strategy NostalgiaForInfinityX8 --strategy-path /work/strategies --user-data-dir /work --timerange 20240101-20240201 --cache none --export trades --export-directory /work/backtest_results --log-file /work/native-backtest.log
-    $BacktestExit = $LASTEXITCODE
-    if ($BacktestExit -ne 0) { throw 'Native backtest failed. Keep native-backtest.log; no regional proxy, feed fallback or trading was attempted.' }
+    & docker run --rm --network none --read-only --tmpfs /tmp --entrypoint python --mount __CHECKMOUNT__ --mount __WORKMOUNT__ --mount __DATAMOUNT__ $Image /check/nfi_runtime_preflight.py
+    if ($LASTEXITCODE -ne 0) { throw 'Offline runtime configuration preflight failed. See runtime-preflight.json; no backtest started.' }
+    & __PYTHON__ -m app.strategy_lab.nfi_source_reproduction --work __WORK__ --history __HISTORY__
+    if ($LASTEXITCODE -ne 0) { throw 'History/source verification failed.' }
+    & docker run --rm --read-only --tmpfs /tmp --entrypoint python --mount __CHECKMOUNT__ --mount __WORKMOUNT__ --mount __DATAMOUNT__ $Image /check/nfi_native_backtest.py
+    if ($LASTEXITCODE -ne 0) { throw 'Native backtest did not produce a successful result. Keep native-backtest.log and native-run-status.json. No summary was attempted.' }
     & __PYTHON__ -m app.strategy_lab.nfi_source_reproduction --work __WORK__ --summarize
-    if ($LASTEXITCODE -ne 0) { throw 'Native result reconciliation failed.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Native trade/result reconciliation failed.' }
     Write-Host __SUMMARY__
 }
 finally { Pop-Location }
@@ -78,7 +78,7 @@ finally { Pop-Location }
 '@
 $Scripts = @{'Import-Author-History.ps1'=$Import; 'Start-NFI-Backtest.ps1'=$Backtest; 'Start-Grok-News-Scout.ps1'=$NewsStart}
 foreach ($Name in $Scripts.Keys) {
-    $Text = $Scripts[$Name].Replace('__SOURCE__', (& $Quote $Source)).Replace('__PYTHON__', (& $Quote $Python)).Replace('__REPO__', (& $Quote $Repo)).Replace('__WORK__', (& $Quote $Work)).Replace('__HISTORY__', (& $Quote $History)).Replace('__NEWS__', (& $Quote $News)).Replace('__WORKMOUNT__', (& $Quote "type=bind,source=$Work,target=/work")).Replace('__DATAMOUNT__', (& $Quote "type=bind,source=$History,target=/history,readonly")).Replace('__SUMMARY__', (& $Quote ("UPLOAD_SUMMARY=" + (Join-Path $Work 'reproduction-summary.json'))))
+    $Text = $Scripts[$Name].Replace('__SOURCE__', (& $Quote $Source)).Replace('__PYTHON__', (& $Quote $Python)).Replace('__REPO__', (& $Quote $Repo)).Replace('__WORK__', (& $Quote $Work)).Replace('__HISTORY__', (& $Quote $History)).Replace('__NEWS__', (& $Quote $News)).Replace('__CHECKMOUNT__', (& $Quote ("type=bind,source=" + (Join-Path $Source 'app\strategy_lab') + ',target=/check,readonly'))).Replace('__WORKMOUNT__', (& $Quote "type=bind,source=$Work,target=/work")).Replace('__DATAMOUNT__', (& $Quote "type=bind,source=$History,target=/history,readonly")).Replace('__SUMMARY__', (& $Quote ("UPLOAD_SUMMARY=" + (Join-Path $Work 'reproduction-summary.json'))))
     Set-Content -LiteralPath (Join-Path $Root $Name) -Value $Text -Encoding UTF8
 }
 Write-Host "RESEARCH_DIRECTORY=$Root"

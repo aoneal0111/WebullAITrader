@@ -37,8 +37,9 @@ try {
 finally { Pop-Location }
 $OldHistory = Join-Path $ResearchDirectory 'author-history'
 $Text = Get-Content -LiteralPath $Original -Raw
-if (([regex]::Matches($Text, [regex]::Escape($OldHistory))).Count -ne 2) {
-    throw 'Original launcher does not have the two expected history paths. Verified history was preserved; nothing overwritten.'
+$HistoryReferences = ([regex]::Matches($Text, [regex]::Escape($OldHistory))).Count
+if ($HistoryReferences -notin @(2,3)) {
+    throw 'Original launcher does not have the expected history paths. Verified history was preserved; nothing overwritten.'
 }
 $NewLauncher = Join-Path $Repair 'Start-NFI-Backtest-Verified-History.ps1'
 Set-Content -LiteralPath $NewLauncher -Value $Text.Replace($OldHistory, $History) -Encoding UTF8
