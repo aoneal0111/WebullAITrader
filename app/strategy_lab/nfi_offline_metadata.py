@@ -77,18 +77,20 @@ def fetch(work):
     source = work / 'metadata-source'
     source.mkdir(exist_ok=False)
     def git(*args, stdout=None):
-        r = subprocess.run(['git', '-C', str(source), *args], stdout=stdout, check=False)
+        r = subprocess.run(['git', '-c', 'core.longpaths=true', '-C', str(source), *args], stdout=stdout, check=False)
         if r.returncode:
             raise RuntimeError('PINNED_METADATA_FETCH_FAILED')
     git('init')
     git('remote', 'add', 'origin', REPO)
     git('fetch', '--depth=1', '--filter=blob:none', '--no-tags', 'origin', COMMIT)
-    tree = subprocess.check_output(['git', '-C', str(source), 'ls-tree', 'FETCH_HEAD', SOURCE_PATH], text=True)
+    tree = subprocess.check_output(['git', '-c', 'core.longpaths=true', '-C', str(source), 'ls-tree', 'FETCH_HEAD', SOURCE_PATH], text=True)
     if tree.strip() != '100644 blob ' + BLOB + '\t' + SOURCE_PATH:
         raise ValueError('PINNED_METADATA_TREE_MISMATCH')
     temp = work / (FILE + '.partial')
     with temp.open('xb') as stream:
-        git('show', COMMIT + ':' + SOURCE_PATH, stdout=stream)
+        # Read the verified object directly: revision:path can trigger Windows
+        # filesystem probing against the deeply nested research directory.
+        git('cat-file', 'blob', BLOB, stdout=stream)
     data, report = load_metadata(temp, config['exchange']['pair_whitelist'])
     temp.replace(target)
     write(work / 'metadata-context.json', report)

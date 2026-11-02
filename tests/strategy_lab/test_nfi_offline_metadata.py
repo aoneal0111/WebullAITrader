@@ -80,3 +80,26 @@ def test_summary_cannot_lose_post_period_metadata_warning(tmp_path):
     assert summary['scope'] == 'NFI_OFFLINE_POST_PERIOD_METADATA_RESEARCH_V1'
     assert not summary['qualification_eligible'] and not summary['publication_reproduced']
     assert 'Post-period rules' in summary['limitations']
+
+
+def test_fetch_reads_verified_blob_without_windows_revision_path_probe(recorded, monkeypatch):
+    from types import SimpleNamespace
+    path, _, _ = recorded
+    work = path.parent
+    (work / 'config.json').write_text(json.dumps({'exchange': {'pair_whitelist': ['T0/USDT']}}))
+    calls = []
+    def run(args, stdout=None, check=False):
+        calls.append(args)
+        assert args[:4] == ['git', '-c', 'core.longpaths=true', '-C']
+        if 'cat-file' in args:
+            assert args[-3:] == ['cat-file', 'blob', m.BLOB]
+            stdout.write(path.read_bytes())
+        assert 'show' not in args
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(m.subprocess, 'run', run)
+    monkeypatch.setattr(m.subprocess, 'check_output', lambda *a, **k:
+        '100644 blob ' + m.BLOB + '\t' + m.SOURCE_PATH + '\n')
+    m.fetch(work)
+    assert (work / m.FILE).read_bytes() == path.read_bytes()
+    assert json.loads((work / 'metadata-context.json').read_text())['qualification_eligible'] is False
+    assert any('cat-file' in args for args in calls)
