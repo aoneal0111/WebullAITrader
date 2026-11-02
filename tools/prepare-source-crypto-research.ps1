@@ -30,7 +30,7 @@ $History = Join-Path $Root 'author-history'
 $News = Join-Path $Root 'news-scout'
 Push-Location $Source
 try {
-    & $Python -m pytest tests/asset_modules/test_grok_news_scout.py tests/strategy_lab/test_nfi_source_reproduction.py tests/asset_modules/test_grok.py -q --basetemp (Join-Path $Root 'checks')
+    & $Python -m pytest tests/asset_modules/test_grok_news_scout.py tests/strategy_lab/test_nfi_source_reproduction.py tests/strategy_lab/test_nfi_history_import.py tests/asset_modules/test_grok.py -q --basetemp (Join-Path $Root 'checks')
     if ($LASTEXITCODE -ne 0) { throw 'Research checks failed. Nothing started.' }
     & $Python -m app.strategy_lab.nfi_source_reproduction --source $Nfi --work $Work
     if ($LASTEXITCODE -ne 0) { throw 'Source/configuration verification failed.' }
@@ -56,23 +56,15 @@ finally { Pop-Location }
 '@
 $Import = @'
 $ErrorActionPreference = 'Stop'
-if (Test-Path -LiteralPath __HISTORY__) { throw 'History directory already exists. Preserve it for reproducibility.' }
-$Image = 'ghcr.io/iterativv/market-data:binance-spot'
-Write-Host 'AUTHOR_DATA_DOWNLOAD; MAY_BE_LARGE; NO_BOT_OR_GROK_STARTED'
-& docker pull $Image
-if ($LASTEXITCODE -ne 0) { throw 'Author data image unavailable. No alternate feed or proxy attempted.' }
-$ImageId = & docker image inspect --format '{{.Id}}' $Image
-if ($LASTEXITCODE -ne 0) { throw 'Could not record data image identity.' }
-$Container = & docker create --network none --entrypoint /bin/true $ImageId
-if ($LASTEXITCODE -ne 0) { throw 'Data container creation failed.' }
+Push-Location __SOURCE__
 try {
-    $null = New-Item -ItemType Directory -Path __HISTORY__
-    & docker cp "${Container}:/data/." __HISTORY__
-    if ($LASTEXITCODE -ne 0) { throw 'Author data copy failed. Preserve partial folder.' }
-    Set-Content -LiteralPath __IMAGEIDENTITY__ -Value $ImageId -Encoding UTF8
+    & __PYTHON__ -m app.strategy_lab.nfi_history_import --work __WORK__ --output __HISTORY__ --download
+    if ($LASTEXITCODE -ne 0) { throw 'Pinned history import failed. Preserve history-import-summary.json; no backtest or bot was started.' }
+    & __PYTHON__ -m app.strategy_lab.nfi_source_reproduction --work __WORK__ --history __HISTORY__
+    if ($LASTEXITCODE -ne 0) { throw 'Original-universe history verification failed.' }
 }
-finally { & docker rm $Container | Out-Null }
-Write-Host 'AUTHOR_HISTORY_COPIED; CURRENT_IMAGE_ID_RECORDED; OLD_PUBLISHED_DATA_ID_NOT_ATTESTED'
+finally { Pop-Location }
+Write-Host 'VERIFIED_PINNED_CANDLE_FILES; OLD_PUBLISHED_DATA_ID_NOT_ATTESTED'
 '@
 $NewsStart = @'
 param([double]$Hours=1, [int]$MaxRequests=24)
@@ -86,7 +78,7 @@ finally { Pop-Location }
 '@
 $Scripts = @{'Import-Author-History.ps1'=$Import; 'Start-NFI-Backtest.ps1'=$Backtest; 'Start-Grok-News-Scout.ps1'=$NewsStart}
 foreach ($Name in $Scripts.Keys) {
-    $Text = $Scripts[$Name].Replace('__SOURCE__', (& $Quote $Source)).Replace('__PYTHON__', (& $Quote $Python)).Replace('__REPO__', (& $Quote $Repo)).Replace('__WORK__', (& $Quote $Work)).Replace('__HISTORY__', (& $Quote $History)).Replace('__NEWS__', (& $Quote $News)).Replace('__WORKMOUNT__', (& $Quote "type=bind,source=$Work,target=/work")).Replace('__DATAMOUNT__', (& $Quote "type=bind,source=$History,target=/history,readonly")).Replace('__IMAGEIDENTITY__', (& $Quote (Join-Path $Root 'author-data-image-id.txt'))).Replace('__SUMMARY__', (& $Quote ("UPLOAD_SUMMARY=" + (Join-Path $Work 'reproduction-summary.json'))))
+    $Text = $Scripts[$Name].Replace('__SOURCE__', (& $Quote $Source)).Replace('__PYTHON__', (& $Quote $Python)).Replace('__REPO__', (& $Quote $Repo)).Replace('__WORK__', (& $Quote $Work)).Replace('__HISTORY__', (& $Quote $History)).Replace('__NEWS__', (& $Quote $News)).Replace('__WORKMOUNT__', (& $Quote "type=bind,source=$Work,target=/work")).Replace('__DATAMOUNT__', (& $Quote "type=bind,source=$History,target=/history,readonly")).Replace('__SUMMARY__', (& $Quote ("UPLOAD_SUMMARY=" + (Join-Path $Work 'reproduction-summary.json'))))
     Set-Content -LiteralPath (Join-Path $Root $Name) -Value $Text -Encoding UTF8
 }
 Write-Host "RESEARCH_DIRECTORY=$Root"
