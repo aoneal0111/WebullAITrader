@@ -15,7 +15,7 @@ from app.asset_modules.engine_catalog import EngineId
 
 MASTER = "MASTER"
 LEARNING = "LEARNING"
-ROLES = frozenset({engine.value for engine in EngineId} | {MASTER, LEARNING})
+ROLES = frozenset({engine.value for engine in EngineId} | {MASTER, LEARNING, "NEWS", "SCOUT"})
 REASONING_MODELS = frozenset({'grok-4.5','grok-4.6','grok-4.7'})
 
 

@@ -1,0 +1,51 @@
+# Source-faithful NFI reproduction and separate news/scout research
+
+Prepared 2026-11-02. No Atlas launch, paid Grok request or trading activation was performed by this change.
+
+## NFI: exact code and configuration, different experiment from the capped lab
+
+The source is pinned to `iterativv/NostalgiaForInfinity` commit `bbddbd94f97f3c14336387d2958183870891b951`. The complete strategy, license and six configuration inputs are verified by SHA-256 before preparation. The original strategy is copied unchanged; no Atlas subclass, lease gate, 2% stop, $50 stake override or two-pair limit is applied.
+
+The configuration chain is taken from upstream [tests/backtests/helpers.py](https://github.com/iterativv/NostalgiaForInfinity/blob/bbddbd94f97f3c14336387d2958183870891b951/tests/backtests/helpers.py): example config, example secret template, spot mode, Binance blacklist, static Binance spot pair list and proxy config. The checked-in proxy config contains no proxy address, and none is added. Only non-backtest communication surfaces are disabled and local paths replaced. Effective source settings: 160 configured pairs, six simultaneous positions, 10,000 USDT simulated wallet, unlimited stake sizing, grinding enabled, 5m signals with 15m/1h/4h/1d informative history. Blacklists and native exchange validation can reduce usable pairs; record that outcome rather than reporting 160 as actual traded symbols.
+
+The runtime is the existing Atlas-reviewed official Freqtrade 2026.9 image with immutable digest. Upstream CI uses mutable `latest` engine and history image tags. Therefore this is a **new source-faithful backtest**, not yet reproduction of the 96.95% average figure. The January 2024 window is fixed before execution to match one published monthly window. No parameter optimization or result-based window choice occurs. Exact old report source/runtime/data binding is still unresolved.
+
+Important source finding: [monthly test_expected_values](https://github.com/iterativv/NostalgiaForInfinity/blob/bbddbd94f97f3c14336387d2958183870891b951/tests/backtests/test_winrate_and_drawdown.py) prints notes when win rate or drawdown misses its target; it does not assert those targets. Some other upstream control tests do assert thresholds. Neither green tests nor zero trades will be reported as a verified winning strategy here.
+
+## Running the reproduction
+
+Use `tools/prepare-source-crypto-research.ps1 -Repo <installed repo> -Revision <exact published commit>`. It creates a separate worktree and pinned NFI checkout, runs disconnected checks, and generates:
+
+1. `Import-Author-History.ps1`: manually pull the author's public Binance spot history image. This can be a large download. Record its immutable local image ID, create a stopped network-disabled container, and copy `/data` without executing the image. It does not supply exchange keys or buy data. The current image is not attested as the old report's exact history.
+2. `Start-NFI-Backtest.ps1`: hash and inventory all expected pair/timeframe files; refuse incomplete history instead of silently shrinking the universe; run only native Freqtrade **backtesting**, with no strategy wrapper or trading loop. Exports native trades/config/results and logs, then reconciles trade counts and aggregate simulated PnL into `reproduction-summary.json`. Zero trades is `NO_TRADE_EVIDENCE`. Existing output is preserved, and rerunning into multiple archives requires a new prepared workspace.
+3. `Start-Grok-News-Scout.ps1`: a separate optional research process described below.
+
+The backtest runtime may contact public Binance metadata endpoints. Regional rejection is a diagnostic; do not add a proxy or change exchanges and call it the same reproduction. No exchange credentials, host environment file, Docker socket, published port or existing Atlas lab are mounted. The host running this implementation had no Docker binary, so the full historical replay was **NOT_RUN**, not passed. Preparation was exercised against the real pinned source and emitted the settings above.
+
+File presence does not establish sufficient warmup or period coverage. Native loader warnings, skipped/delisted pairs, zero-volume filled candles, actual fees, open-equity accounting, source code lookahead and recursive stability still require review. No profit promotion occurs automatically. BB_RPB v104 and CRSI are the subsequent reproduction queue; they are not reproduced by this NFI run.
+
+## Two distinct Grok roles
+
+| Role | Input and work | Saved result | Authority |
+|---|---|---|---|
+| NEWS | Official Responses `web_search` and `x_search`; narrow supplied assets; recent social date range; cited digest distinguishing rumors and events | `news-latest.json`, immutable attempt record in SQLite with token/tool usage | Research only |
+| SCOUT | Fresh cited digest, supplied asset universe; ranks at most five assets; no market quote is supplied | `scout-latest.json`, news request ID and content hash, provider usage and latency | Watchlist only |
+
+These use Atlas's existing provider and local credentials. No additional agent framework is required. A normal Grok completion does not search X: NEWS explicitly supplies the documented search tools. Model reasoning is not substituted for fresh source retrieval. Citations returned by the provider remain **unverified citations**, not an independent fact-check. News can be historical, wrong, manipulated or unrelated to executable edge. SCOUT may select only supplied symbols and cite only NEWS source URLs; invented symbols, citations, order fields and oversized results are refused.
+
+Both roles run in a process separate from native trading. Native execution never calls or waits on this process. The cache consumer returns an empty watchlist for expired research. The current change does **not** wire the watchlist into Atlas entries, alter strategy rankings, or place Grok orders. That keeps this first role-specific collection pilot measurable before an entry-policy change. Existing protective exits remain owned by their native controllers.
+
+The launcher defaults to one hour, hourly collection, at most 24 attempts in the same output directory over a rolling 24 hours. For a 24-hour research collection use `Start-Grok-News-Scout.ps1 -Hours 24 -MaxRequests 48`. An hourly cycle uses one NEWS and one SCOUT request. Calls fail closed; failed and in-flight calls count. The SQLite transaction prevents concurrent processes/restarts using the same directory from resetting or racing the cap. A new directory is a new budget, so reuse the prepared directory for the same collection. Provider token and search charges apply; **max_turns and request caps are not exact dollar or fetched-post caps**. Do not assume the existing execution trial's 20-call budget covers this separately configured research pilot. No automatic retry or order submission occurs.
+
+Stop with Ctrl+C or create `STOP_NEWS_SCOUT` in its output directory. Latest caches are atomically replaced and expire after 15 minutes. The full attempt ledger retains previous digests, citations, model result status, source timing, token/tool usage when supplied and latency. A failed new attempt invalidates the previous latest scout result before collection. The same prepared workspace can run alongside the visible normal Atlas GUI without starting it through Codex.
+
+The default eight-symbol research universe is BTC/USD, ETH/USD, SOL/USD, LINK/USD, LTC/USD, AVAX/USD, XRP/USD and ADA/USD; the CLI accepts up to 24 explicit symbols. These are research identifiers, not an attestation of exchange support, account permissions or liquidity. Native symbol mapping and quote/risk checks remain necessary before any future order trial. No screenshot of a watchlist is a simulated fill or profitability result.
+
+## Instagram requests and relevant public code
+
+- Direct requests to `instagram.com/gitrepos.si/` were blocked by retrieval, and searches did not identify a reliable exact match. No alternate username or repository was silently substituted. The exact profile/reel link is needed to assess the user's intended post.
+- Direct `instagram.com/msbintel/` retrieval returned HTTP 429. A [third-party feed mirror](https://grokbotfeed.sharenow.today/?date=2026-08-28&tab=instagram) attributes an August 28 post about 350 trading agents and TradingView to MSB Intel. This is a lead, not a verified original reel, executable implementation, broker fill ledger or evidence of profitability. No code from that post was installed.
+- [TradingAgents](https://github.com/TauricResearch/TradingAgents) and [FinRobot](https://github.com/AI4Finance-Foundation/FinRobot) are relevant public multi-role financial research frameworks. Their role separation is relevant; neither framework alone proves a profitable crypto strategy. Atlas already contains the provider, coordinator, bounded research capture and independent native execution, so this change adds the missing roles without importing another execution stack.
+- Official [X Search](https://docs.x.ai/developers/tools/x-search), [Web Search](https://docs.x.ai/developers/tools/web-search) and [pricing](https://docs.x.ai/developers/pricing) documentation was checked 2026-11-02. Search may take longer than a scalper decision budget; it belongs in background research and a short-lived cache.
+
+No Instagram login, private account session, subscription purchase, messages to another person, source-code installation from a social post, or paid provider request was performed during development.
