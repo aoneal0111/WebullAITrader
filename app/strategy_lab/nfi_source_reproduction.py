@@ -189,6 +189,11 @@ def summarize(work):
         'limitations': ['Source-faithful new run; exact published summary provenance unresolved',
             'Native exported fee fields may be absent; inspect individual trade fees and resolved config',
             'Missing candles, warmup, lookahead and recursive stability require separate review']}
+    if (work / 'metadata-context.json').is_file():
+        metadata = json.loads((work / 'metadata-context.json').read_text())
+        summary.update(scope='NFI_OFFLINE_POST_PERIOD_METADATA_RESEARCH_V1',
+                       market_metadata=metadata, qualification_eligible=False)
+        summary['limitations'].extend(metadata['limitations'])
     write(work / 'reproduction-summary.json', summary)
     return summary
 
