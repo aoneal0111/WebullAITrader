@@ -88,7 +88,7 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
     path=session/'private-capture'/'private-observer-context.jsonl'
     pool=ThreadPoolExecutor(max_workers=2);pending={};next_at={};seen=set();offset=0;buffer=b'';attempts=0;records=0
     reason='TIME_LIMIT';statuses=Counter();actions=Counter();last_progress=timer()
-    if team_mode:print('GROK_TEAMS_OBSERVER; TWO INDEPENDENT EQUITY TEAMS; NEWS/SCOUT; 20 SHARED ATTEMPTS; ORDERS=0',flush=True)
+    if team_mode:print('GROK_TEAMS_OBSERVER; TWO INDEPENDENT EQUITY TEAMS; NEWS/SCOUT; 60 SHARED ATTEMPTS; 20 PER TEAM; ORDERS=0',flush=True)
     if not team_mode:print('GROK_INTENTIONS_RUNNING; MAX_REQUESTS=20; HOURLY_PER_ENGINE; ORDERS=0; SIMULATED_FILLS=0',flush=True)
     try:
         with (output/'private-proposals.jsonl').open('x',encoding='utf-8') as log:
@@ -102,7 +102,7 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
                         statuses[record['status']]+=1;actions[record.get('action','UNAVAILABLE')]+=1
                         print('GROK_INTENTION='+record['status']+'; ACTION='+record.get('action','UNAVAILABLE'),flush=True)
                         del pending[engine]
-                if attempts>=20 and not pending:reason='REQUEST_LIMIT';break
+                if not team_mode and attempts>=20 and not pending:reason='REQUEST_LIMIT';break
                 if path.exists():
                     if path.stat().st_size<offset:raise ValueError('CAPTURE_TRUNCATED')
                     with path.open('rb') as source:source.seek(offset);chunk=source.read(256*1024);offset+=len(chunk)
@@ -115,10 +115,20 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
                         snapshot,context=decode_capture(line+b'\n',manifest['baseline_sha256'])[0]
                         if snapshot.source!='WEBULL_OPENAPI':raise ValueError('NATIVE_CONTEXT_REQUIRED')
                         if snapshot.fresh(clock()):latest[snapshot.engine.value]=(snapshot,context)
+                    if team_mode:
+                        for owner in ('WARRIOR_MOMENTUM_V1','QUICK_SCALPER'):
+                            cached=path.parent/('latest-'+owner+'.jsonl')
+                            if not cached.exists():continue
+                            with cached.open('rb') as stream:raw=stream.read(MAX_LINE+1)
+                            if len(raw)>MAX_LINE:raise ValueError('LATEST_CONTEXT_BOUND')
+                            s,c=decode_capture(raw,manifest['baseline_sha256'])[0]
+                            if s.engine.value!=owner or s.source!='WEBULL_OPENAPI':raise ValueError('LATEST_CONTEXT_OWNER_MISMATCH')
+                            old=latest.get(owner)
+                            if s.fresh(clock()) and (old is None or s.captured_at>old[0].captured_at):latest[owner]=(s,c)
                     for engine,(snapshot,context) in latest.items():
                         key=(engine,snapshot.event_id)
-                        if attempts>=20 or engine in pending or timer()<next_at.get(engine,0) or key in seen:continue
-                        seen.add(key);attempts+=1;next_at[engine]=timer()+(7200 if team_mode else 3600)
+                        if (not team_mode and attempts>=20) or engine in pending or timer()<next_at.get(engine,0) or key in seen:continue
+                        seen.add(key);attempts+=1;next_at[engine]=timer()+3600
                         pending[engine]=pool.submit(reviewer,client,snapshot,context,clock)
                 if timer()-last_progress>=60:
                     if team_mode:
@@ -145,14 +155,14 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
                 'At most 20 paid calls; each engine sampled no more than once per hour.',
                 'Nothing in this process can enable native orders, change risk or close a position.'])
         if team_mode:
-            report.update(cases_scheduled=attempts,shared_budget=client.budget.report(),engine_sample_interval_seconds=7200,
-                news_scout_maximum_attempts=4,engine_maximum_attempts=16,
+            report.update(cases_scheduled=attempts,shared_budget=client.budget.report(),engine_sample_interval_seconds=3600,
+                news_scout_maximum_attempts=20,engine_maximum_attempts=40,per_engine_maximum_attempts=20,
                 accounting_final=not client.diagnostics()['news_worker_running'],
-                limitations=['Sampled collaboration research only; at most four cases per engine over eight hours.',
-                    'NEWS/SCOUT run at most twice. Missing/expired news is omitted; news never delays engine review.',
+                limitations=['Sampled collaboration research only; hourly cases with a durable limit of ten two-stage cases per engine.',
+                    'NEWS/SCOUT run at most ten cycles. Missing/expired news is omitted; news never delays engine review.',
                     'Original native capture times retained; late opinions never authorize orders.',
                     'No Grok-owned fills or PnL ledger; proposals cannot establish win rate.',
-                    'The 20-attempt cap persists across restarts; each engine has its own coordinator.'])
+                    'The 60-total/20-per-team attempt caps persist across restarts; each engine has its own coordinator.'])
         target=output/'summary.json';target.write_text(json.dumps(report,indent=2),encoding='utf-8')
         print('UPLOAD_SUMMARY='+str(target),flush=True)
 

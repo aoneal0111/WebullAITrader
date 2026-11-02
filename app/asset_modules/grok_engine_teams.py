@@ -1,6 +1,6 @@
 """Engine-separated Grok collaboration research; no execution interfaces.
 
-One shared durable 20-attempt cap: 16 engine calls, four NEWS/SCOUT calls.
+Durable 60-attempt cap: 20 Momentum, 20 Scalper, 20 NEWS/SCOUT calls.
 The news desk never blocks a native or observer engine. All proposals remain
 unfilled opinions, including replies arriving inside an engine's timing budget.
 """
@@ -32,6 +32,7 @@ class TeamBudget:
         self.root, self.clock = Path(root), clock
         self.path = self.root / 'grok-team-budget.sqlite3'
         with self.connect() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS samples (engine TEXT, slot INTEGER, event TEXT, PRIMARY KEY(engine,slot))')
             db.execute('CREATE TABLE IF NOT EXISTS calls '
                 '(id TEXT PRIMARY KEY, engine TEXT, stage TEXT, started TEXT, context TEXT, result TEXT, event_key TEXT UNIQUE)')
 
@@ -43,6 +44,30 @@ class TeamBudget:
                 yield db
         finally:
             db.close()
+
+    def sample_slot(self, engine):
+        from app.equity_overhaul.paper_experiment import load
+        _, spec = load(self.root / 'experiment.json', clock=self.clock)
+        elapsed = (self.clock() - datetime.fromisoformat(spec['created_at'])).total_seconds()
+        return int((elapsed + (300 if engine == 'NEWS_DESK' else 0)) // 3600)
+
+    def claim_sample(self, engine, event):
+        if engine not in (*ENGINES, 'NEWS_DESK'):
+            raise ValueError('EXPLICIT_ENGINE_TEAM_REQUIRED')
+        slot = self.sample_slot(engine)
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if db.execute('SELECT 1 FROM samples WHERE engine=? AND slot=?',(engine,slot)).fetchone():
+                return False
+            db.execute('INSERT INTO samples VALUES (?,?,?)',(engine,slot,event))
+        return True
+
+    def next_desk_wait(self):
+        from app.equity_overhaul.paper_experiment import load
+        _, spec = load(self.root / 'experiment.json', clock=self.clock)
+        elapsed = (self.clock() - datetime.fromisoformat(spec['created_at'])).total_seconds()
+        next_boundary = (self.sample_slot('NEWS_DESK') + 1) * 3600 - 300
+        return max(1, min(60, next_boundary - elapsed))
 
     def reserve(self, engine, stage, context):
         from app.equity_overhaul.paper_experiment import load
@@ -60,7 +85,7 @@ class TeamBudget:
             total = db.execute('SELECT count(*) FROM calls').fetchone()[0]
             desk = db.execute("SELECT count(*) FROM calls WHERE engine='NEWS_DESK'").fetchone()[0]
             own = db.execute('SELECT count(*) FROM calls WHERE engine=?',(engine,)).fetchone()[0]
-            if (engine in ENGINES and own >= 8) or total >= 20 or (engine == 'NEWS_DESK' and desk >= 4) or (engine in ENGINES and total - desk >= 16):
+            if own >= 20 or total >= 60:
                 raise GrokUnavailable('DURABLE_TEAM_REQUEST_CAP')
             identifier = uuid4().hex
             event_key = engine + ':' + stage + ':' + str(context['event_id']) if 'event_id' in context else identifier
@@ -77,7 +102,7 @@ class TeamBudget:
     def report(self):
         with self.connect() as db:
             rows = db.execute('SELECT engine,stage,count(*),sum(result IS NULL) FROM calls GROUP BY engine,stage').fetchall()
-        return {'reserved_attempts': sum(r[2] for r in rows), 'maximum_attempts': 20,
+        return {'reserved_attempts': sum(r[2] for r in rows), 'maximum_attempts': 60, 'maximum_per_team': 20,
             'unfinalized_attempts': sum(r[3] for r in rows),
             'roles': [{'engine': r[0], 'stage': r[1], 'attempts': r[2]} for r in rows]}
 
@@ -140,12 +165,15 @@ class EngineTeams:
             return json.loads(encode(record))
 
     def _news_worker(self):
-        # At most two desk cycles, four hours apart; no model/news call is made
-        # by a native quote, strategy, risk, protection or GUI callback.
-        for iteration in range(2):
-            if iteration and self._stop.wait(4 * 3600):
-                return
-            if self._stop.is_set():
+        # Durable hourly slots survive restarts. NEWS runs five minutes before
+        # later nominal engine slots, up to nine cycles during the parent trial.
+        while not self._stop.is_set():
+            try:
+                if not self.budget.claim_sample('NEWS_DESK', 'desk'):
+                    if self._stop.wait(self.budget.next_desk_wait()):
+                        return
+                    continue
+            except (ValueError, GrokUnavailable):
                 return
             with self._lock:
                 symbols = tuple(sorted(self._symbols))
@@ -190,6 +218,15 @@ def review_team(teams, snapshot, context, clock=lambda: datetime.now(UTC)):
     engine = snapshot.engine.value
     if engine not in ENGINES:
         raise ValueError('SEPARATE_EQUITY_TEAM_REQUIRED')
+    try:
+        claimed=teams.budget.claim_sample(engine,snapshot.event_id)
+    except (ValueError,GrokUnavailable):
+        return dict(engine=engine,event_id=snapshot.event_id,symbol=snapshot.symbol,
+            status='TEAM_WINDOW_CLOSED',execution_authorized=False,orders=0,simulated_fills=0)
+    if not claimed:
+        return dict(engine=engine,event_id=snapshot.event_id,symbol=snapshot.symbol,
+            status='HOURLY_SLOT_ALREADY_SAMPLED',received_at=clock().isoformat(),
+            execution_authorized=False,orders=0,simulated_fills=0)
     teams.offer_symbol(snapshot.symbol)
     shared = teams.shared_evidence(snapshot.captured_at)
     began = monotonic()

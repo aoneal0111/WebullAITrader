@@ -117,3 +117,24 @@ def test_saved_context_is_never_retimed_for_model_request(tmp_path):
     trial,requests,clock=fixture();clock[0]=NOW+timedelta(seconds=3)
     result=observe_capture(tmp_path/'capture'/'private-observer-context.jsonl',trial,BASE)
     assert result[0].status=='STALE_OR_FUTURE_QUOTE' and not requests
+
+
+def test_bounded_latest_context_advances_after_append_sample_is_full(tmp_path):
+    from dataclasses import replace
+    from datetime import timedelta
+    current=[NOW]
+    capture=ContextCapture(tmp_path/'capture',BASE,clock=lambda:current[0],max_records=1,latest_cache=True)
+    first=snap()
+    assert capture.submit(first,evidence(first))
+    current[0]=NOW+timedelta(seconds=1)
+    second=replace(first,event_id='second',captured_at=current[0],bid_at=current[0],ask_at=current[0])
+    second_context=replace(evidence(first),event_id='second',captured_at=current[0])
+    assert not capture.submit(second,second_context)  # Append quota still applies.
+    report=capture.close()
+    from app.asset_modules.grok_observer_capture import decode_capture
+    cached=(tmp_path/'capture/latest-WARRIOR_MOMENTUM_V1.jsonl').read_bytes()
+    snapshot,_=decode_capture(cached,BASE)[0]
+    assert snapshot.event_id=='second' and snapshot.captured_at==current[0]
+    assert report['counts']['written']==1 and report['counts']['limit_rejections']==1
+    assert report['latest_context_cache'] and not report['writer_failed']
+    assert len(list((tmp_path/'capture').glob('latest-*.jsonl')))==1

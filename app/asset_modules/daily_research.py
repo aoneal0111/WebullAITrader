@@ -52,7 +52,7 @@ class DailyResearch:
                 pointer=Path(experiment_path).with_name('recording-session.json')
                 pointer.write_text(json.dumps({'session':str(self.directory),'trial_id':experiment['trial_id']}),encoding='utf-8')
             self.capture=ContextCapture(self.directory/'private-capture',self.baseline,clock=clock,
-                max_records=10000,max_bytes=64*1024*1024)
+                max_records=10000,max_bytes=64*1024*1024,latest_cache=bool(experiment))
             self.tap=RuntimeContextTap(self.capture,self.baseline,journal=self.journal)
             self._stop=Event();self._closed=False
             self._composition=None;self._settings_hash=None;self._policy_changed=False
@@ -74,6 +74,7 @@ class DailyResearch:
                     'Native crypto worker inputs and results when observer is explicitly enabled'],
                 limitations=['No unobserved symbols, pre-start ticks, options chains or news invented',
                     'Fresh context sample limited to 10000 records/64MiB; raw journal continues if context fills',
+                    'Paper experiments additionally publish one bounded latest context per engine for independent team sampling',
                     f'Raw journal bounded to {self.journal.max_bytes} bytes/{self.journal.max_records} records; queue drops invalidate complete replay',
                     'Recording grants no entries; native admission or an explicit bounded PAPER experiment controls buys'])
             (self.directory/'research-manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')

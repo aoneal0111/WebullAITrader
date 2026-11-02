@@ -1,5 +1,6 @@
 """Compact read-only operator report; no provider, broker or GUI imports."""
 import argparse
+from datetime import UTC, datetime
 import json
 from pathlib import Path
 import sqlite3
@@ -18,6 +19,16 @@ def report(trial):
     spec = read(trial / 'experiment.json')
     result = {'trial_started': bool(spec), 'expires_at': spec.get('expires_at'),
         'orders_enabled_by_this_check': False}
+    if spec:
+        remaining=max(0,(datetime.fromisoformat(spec['expires_at'])-datetime.now(UTC)).total_seconds())
+        result['remaining_trial_hours']=round(remaining/3600,2)
+        entry_db=trial/'entry-attempts.sqlite3'
+        if entry_db.is_file():
+            db=sqlite3.connect(entry_db.as_uri()+'?mode=ro',uri=True)
+            try:
+                used=db.execute('SELECT count(*) FROM attempts WHERE trial=?',(spec['trial_id'],)).fetchone()[0]
+                result.update(native_entry_attempts_used=used,native_entry_attempts_remaining=max(0,spec['limits']['maximum_entry_attempts']-used))
+            finally:db.close()
     pointer = read(trial / 'recording-session.json')
     if pointer:
         if pointer.get('trial_id') != spec.get('trial_id'):
@@ -44,6 +55,8 @@ def report(trial):
             rows = db.execute('SELECT engine,stage,count(*),sum(result IS NULL) FROM calls GROUP BY engine,stage').fetchall()
             result.update(grok_reserved_attempts=sum(r[2] for r in rows),
                 grok_unfinalized_attempts=sum(r[3] for r in rows),
+                grok_attempts_remaining_by_team={engine:max(0,20-sum(r[2] for r in rows if r[0]==engine))
+                    for engine in ('WARRIOR_MOMENTUM_V1','QUICK_SCALPER','NEWS_DESK')},
                 grok_roles={r[0]+'|'+r[1]:r[2] for r in rows})
         finally:
             db.close()

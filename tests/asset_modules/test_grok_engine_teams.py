@@ -48,13 +48,13 @@ def context():
 def test_durable_budget_caps_engine_calls_and_preserves_desk_allocation(trial):
     budget=TeamBudget(trial,clock=lambda:NOW)
     for engine in ('QUICK_SCALPER','WARRIOR_MOMENTUM_V1'):
-        for i in range(8):budget.reserve(engine,'ANALYST',{'event_id':str(i)})
+        for i in range(20):budget.reserve(engine,'ANALYST',{'event_id':str(i)})
     with pytest.raises(GrokUnavailable,match='CAP'):
         budget.reserve('WARRIOR_MOMENTUM_V1','ANALYST',{'event_id':'extra'})
     restarted=TeamBudget(trial,clock=lambda:NOW)
-    for i in range(4):restarted.reserve('NEWS_DESK','NEWS',{'as_of':str(i)})
-    assert restarted.report()['reserved_attempts']==20
-    assert restarted.report()['unfinalized_attempts']==20
+    for i in range(20):restarted.reserve('NEWS_DESK','NEWS',{'as_of':str(i)})
+    assert restarted.report()['reserved_attempts']==60
+    assert restarted.report()['unfinalized_attempts']==60
     with pytest.raises(GrokUnavailable,match='CAP'):restarted.reserve('NEWS_DESK','SCOUT',{})
 
 
@@ -63,8 +63,8 @@ def test_concurrent_process_style_reservations_cannot_overspend(trial):
         try:return TeamBudget(trial,clock=lambda:NOW).reserve('QUICK_SCALPER' if i%2 else 'WARRIOR_MOMENTUM_V1','ANALYST',{'event_id':str(i)})
         except GrokUnavailable:return None
     TeamBudget(trial,clock=lambda:NOW)
-    with ThreadPoolExecutor(max_workers=8) as pool:results=list(pool.map(attempt,range(40)))
-    assert sum(r is not None for r in results)==16
+    with ThreadPoolExecutor(max_workers=8) as pool:results=list(pool.map(attempt,range(60)))
+    assert sum(r is not None for r in results)==40
 
 
 def test_pause_expiry_unknown_role_and_duplicate_event_refuse(trial):
@@ -183,3 +183,27 @@ def test_day_runner_persists_actual_two_stage_requests_on_same_captured_event(tm
     payload=json.loads(requests[1]['input'][1]['content'])
     assert payload['team_engine']=='WARRIOR_MOMENTUM_V1'
     assert payload['strategy_evidence']['same_engine_analyst']['event_id']==s.event_id
+
+
+def test_restart_pacing_preserves_every_future_hour_without_spending_early(trial):
+    from datetime import timedelta
+    for hour in range(8):
+        at=NOW+timedelta(hours=hour)
+        b=TeamBudget(trial,clock=lambda:at)
+        for engine in ('QUICK_SCALPER','WARRIOR_MOMENTUM_V1'):
+            assert b.claim_sample(engine,'case'+str(hour))
+            assert not TeamBudget(trial,clock=lambda:at).claim_sample(engine,'restart')
+            for stage in ('ANALYST','COORDINATOR'):
+                b.reserve(engine,stage,{'event_id':'case'+str(hour)})
+    r=TeamBudget(trial,clock=lambda:NOW+timedelta(hours=7)).report()
+    assert r['reserved_attempts']==32 and r['maximum_attempts']==60
+
+
+def test_news_slots_fit_twenty_calls_through_full_eight_hours(trial):
+    slots=[0]+[55+60*i for i in range(8)]
+    for minutes in slots:
+        b=TeamBudget(trial,clock=lambda:NOW+timedelta(minutes=minutes))
+        assert b.claim_sample('NEWS_DESK','desk')
+        assert not b.claim_sample('NEWS_DESK','restart')
+        for stage in ('NEWS','SCOUT'):b.reserve('NEWS_DESK',stage,{})
+    assert b.report()['reserved_attempts']==18

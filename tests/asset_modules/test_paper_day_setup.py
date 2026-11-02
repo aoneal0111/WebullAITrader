@@ -45,6 +45,6 @@ def test_team_launchers_are_manual_paper_only_and_have_readiness_report(tmp_path
     assert "'ATLAS_GROK_EXECUTION_TRIAL' = ''" in atlas and "'LIVE_TRADING_ENABLED' = 'false'" in atlas
     assert not (root/'experiment.json').exists()
     assert 'paper_morning_status' in (root/'Show-Morning-Status.ps1').read_text()
-    assert result['shared_paid_attempt_cap']==20 and not result['crypto_nfi_connected']
+    assert result['shared_paid_attempt_cap']==60 and not result['crypto_nfi_connected']
     assert not result['credentials_validated_online']
     assert 'fixture-only' not in ''.join(p.read_text() for p in root.iterdir())

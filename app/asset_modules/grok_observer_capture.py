@@ -59,7 +59,7 @@ class ContextCapture:
     No entry/exit callbacks or providers are accepted. This is not wired to Atlas.
     submit never propagates validation/storage exceptions into its caller.
     """
-    def __init__(self,directory,baseline,*,clock,deadline=None,timer=monotonic,max_records=None,max_bytes=None):
+    def __init__(self,directory,baseline,*,clock,deadline=None,timer=monotonic,max_records=None,max_bytes=None,latest_cache=False):
         import re
         if not isinstance(baseline,str) or not re.fullmatch('[0-9a-f]{64}',baseline):
             raise ValueError('Frozen baseline fingerprint required')
@@ -73,6 +73,7 @@ class ContextCapture:
         self._queue=Queue(maxsize=16);self._stop=Event();self._lock=Lock()
         self._counts=Counter();self._owners=Counter();self._seen=set();self._bytes=0
         self._closed=False;self._failed=False
+        self._latest_cache=bool(latest_cache);self._latest={};self._published={};self._last_publish=0
         self._directory=Path(directory);self._directory.mkdir(parents=True,exist_ok=False)
         self._thread=Thread(target=self._write,name='atlas-private-context-writer',daemon=True)
         self._thread.start()
@@ -87,6 +88,10 @@ class ContextCapture:
             with self._lock:
                 if self._closed or self._failed:
                     self._counts['closed_or_failed']+=1;return False
+                if self._latest_cache:
+                    old=self._latest.get(snapshot.engine.value)
+                    if old is None or snapshot.captured_at>old[0]:
+                        self._latest[snapshot.engine.value]=(snapshot.captured_at,data)
                 if identity in self._seen:
                     self._counts['duplicates']+=1;return False
                 if self._counts['enqueued']>=self._max_records or self._bytes+len(data)>self._max_bytes:
@@ -99,15 +104,34 @@ class ContextCapture:
             with self._lock:self._counts['invalid_inputs']+=1
             return False
 
+    def _publish_latest(self):
+        if not self._latest_cache:return
+        with self._lock:items=dict(self._latest)
+        for owner,(captured,data) in items.items():
+            if self._published.get(owner)==captured:continue
+            temporary=self._directory/('latest-'+owner+'.tmp')
+            temporary.write_bytes(data)
+            try:temporary.replace(self._directory/('latest-'+owner+'.jsonl'))
+            except PermissionError:
+                # Windows may briefly hold the old cache file open in its reader.
+                # Retain its original timestamp and retry on the next writer tick.
+                with self._lock:self._counts['latest_cache_publish_busy']+=1
+                continue
+            self._published[owner]=captured
+            with self._lock:self._counts['latest_contexts_published']+=1
+        self._last_publish=self._timer()
+
     def _write(self):
         try:
             with (self._directory/'private-observer-context.jsonl').open('xb') as stream:
                 while not self._stop.is_set() or not self._queue.empty():
+                    if self._timer()-self._last_publish>=1:self._publish_latest()
                     try:owner,data=self._queue.get(timeout=.05)
                     except Empty:continue
                     stream.write(data);stream.flush()
                     with self._lock:
                         self._counts['written']+=1;self._owners[owner]+=1
+                self._publish_latest()
         except Exception:
             with self._lock:self._failed=True;self._counts['writer_failures']+=1
 
@@ -119,7 +143,7 @@ class ContextCapture:
             summary=dict(scope='LOCAL_OBSERVER_CONTEXT_CAPTURE_V1',orders=0,grok_requests=0,network_requests=0,
                 online_observer_ready=False,desktop_wiring='NOT_ATTESTED',baseline_modified=False,
                 writer_stopped=not self._thread.is_alive(),writer_failed=self._failed,
-                counts=dict(self._counts),records_by_engine=dict(self._owners),bytes_enqueued=self._bytes)
+                latest_context_cache=self._latest_cache,counts=dict(self._counts),records_by_engine=dict(self._owners),bytes_enqueued=self._bytes)
         if not self._thread.is_alive():
             path=self._directory/'summary.json'
             if not path.exists():

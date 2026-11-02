@@ -69,9 +69,10 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False):
     if teams:
         summary.update(grok='Separate Momentum and Scalper analyst/coordinator teams; independent NEWS/SCOUT desk; observations only',
             grok_model=grok_model,credentials_present=True,credentials_validated_online=False,
-            shared_paid_attempt_cap=20,engine_attempt_cap=16,news_scout_attempt_cap=4,
+            shared_paid_attempt_cap=60,engine_attempt_cap=40,news_scout_attempt_cap=20,per_engine_attempt_cap=20,
             native_path_waits_for_grok=False,crypto_nfi_connected=False,
-            observations='At most four sampled cases per equity engine; not continuous reviews of all 23 families')
+            latest_context_cache='One atomic bounded context per equity engine; raw journal remains authoritative',
+            observations='Hourly samples with at most ten two-stage cases per equity engine; not continuous reviews of all 23 families')
     target=output/'preparation-summary.json';target.write_text(json.dumps(summary,indent=2),encoding='utf-8')
     print('TRIAL_DIRECTORY='+str(output));print('MANUAL_ATLAS='+str(output/'Start-Atlas-Paper-Trial.ps1'))
     print('MANUAL_GROK='+str(output/('Start-Grok-Teams.ps1' if teams else 'Start-Grok-Intentions.ps1')));print('UPLOAD_SUMMARY='+str(target))

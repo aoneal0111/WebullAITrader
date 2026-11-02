@@ -33,12 +33,14 @@ Missing or failed news is explicitly omitted, never awaited by an engine.
 News is not a verified catalyst, executable quote or proof of profitability.
 The desk gathers only up to 24 observed symbols, not the whole market.
 
-The SQLite request budget persists across restarts and processes: at most twenty
+The SQLite request budget persists across restarts and processes: at most sixty
 reserved attempts in this trial, counting failures and unknown completions.
-Each equity team can use eight calls (four two-stage cases), and NEWS/SCOUT can
-use four calls total (two cycles four hours apart). Engine sampling has a nominal
-two-hour cadence. This is sparse collaboration research, not continuous review
-of every signal or all 23 historical setup families. Provider search turns are
+Each equity team can use twenty calls (ten two-stage cases), and NEWS/SCOUT can
+use twenty calls total (ten cycles). Engine sampling has a nominal hourly cadence.
+The independent news desk refreshes after 55 minutes initially and hourly
+thereafter, ahead of later nominal engine samples. Source TTL and pre-event
+availability are still checked. This is sampled collaboration research, not
+continuous review of every signal or all 23 historical setup families. Provider search turns are
 also bounded; an attempt cap is not a fixed dollar cost. Engine model transport
 uses the existing 256-output-token/low-reasoning profile where supported. Native
 trading never waits for these requests. Records compare completion age against
@@ -65,3 +67,33 @@ work. Keep Atlas running while native positions need protection; close it
 normally when done to finalize capture. The observer notices the closed recording
 and stops independently. Do not run old intentions or execution launchers beside
 this observer. Options, futures and NFI execution are not added by this test.
+
+`tools/update-morning-team-budget.ps1` upgrades an already prepared team trial
+without recreating it: it preserves experiment expiry, native entry attempts,
+existing model call rows and `.env`. Close Atlas and Grok normally first.
+Unused allowance is not a deadline extension. Eight hours still starts at the
+original manual Atlas launch; restarting either process does not renew it.
+
+The hourly case slots are now stored in the same SQLite ledger and anchored to
+the original experiment start. Restarts cannot spend another case in a sampled
+engine hour or reset the news refresh slot. Eight engine hours use at most sixteen
+calls per engine; nine news slots (initial, +55 minutes, then hourly) use at most
+eighteen calls. Each group fits its twenty-attempt allowance without needing an
+intra-day refill. Failed requests consume their slot and are not retried. No
+request-count-based observer shutdown occurs before the eight-hour deadline.
+
+This does not remove the native fifty-entry/$5,000-notional trial allowance or
+account, risk, quote and capture-health checks. Those can pause new paper entries
+before the deadline; protection and observation continue independently. Raw
+recording still has finite capacity, and queue/disk failure cannot be promised
+away. The compact status report shows remaining native entry attempts, remaining
+trial hours and remaining calls for each research team. Do not interpret a running
+observer as proof that native admission or complete data capture remains healthy.
+
+When the append-only context sample reaches its 10,000-record/64-MiB bound, an
+independent bounded latest-context cache continues publishing one atomic file
+per equity engine. This uses the existing context writer, coalesces updates, and
+adds no native provider request or model call. Team sampling validates source,
+owner, baseline and original quote age before consuming it. The cache is current
+state, not a replacement for the durable raw journal or a complete history.
+It prevents context-sample exhaustion from starving a later hourly Grok slot.
