@@ -85,3 +85,24 @@ The default eight-symbol research universe is BTC/USD, ETH/USD, SOL/USD, LINK/US
 - Official [X Search](https://docs.x.ai/developers/tools/x-search), [Web Search](https://docs.x.ai/developers/tools/web-search) and [pricing](https://docs.x.ai/developers/pricing) documentation was checked 2026-11-02. Search may take longer than a scalper decision budget; it belongs in background research and a short-lived cache.
 
 No Instagram login, private account session, subscription purchase, messages to another person, source-code installation from a social post, or paid provider request was performed during development.
+
+### Explicit derived-timeframe research variant
+
+`repair-nfi-backtest-runtime.ps1 -OfflineMetadata -RepairTimeframes` enables a
+separate replay dataset for configured pairs whose five-minute candles overlap
+January 2024 but whose required higher timeframe has no candles in that month.
+The offline runner copies the frozen history (about 2.5 GB extra disk space),
+then replaces only those period-empty higher-timeframe files in the copy with
+OHLCV aggregated from their own five-minute candles. It requires unique aligned
+five-minute opens, finite valid OHLCV, complete constituent groups, and at least
+800 pre-period derived bars. Incomplete groups are omitted, never forward-filled.
+Open timestamps remain unchanged; native informative merges enforce completion.
+Other partial historical gaps are not repaired by this variant.
+
+`timeframe-repair.json` records source, original and derived hashes and row counts;
+all output hashes and provenance are included in the metadata carried into the
+performance summary. Original candles, strategy and configuration stay intact.
+This is a derived-data research variant, not the original published dataset or a
+qualification result. No trading, Grok, market-data download or network-enabled
+replay is started by preparation. Failures now save the error message and
+`offline-error-trace.txt` alongside `offline-native-status.json`.

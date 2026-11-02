@@ -3,9 +3,11 @@ param(
     [Parameter(Mandatory=$true)][string]$Revision,
     [Parameter(Mandatory=$true)][string]$ResearchDirectory,
     [Parameter(Mandatory=$true)][string]$History,
-    [switch]$OfflineMetadata
+    [switch]$OfflineMetadata,
+    [switch]$RepairTimeframes
 )
 $ErrorActionPreference = 'Stop'
+if ($RepairTimeframes -and -not $OfflineMetadata) { throw 'Timeframe repair requires offline metadata research mode.' }
 if ($Revision -notmatch '^[0-9a-f]{40}$') { throw 'Exact reviewed revision required.' }
 $Repo = (Resolve-Path -LiteralPath $Repo).Path
 $ResearchDirectory = (Resolve-Path -LiteralPath $ResearchDirectory).Path
@@ -60,6 +62,7 @@ finally { Pop-Location }
 $Text = $Start.Replace('__SOURCE__', (& $Quote $Source)).Replace('__PYTHON__', (& $Quote $Python)).Replace('__WORK__', (& $Quote $Work)).Replace('__HISTORY__', (& $Quote $History)).Replace('__CHECKMOUNT__', (& $Quote ("type=bind,source=" + (Join-Path $Source 'app\strategy_lab') + ',target=/check,readonly'))).Replace('__WORKMOUNT__', (& $Quote "type=bind,source=$Work,target=/work")).Replace('__DATAMOUNT__', (& $Quote "type=bind,source=$History,target=/history,readonly")).Replace('__SUMMARY__', (& $Quote ("UPLOAD_SUMMARY=" + (Join-Path $Work 'reproduction-summary.json'))))
 $Preflight = if ($OfflineMetadata) { '/check/nfi_offline_metadata.py --check-only' } else { '/check/nfi_runtime_preflight.py' }
 $Runner = if ($OfflineMetadata) { '/check/nfi_offline_metadata.py' } else { '/check/nfi_native_backtest.py' }
+if ($RepairTimeframes) { $Runner += ' --repair-timeframes' }
 $Network = if ($OfflineMetadata) { '--network none' } else { '' }
 $Text = $Text.Replace('__PREFLIGHT__', $Preflight).Replace('__RUNNER__', $Runner).Replace('__NETWORK__', $Network)
 $Launcher = Join-Path $Repair 'Start-NFI-Backtest-Checked.ps1'
@@ -68,4 +71,5 @@ Write-Host "REPAIR_DIRECTORY=$Repair"
 Write-Host "REUSED_HISTORY=$History"
 Write-Host "MANUAL_BACKTEST=$Launcher"
 if ($OfflineMetadata) { Write-Host 'RECORDED_2025_METADATA; 2024_EXECUTION_RULES_UNVERIFIED; FULL_REPLAY_NETWORK_DISABLED' }
+if ($RepairTimeframes) { Write-Host 'DERIVED_TIMEFRAME_RESEARCH; SEPARATE_HISTORY_COPY_REQUIRES_APPROX_2_5GB; NO_ORIGINALS_REPLACED' }
 Write-Host 'PREPARED_ONLY; NO_CANDLE_DOWNLOAD; ORIGINAL_SOURCE_CONFIG_AND_LOGS_PRESERVED; NO_BOT_OR_GROK_STARTED'

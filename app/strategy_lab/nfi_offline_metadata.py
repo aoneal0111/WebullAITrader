@@ -11,6 +11,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import subprocess
+import traceback
 
 try:
     from .nfi_runtime_preflight import cli_arguments, disconnected, validate
@@ -117,7 +118,7 @@ def exchange_from_recording(config, data):
     return exchange
 
 
-def replay(work, history, *, check_only=False):
+def replay(work, history, *, check_only=False, repair_timeframes=False):
     work, history = Path(work).resolve(), Path(history).resolve()
     status = {'scope': 'OFFLINE_NFI_RECORDED_METADATA_REPLAY_V1', 'status': 'FAILED',
         'network_requests': 0, 'orders': 0, 'qualification_eligible': False,
@@ -135,6 +136,14 @@ def replay(work, history, *, check_only=False):
             data, metadata = load_metadata(work / FILE, config['exchange']['pair_whitelist'])
             write(work / 'metadata-context.json', metadata)
             exchange = exchange_from_recording(config, data)
+            if repair_timeframes and not check_only:
+                try:
+                    from .nfi_timeframe_repair import prepare
+                except ImportError:
+                    from nfi_timeframe_repair import prepare
+                derived, provenance = prepare(work, history, config['exchange']['pair_whitelist'])
+                config['datadir'] = derived / 'binance'
+                metadata['timeframe_repair'] = provenance
             bt = Backtesting(config, exchange=exchange)
             metadata.update(ccxt_version=ccxt.__version__, native_fee_per_side=bt.fee,
                             effective_pairlist=list(bt.pairlists.whitelist))
@@ -153,6 +162,8 @@ def replay(work, history, *, check_only=False):
                 status['status'] = 'OFFLINE_RESEARCH_RESULT_READY'
     except Exception as exc:
         status['error_type'] = type(exc).__name__
+        status['error'] = str(exc)
+        (work / 'offline-error-trace.txt').write_text(traceback.format_exc(), encoding='utf-8')
         raise
     finally:
         if exchange is not None:
@@ -167,11 +178,12 @@ def main():
     p.add_argument('--history', type=Path, default=Path('/history'))
     p.add_argument('--fetch', action='store_true')
     p.add_argument('--check-only', action='store_true')
+    p.add_argument('--repair-timeframes', action='store_true')
     a = p.parse_args()
     if a.fetch:
         fetch(a.work)
     else:
-        report = replay(a.work, a.history, check_only=a.check_only)
+        report = replay(a.work, a.history, check_only=a.check_only, repair_timeframes=a.repair_timeframes)
         print('NFI_OFFLINE_REPLAY=' + report['status'])
 
 
