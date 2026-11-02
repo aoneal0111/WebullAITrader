@@ -50,7 +50,7 @@ def review(client,snapshot,context,clock=lambda:datetime.now(UTC)):
     return record
 
 
-def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=time.monotonic,pause=time.sleep):
+def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=time.monotonic,pause=time.sleep,teams=False):
     from dotenv import dotenv_values
     from app.configuration.loader import load_configuration
     from app.equity_overhaul.paper_experiment import load
@@ -61,7 +61,18 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
         raise ValueError('PAPER_OBSERVER_FLAGS_REQUIRED')
     client=configured_client(env,transport=compact_transport)
     if client is None:raise ValueError('LOCAL_GROK_CONFIGURATION_REQUIRED')
-    output=trial/'grok-order-intentions';output.mkdir(exist_ok=False)
+    team_mode=teams
+    if team_mode:
+        from .grok_engine_teams import EngineTeams, review_team
+        client=EngineTeams(env,trial,clock=clock)
+        reviewer=review_team
+        from uuid import uuid4
+        parent=trial/'grok-team-observer';parent.mkdir(exist_ok=True)
+        output=parent/('run-'+uuid4().hex)
+    else:
+        reviewer=review
+        output=trial/'grok-order-intentions'
+    output.mkdir(exist_ok=False)
     started=timer();pointer=trial/'recording-session.json'
     while not pointer.exists():
         if timer()-started>900:raise ValueError('DAILY_CAPTURE_STARTUP_TIMEOUT')
@@ -77,7 +88,8 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
     path=session/'private-capture'/'private-observer-context.jsonl'
     pool=ThreadPoolExecutor(max_workers=2);pending={};next_at={};seen=set();offset=0;buffer=b'';attempts=0;records=0
     reason='TIME_LIMIT';statuses=Counter();actions=Counter();last_progress=timer()
-    print('GROK_INTENTIONS_RUNNING; MAX_REQUESTS=20; HOURLY_PER_ENGINE; ORDERS=0; SIMULATED_FILLS=0',flush=True)
+    if team_mode:print('GROK_TEAMS_OBSERVER; TWO INDEPENDENT EQUITY TEAMS; NEWS/SCOUT; 20 SHARED ATTEMPTS; ORDERS=0',flush=True)
+    if not team_mode:print('GROK_INTENTIONS_RUNNING; MAX_REQUESTS=20; HOURLY_PER_ENGINE; ORDERS=0; SIMULATED_FILLS=0',flush=True)
     try:
         with (output/'private-proposals.jsonl').open('x',encoding='utf-8') as log:
             while timer()-started<max_seconds:
@@ -106,10 +118,14 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
                     for engine,(snapshot,context) in latest.items():
                         key=(engine,snapshot.event_id)
                         if attempts>=20 or engine in pending or timer()<next_at.get(engine,0) or key in seen:continue
-                        seen.add(key);attempts+=1;next_at[engine]=timer()+3600
-                        pending[engine]=pool.submit(review,client,snapshot,context,clock)
+                        seen.add(key);attempts+=1;next_at[engine]=timer()+(7200 if team_mode else 3600)
+                        pending[engine]=pool.submit(reviewer,client,snapshot,context,clock)
                 if timer()-last_progress>=60:
-                    print(f'GROK_INTENTIONS_RUNNING; REQUESTS_SCHEDULED={attempts}; RECORDS={records}',flush=True);last_progress=timer()
+                    if team_mode:
+                        print(f'GROK_TEAMS_RUNNING; CASES_SCHEDULED={attempts}; SHARED_ATTEMPTS={client.requests}; RECORDS={records}',flush=True)
+                    else:
+                        print(f'GROK_INTENTIONS_RUNNING; REQUESTS_SCHEDULED={attempts}; RECORDS={records}',flush=True)
+                    last_progress=timer()
                 pause(1)
     except KeyboardInterrupt:reason='INTERRUPTED'
     finally:
@@ -119,7 +135,8 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
             for future in pending.values():
                 record=future.result();log.write(json.dumps(record,default=str)+'\n');records+=1
                 statuses[record['status']]+=1;actions[record.get('action','UNAVAILABLE')]+=1
-        report=dict(scope='GROK_ORDER_INTENTIONS_ONLY_V1',stop_reason=reason,requests_scheduled=attempts,records=records,
+        if team_mode:client.close()
+        report=dict(scope=('ENGINE_LOCAL_COLLABORATION_RESEARCH_V1' if team_mode else 'GROK_ORDER_INTENTIONS_ONLY_V1'),stop_reason=reason,requests_scheduled=attempts,records=records,
             statuses=dict(statuses),actions=dict(actions),
             provider_requests_attempted=client.requests,usage=client.usage(),diagnostics=client.diagnostics(),orders=0,simulated_fills=0,baseline_modified=False,
             limitations=['Order intentions only: no execution or Grok-owned simulated position ledger.',
@@ -127,13 +144,23 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
                 'Missing token usage is not proof of zero provider charges.',
                 'At most 20 paid calls; each engine sampled no more than once per hour.',
                 'Nothing in this process can enable native orders, change risk or close a position.'])
+        if team_mode:
+            report.update(cases_scheduled=attempts,shared_budget=client.budget.report(),engine_sample_interval_seconds=7200,
+                news_scout_maximum_attempts=4,engine_maximum_attempts=16,
+                accounting_final=not client.diagnostics()['news_worker_running'],
+                limitations=['Sampled collaboration research only; at most four cases per engine over eight hours.',
+                    'NEWS/SCOUT run at most twice. Missing/expired news is omitted; news never delays engine review.',
+                    'Original native capture times retained; late opinions never authorize orders.',
+                    'No Grok-owned fills or PnL ledger; proposals cannot establish win rate.',
+                    'The 20-attempt cap persists across restarts; each engine has its own coordinator.'])
         target=output/'summary.json';target.write_text(json.dumps(report,indent=2),encoding='utf-8')
         print('UPLOAD_SUMMARY='+str(target),flush=True)
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--repo',required=True);p.add_argument('--trial',required=True)
-    args=p.parse_args();run(args.repo,args.trial)
+    p.add_argument('--teams',action='store_true')
+    args=p.parse_args();run(args.repo,args.trial,teams=args.teams)
 
 
 if __name__=='__main__':main()

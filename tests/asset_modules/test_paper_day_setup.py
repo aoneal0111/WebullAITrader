@@ -31,3 +31,20 @@ def test_existing_output_and_low_disk_space_are_rejected(tmp_path,monkeypatch):
     monkeypatch.setattr(module.shutil,'disk_usage',lambda _:SimpleNamespace(free=1024))
     with pytest.raises(ValueError,match='FREE_SPACE'):prepare(tmp_path,tmp_path/'trial')
     assert not (tmp_path/'trial').exists()
+
+
+def test_team_launchers_are_manual_paper_only_and_have_readiness_report(tmp_path,monkeypatch):
+    monkeypatch.setenv('XAI_API_KEY','fixture-only')
+    monkeypatch.setenv('ATLAS_GROK_MODEL','grok-4.7')
+    repo=tmp_path/'repo';repo.mkdir()
+    result=prepare(repo,tmp_path/'trial',profile='CENT_EXECUTABLE_V3',teams=True)
+    root=tmp_path/'trial'
+    atlas=(root/'Start-Atlas-Paper-Trial.ps1').read_text()
+    team=(root/'Start-Grok-Teams.ps1').read_text()
+    assert '--teams' in team and team==(root/'Start-Grok-Intentions.ps1').read_text()
+    assert "'ATLAS_GROK_EXECUTION_TRIAL' = ''" in atlas and "'LIVE_TRADING_ENABLED' = 'false'" in atlas
+    assert not (root/'experiment.json').exists()
+    assert 'paper_morning_status' in (root/'Show-Morning-Status.ps1').read_text()
+    assert result['shared_paid_attempt_cap']==20 and not result['crypto_nfi_connected']
+    assert not result['credentials_validated_online']
+    assert 'fixture-only' not in ''.join(p.read_text() for p in root.iterdir())

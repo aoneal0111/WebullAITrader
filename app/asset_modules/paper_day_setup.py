@@ -1,6 +1,7 @@
 """Prepare local manual launchers only. Does not launch Atlas or make API calls."""
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 
@@ -14,14 +15,24 @@ FLAGS={'WEBULL_TRADING_ENVIRONMENT':'PAPER','LIVE_TRADING_ENABLED':'false',
 def quote(value):return "'"+str(value).replace("'","''")+"'"
 
 
-def prepare(repo,output,*,profile='LEGACY_V1'):
+def prepare(repo,output,*,profile='LEGACY_V1',teams=False):
     if profile not in ('LEGACY_V1','CENT_EARLY_V2','CENT_EXECUTABLE_V3'):raise ValueError('UNKNOWN_EXPERIMENT_PROFILE')
     repo,output=Path(repo).resolve(),Path(output).resolve()
     if shutil.disk_usage(output.parent).free<6*1024**3:raise ValueError('SIX_GIB_FREE_SPACE_REQUIRED_FOR_DAY_CAPTURE')
+    grok_model=None
+    if teams:
+        from dotenv import dotenv_values
+        from .grok import configured_client
+        client=configured_client({**dotenv_values(repo/'.env'),**os.environ})
+        if client is None:raise ValueError('LOCAL_GROK_KEY_AND_MODEL_REQUIRED_NO_NETWORK_PROBE')
+        grok_model=client.model
     output.mkdir(parents=True,exist_ok=False)
     python=repo/'.venv/Scripts/python.exe'
     trial_environment=dict(FLAGS,ATLAS_EQUITY_PAPER_EXPERIMENT=str(output/'experiment.json'),
         ATLAS_LEARNING_OUTCOME_JOURNAL_PATH=str(output/'learning-outcomes.json'))
+    if teams:
+        trial_environment.update(ATLAS_GROK_EXECUTION_TRIAL='',ATLAS_CRYPTO_OBSERVATION_CAPTURE='',
+            ATLAS_CRYPTO_NATIVE_OBSERVER_ENABLED='false')
     assignments='\n'.join('    '+quote(k)+' = '+quote(v) for k,v in trial_environment.items())
     common="$ErrorActionPreference = 'Stop'\n$TrialEnvironment = @{\n"+assignments+"\n}\n$Before = @{}\nforeach ($Name in $TrialEnvironment.Keys) { $Before[$Name] = [Environment]::GetEnvironmentVariable($Name, 'Process'); [Environment]::SetEnvironmentVariable($Name, $TrialEnvironment[$Name], 'Process') }\n"
     finally_block="} finally { foreach ($Name in $Before.Keys) { [Environment]::SetEnvironmentVariable($Name, $Before[$Name], 'Process') }; Pop-Location }\n"
@@ -33,10 +44,16 @@ def prepare(repo,output,*,profile='LEGACY_V1'):
     atlas+="    Write-Host 'EXPERIMENTAL PAPER; 8 HOURS; 50 ENTRY ATTEMPTS; 10 SHARES; $100 POSITION; $1 MODELED INITIAL RISK; GROK ORDERS OFF'\n"
     atlas+="    & "+quote(python)+" -m app.gui.app\n"+finally_block
     grok=common+"Push-Location "+quote(repo)+"\ntry {\n"
-    grok+="    & "+quote(python)+" -m app.asset_modules.grok_day_proposals --repo "+quote(repo)+" --trial "+quote(output)+"\n"
+    grok+="    & "+quote(python)+" -m app.asset_modules.grok_day_proposals --repo "+quote(repo)+" --trial "+quote(output)+(" --teams" if teams else "")+"\n"
     grok+="    if ($LASTEXITCODE -ne 0) { throw 'Grok intentions stopped with a diagnostic. Native PAPER protection is independent.' }\n"+finally_block
     (output/'Start-Atlas-Paper-Trial.ps1').write_text(atlas,encoding='utf-8')
     (output/'Start-Grok-Intentions.ps1').write_text(grok,encoding='utf-8')
+    if teams:
+        (output/'Start-Grok-Teams.ps1').write_text(grok,encoding='utf-8')
+        (output/'Show-Morning-Status.ps1').write_text(
+            "$ErrorActionPreference = 'Stop'\nPush-Location "+quote(repo)+"\ntry {\n    & "+quote(python)+
+            " -m app.asset_modules.paper_morning_status --trial "+quote(output)+
+            "\n} finally { Pop-Location }\n",encoding='utf-8')
     (output/'Pause-New-Entries.ps1').write_text("$null = New-Item -ItemType File -Force -Path "+quote(output/'PAUSE_ENTRIES')+"\nWrite-Host 'New entries paused; working buys expire within at most 60 seconds. Keep Atlas open for protective exits.'\n",encoding='utf-8')
     (output/'Stop-Grok.ps1').write_text("$null = New-Item -ItemType File -Force -Path "+quote(output/'STOP_GROK')+"\n",encoding='utf-8')
     summary=dict(experiment_profile=profile,scope='MANUAL_PAPER_DAY_TRIAL_PREPARATION_V1',prepared_only=True,atlas_started=False,requests=0,
@@ -49,16 +66,23 @@ def prepare(repo,output,*,profile='LEGACY_V1'):
             'All-day means bounded recording; queue loss or disk/capacity failure invalidates complete evidence.',
             'No unobserved symbols, missing quotes, news, or market depth invented.',
             'Grok BUY/EXIT opinions are proposals only, not a counterfactual filled-position backtest.'])
+    if teams:
+        summary.update(grok='Separate Momentum and Scalper analyst/coordinator teams; independent NEWS/SCOUT desk; observations only',
+            grok_model=grok_model,credentials_present=True,credentials_validated_online=False,
+            shared_paid_attempt_cap=20,engine_attempt_cap=16,news_scout_attempt_cap=4,
+            native_path_waits_for_grok=False,crypto_nfi_connected=False,
+            observations='At most four sampled cases per equity engine; not continuous reviews of all 23 families')
     target=output/'preparation-summary.json';target.write_text(json.dumps(summary,indent=2),encoding='utf-8')
     print('TRIAL_DIRECTORY='+str(output));print('MANUAL_ATLAS='+str(output/'Start-Atlas-Paper-Trial.ps1'))
-    print('MANUAL_GROK='+str(output/'Start-Grok-Intentions.ps1'));print('UPLOAD_SUMMARY='+str(target))
+    print('MANUAL_GROK='+str(output/('Start-Grok-Teams.ps1' if teams else 'Start-Grok-Intentions.ps1')));print('UPLOAD_SUMMARY='+str(target))
     return summary
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--repo',required=True);p.add_argument('--output',required=True)
     p.add_argument('--profile',choices=('LEGACY_V1','CENT_EARLY_V2','CENT_EXECUTABLE_V3'),default='LEGACY_V1')
-    args=p.parse_args();prepare(args.repo,args.output,profile=args.profile)
+    p.add_argument('--teams',action='store_true')
+    args=p.parse_args();prepare(args.repo,args.output,profile=args.profile,teams=args.teams)
 
 
 if __name__=='__main__':main()

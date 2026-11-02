@@ -2,7 +2,8 @@ param(
     [string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'),
     [Parameter(Mandatory=$true)][string]$Revision,
     [ValidateSet('LEGACY_V1','CENT_EARLY_V2','CENT_EXECUTABLE_V3')][string]$ExperimentProfile = 'LEGACY_V1',
-    [string]$RecordedSession = ''
+    [string]$RecordedSession = '',
+    [switch]$EngineTeams
 )
 $ErrorActionPreference = 'Stop'
 if ($Revision -notmatch '^[0-9a-f]{40}$') { throw 'Exact reviewed revision required.' }
@@ -34,7 +35,7 @@ git -C $Repo worktree add --detach $Source $Revision
 if ($LASTEXITCODE -ne 0) { throw 'Review checkout failed.' }
 Push-Location $Source
 try {
-    & $Python -m pytest tests/warrior_momentum/test_cent_stream_support.py tests/warrior_momentum/test_cent_executable_v3.py tests/asset_modules/test_scalper_repair_replay.py tests/equity_overhaul/test_paper_experiment.py tests/equity_overhaul/test_cent_early_profile.py tests/strategy_research/test_exit_trace.py tests/warrior_momentum/test_strategy.py tests/warrior_momentum/test_point_setup_continuity.py tests/warrior_momentum/test_configuration_provenance.py tests/warrior_momentum/test_setup_diagnostics.py tests/asset_modules/test_native_fill_funnel.py tests/warrior_momentum/test_cent_scalper_profile.py tests/warrior_momentum/test_quick_scalper_runtime.py tests/warrior_momentum/test_profit_retention_shadow.py tests/equity_overhaul/test_admission.py tests/asset_modules/test_equity_policy_attribution.py tests/asset_modules/test_daily_research.py tests/asset_modules/test_daily_observer_protocol.py tests/asset_modules/test_grok_day_proposals.py tests/asset_modules/test_paper_day_setup.py tests/gui/test_workstation_composition.py tests/composition/test_desktop_composition.py tests/asset_modules/test_grok_observer_capture.py tests/asset_modules/test_grok_observer_session.py tests/warrior_momentum/test_execution_quote_provenance.py tests/asset_modules/test_scalper_evidence_audit.py tests/asset_modules/test_grok_execution_trial.py tests/asset_modules/test_grok_execution_crypto.py tests/asset_modules/test_grok_next_window.py tests/warrior_momentum/test_execution_quote_confirmation.py tests/paper_gateway/test_session_aware_entry_validity.py -q --basetemp (Join-Path $Root 'checks')
+    & $Python -m pytest tests/warrior_momentum/test_cent_stream_support.py tests/warrior_momentum/test_cent_executable_v3.py tests/asset_modules/test_scalper_repair_replay.py tests/equity_overhaul/test_paper_experiment.py tests/equity_overhaul/test_cent_early_profile.py tests/strategy_research/test_exit_trace.py tests/warrior_momentum/test_strategy.py tests/warrior_momentum/test_point_setup_continuity.py tests/warrior_momentum/test_configuration_provenance.py tests/warrior_momentum/test_setup_diagnostics.py tests/asset_modules/test_native_fill_funnel.py tests/warrior_momentum/test_cent_scalper_profile.py tests/warrior_momentum/test_quick_scalper_runtime.py tests/warrior_momentum/test_profit_retention_shadow.py tests/equity_overhaul/test_admission.py tests/asset_modules/test_equity_policy_attribution.py tests/asset_modules/test_daily_research.py tests/asset_modules/test_daily_observer_protocol.py tests/asset_modules/test_grok_engine_teams.py tests/asset_modules/test_paper_morning_status.py tests/asset_modules/test_grok_day_proposals.py tests/asset_modules/test_paper_day_setup.py tests/gui/test_workstation_composition.py tests/composition/test_desktop_composition.py tests/asset_modules/test_grok_observer_capture.py tests/asset_modules/test_grok_observer_session.py tests/warrior_momentum/test_execution_quote_provenance.py tests/asset_modules/test_scalper_evidence_audit.py tests/asset_modules/test_grok_execution_trial.py tests/asset_modules/test_grok_execution_crypto.py tests/asset_modules/test_grok_next_window.py tests/warrior_momentum/test_execution_quote_confirmation.py tests/paper_gateway/test_session_aware_entry_validity.py -q --basetemp (Join-Path $Root 'checks')
     if ($LASTEXITCODE -ne 0) { throw 'Windows checks failed. Installed source and settings unchanged.' }
     if ($ExperimentProfile -eq 'CENT_EXECUTABLE_V3') {
         & $Python -m app.asset_modules.scalper_repair_replay --session $RecordedSession --output (Join-Path $Root 'scalper-repair-replay.json')
@@ -48,7 +49,9 @@ git -C $Repo merge --ff-only $Revision
 if ($LASTEXITCODE -ne 0) { throw 'Update failed. No reset performed.' }
 Push-Location $Repo
 try {
-    & $Python -m app.asset_modules.paper_day_setup --repo $Repo --output (Join-Path $Root 'trial') --profile $ExperimentProfile
+    $SetupArgs = @('-m','app.asset_modules.paper_day_setup','--repo',$Repo,'--output',(Join-Path $Root 'trial'),'--profile',$ExperimentProfile)
+    if ($EngineTeams) { $SetupArgs += '--teams' }
+    & $Python @SetupArgs
     if ($LASTEXITCODE -ne 0) { throw 'Source installed; trial preparation failed. Nothing launched.' }
 } finally { Pop-Location }
 Write-Host "BACKUP_BRANCH=$Backup"
