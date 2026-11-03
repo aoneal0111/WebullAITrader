@@ -15,6 +15,7 @@ from time import monotonic
 from uuid import uuid4
 
 from .grok import configured_client, GrokUnavailable
+from .grok_failure import failure_diagnostic
 from .grok_day_proposals import review
 from .grok_news_scout import search_news, scout, valid_news
 from .grok_research_transport import compact_transport
@@ -189,8 +190,8 @@ class EngineTeams:
                 news.update(search_news(self.environment['XAI_API_KEY'], self.environment['ATLAS_GROK_MODEL'], symbols, now))
                 news.update(observed_at=now.isoformat(), expires_at=(now + timedelta(minutes=15)).isoformat(),
                     execution_authorized=False, orders=0)
-            except Exception:
-                pass  # Never persist credentials, provider bodies or exception text.
+            except Exception as exc:
+                news.update(failure_diagnostic(exc))
             finally:
                 news['latency_ms'] = round((monotonic() - began) * 1000)
                 if identifier:

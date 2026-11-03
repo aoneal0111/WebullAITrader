@@ -91,6 +91,7 @@ class QuickScalperExecutionIntent:
     entry_session_deadline: datetime | None = None
     maximum_holding_seconds: int = 300
     cent_target_move: Decimal | None = None
+    cent_profit_defense_floor: Decimal | None = None
     support_source: str = 'WINDOW_LOW'
     support_timestamp: datetime | None = None
 
@@ -99,6 +100,10 @@ class QuickScalperExecutionIntent:
             raise ValueError("Quick Scalper intent requires positive structural risk")
         if self.adaptive_target <= self.entry_trigger:
             raise ValueError("Quick Scalper target must exceed entry")
+        if self.cent_profit_defense_floor is not None and (
+            self.cent_target_move is None or self.cent_profit_defense_floor != Decimal('0.05')
+        ):
+            raise ValueError('Cent defense floor requires a bounded cent-target entry')
         if self.cent_target_move is not None and (
             not self.cent_target_move.is_finite()
             or not Decimal('0.05') <= self.cent_target_move <= Decimal('0.10')
@@ -123,6 +128,7 @@ class _ScalpPositionState:
     profit_state: ProfitState = ProfitState.NO_PROFIT
     full_exit_submitting: bool = False
     cent_target_move: Decimal | None = None
+    cent_profit_defense_floor: Decimal | None = None
     last_exit_diagnostic_second: int | None = None
 
 
@@ -513,6 +519,9 @@ class QuickScalperPaperRuntimeAdapter:
                 stop = self._decimal(metadata.get("structural_stop"))
                 target = self._decimal(metadata.get("adaptive_target"))
                 cent_move = self._decimal(metadata.get('scalp_cent_target_move'))
+                defense_floor = self._decimal(metadata.get('scalp_cent_profit_defense_floor'))
+                if defense_floor != Decimal('0.05'):
+                    defense_floor = None
                 if cent_move is not None:
                     if entry_price is None or not cent_move.is_finite() or not Decimal('0.05') <= cent_move <= Decimal('0.10'):
                         continue
@@ -533,6 +542,7 @@ class QuickScalperPaperRuntimeAdapter:
                         current_symbol, identity, generation, entry_price, stop,
                         target, entered_at, entry_price,
                         cent_target_move=cent_move,
+                        cent_profit_defense_floor=defense_floor,
                     )
                     self._positions[current_symbol] = state
                 elif cent_move is not None:
@@ -810,6 +820,7 @@ class QuickScalperPaperRuntimeAdapter:
             stream_price_change_updates=refreshed.stream_price_change_updates,
             observed_ask_advance=refreshed.observed_ask_advance,
             cent_target_move=(confirmed.target_move if self.config.cent_target_minimum is not None else None),
+            cent_profit_defense_floor=self.config.cent_profit_defense_floor,
             support_source=refreshed.support_source,
             support_timestamp=refreshed.support_timestamp,
         )
@@ -1140,6 +1151,7 @@ class QuickScalperPaperRuntimeAdapter:
                 return
         decision = ProfitRetentionPolicy(ProfitRetentionConfig(
             scalp_maximum_holding_seconds=self.config.maximum_holding_seconds,
+            scalp_minimum_defense_profit=state.cent_profit_defense_floor or ZERO,
         )).evaluate(
             ProfitRetentionPosition(
                 StrategyOwner.QUICK_SCALPER, state.symbol, state.lifecycle_id,

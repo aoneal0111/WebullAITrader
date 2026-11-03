@@ -223,3 +223,18 @@ def test_observed_symbols_start_news_desk_without_claiming_an_engine_sample(tria
     assert len(started)==1 and started[0]['name']=='grok-independent-news-desk'
     assert teams.requests==0
     assert teams.budget.claim_sample('QUICK_SCALPER','first-engine-case')
+
+
+def test_failed_news_persists_safe_category_without_provider_text(trial,monkeypatch):
+    teams,_=setup(trial)
+    def timeout(*args):
+        teams._stop.set()
+        raise TimeoutError('fixture-private-provider-body')
+    monkeypatch.setattr('app.asset_modules.grok_engine_teams.search_news',timeout)
+    teams._symbols={'XYZ'}
+    teams._news_worker()
+    with teams.budget.connect() as db:
+        result=json.loads(db.execute("SELECT result FROM calls WHERE stage='NEWS'").fetchone()[0])
+    assert result['failure_category']=='TIMEOUT' and result['status']=='UNAVAILABLE'
+    assert 'fixture-private-provider-body' not in str(result)
+    assert teams.budget.report()['reserved_attempts']==1

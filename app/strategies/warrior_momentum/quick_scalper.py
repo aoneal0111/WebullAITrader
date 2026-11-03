@@ -64,8 +64,13 @@ class QuickScalperConfig:
     cent_target_maximum: Decimal | None = None
     cent_pullback_support_enabled: bool = False
     cent_fill_anchored_economics: bool = False
+    cent_profit_defense_floor: Decimal | None = None
 
     def __post_init__(self) -> None:
+        if self.cent_profit_defense_floor is not None and (
+            self.cent_target_minimum is None or self.cent_profit_defense_floor != Decimal('0.05')
+        ):
+            raise ValueError('Cent defense experiment requires the explicit five-cent floor')
         if self.cent_fill_anchored_economics and not self.cent_pullback_support_enabled:
             raise ValueError('Fill-anchored economics requires the explicit cent pullback profile')
         if self.cent_pullback_support_enabled and self.cent_target_minimum is None:

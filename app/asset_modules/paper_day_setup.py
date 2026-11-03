@@ -16,7 +16,7 @@ def quote(value):return "'"+str(value).replace("'","''")+"'"
 
 
 def prepare(repo,output,*,profile='LEGACY_V1',teams=False):
-    if profile not in ('LEGACY_V1','CENT_EARLY_V2','CENT_EXECUTABLE_V3'):raise ValueError('UNKNOWN_EXPERIMENT_PROFILE')
+    if profile not in ('LEGACY_V1','CENT_EARLY_V2','CENT_EXECUTABLE_V3','CENT_DEFENSE_V4'):raise ValueError('UNKNOWN_EXPERIMENT_PROFILE')
     repo,output=Path(repo).resolve(),Path(output).resolve()
     if shutil.disk_usage(output.parent).free<6*1024**3:raise ValueError('SIX_GIB_FREE_SPACE_REQUIRED_FOR_DAY_CAPTURE')
     grok_model=None
@@ -81,7 +81,7 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--repo',required=True);p.add_argument('--output',required=True)
-    p.add_argument('--profile',choices=('LEGACY_V1','CENT_EARLY_V2','CENT_EXECUTABLE_V3'),default='LEGACY_V1')
+    p.add_argument('--profile',choices=('LEGACY_V1','CENT_EARLY_V2','CENT_EXECUTABLE_V3','CENT_DEFENSE_V4'),default='LEGACY_V1')
     p.add_argument('--teams',action='store_true')
     args=p.parse_args();prepare(args.repo,args.output,profile=args.profile,teams=args.teams)
 

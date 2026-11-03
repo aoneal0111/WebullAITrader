@@ -156,7 +156,8 @@ def collect(trial,ledger,output):
             rows=bounded_rows(db,'SELECT engine,stage,started,result FROM calls ORDER BY rowid LIMIT 61',(),60,8*1024**2)
         report['grok_roles']=dict(Counter(engine+'|'+stage for engine,stage,_,_ in rows))
         report['news_results']=[{'at':at,'status':r.get('status','UNFINALIZED'),
-            'provider_status':r.get('provider_status'),'citation_count':len(r.get('citations',[])),
+            'provider_status':r.get('provider_status'),'failure_category':r.get('failure_category'),
+            'http_status':r.get('http_status'),'citation_count':len(r.get('citations',[])),
             'latency_ms':r.get('latency_ms')} for engine,stage,at,raw in rows
             if engine=='NEWS_DESK' and stage=='NEWS' for r in [json.loads(raw) if raw else {}]]
     (payload/'paper-day-review.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
