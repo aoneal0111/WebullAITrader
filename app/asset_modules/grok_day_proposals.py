@@ -86,6 +86,15 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
     if (sha256(canonical(source_manifest(repo))).hexdigest()!=manifest['source_sha256']
         or configuration_digest(config)!=manifest['configuration_sha256'] or manifest.get('paper_experiment')!=spec):raise ValueError('SOURCE_OR_CONFIGURATION_MISMATCH')
     path=session/'private-capture'/'private-observer-context.jsonl'
+    health_counts=Counter()
+    if team_mode:
+        from .grok_input_health import JournalSymbols,input_health,save_health
+        symbols_reader=JournalSymbols(session,manifest['baseline_sha256'])
+        observer_source=Path(__file__).resolve()
+        (output/'observer-source.json').write_text(json.dumps(dict(observer_code_sha256=sha256(observer_source.read_bytes()).hexdigest(),
+            observer_sources={name:sha256(observer_source.with_name(name).read_bytes()).hexdigest() for name in
+                ('grok_day_proposals.py','grok_engine_teams.py','grok_input_health.py','grok_news_scout.py','grok.py','grok_research_transport.py')},
+            native_source_sha256=manifest['source_sha256'],native_source_modified=False)),encoding='utf-8')
     pool=ThreadPoolExecutor(max_workers=2);pending={};next_at={};seen=set();offset=0;buffer=b'';attempts=0;records=0
     reason='TIME_LIMIT';statuses=Counter();actions=Counter();last_progress=timer()
     if team_mode:print('GROK_TEAMS_OBSERVER; TWO INDEPENDENT EQUITY TEAMS; NEWS/SCOUT; 60 SHARED ATTEMPTS; 20 PER TEAM; ORDERS=0',flush=True)
@@ -96,6 +105,10 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
                 if clock()>=datetime.fromisoformat(spec['expires_at']):reason='EXPERIMENT_EXPIRED';break
                 if (session/'research-summary.json').exists():reason='ATLAS_RECORDING_CLOSED';break
                 if (trial/'STOP_GROK').exists():reason='OPERATOR_STOP';break
+                if team_mode:
+                    observed_symbols=symbols_reader.poll(clock())
+                    if observed_symbols:client.offer_symbols(observed_symbols)
+                    health_counts.update(symbols_reader.counts);symbols_reader.counts.clear()
                 for engine,future in list(pending.items()):
                     if future.done():
                         record=future.result();log.write(json.dumps(record,default=str)+'\n');log.flush();records+=1
@@ -114,15 +127,20 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
                         if len(line)>MAX_LINE:raise ValueError('CAPTURE_LINE_BOUND')
                         snapshot,context=decode_capture(line+b'\n',manifest['baseline_sha256'])[0]
                         if snapshot.source!='WEBULL_OPENAPI':raise ValueError('NATIVE_CONTEXT_REQUIRED')
+                        health_counts['append_contexts_seen']+=1
                         if snapshot.fresh(clock()):latest[snapshot.engine.value]=(snapshot,context)
+                        else:health_counts['append_contexts_stale_when_read']+=1
                     if team_mode:
                         for owner in ('WARRIOR_MOMENTUM_V1','QUICK_SCALPER'):
                             cached=path.parent/('latest-'+owner+'.jsonl')
-                            if not cached.exists():continue
+                            if not cached.exists():
+                                health_counts['latest_context_file_missing']+=1;continue
                             with cached.open('rb') as stream:raw=stream.read(MAX_LINE+1)
                             if len(raw)>MAX_LINE:raise ValueError('LATEST_CONTEXT_BOUND')
                             s,c=decode_capture(raw,manifest['baseline_sha256'])[0]
                             if s.engine.value!=owner or s.source!='WEBULL_OPENAPI':raise ValueError('LATEST_CONTEXT_OWNER_MISMATCH')
+                            health_counts['latest_contexts_read']+=1
+                            if not s.fresh(clock()):health_counts['latest_contexts_stale_when_read']+=1
                             old=latest.get(owner)
                             if s.fresh(clock()) and (old is None or s.captured_at>old[0].captured_at):latest[owner]=(s,c)
                     for engine,(snapshot,context) in latest.items():
@@ -132,7 +150,9 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
                         pending[engine]=pool.submit(reviewer,client,snapshot,context,clock)
                 if timer()-last_progress>=60:
                     if team_mode:
-                        print(f'GROK_TEAMS_RUNNING; CASES_SCHEDULED={attempts}; SHARED_ATTEMPTS={client.requests}; RECORDS={records}',flush=True)
+                        health=input_health(session,manifest['baseline_sha256'],clock(),cases=attempts,pending=len(pending),counters=health_counts)
+                        save_health(output,health)
+                        print(f"GROK_TEAMS_RUNNING; CASES_SCHEDULED={attempts}; SHARED_ATTEMPTS={client.requests}; RECORDS={records}; INPUT={health['waiting_reason']}",flush=True)
                     else:
                         print(f'GROK_INTENTIONS_RUNNING; REQUESTS_SCHEDULED={attempts}; RECORDS={records}',flush=True)
                     last_progress=timer()
@@ -145,7 +165,9 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
             for future in pending.values():
                 record=future.result();log.write(json.dumps(record,default=str)+'\n');records+=1
                 statuses[record['status']]+=1;actions[record.get('action','UNAVAILABLE')]+=1
-        if team_mode:client.close()
+        if team_mode:
+            save_health(output,input_health(session,manifest['baseline_sha256'],clock(),cases=attempts,counters=health_counts))
+            client.close()
         report=dict(scope=('ENGINE_LOCAL_COLLABORATION_RESEARCH_V1' if team_mode else 'GROK_ORDER_INTENTIONS_ONLY_V1'),stop_reason=reason,requests_scheduled=attempts,records=records,
             statuses=dict(statuses),actions=dict(actions),
             provider_requests_attempted=client.requests,usage=client.usage(),diagnostics=client.diagnostics(),orders=0,simulated_fills=0,baseline_modified=False,

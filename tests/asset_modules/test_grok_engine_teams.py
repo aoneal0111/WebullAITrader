@@ -171,6 +171,7 @@ def test_day_runner_persists_actual_two_stage_requests_on_same_captured_event(tm
     original_teams=module.EngineTeams
     monkeypatch.setattr(module,'EngineTeams',lambda env,path,clock:original_teams(env,path,clock=clock,factory=factory))
     monkeypatch.setattr(original_teams,'offer_symbol',lambda *a:None)
+    monkeypatch.setattr(original_teams,'offer_symbols',lambda *a:None)
     monkeypatch.setattr(day,'configured_client',lambda *a,**k:factory())
     ticks=[0]
     def pause(seconds):ticks[0]+=seconds;time.sleep(.01)
@@ -207,3 +208,18 @@ def test_news_slots_fit_twenty_calls_through_full_eight_hours(trial):
         assert not b.claim_sample('NEWS_DESK','restart')
         for stage in ('NEWS','SCOUT'):b.reserve('NEWS_DESK',stage,{})
     assert b.report()['reserved_attempts']==18
+
+
+def test_observed_symbols_start_news_desk_without_claiming_an_engine_sample(trial,monkeypatch):
+    import app.asset_modules.grok_engine_teams as module
+    teams,_=setup(trial)
+    started=[]
+    class Thread:
+        def __init__(self,**kwargs):started.append(kwargs)
+        def start(self):pass
+    monkeypatch.setattr(module,'Thread',Thread)
+    teams.offer_symbols(('XYZ','ABC','BTC/USD','BAD;ORDER'))
+    assert teams._symbols=={'XYZ','ABC'}
+    assert len(started)==1 and started[0]['name']=='grok-independent-news-desk'
+    assert teams.requests==0
+    assert teams.budget.claim_sample('QUICK_SCALPER','first-engine-case')

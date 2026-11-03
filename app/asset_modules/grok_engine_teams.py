@@ -145,14 +145,16 @@ class EngineTeams:
             self.budget.finish(identifier, result)
 
     def offer_symbol(self, symbol):
+        self.offer_symbols((symbol,))
+
+    def offer_symbols(self, symbols):
         import re
-        if not isinstance(symbol, str) or not re.fullmatch(r'[A-Z][A-Z0-9.\-]{0,11}', symbol):
-            return
+        valid=[s for s in symbols if isinstance(s,str) and re.fullmatch(r'[A-Z][A-Z0-9.\-]{0,11}',s)]
         with self._lock:
-            if len(self._symbols) < 24:
-                self._symbols.add(symbol)
-            if self._thread is None:
-                self._thread = Thread(target=self._news_worker, name='grok-independent-news-desk', daemon=True)
+            for symbol in valid:
+                if len(self._symbols)<24:self._symbols.add(symbol)
+            if self._symbols and self._thread is None:
+                self._thread=Thread(target=self._news_worker,name='grok-independent-news-desk',daemon=True)
                 self._thread.start()
 
     def shared_evidence(self, captured_at):

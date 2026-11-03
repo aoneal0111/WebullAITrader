@@ -97,3 +97,27 @@ adds no native provider request or model call. Team sampling validates source,
 owner, baseline and original quote age before consuming it. The cache is current
 state, not a replacement for the durable raw journal or a complete history.
 It prevents context-sample exhaustion from starving a later hourly Grok slot.
+
+## Idle observer input repair
+
+NEWS/SCOUT now starts independently from up to 24 equity symbols found in a
+bounded recent tail of the exact native recording journal. Each inspected row
+must have the expected baseline, schema, content hash and a received time within
+15 minutes. This live tail is not a closed journal-chain verification. Only
+symbol identities are consumed: no stale journal price can become a current
+quote, engine candidate, fill, order or authorization. Engine review still requires
+its original fresh typed context and completed-bar causality. No time is rewritten.
+
+Observer progress and `input-health.json` now state whether fresh quotes, shared
+bars, native provenance or context construction are missing, with original cache
+ages, capture counters and reader counts. `observer-source.json` binds the repaired
+research modules separately from the unchanged native source identity.
+
+`tools/prepare-grok-input-repair.ps1` prepares this repair in a separate detached
+checkout. Stop only the old Grok observer normally first; Atlas can keep running.
+The generated repaired launcher changes only the Python working directory to the
+reviewed checkout, retaining the original installed `--repo`, trial flags and
+trial path. Native source, `.env`, launchers, native attempts, all prior model rows,
+hourly slots and original expiry are retained. It never merges into the running
+Atlas checkout or starts a GUI/provider. Run the printed repaired Grok launcher
+manually. `Show-Grok-Input.ps1` is a separate read-only diagnostic.
