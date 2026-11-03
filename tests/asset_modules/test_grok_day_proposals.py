@@ -1,3 +1,4 @@
+from pathlib import Path
 from datetime import UTC,datetime,timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -102,3 +103,33 @@ def test_day_runner_reads_daily_capture_in_separate_process_contract(tmp_path,mo
     assert result['requests_scheduled']==1 and result['records']==1
     assert result['orders']==result['simulated_fills']==0
     assert result['actions']=={'PASS':1}
+
+
+def test_isolated_observer_resolves_native_configuration_from_original_repo(tmp_path,monkeypatch):
+    from app.asset_modules.grok_day_proposals import native_configuration
+    from app.asset_modules.grok_observer_session import configuration_digest
+    from app.configuration.loader import load_configuration
+    repo=tmp_path/'native-repo';repo.mkdir()
+    repair=tmp_path/'separate-observer-checkout';repair.mkdir()
+    environment={'WEBULL_TRADING_ENVIRONMENT':'PAPER','LIVE_TRADING_ENABLED':'false'}
+    monkeypatch.chdir(repo)
+    expected=configuration_digest(load_configuration(environment))
+    monkeypatch.chdir(repair)
+    # Reproduce the startup refusal before exercising its fix.
+    assert configuration_digest(load_configuration(environment))!=expected
+    actual=native_configuration(repo,environment)
+    assert configuration_digest(actual)==expected
+    assert Path.cwd()==repair
+
+
+def test_failed_native_configuration_restores_observer_working_directory(tmp_path,monkeypatch):
+    from app.asset_modules.grok_day_proposals import native_configuration
+    import app.configuration.loader as loader
+    repo=tmp_path/'repo';repo.mkdir()
+    repair=tmp_path/'repair';repair.mkdir();monkeypatch.chdir(repair)
+    def fail(_):
+        assert Path.cwd()==repo
+        raise ValueError('FIXTURE_CONFIG_REFUSAL')
+    monkeypatch.setattr(loader,'load_configuration',fail)
+    with pytest.raises(ValueError,match='REFUSAL'):native_configuration(repo,{})
+    assert Path.cwd()==repair

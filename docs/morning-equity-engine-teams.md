@@ -121,3 +121,11 @@ trial path. Native source, `.env`, launchers, native attempts, all prior model r
 hourly slots and original expiry are retained. It never merges into the running
 Atlas checkout or starts a GUI/provider. Run the printed repaired Grok launcher
 manually. `Show-Grok-Input.ps1` is a separate read-only diagnostic.
+
+Configuration identity for a separate observer checkout is resolved while its
+working directory is temporarily the original native `--repo`, before any
+observer threads start. The observer's import source stays separate. The prior
+working directory is restored even if configuration loading fails. This preserves
+native relative data paths instead of assigning defaults under the repair folder.
+The source/configuration/experiment checks remain mandatory; their individual
+match booleans and digests are saved in `observer-preflight.json` before any call.

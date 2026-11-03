@@ -50,13 +50,28 @@ def review(client,snapshot,context,clock=lambda:datetime.now(UTC)):
     return record
 
 
+def native_configuration(repo, environment):
+    """Resolve relative settings from native Atlas root, before workers exist.
+
+    The observer may be imported from an isolated repair checkout. That import
+    root must not become the base for native configuration paths or its digest.
+    """
+    from app.configuration.loader import load_configuration
+    previous=Path.cwd()
+    try:
+        os.chdir(repo)
+        return load_configuration(environment)
+    finally:
+        os.chdir(previous)
+
+
 def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=time.monotonic,pause=time.sleep,teams=False):
     from dotenv import dotenv_values
     from app.configuration.loader import load_configuration
     from app.equity_overhaul.paper_experiment import load
     if not 1<=max_seconds<=8*3600:raise ValueError('DAY_OBSERVER_DURATION_BOUND')
     repo,trial=Path(repo).resolve(),Path(trial).resolve();_,spec=load(trial/'experiment.json')
-    env={**dotenv_values(repo/'.env'),**os.environ};config=load_configuration(env)
+    env={**dotenv_values(repo/'.env'),**os.environ};config=native_configuration(repo,env)
     if config.environment.value!='PAPER' or config.live_trading_enabled or config.grok_paper_entries_enabled:
         raise ValueError('PAPER_OBSERVER_FLAGS_REQUIRED')
     client=configured_client(env,transport=compact_transport)
@@ -83,8 +98,22 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
         if timer()-started>900:raise ValueError('DAILY_CAPTURE_STARTUP_TIMEOUT')
         pause(1)
     manifest=json.loads((session/'research-manifest.json').read_text())
-    if (sha256(canonical(source_manifest(repo))).hexdigest()!=manifest['source_sha256']
-        or configuration_digest(config)!=manifest['configuration_sha256'] or manifest.get('paper_experiment')!=spec):raise ValueError('SOURCE_OR_CONFIGURATION_MISMATCH')
+    actual_source=sha256(canonical(source_manifest(repo))).hexdigest()
+    actual_configuration=configuration_digest(config)
+    preflight=dict(scope='GROK_OBSERVER_NATIVE_IDENTITY_PREFLIGHT_V1',
+        native_source_matches=actual_source==manifest['source_sha256'],
+        configuration_matches=actual_configuration==manifest['configuration_sha256'],
+        experiment_matches=manifest.get('paper_experiment')==spec,
+        native_repo=str(repo),configuration_resolution_root=str(repo),
+        native_source_sha256=actual_source,configuration_sha256=actual_configuration,
+        expected_native_source_sha256=manifest['source_sha256'],
+        expected_configuration_sha256=manifest['configuration_sha256'],network_requests=0,orders=0)
+    (output/'observer-preflight.json').write_text(json.dumps(preflight,indent=2),encoding='utf-8')
+    print('GROK_PREFLIGHT; SOURCE_MATCH='+str(preflight['native_source_matches'])+
+        '; CONFIGURATION_MATCH='+str(preflight['configuration_matches'])+
+        '; TRIAL_MATCH='+str(preflight['experiment_matches']),flush=True)
+    if not all(preflight[k] for k in ('native_source_matches','configuration_matches','experiment_matches')):
+        raise ValueError('SOURCE_OR_CONFIGURATION_MISMATCH')
     path=session/'private-capture'/'private-observer-context.jsonl'
     health_counts=Counter()
     if team_mode:
