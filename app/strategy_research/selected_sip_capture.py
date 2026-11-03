@@ -47,13 +47,30 @@ def request_page(params, credentials):
     return raw
 
 
-def credentials_from_local(repo):
-    # Do not rewrite, print, transmit to Codex, or request regeneration of credentials.
+def credential_candidates(repo, *, environment=None):
+    """Complete pairs from one namespace and source; never combine secrets.
+
+    Values stay local. Callers may persist only labels, not pairs or hashes.
+    """
     from dotenv import dotenv_values
-    values = {**dotenv_values(Path(repo) / '.env'), **os.environ}
-    key = values.get('ALPACA_API_KEY') or values.get('APCA_API_KEY_ID') or ''
-    secret = values.get('ALPACA_API_SECRET') or values.get('APCA_API_SECRET_KEY') or ''
-    return key, secret
+    sources = [('PROCESS', dict(os.environ if environment is None else environment)),
+               ('DOTENV', dotenv_values(Path(repo) / '.env', interpolate=False))]
+    candidates, seen = [], set()
+    for source, values in sources:
+        for namespace, key_name, secret_name in (
+            ('ALPACA', 'ALPACA_API_KEY', 'ALPACA_API_SECRET'),
+            ('APCA', 'APCA_API_KEY_ID', 'APCA_API_SECRET_KEY'),
+        ):
+            pair = tuple((values.get(name) or '').strip() for name in (key_name, secret_name))
+            if all(pair) and pair not in seen:
+                seen.add(pair)
+                candidates.append((source + '_' + namespace, pair))
+    return candidates
+
+
+def credentials_from_local(repo):
+    candidates = credential_candidates(repo)
+    return candidates[0][1] if candidates else ('', '')
 
 
 def capture(study, output, credentials, *, fetch=request_page, pause=time.sleep, progress=print):

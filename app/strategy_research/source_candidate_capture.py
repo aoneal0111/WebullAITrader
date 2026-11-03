@@ -5,7 +5,7 @@ from datetime import datetime
 from hashlib import sha256
 import json
 from pathlib import Path
-from .selected_sip_capture import request_page,credentials_from_local,CaptureError
+from .selected_sip_capture import request_page,credential_candidates,CaptureError
 from .source_candidate_lab import load_csv
 
 SYMBOLS=('SPY','AAPL','MSFT','NVDA','AMZN','GOOGL','META','AVGO','AMD','ADBE','CRM',
@@ -19,13 +19,35 @@ def capture(repo,output,*,fetch=request_page,credentials=None):
         start=START,end_exclusive=END,symbols=SYMBOLS,attempts=0,orders=0,grok_requests=0,pages=[])
     rows={};token=None;seen=set();total=0
     try:
-        credentials=credentials if credentials is not None else credentials_from_local(repo)
-        if not all(credentials):raise CaptureError('LOCAL_ALPACA_CREDENTIALS_MISSING')
+        candidates=credential_candidates(repo) if credentials is None else [('EXPLICIT_LOCAL_PAIR',credentials)]
+        if not candidates or any(not all(pair) for _,pair in candidates):
+            raise CaptureError('LOCAL_ALPACA_CREDENTIALS_MISSING')
+        report['authentication_checks']=[]
+        selected=None
         for page in range(40):
             params=dict(symbols=','.join(SYMBOLS),timeframe='1Day',start=START,end=END,
                         adjustment='all',feed='sip',asof='-',sort='asc',limit=10000)
             if token:params['page_token']=token
-            report['attempts']+=1;raw=fetch(params,credentials);total+=len(raw)
+            # Try each existing complete local pair once, only after a 401.
+            # 403/429/network/schema failures do not trigger another identity.
+            choices=candidates if selected is None else [selected]
+            for label,pair in choices:
+                if report['attempts']>=40:raise CaptureError('DAILY_REQUEST_BOUND')
+                report['attempts']+=1
+                try:
+                    raw=fetch(params,pair)
+                except CaptureError as exc:
+                    if str(exc)!='HTTP_401' or selected is not None:raise
+                    report['authentication_checks'].append(dict(source=label,status='HTTP_401'))
+                    continue
+                if selected is None:
+                    report['authentication_checks'].append(dict(source=label,status='REQUEST_ACCEPTED'))
+                    report['credential_source']=label
+                    print('DAILY_CREDENTIAL_SOURCE='+label,flush=True)
+                selected=(label,pair)
+                break
+            else:raise CaptureError('ALL_COMPLETE_LOCAL_PAIRS_HTTP_401')
+            total+=len(raw)
             if len(raw)>4000000 or total>64*1024**2:raise CaptureError('DAILY_RESPONSE_BOUND')
             (output/f'page-{page:03d}.json').write_bytes(raw)
             report['pages'].append(dict(file=f'page-{page:03d}.json',sha256=sha256(raw).hexdigest()))
@@ -67,7 +89,16 @@ def capture(repo,output,*,fetch=request_page,credentials=None):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--repo',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
-    a=p.parse_args();capture(a.repo,a.output)
+    p.add_argument('--prompt-credentials',action='store_true')
+    a=p.parse_args();credentials=None
+    if a.prompt_credentials:
+        from getpass import getpass
+        credentials=(getpass('Alpaca API key (hidden): ').strip(),getpass('Alpaca secret (hidden): ').strip())
+    try:capture(a.repo,a.output,credentials=credentials)
+    except CaptureError as exc:
+        print('DAILY_CAPTURE_ERROR='+str(exc),flush=True)
+        print('AUTH_DIAGNOSTIC='+str(a.output/'capture-summary.json'),flush=True)
+        raise SystemExit(2) from None
 
 
 if __name__=='__main__':main()

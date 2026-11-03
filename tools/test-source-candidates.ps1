@@ -1,7 +1,8 @@
 param(
     [string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'),
     [Parameter(Mandatory=$true)][string]$Revision,
-    [decimal]$FixedResearchCost = 0
+    [decimal]$FixedResearchCost = 0,
+    [switch]$PromptCredentials
 )
 $ErrorActionPreference = 'Stop'
 if ($Revision -notmatch '^[0-9a-f]{40}$' -or $FixedResearchCost -lt 0) { throw 'Exact revision and nonnegative research cost required.' }
@@ -15,9 +16,12 @@ git -C $Repo worktree add --detach $Source $Revision
 if ($LASTEXITCODE -ne 0) { throw 'Review checkout failed.' }
 Push-Location $Source
 try {
-    & $Python -m pytest tests/strategy_research/test_source_candidate_lab.py -q
+    & $Python -m pytest tests/strategy_research/test_source_candidate_lab.py tests/strategy_research/test_source_candidate_auth.py -q
     if ($LASTEXITCODE -ne 0) { throw 'Candidate checks failed.' }
-    & $Python -m app.strategy_research.source_candidate_capture --repo $Repo --output (Join-Path $Root 'history')
+    $CaptureArgs = @('-m','app.strategy_research.source_candidate_capture','--repo',$Repo,'--output',(Join-Path $Root 'history'))
+    if ($PromptCredentials) { $CaptureArgs += '--prompt-credentials' }
+    Write-Host "RESEARCH_DIRECTORY=$Root"
+    & $Python @CaptureArgs
     if ($LASTEXITCODE -ne 0) { throw 'Capture incomplete. Preserve capture-summary.json. No feed fallback or subscription attempted.' }
     & $Python -m app.strategy_research.source_candidate_lab --daily-csv (Join-Path $Root 'history\daily.csv') --evaluation-start '2023-01-01' --fixed-overhead $FixedResearchCost --output (Join-Path $Root 'comparison.json')
     if ($LASTEXITCODE -ne 0) { throw 'Offline candidate comparison failed.' }
