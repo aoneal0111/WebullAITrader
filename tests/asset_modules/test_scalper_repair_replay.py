@@ -168,3 +168,15 @@ def test_failure_report_identifies_the_refused_check_without_installer_mutations
     assert report['reason']==reason and report['installed_source_modified'] is False
     assert report['orders']==report['network_requests']==report['grok_requests']==0
     assert before=={str(p):sha256(p.read_bytes()).hexdigest() for p in root.rglob('*') if p.is_file()}
+
+
+@pytest.mark.parametrize('crlf',[False,True])
+def test_pre_extension_v4_recording_keeps_exact_source_identity(tmp_path,crlf):
+    from app.asset_modules.scalper_repair_replay import V4_SOURCE,V4_CRLF_SOURCE
+    root=session(tmp_path)
+    path=root/'research-manifest.json';manifest=json.loads(path.read_text())
+    manifest['source_files']=dict(zip(POLICY_FILES,V4_CRLF_SOURCE if crlf else V4_SOURCE))
+    path.write_text(json.dumps(manifest))
+    result=compare(root)
+    assert result['source_binding']=='PRIOR_V4' and result['baseline_replay_matches']
+    assert result['orders']==result['network_requests']==0

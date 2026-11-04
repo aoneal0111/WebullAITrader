@@ -89,6 +89,7 @@ class QuickScalperExecutionIntent:
     stream_price_change_updates: int | None = None
     observed_ask_advance: Decimal | None = None
     entry_session_deadline: datetime | None = None
+    extended_entry_sessions: bool = False
     maximum_holding_seconds: int = 300
     cent_target_move: Decimal | None = None
     cent_profit_defense_floor: Decimal | None = None
@@ -96,6 +97,8 @@ class QuickScalperExecutionIntent:
     support_timestamp: datetime | None = None
 
     def __post_init__(self) -> None:
+        if type(self.extended_entry_sessions) is not bool:
+            raise ValueError('Explicit boolean extended entry policy required')
         if self.entry_trigger <= self.stop_price or self.risk_per_share <= ZERO:
             raise ValueError("Quick Scalper intent requires positive structural risk")
         if self.adaptive_target <= self.entry_trigger:
@@ -646,7 +649,8 @@ class QuickScalperPaperRuntimeAdapter:
                 "quick_scalper_stale_preview_refresh_available"
             )
         evaluated_at = self._clock()
-        window = scalp_entry_window(evaluated_at, self.config.maximum_holding_seconds)
+        window = scalp_entry_window(evaluated_at, self.config.maximum_holding_seconds,
+            extended_sessions='AFTER_HOURS' in self.config.allowed_sessions)
         if window is None or evaluated_at >= window[1] or source.session != window[0]:
             performance_diagnostics.increment("quick_scalper_rejections")
             self._record_quote_decision(evaluated_at, quote, "REJECTED", "SCALP_SESSION_WINDOW")
@@ -793,6 +797,7 @@ class QuickScalperPaperRuntimeAdapter:
             symbol=refreshed.symbol, timestamp=evaluated_at,
             setup_type=refreshed.setup_type,
             entry_session_deadline=window[1],
+            extended_entry_sessions='AFTER_HOURS' in self.config.allowed_sessions,
             maximum_holding_seconds=self.config.maximum_holding_seconds,
             session=refreshed.session, entry_trigger=quote.ask,
             reference_price=quote.ask, stop_price=refreshed.structural_stop,

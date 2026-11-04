@@ -18,7 +18,8 @@ def report(trial):
     trial = Path(trial).resolve()
     spec = read(trial / 'experiment.json')
     result = {'trial_started': bool(spec), 'expires_at': spec.get('expires_at'),
-        'orders_enabled_by_this_check': False}
+        'orders_enabled_by_this_check': False,
+        'entry_sessions':spec.get('entry_sessions',['PREMARKET','REGULAR'])}
     if spec:
         remaining=max(0,(datetime.fromisoformat(spec['expires_at'])-datetime.now(UTC)).total_seconds())
         result['remaining_trial_hours']=round(remaining/3600,2)

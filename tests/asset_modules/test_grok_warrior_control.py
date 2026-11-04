@@ -154,13 +154,14 @@ def test_explicit_native_scalper_freshness_does_not_inherit_grok_warrior_deadlin
     assert not rejected.success and service.last_reason=='PROVIDER_QUOTE_NOT_CURRENT'
 
 
-def test_real_desktop_profile_binds_only_warrior_and_starts_no_model_before_operator_start(tmp_path,monkeypatch,historical_intelligence_artifact):
+@pytest.mark.parametrize('extended',[False,True])
+def test_real_desktop_profile_binds_only_warrior_and_starts_no_model_before_operator_start(tmp_path,monkeypatch,historical_intelligence_artifact,extended):
     from app.configuration import load_configuration
     import app.composition.desktop as desktop_module
     import app.asset_modules.grok_warrior_control as control_module
     from tests.test_support.session_clock import create_session_paper_composition
     from app.equity_overhaul.paper_experiment import ENV
-    root=tmp_path/'desktop-trial';create(root,profile='GROK_WARRIOR_V5')
+    root=tmp_path/'desktop-trial';create(root,profile='GROK_WARRIOR_V5',extended_sessions=extended)
     monkeypatch.setenv(ENV,str(root/'experiment.json'))
     config=load_configuration({'WEBULL_TRADING_ENVIRONMENT':'PAPER','LIVE_TRADING_ENABLED':'false',
         'ATLAS_DAILY_RESEARCH_ENABLED':'true','WARRIOR_FORWARD_PAPER_ENABLED':'true','QUICK_SCALPER_ENABLED':'true',
@@ -173,6 +174,9 @@ def test_real_desktop_profile_binds_only_warrior_and_starts_no_model_before_oper
     try:
         c=graph.warrior_forward_sidecar._grok_warrior_control
         assert c is not None and not c.active()
+        assert ('AFTER_HOURS' in graph.warrior_forward_sidecar.strategy_config.entry.allowed_sessions)==extended
+        assert ('AFTER_HOURS' in graph.quick_scalper_runtime.config.allowed_sessions)==extended
+        assert ('AFTER_HOURS' in c.entry_sessions)==extended
         assert graph.quick_scalper_runtime._paper_entry_reviewer is None
         assert graph.paper_controller_service.native_scalper_quote_age_seconds==5
         assert not graph.equity_paper_experiment.grok_execution
@@ -314,3 +318,19 @@ def test_durable_cap_refusal_prevents_transport_and_preserves_client_cooldown(co
         ControlClient(control,'DIRECTOR').request('WARRIOR_MOMENTUM_V1','fixture',{'mode':'PAPER','event_id':'extra'},{})
     assert not sent and control.client.requests==0 and not control.client._next
     assert control.budget.report()['reserved_attempts']==8
+
+
+@pytest.mark.parametrize('extended',[False,True])
+def test_director_capture_and_dispatch_share_explicit_after_hours_policy(control,warrior,extended,monkeypatch):
+    from app.equity_overhaul.paper_experiment import EXTENDED_ENTRY_SESSIONS
+    control.entry_sessions=EXTENDED_ENTRY_SESSIONS if extended else frozenset({'PREMARKET','REGULAR'})
+    monkeypatch.setattr(control,'_run',lambda:None)
+    p=replace(point(),session='AFTER_HOURS')
+    control.offer(p,warrior)
+    if extended:
+        assert control._contexts['SPY'][0].session=='AFTER_HOURS'
+        # Revalidation must use the same opted-in session policy.
+        apply(control,warrior)
+        assert control._events[-1]['status']=='DIRECTOR_ENTRY_ACKNOWLEDGED'
+    else:
+        assert 'SPY' not in control._contexts

@@ -23,10 +23,13 @@ V2_FAMILIES={'WARRIOR_MOMENTUM':('MICRO_PULLBACK','MOMENTUM_REACCELERATION','REC
              'QUICK_SCALPER':FAMILIES['QUICK_SCALPER']}
 V2_CENT_POLICY=dict(minimum='0.05',maximum='0.10',minimum_net_reward_r='1')
 PROFILES=('LEGACY_V1','CENT_EARLY_V2','CENT_EXECUTABLE_V3','CENT_DEFENSE_V4','GROK_WARRIOR_V5')
+EXTENDED_ENTRY_SESSIONS=frozenset({'PREMARKET','REGULAR','AFTER_HOURS'})
 
 
-def create(directory,clock=lambda:datetime.now(UTC),*,profile='LEGACY_V1'):
+def create(directory,clock=lambda:datetime.now(UTC),*,profile='LEGACY_V1',extended_sessions=False):
     if profile not in PROFILES:raise ValueError('UNKNOWN_EXPERIMENT_PROFILE')
+    if type(extended_sessions) is not bool or extended_sessions and profile!='GROK_WARRIOR_V5':
+        raise ValueError('EXPLICIT_GROK_PAPER_EXTENDED_SESSIONS_REQUIRED')
     root=Path(directory);root.mkdir(parents=True,exist_ok=True)
     now=clock();spec=dict(scope='NATIVE_PAPER_EXPERIMENT_V1',trial_id=uuid4().hex,
         created_at=now.isoformat(),expires_at=(now+timedelta(hours=8)).isoformat(),limits=LIMITS,families=FAMILIES)
@@ -34,6 +37,7 @@ def create(directory,clock=lambda:datetime.now(UTC),*,profile='LEGACY_V1'):
         spec.update(scope=('NATIVE_PAPER_EXPERIMENT_V5' if profile=='GROK_WARRIOR_V5' else 'NATIVE_PAPER_EXPERIMENT_V4' if profile=='CENT_DEFENSE_V4' else 'NATIVE_PAPER_EXPERIMENT_V3' if profile=='CENT_EXECUTABLE_V3' else 'NATIVE_PAPER_EXPERIMENT_V2'),profile=profile,families=V2_FAMILIES,cent_policy=V2_CENT_POLICY)
     if profile=='GROK_WARRIOR_V5':
         spec['families']={**V2_FAMILIES,'WARRIOR_MOMENTUM':(*V2_FAMILIES['WARRIOR_MOMENTUM'],'GROK_DIRECTED')}
+    if extended_sessions:spec['entry_sessions']=sorted(EXTENDED_ENTRY_SESSIONS)
     with (root/'experiment.json').open('x',encoding='utf-8') as f:json.dump(spec,f,indent=2)
     return spec
 
@@ -42,6 +46,9 @@ def load(path,clock=lambda:datetime.now(UTC)):
     path=Path(path).resolve()
     if path.stat().st_size>16384:raise ValueError('EXPERIMENT_SPEC_BOUND')
     spec=json.loads(path.read_text(encoding='utf-8'))
+    if 'entry_sessions' in spec and (spec.get('profile')!='GROK_WARRIOR_V5'
+            or spec['entry_sessions']!=sorted(EXTENDED_ENTRY_SESSIONS)):
+        raise ValueError('EXPERIMENT_SESSION_POLICY_INVALID')
     v2=spec.get('scope') in {'NATIVE_PAPER_EXPERIMENT_V2','NATIVE_PAPER_EXPERIMENT_V3','NATIVE_PAPER_EXPERIMENT_V4','NATIVE_PAPER_EXPERIMENT_V5'}
     expected_profile='GROK_WARRIOR_V5' if spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V5' else 'CENT_DEFENSE_V4' if spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V4' else 'CENT_EXECUTABLE_V3' if spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V3' else 'CENT_EARLY_V2'
     families=({**V2_FAMILIES,'WARRIOR_MOMENTUM':(*V2_FAMILIES['WARRIOR_MOMENTUM'],'GROK_DIRECTED')}
@@ -85,12 +92,14 @@ class PaperExperiment(EquityQualificationPolicy):
 
     def warrior_config(self,config):
         if not self.cent_early:return config
-        return replace(config,setups=replace(config.setups,
+        return replace(config,entry=replace(config.entry,allowed_sessions=EXTENDED_ENTRY_SESSIONS)
+            if self.spec.get('entry_sessions') else config.entry,setups=replace(config.setups,
             allowed_setup_types=frozenset(V2_FAMILIES['WARRIOR_MOMENTUM'])))
 
     def scalper_config(self,config):
         if not self.cent_early:return config
         return replace(config,cent_target_minimum=D('0.05'),cent_target_maximum=D('0.10'),
+            allowed_sessions=EXTENDED_ENTRY_SESSIONS if self.spec.get('entry_sessions') else config.allowed_sessions,
             minimum_net_target_reward_r=D('1'),cent_pullback_support_enabled=True,
             cent_fill_anchored_economics=self.spec.get('profile') in {'CENT_EXECUTABLE_V3','CENT_DEFENSE_V4','GROK_WARRIOR_V5'},
             cent_profit_defense_floor=D('0.05') if self.spec.get('profile') in {'CENT_DEFENSE_V4','GROK_WARRIOR_V5'} else None)
@@ -164,7 +173,9 @@ class PaperExperiment(EquityQualificationPolicy):
         profile=('Grok-directed Warrior; native five-cent-defense Scalper. ' if self.spec.get('profile')=='GROK_WARRIOR_V5' else 'V4 five-cent stop-defense floor; early native Warrior. ' if self.spec.get('profile')=='CENT_DEFENSE_V4' else 'V3 fill-anchored cent Scalper; early native Warrior. ' if self.spec.get('profile')=='CENT_EXECUTABLE_V3' else 'Early native Warrior; cent-pullback Scalper. ') if self.cent_early else ''
         mode='Grok WARRIOR review + directed entries/exits ON; Scalper native' if self.spec.get('profile')=='GROK_WARRIOR_V5' else 'Grok native order review ON; crypto requires its visible AI switch' if self.grok_execution else 'Grok orders OFF'
         return ('EXPERIMENTAL PAPER: '+profile+state+'. Max 10 shares / $100 position / $1 modeled initial risk; '
-                '50 shared entry attempts; expires '+self.spec['expires_at']+'. '+mode+'. Position protection remains available.')
+                '50 shared entry attempts; expires '+self.spec['expires_at']+'. '+mode+
+                ('. Entry sessions: PREMARKET / REGULAR / AFTER_HOURS' if self.spec.get('entry_sessions') else '')+
+                '. Position protection remains available.')
 
     def status(self):
         return dict(policy=self.spec['scope'],entry_mode='BOUNDED_PAPER_EXPERIMENT',approved_policies=[],
@@ -176,10 +187,13 @@ def main():
     import argparse
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--create',required=True)
     p.add_argument('--profile',choices=PROFILES,default='LEGACY_V1')
+    p.add_argument('--extended-sessions',action='store_true')
     args=p.parse_args();root=Path(args.create)
-    spec=load(root/'experiment.json')[1] if (root/'experiment.json').exists() else create(root,profile=args.profile)
+    spec=load(root/'experiment.json')[1] if (root/'experiment.json').exists() else create(root,profile=args.profile,extended_sessions=args.extended_sessions)
     if spec.get('profile','LEGACY_V1') != args.profile:
         raise ValueError('EXISTING_EXPERIMENT_PROFILE_MISMATCH')
+    if bool(spec.get('entry_sessions')) != args.extended_sessions:
+        raise ValueError('EXISTING_EXPERIMENT_SESSION_POLICY_MISMATCH')
     print('PAPER_EXPERIMENT_ID='+spec['trial_id']);print('EXPERIMENT_EXPIRES_AT='+spec['expires_at'])
 
 

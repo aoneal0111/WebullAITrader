@@ -15,9 +15,10 @@ FLAGS={'WEBULL_TRADING_ENVIRONMENT':'PAPER','LIVE_TRADING_ENABLED':'false',
 def quote(value):return "'"+str(value).replace("'","''")+"'"
 
 
-def prepare(repo,output,*,profile='LEGACY_V1',teams=False):
+def prepare(repo,output,*,profile='LEGACY_V1',teams=False,extended_sessions=False):
     if profile not in ('LEGACY_V1','CENT_EARLY_V2','CENT_EXECUTABLE_V3','CENT_DEFENSE_V4','GROK_WARRIOR_V5'):raise ValueError('UNKNOWN_EXPERIMENT_PROFILE')
     if profile=='GROK_WARRIOR_V5' and teams:raise ValueError('WARRIOR_CONTROL_IS_EMBEDDED_NOT_OBSERVER_TEAMS')
+    if type(extended_sessions) is not bool or extended_sessions and profile!='GROK_WARRIOR_V5':raise ValueError('EXPLICIT_GROK_PAPER_EXTENDED_SESSIONS_REQUIRED')
     repo,output=Path(repo).resolve(),Path(output).resolve()
     if shutil.disk_usage(output.parent).free<6*1024**3:raise ValueError('SIX_GIB_FREE_SPACE_REQUIRED_FOR_DAY_CAPTURE')
     grok_model=None
@@ -43,11 +44,12 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False):
     atlas=common+"Push-Location "+quote(repo)+"\ntry {\n"
     atlas+="    $Running = Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^python(w)?\\.exe$' -and $_.CommandLine -match 'app\\.gui\\.app|bootstrap-observer\\.py' }\n"
     atlas+="    if ($Running) { throw 'Close the existing Atlas normally first. Nothing else was started.' }\n"
-    atlas+="    & "+quote(python)+" -m app.equity_overhaul.paper_experiment --create "+quote(output)+" --profile "+quote(profile)+"\n"
+    atlas+="    & "+quote(python)+" -m app.equity_overhaul.paper_experiment --create "+quote(output)+" --profile "+quote(profile)+(" --extended-sessions" if extended_sessions else "")+"\n"
     atlas+="    if ($LASTEXITCODE -ne 0) { throw 'Experiment expired or invalid. Nothing started.' }\n"
     if profile=='GROK_WARRIOR_V5':
         atlas+="    Write-Host 'GROK CONTROLS WARRIOR ONLY; NATIVE CANDIDATE REVIEW + DIRECTED ENTRIES/EXITS; MAX 20 PAID CALLS; SCALPER INDEPENDENT; PROTECTIVE EXITS RETAINED'\n"
     atlas+="    Write-Host 'EXPERIMENTAL PAPER; 8 HOURS; 50 ENTRY ATTEMPTS; 10 SHARES; $100 POSITION; $1 MODELED INITIAL RISK; "+('GROK WARRIOR CONTROL ON' if profile=='GROK_WARRIOR_V5' else 'GROK ORDERS OFF')+"'\n"
+    if extended_sessions:atlas+="    Write-Host 'PAPER ENTRY SESSIONS: PREMARKET / REGULAR / AFTER_HOURS; EIGHT-HOUR EXPIRY AND REQUEST/ENTRY CAPS STILL APPLY'\n"
     atlas+="    & "+quote(python)+" -m app.gui.app\n"+finally_block
     grok=common+"Push-Location "+quote(repo)+"\ntry {\n"
     grok+="    & "+quote(python)+" -m app.asset_modules.grok_day_proposals --repo "+quote(repo)+" --trial "+quote(output)+(" --teams" if teams else "")+"\n"
@@ -64,7 +66,8 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False):
             "\n} finally { Pop-Location }\n",encoding='utf-8')
     (output/'Pause-New-Entries.ps1').write_text("$null = New-Item -ItemType File -Force -Path "+quote(output/'PAUSE_ENTRIES')+"\nWrite-Host 'New entries paused; working buys expire within at most 60 seconds. Keep Atlas open for protective exits.'\n",encoding='utf-8')
     (output/'Stop-Grok.ps1').write_text("$null = New-Item -ItemType File -Force -Path "+quote(output/'STOP_GROK')+"\n",encoding='utf-8')
-    summary=dict(experiment_profile=profile,scope='MANUAL_PAPER_DAY_TRIAL_PREPARATION_V1',prepared_only=True,atlas_started=False,requests=0,
+    summary=dict(experiment_profile=profile,scope='MANUAL_PAPER_DAY_TRIAL_PREPARATION_V1',prepared_only=True,atlas_started=False,requests=0,extended_sessions=extended_sessions,
+        entry_sessions=['PREMARKET','REGULAR','AFTER_HOURS'] if extended_sessions else ['PREMARKET','REGULAR'],
         flags=FLAGS,lease_created_on_manual_launch=True,capture='Local learning outcome collection; subscribed market events, bar windows, assessments, paper order/fill events, rejection/freshness diagnostics',
         raw_journal_limit_bytes=4*1024**3,raw_journal_limit_records=8_000_000,max_recording_hours=16,
         context_limits='10000 fresh contexts / 64 MiB; raw journal continues afterward',
@@ -96,8 +99,8 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False):
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--repo',required=True);p.add_argument('--output',required=True)
     p.add_argument('--profile',choices=('LEGACY_V1','CENT_EARLY_V2','CENT_EXECUTABLE_V3','CENT_DEFENSE_V4','GROK_WARRIOR_V5'),default='LEGACY_V1')
-    p.add_argument('--teams',action='store_true')
-    args=p.parse_args();prepare(args.repo,args.output,profile=args.profile,teams=args.teams)
+    p.add_argument('--teams',action='store_true');p.add_argument('--extended-sessions',action='store_true')
+    args=p.parse_args();prepare(args.repo,args.output,profile=args.profile,teams=args.teams,extended_sessions=args.extended_sessions)
 
 
 if __name__=='__main__':main()

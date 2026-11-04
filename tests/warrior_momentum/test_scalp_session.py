@@ -82,3 +82,21 @@ def test_recovered_after_hours_scalp_authority_expires_even_with_future_metadata
     at=datetime(2026,10,8,17,tzinfo=ET)
     assert scalp_entry_deadline(at,{'scalp_entry_session_deadline':
         datetime(2026,10,8,19,55,tzinfo=ET).isoformat()}) == at
+
+
+@pytest.mark.parametrize('hour,minute,session',[(9,29,'PREMARKET'),(15,59,'REGULAR'),(17,0,'AFTER_HOURS')])
+def test_extended_runtime_reaches_native_bridge_and_carries_continuous_deadline(hour,minute,session):
+    from app.equity_overhaul.paper_experiment import EXTENDED_ENTRY_SESSIONS
+    runtime,bridge,quotes=adapter()
+    at=datetime(2026,10,8,hour,minute,tzinfo=ET)
+    runtime.config=replace(runtime.config,allowed_sessions=EXTENDED_ENTRY_SESSIONS)
+    runtime.scalper.policy.config=runtime.config
+    runtime._clock=lambda:at
+    quotes.value=replace(quotes.value,last_timestamp=at,bid_timestamp=at,ask_timestamp=at)
+    value=replace(snapshot(),session=session,observed_at=at,decision_at=at,
+        last_timestamp=at,bid_timestamp=at,ask_timestamp=at)
+    runtime._snapshots[('FAST','g1')]=value
+    runtime.scalper.observe(value)
+    assert bridge.entries
+    intent=bridge.entries[0][0]
+    assert intent.extended_entry_sessions and intent.entry_session_deadline.hour==19

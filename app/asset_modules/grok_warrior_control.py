@@ -87,6 +87,7 @@ class WarriorControl:
                 or not bridge.enabled or service is None):raise ValueError('EXPLICIT_WARRIOR_PAPER_CONTROL_REQUIRED')
         self.sidecar,self.bridge,self.service=sidecar,bridge,service
         self.experiment,self.ownership,self.client,self.clock=experiment,ownership,client,clock
+        self.entry_sessions=frozenset(experiment.spec.get('entry_sessions',('PREMARKET','REGULAR')))
         self.usage_identity=getattr(client,'_atlas_warrior_usage_id',None)
         if not isinstance(self.usage_identity,str):
             self.usage_identity=uuid4().hex;client._atlas_warrior_usage_id=self.usage_identity
@@ -122,7 +123,7 @@ class WarriorControl:
         if not self.active():return
         now=self.clock();obs=point.observation
         if (not obs.tradable or obs.halted or not point.halt_state_known
-                or point.session not in {'PREMARKET','REGULAR'} or obs.bid is None or obs.ask is None
+                or point.session not in self.entry_sessions or obs.bid is None or obs.ask is None
                 or obs.price<1 or obs.bid<=0 or obs.ask<obs.bid or point.quote_observed_at is None
                 or not 0<=(now-point.quote_observed_at).total_seconds()<=5):
             self.invalidate(obs.symbol);return
@@ -180,6 +181,7 @@ class WarriorControl:
         payload=dict(scope='WARRIOR_DUAL_CONTROL_STATUS_V1',updated_at=self.clock().isoformat(),state=state,
             entry_control_active=self.active(),model_usage=self.client.usage(),client_diagnostics=self.client.diagnostics(),
             warrior_mode='GROK_NATIVE_REVIEW_AND_DIRECTED',scalper_mode='NATIVE',
+            entry_sessions=sorted(self.entry_sessions),
             uncertain_lifecycles=[list(item) for item in sorted(self._uncertain.copy())],requests=budget,remaining_by_lane=remaining,events=events,live_trading_enabled=False)
         temp=self.root/'warrior-control-status.tmp'
         temp.write_text(json.dumps(payload,indent=2));temp.replace(self.root/'warrior-control-status.json')
@@ -243,7 +245,7 @@ class WarriorControl:
         if latest is None:raise ValueError('CURRENT_MARKET_CONTEXT_REQUIRED')
         point,known=latest;obs=point.observation;now=self.clock()
         if (obs.symbol!=symbol or not obs.tradable or obs.halted or not point.halt_state_known
-                or point.session not in {'PREMARKET','REGULAR'}
+                or point.session not in self.entry_sessions
                 or not 0<=(now-known).total_seconds()<=2
                 or not 0<=(now-point.quote_observed_at).total_seconds()<=5):raise ValueError('CURRENT_TRADABLE_MARKET_REQUIRED')
         if action=='EXIT':

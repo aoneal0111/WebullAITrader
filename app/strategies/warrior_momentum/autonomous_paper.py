@@ -1281,6 +1281,8 @@ class AutonomousPaperExecutionBridge:
                                     if getattr(signal, "entry_session_deadline", None) else None
                                 ),
                                 "scalp_maximum_holding_seconds": str(getattr(signal, "maximum_holding_seconds", 300)),
+                                **({"scalp_extended_entry_sessions": True}
+                                   if getattr(signal, "extended_entry_sessions", False) else {}),
                             } if strategy_owner == "QUICK_SCALPER" else {}),
                         },
                     )
@@ -1737,7 +1739,7 @@ class AutonomousPaperExecutionBridge:
                             "lifecycle_id": identity,
                             "predecessor_order_id": predecessor.order_id,
                             **{k: predecessor.request.metadata[k] for k in (
-                                "scalp_entry_session_deadline", "scalp_maximum_holding_seconds"
+                                "scalp_entry_session_deadline", "scalp_maximum_holding_seconds", "scalp_extended_entry_sessions"
                             ) if k in predecessor.request.metadata},
                             "replacement_sequence": str(sequence),
                             "replacement_reason": normalized_reason,

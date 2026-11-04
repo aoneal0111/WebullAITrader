@@ -4,26 +4,31 @@ from datetime import datetime, time, timedelta
 from app.market.calendar import EASTERN, trading_day_schedule
 
 
-def scalp_entry_window(at: datetime, holding_seconds: int = 300) -> tuple[str, datetime] | None:
+def scalp_entry_window(at: datetime, holding_seconds: int = 300, *, extended_sessions: bool = False) -> tuple[str, datetime] | None:
     """Return (session, last entry time), leaving the full holding budget.
 
-    Premarket and regular entries only, respecting early closes.
+    Defaults to premarket and regular entries, respecting early closes.
+    Explicit extended mode covers one continuous 04:00–20:00 Eastern cycle,
+    with the full holding budget reserved only at the final close.
     This is entry admission only; it never cancels protection for filled shares.
     """
-    if at.utcoffset() is None or holding_seconds <= 0:
+    if at.utcoffset() is None or holding_seconds <= 0 or type(extended_sessions) is not bool:
         raise ValueError("aware time and positive holding budget required")
     local = at.astimezone(EASTERN)
     schedule = trading_day_schedule(local)
     if schedule is None:
         return None
     start = datetime.combine(local.date(), time(4), EASTERN)
-    end = schedule.market_close
+    end = datetime.combine(local.date(), time(20), EASTERN) if extended_sessions else schedule.market_close
     if not start <= local < end:
         return None
     if local < schedule.market_open:
         session, boundary = "PREMARKET", schedule.market_open
-    else:
+    elif local < schedule.market_close:
         session, boundary = "REGULAR", schedule.market_close
+    else:
+        session, boundary = "AFTER_HOURS", end
+    if extended_sessions:boundary=end
     return session, boundary - timedelta(seconds=holding_seconds)
 
 
@@ -31,7 +36,9 @@ def scalp_entry_deadline(at: datetime, metadata) -> datetime:
     """Bound recovered/review-delayed authority by its original deadline."""
     try:
         holding = int(metadata.get("scalp_maximum_holding_seconds", 300))
-        window = scalp_entry_window(at, holding)
+        extended=metadata.get('scalp_extended_entry_sessions',False)
+        if type(extended) is not bool:return at
+        window = scalp_entry_window(at, holding,extended_sessions=extended)
         deadline = window[1] if window else at
         original = metadata.get("scalp_entry_session_deadline")
         if original:

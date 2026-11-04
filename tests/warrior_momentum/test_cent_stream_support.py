@@ -129,34 +129,43 @@ def test_new_entry_support_does_not_reprice_existing_position(cent):
     assert state.entry_price==prior.entry_price and not bridge.entries
 
 
+@pytest.mark.parametrize('extended',[False,True])
 @pytest.mark.parametrize('fill_anchored',[False,True])
-def test_native_stream_to_durable_gateway_fill_protection_and_cent_exit(tmp_path,fill_anchored):
+def test_native_stream_to_durable_gateway_fill_protection_and_cent_exit(tmp_path,fill_anchored,extended):
     from app.market_data.models import MarketEvent,MarketEventType,QuotePayload
     from app.paper_trading.order_models import OrderSide
     from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperExecutionBridge
     from tests.test_support.session_clock import create_session_paper_composition
+    from app.equity_overhaul.paper_experiment import EXTENDED_ENTRY_SESSIONS
+    at=NOW+timedelta(hours=2) if extended else NOW
+    session='AFTER_HOURS' if extended else 'REGULAR'
+    def stream(bid,offset):
+        o=stream_observation(bid,offset);stamp=at+timedelta(seconds=offset)
+        return replace(o,timestamp=stamp,last_price_timestamp=stamp,quote_timestamp=stamp)
     position={'qty':D(0)}
     def sink(event):
         if event.fill is not None:
             position['qty']+=event.fill.quantity*(1 if event.fill.side=='BUY' else -1)
-    c=create_session_paper_composition(at=NOW,event_sink=sink,position_quantity_source=lambda _:position['qty'],
+    c=create_session_paper_composition(at=at,event_sink=sink,position_quantity_source=lambda _:position['qty'],
         persistence_path=tmp_path/'cent-stream.sqlite3')
     try:
         bridge=AutonomousPaperExecutionBridge(c.trading_service,c.order_command_factory,mode='PAPER',enabled=True,
             order_book=c.order_book,protection_amender=c.gateway.amend_protective_stop,position_quantity_source=lambda _:position['qty'])
-        quotes=Quotes(replace(quote(),bid=D('4.95'),ask=D('4.96'),last=D('4.96')))
-        runtime=QuickScalperPaperRuntimeAdapter(config=replace(cent_config(),cent_fill_anchored_economics=fill_anchored),bridge=bridge,order_book=c.order_book,
+        quotes=Quotes(replace(quote(),bid=D('4.95'),ask=D('4.96'),last=D('4.96'),last_timestamp=at,bid_timestamp=at,ask_timestamp=at))
+        runtime=QuickScalperPaperRuntimeAdapter(config=replace(cent_config(),cent_fill_anchored_economics=fill_anchored,
+            allowed_sessions=EXTENDED_ENTRY_SESSIONS if extended else cent_config().allowed_sessions),bridge=bridge,order_book=c.order_book,
             risk_config=RiskConfig(configured_per_trade_risk=D(1),maximum_quantity=10,maximum_position_dollars=D(100)),
-            account_context_source=account,position_quantity_source=lambda _:position['qty'],execution_quote_source=quotes,clock=lambda:NOW)
+            account_context_source=account,position_quantity_source=lambda _:position['qty'],execution_quote_source=quotes,clock=lambda:at)
         for bid,offset in [('4.80',-10),('5.00',-6),('4.93',-3)]:
-            runtime.observe_stream_event(stream_observation(bid,offset),decision_at=NOW,session='REGULAR',execution_permitted=False)
-        runtime.observe_stream_event(stream_observation('4.95',0),decision_at=NOW,session='REGULAR')
+            runtime.observe_stream_event(stream(bid,offset),decision_at=at,session=session,execution_permitted=False)
+        runtime.observe_stream_event(stream('4.95',0),decision_at=at,session=session)
         entries=[o for o in c.order_book.history() if o.request.side is OrderSide.BUY]
         assert len(entries)==1
         entry=entries[0]
+        assert entry.request.metadata.get('scalp_extended_entry_sessions',False)==extended
         assert entry.request.metadata['scalp_support_source']=='CONFIRMED_MICRO_PULLBACK'
-        assert entry.request.metadata['scalp_support_timestamp']==(NOW-timedelta(seconds=3)).isoformat()
-        c.gateway.process_market_event(MarketEvent(1,NOW+timedelta(seconds=1),'FAST','test',MarketEventType.QUOTE,
+        assert entry.request.metadata['scalp_support_timestamp']==(at-timedelta(seconds=3)).isoformat()
+        c.gateway.process_market_event(MarketEvent(1,at+timedelta(seconds=1),'FAST','test',MarketEventType.QUOTE,
             QuotePayload(D('4.95'),D('4.96'),D(100),D(100))))
         runtime.reconcile('FAST')
         assert D(0)<position['qty']<=10
@@ -164,7 +173,7 @@ def test_native_stream_to_durable_gateway_fill_protection_and_cent_exit(tmp_path
         assert next(o.request.stop_price for o in working if o.request.execution_reason=='STOP')==D('4.93')
         target=next(o.request.limit_price for o in working if o.request.execution_reason=='SCALP_TARGET')
         assert target==D('5.06')
-        c.gateway.process_market_event(MarketEvent(2,NOW+timedelta(seconds=2),'FAST','test',MarketEventType.QUOTE,
+        c.gateway.process_market_event(MarketEvent(2,at+timedelta(seconds=2),'FAST','test',MarketEventType.QUOTE,
             QuotePayload(target,target+D('.01'),D(100),D(100))))
         runtime.reconcile('FAST')
         assert position['qty']==0

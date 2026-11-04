@@ -37,6 +37,16 @@ V3_CRLF_SOURCE = (
     '1f807cbe3e51db356864f330871b4fb1529e63a5b5a4e7ad4685af7b6018e518',
     'f02bac674a472a7405c6b81b885798d8c368421b535890615ab155451ea7e697',
 )
+# V4/V5 before explicit extended-session runtime dispatch was added. The
+# QuickScalperPolicy assessment and snapshot schema remain identical.
+V4_SOURCE = (
+    '417a9b051bb4174fa68f71e8de6b5bb900ad0d8ebbd26ebac7439f78ec89b5dd',
+    '2395e1be23ad31fe68767a5d4e39de7e7de24ddfbc720007e604578c55b95ecc',
+)
+V4_CRLF_SOURCE = (
+    '199190d1d31ce4fa7ecd0ae7be9967743a4f9a495c071d63e11d8725d3815dcc',
+    '01b882cc65bdb019251f2b7d4d3ab54bd8ea4eb418245a97e08ca9fc4f7c0819',
+)
 
 
 def source_binding(recorded, source_root):
@@ -52,13 +62,18 @@ def source_binding(recorded, source_root):
     if all(value in (V3_SOURCE[i], V3_CRLF_SOURCE[i])
            for i, value in enumerate(recorded)):
         return 'PRIOR_V3'
+    # Check current first: V4's policy file itself is unchanged.
+    current=True
     for name, value in zip(POLICY_FILES, recorded):
         raw = (source_root/name).read_bytes()
         lf = raw.replace(b'\r\n', b'\n')
         accepted = {sha256(form).hexdigest() for form in (raw, lf, lf.replace(b'\n', b'\r\n'))}
         if value not in accepted:
-            raise ValueError('RECORDED_NATIVE_POLICY_SOURCE_MISMATCH')
-    return 'CURRENT'
+            current=False
+    if current:return 'CURRENT'
+    if all(value in (V4_SOURCE[i], V4_CRLF_SOURCE[i]) for i,value in enumerate(recorded)):
+        return 'PRIOR_V4'
+    raise ValueError('RECORDED_NATIVE_POLICY_SOURCE_MISMATCH')
 
 
 def compare(session):
