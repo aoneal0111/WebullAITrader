@@ -29,6 +29,8 @@ EXIT is allowed only for the exact still-owned Warrior lifecycle and current aut
 
 Install with `tools/install-paper-day-trial.ps1 -ExperimentProfile GROK_WARRIOR_V5 -RecordedSession <closed-session>`. The frozen replay is a prior Scalper compatibility check, not a simulation of Grok performance. Windows checks run before source installation. A backup branch is created; no tracked changes are overwritten and no `.env` file changes.
 
+The replay recognizes the exact V3 Scalper blobs shipped at `0151b213114480e35765ece14133c842ee811be8`, including Windows CRLF checkouts. That version has identical entry-assessment arithmetic and snapshot schema; its absent profit-defense setting is restored as disabled in memory. V2 and V3 recordings cannot claim the newer defense setting. Unknown, missing or mixed-version source files still refuse installation. Original recording bytes, timestamps and journal hashes remain unchanged; this check does not replay runtime exits.
+
 Use the newly printed `Start-Atlas-Paper-Trial.ps1`, then click START normally in the visible desktop. Warrior control is embedded. Do not start an old Grok observer alongside it. The dashboard notice names Grok Warrior control and native Scalper. `Show-Morning-Status.ps1` reports recording, engine authority and the control status. The eight hours begin on the first manual launch, not at installation.
 
 Independent context refresh runs on the shared market stream before Warrior full-evaluation scheduling. Repeated updates coalesce for 250 ms; provider times remain unchanged. Holdings receive priority in the four-symbol model batch.

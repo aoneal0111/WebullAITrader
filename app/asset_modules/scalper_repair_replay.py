@@ -25,6 +25,18 @@ PRIOR_CRLF_SOURCE = (
     'c24be7930d912d7ef974f0e0ed37de67afd24975f11dde5dc2f44666260a991a',
     '078d0d3fde267492f85bd1430f738bc8653554db4a5460772a8a1a2ca8a966f6',
 )
+# Exact V3 blobs shipped at 0151b213114480e35765ece14133c842ee811be8.
+# Since V3, only an optional profit-defense setting was added to this policy
+# schema; entry assessment arithmetic is unchanged. Runtime exit behavior is
+# outside this snapshot comparison. Keep the original evidence bytes intact.
+V3_SOURCE = (
+    '766e384d91440fd40b3ec4e2d925e73b8a838ccaebb885e62ca4a7d09128f75d',
+    'bafb19ffdf0a718db633cbe52b60ea33d76395a40ae7d0124c9d42b984302d02',
+)
+V3_CRLF_SOURCE = (
+    '1f807cbe3e51db356864f330871b4fb1529e63a5b5a4e7ad4685af7b6018e518',
+    'f02bac674a472a7405c6b81b885798d8c368421b535890615ab155451ea7e697',
+)
 
 
 def source_binding(recorded, source_root):
@@ -37,6 +49,9 @@ def source_binding(recorded, source_root):
                 for i, value in enumerate(recorded))
     if prior:
         return 'PRIOR_V2'
+    if all(value in (V3_SOURCE[i], V3_CRLF_SOURCE[i])
+           for i, value in enumerate(recorded)):
+        return 'PRIOR_V3'
     for name, value in zip(POLICY_FILES, recorded):
         raw = (source_root/name).read_bytes()
         lf = raw.replace(b'\r\n', b'\n')
@@ -87,6 +102,10 @@ def compare(session):
                     raw = dict(p['settings']['scalper'])
                     if binding == 'PRIOR_V2' and 'cent_fill_anchored_economics' in raw:
                         raise ValueError('PRIOR_POLICY_SCHEMA_CHANGED')
+                    if binding in ('PRIOR_V2', 'PRIOR_V3'):
+                        if 'cent_profit_defense_floor' in raw:
+                            raise ValueError('PRIOR_POLICY_SCHEMA_CHANGED')
+                        raw['cent_profit_defense_floor'] = None
                     # Sole reviewed additive schema change, default OFF in V2.
                     raw.setdefault('cent_fill_anchored_economics', False)
                     config = typed(QuickScalperConfig, raw)
