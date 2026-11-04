@@ -17,17 +17,21 @@ class DesktopGrokProducer:
     from those branches, not invented by the model. No provider is invoked on
     this owner lane; NativeGrokReview submits to its bounded background worker.
     """
-    def __init__(self, review, *, permitted, history_source=None):
+    def __init__(self, review, *, permitted, history_source=None, engines=None):
         if not isinstance(review, NativeGrokReview) or not callable(permitted):
             raise TypeError("Native PAPER review and local permission source required")
         self.review, self.permitted = review, permitted
+        self.engines = frozenset(engines if engines is not None else (EngineId.WARRIOR, EngineId.SCALPER))
+        if not self.engines or not self.engines <= {EngineId.WARRIOR, EngineId.SCALPER}:
+            raise ValueError("Explicit native equity engines required")
         self.history_source = history_source
         self._requests = {}
+        self.control_permission = lambda: True
         review.bind_execution_permission(self._permitted)
 
     def _permitted(self):
         try:
-            return (self.permitted() is True and self.review.bridge.enabled
+            return (self.permitted() is True and self.control_permission() is True and self.review.bridge.enabled
                     and self.review.bridge.mode == "PAPER")
         except Exception:
             return False
@@ -72,10 +76,12 @@ class DesktopGrokProducer:
         return receipt
 
     def warrior_offer(self, signal, shares, risk, *, float_provenance, symbol_authorization, evaluated_at):
+        if EngineId.WARRIOR not in self.engines:return NativeReviewReceipt("NOT_SENT", "ENGINE_NOT_CONTROLLED")
         return self._offer(signal, shares, risk, evaluated_at,
             float_provenance=float_provenance, symbol_authorization=symbol_authorization)
 
     def scalper_offer(self, intent, shares, risk):
+        if EngineId.SCALPER not in self.engines:return NativeReviewReceipt("NOT_SENT", "ENGINE_NOT_CONTROLLED")
         return self._offer(intent, shares, risk, intent.timestamp)
 
     def _refresh(self, engine, symbol, at, *, matches):

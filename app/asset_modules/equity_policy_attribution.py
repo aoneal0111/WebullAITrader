@@ -24,7 +24,7 @@ SOURCE_FILES = {
         "strategies/warrior_momentum/forward_runtime.py", "strategies/warrior_momentum/models.py",
         "strategies/warrior_momentum/setups.py", "strategies/warrior_momentum/features.py",
         "strategies/warrior_momentum/runtime.py", "strategies/warrior_momentum/risk.py",
-        "strategies/warrior_momentum/trade_management.py",
+        "strategies/warrior_momentum/trade_management.py", "asset_modules/grok_warrior_control.py",
     ),
     EngineId.SCALPER.value: SHARED + (
         "strategies/warrior_momentum/quick_scalper.py",

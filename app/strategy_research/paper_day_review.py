@@ -130,7 +130,7 @@ def collect(trial,ledger,output):
             continue
         target=payload/relative;target.parent.mkdir(parents=True,exist_ok=True)
         files[relative]=snapshot(source,target)
-    for name in ('experiment.json','preparation-summary.json','recording-session.json'):
+    for name in ('experiment.json','preparation-summary.json','recording-session.json','warrior-control-status.json'):
         copy(trial/name,'trial/'+name)
     for name in ('research-manifest.json','research-summary.json','engine-readiness.json'):
         copy(session/name,'capture/'+name)

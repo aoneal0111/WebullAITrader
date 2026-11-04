@@ -26,7 +26,7 @@ _RECENT_LIFECYCLE_LIMIT = 1024
 # These intents end holding, rather than stage a profit target at a fixed price.
 _IMMEDIATE_EXIT_REASONS = frozenset({
     "SESSION_CLOSE", "OVERNIGHT_CAPABILITY_LOST",
-    "SCALP_MAX_HOLD", "SCALP_MOMENTUM_STALL",
+    "SCALP_MAX_HOLD", "SCALP_MOMENTUM_STALL", "GROK_EXIT",
 })
 
 

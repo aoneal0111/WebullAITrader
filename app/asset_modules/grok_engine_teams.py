@@ -70,14 +70,17 @@ class TeamBudget:
         next_boundary = (self.sample_slot('NEWS_DESK') + 1) * 3600 - 300
         return max(1, min(60, next_boundary - elapsed))
 
-    def reserve(self, engine, stage, context):
+    def reserve(self, engine, stage, context, *, maximum_stage=None):
         from app.equity_overhaul.paper_experiment import load
         load(self.root / 'experiment.json', clock=self.clock)
         if (self.root / 'STOP_GROK').exists():
             raise GrokUnavailable('TEAM_OBSERVER_STOPPED')
         if not ((engine in ENGINES and stage in ('ANALYST', 'COORDINATOR'))
+                or (engine == 'WARRIOR_MOMENTUM_V1' and stage in ('DIRECTOR','NATIVE_REVIEW'))
                 or (engine == 'NEWS_DESK' and stage in ('NEWS', 'SCOUT'))):
             raise ValueError('EXPLICIT_ENGINE_TEAM_ROLE_REQUIRED')
+        if maximum_stage is not None and (type(maximum_stage) is not int or not 1<=maximum_stage<=20):
+            raise ValueError("BOUNDED_STAGE_CAP_REQUIRED")
         raw = encode(context)
         if len(raw.encode()) > 65536:
             raise ValueError('TEAM_CONTEXT_BOUND')
@@ -86,6 +89,9 @@ class TeamBudget:
             total = db.execute('SELECT count(*) FROM calls').fetchone()[0]
             desk = db.execute("SELECT count(*) FROM calls WHERE engine='NEWS_DESK'").fetchone()[0]
             own = db.execute('SELECT count(*) FROM calls WHERE engine=?',(engine,)).fetchone()[0]
+            stage_count=db.execute('SELECT count(*) FROM calls WHERE engine=? AND stage=?',(engine,stage)).fetchone()[0]
+            if maximum_stage is not None and stage_count>=maximum_stage:
+                raise GrokUnavailable('DURABLE_STAGE_REQUEST_CAP')
             if own >= 20 or total >= 60:
                 raise GrokUnavailable('DURABLE_TEAM_REQUEST_CAP')
             identifier = uuid4().hex

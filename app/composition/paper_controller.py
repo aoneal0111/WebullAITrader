@@ -7,7 +7,7 @@ from app.asset_modules.controlled_paper_service import ControlledPaperTradingSer
 from app.strategies.warrior_momentum.autonomous_paper import AutonomousPaperReadiness
 
 
-def attach_paper_controller(commands, bridge, *, account_source, quote_source, risk_config, clock=None):
+def attach_paper_controller(commands, bridge, *, account_source, quote_source, risk_config, clock=None, native_scalper_quote_age_seconds=2):
     store = commands.durable_store
     if store is None or not commands.paper_campaign_id:
         raise ValueError("PAPER controller requires durable campaign storage")
@@ -16,7 +16,7 @@ def attach_paper_controller(commands, bridge, *, account_source, quote_source, r
         raise ValueError("PAPER campaign starting capital unavailable")
     campaign_key = sha256(commands.paper_campaign_id.encode()).hexdigest()
     path = store.path.parent / "paper-controller" / (campaign_key + ".sqlite3")
-    controller = PaperAdmissionController(path)
+    controller = PaperAdmissionController(path,native_scalper_quote_age_seconds=native_scalper_quote_age_seconds)
     with localcontext() as ctx:
         ctx.prec = 100
         shared_capital = min(capital["starting_cash"], capital["starting_equity"] * risk_config.maximum_gross_exposure_fraction)
@@ -27,7 +27,7 @@ def attach_paper_controller(commands, bridge, *, account_source, quote_source, r
         account_source=account_source, quote_source=quote_source, risk_config=risk_config,
         entry_ready=lambda: bridge.enabled and bridge.mode == "PAPER"
             and bridge.readiness is AutonomousPaperReadiness.READY,
-        clock=clock)
+        clock=clock,native_scalper_quote_age_seconds=native_scalper_quote_age_seconds)
     # Recovery bookkeeping does not cancel orders, sell positions or alter stops.
     service.reconcile()
     bridge.trading_service = service

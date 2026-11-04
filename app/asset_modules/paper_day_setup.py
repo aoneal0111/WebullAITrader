@@ -16,11 +16,12 @@ def quote(value):return "'"+str(value).replace("'","''")+"'"
 
 
 def prepare(repo,output,*,profile='LEGACY_V1',teams=False):
-    if profile not in ('LEGACY_V1','CENT_EARLY_V2','CENT_EXECUTABLE_V3','CENT_DEFENSE_V4'):raise ValueError('UNKNOWN_EXPERIMENT_PROFILE')
+    if profile not in ('LEGACY_V1','CENT_EARLY_V2','CENT_EXECUTABLE_V3','CENT_DEFENSE_V4','GROK_WARRIOR_V5'):raise ValueError('UNKNOWN_EXPERIMENT_PROFILE')
+    if profile=='GROK_WARRIOR_V5' and teams:raise ValueError('WARRIOR_CONTROL_IS_EMBEDDED_NOT_OBSERVER_TEAMS')
     repo,output=Path(repo).resolve(),Path(output).resolve()
     if shutil.disk_usage(output.parent).free<6*1024**3:raise ValueError('SIX_GIB_FREE_SPACE_REQUIRED_FOR_DAY_CAPTURE')
     grok_model=None
-    if teams:
+    if teams or profile=='GROK_WARRIOR_V5':
         from dotenv import dotenv_values
         from .grok import configured_client
         client=configured_client({**dotenv_values(repo/'.env'),**os.environ})
@@ -30,6 +31,9 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False):
     python=repo/'.venv/Scripts/python.exe'
     trial_environment=dict(FLAGS,ATLAS_EQUITY_PAPER_EXPERIMENT=str(output/'experiment.json'),
         ATLAS_LEARNING_OUTCOME_JOURNAL_PATH=str(output/'learning-outcomes.json'))
+    if profile=='GROK_WARRIOR_V5':
+        trial_environment.update(ATLAS_PAPER_CONTROLLER_ENABLED='true',ATLAS_GROK_EXECUTION_TRIAL='',
+            ATLAS_CRYPTO_OBSERVATION_CAPTURE='',ATLAS_CRYPTO_NATIVE_OBSERVER_ENABLED='false')
     if teams:
         trial_environment.update(ATLAS_GROK_EXECUTION_TRIAL='',ATLAS_CRYPTO_OBSERVATION_CAPTURE='',
             ATLAS_CRYPTO_NATIVE_OBSERVER_ENABLED='false')
@@ -41,15 +45,19 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False):
     atlas+="    if ($Running) { throw 'Close the existing Atlas normally first. Nothing else was started.' }\n"
     atlas+="    & "+quote(python)+" -m app.equity_overhaul.paper_experiment --create "+quote(output)+" --profile "+quote(profile)+"\n"
     atlas+="    if ($LASTEXITCODE -ne 0) { throw 'Experiment expired or invalid. Nothing started.' }\n"
-    atlas+="    Write-Host 'EXPERIMENTAL PAPER; 8 HOURS; 50 ENTRY ATTEMPTS; 10 SHARES; $100 POSITION; $1 MODELED INITIAL RISK; GROK ORDERS OFF'\n"
+    if profile=='GROK_WARRIOR_V5':
+        atlas+="    Write-Host 'GROK CONTROLS WARRIOR ONLY; NATIVE CANDIDATE REVIEW + DIRECTED ENTRIES/EXITS; MAX 20 PAID CALLS; SCALPER INDEPENDENT; PROTECTIVE EXITS RETAINED'\n"
+    atlas+="    Write-Host 'EXPERIMENTAL PAPER; 8 HOURS; 50 ENTRY ATTEMPTS; 10 SHARES; $100 POSITION; $1 MODELED INITIAL RISK; "+('GROK WARRIOR CONTROL ON' if profile=='GROK_WARRIOR_V5' else 'GROK ORDERS OFF')+"'\n"
     atlas+="    & "+quote(python)+" -m app.gui.app\n"+finally_block
     grok=common+"Push-Location "+quote(repo)+"\ntry {\n"
     grok+="    & "+quote(python)+" -m app.asset_modules.grok_day_proposals --repo "+quote(repo)+" --trial "+quote(output)+(" --teams" if teams else "")+"\n"
     grok+="    if ($LASTEXITCODE -ne 0) { throw 'Grok intentions stopped with a diagnostic. Native PAPER protection is independent.' }\n"+finally_block
     (output/'Start-Atlas-Paper-Trial.ps1').write_text(atlas,encoding='utf-8')
-    (output/'Start-Grok-Intentions.ps1').write_text(grok,encoding='utf-8')
+    if profile!='GROK_WARRIOR_V5':
+        (output/'Start-Grok-Intentions.ps1').write_text(grok,encoding='utf-8')
     if teams:
         (output/'Start-Grok-Teams.ps1').write_text(grok,encoding='utf-8')
+    if teams or profile=='GROK_WARRIOR_V5':
         (output/'Show-Morning-Status.ps1').write_text(
             "$ErrorActionPreference = 'Stop'\nPush-Location "+quote(repo)+"\ntry {\n    & "+quote(python)+
             " -m app.asset_modules.paper_morning_status --trial "+quote(output)+
@@ -73,15 +81,21 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False):
             native_path_waits_for_grok=False,crypto_nfi_connected=False,
             latest_context_cache='One atomic bounded context per equity engine; raw journal remains authoritative',
             observations='Hourly samples with at most ten two-stage cases per equity engine; not continuous reviews of all 23 families')
+    if profile=='GROK_WARRIOR_V5':
+        summary.update(flags=dict(trial_environment),trial='Warrior Grok native review plus independent directed plans through canonical PAPER execution',grok='Embedded Warrior native reviews and independent plans; maximum twenty shared paid requests',warrior_control='GROK_NATIVE_REVIEW_AND_DIRECTOR',scalper_control='NATIVE',
+            shared_warrior_paid_cap=20,director_call_cap=8,native_review_call_cap=12,
+            automatic_grok_requests_on_start=True,grok_model=grok_model)
     target=output/'preparation-summary.json';target.write_text(json.dumps(summary,indent=2),encoding='utf-8')
     print('TRIAL_DIRECTORY='+str(output));print('MANUAL_ATLAS='+str(output/'Start-Atlas-Paper-Trial.ps1'))
-    print('MANUAL_GROK='+str(output/('Start-Grok-Teams.ps1' if teams else 'Start-Grok-Intentions.ps1')));print('UPLOAD_SUMMARY='+str(target))
+    if profile!='GROK_WARRIOR_V5':print('MANUAL_GROK='+str(output/('Start-Grok-Teams.ps1' if teams else 'Start-Grok-Intentions.ps1')))
+    else:print('GROK_CONTROL=EMBEDDED_WARRIOR_ONLY; NO_SEPARATE_GROK_OBSERVER_NEEDED')
+    print('UPLOAD_SUMMARY='+str(target))
     return summary
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--repo',required=True);p.add_argument('--output',required=True)
-    p.add_argument('--profile',choices=('LEGACY_V1','CENT_EARLY_V2','CENT_EXECUTABLE_V3','CENT_DEFENSE_V4'),default='LEGACY_V1')
+    p.add_argument('--profile',choices=('LEGACY_V1','CENT_EARLY_V2','CENT_EXECUTABLE_V3','CENT_DEFENSE_V4','GROK_WARRIOR_V5'),default='LEGACY_V1')
     p.add_argument('--teams',action='store_true')
     args=p.parse_args();prepare(args.repo,args.output,profile=args.profile,teams=args.teams)
 

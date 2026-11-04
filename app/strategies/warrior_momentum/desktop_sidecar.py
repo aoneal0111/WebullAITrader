@@ -327,6 +327,7 @@ class WarriorDesktopSidecar:
         self._paper_acknowledgement_adopter = paper_acknowledgement_adopter
         self._grok_runtime_handoff = None
         self._grok_native_producer = None
+        self._grok_warrior_control = None
         self._grok_native_producer_factory = None
         self._paper_exit_submitter = paper_exit_submitter
         self._paper_entry_canceller = paper_entry_canceller
@@ -464,7 +465,11 @@ class WarriorDesktopSidecar:
             state = self._grok_runtime_handoff.snapshot()
             if not state["closed"] or state["pending_entries"] or state["reconciliation_required"]:
                 raise ValueError("Prior handoff requires reconciliation")
-        observer.bind_native_review_callbacks(producer.scalper_offer, producer.scalper_refresh)
+        from app.asset_modules.engine_catalog import EngineId
+        if EngineId.SCALPER in producer.engines:
+            observer.bind_native_review_callbacks(producer.scalper_offer,producer.scalper_refresh)
+        elif observer._paper_entry_reviewer is not None:
+            raise ValueError('Warrior-only control requires a fresh native Scalper runtime')
         producer.permitted = self.grok_native_execution_permitted
         producer.history_source = self._grok_completed_history
         self._grok_native_producer = producer
@@ -522,6 +527,9 @@ class WarriorDesktopSidecar:
             return self._drain_grok_completions()
 
     def _drain_grok_completions(self):
+        if self._grok_warrior_control is not None:
+            try:self._grok_warrior_control.drain(self._service)
+            except Exception as exc:self._grok_warrior_control.failed('DIRECTOR_DRAIN_FAILED',exc)
         if self._grok_native_producer is not None:
             return self._grok_native_producer.drain(self._service, self._quick_scalper_observer, at=self._aware_now())
         handoff = self._grok_runtime_handoff
@@ -951,6 +959,8 @@ class WarriorDesktopSidecar:
                 self._service = None
 
     def _close_auxiliary_observers(self) -> None:
+        if self._grok_warrior_control is not None:
+            self._grok_warrior_control.stop()
         entry_value_stop = getattr(self._entry_value_observer, "close", None)
         if callable(entry_value_stop):
             try:
@@ -1410,6 +1420,9 @@ class WarriorDesktopSidecar:
         symbol = event.symbol.strip().upper()
         lookup_started = perf_counter()
         observation = adapter.observation_for(symbol)
+        if self._grok_warrior_control is not None and (
+            observation is None or not observation.tradable or observation.halted):
+            self._grok_warrior_control.invalidate(symbol)
         if self._observer_context_tap is not None and observation is not None:
             try:
                 self._observer_context_tap.record_market_eligibility(
@@ -1545,6 +1558,12 @@ class WarriorDesktopSidecar:
                 reason="NEW_COMPLETED_BAR",
                 processing_time=self._aware_now(),
             )
+        if self._grok_warrior_control is not None:
+            try:
+                now=self._aware_now()
+                self._grok_warrior_control.offer_stream(observation,self._grok_completed_history(symbol,now),
+                    scanner_session(now).value,service)
+            except Exception as exc:self._grok_warrior_control.failed('DIRECTOR_INPUT_FAILED',exc)
         scheduling_timestamp = event.received_timestamp or event.timestamp
         intraminute_due = False
         if symbol in self._first_observed and not completed:

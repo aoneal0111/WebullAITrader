@@ -64,9 +64,11 @@ class DailyResearch:
                 crypto_observation_capture=self.crypto_capture,
                 source_sha256=source_hash,configuration_sha256=config_hash,source_files=source,
                 started_at=clock().isoformat(),max_seconds=seconds,live_trading_enabled=False,
-                grok_order_review_enabled=bool(self.grok_execution),automatic_grok_requests=0,
+                grok_order_review_enabled=bool(self.grok_execution) or bool(experiment and experiment.get('profile')=='GROK_WARRIOR_V5'),automatic_grok_requests=0,
+                warrior_control=('GROK_NATIVE_REVIEW_AND_DIRECTED' if experiment and experiment.get('profile')=='GROK_WARRIOR_V5' else 'NATIVE'),
+                scalper_control=('NATIVE' if self.grok_execution is None else 'GROK_REVIEW'),
                 grok_execution_trial=None if self.grok_execution is None else self.grok_execution.doc,
-                automatic_grok_requests_on_operator_start=bool(self.grok_execution),
+                automatic_grok_requests_on_operator_start=bool(self.grok_execution) or bool(experiment and experiment.get('profile')=='GROK_WARRIOR_V5'),
                 strategy_baseline_changed=False,entries_enabled_by_recorder=False,
                 coverage=['Subscribed native market events','Paper order and fill runtime events',
                     'Observed bar windows','Warrior and Scalper quote assessments',
@@ -111,6 +113,7 @@ class DailyResearch:
         scalper=getattr(composition,'quick_scalper_runtime',None)
         service=getattr(warrior,'_service',None)
         with self.tap._lock:counts=dict(self.tap._counts)
+        control=getattr(warrior,'_grok_warrior_control',None)
         report=dict(scope='DAILY_NATIVE_ENGINE_READINESS_V1',updated_at=datetime.now(UTC).isoformat(),
             warrior_enabled=getattr(warrior,'enabled',None),
             warrior_service_running=service is not None,
@@ -121,7 +124,10 @@ class DailyResearch:
             scalper_enabled=getattr(scalper,'enabled',None),
             scalper_tap_bound=getattr(scalper,'_observer_context_tap',None) is self.tap,
             tap_counts=counts,engine_evidence_seen=counts.get('bars_queued',0)>0 or counts.get('assessments_queued',0)>0,
-            orders_dispatched=0,grok_requests=0)
+            recorder_orders_dispatched=0,recorder_grok_requests=0,orders_dispatched=0,
+            warrior_control='GROK_NATIVE_REVIEW_AND_DIRECTED' if control is not None else 'NATIVE',
+            scalper_grok_review_bound=getattr(scalper,'_paper_entry_reviewer',None) is not None,
+            grok_requests=control.budget.report()['reserved_attempts'] if control is not None else 0)
         if service is not None:self._last_active_readiness=report
         target=self.directory/'engine-readiness.json';temporary=target.with_suffix('.tmp')
         temporary.write_text(json.dumps(report,indent=2),encoding='utf-8');temporary.replace(target)

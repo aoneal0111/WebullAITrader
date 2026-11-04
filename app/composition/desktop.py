@@ -209,6 +209,9 @@ def create_desktop_composition(
     warrior_configuration_fingerprint = strategy_configuration_fingerprint(
         warrior_strategy_config
     )
+    if equity_experiment is not None and equity_experiment.spec.get('profile')=='GROK_WARRIOR_V5':
+        from hashlib import sha256
+        warrior_configuration_fingerprint=sha256(('GROK_WARRIOR_V5|'+warrior_configuration_fingerprint).encode()).hexdigest()
     warrior_management_context_source = _configured_management_context_source(
         operational_configuration.warrior_forward_capture_path,
         warrior_configuration_fingerprint,
@@ -412,6 +415,7 @@ def create_desktop_composition(
                 account_source=trading_state_sources.warrior_account_context,
                 quote_source=execution_quote_source,
                 risk_config=warrior_strategy_config.risk,
+                native_scalper_quote_age_seconds=(5 if equity_experiment is not None and equity_experiment.spec.get('profile')=='GROK_WARRIOR_V5' else 2),
                 clock=paper_clock,
             )
             paper_trading_commands = replace(paper_trading_commands, trading_service=paper_controller_service)
@@ -515,6 +519,9 @@ def create_desktop_composition(
         async_decision_intelligence=True,
         observability=warrior_observability,
     )
+    from app.asset_modules.grok_warrior_control import bind as bind_warrior_control
+    bind_warrior_control(warrior_forward_sidecar,autonomous_paper_bridge,paper_controller_service,
+        equity_experiment,shared_strategy_ownership,operational_configuration,clock=paper_clock or utc_now)
     if grok_suite is not None:
         bind_grok_paper_entries(warrior_forward_sidecar, grok_suite, paper_controller_service,
             autonomous_paper_bridge, clock=paper_clock or utc_now)

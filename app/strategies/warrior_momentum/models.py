@@ -35,6 +35,7 @@ class StockInPlayType(StrEnum):
 
 
 class SetupType(StrEnum):
+    GROK_DIRECTED = "GROK_DIRECTED"
     HIGH_OF_DAY_BREAKOUT = "HIGH_OF_DAY_BREAKOUT"
     MICRO_PULLBACK = "MICRO_PULLBACK"
     BULL_FLAG = "BULL_FLAG"

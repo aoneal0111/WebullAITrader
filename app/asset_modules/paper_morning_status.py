@@ -40,7 +40,9 @@ def report(trial):
         readiness = read(session / 'engine-readiness.json')
         journal = read(session / 'journal/journal-status.json')
         final = read(session / 'research-summary.json')
-        result.update(recording_session=str(session), live_trading_enabled=manifest.get('live_trading_enabled'),
+        result.update(warrior_control=manifest.get('warrior_control','NATIVE'),
+            scalper_control=manifest.get('scalper_control','UNKNOWN'),
+            grok_order_review_enabled=manifest.get('grok_order_review_enabled'),recording_session=str(session), live_trading_enabled=manifest.get('live_trading_enabled'),
             warrior_running=readiness.get('warrior_service_running'),scalper_enabled=readiness.get('scalper_enabled'),
             engine_status_updated_at=readiness.get('updated_at'), recording_closed=journal.get('closed'),
             writer_alive=journal.get('writer_alive'),writer_failed=journal.get('writer_failed'),
@@ -48,6 +50,8 @@ def report(trial):
             written_records=journal.get('counts',{}).get('written'),
             contexts_by_engine={k:v for k,v in readiness.get('tap_counts',{}).items() if k.startswith('assessments_queued_')},
             final_reason=final.get('reason'))
+    control=read(trial/'warrior-control-status.json')
+    if control:result['warrior_control_status']=control
     db_path = trial / 'grok-team-budget.sqlite3'
     if db_path.is_file():
         db = sqlite3.connect(db_path.as_uri() + '?mode=ro', uri=True)

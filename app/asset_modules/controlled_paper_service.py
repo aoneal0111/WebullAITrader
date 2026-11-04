@@ -25,11 +25,13 @@ class ControlledPaperTradingService:
     """
 
     def __init__(self, service, controller, gateway, *, account_id, session_id,
-                 account_source, quote_source, risk_config, entry_ready, clock=None):
+                 account_source, quote_source, risk_config, entry_ready, clock=None, native_scalper_quote_age_seconds=2):
         self.service = service
         self.account_source = account_source
         self.quote_source = quote_source
         self.risk_config = risk_config
+        if native_scalper_quote_age_seconds not in (2,5):raise ValueError("Explicit native Scalper freshness policy required")
+        self.native_scalper_quote_age_seconds=native_scalper_quote_age_seconds
         self.entry_ready = entry_ready
         self.clock = clock or (lambda: datetime.now(UTC))
         self._lock = RLock()
@@ -53,8 +55,9 @@ class ControlledPaperTradingService:
             if quote.ask < quote.bid or quote.ask > request.entry_limit or quote.bid <= request.structural_stop:
                 self.last_reason = "ENTRY_NOT_EXECUTABLE"
                 return False
+            quote_limit=self.native_scalper_quote_age_seconds if request.engine is EngineId.SCALPER else 2
             for stamp in (quote.bid_timestamp, quote.ask_timestamp):
-                if stamp.tzinfo is None or not 0 <= (now - stamp).total_seconds() <= 2:
+                if stamp.tzinfo is None or not 0 <= (now - stamp).total_seconds() <= quote_limit:
                     self.last_reason = "PROVIDER_QUOTE_NOT_CURRENT"
                     return False
             account = self.account_source()
