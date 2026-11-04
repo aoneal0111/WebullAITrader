@@ -64,12 +64,21 @@ class GrokClient:
         self.requests = 0
         self._usage = {"input_tokens":0,"output_tokens":0,"responses_with_usage":0,"responses_without_usage":0}
 
-    def request(self, role, instruction, context, schema):
+    def request(self, role, instruction, context, schema, *, before_transport=None):
         if role not in ROLES or context.get("mode") != "PAPER":
             raise ValueError("Explicit Grok role and PAPER context required")
         encoded = json.dumps(context, allow_nan=False, separators=(',',':'))
         if len(encoded.encode()) > 65536:
             raise ValueError("Oversized Grok context")
+        payload = {"model": self.model, "store": False, "max_output_tokens": self.maximum_output_tokens,
+                   "input": [{"role": "system", "content": instruction},
+                             {"role": "user", "content": encoded}],
+                   "text": {"format": {"type": "json_schema", "name": "atlas_paper_decision",
+                                        "schema": schema, "strict": True}}}
+        if self.reasoning_effort is not None:payload['reasoning']={'effort':self.reasoning_effort}
+        request = Request("https://api.x.ai/v1/responses", data=json.dumps(payload).encode(),
+                          headers={"Content-Type": "application/json",
+                                   "Authorization": "Bearer " + self._key}, method="POST")
         if not self._slots.acquire(blocking=False):
             raise GrokUnavailable("GROK_BUSY")
         try:
@@ -79,17 +88,11 @@ class GrokClient:
                     raise GrokUnavailable("GROK_SESSION_REQUEST_LIMIT")
                 if now < self._next.get(role, 0):
                     raise GrokUnavailable("GROK_ROLE_COOLDOWN")
+                # Reserve a durable attempt only after local validation, slot and
+                # cooldown checks. A rejected reservation must never dispatch.
+                if before_transport is not None:before_transport()
                 self._next[role] = now + 60
                 self.requests += 1  # failed requests count; never retry an order decision
-            payload = {"model": self.model, "store": False, "max_output_tokens": self.maximum_output_tokens,
-                       "input": [{"role": "system", "content": instruction},
-                                 {"role": "user", "content": encoded}],
-                       "text": {"format": {"type": "json_schema", "name": "atlas_paper_decision",
-                                            "schema": schema, "strict": True}}}
-            if self.reasoning_effort is not None:payload['reasoning']={'effort':self.reasoning_effort}
-            request = Request("https://api.x.ai/v1/responses", data=json.dumps(payload).encode(),
-                              headers={"Content-Type": "application/json",
-                                       "Authorization": "Bearer " + self._key}, method="POST")
             started = self._latency_clock()
             received = False
             failure = 'TRANSPORT_OTHER'

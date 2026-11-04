@@ -57,20 +57,28 @@ class ControlClient:
         c=self.control
         if not c.active():raise GrokUnavailable('WARRIOR_CONTROL_NOT_ACTIVE')
         if role not in {'WARRIOR_MOMENTUM_V1','MASTER'}:raise GrokUnavailable('WARRIOR_ONLY_ROLE')
-        identifier=c.budget.reserve(EngineId.WARRIOR.value,self.stage,context,
-            maximum_stage=8 if self.stage=='DIRECTOR' else 12)
+        identifier=None
+        def reserve():
+            nonlocal identifier
+            identifier=c.budget.reserve(EngineId.WARRIOR.value,self.stage,context,
+                maximum_stage=8 if self.stage=='DIRECTOR' else 12)
         began=monotonic();result={'status':'UNAVAILABLE'}
         try:
-            answer=c.client.request(role,instruction,context,schema)
+            answer=c.client.request(role,instruction,context,schema,before_transport=reserve)
             result.update(status='RESPONSE_RECEIVED',answer=answer)
             return answer
         except Exception as exc:
-            result.update(failure_diagnostic(exc));raise
+            result.update(failure_diagnostic(exc))
+            if str(exc) in {'GROK_ROLE_COOLDOWN','GROK_BUSY','GROK_SESSION_REQUEST_LIMIT',
+                    'DURABLE_STAGE_REQUEST_CAP','DURABLE_TEAM_REQUEST_CAP','DUPLICATE_TEAM_EVENT'}:
+                result['reason_code']=str(exc)
+            raise
         finally:
             result['latency_ms']=round((monotonic()-began)*1000)
             result['usage_scope']=c.usage_identity
             result['usage_cumulative_not_per_request']=c.client.usage()
-            c.budget.finish(identifier,result)
+            if identifier is not None:c.budget.finish(identifier,result)
+            else:c._record('MODEL_REQUEST_NOT_SENT',stage=self.stage,**{k:v for k,v in result.items() if k in {'failure_category','reason_code'}})
 
 
 class WarriorControl:
@@ -195,7 +203,7 @@ class WarriorControl:
             bid=str(p.observation.bid),ask=str(p.observation.ask),provider_quote_at=p.quote_observed_at.isoformat(),
             provider_last_at=p.observation.last_price_timestamp.isoformat() if p.observation.last_price_timestamp is not None else None,
             completed_bars=safe(p.bars)) for s,(p,at) in contexts.items()}
-        context=dict(event_id='director-hour-'+str(hour),as_of=now.isoformat(),market=evidence,
+        context=dict(mode='PAPER',asset='EQUITY',event_id='director-hour-'+str(hour),as_of=now.isoformat(),market=evidence,
             warrior_positions=positions,limits=self.experiment.spec['limits'])
         answer=self._director.request(EngineId.WARRIOR.value,
             'Control only the Warrior PAPER engine. Independently choose BUY, EXIT or PASS from supplied evidence. '

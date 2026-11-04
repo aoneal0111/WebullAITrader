@@ -34,6 +34,10 @@ def control(setup,tmp_path,warrior):
     exp.capture_ready=lambda:True
     sidecar=NS(grok_native_execution_permitted=lambda:True,_account_source=lambda:account[0])
     client=Mock();client.usage.return_value={};client.diagnostics.return_value={};client.request.return_value=dict(action='BUY',symbol='SPY',entry='6',stop='5.9',target='6.2',quantity=10,reason='Synthetic plan')
+    def request(*args,before_transport):
+        before_transport()
+        return client.request.return_value
+    client.request.side_effect=request
     c=WarriorControl(sidecar,bridge,service,exp,SymbolOwnershipRegistry(),client,clock=lambda:clock[0])
     # No background model call in fixture; direct decisions are driven explicitly.
     with c._lock:c._contexts['SPY']=(point(),NOW)
@@ -84,13 +88,20 @@ def test_warrior_only_binding_leaves_scalper_callbacks_disconnected(setup,tmp_pa
 
 
 def test_shared_request_cap_preserves_eight_director_calls_after_twelve_native_reviews(control):
+    from app.asset_modules.grok import GrokClient
+    from tests.asset_modules.test_grok import response
+    sent=[];clock=[100]
+    control.client=GrokClient('fixture-key','grok-test',transport=lambda req:sent.append(req) or response({}),clock=lambda:clock[0])
     native=ControlClient(control,'NATIVE_REVIEW');direct=ControlClient(control,'DIRECTOR')
-    control.client.request.return_value={}
-    for i in range(12):native.request('MASTER','fixture',{'event_id':str(i)}, {})
-    with pytest.raises(GrokUnavailable,match='STAGE'):native.request('MASTER','fixture',{'event_id':'extra'}, {})
-    for i in range(8):direct.request('WARRIOR_MOMENTUM_V1','fixture',{'event_id':str(i)}, {})
-    assert control.client.request.call_count==20
-    with pytest.raises(GrokUnavailable):direct.request('WARRIOR_MOMENTUM_V1','fixture',{'event_id':'extra'}, {})
+    for i in range(12):
+        clock[0]+=61;native.request('MASTER','fixture',{'mode':'PAPER','event_id':str(i)}, {})
+    clock[0]+=61
+    with pytest.raises(GrokUnavailable,match='STAGE'):native.request('MASTER','fixture',{'mode':'PAPER','event_id':'extra'}, {})
+    for i in range(8):
+        clock[0]+=61;direct.request('WARRIOR_MOMENTUM_V1','fixture',{'mode':'PAPER','event_id':str(i)}, {})
+    assert len(sent)==20
+    clock[0]+=61
+    with pytest.raises(GrokUnavailable):direct.request('WARRIOR_MOMENTUM_V1','fixture',{'mode':'PAPER','event_id':'extra'}, {})
     assert control.budget.report()['reserved_attempts']==20
     with pytest.raises(GrokUnavailable,match='WARRIOR_ONLY'):direct.request('QUICK_SCALPER','fixture',{}, {})
 
@@ -111,6 +122,7 @@ def test_director_sees_completed_market_data_without_legacy_pattern_and_logs_onc
     assert control.client.request.call_count==1
     context=control.client.request.call_args.args[2]
     assert context['event_id']=='director-hour-0'
+    assert context['mode']=='PAPER' and context['asset']=='EQUITY'
     assert len(context['market']['SPY']['completed_bars'])==1
     assert 'native_setup_required' not in context
     assert control.budget.report()['reserved_attempts']==1
@@ -234,3 +246,71 @@ def test_stream_context_refresh_does_not_depend_on_native_setup_evaluation(contr
     assert refreshed.observation is obs
     assert not warrior._paper
     control.client.request.assert_not_called()
+
+
+def test_director_real_client_contract_reaches_transport_then_canonical_order(control,warrior,setup):
+    from app.asset_modules.grok import GrokClient
+    from tests.asset_modules.test_grok import response
+    calls=[]
+    def transport(request):
+        payload=json.loads(request.data)
+        context=json.loads(payload['input'][1]['content'])
+        assert context['mode']=='PAPER' and context['asset']=='EQUITY'
+        assert context['market']['SPY']['provider_quote_at']==NOW.isoformat()
+        calls.append(request)
+        return response(dict(action='BUY',symbol='SPY',entry='6',stop='5.9',target='6.2',quantity=10,reason='Synthetic'))
+    control.client=GrokClient('fixture-key','grok-test',transport=transport,clock=lambda:100)
+    control._review_director();control.drain(warrior)
+    assert len(calls)==1
+    assert control.budget.report()['reserved_attempts']==1
+    assert control.client.diagnostics()['answers_parsed']==1
+    assert len([o for o in setup[0].order_book.history() if o.request.side.value=='BUY'])==1
+    fill(setup[0]);assert warrior.reconcile_authoritative_protection('SPY',NOW)
+    assert any(o.request.execution_reason=='STOP' for o in setup[0].order_book.open_orders_for_symbol('SPY'))
+
+
+@pytest.mark.parametrize('gate',['mode','cooldown','busy','session'])
+def test_local_client_rejections_do_not_consume_durable_attempts(control,gate):
+    from app.asset_modules.grok import GrokClient
+    from tests.asset_modules.test_grok import response
+    sent=[]
+    control.client=GrokClient('fixture-key','grok-test',transport=lambda request:sent.append(request) or response({}),clock=lambda:100)
+    client=ControlClient(control,'NATIVE_REVIEW')
+    context={'mode':'PAPER','event_id':'candidate'}
+    if gate=='mode':context.pop('mode')
+    elif gate=='cooldown':control.client._next['MASTER']=200
+    elif gate=='session':control.client.requests=120
+    else:
+        control.client._slots.acquire();control.client._slots.acquire()
+    with pytest.raises((ValueError,GrokUnavailable)):
+        client.request('MASTER','fixture',context,{})
+    assert control.budget.report()['reserved_attempts']==0
+    assert not sent
+    assert control._events[-1]['status']=='MODEL_REQUEST_NOT_SENT'
+
+
+def test_transport_failure_consumes_one_attempt_without_retry(control):
+    from app.asset_modules.grok import GrokClient
+    sent=[]
+    def transport(request):
+        sent.append(request)
+        raise TimeoutError()
+    control.client=GrokClient('fixture-key','grok-test',transport=transport,clock=lambda:100)
+    with pytest.raises(GrokUnavailable):
+        ControlClient(control,'DIRECTOR').request('WARRIOR_MOMENTUM_V1','fixture',{'mode':'PAPER','event_id':'case'},{})
+    report=control.budget.report()
+    assert report['reserved_attempts']==1 and report['unfinalized_attempts']==0
+    assert len(sent)==1 and control.client.diagnostics()['failures']=={'TIMEOUT':1}
+
+
+def test_durable_cap_refusal_prevents_transport_and_preserves_client_cooldown(control):
+    from app.asset_modules.grok import GrokClient
+    sent=[]
+    for i in range(8):
+        identifier=control.budget.reserve('WARRIOR_MOMENTUM_V1','DIRECTOR',{'event_id':str(i)})
+        control.budget.finish(identifier,{'status':'fixture'})
+    control.client=GrokClient('fixture-key','grok-test',transport=lambda request:sent.append(request),clock=lambda:100)
+    with pytest.raises(GrokUnavailable,match='DURABLE_STAGE_REQUEST_CAP'):
+        ControlClient(control,'DIRECTOR').request('WARRIOR_MOMENTUM_V1','fixture',{'mode':'PAPER','event_id':'extra'},{})
+    assert not sent and control.client.requests==0 and not control.client._next
+    assert control.budget.report()['reserved_attempts']==8
