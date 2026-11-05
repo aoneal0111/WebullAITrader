@@ -25,6 +25,7 @@ class DesktopGrokProducer:
         if not self.engines or not self.engines <= {EngineId.WARRIOR, EngineId.SCALPER}:
             raise ValueError("Explicit native equity engines required")
         self.history_source = history_source
+        self.warrior_policy_source = None
         self._requests = {}
         self.control_permission = lambda: True
         review.bind_execution_permission(self._permitted)
@@ -68,7 +69,10 @@ class DesktopGrokProducer:
             evidence=evidence, float_provenance=float_provenance, symbol_authorization=symbol_authorization)
         if not isinstance(request, NativeReviewRequest):
             return NativeReviewReceipt("NOT_SENT", request.decision.reason.value)
-        receipt = self.review.submit([request], engine_evidence={request.entry.prepared.candidate.engine.value: evidence},
+        review_evidence=dict(evidence)
+        if request.entry.prepared.candidate.engine is EngineId.WARRIOR and self.warrior_policy_source is not None:
+            review_evidence['native_management']=self.warrior_policy_source()
+        receipt = self.review.submit([request], engine_evidence={request.entry.prepared.candidate.engine.value: review_evidence},
             account_evidence={"mode": "PAPER", "risk_sizing": "NATIVE_APPROVED",
                 "account_validation": "CONTROLLED_SERVICE_RECHECKS_AT_DISPATCH"})
         if receipt.pending:

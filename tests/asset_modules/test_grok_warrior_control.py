@@ -26,13 +26,15 @@ def point():
 
 
 @pytest.fixture
-def control(setup,tmp_path,warrior):
+def control(setup,tmp_path,warrior,request):
     commands,bridge,service,account,quotes,clock=setup
-    root=tmp_path/'trial';create(root,clock=lambda:NOW,profile='GROK_WARRIOR_V5')
+    root=tmp_path/'trial';create(root,clock=lambda:NOW,profile=getattr(request,'param','GROK_WARRIOR_V5'))
     path,spec=load(root/'experiment.json',clock=lambda:NOW)
     exp=PaperExperiment(path,spec,clock=lambda:clock[0],timer=lambda:(clock[0]-NOW).total_seconds())
     exp.capture_ready=lambda:True
     sidecar=NS(grok_native_execution_permitted=lambda:True,_account_source=lambda:account[0])
+    from app.strategies.warrior_momentum.configuration import WarriorMomentumConfig
+    sidecar.strategy_config=WarriorMomentumConfig()
     client=Mock();client.usage.return_value={};client.diagnostics.return_value={};client.request.return_value=dict(action='BUY',symbol='SPY',entry='6',stop='5.9',target='6.2',quantity=10,reason='Synthetic plan')
     def request(*args,before_transport):
         before_transport()
@@ -154,14 +156,15 @@ def test_explicit_native_scalper_freshness_does_not_inherit_grok_warrior_deadlin
     assert not rejected.success and service.last_reason=='PROVIDER_QUOTE_NOT_CURRENT'
 
 
+@pytest.mark.parametrize('profile',['GROK_WARRIOR_V5','GROK_WARRIOR_ACCOUNT_V6'])
 @pytest.mark.parametrize('extended',[False,True])
-def test_real_desktop_profile_binds_only_warrior_and_starts_no_model_before_operator_start(tmp_path,monkeypatch,historical_intelligence_artifact,extended):
+def test_real_desktop_profile_binds_only_warrior_and_starts_no_model_before_operator_start(tmp_path,monkeypatch,historical_intelligence_artifact,extended,profile):
     from app.configuration import load_configuration
     import app.composition.desktop as desktop_module
     import app.asset_modules.grok_warrior_control as control_module
     from tests.test_support.session_clock import create_session_paper_composition
     from app.equity_overhaul.paper_experiment import ENV
-    root=tmp_path/'desktop-trial';create(root,profile='GROK_WARRIOR_V5',extended_sessions=extended)
+    root=tmp_path/'desktop-trial';create(root,profile=profile,extended_sessions=extended)
     monkeypatch.setenv(ENV,str(root/'experiment.json'))
     config=load_configuration({'WEBULL_TRADING_ENVIRONMENT':'PAPER','LIVE_TRADING_ENABLED':'false',
         'ATLAS_DAILY_RESEARCH_ENABLED':'true','WARRIOR_FORWARD_PAPER_ENABLED':'true','QUICK_SCALPER_ENABLED':'true',
@@ -174,6 +177,9 @@ def test_real_desktop_profile_binds_only_warrior_and_starts_no_model_before_oper
     try:
         c=graph.warrior_forward_sidecar._grok_warrior_control
         assert c is not None and not c.active()
+        assert c.account_sizing==(profile=='GROK_WARRIOR_ACCOUNT_V6')
+        assert graph.quick_scalper_runtime.risk_config==graph.warrior_forward_sidecar.strategy_config.risk
+        assert (graph.quick_scalper_runtime.risk_config.maximum_quantity>10)==c.account_sizing
         assert ('AFTER_HOURS' in graph.warrior_forward_sidecar.strategy_config.entry.allowed_sessions)==extended
         assert ('AFTER_HOURS' in graph.quick_scalper_runtime.config.allowed_sessions)==extended
         assert ('AFTER_HOURS' in c.entry_sessions)==extended
@@ -334,3 +340,57 @@ def test_director_capture_and_dispatch_share_explicit_after_hours_policy(control
         assert control._events[-1]['status']=='DIRECTOR_ENTRY_ACKNOWLEDGED'
     else:
         assert 'SPY' not in control._contexts
+
+
+@pytest.mark.parametrize('control',['GROK_WARRIOR_ACCOUNT_V6'],indirect=True)
+def test_account_sized_grok_plan_exceeds_small_trial_caps_and_keeps_native_stops(control,warrior,setup):
+    answer=dict(action='BUY',symbol='SPY',entry='6',stop='5.9',target='6.2',quantity=100,reason='Synthetic account-sized plan')
+    apply(control,warrior,answer)
+    buys=[o for o in setup[0].order_book.history() if o.request.side.value=='BUY']
+    assert len(buys)==1 and buys[0].request.quantity==D(100)
+    fill(setup[0]);assert warrior.reconcile_authoritative_protection('SPY',NOW)
+    assert any(o.request.execution_reason=='STOP' and o.request.quantity==D(100) for o in setup[0].order_book.open_orders_for_symbol('SPY'))
+
+
+@pytest.mark.parametrize('control',['GROK_WARRIOR_ACCOUNT_V6'],indirect=True)
+def test_account_sizing_does_not_bypass_current_account_risk(control,warrior,setup):
+    # Native per-trade allowance is min($100, 0.5% of $10k) = $50.
+    answer=dict(action='BUY',symbol='SPY',entry='6',stop='5.9',target='6.2',quantity=1000,reason='Synthetic excessive risk')
+    apply(control,warrior,answer)
+    assert not any(o.request.side.value=='BUY' for o in setup[0].order_book.history())
+    assert control.service.last_reason=='RISK_NOT_AUTHORIZED'
+
+
+@pytest.mark.parametrize('control',['GROK_WARRIOR_ACCOUNT_V6'],indirect=True)
+def test_director_receives_account_sizing_schema_and_partial_exit_policy(control):
+    control._review_director()
+    args=control.client.request.call_args.args
+    evidence,schema=args[2],args[3]
+    assert schema['properties']['quantity']['maximum']==control.service.risk_config.maximum_quantity
+    assert schema['properties']['quantity']['maximum']>10
+    assert evidence['limits']['maximum_position_dollars'] is None
+    assert evidence['position_sizing']['account']['buying_power']=='10000'
+    assert evidence['native_management']['configured_partial_exit_fractions']=={'first_target':'0.50','second_target':'0.25','runner':'0.25'}
+    assert evidence['native_management']['native_minimum_remaining_reward_r']=={'first_target':'0.5','final_target':'1.5'}
+
+
+def test_native_review_includes_actual_partial_policy_without_enlarging_candidate_identity(control,warrior,setup):
+    from tests.asset_modules.test_grok_runtime_handoff import signal,AUTH,FloatProvenance
+    from tests.asset_modules.test_grok_native_review import finished
+    from tests.asset_modules.test_grok_paper_entries import suite
+    from tests.asset_modules.test_native_review_branches import arm
+    ai,_=suite();control.client=ai.client
+    value=signal();arm(warrior,value)
+    receipt=control.producer.warrior_offer(value,10,D(1),float_provenance=FloatProvenance.UNKNOWN,
+        symbol_authorization=AUTH,evaluated_at=NOW)
+    assert receipt.pending;finished(control.producer.review)
+    import sqlite3
+    from contextlib import closing
+    with closing(sqlite3.connect(control.budget.path)) as db:
+        raw=db.execute('SELECT context FROM calls').fetchone()[0]
+    context=json.loads(raw)
+    evidence=context['evidence']['native_engine_evidence']['WARRIOR_MOMENTUM_V1']['additional_evidence']
+    policy=evidence['native_management']
+    assert policy['configured_partial_exit_fractions']['first_target']=='0.50'
+    assert policy['native_minimum_remaining_reward_r']['final_target']=='1.5'
+    assert context['candidates'][0]['evidence']['target_levels']==[str(p) for p in value.target_levels]

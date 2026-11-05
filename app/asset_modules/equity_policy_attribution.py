@@ -11,6 +11,7 @@ FIELDS = ("strategy_trial_id", "strategy_family", "strategy_policy_version", "st
 
 # Explicit source scope: deliberately not presented as a full repository hash.
 SHARED = (
+    "asset_modules/paper_profiles.py",
     "asset_modules/equity_policy_attribution.py", "asset_modules/controlled_paper_service.py",
     "asset_modules/paper_controller_router.py", "asset_modules/admission_controller.py",
     "strategies/warrior_momentum/autonomous_paper.py", "strategies/warrior_momentum/configuration.py",
@@ -24,7 +25,7 @@ SOURCE_FILES = {
         "strategies/warrior_momentum/forward_runtime.py", "strategies/warrior_momentum/models.py",
         "strategies/warrior_momentum/setups.py", "strategies/warrior_momentum/features.py",
         "strategies/warrior_momentum/runtime.py", "strategies/warrior_momentum/risk.py",
-        "strategies/warrior_momentum/trade_management.py", "asset_modules/grok_warrior_control.py",
+        "strategies/warrior_momentum/trade_management.py", "asset_modules/grok_warrior_control.py", "asset_modules/grok_desktop_producer.py",
     ),
     EngineId.SCALPER.value: SHARED + (
         "strategies/warrior_momentum/quick_scalper.py",

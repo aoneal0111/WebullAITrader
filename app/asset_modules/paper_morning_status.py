@@ -19,6 +19,8 @@ def report(trial):
     spec = read(trial / 'experiment.json')
     result = {'trial_started': bool(spec), 'expires_at': spec.get('expires_at'),
         'orders_enabled_by_this_check': False,
+        'position_sizing':('NATIVE_ACCOUNT_RISK' if spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V6' else 'BOUNDED_TRIAL'),
+        'trial_limits':spec.get('limits'),
         'entry_sessions':spec.get('entry_sessions',['PREMARKET','REGULAR'])}
     if spec:
         remaining=max(0,(datetime.fromisoformat(spec['expires_at'])-datetime.now(UTC)).total_seconds())
@@ -28,7 +30,8 @@ def report(trial):
             db=sqlite3.connect(entry_db.as_uri()+'?mode=ro',uri=True)
             try:
                 used=db.execute('SELECT count(*) FROM attempts WHERE trial=?',(spec['trial_id'],)).fetchone()[0]
-                result.update(native_entry_attempts_used=used,native_entry_attempts_remaining=max(0,spec['limits']['maximum_entry_attempts']-used))
+                cap=spec['limits']['maximum_entry_attempts']
+                result.update(native_entry_attempts_used=used,native_entry_attempts_remaining=None if cap is None else max(0,cap-used))
             finally:db.close()
     pointer = read(trial / 'recording-session.json')
     if pointer:

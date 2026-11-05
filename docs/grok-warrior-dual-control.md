@@ -49,3 +49,33 @@ This option configures Warrior, native Scalper and both Grok director checks for
 The opted-in policy travels with new Scalper intents, persisted order metadata and replacements. Delayed/recovered orders retain their original deadline; the extension cannot revive expired orders or retrospectively authorize old positions. Unknown/non-boolean policy metadata expires entry authority. Exact prior V4/V5 source hashes, including CRLF variants, remain recognized by the frozen assessment replay; the replay does not simulate the new session behavior or exits.
 
 Preparation starts no GUI, trial timer, model or trade. Launch on the intended test day. The eight-hour entry window still begins at the first manual launch, and the 20 Warrior request / 50 shared entry caps still apply. This is PAPER trading against incoming data, not unrestricted or live brokerage trading. The launcher, dashboard and status report display the selected sessions and remaining limits.
+
+## Native account sizing in V6
+
+`GROK_WARRIOR_ACCOUNT_V6` is a separate explicit PAPER experiment. It removes
+the V5 trial's 10-share, $100-position, $1-initial-risk, 50-attempt and $5,000
+cumulative-entry-notional overrides. The recorded `limits` fields are null for
+these extra trial ceilings. The eight-hour expiry, recording requirement and
+20 paid Warrior requests (12 native reviews / 8 director calls) remain.
+
+Warrior and Scalper receive the normal configured native risk policy, rather
+than the V5 clamped version. Grok chooses its directed order quantity using
+supplied actual buying power, equity, exposure and native risk configuration.
+Its response schema uses the configured native quantity maximum. Fresh quotes,
+account buying power, sizing, symbol ownership, shared account capital/loss
+budgets and native protective exits are still rechecked at dispatch. This is
+not unlimited capital, permission to enlarge account limits, or live trading.
+Actual normal limits may still cause a proposed order to be rejected.
+
+Both native Warrior review and director context include the configured partial
+exit fractions, native first/final reward thresholds and protective-management
+settings. These are facts for independent review, not instructions to approve;
+a first partial target is not the entire trade's payoff, and configured
+fractions remain subject to whole-share rounding, native exits and fills.
+
+Prepare a new launcher with `-ExperimentProfile GROK_WARRIOR_ACCOUNT_V6
+-ExtendedSessions`. Existing trials, budgets, positions and recorded outcomes
+are preserved. The launcher/dashboard/status name native account sizing, and
+entry attempts remain durably recorded even though there is no extra trial
+attempt ceiling. This change does not repair stale provider quote timestamps
+or establish a profitable strategy. NFI crypto remains disconnected.

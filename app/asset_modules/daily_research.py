@@ -1,4 +1,5 @@
 """Opt-in recording on the normal visible Atlas desktop; never enables entries."""
+from app.asset_modules.paper_profiles import GROK_CONTROL_PROFILES
 from datetime import UTC, datetime
 from hashlib import sha256
 import json
@@ -64,11 +65,11 @@ class DailyResearch:
                 crypto_observation_capture=self.crypto_capture,
                 source_sha256=source_hash,configuration_sha256=config_hash,source_files=source,
                 started_at=clock().isoformat(),max_seconds=seconds,live_trading_enabled=False,
-                grok_order_review_enabled=bool(self.grok_execution) or bool(experiment and experiment.get('profile')=='GROK_WARRIOR_V5'),automatic_grok_requests=0,
-                warrior_control=('GROK_NATIVE_REVIEW_AND_DIRECTED' if experiment and experiment.get('profile')=='GROK_WARRIOR_V5' else 'NATIVE'),
+                grok_order_review_enabled=bool(self.grok_execution) or bool(experiment and experiment.get('profile') in GROK_CONTROL_PROFILES),automatic_grok_requests=0,
+                warrior_control=('GROK_NATIVE_REVIEW_AND_DIRECTED' if experiment and experiment.get('profile') in GROK_CONTROL_PROFILES else 'NATIVE'),
                 scalper_control=('NATIVE' if self.grok_execution is None else 'GROK_REVIEW'),
                 grok_execution_trial=None if self.grok_execution is None else self.grok_execution.doc,
-                automatic_grok_requests_on_operator_start=bool(self.grok_execution) or bool(experiment and experiment.get('profile')=='GROK_WARRIOR_V5'),
+                automatic_grok_requests_on_operator_start=bool(self.grok_execution) or bool(experiment and experiment.get('profile') in GROK_CONTROL_PROFILES),
                 strategy_baseline_changed=False,entries_enabled_by_recorder=False,
                 coverage=['Subscribed native market events','Paper order and fill runtime events',
                     'Observed bar windows','Warrior and Scalper quote assessments',

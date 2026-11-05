@@ -140,14 +140,14 @@ class PaperDayReviewTests(unittest.TestCase):
             root=Path(temp);trial=root/'trial';trial.mkdir();session=root/'session';session.mkdir()
             before_cwd=os.getcwd()
             try:
-                for profile in ('LEGACY_V1','GROK_WARRIOR_V5'):
+                for profile in ('LEGACY_V1','GROK_WARRIOR_V5','GROK_WARRIOR_ACCOUNT_V6'):
                     spec={'trial_id':TRIAL,'profile':profile}
                     (trial/'experiment.json').write_text(json.dumps(spec))
                     (trial/'recording-session.json').write_text(json.dumps({'trial_id':TRIAL,'session':str(session)}))
                     expected=dict(FLAGS,ATLAS_EQUITY_PAPER_EXPERIMENT=str(trial/'experiment.json'),
                         ATLAS_LEARNING_OUTCOME_JOURNAL_PATH=str(trial/'learning-outcomes.json'),
                         ATLAS_GROK_EXECUTION_TRIAL='',ATLAS_CRYPTO_OBSERVATION_CAPTURE='',ATLAS_CRYPTO_NATIVE_OBSERVER_ENABLED='false')
-                    if profile=='GROK_WARRIOR_V5':expected['ATLAS_PAPER_CONTROLLER_ENABLED']='true'
+                    if profile in ('GROK_WARRIOR_V5','GROK_WARRIOR_ACCOUNT_V6'):expected['ATLAS_PAPER_CONTROLLER_ENABLED']='true'
                     manifest={'paper_experiment':spec,'configuration_sha256':digest(expected)}
                     target=session/'research-manifest.json';target.write_text(json.dumps(manifest))
                     with patch.dict(sys.modules,{'dotenv':dotenv,'app.configuration.loader':loader,

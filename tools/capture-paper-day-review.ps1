@@ -25,7 +25,7 @@ flags = dict(FLAGS, ATLAS_EQUITY_PAPER_EXPERIMENT=str(trial/'experiment.json'),
     ATLAS_GROK_EXECUTION_TRIAL='', ATLAS_CRYPTO_OBSERVATION_CAPTURE='',
     ATLAS_CRYPTO_NATIVE_OBSERVER_ENABLED='false')
 spec = json.loads((trial/'experiment.json').read_text(encoding='utf-8-sig'))
-if spec.get('profile') == 'GROK_WARRIOR_V5':
+if spec.get('profile') in ('GROK_WARRIOR_V5','GROK_WARRIOR_ACCOUNT_V6'):
     flags['ATLAS_PAPER_CONTROLLER_ENABLED'] = 'true'
 config = load_configuration({**dotenv_values(repo/'.env'), **os.environ, **flags})
 pointer = json.loads((trial/'recording-session.json').read_text())

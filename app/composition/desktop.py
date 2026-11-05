@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.asset_modules.paper_profiles import GROK_CONTROL_PROFILES
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -201,17 +202,18 @@ def create_desktop_composition(
             status=daily_research.journal.status()
             return status['writer_alive'] and status['evidence_complete'] and not status['closed']
         equity_experiment.capture_ready=capture_ready
-        warrior_strategy_config = replace(warrior_strategy_config, risk=replace(warrior_strategy_config.risk,
-            configured_per_trade_risk=min(warrior_strategy_config.risk.configured_per_trade_risk, Decimal('1')),
-            maximum_quantity=min(warrior_strategy_config.risk.maximum_quantity, 10),
-            maximum_position_dollars=min(warrior_strategy_config.risk.maximum_position_dollars, Decimal('100'))))
+        if not equity_experiment.account_sizing:
+            warrior_strategy_config = replace(warrior_strategy_config, risk=replace(warrior_strategy_config.risk,
+                configured_per_trade_risk=min(warrior_strategy_config.risk.configured_per_trade_risk, Decimal('1')),
+                maximum_quantity=min(warrior_strategy_config.risk.maximum_quantity, 10),
+                maximum_position_dollars=min(warrior_strategy_config.risk.maximum_position_dollars, Decimal('100'))))
         warrior_strategy_config = equity_experiment.warrior_config(warrior_strategy_config)
     warrior_configuration_fingerprint = strategy_configuration_fingerprint(
         warrior_strategy_config
     )
-    if equity_experiment is not None and equity_experiment.spec.get('profile')=='GROK_WARRIOR_V5':
+    if equity_experiment is not None and equity_experiment.spec.get('profile') in GROK_CONTROL_PROFILES:
         from hashlib import sha256
-        warrior_configuration_fingerprint=sha256(('GROK_WARRIOR_V5|'+warrior_configuration_fingerprint).encode()).hexdigest()
+        warrior_configuration_fingerprint=sha256((equity_experiment.spec['profile']+'|'+warrior_configuration_fingerprint).encode()).hexdigest()
     warrior_management_context_source = _configured_management_context_source(
         operational_configuration.warrior_forward_capture_path,
         warrior_configuration_fingerprint,
@@ -415,7 +417,7 @@ def create_desktop_composition(
                 account_source=trading_state_sources.warrior_account_context,
                 quote_source=execution_quote_source,
                 risk_config=warrior_strategy_config.risk,
-                native_scalper_quote_age_seconds=(5 if equity_experiment is not None and equity_experiment.spec.get('profile')=='GROK_WARRIOR_V5' else 2),
+                native_scalper_quote_age_seconds=(5 if equity_experiment is not None and equity_experiment.spec.get('profile') in GROK_CONTROL_PROFILES else 2),
                 clock=paper_clock,
             )
             paper_trading_commands = replace(paper_trading_commands, trading_service=paper_controller_service)
