@@ -97,6 +97,34 @@ def trial_outcomes(ledger, trial_id):
             'Simulator ledger provenance is unverified; these are paper outcomes, not live results']}
 
 
+def call_reviews(rows):
+    """Model answers and original deadlines only; never execution outcomes."""
+    reviews=[]
+    for engine,stage,at,context,raw in rows:
+        def object_value(value):
+            try:
+                result=json.loads(value) if value else {}
+                if not isinstance(result,dict):raise ValueError()
+                return result,'PRESENT' if value else 'ABSENT'
+            except (ValueError,TypeError):return {},'INVALID_JSON_OBJECT'
+        result,result_status=object_value(raw)
+        evidence,context_status=object_value(context)
+        answer=result.get('answer')
+        if not isinstance(answer,dict):answer={}
+        candidates=evidence.get('candidates',[])
+        if not isinstance(candidates,list):candidates=[]
+        reason=answer.get('reason')
+        reviews.append(dict(engine=engine,stage=stage,started_at=at,
+            status=result.get('status','UNFINALIZED' if not raw else 'UNKNOWN'),
+            result_decode_status=result_status,context_decode_status=context_status,
+            latency_ms=result.get('latency_ms'),failure_category=result.get('failure_category'),
+            reason_code=result.get('reason_code'),action=answer.get('action'),symbol=answer.get('symbol'),
+            selected_ids=answer.get('selected_ids'),reason=reason if isinstance(reason,str) else None,
+            candidates=[{k:c.get(k) for k in ('engine','candidate_id','valid_until')} for c in candidates if isinstance(c,dict)],
+            model_selection_is_not_execution=True))
+    return reviews
+
+
 def collect(trial,ledger,output):
     trial,ledger,output=Path(trial).resolve(),Path(ledger).resolve(),Path(output).resolve()
     spec=read_json(trial/'experiment.json');pointer=read_json(trial/'recording-session.json')
@@ -144,6 +172,8 @@ def collect(trial,ledger,output):
         'execution_authorized':False,'native_database_modified':False,
         'capture':{k:final['journal'].get(k) for k in ('closed','writer_stopped','writer_failed','capacity_reached','evidence_complete','bytes_written')},
         'capture_reason':final.get('reason'),'files':files,
+        'entry_diagnostics':final.get('entry_diagnostics'),
+        'paired_scalper_quote_comparison':final.get('context_capture',{}).get('scalper_confirmation_comparison'),
         'limitations':['Raw journal stays at its original location; this package contains final summaries and ledger snapshots',
             'Capture completeness is reported by its writer; the full journal hash chain is not rescanned here',
             'Grok intentions have no separate filled-position ledger or measurable win rate']}
@@ -153,12 +183,13 @@ def collect(trial,ledger,output):
     budget=payload/'grok/grok-team-budget.sqlite3'
     if budget.is_file():
         with read_database(budget) as db:
-            rows=bounded_rows(db,'SELECT engine,stage,started,result FROM calls ORDER BY rowid LIMIT 61',(),60,8*1024**2)
-        report['grok_roles']=dict(Counter(engine+'|'+stage for engine,stage,_,_ in rows))
+            rows=bounded_rows(db,'SELECT engine,stage,started,context,result FROM calls ORDER BY rowid LIMIT 61',(),60,8*1024**2)
+        report['grok_roles']=dict(Counter(engine+'|'+stage for engine,stage,_,_,_ in rows))
+        report['grok_reviews']=call_reviews(rows)
         report['news_results']=[{'at':at,'status':r.get('status','UNFINALIZED'),
             'provider_status':r.get('provider_status'),'failure_category':r.get('failure_category'),
             'http_status':r.get('http_status'),'citation_count':len(r.get('citations',[])),
-            'latency_ms':r.get('latency_ms')} for engine,stage,at,raw in rows
+            'latency_ms':r.get('latency_ms')} for engine,stage,at,_,raw in rows
             if engine=='NEWS_DESK' and stage=='NEWS' for r in [json.loads(raw) if raw else {}]]
     (payload/'paper-day-review.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
     archive=output/'closed-paper-day-review.zip'

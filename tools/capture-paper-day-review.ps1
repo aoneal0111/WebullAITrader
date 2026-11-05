@@ -24,9 +24,14 @@ flags = dict(FLAGS, ATLAS_EQUITY_PAPER_EXPERIMENT=str(trial/'experiment.json'),
     ATLAS_LEARNING_OUTCOME_JOURNAL_PATH=str(trial/'learning-outcomes.json'),
     ATLAS_GROK_EXECUTION_TRIAL='', ATLAS_CRYPTO_OBSERVATION_CAPTURE='',
     ATLAS_CRYPTO_NATIVE_OBSERVER_ENABLED='false')
+spec = json.loads((trial/'experiment.json').read_text(encoding='utf-8-sig'))
+if spec.get('profile') == 'GROK_WARRIOR_V5':
+    flags['ATLAS_PAPER_CONTROLLER_ENABLED'] = 'true'
 config = load_configuration({**dotenv_values(repo/'.env'), **os.environ, **flags})
 pointer = json.loads((trial/'recording-session.json').read_text())
 manifest = json.loads((Path(pointer['session'])/'research-manifest.json').read_text())
+if pointer.get('trial_id') != spec.get('trial_id') or manifest.get('paper_experiment') != spec:
+    raise ValueError('NATIVE_RECORDING_TRIAL_MISMATCH')
 if configuration_digest(config) != manifest['configuration_sha256']:
     raise ValueError('NATIVE_CONFIGURATION_CHANGED_PASS_EXACT_LEDGER_EXPLICITLY')
 print(Path(config.execution_database_path).with_name('paper-execution.sqlite3'))

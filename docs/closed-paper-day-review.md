@@ -33,3 +33,19 @@ the saved role ledger; a missing SCOUT handoff is not described as successful
 news/scouting. Grok proposals have no separate filled-position ledger and produce
 no measured win rate. Closed-capture completeness is the writer's reported state,
 not an independent verification of the full journal chain by this export.
+
+The exporter reconstructs the explicit controller-on configuration for
+`GROK_WARRIOR_V5` (including its extended-session option) before checking the
+original manifest digest. Trial IDs and the manifest's full experiment must
+match; a changed configuration still requires the exact ledger path explicitly.
+No old trial specification, environment file or installed strategy is rewritten.
+
+`paper-day-review.json` includes the recorded entry counters, paired Scalper
+stream/REST aggregate comparison and individual Grok answers with original
+candidate IDs/deadlines, selections, reasons, latency and failure categories.
+A model selection or parsed response is not an accepted decision, submitted
+order or fill. Canonical trial-bound fills remain a separate section. The
+private SQLite snapshot retains the original model evidence and results.
+No provider requests or paid inference occur during export. Raw market journals
+stay in their original folders; the aggregate quote comparison does not prove
+feed entitlement or identify a quote-parser defect on its own.
