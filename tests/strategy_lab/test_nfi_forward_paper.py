@@ -86,7 +86,7 @@ class PaperTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'CHANGED'):paper.selected_config(self.work)
 
     def test_missing_current_history_never_creates_ready_universe(self):
-        with patch('ccxt.kraken',self.fake_exchange(True)),self.assertRaisesRegex(ValueError,'WARMUP'):
+        with patch('ccxt.kraken',self.fake_exchange(True)),self.assertRaisesRegex(ValueError,'WARMUP|SOURCE_ACTIVITY'):
             engine.preflight(self.work)
         self.assertFalse((self.work/'resolved-config.json').exists())
         self.assertEqual(json.loads((self.work/'market-preflight.json').read_text())['status'],'FAILED')

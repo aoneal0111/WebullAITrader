@@ -33,6 +33,7 @@ def main():
     import argparse
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--work',type=Path,required=True)
     p.add_argument('--export',type=Path)
+    p.add_argument('--compact',action='store_true')
     a=p.parse_args();work=a.work
     if a.export:
         print('UPLOAD_REVIEW='+str(export_review(work,a.export)));return
@@ -41,6 +42,24 @@ def main():
     for name in ('engine-status.json','market-preflight.json','runtime-check.json','capture-final.json'):
         path=work/name
         if path.is_file():report[name]=json.loads(path.read_text())
+    from app.strategy_lab.nfi_readiness import runtime_freshness
+    report['runtime_observation']=runtime_freshness(report)
+    if a.compact:
+        engine=report.get('engine-status.json') or {}
+        source=engine.get('source_readiness') or {}
+        capture=engine.get('capture') or {}
+        stopped=report['runtime_observation']['state']=='STOPPED'
+        if stopped:capture=(report.get('capture-final.json') or {}).get('journal') or capture
+        report={k:report.get(k) for k in ('checked_at','runtime_observation',
+            'closed_trades','wins','losses','closed_win_rate','closed_lifecycle_net_usd','open_positions','holdings')}
+        report.update(fresh_data_pairs=(engine.get('fresh_ready_pairs')
+                if report['runtime_observation']['state']=='RECENT_CHECKPOINT' else None),
+            source_states=source.get('latest_counts'),signal_snapshots=source.get('signal_snapshots'),
+            source_state_scope='LAST_CAPTURED_SNAPSHOT',
+            buy_signal_snapshots=source.get('buy_signal_snapshots'),entry_reviews=source.get('entry_reviews'),
+            pause_new_entries=engine.get('pause_new_entries'),capture_error=engine.get('capture_error'),
+            writer_alive=capture.get('writer_alive'),evidence_complete=capture.get('evidence_complete'),
+            live_trading_enabled=False)
     print(json.dumps(report,indent=2,allow_nan=False))
 
 

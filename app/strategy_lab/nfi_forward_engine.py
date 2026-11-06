@@ -16,6 +16,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
 from app.strategy_lab.nfi_forward_paper import (
     TIMEFRAMES,verify,selected_config,digest,validate_config,write)
 from app.strategy_lab.nfi_runtime_preflight import disconnected
+from app.strategy_lab.nfi_readiness import primary_activity, source_snapshot
 
 
 def clean_environment():
@@ -96,7 +97,18 @@ def preflight(work):
             missing=set(config['exchange']['pair_whitelist'])-set(allowed)
             if missing:raise ValueError('SAVED_UNIVERSE_NO_LONGER_ACTIVE_REVIEW_POSITIONS')
         else:
-            config['exchange']['pair_whitelist']=ranked[:40]
+            # Preserve source rules while avoiding a fresh universe dominated
+            # by pairs that already fail its USD zero-volume candle check.
+            quality={}; selected=[]
+            for pair in ranked:
+                report['public_api_operations']+=1
+                rows=exchange.fetch_ohlcv(pair,'5m',limit=720)
+                quality[pair]=primary_activity(rows,datetime.now(UTC).timestamp())
+                if quality[pair]['eligible']:selected.append(pair)
+                if len(selected)==40:break
+            report['primary_activity']=quality
+            if len(selected)<10:raise ValueError('INSUFFICIENT_SOURCE_ACTIVITY_QUALIFIED_PAIRS')
+            config['exchange']['pair_whitelist']=selected
         sample=['BTC/USD',next(p for p in config['exchange']['pair_whitelist'] if p!='BTC/USD')]
         now=int(datetime.now(UTC).timestamp())
         for pair in sample:
@@ -115,7 +127,7 @@ def preflight(work):
             write(path,config)
             write(work/'resolved-universe.json',dict(config_sha256=digest(path),
                 base_sha256=manifest['prepared_hashes']['config.json'],
-                selection='TOP_40_PUBLIC_QUOTE_VOLUME_WITHIN_PINNED_KRAKEN_USD_UNIVERSE',
+                selection='TOP_40_QUOTE_VOLUME_WITH_SOURCE_USD_ACTIVITY_CHECK_WITHIN_PINNED_UNIVERSE',
                 selected_at=report['checked_at'],pairs=config['exchange']['pair_whitelist']))
         report.update(status='PUBLIC_MARKET_READY',selected_pairs=config['exchange']['pair_whitelist'],
                       quote_timestamp_verified=False,
@@ -172,6 +184,10 @@ class Evidence:
         self.journal=DailyJournal(self.root,baseline,max_bytes=4*1024**3,max_records=8_000_000)
         self.last={};self.complete_cycle=False;self.error=None
         self._response_hashes={}
+        self.source_states={}
+        self.signal_snapshots=0
+        self.buy_signal_snapshots=0
+        self.entry_reviews={}
 
     def healthy(self):
         status=self.journal.status()
@@ -209,11 +225,15 @@ class Evidence:
                     row=analyzed.iloc[-1]
                     at=row['date'].isoformat();key=(pair,'signal')
                     if self.last.get(key)!=at:
+                        source=source_snapshot(analyzed)
                         if self.emit('NFI_NATIVE_SIGNAL',dict(pair=pair,date=at,
                             enter_long=str(row.get('enter_long',None)),
                             exit_long=str(row.get('exit_long',None)),
-                            enter_tag=str(row.get('enter_tag','')))):
+                            enter_tag=str(row.get('enter_tag','')),source_readiness=source)):
                             self.last[key]=at
+                            self.source_states[pair]=source
+                            self.signal_snapshots+=1
+                            self.buy_signal_snapshots+=source.get('buy')==1
             self.complete_cycle=True
         except Exception as exc:
             self.error='CAPTURE_'+type(exc).__name__
@@ -246,6 +266,7 @@ class Evidence:
             payload=dict(pair=pair,stake_amount=float(stake_amount),allowed=allowed,reason=reason,
                          trade_id=getattr(kwargs.get('trade'),'id',None))
             if not self.emit('NFI_ENTRY_REVIEW',payload):return False
+            self.entry_reviews[reason]=self.entry_reviews.get(reason,0)+1
             if not allowed:return False
             return original(pair,stake_amount,*args,**kwargs)
         bot.execute_entry=entry
@@ -274,7 +295,42 @@ class Evidence:
             setattr(bot.exchange,name,wrap(original_call,name))
 
 
-def run(work):
+def refresh_universe(work,token):
+    """One explicit refresh, only with no open trade/order; keep the same wallet."""
+    import re
+    import sqlite3
+    import shutil
+    if not re.fullmatch('[0-9a-f]{32}',token):raise ValueError('REFRESH_TOKEN_REQUIRED')
+    marker=work/('universe-refresh-'+token+'.json')
+    if marker.exists():return
+    selected_config(work)
+    ledger=work/'nfi-paper.sqlite3'
+    if ledger.exists():
+        db=sqlite3.connect(ledger.resolve().as_uri()+'?mode=ro',uri=True)
+        try:
+            if db.execute('SELECT COUNT(*) FROM trades WHERE is_open=1').fetchone()[0]:
+                raise ValueError('UNIVERSE_REFRESH_REQUIRES_NO_OPEN_POSITIONS')
+            if db.execute('SELECT COUNT(*) FROM orders WHERE ft_is_open=1').fetchone()[0]:
+                raise ValueError('UNIVERSE_REFRESH_REQUIRES_NO_WORKING_ORDERS')
+        finally:db.close()
+    backup=work/('universe-before-'+token)
+    if backup.exists():
+        for name in ('resolved-config.json','resolved-universe.json'):
+            if (backup/name).read_bytes()!=(work/name).read_bytes():
+                raise ValueError('PREVIOUS_UNIVERSE_REFRESH_REQUIRES_REVIEW')
+    else:backup.mkdir()
+    names=('resolved-config.json','resolved-universe.json')
+    for name in names:shutil.copyfile(work/name,backup/name)
+    try:
+        for name in names:(work/name).unlink()
+        preflight(work)
+        write(marker,dict(status='REFRESH_COMPLETE',wallet_reset=False,source_modified=False))
+    except BaseException:
+        for name in names:shutil.copyfile(backup/name,work/name)
+        raise
+
+
+def run(work,*,refresh_token=None):
     # Native Linux container lock supplements the unique Docker container name.
     # Keep the descriptor alive until the entire native worker has stopped.
     import fcntl
@@ -283,7 +339,10 @@ def run(work):
     except OSError:
         lock.close()
         raise ValueError('NFI_PAPER_ALREADY_RUNNING') from None
-    try:return _run_locked(work)
+    try:
+        if refresh_token:refresh_universe(work,refresh_token)
+        preflight(work)
+        return _run_locked(work)
     finally:
         fcntl.flock(lock.fileno(),fcntl.LOCK_UN);lock.close()
 
@@ -309,12 +368,20 @@ def _run_locked(work):
             bot=worker.freqtrade;now=datetime.now(UTC)
             evidence.capture(bot,now)
             status=dict(scope='NFI_FORWARD_PAPER_STATUS_V1',updated_at=now.isoformat(),
+                recording_id=evidence.root.name,
                 state=str(state),dry_run=True,exchange='kraken',stake_currency='USD',
                 strategy_version=bot.strategy.version(),active_pairs=len(bot.active_pair_whitelist),
                 pause_new_entries=(work/'PAUSE_NEW_ENTRIES').exists(),
                 capture=evidence.journal.status(),capture_error=evidence.error,
                 fresh_ready_pairs=sum(pair_ready(bot,p,now) for p in bot.active_pair_whitelist),
                 live_trading_enabled=False)
+            from collections import Counter
+            status['source_readiness']=dict(
+                latest_counts=dict(Counter(s['state'] for s in evidence.source_states.values())),
+                by_pair=evidence.source_states,signal_snapshots=evidence.signal_snapshots,
+                buy_signal_snapshots=evidence.buy_signal_snapshots,
+                entry_reviews=evidence.entry_reviews,
+                note='Fresh data is not a source BUY signal. Repeated snapshots are not win-rate samples.')
             try:status.update(ledger_status(work))
             except Exception as exc:status['ledger_status_error']=type(exc).__name__
             try:
@@ -326,21 +393,36 @@ def _run_locked(work):
                 break
     except KeyboardInterrupt:
         print('NFI_PAPER_STOPPED; DATABASE_PRESERVED; OPEN_SIMULATED_POSITIONS_NEED_RESTART_FOR_MANAGEMENT',flush=True)
+    except Exception as exc:
+        evidence.error='NATIVE_'+type(exc).__name__
+        raise
     finally:
+        close_capture(work,worker,evidence)
+
+
+def close_capture(work,worker,evidence):
+    cleanup_error=None
+    try:
         if worker is not None:worker.exit()
+    except BaseException as exc:
+        cleanup_error=type(exc).__name__
+        raise
+    finally:
         evidence.journal.close()
-        write(work/'capture-final.json',dict(journal=evidence.journal.status(),error=evidence.error))
+        write(work/'capture-final.json',dict(recording_id=evidence.root.name,
+            journal=evidence.journal.status(),error=evidence.error,cleanup_error=cleanup_error))
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--work',type=Path,default=Path('/work'))
     p.add_argument('--check-only',action='store_true');p.add_argument('--preflight',action='store_true')
+    p.add_argument('--refresh-universe-once')
     a=p.parse_args();work=a.work.resolve()
     if a.check_only:result=check(work)
     elif a.preflight:result=preflight(work)
     else:
-        clean_environment();preflight(work);run(work);return
+        clean_environment();run(work,refresh_token=a.refresh_universe_once);return
     print('NFI_PAPER='+result['status'])
 
 
