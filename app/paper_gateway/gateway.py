@@ -1050,6 +1050,7 @@ class PaperOrderGateway:
                 order.side is not PaperOrderSide.BUY
                 or stop is None
                 or quote.ask_price > stop
+                or quote.timestamp < order.updated_at
             ):
                 continue
             cancelled = transition_cancel_order(
