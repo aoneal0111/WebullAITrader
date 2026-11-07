@@ -12,10 +12,13 @@ from app.strategy_lab.crypto_fleet import PROFILES, SOURCES, MODULE, digest, wri
 from app.strategy_lab.nfi_forward_engine import Evidence, clean_environment
 from app.strategy_lab.nfi_forward_status import ledger_status
 
+# Add-on definitions do not alter the original five-profile fleet.
+DEFINITIONS = {**PROFILES, 'roc': dict(strategy='FleetROCPullback', timeframe='1h', startup=200)}
+
 
 def verify(work, *, compiled=True):
     work=Path(work);profile=json.loads((work/'profile.json').read_text())
-    if profile.get('scope')!='NATIVE_CRYPTO_FLEET_PROFILE_V1' or profile.get('key') not in PROFILES:
+    if profile.get('scope')!='NATIVE_CRYPTO_FLEET_PROFILE_V1' or profile.get('key') not in DEFINITIONS:
         raise ValueError('FLEET_PROFILE_REQUIRED')
     key=profile['key']
     expected={Path(name).name:sha for group,_,_,name,sha in SOURCES if group==key}
@@ -28,7 +31,7 @@ def verify(work, *, compiled=True):
     if (config.get('dry_run') is not True or config.get('trading_mode')!='spot'
         or config.get('stake_currency')!='USD' or config.get('stake_amount')!='unlimited'
         or config.get('max_open_trades')!=6 or config.get('dry_run_wallet')!=10000
-        or config.get('strategy')!=PROFILES[key]['strategy']
+        or config.get('strategy')!=DEFINITIONS[key]['strategy']
         or config.get('db_url')!='sqlite:////work/paper.sqlite3'
         or config.get('force_entry_enable') is not False
         or config['exchange']['name']!='kraken'
@@ -50,7 +53,7 @@ def compile_profile(work):
     work=Path(work);_,profile=verify(work,compiled=False)
     if profile.get('compiled'):verify(work);return profile
     folder=work/'strategies';folder.mkdir(exist_ok=False)
-    key=profile['key'];definition=PROFILES[key]
+    key=profile['key'];definition=DEFINITIONS[key]
     if key in ('e0','nasos','bb'):
         original=next((work/'upstream').glob('*.py')).read_text()
         converted=StrategyUpdater().update_code(original)
@@ -78,6 +81,8 @@ def compile_profile(work):
         if original.count(before)!=1:raise ValueError('EXACT_CRSI_CAUSAL_ADAPTER_REQUIRED')
         (folder/'FleetCRSIReference.py').write_text(original.replace(before,"df['sma_200'] = df['sma_200'].copy()"))
         (folder/'FleetCRSI.py').write_bytes((MODULE/'FleetCRSI.py').read_bytes())
+    elif key=='roc':
+        (folder/'FleetROCPullback.py').write_bytes((MODULE/'FleetROCPullback.py').read_bytes())
     else:
         for old,new in [('config.py','FleetWaveConfig.py'),('indicators.py','FleetWaveIndicators.py'),
                         ('strategies.py','FleetWaveReference.py')]:
@@ -110,7 +115,7 @@ def resolve(work):
     validate_config_consistency(config)
     if (config['dry_run'] is not True or config['runmode']!=RunMode.DRY_RUN
             or config['trading_mode'].value!='spot' or strategy.can_short
-            or strategy.timeframe!=profile['timeframe'] or strategy.startup_candle_count!=640
+            or strategy.timeframe!=profile['timeframe'] or strategy.startup_candle_count!=DEFINITIONS[profile['key']].get('startup',640)
             or config['exchange']['name']!='kraken' or config['stake_currency']!='USD'):
         raise ValueError('RESOLVED_NATIVE_PAPER_MISMATCH')
     return args,config,strategy,profile
@@ -122,14 +127,14 @@ def check(work):
         compile_profile(work)
         _,_,strategy,profile=resolve(work)
     result=dict(status='RUNTIME_READY',profile=profile['key'],strategy=profile['strategy'],
-        timeframe=strategy.timeframe,startup_candles=640,network_requests=0,orders=0,
+        timeframe=strategy.timeframe,startup_candles=strategy.startup_candle_count,network_requests=0,orders=0,
         published_performance_applies=False,live_trading_enabled=False)
     write(Path(work)/'runtime-check.json',result)
     return result
 
 
 def frames_for(key):
-    return ({'5m':300,'1h':3600} if key=='bb' else {'5m':300}
+    return ({'1h':3600} if key=='roc' else {'5m':300,'1h':3600} if key=='bb' else {'5m':300}
             if key in ('e0','nasos') else {'4h':14400})
 
 
@@ -137,14 +142,14 @@ def ready(bot,pair,now,key):
     try:
         if bot.config.get('dry_run') is not True:return False
         import pandas as pd
-        intervals=frames_for(key);primary=PROFILES[key]['timeframe']
+        intervals=frames_for(key);primary=DEFINITIONS[key]['timeframe']
         for symbol in ([pair,'BTC/USD'] if key=='wave' else [pair]):
             for tf,seconds in intervals.items():
                 data=bot.dataprovider.ohlcv(symbol,tf,copy=False)
                 if data.empty or not data['date'].is_monotonic_increasing or data['date'].duplicated().any():return False
                 cutoff=pd.Timestamp(now)-pd.Timedelta(seconds=seconds)
                 data=data[data['date']<=cutoff]
-                if len(data)<640 or not 0<=now.timestamp()-data.iloc[-1]['date'].timestamp()-seconds<=2*seconds:return False
+                if len(data)<DEFINITIONS[key].get('startup',640) or not 0<=now.timestamp()-data.iloc[-1]['date'].timestamp()-seconds<=2*seconds:return False
         analyzed,_=bot.dataprovider.get_analyzed_dataframe(pair,primary)
         return (not analyzed.empty and 0<=now.timestamp()-analyzed.iloc[-1]['date'].timestamp()
                 -intervals[primary]<=2*intervals[primary])
