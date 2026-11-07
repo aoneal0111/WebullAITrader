@@ -1,0 +1,184 @@
+{
+  "scope": "ATLAS_BROAD_SOURCE_SCREEN_AND_FIXED_RULE_COMPARISON_V1",
+  "prepared_before_performance_testing": true,
+  "markets": {
+    "crypto": {
+      "venue": "Kraken public USD spot",
+      "symbols": [
+        "BTC",
+        "ETH",
+        "SOL",
+        "XRP",
+        "ADA",
+        "DOGE",
+        "LINK",
+        "LTC",
+        "AVAX",
+        "DOT",
+        "BCH",
+        "XLM"
+      ],
+      "timeframes": [
+        "1d",
+        "4h",
+        "1h"
+      ],
+      "fee_per_side": [
+        0.004,
+        0.008,
+        0.01
+      ],
+      "slippage_per_side": 0.0005
+    },
+    "equity": {
+      "feed": "Yahoo chart public adjusted OHLC research proxy",
+      "symbols": [
+        "SPY",
+        "QQQ",
+        "IWM",
+        "DIA",
+        "XLK",
+        "XLF",
+        "XLE",
+        "XLI",
+        "XLP",
+        "XLU",
+        "GLD",
+        "TLT"
+      ],
+      "timeframes": [
+        "1d"
+      ],
+      "fee_per_side": [
+        0.0005,
+        0.001
+      ],
+      "slippage_per_side": 0.0002
+    }
+  },
+  "fixed_family_count": 15,
+  "variants_per_family": 3,
+  "families": {
+    "RSI2_TREND": [
+      5,
+      10,
+      20
+    ],
+    "RSI2_FAST": [
+      5,
+      10,
+      20
+    ],
+    "IBS_TREND": [
+      0.1,
+      0.2,
+      0.3
+    ],
+    "IBS_RANGE": [
+      0.1,
+      0.2,
+      0.3
+    ],
+    "BB_REVERSION": [
+      2.0,
+      2.5,
+      3.0
+    ],
+    "ROC3_PULLBACK": [
+      0.03,
+      0.05,
+      0.08
+    ],
+    "WILLIAMS_R": [
+      -90,
+      -95,
+      -98
+    ],
+    "PCTB_RSI": [
+      0.0,
+      0.1,
+      0.2
+    ],
+    "DONCHIAN": [
+      20,
+      55,
+      100
+    ],
+    "TREND_PULLBACK": [
+      10,
+      20,
+      50
+    ],
+    "ATR_BREAKOUT": [
+      0.5,
+      1.0,
+      1.5
+    ],
+    "SQUEEZE_BREAKOUT": [
+      5,
+      10,
+      20
+    ],
+    "ROC_MOMENTUM": [
+      0.05,
+      0.1,
+      0.2
+    ],
+    "EMA_CROSS": [
+      [
+        10,
+        50
+      ],
+      [
+        20,
+        100
+      ],
+      [
+        50,
+        200
+      ]
+    ],
+    "TURNAROUND_TUESDAY": [
+      0.0,
+      0.01,
+      0.02
+    ]
+  },
+  "adaptation_identity": "Atlas independently specified, source-inspired rule families; not faithful reproduction of any professional trader's discretionary decisions or published returns",
+  "warmup": 200,
+  "split": "After 200 benchmark bars: first 50% development, next 25% validation, final 25% holdout. Same calendar for all symbols in a market/timeframe. Each segment starts with independent cash; no position or pending-order leakage across segments.",
+  "initial_cash": 10000,
+  "simultaneous_slots": 6,
+  "position_allocation": "At entry, one-sixth of available marked account equity, capped by cash, no leverage, fixed alphabetic tie-break; exits before entries at same next-open timestamp",
+  "fills": "Completed bar signals execute at next available shared-calendar open with adverse slippage. Gaps do not fabricate bars. Stop gaps fill at worse open; stop/target same bar chooses stop first. No close-derived entry is filled on that same close.",
+  "selection": "For each market/timeframe select at most one configuration using development and validation at the baseline adverse-cost scenario. Freeze its identity before computing holdout outcomes. No switching based on holdout results.",
+  "development_gate": {
+    "minimum_closed_trades": 40,
+    "minimum_win_rate": 0.6,
+    "minimum_profit_factor": 1.15,
+    "positive_marked_profit": true,
+    "maximum_drawdown": 0.2
+  },
+  "validation_gate": {
+    "minimum_closed_trades": 20,
+    "minimum_win_rate": 0.6,
+    "minimum_profit_factor": 1.15,
+    "positive_marked_profit": true,
+    "maximum_drawdown": 0.2
+  },
+  "holdout_gate": {
+    "minimum_closed_trades": 20,
+    "minimum_win_rate": 0.6,
+    "minimum_profit_factor": 1.15,
+    "positive_marked_profit": true,
+    "maximum_drawdown": 0.2
+  },
+  "frequency_reporting": "Report entries/month and active days. Daily swing survivors are not described as all-day scalpers. Historical selection is not clean prospective out-of-sample evidence.",
+  "automatic_activation": false,
+  "orders": 0,
+  "grok_requests": 0,
+  "paid_requests": 0,
+  "entry_exit_details": "Exact predetermined rules in app/strategy_lab/broad_strategy_lab.py; generic research adaptations. Mean-reversion branches use a 3-ATR entry-relative protective stop; no fixed take profit; exit via their named mean reversion condition or 5/8/10-bar time exit. Trend branches use 2/3-ATR stops, selected 3-ATR targets or 3-ATR close-updated trailing stops and 15/20/30/120-bar time exits. TURNAROUND_TUESDAY buys the next Tuesday open after a declining Monday and exits next Wednesday open, not a claimed original close-auction reproduction.",
+  "implementation_sha256_at_original_run": "ce73668bb8f082b5002034e5ca49f5f68bdb20230f5daef45c22ef8695960c4b",
+  "scope_note": "Original frozen protocol; source SHA recorded at first run. Current implementation adds per-symbol warmup and CLI. Initial 48 symbol/timeframe windows already began after each symbol warmup; outputs unchanged. Supplemental long study used per-symbol warmup."
+}
