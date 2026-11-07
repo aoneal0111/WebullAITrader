@@ -5,8 +5,10 @@ import sqlite3
 from datetime import UTC,datetime
 
 
-def ledger_status(work):
-    path=Path(work)/'nfi-paper.sqlite3'
+def ledger_status(work, *, filename='nfi-paper.sqlite3'):
+    if filename not in ('nfi-paper.sqlite3', 'paper.sqlite3'):
+        raise ValueError('NATIVE_PAPER_LEDGER_NAME_REQUIRED')
+    path=Path(work)/filename
     if not path.is_file():return dict(ledger_present=False,closed_trades=0,open_positions=0)
     db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=2)
     try:

@@ -177,7 +177,7 @@ def block_real_writes(bot):
 
 
 class Evidence:
-    def __init__(self,work,baseline):
+    def __init__(self,work,baseline,*,timeframes=None,primary='5m',ready=None,snapshot=None,prefix='NFI'):
         from app.asset_modules.daily_research_journal import DailyJournal
         from uuid import uuid4
         self.root=work/('recording-'+datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')+'-'+uuid4().hex)
@@ -188,6 +188,11 @@ class Evidence:
         self.signal_snapshots=0
         self.buy_signal_snapshots=0
         self.entry_reviews={}
+        self.timeframes=TIMEFRAMES if timeframes is None else timeframes
+        self.primary=primary
+        self.ready=pair_ready if ready is None else ready
+        self.snapshot=source_snapshot if snapshot is None else snapshot
+        self.prefix=prefix
 
     def healthy(self):
         status=self.journal.status()
@@ -203,7 +208,7 @@ class Evidence:
         try:
             pairs=set(bot.active_pair_whitelist)|{'BTC/USD'}
             for pair in sorted(pairs):
-                for tf,seconds in TIMEFRAMES.items():
+                for tf,seconds in self.timeframes.items():
                     frame=bot.dataprovider.ohlcv(pair,tf,copy=False)
                     if frame.empty:continue
                     key=(pair,tf);last=self.last.get(key,-1)
@@ -216,17 +221,17 @@ class Evidence:
                             low=float(r.low),close=float(r.close),volume=float(r.volume)))
                     for i in range(0,len(records),200):
                         chunk=records[i:i+200]
-                        if not self.emit('NFI_NATIVE_CANDLES',dict(pair=pair,timeframe=tf,rows=chunk,
+                        if not self.emit(self.prefix+'_NATIVE_CANDLES',dict(pair=pair,timeframe=tf,rows=chunk,
                             normalization='NATIVE_FREQTRADE_MAY_FILL_ZERO_VOLUME_INTERVALS')):
                             return
                         self.last[key]=datetime.fromisoformat(chunk[-1]['date']).timestamp()
-                analyzed,_=bot.dataprovider.get_analyzed_dataframe(pair,'5m')
+                analyzed,_=bot.dataprovider.get_analyzed_dataframe(pair,self.primary)
                 if not analyzed.empty:
                     row=analyzed.iloc[-1]
                     at=row['date'].isoformat();key=(pair,'signal')
                     if self.last.get(key)!=at:
-                        source=source_snapshot(analyzed)
-                        if self.emit('NFI_NATIVE_SIGNAL',dict(pair=pair,date=at,
+                        source=self.snapshot(analyzed)
+                        if self.emit(self.prefix+'_NATIVE_SIGNAL',dict(pair=pair,date=at,
                             enter_long=str(row.get('enter_long',None)),
                             exit_long=str(row.get('exit_long',None)),
                             enter_tag=str(row.get('enter_tag','')),source_readiness=source)):
@@ -250,7 +255,7 @@ class Evidence:
                 began=time.monotonic()
                 result=await original_fetch(symbol,timeframe,*args,**kwargs)
                 for offset in range(0,len(result),200):
-                    self.emit('NFI_RAW_PUBLIC_OHLCV',dict(pair=symbol,timeframe=timeframe,
+                    self.emit(self.prefix+'_RAW_PUBLIC_OHLCV',dict(pair=symbol,timeframe=timeframe,
                         received_at=datetime.now(UTC).isoformat(),
                         latency_ms=(time.monotonic()-began)*1000,
                         rows=deepcopy(result[offset:offset+200]),provider_timestamps_modified=False))
@@ -261,11 +266,11 @@ class Evidence:
         def entry(pair,stake_amount,*args,**kwargs):
             reason=('OPERATOR_ENTRY_PAUSE' if (work/'PAUSE_NEW_ENTRIES').exists() else
                     'CAPTURE_NOT_READY' if not self.healthy() else
-                    'NATIVE_CANDLES_NOT_READY' if not pair_ready(bot,pair,datetime.now(UTC)) else 'NATIVE_ENTRY_ALLOWED')
+                    'NATIVE_CANDLES_NOT_READY' if not self.ready(bot,pair,datetime.now(UTC)) else 'NATIVE_ENTRY_ALLOWED')
             allowed=reason=='NATIVE_ENTRY_ALLOWED'
             payload=dict(pair=pair,stake_amount=float(stake_amount),allowed=allowed,reason=reason,
                          trade_id=getattr(kwargs.get('trade'),'id',None))
-            if not self.emit('NFI_ENTRY_REVIEW',payload):return False
+            if not self.emit(self.prefix+'_ENTRY_REVIEW',payload):return False
             self.entry_reviews[reason]=self.entry_reviews.get(reason,0)+1
             if not allowed:return False
             return original(pair,stake_amount,*args,**kwargs)
@@ -286,7 +291,7 @@ class Evidence:
                             fingerprint=sha256(json.dumps(response,sort_keys=True,allow_nan=False).encode()).hexdigest()
                             key=(method,subject)
                             if self._response_hashes.get(key)==fingerprint:continue
-                            if self.emit('NFI_NATIVE_PUBLIC_RESPONSE',dict(method=method,subject=subject,
+                            if self.emit(self.prefix+'_NATIVE_PUBLIC_RESPONSE',dict(method=method,subject=subject,
                                 received_at=datetime.now(UTC).isoformat(),latency_ms=(time.monotonic()-began)*1000,
                                 response=deepcopy(response))):self._response_hashes[key]=fingerprint
                     except Exception as exc:self.error='PUBLIC_CAPTURE_'+type(exc).__name__
