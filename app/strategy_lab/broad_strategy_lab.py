@@ -81,10 +81,11 @@ def prepare_replay(frames,case,bars_by_date=None):
     return bars_by_date,allrules,signals
 
 
-def replay(frames,case,calendar,*,fee,slip,initial=10000.,slots=6,equity_shares=False,prepared=None):
+def replay(frames,case,calendar,*,fee,slip,initial=10000.,slots=6,equity_shares=False,prepared=None,min_notional=0.):
+    if not math.isfinite(min_notional) or min_notional<0:raise ValueError('MINIMUM_NOTIONAL_REQUIRED')
     if not calendar or not 0<=fee<.1 or not 0<=slip<.1 or initial<=0 or slots<=0:raise ValueError('BOUNDED_REPLAY_INPUT_REQUIRED')
     bars_by_date,allrules,signals=prepared or prepare_replay(frames,case)
-    cash=initial;positions={};pending={};marks={};trades=[];curve=[];events=[];entries=0;missing=0;capacity=0
+    cash=initial;positions={};pending={};marks={};trades=[];curve=[];events=[];entries=0;missing=0;capacity=0;minimum_size=0
     def close(symbol,price,at,reason):
         nonlocal cash
         p=positions.pop(symbol);exit_price=price*(1-slip);proceeds=p['qty']*exit_price*(1-fee);cash+=proceeds
@@ -104,6 +105,7 @@ def replay(frames,case,calendar,*,fee,slip,initial=10000.,slots=6,equity_shares=
             px=float(b['open'])*(1+slip);budget=min(cash,equity/slots)
             qty=budget/(px*(1+fee));qty=math.floor(qty) if equity_shares else math.floor(qty*1e8)/1e8
             if qty<=0:continue
+            if qty*px<min_notional:minimum_size+=1;continue
             cost=qty*px*(1+fee);atr=order['atr'];cfg=allrules[s]
             if not math.isfinite(atr) or atr<=0:continue
             cash-=cost;positions[s]=dict(qty=qty,cost=cost,price=px,at=at,signal=order['signal'],bars=0,stop=max(.01*px,px-cfg['stop_atr']*atr),target=px+cfg['target_atr']*atr if cfg['target_atr'] else None)
@@ -134,7 +136,7 @@ def replay(frames,case,calendar,*,fee,slip,initial=10000.,slots=6,equity_shares=
     return dict(case=case.identity,closed_trades=len(trades),wins=sum(p>0 for p in pnl),losses=sum(p<0 for p in pnl),win_rate=sum(p>0 for p in pnl)/len(pnl) if pnl else None,
         realized_net=sum(pnl),marked_net=net,profit_factor=gain/loss if loss else (None if not gain else 999.),maximum_drawdown=dd,
         ending_cash=cash,ending_marked_equity=cash+open_mark,open_positions=len(positions),entries=entries,entries_per_month=entries*30.4375/days,
-        missing_next_bar_exclusions=missing,slot_exclusions=capacity,costs=dict(fee_per_side=fee,slippage_per_side=slip),trades=trades,curve=curve,events=events,
+        missing_next_bar_exclusions=missing,slot_exclusions=capacity,minimum_notional_exclusions=minimum_size,costs=dict(fee_per_side=fee,slippage_per_side=slip),trades=trades,curve=curve,events=events,
         source_faithful=False,execution_authorized=False,orders=0)
 
 

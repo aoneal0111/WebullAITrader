@@ -73,7 +73,7 @@ def signals(rows,mode):
     return out
 
 
-def replay(rows,mode,start,*,wallet=10000.,stake=1000.,fee_bps=5.,slippage_bps=5.,overhead=0.):
+def replay(rows,mode,start,*,wallet=10000.,stake=1000.,fee_bps=5.,slippage_bps=5.,overhead=0.,include_curve=False):
     for v in (wallet,stake,fee_bps,slippage_bps,overhead):
         if not math.isfinite(v) or v<0:raise ValueError('FINITE_NONNEGATIVE_COSTS_REQUIRED')
     if not wallet or not stake or slippage_bps>=10000:raise ValueError('BOUNDED_CAPITAL_AND_SLIPPAGE_REQUIRED')
@@ -113,7 +113,7 @@ def replay(rows,mode,start,*,wallet=10000.,stake=1000.,fee_bps=5.,slippage_bps=5
     profits=[t['net_pnl'] for t in trades];wins=sum(p>0 for p in profits);gross_loss=-sum(p for p in profits if p<0)
     peak=wallet;dd=0
     for e in curve:peak=max(peak,e);dd=max(dd,(peak-e)/peak)
-    return dict(candidate=mode,status='OFFLINE_ADAPTATION_NOT_PROMOTED',closed_trades=len(trades),wins=wins,
+    result=dict(candidate=mode,status='OFFLINE_ADAPTATION_NOT_PROMOTED',closed_trades=len(trades),wins=wins,
         losses=sum(p<0 for p in profits),breakeven=sum(p==0 for p in profits),
         win_rate=wins/len(profits) if profits else None,realized_net=sum(profits),
         realized_after_fixed_overhead=sum(profits)-overhead,
@@ -128,6 +128,13 @@ def replay(rows,mode,start,*,wallet=10000.,stake=1000.,fee_bps=5.,slippage_bps=5
                     'Next-open fills and shared cash differ from author engines; no author result reproduced',
                     'Connors original has no stop; research only, not attached to native execution',
                     'Open positions marked separately, not counted as closed wins; universe selection bias is not repaired'])
+
+    if include_curve:
+        result['curve']=[dict(at=day,equity=value) for day,value in zip(calendar,curve) if day>=start]
+        result['events']=[dict(at=t['entry_at'],action='BUY') for t in trades]+[dict(at=p['entry_at'],action='BUY') for p in positions.values()]
+        result['entries']=len(result['events'])
+        result['marked_net']=result['ending_marked_equity']-wallet
+    return result
 
 
 def main():
