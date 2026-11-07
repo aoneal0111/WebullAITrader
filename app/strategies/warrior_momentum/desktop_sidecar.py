@@ -904,6 +904,7 @@ class WarriorDesktopSidecar:
             return
 
         lifecycle_phase = "shadow outcome finalization"
+        report_shutdown_pending = False
         try:
             now = self._aware_now()
             if service is not None:
@@ -923,7 +924,13 @@ class WarriorDesktopSidecar:
                 self._request_report_refresh(
                     now.astimezone(EASTERN).date(), persist=True
                 )
-                report_worker.close(timeout_seconds=5.0)
+                if not report_worker.close(timeout_seconds=5.0):
+                    # The worker may still persist the final report. Keep its
+                    # writer/service ownership until a subsequent Stop drains
+                    # it; do not advertise a clean stop or allow a new session.
+                    report_shutdown_pending = True
+                    from .report_worker import ReportWorkerShutdownPending
+                    raise ReportWorkerShutdownPending("Warrior report worker shutdown still pending")
                 report_metrics = report_worker.metrics()
             else:
                 report_metrics = None
@@ -954,9 +961,10 @@ class WarriorDesktopSidecar:
             self._close_auxiliary_observers()
             with self._lock:
                 performance_diagnostics.set_diagnostic_sink(None)
-                self._report_worker = None
-                self._writer = None
-                self._service = None
+                if not report_shutdown_pending:
+                    self._report_worker = None
+                    self._writer = None
+                    self._service = None
 
     def _close_auxiliary_observers(self) -> None:
         if self._grok_warrior_control is not None:
