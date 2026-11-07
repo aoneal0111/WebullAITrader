@@ -1,0 +1,345 @@
+{
+  "scope": "PUBLIC_CRYPTO_TEN_CANDIDATE_SOURCE_REVIEW_V1",
+  "reviewed_at": "2026-10-31",
+  "metadata_screen": {
+    "raw_records": 300,
+    "unique_repositories": 297,
+    "queries": [
+      {
+        "q": "crypto strategy backtest fork:false",
+        "pages": [
+          1,
+          2
+        ],
+        "per_page": 100
+      },
+      {
+        "q": "freqtrade strategies fork:false",
+        "pages": [
+          1
+        ],
+        "per_page": 100
+      }
+    ],
+    "limitation": "Metadata screening is not a code audit of 297 repositories."
+  },
+  "candidates": [
+    {
+      "id": "NFI",
+      "name": "NostalgiaForInfinity",
+      "repository": "iterativv/NostalgiaForInfinity",
+      "commit": "bbddbd94f97f3c14336387d2958183870891b951",
+      "license_metadata": "GPL-3.0",
+      "timeframe": "5m spot multi-pair",
+      "author_report": "Author spot summary: 289 trades; average win rate 96.95% (not a verified pooled rate).",
+      "decision": "FIRST_REPRODUCTION",
+      "verification_gap": "Report is not bound to current X8 code/config. Source recommends 40–80 pairs and 6–12 positions; Atlas two-pair capped lab was a different experiment.",
+      "atlas_results_reproduced": false,
+      "activation": false,
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "42d71404b39689d392170b387ff51aaedf1c3b8c",
+          "url": "https://github.com/iterativv/NostalgiaForInfinity/blob/bbddbd94f97f3c14336387d2958183870891b951/README.md"
+        },
+        {
+          "path": "NostalgiaForInfinityX8.py",
+          "blob_sha": "5eae6376d4bf0c4a4eb51d5d63f9c9c6656d9bc1",
+          "url": "https://github.com/iterativv/NostalgiaForInfinity/blob/bbddbd94f97f3c14336387d2958183870891b951/NostalgiaForInfinityX8.py"
+        },
+        {
+          "path": "docs/backtest-results/binance-spot/summary.md",
+          "blob_sha": "27d62a88535a9dedd569a8782f6318fed75a5988",
+          "url": "https://github.com/iterativv/NostalgiaForInfinity/blob/bbddbd94f97f3c14336387d2958183870891b951/docs/backtest-results/binance-spot/summary.md"
+        },
+        {
+          "path": "docs/backtest-results/binance-spot/2024/january.md",
+          "blob_sha": "9207b4662aff1dbb86282a6e2540bf857b2a3a1c",
+          "url": "https://github.com/iterativv/NostalgiaForInfinity/blob/bbddbd94f97f3c14336387d2958183870891b951/docs/backtest-results/binance-spot/2024/january.md"
+        }
+      ]
+    },
+    {
+      "id": "BB_RPB",
+      "name": "BB_RPB_TSL",
+      "repository": "jilv220/BB_RPB_TSL",
+      "commit": "33f83596e23ca214ef12352802aa798cb986b236",
+      "license_metadata": "GPL-3.0",
+      "timeframe": "5m spot pullback",
+      "author_report": "v104 report: 1,866 trades, 1,696 wins, 90.9%; worst trade -33.31%; printed drawdown 57.71%.",
+      "decision": "FIRST_REPRODUCTION",
+      "verification_gap": "NFI derivative, not independent alpha. Recover v104 exact implementation/config before reproducing; current master/report binding unresolved. Old drawdown definition needs reconciliation.",
+      "atlas_results_reproduced": false,
+      "activation": false,
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "f9430bec478c8359ff11effed11241f03d74db19",
+          "url": "https://github.com/jilv220/BB_RPB_TSL/blob/33f83596e23ca214ef12352802aa798cb986b236/README.md"
+        },
+        {
+          "path": "backtest_result_v104/20210507-0922.txt",
+          "blob_sha": "5d886f6916ce15e6c337584532dd5194296e4410",
+          "url": "https://github.com/jilv220/BB_RPB_TSL/blob/33f83596e23ca214ef12352802aa798cb986b236/backtest_result_v104/20210507-0922.txt"
+        }
+      ]
+    },
+    {
+      "id": "CRSI",
+      "name": "Connors RSI with BB slope",
+      "repository": "MRCVEngineer/CRSI",
+      "commit": "d826a8e4d55c0d7a993e6f06303fcdb34205d31e",
+      "license_metadata": "NOASSERTION",
+      "timeframe": "long/short mean reversion; verify bar interval from dataset",
+      "author_report": "Optimized slope CSV: 884 trades; 68.7% wins; Sharpe 1.56; max drawdown 20.4%.",
+      "decision": "FIRST_REPRODUCTION",
+      "verification_gap": "Final validation uses long/short, close-price entries; explicit trading costs not found in inspected runner. Different baseline/dashboard variants have different results. Atlas long-only next-price fills require separate adaptation results.",
+      "atlas_results_reproduced": false,
+      "activation": false,
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "b670c55cb7f36ee76dc3730ae6c170a2bccebb80",
+          "url": "https://github.com/MRCVEngineer/CRSI/blob/d826a8e4d55c0d7a993e6f06303fcdb34205d31e/README.md"
+        },
+        {
+          "path": "src/strategy.py",
+          "blob_sha": "ffb41b03bee2c03ed493e46257d3b705159c16e2",
+          "url": "https://github.com/MRCVEngineer/CRSI/blob/d826a8e4d55c0d7a993e6f06303fcdb34205d31e/src/strategy.py"
+        },
+        {
+          "path": "src/final_validation.py",
+          "blob_sha": "e8983b5627bb0b7b537059d9be1ec06910f9c2e1",
+          "url": "https://github.com/MRCVEngineer/CRSI/blob/d826a8e4d55c0d7a993e6f06303fcdb34205d31e/src/final_validation.py"
+        },
+        {
+          "path": "results/final_validation_results.csv",
+          "blob_sha": "cd31563fe05fd5793ec8e8bca7dd808b3613d3bb",
+          "url": "https://github.com/MRCVEngineer/CRSI/blob/d826a8e4d55c0d7a993e6f06303fcdb34205d31e/results/final_validation_results.csv"
+        }
+      ]
+    },
+    {
+      "id": "MOM_BASKET",
+      "name": "MomentumRegimeBasket15mFast",
+      "repository": "nateemma/strategies",
+      "commit": "9bb7dab5df53203e69f60336749551a40767af0b",
+      "license_metadata": "GPL-3.0",
+      "timeframe": "15m long-only spot basket",
+      "author_report": "Strategy docstring reports +35.6%, +166.2%, +834.5% across three windows; no portable verified win rate.",
+      "decision": "SECOND_REPRODUCTION",
+      "verification_gap": "Fast override is 14-day lookback. Author says cross-regime validation incomplete and documents liquidity/mark-to-market caveats; base strategy and universe required.",
+      "atlas_results_reproduced": false,
+      "activation": false,
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "a8a02652c041ce247ef8b785aaeedc11802c0840",
+          "url": "https://github.com/nateemma/strategies/blob/9bb7dab5df53203e69f60336749551a40767af0b/README.md"
+        },
+        {
+          "path": "Basket/README.md",
+          "blob_sha": "b7395d993d5820771a83c08ca925446d029b6e7b",
+          "url": "https://github.com/nateemma/strategies/blob/9bb7dab5df53203e69f60336749551a40767af0b/Basket/README.md"
+        },
+        {
+          "path": "Basket/MomentumRegimeBasket15mFast.py",
+          "blob_sha": "217be78cfc10be69220e2ad0f4d65f6a5d81cb30",
+          "url": "https://github.com/nateemma/strategies/blob/9bb7dab5df53203e69f60336749551a40767af0b/Basket/MomentumRegimeBasket15mFast.py"
+        },
+        {
+          "path": "Basket/MomentumRegimeBasket15m.py",
+          "blob_sha": "cbdf681d027b22d9e400630d7bb233d63d6fc0a9",
+          "url": "https://github.com/nateemma/strategies/blob/9bb7dab5df53203e69f60336749551a40767af0b/Basket/MomentumRegimeBasket15m.py"
+        }
+      ]
+    },
+    {
+      "id": "VWAP",
+      "name": "E14 Honest VWAP mean reversion",
+      "repository": "ojeology/mean-reversion-vwap-lab",
+      "commit": "5ae2853d729b6761d4be3c2ccb7602beb32665cf",
+      "license_metadata": "NOASSERTION",
+      "timeframe": "1m long/short; 20x source simulation",
+      "author_report": "Committed honest result: 184 OOS trades over 15 test days; 43.48% wins; profit factor 1.7367.",
+      "decision": "ADAPTATION_REQUIRED",
+      "verification_gap": "Different from golden headline. Source uses 20x leverage; cannot transfer results to Webull spot. License not detected. Reproduce original separately, then 1x long-only with fees.",
+      "atlas_results_reproduced": false,
+      "activation": false,
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "7c5885150e7b2bf2558e640b2df7b025234ab695",
+          "url": "https://github.com/ojeology/mean-reversion-vwap-lab/blob/5ae2853d729b6761d4be3c2ccb7602beb32665cf/README.md"
+        },
+        {
+          "path": "e14_honest_results.json",
+          "blob_sha": "b7d56976d30a75bb8d9cfb2705285a1525fbe45f",
+          "url": "https://github.com/ojeology/mean-reversion-vwap-lab/blob/5ae2853d729b6761d4be3c2ccb7602beb32665cf/e14_honest_results.json"
+        },
+        {
+          "path": "backtest_v14_honest.py",
+          "blob_sha": "e02274a927c841e1485f09538f796ac58e9e9aa2",
+          "url": "https://github.com/ojeology/mean-reversion-vwap-lab/blob/5ae2853d729b6761d4be3c2ccb7602beb32665cf/backtest_v14_honest.py"
+        }
+      ]
+    },
+    {
+      "id": "APEX",
+      "name": "Apex No Pyramid",
+      "repository": "EstebanSP23/crypto_systematic_research",
+      "commit": "5df0c43f6d48b7d8dbb74843d6747e5ddbb6819b",
+      "license_metadata": "MIT",
+      "timeframe": "4h long-only 180-day breakout",
+      "author_report": "Exam window: 47 trades, 38.3% wins, +0.20R expectancy; 6.1% APY; -14.1% drawdown.",
+      "decision": "SLOW_CONTROL",
+      "verification_gap": "Not an all-day scalper; sparse signals. Preserve next-open and partial-exit mechanics. Check notional cap as well as risk sizing.",
+      "atlas_results_reproduced": false,
+      "activation": false,
+      "sources": [
+        {
+          "path": "2_strategies/02_apex_no_pyramid/README.md",
+          "blob_sha": "453826aa81ddac610965d8e42e4e101025a93394",
+          "url": "https://github.com/EstebanSP23/crypto_systematic_research/blob/5df0c43f6d48b7d8dbb74843d6747e5ddbb6819b/2_strategies/02_apex_no_pyramid/README.md"
+        },
+        {
+          "path": "2_strategies/02_apex_no_pyramid/walkforward.py",
+          "blob_sha": "52d6851b9356d9e26df860812489369b79ee1032",
+          "url": "https://github.com/EstebanSP23/crypto_systematic_research/blob/5df0c43f6d48b7d8dbb74843d6747e5ddbb6819b/2_strategies/02_apex_no_pyramid/walkforward.py"
+        }
+      ]
+    },
+    {
+      "id": "EMA_WEEKLY",
+      "name": "Weekly 5EMA with daily 200EMA filter",
+      "repository": "EstebanSP23/crypto_systematic_research",
+      "commit": "5df0c43f6d48b7d8dbb74843d6747e5ddbb6819b",
+      "license_metadata": "MIT",
+      "timeframe": "weekly long-only trend",
+      "author_report": "Author V1: 31 trades, 41.9% wins, 38.6% APY, -40.2% drawdown.",
+      "decision": "SLOW_CONTROL",
+      "verification_gap": "2018–May 2026 source period. No fixed native stop; any Atlas protective-stop addition changes the strategy. Not a frequent-entry option.",
+      "atlas_results_reproduced": false,
+      "activation": false,
+      "sources": [
+        {
+          "path": "2_strategies/03_five_ema_filter/README.md",
+          "blob_sha": "f555eb9f667cf16bb257cb8416f496ae9a8ff5c1",
+          "url": "https://github.com/EstebanSP23/crypto_systematic_research/blob/5df0c43f6d48b7d8dbb74843d6747e5ddbb6819b/2_strategies/03_five_ema_filter/README.md"
+        },
+        {
+          "path": "2_strategies/03_five_ema_filter/backtest.py",
+          "blob_sha": "b385c57a8cf83a8ec975bdc2521ce3f527decb84",
+          "url": "https://github.com/EstebanSP23/crypto_systematic_research/blob/5df0c43f6d48b7d8dbb74843d6747e5ddbb6819b/2_strategies/03_five_ema_filter/backtest.py"
+        }
+      ]
+    },
+    {
+      "id": "PATTERN",
+      "name": "Chart-pattern shared portfolio",
+      "repository": "juriok/chart-pattern-backtester",
+      "commit": "2972c880144997ec305dc3dac23d78ee5a831176",
+      "license_metadata": "NOASSERTION",
+      "timeframe": "4h long/short; 2x notional",
+      "author_report": "README: 2,342 trades, 52.8% wins, PF 1.31; +296% return.",
+      "decision": "HOLD_FOR_VALIDATION",
+      "verification_gap": "Author admits full-period pattern selection; profit heavily short-side. Results not committed as ledger. Source says 5m variant lost 88%; not a validated scalper. License not detected.",
+      "atlas_results_reproduced": false,
+      "activation": false,
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "03d5db3a2bbc8b6122139bef59fd3209cae05f7a",
+          "url": "https://github.com/juriok/chart-pattern-backtester/blob/2972c880144997ec305dc3dac23d78ee5a831176/README.md"
+        },
+        {
+          "path": "backtest/portfolio.py",
+          "blob_sha": "1ad8d8e850ab692a00ed05af81a6e7f536f4106a",
+          "url": "https://github.com/juriok/chart-pattern-backtester/blob/2972c880144997ec305dc3dac23d78ee5a831176/backtest/portfolio.py"
+        },
+        {
+          "path": "config.py",
+          "blob_sha": "71a8c72b7093d4a10c4479d0a1185a6555533c8b",
+          "url": "https://github.com/juriok/chart-pattern-backtester/blob/2972c880144997ec305dc3dac23d78ee5a831176/config.py"
+        }
+      ]
+    },
+    {
+      "id": "REGIME_BB",
+      "name": "BTC regime Bollinger configuration 97",
+      "repository": "Ksloveyuan/btc-trend-trading-backtest",
+      "commit": "5fca4e3cc727ea273ab515dfb93f3d2152347316",
+      "license_metadata": "NOASSERTION",
+      "timeframe": "4h / daily; long/short; 3x",
+      "author_report": "CSV: 249 trades; 57.43% wins; final capital 27908.27 from stated 5000; total_pnl 12965.97.",
+      "decision": "HOLD_FOR_ACCOUNTING",
+      "verification_gap": "Final capital minus starting capital does not equal reported total_pnl. Reconcile accounting before trusting headline 458% return. Raw data absent; license not detected.",
+      "atlas_results_reproduced": false,
+      "activation": false,
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "8b8f6b95f2616ff61ed6cc7c407d2cd3311545b0",
+          "url": "https://github.com/Ksloveyuan/btc-trend-trading-backtest/blob/5fca4e3cc727ea273ab515dfb93f3d2152347316/README.md"
+        },
+        {
+          "path": "results/final_report.txt",
+          "blob_sha": "913aec9926960b263268b728d09acbe824db90eb",
+          "url": "https://github.com/Ksloveyuan/btc-trend-trading-backtest/blob/5fca4e3cc727ea273ab515dfb93f3d2152347316/results/final_report.txt"
+        },
+        {
+          "path": "results/backtest_results.csv",
+          "blob_sha": "37c722f9c7e693a07774e0bf3b4e044fa2ef331c",
+          "url": "https://github.com/Ksloveyuan/btc-trend-trading-backtest/blob/5fca4e3cc727ea273ab515dfb93f3d2152347316/results/backtest_results.csv"
+        },
+        {
+          "path": "notebooks/02_strategy_backtest.ipynb",
+          "blob_sha": "f32dfb9208ecf9c307c30316ffeca9632803f387",
+          "url": "https://github.com/Ksloveyuan/btc-trend-trading-backtest/blob/5fca4e3cc727ea273ab515dfb93f3d2152347316/notebooks/02_strategy_backtest.ipynb"
+        }
+      ]
+    },
+    {
+      "id": "EMA_MULTICOIN",
+      "name": "Multi-coin EMA 9/21 published comparison",
+      "repository": "Chamanrajragu/purffle-trader",
+      "commit": "bfa29a696944cbf4062e6fe866d748c4a26b19b7",
+      "license_metadata": "MIT",
+      "timeframe": "reported multi-coin trend; shipped bot M1",
+      "author_report": "README 2-year comparison: +35.4%, 27.8% wins, 53.1% drawdown.",
+      "decision": "HOLD_FOR_SOURCE_BINDING",
+      "verification_gap": "Shipped M1 bot uses EMA crossover OR RSI oversold, whereas README says AND. No committed backtest engine/ledger identified for comparison. Published winner not established as shipped implementation.",
+      "atlas_results_reproduced": false,
+      "activation": false,
+      "sources": [
+        {
+          "path": "README.md",
+          "blob_sha": "133278dfb47f5294def3ab23c9e8c3554b74d4e6",
+          "url": "https://github.com/Chamanrajragu/purffle-trader/blob/bfa29a696944cbf4062e6fe866d748c4a26b19b7/README.md"
+        },
+        {
+          "path": "crypto_bot.py",
+          "blob_sha": "d1695ad6568ba1e28a74cc1360f5e838ff297666",
+          "url": "https://github.com/Chamanrajragu/purffle-trader/blob/bfa29a696944cbf4062e6fe866d748c4a26b19b7/crypto_bot.py"
+        }
+      ]
+    }
+  ],
+  "exclusions": [
+    {
+      "repository": "CacheCarti/Crypto-Strategies",
+      "commit": "f8e32599c192b823dbe7aea77a2b9341c6114527",
+      "finding": "Ten passed cards all report stages_passed=2 and negative OOS returns, despite README claim of seven-stage survivors. index.json contains 406 rejected entries and omits passed cards.",
+      "activation": false
+    },
+    {
+      "repository": "AKzar1el/walk-forward-crypto",
+      "commit": "8ec32ea1ad454edd88abc5118a808c6fa764063b",
+      "finding": "REDACTION_REPORT says exact engine, parameters and selection rules withheld. Cannot plug in or verify claimed weekly selector; winning weeks are not trade win rate.",
+      "activation": false
+    }
+  ],
+  "research_only": true,
+  "orders": 0,
+  "grok_requests": 0
+}

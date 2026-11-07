@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from app.gui.models import DashboardSnapshot
 from app.gui.widgets.market_workspace import MarketWorkspace
@@ -12,7 +12,7 @@ from app.gui.widgets.workstation_panels import WorkstationFooter
 class DashboardPage(QWidget):
     """Single-screen, non-scrolling Atlas supervision workstation."""
 
-    def __init__(self, warrior_observability=None) -> None:
+    def __init__(self, warrior_observability=None, admission_notice_provider=None) -> None:
         super().__init__()
         self.setObjectName("appRoot")
         self._external_viewport_width: int | None = None
@@ -35,6 +35,13 @@ class DashboardPage(QWidget):
         self.mission_status = self.market_workspace.mission_status
         self.infrastructure = self.market_workspace.infrastructure
         self.main_splitter = self.market_workspace.splitter
+        self.entry_admission_notice = QLabel(
+            "PAPER equity BUYs paused: no qualified replacement strategy. Position protection remains available.")
+        self.entry_admission_notice.setObjectName("equityEntryAdmissionNotice")
+        self._admission_notice_provider=admission_notice_provider
+        self.refresh_entry_notice()
+        self.entry_admission_notice.setWordWrap(True)
+        root.addWidget(self.entry_admission_notice)
         root.addWidget(self.runtime_header)
         root.addWidget(self.market_workspace, 1)
         # The legacy metadata footer duplicated the visible runtime/status
@@ -64,7 +71,13 @@ class DashboardPage(QWidget):
         self._external_viewport_width = width
         self.market_workspace.set_responsive_width(width, force=force, external=True)
 
+    def refresh_entry_notice(self):
+        if self._admission_notice_provider is not None:
+            try:self.entry_admission_notice.setText(self._admission_notice_provider())
+            except Exception:self.entry_admission_notice.setText('PAPER experiment status unavailable. Native entry checks and position protection remain active.')
+
     def render(self, snapshot: DashboardSnapshot) -> None:
+        self.refresh_entry_notice()
         self.runtime_header.render(snapshot.runtime)
         self.market_workspace.set_runtime_phase(
             snapshot.runtime.state,

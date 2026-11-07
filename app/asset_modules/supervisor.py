@@ -7,13 +7,22 @@ from uuid import uuid4
 
 class CryptoSupervisor:
     """One off-thread request per minute; protection runs independently of AI."""
-    def __init__(self, paper, source, provider=None, *, entry_router=None):
+    def __init__(self, paper, source, provider=None, *, entry_router=None,
+                 maximum_quote_age_seconds=None,execution_limits=None,history_source=None,
+                 execution_quote_source=None,evidence_sink=None):
+        if maximum_quote_age_seconds not in (None,2):raise ValueError('Explicit two-second crypto trial quote boundary required')
         if entry_router is not None:
             from app.asset_modules.crypto_allocation import CryptoAllocationRouter
             if not isinstance(entry_router, CryptoAllocationRouter) or entry_router.ledger is not paper:
                 raise ValueError('Crypto allocation router must own this paper ledger')
             entry_router.set_enabled(False)
         self.paper, self.source, self.provider = paper, source, provider
+        self.maximum_quote_age_seconds=maximum_quote_age_seconds
+        self.execution_limits=execution_limits
+        self.history_source=history_source
+        self.execution_quote_source=execution_quote_source
+        self.evidence_sink=evidence_sink
+        self._last_protection_evidence=None
         self.entry_router = entry_router
         self.gate = RLock()
         self._entries_enabled = False
@@ -40,6 +49,8 @@ class CryptoSupervisor:
             self._entries_enabled = value
 
     def _protect(self, quotes, now):
+        if self.maximum_quote_age_seconds is not None:
+            quotes={k:v for k,v in quotes.items() if 0<=(now-v.timestamp).total_seconds()<=2}
         if self.entry_router is None:
             problems = self.paper.protect(quotes, now=now)
         else:
@@ -48,6 +59,11 @@ class CryptoSupervisor:
             problems.extend('ALLOCATION: '+state for state in set(result['reconciliation'].values())
                             if state not in {'HELD', 'CLOSED'})
         self.protection_status = '; '.join(problems) or 'MONITORING'
+        if self.evidence_sink is not None:
+            state=self.paper.snapshot();events=state['events'][:5]
+            if events and events[0]!=self._last_protection_evidence:
+                self._last_protection_evidence=events[0]
+                self.evidence_sink('CRYPTO_PROTECTION_EVIDENCE',dict(at=now,positions=state['positions'],events=events))
 
     def start(self):
         if self.thread is not None:
@@ -77,10 +93,19 @@ class CryptoSupervisor:
         while not self.stop_event.is_set():
             try:
                 quotes = {row.pair.canonical_symbol: row for row in self.source()}
+                if self.execution_quote_source is not None:
+                    owned=tuple(p['symbol'] for p in self.paper.snapshot()['positions'])
+                    if owned:quotes=self._execution_quotes(owned)
                 self._protect(quotes, datetime.now(UTC))
             except Exception as error:
                 self.protection_status = f'ERROR: {type(error).__name__}'
-            self.stop_event.wait(1)
+            self.stop_event.wait(5 if self.execution_quote_source is not None else 1)
+
+    def _execution_quotes(self,symbols):
+        rows=tuple(self.execution_quote_source(tuple(symbols)))
+        if self.evidence_sink is not None:
+            self.evidence_sink('CRYPTO_EXECUTION_QUOTES',dict(quotes=rows,received_at=datetime.now(UTC)))
+        return {row.pair.canonical_symbol:row for row in rows}
 
     def _run(self):
         while not self.stop_event.is_set():
@@ -115,11 +140,23 @@ class CryptoSupervisor:
         context = {'asset':'CRYPTO','mode':'PAPER','at':now.isoformat(),
                    'account':{k:v for k,v in self.paper.snapshot().items() if k != 'events'},
                    'markets':[row.to_record() for row in list(fresh.values())[:10]]}
+        if self.execution_limits is not None:
+            context['execution_limits']=dict(self.execution_limits)
+        if self.history_source is not None:
+            from app.asset_modules.daily_research_journal import safe
+            context['completed_provider_bars']={k:safe(tuple(self.history_source(k,now))) for k in list(fresh)[:2]}
         proposals = self.provider.propose(context)
         if self.stop_event.is_set() or not self.entries_enabled:
             return
         # Re-read quotes after the slow model call; never fill against a stale request snapshot.
         current = {row.pair.canonical_symbol:row for row in self.source()}
+        if self.execution_quote_source is not None:
+            symbols=tuple(dict.fromkeys(p.get('symbol') for p in proposals
+                if p.get('symbol') in fresh and p.get('action') in {'BUY','SELL'}))[:2]
+            current=self._execution_quotes(symbols)
+        if self.maximum_quote_age_seconds is not None:
+            dispatch_now=datetime.now(UTC)
+            current={k:v for k,v in current.items() if 0<=(dispatch_now-v.timestamp).total_seconds()<=2}
         outcomes = []
         for proposal in proposals:
             if proposal.get('symbol') not in fresh:
@@ -148,6 +185,8 @@ class CryptoSupervisor:
                     # A post-claim error may have filled. Never describe it as a refusal.
                     outcomes.append(f'ALLOCATION REVIEW REQUIRED: {type(error).__name__}')
             self.paper.record_decision(proposal, outcomes[-1])
+            if self.evidence_sink is not None:
+                self.evidence_sink('CRYPTO_GROK_DISPATCH',dict(at=datetime.now(UTC),proposal=proposal,outcome=outcomes[-1]))
         self.status = '; '.join(outcomes) or 'HOLD'
 
 

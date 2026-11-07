@@ -1,0 +1,1784 @@
+[
+  {
+    "repository": "xFFFFF/Gekko-Strategies",
+    "default_branch": "master",
+    "archived": false,
+    "size": 3919
+  },
+  {
+    "repository": "Drakkar-Software/OctoBot",
+    "default_branch": "master",
+    "archived": false,
+    "size": 181170
+  },
+  {
+    "repository": "Erfaniaa/crypto-trading-strategy-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 110
+  },
+  {
+    "repository": "xFFFFF/Gekko-BacktestTool",
+    "default_branch": "master",
+    "archived": false,
+    "size": 2726
+  },
+  {
+    "repository": "CyberPunkMetalHead/backtesting-for-cryptocurrency-trading",
+    "default_branch": "main",
+    "archived": false,
+    "size": 10
+  },
+  {
+    "repository": "marketcalls/vectorbt-backtesting-skills",
+    "default_branch": "master",
+    "archived": false,
+    "size": 189
+  },
+  {
+    "repository": "OpenByteInc/QuantDinger",
+    "default_branch": "main",
+    "archived": false,
+    "size": 91205
+  },
+  {
+    "repository": "clementpl/influx-crypto-trader",
+    "default_branch": "master",
+    "archived": false,
+    "size": 1197
+  },
+  {
+    "repository": "wynfred/presso",
+    "default_branch": "master",
+    "archived": false,
+    "size": 272
+  },
+  {
+    "repository": "tripolskypetr/backtest-kit",
+    "default_branch": "master",
+    "archived": false,
+    "size": 132353
+  },
+  {
+    "repository": "michaelhly/CryptoBacktester",
+    "default_branch": "master",
+    "archived": false,
+    "size": 11
+  },
+  {
+    "repository": "slurpxbt/crypto-backtest-module",
+    "default_branch": "master",
+    "archived": false,
+    "size": 122886
+  },
+  {
+    "repository": "s-brez/trading-server",
+    "default_branch": "dev",
+    "archived": true,
+    "size": 778
+  },
+  {
+    "repository": "jordantete/grid_trading_bot",
+    "default_branch": "master",
+    "archived": false,
+    "size": 4375
+  },
+  {
+    "repository": "Strategeable/strategeable-trader",
+    "default_branch": "main",
+    "archived": false,
+    "size": 586
+  },
+  {
+    "repository": "0xrsydn/polymarket-crypto-toolkit",
+    "default_branch": "main",
+    "archived": false,
+    "size": 1013
+  },
+  {
+    "repository": "51bitquant/howtrader",
+    "default_branch": "main",
+    "archived": false,
+    "size": 1320
+  },
+  {
+    "repository": "DorukKorkmaz/crypto-backtest",
+    "default_branch": "master",
+    "archived": false,
+    "size": 6314
+  },
+  {
+    "repository": "backtestjs/framework",
+    "default_branch": "main",
+    "archived": false,
+    "size": 2988
+  },
+  {
+    "repository": "GimmerBot/Gimmer",
+    "default_branch": "master",
+    "archived": false,
+    "size": 11021
+  },
+  {
+    "repository": "jrbartola/CryptoBacktester",
+    "default_branch": "master",
+    "archived": false,
+    "size": 4449
+  },
+  {
+    "repository": "pierreia/quantGPT",
+    "default_branch": "main",
+    "archived": false,
+    "size": 38
+  },
+  {
+    "repository": "Optixal/CryptoInscriber",
+    "default_branch": "master",
+    "archived": false,
+    "size": 9
+  },
+  {
+    "repository": "braedonsaunders/homerun",
+    "default_branch": "main",
+    "archived": false,
+    "size": 46953
+  },
+  {
+    "repository": "DaviddTech/ai-trading-agent",
+    "default_branch": "main",
+    "archived": false,
+    "size": 15369
+  },
+  {
+    "repository": "PVinh-Quant/Kairos-v2",
+    "default_branch": "main",
+    "archived": false,
+    "size": 6424
+  },
+  {
+    "repository": "10-academy-w-9/crypto-trading-backtesting",
+    "default_branch": "main",
+    "archived": false,
+    "size": 3422
+  },
+  {
+    "repository": "jptsantossilva/BEC",
+    "default_branch": "main",
+    "archived": false,
+    "size": 10478
+  },
+  {
+    "repository": "Trade-With-Claude/cbt-framework",
+    "default_branch": "main",
+    "archived": false,
+    "size": 253
+  },
+  {
+    "repository": "doge-8/btc5m-web",
+    "default_branch": "main",
+    "archived": false,
+    "size": 899
+  },
+  {
+    "repository": "cryptic-core/crypto-strategy-backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 2112
+  },
+  {
+    "repository": "sofia111222321/Crypto-Strategy-Backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 0
+  },
+  {
+    "repository": "stevens-morons/crypto_strategy",
+    "default_branch": "master",
+    "archived": false,
+    "size": 1327
+  },
+  {
+    "repository": "culda/bybit-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 29
+  },
+  {
+    "repository": "cloudseasail/vnpy_cryptostrategy",
+    "default_branch": "main",
+    "archived": true,
+    "size": 1166
+  },
+  {
+    "repository": "asier13/Python-Trading-Bot",
+    "default_branch": "main",
+    "archived": false,
+    "size": 89
+  },
+  {
+    "repository": "sixteen-dev/obai",
+    "default_branch": "main",
+    "archived": false,
+    "size": 9941
+  },
+  {
+    "repository": "MarikoKujo/Crypto-Back-testing-Platform",
+    "default_branch": "master",
+    "archived": false,
+    "size": 19899
+  },
+  {
+    "repository": "runeheidtmann/cryptobot",
+    "default_branch": "master",
+    "archived": false,
+    "size": 24
+  },
+  {
+    "repository": "mansoor-mamnoon/limit-order-book",
+    "default_branch": "main",
+    "archived": false,
+    "size": 31921
+  },
+  {
+    "repository": "darkvolg/trendrider-strategy",
+    "default_branch": "master",
+    "archived": false,
+    "size": 91
+  },
+  {
+    "repository": "pineforge-4pass/pineforge-engine",
+    "default_branch": "main",
+    "archived": false,
+    "size": 81455
+  },
+  {
+    "repository": "apostleoffinance/ml-hrp-crypto-portfolio",
+    "default_branch": "main",
+    "archived": false,
+    "size": 10080
+  },
+  {
+    "repository": "Cryptotrademate/cryptotrademate-backtesting-tool",
+    "default_branch": "main",
+    "archived": false,
+    "size": 18
+  },
+  {
+    "repository": "yyq7903/auto-trading",
+    "default_branch": "main",
+    "archived": false,
+    "size": 24605
+  },
+  {
+    "repository": "ryaniamfs/Crypto-Stat-Arb",
+    "default_branch": "master",
+    "archived": false,
+    "size": 21809
+  },
+  {
+    "repository": "ecco257/TradingStrategy-Backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 894
+  },
+  {
+    "repository": "cubexch/ai-fund",
+    "default_branch": "main",
+    "archived": false,
+    "size": 2652
+  },
+  {
+    "repository": "davelamtrader/Strategy-Backtest-Orderbook-Imbalance-Pattern-based-Cryptocurrencies-Screening-Trading-Strategy",
+    "default_branch": "main",
+    "archived": false,
+    "size": 868
+  },
+  {
+    "repository": "wisarmy/exbot",
+    "default_branch": "main",
+    "archived": false,
+    "size": 987
+  },
+  {
+    "repository": "c-s-westphal/Binance-Trading-Backtests-and-Bots",
+    "default_branch": "main",
+    "archived": false,
+    "size": 29
+  },
+  {
+    "repository": "SashRajj/Momentum-Based-Crypto-Trading",
+    "default_branch": "main",
+    "archived": false,
+    "size": 731
+  },
+  {
+    "repository": "djienne/ML_Trading_Strategy_Crypto_BTC_LightGBM_Jansen",
+    "default_branch": "master",
+    "archived": false,
+    "size": 4336
+  },
+  {
+    "repository": "CacheCarti/dmoera-mcp",
+    "default_branch": "main",
+    "archived": false,
+    "size": 415
+  },
+  {
+    "repository": "titouannwtt/Algorithme-RCI",
+    "default_branch": "main",
+    "archived": true,
+    "size": 165962
+  },
+  {
+    "repository": "dabit3/backtest-lite",
+    "default_branch": "main",
+    "archived": false,
+    "size": 13
+  },
+  {
+    "repository": "Lumiwealth/lumibot-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 7
+  },
+  {
+    "repository": "shoemoney/shoemoneyx",
+    "default_branch": "main",
+    "archived": false,
+    "size": 24409
+  },
+  {
+    "repository": "0xbet-ai/QuantDesk",
+    "default_branch": "main",
+    "archived": false,
+    "size": 30443
+  },
+  {
+    "repository": "kayrademirkan/opencrypto",
+    "default_branch": "main",
+    "archived": false,
+    "size": 135
+  },
+  {
+    "repository": "AliToori/Flask-App",
+    "default_branch": "master",
+    "archived": false,
+    "size": 5389
+  },
+  {
+    "repository": "Sami001-OG/Crypto-Backtester-and-Strategy-Optimizer",
+    "default_branch": "main",
+    "archived": false,
+    "size": 109
+  },
+  {
+    "repository": "signorloops/crypto-options-research-platform",
+    "default_branch": "master",
+    "archived": false,
+    "size": 1962
+  },
+  {
+    "repository": "caped-doshi/cryptoquantengine",
+    "default_branch": "main",
+    "archived": false,
+    "size": 858
+  },
+  {
+    "repository": "Gainium/main-app-sh",
+    "default_branch": "main",
+    "archived": false,
+    "size": 14813
+  },
+  {
+    "repository": "xiazhi88/Desic-Terminal",
+    "default_branch": "main",
+    "archived": false,
+    "size": 45792
+  },
+  {
+    "repository": "braddyyguyuing/quant-backtest-utils",
+    "default_branch": "master",
+    "archived": false,
+    "size": 5
+  },
+  {
+    "repository": "dasein108/freqtrade_dev_mcp",
+    "default_branch": "dev",
+    "archived": false,
+    "size": 1279
+  },
+  {
+    "repository": "yehaixuan4428/crypto_rich",
+    "default_branch": "main",
+    "archived": false,
+    "size": 128
+  },
+  {
+    "repository": "upbit-official/upbit-strategy-toolkit",
+    "default_branch": "main",
+    "archived": false,
+    "size": 5391
+  },
+  {
+    "repository": "metinmertyesilyurt/Crypto-Perps-Backtest-Engine",
+    "default_branch": "main",
+    "archived": false,
+    "size": 220
+  },
+  {
+    "repository": "Puguix/cryptoBot",
+    "default_branch": "main",
+    "archived": false,
+    "size": 149733
+  },
+  {
+    "repository": "jdprada1760/user_data_crypto_bot",
+    "default_branch": "develop",
+    "archived": false,
+    "size": 125086
+  },
+  {
+    "repository": "Artem-Kornilov-pro/CandleWatch",
+    "default_branch": "master",
+    "archived": false,
+    "size": 3044
+  },
+  {
+    "repository": "An1g/crypto-portfolio-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 14
+  },
+  {
+    "repository": "Hacv16/crypto_strategy_backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 61
+  },
+  {
+    "repository": "SURUJ404/Aegis",
+    "default_branch": "main",
+    "archived": false,
+    "size": 990
+  },
+  {
+    "repository": "vishnugovind10/institutional-crypto-funding-analyzer",
+    "default_branch": "main",
+    "archived": false,
+    "size": 32
+  },
+  {
+    "repository": "QuNoSleep/Binance-Crypto-Backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 205
+  },
+  {
+    "repository": "TDZNBEER/crypto-backtest-lab",
+    "default_branch": "main",
+    "archived": false,
+    "size": 49724
+  },
+  {
+    "repository": "Adamb83/Crypto_Trade_Backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 1188
+  },
+  {
+    "repository": "mefai-dev/mefai-autotrade",
+    "default_branch": "master",
+    "archived": false,
+    "size": 549
+  },
+  {
+    "repository": "dagzk/Ichimoku_Backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 9436
+  },
+  {
+    "repository": "marcus896/proofalpha",
+    "default_branch": "main",
+    "archived": false,
+    "size": 4165
+  },
+  {
+    "repository": "MrHolmes19/Backtesting-crypto-trading",
+    "default_branch": "main",
+    "archived": false,
+    "size": 12724
+  },
+  {
+    "repository": "ian-whitestone/crypto-backtest",
+    "default_branch": "master",
+    "archived": false,
+    "size": 2936
+  },
+  {
+    "repository": "964quanyuan/crypto-strategy",
+    "default_branch": "main",
+    "archived": false,
+    "size": 3545
+  },
+  {
+    "repository": "ikun52012/QuantPilot-AI",
+    "default_branch": "master",
+    "archived": false,
+    "size": 4672
+  },
+  {
+    "repository": "DreamWalkerXZ/crypto-ml",
+    "default_branch": "main",
+    "archived": false,
+    "size": 3922
+  },
+  {
+    "repository": "SinlinLi/quant-engine",
+    "default_branch": "main",
+    "archived": false,
+    "size": 152
+  },
+  {
+    "repository": "hathanh119x/backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 238
+  },
+  {
+    "repository": "hansen-han/crypto_backtesting_analysis",
+    "default_branch": "main",
+    "archived": false,
+    "size": 53147
+  },
+  {
+    "repository": "manohar6317/live_strategy_backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 448
+  },
+  {
+    "repository": "raykavin/backnrun-go",
+    "default_branch": "dev",
+    "archived": false,
+    "size": 1289
+  },
+  {
+    "repository": "lderoose/backtesting-trading-strategy",
+    "default_branch": "master",
+    "archived": false,
+    "size": 38
+  },
+  {
+    "repository": "scherroman/profit-taker-9000",
+    "default_branch": "master",
+    "archived": false,
+    "size": 609
+  },
+  {
+    "repository": "djienne/StandX_Market_Making_Backtest_BTC",
+    "default_branch": "main",
+    "archived": false,
+    "size": 72388
+  },
+  {
+    "repository": "PaulAbramov/CryptoTradingSystem.BackTester",
+    "default_branch": "master",
+    "archived": false,
+    "size": 135
+  },
+  {
+    "repository": "thieucong98/quant-backtest-pro",
+    "default_branch": "main",
+    "archived": false,
+    "size": 7815
+  },
+  {
+    "repository": "StasDS/forecast_for_roocode",
+    "default_branch": "dev",
+    "archived": false,
+    "size": 37
+  },
+  {
+    "repository": "yllvar/DRL-Crypto-Trading-Backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 104
+  },
+  {
+    "repository": "niuziliu412-coder/AlphaLab",
+    "default_branch": "main",
+    "archived": false,
+    "size": 0
+  },
+  {
+    "repository": "jicheolha/crypto-trading-bot",
+    "default_branch": "main",
+    "archived": false,
+    "size": 2639
+  },
+  {
+    "repository": "AshrafAlroomi/Crypto",
+    "default_branch": "master",
+    "archived": false,
+    "size": 5860
+  },
+  {
+    "repository": "titouannwtt/freqtrade-france-strategies_simple_vwap",
+    "default_branch": "main",
+    "archived": true,
+    "size": 19
+  },
+  {
+    "repository": "Drakkar-Software/OctoBot-AI",
+    "default_branch": "master",
+    "archived": false,
+    "size": 2242
+  },
+  {
+    "repository": "alex-kur/CryptoBots",
+    "default_branch": "main",
+    "archived": false,
+    "size": 4098
+  },
+  {
+    "repository": "intikhab49/edgeproof-crypto-trading-backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 141
+  },
+  {
+    "repository": "stevenyu530/crypto_backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 6
+  },
+  {
+    "repository": "benheng77-creator/backtestpy",
+    "default_branch": "main",
+    "archived": false,
+    "size": 54
+  },
+  {
+    "repository": "fcurt338-cloud/cae-strategy-backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 97486
+  },
+  {
+    "repository": "tfrmma/options-volatility-trading-strats",
+    "default_branch": "main",
+    "archived": false,
+    "size": 199
+  },
+  {
+    "repository": "Texonja/crypto-strategy-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 4846
+  },
+  {
+    "repository": "suisarbre/Crypto-strategy-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 3122
+  },
+  {
+    "repository": "txnishq28/Crypto-Strategy-Backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 0
+  },
+  {
+    "repository": "deadmonkey26/CryptoBacktester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 4293
+  },
+  {
+    "repository": "charlestang1104-hue/crypto-strategy-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 2658
+  },
+  {
+    "repository": "TheOrthman/crypto-strategy-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 31
+  },
+  {
+    "repository": "pooriag/crypto-strategy-backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 486
+  },
+  {
+    "repository": "Rehanahmed2005/crypto-strategy-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 172
+  },
+  {
+    "repository": "Nethukax/crypto-strategy-backtests",
+    "default_branch": "main",
+    "archived": false,
+    "size": 167
+  },
+  {
+    "repository": "rvanrijn/crypto-strategy-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 65
+  },
+  {
+    "repository": "0xmnix0/crypto-strategy-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 2
+  },
+  {
+    "repository": "SamCodes-25/Strategy-backtesting-crypto-",
+    "default_branch": "main",
+    "archived": false,
+    "size": 9
+  },
+  {
+    "repository": "Ade-yemo/crypto-strategy-backtester-",
+    "default_branch": "main",
+    "archived": false,
+    "size": 6
+  },
+  {
+    "repository": "yusufyilmaz03/crypto-strategy-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 940
+  },
+  {
+    "repository": "CUHK-SZ-quant/crypto_backtest_demo",
+    "default_branch": "master",
+    "archived": false,
+    "size": 2939
+  },
+  {
+    "repository": "AFederici/lets-make-money",
+    "default_branch": "master",
+    "archived": false,
+    "size": 212
+  },
+  {
+    "repository": "jay-5/CryptoBacktester",
+    "default_branch": "master",
+    "archived": false,
+    "size": 2
+  },
+  {
+    "repository": "kiploks/kiploks-freqtrade",
+    "default_branch": "main",
+    "archived": false,
+    "size": 776
+  },
+  {
+    "repository": "timrecursify/trading-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 173
+  },
+  {
+    "repository": "manoj-shenoy/crypto_strategy",
+    "default_branch": "master",
+    "archived": false,
+    "size": 24
+  },
+  {
+    "repository": "Rick987-beep/CryoBacktester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 10897
+  },
+  {
+    "repository": "Saikrishnaz/Crypto-Backtests",
+    "default_branch": "main",
+    "archived": false,
+    "size": 2481
+  },
+  {
+    "repository": "darkfanxing/Hi-Backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 11
+  },
+  {
+    "repository": "David-Woroniuk/crypto_trading_strategies",
+    "default_branch": "master",
+    "archived": false,
+    "size": 36
+  },
+  {
+    "repository": "haanjohn/crypto-backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 53
+  },
+  {
+    "repository": "GalindoD/Backtesting_crypto",
+    "default_branch": "main",
+    "archived": false,
+    "size": 2047
+  },
+  {
+    "repository": "QHYinwardness/backtesting",
+    "default_branch": "master",
+    "archived": false,
+    "size": 1
+  },
+  {
+    "repository": "NullAILab/HexaBotBacktest",
+    "default_branch": "master",
+    "archived": false,
+    "size": 5223
+  },
+  {
+    "repository": "codemath3000/CryptoOptionsBacktester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 85
+  },
+  {
+    "repository": "vrd07/Quant_Trading",
+    "default_branch": "main",
+    "archived": false,
+    "size": 63373
+  },
+  {
+    "repository": "alexdiehl0/Backtesting-Strategies_Crypto",
+    "default_branch": "Main",
+    "archived": false,
+    "size": 7527
+  },
+  {
+    "repository": "SnotacusNexus/mexc-crypto-strategy-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 1
+  },
+  {
+    "repository": "femifacia/backtest_crypto_quant_strategy",
+    "default_branch": "master",
+    "archived": false,
+    "size": 19783
+  },
+  {
+    "repository": "blackwolfhk/Crypto_Trading_Strategy_Backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 925
+  },
+  {
+    "repository": "TheOrthman/crypto-strategy-backtesting-app",
+    "default_branch": "main",
+    "archived": false,
+    "size": 0
+  },
+  {
+    "repository": "phuazz/Crypto-MAV-Strategy",
+    "default_branch": "main",
+    "archived": false,
+    "size": 102
+  },
+  {
+    "repository": "harshkamble2494-coder/crypto-strategy-backtesting-engine",
+    "default_branch": "main",
+    "archived": false,
+    "size": 5550
+  },
+  {
+    "repository": "alejandrorodm/Crypto-Strategy-with-Backtesting",
+    "default_branch": "main",
+    "archived": false,
+    "size": 1001
+  },
+  {
+    "repository": "Oscarpengdadong/Cryptocurrency-Strategy-Backtesting-Frame",
+    "default_branch": "main",
+    "archived": false,
+    "size": 11724
+  },
+  {
+    "repository": "naineshhhhh/crypto-backtest-strategy-builder",
+    "default_branch": "main",
+    "archived": false,
+    "size": 38000
+  },
+  {
+    "repository": "louisrobertbouille-pixel/crypto-squeeze-backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 0
+  },
+  {
+    "repository": "NadirAliOfficial/QuantConnnect",
+    "default_branch": "main",
+    "archived": false,
+    "size": 17
+  },
+  {
+    "repository": "Abelrodrigo1970/crypto-backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 36
+  },
+  {
+    "repository": "0xinBeta/backtestingUI",
+    "default_branch": "main",
+    "archived": false,
+    "size": 324
+  },
+  {
+    "repository": "francoabaroa/cs-backtester",
+    "default_branch": "master",
+    "archived": false,
+    "size": 26283
+  },
+  {
+    "repository": "akashhegde2012/backtest_strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 17
+  },
+  {
+    "repository": "renaldy84/fibo-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 3
+  },
+  {
+    "repository": "DTennant/crypto-swing-backtest",
+    "default_branch": "master",
+    "archived": false,
+    "size": 11
+  },
+  {
+    "repository": "villuis91/backtesting",
+    "default_branch": "main",
+    "archived": false,
+    "size": 0
+  },
+  {
+    "repository": "willbowden/SmartTrade",
+    "default_branch": "main",
+    "archived": false,
+    "size": 104827
+  },
+  {
+    "repository": "Eugene2710/crypto_backtesting_engine",
+    "default_branch": "main",
+    "archived": false,
+    "size": 245
+  },
+  {
+    "repository": "tbhandari548-maker/Crypto_Strategy_Research",
+    "default_branch": "main",
+    "archived": false,
+    "size": 13587
+  },
+  {
+    "repository": "akshpethani1728/crypto-backtester",
+    "default_branch": "master",
+    "archived": false,
+    "size": 15
+  },
+  {
+    "repository": "thearchitector/crypto-backtesting",
+    "default_branch": "main",
+    "archived": true,
+    "size": 26
+  },
+  {
+    "repository": "vysb/Crypto-Trading-Framework",
+    "default_branch": "main",
+    "archived": false,
+    "size": 4121
+  },
+  {
+    "repository": "vumilan/crypto_trading",
+    "default_branch": "master",
+    "archived": false,
+    "size": 35590
+  },
+  {
+    "repository": "cleyfe/Crypto_strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 8
+  },
+  {
+    "repository": "Crypto-God-JC/Crypto_backtesting",
+    "default_branch": "main",
+    "archived": false,
+    "size": 0
+  },
+  {
+    "repository": "vagabond11/Cryptocurrency-Backtester",
+    "default_branch": "master",
+    "archived": false,
+    "size": 5
+  },
+  {
+    "repository": "taylormartins/crypto-backtest",
+    "default_branch": "master",
+    "archived": false,
+    "size": 42
+  },
+  {
+    "repository": "aurelien-gentile/turtle-strategy-backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 12787
+  },
+  {
+    "repository": "mrakBH/backtestlab",
+    "default_branch": "main",
+    "archived": false,
+    "size": 0
+  },
+  {
+    "repository": "nanasaheb6ai-lab/crypto-backtest-platform",
+    "default_branch": "main",
+    "archived": false,
+    "size": 0
+  },
+  {
+    "repository": "thesarfo/backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 19
+  },
+  {
+    "repository": "Zaynnnnnnnn/sol-strategy-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 123
+  },
+  {
+    "repository": "sajal-pakira/BacktestForge",
+    "default_branch": "main",
+    "archived": false,
+    "size": 205
+  },
+  {
+    "repository": "matta-ale/backtester_crypto",
+    "default_branch": "main",
+    "archived": false,
+    "size": 61
+  },
+  {
+    "repository": "iceokoli/CryptoPairTrading-BackTest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 5641
+  },
+  {
+    "repository": "racebreaker/cryptocurrency",
+    "default_branch": "main",
+    "archived": false,
+    "size": 437
+  },
+  {
+    "repository": "oguzhan-gulseren/crypto-trading-backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 100
+  },
+  {
+    "repository": "MKazmierczak02/crypto.memint.backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 4964
+  },
+  {
+    "repository": "SantiagoBP95/Crypto-Backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 208
+  },
+  {
+    "repository": "skpiotr27/Random_Forest_Classifier-CryptoTrader",
+    "default_branch": "main",
+    "archived": false,
+    "size": 3861
+  },
+  {
+    "repository": "srialee168-bot/BacktestingCrypto",
+    "default_branch": "main",
+    "archived": false,
+    "size": 10
+  },
+  {
+    "repository": "DehydratedWater/LightBacktester",
+    "default_branch": "master",
+    "archived": false,
+    "size": 3495
+  },
+  {
+    "repository": "langley-creator/cf-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 66
+  },
+  {
+    "repository": "crimsoncaius/backtester-cpi-strategy",
+    "default_branch": "main",
+    "archived": false,
+    "size": 22094
+  },
+  {
+    "repository": "youtube-jocoding/ai-crypto-backtester",
+    "default_branch": "main",
+    "archived": false,
+    "size": 39
+  },
+  {
+    "repository": "andreaambrosio/crypto_perps_strategy",
+    "default_branch": "main",
+    "archived": false,
+    "size": 78
+  },
+  {
+    "repository": "Adam-Agbaria/CryptoBacktest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 309
+  },
+  {
+    "repository": "reisenmachtfreude/Crypto-Backtest-Backtrader",
+    "default_branch": "main",
+    "archived": false,
+    "size": 0
+  },
+  {
+    "repository": "davidArtme/Cryptoassets-backtesting-system",
+    "default_branch": "main",
+    "archived": false,
+    "size": 2
+  },
+  {
+    "repository": "prams2104/crypto-momentum-backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 5636
+  },
+  {
+    "repository": "alibulutb/Strategy-Backtest-for-Binance-Coins",
+    "default_branch": "main",
+    "archived": false,
+    "size": 8
+  },
+  {
+    "repository": "tttksj404/strategy-arena",
+    "default_branch": "main",
+    "archived": false,
+    "size": 311094
+  },
+  {
+    "repository": "FETKlOkAn2/crypto-quant-platform",
+    "default_branch": "main",
+    "archived": false,
+    "size": 945
+  },
+  {
+    "repository": "haibingzhao/trading-backtest",
+    "default_branch": "main",
+    "archived": false,
+    "size": 294
+  },
+  {
+    "repository": "Murd1976/web_crypto_back",
+    "default_branch": "main",
+    "archived": false,
+    "size": 4711
+  },
+  {
+    "repository": "freqtrade/freqtrade-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 27668
+  },
+  {
+    "repository": "davidzr/freqtrade-strategies",
+    "default_branch": "main",
+    "archived": true,
+    "size": 1949
+  },
+  {
+    "repository": "nateemma/strategies",
+    "default_branch": "master",
+    "archived": false,
+    "size": 1723547
+  },
+  {
+    "repository": "iterativv/NostalgiaForInfinity",
+    "default_branch": "main",
+    "archived": false,
+    "size": 396412
+  },
+  {
+    "repository": "ssssi/freqtrade_strs",
+    "default_branch": "main",
+    "archived": false,
+    "size": 3754
+  },
+  {
+    "repository": "PeetCrypto/freqtrade-stuff",
+    "default_branch": "main",
+    "archived": false,
+    "size": 1063
+  },
+  {
+    "repository": "werkkrew/freqtrade-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 439
+  },
+  {
+    "repository": "i1ya/freqtrade-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 618
+  },
+  {
+    "repository": "froggleston/cryptofrog-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 155
+  },
+  {
+    "repository": "paulcpk/freqtrade-strategies-that-work",
+    "default_branch": "main",
+    "archived": false,
+    "size": 16
+  },
+  {
+    "repository": "devbootstrap/optimize-trading-strategy-using-freqtrade",
+    "default_branch": "main",
+    "archived": false,
+    "size": 20
+  },
+  {
+    "repository": "p-zombie/freqtrade",
+    "default_branch": "master",
+    "archived": false,
+    "size": 17413
+  },
+  {
+    "repository": "TheoBrigitte/freqtrade",
+    "default_branch": "main",
+    "archived": false,
+    "size": 172779
+  },
+  {
+    "repository": "jerome-benoit/freqai-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 5693
+  },
+  {
+    "repository": "Juusseli/Trade",
+    "default_branch": "master",
+    "archived": false,
+    "size": 39
+  },
+  {
+    "repository": "freqtrade/berlinguyinca-trading-strategies",
+    "default_branch": "master",
+    "archived": true,
+    "size": 15
+  },
+  {
+    "repository": "imsatoshi/GeneTrader",
+    "default_branch": "main",
+    "archived": false,
+    "size": 226399
+  },
+  {
+    "repository": "jilv220/BB_RPB_TSL",
+    "default_branch": "master",
+    "archived": false,
+    "size": 1589
+  },
+  {
+    "repository": "ShahAnuj2610/my-freqtrade",
+    "default_branch": "master",
+    "archived": false,
+    "size": 435
+  },
+  {
+    "repository": "djienne/YOUTUBE_STRATEGIES_FREQTRADE",
+    "default_branch": "master",
+    "archived": false,
+    "size": 7223
+  },
+  {
+    "repository": "phuchust/freqtrade_strategy",
+    "default_branch": "main",
+    "archived": false,
+    "size": 620
+  },
+  {
+    "repository": "anakein/beastbotXB",
+    "default_branch": "main",
+    "archived": false,
+    "size": 502
+  },
+  {
+    "repository": "michael-fourie/freqtrade_bot",
+    "default_branch": "main",
+    "archived": false,
+    "size": 38
+  },
+  {
+    "repository": "thinkong/freqtradestrategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 364
+  },
+  {
+    "repository": "keithorange/HUGE_FreqTrade_Strategy_Collection",
+    "default_branch": "main",
+    "archived": false,
+    "size": 1826
+  },
+  {
+    "repository": "keryc/crypto-bot",
+    "default_branch": "main",
+    "archived": true,
+    "size": 9802
+  },
+  {
+    "repository": "ntsd/freqtrade-configs",
+    "default_branch": "master",
+    "archived": false,
+    "size": 131
+  },
+  {
+    "repository": "hansen1015/freqtrade_strategy",
+    "default_branch": "main",
+    "archived": false,
+    "size": 1563
+  },
+  {
+    "repository": "just-nilux/awesome-freqtrade",
+    "default_branch": "main",
+    "archived": false,
+    "size": 63
+  },
+  {
+    "repository": "botenesp/freqtrade_strategies",
+    "default_branch": "master",
+    "archived": false,
+    "size": 8
+  },
+  {
+    "repository": "tutecode/freq-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 11899
+  },
+  {
+    "repository": "bustillo/freqtrade-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 85
+  },
+  {
+    "repository": "ShahAnuj2610/my-freqtrade-nfi-nextgen",
+    "default_branch": "master",
+    "archived": false,
+    "size": 9125
+  },
+  {
+    "repository": "Yodolescrypto/yodostrats",
+    "default_branch": "master",
+    "archived": false,
+    "size": 65
+  },
+  {
+    "repository": "jaredrsommer/freqtradestrategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 2527
+  },
+  {
+    "repository": "omarsy/dracula",
+    "default_branch": "main",
+    "archived": false,
+    "size": 7
+  },
+  {
+    "repository": "cyberjunky/freqtrade-cyber-bots",
+    "default_branch": "main",
+    "archived": false,
+    "size": 279
+  },
+  {
+    "repository": "devbootstrap/freqtrade-hyperopt-running-in-cloud-example",
+    "default_branch": "main",
+    "archived": false,
+    "size": 36
+  },
+  {
+    "repository": "raphant/freqtrade-strategies",
+    "default_branch": "master",
+    "archived": false,
+    "size": 83
+  },
+  {
+    "repository": "MMR-19/freqtrade-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 81
+  },
+  {
+    "repository": "mikedigriz/freqtrade-strategy-mikedigriz",
+    "default_branch": "main",
+    "archived": true,
+    "size": 1932
+  },
+  {
+    "repository": "markdregan/FreqAI-Marcos-Lopez-De-Prado",
+    "default_branch": "litmus-ai",
+    "archived": false,
+    "size": 258609
+  },
+  {
+    "repository": "HeyMrRobot/Freqtrade-Adaptive-Renko-Strategy",
+    "default_branch": "master",
+    "archived": false,
+    "size": 17
+  },
+  {
+    "repository": "RoboticAutomations/freqtradestrategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 5826
+  },
+  {
+    "repository": "Superior-Trade/trading-terminal",
+    "default_branch": "main",
+    "archived": false,
+    "size": 15944
+  },
+  {
+    "repository": "Skytraders/freqtrade-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 12
+  },
+  {
+    "repository": "AhmedSakrr/freqtrade-strategies-2",
+    "default_branch": "main",
+    "archived": false,
+    "size": 560
+  },
+  {
+    "repository": "shanejones/nfi-auto-update",
+    "default_branch": "main",
+    "archived": false,
+    "size": 14
+  },
+  {
+    "repository": "DutchCryptoDad/FreqtradeBotStrategyDevelopmentForBeginners",
+    "default_branch": "main",
+    "archived": false,
+    "size": 8
+  },
+  {
+    "repository": "JeremiePRepo/FreqtradeCRStrategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 89664
+  },
+  {
+    "repository": "H4xl0r/freqtrade-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 274
+  },
+  {
+    "repository": "papound/freqtradeStrategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 409
+  },
+  {
+    "repository": "freqsignals/freqtrade-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 36
+  },
+  {
+    "repository": "adevrent/freqtrade_custom_strats",
+    "default_branch": "master",
+    "archived": false,
+    "size": 2393
+  },
+  {
+    "repository": "KristianSpurling/freqtrade_strategies-2",
+    "default_branch": "main",
+    "archived": false,
+    "size": 32
+  },
+  {
+    "repository": "miwtoo/ft-action-zone",
+    "default_branch": "main",
+    "archived": false,
+    "size": 24
+  },
+  {
+    "repository": "terrah27/freqtrade_strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 17
+  },
+  {
+    "repository": "seannowotny/FlawlessVictoryPort",
+    "default_branch": "master",
+    "archived": false,
+    "size": 8
+  },
+  {
+    "repository": "GRrHaG/AutoUpdater",
+    "default_branch": "main",
+    "archived": false,
+    "size": 77
+  },
+  {
+    "repository": "s4ng/freqtrade-strategy",
+    "default_branch": "main",
+    "archived": false,
+    "size": 26665
+  },
+  {
+    "repository": "gammons/freqtrade-prod",
+    "default_branch": "main",
+    "archived": false,
+    "size": 1242
+  },
+  {
+    "repository": "matthieu-hm/freqtrade_consumer_producer_strategies",
+    "default_branch": "master",
+    "archived": false,
+    "size": 1522
+  },
+  {
+    "repository": "AlexBabescu/freqtrade_boilerplate",
+    "default_branch": "main",
+    "archived": true,
+    "size": 73
+  },
+  {
+    "repository": "marcosfreitas/freqtrade-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 3847
+  },
+  {
+    "repository": "docugs/freqtrade_strat",
+    "default_branch": "main",
+    "archived": false,
+    "size": 220
+  },
+  {
+    "repository": "Rikj000/MoniGoMani",
+    "default_branch": "development",
+    "archived": true,
+    "size": 271688
+  },
+  {
+    "repository": "Mohamed-sm/Freqtrade-RLStrategy-IA",
+    "default_branch": "master",
+    "archived": false,
+    "size": 10
+  },
+  {
+    "repository": "AlexCryptoKing/freqtrade",
+    "default_branch": "main",
+    "archived": false,
+    "size": 2812
+  },
+  {
+    "repository": "angrywatermelon69/Strato",
+    "default_branch": "master",
+    "archived": false,
+    "size": 24
+  },
+  {
+    "repository": "Elanz/Freqtrade-Hyperopt-Guide",
+    "default_branch": "main",
+    "archived": false,
+    "size": 23
+  },
+  {
+    "repository": "wojtekjakubo/Freq-trade-stra",
+    "default_branch": "main",
+    "archived": false,
+    "size": 41
+  },
+  {
+    "repository": "titouannwtt/freqtrade-ultimate",
+    "default_branch": "main",
+    "archived": false,
+    "size": 7296326
+  },
+  {
+    "repository": "twilker/freqtrade-meta-strategy",
+    "default_branch": "main",
+    "archived": false,
+    "size": 148
+  },
+  {
+    "repository": "ynstf/Good-Freqtrade-Strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 18
+  },
+  {
+    "repository": "krsh-off/nfi-tags-auto-update",
+    "default_branch": "main",
+    "archived": false,
+    "size": 6
+  },
+  {
+    "repository": "prmts23/freqtrade_strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 27
+  },
+  {
+    "repository": "keithorange/FreqTradeCustomOrders",
+    "default_branch": "main",
+    "archived": false,
+    "size": 125
+  },
+  {
+    "repository": "MelvynClark/Freqtrade-Strategy",
+    "default_branch": "main",
+    "archived": false,
+    "size": 133
+  },
+  {
+    "repository": "weaver-viii/freqtrade-1",
+    "default_branch": "master",
+    "archived": false,
+    "size": 83
+  },
+  {
+    "repository": "titouannwtt/freqtrade-france-strategies-kac-index",
+    "default_branch": "main",
+    "archived": true,
+    "size": 13
+  },
+  {
+    "repository": "dcfran3/freqtrade_strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 47
+  },
+  {
+    "repository": "jorgerance/freqtrade_strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 796
+  },
+  {
+    "repository": "Sshimaninja/Freqtrade_Public",
+    "default_branch": "main",
+    "archived": false,
+    "size": 40
+  },
+  {
+    "repository": "djienne/COPY_WALLET_HYPERLIQUID",
+    "default_branch": "main",
+    "archived": false,
+    "size": 243
+  },
+  {
+    "repository": "yalcin/freqtrade-mcp",
+    "default_branch": "master",
+    "archived": false,
+    "size": 105
+  },
+  {
+    "repository": "BuyMeAnIcecream/freqtrade-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 27775
+  },
+  {
+    "repository": "raphant/lazyft",
+    "default_branch": "runner",
+    "archived": false,
+    "size": 103537
+  },
+  {
+    "repository": "CharlesLehnen/LightweightCharts-for-Freqtrade",
+    "default_branch": "main",
+    "archived": false,
+    "size": 57616
+  },
+  {
+    "repository": "cyberjunky/freqtrade-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 23
+  },
+  {
+    "repository": "TreborNamor/freqtrade_strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 53
+  },
+  {
+    "repository": "2533757653/Freqai_RL",
+    "default_branch": "master",
+    "archived": false,
+    "size": 313
+  },
+  {
+    "repository": "azcoigreach/guru-skippyasurmuni",
+    "default_branch": "main",
+    "archived": false,
+    "size": 34
+  },
+  {
+    "repository": "mohdhd/strat-hunter",
+    "default_branch": "main",
+    "archived": false,
+    "size": 2561
+  },
+  {
+    "repository": "KOPYk4T/freqtrade-strategies",
+    "default_branch": "main",
+    "archived": false,
+    "size": 22
+  },
+  {
+    "repository": "topscoder/hurry-cli",
+    "default_branch": "master",
+    "archived": true,
+    "size": 344
+  },
+  {
+    "repository": "nishu88/Backtest_Results_Berlinguyinca_Strategy_Freqtrade",
+    "default_branch": "main",
+    "archived": false,
+    "size": 321
+  },
+  {
+    "repository": "keithorange/FastLoad_FreqUI_MultiBots",
+    "default_branch": "main",
+    "archived": false,
+    "size": 12
+  }
+]

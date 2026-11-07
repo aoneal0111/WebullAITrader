@@ -17,6 +17,7 @@ from datetime import datetime, time, timedelta
 from decimal import Decimal
 
 from app.market.calendar import EASTERN, trading_day_schedule
+from app.market.scalp_session import scalp_entry_deadline
 from app.paper_trading.order_models import (
     OrderSide,
     OrderStatus,
@@ -60,7 +61,7 @@ def is_autonomous_warrior_entry(order: PaperOrder) -> bool:
         and order.request.order_type is OrderType.LIMIT
         and (
             order.request.entry_valid_until is not None
-            or lifecycle.startswith(WARRIOR_LIFECYCLE_PREFIX)
+            or lifecycle.startswith((WARRIOR_LIFECYCLE_PREFIX, "QUICK_SCALPER|"))
         )
     )
 
@@ -73,10 +74,13 @@ def entry_valid_until(order: PaperOrder) -> datetime | None:
     # Pre-milestone orders did not persist the explicit boundary.  Warrior's
     # established feature interval was one minute, so legacy recovery uses
     # that same authorization-time horizon rather than an unbounded order.
-    return (
+    expiry = (
         order.request.entry_valid_until
         or order.created_at + LEGACY_WARRIOR_ENTRY_VALIDITY
     )
+    if (order.request.strategy_lifecycle_id or "").startswith("QUICK_SCALPER|"):
+        expiry = min(expiry, scalp_entry_deadline(order.created_at, order.request.metadata))
+    return expiry
 
 
 def temporal_terminal_reason(

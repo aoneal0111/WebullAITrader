@@ -15,7 +15,6 @@ from app.live_scanner.session import ScannerSession
 WARRIOR_ENTRY_ALLOWED_SESSIONS = frozenset({
     ScannerSession.PREMARKET.value,
     ScannerSession.REGULAR.value,
-    ScannerSession.AFTER_HOURS.value,
 })
 BALANCED_POLICY_VERSION = "BALANCED_V1"
 CONSERVATIVE_POLICY_VERSION = "CONSERVATIVE_V1"
@@ -95,6 +94,18 @@ class SetupConfig:
     flat_top_tolerance_percent: Decimal = Decimal("0.35")
     minimum_consolidation_bars: int = 2
     recent_swing_lookback: int = 5
+    allowed_setup_types: frozenset[str] | None = None
+
+    def __post_init__(self):
+        if self.allowed_setup_types is not None:
+            object.__setattr__(self,'allowed_setup_types',frozenset(self.allowed_setup_types))
+        known = {'HIGH_OF_DAY_BREAKOUT', 'MICRO_PULLBACK', 'BULL_FLAG',
+                 'FLAT_TOP_BREAKOUT', 'MOMENTUM_ACCELERATION',
+                 'MOMENTUM_REACCELERATION', 'RECLAIM_CONTINUATION'}
+        if self.allowed_setup_types is not None and (
+            not self.allowed_setup_types or not self.allowed_setup_types <= known
+        ):
+            raise ValueError('Native setup selection must use supported setup names')
 
 
 @dataclass(frozen=True, slots=True)

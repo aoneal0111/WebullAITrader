@@ -1,0 +1,14 @@
+{
+  "reviewed_date": "2026-10-27",
+  "nfi_repository": "https://github.com/iterativv/NostalgiaForInfinity.git",
+  "nfi_commit": "2884d15885a6996445861ce204068d1908761b5a",
+  "strategy_file": "NostalgiaForInfinityX8.py",
+  "strategy_sha256": "3a39affe50eb4884867f8c4c481dcd8b4170a9a7eb2072f698a0ff1fce9b81c1",
+  "license": "GPL-3.0",
+  "license_sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+  "freqtrade_version": "2026.9",
+  "freqtrade_commit": "1f394eaebc2f46a83d26971388628707802f8602",
+  "image": "freqtradeorg/freqtrade:2026.9@sha256:989aff5636d8f0213ed44fe334c3314a194a51c0c755d16866960247aafd2eae",
+  "performance_claim_source": "https://iterativv.github.io/NostalgiaForInfinity/backtest-results/binance-spot/summary/",
+  "performance_verified_by_atlas": false
+}

@@ -61,6 +61,7 @@ class ProfitRetentionConfig:
     scalp_giveback_r: Decimal = Decimal("0.25")
     scalp_minimum_profit: Decimal = Decimal("0.05")
     scalp_maximum_holding_seconds: int = 300
+    scalp_minimum_defense_profit: Decimal = ZERO
 
 
 class ProfitRetentionPolicy:
@@ -118,7 +119,9 @@ class ProfitRetentionPolicy:
         if peak_r >= activation and giveback_r >= allowance and current_r > ZERO:
             desired = position.entry_price + max(ZERO, peak_r - allowance) * risk
             desired = min(desired, executable_bid)
-            if desired > position.current_stop:
+            floor = (self.config.scalp_minimum_defense_profit
+                     if position.strategy is StrategyOwner.QUICK_SCALPER else ZERO)
+            if desired > position.current_stop and desired - position.entry_price >= floor:
                 return ProfitRetentionDecision(
                     replace(updated, state=ProfitState.PROFIT_DEFENSE_ACTIVE),
                     ProfitAction.TIGHTEN_STOP, desired, "MFE_GIVEBACK_DEFENSE",

@@ -84,6 +84,42 @@ class _RequestOnlyWorker:
         )
 
 
+def test_report_timeout_retains_capture_ownership_and_refuses_restart_until_drained(tmp_path):
+    class PendingWorker(_RequestOnlyWorker):
+        ready = False
+
+        def close(self, *, timeout_seconds=5.0):
+            self.closed = self.ready
+            return self.closed
+
+    sidecar = WarriorDesktopSidecar(
+        enabled=True, storage_path=tmp_path / "pending-report.sqlite3",
+        clock=lambda: NOW, report_worker_factory=PendingWorker,
+    )
+    sidecar.start("TEST")
+    worker, writer, service = sidecar._report_worker, sidecar._writer, sidecar._service
+    try:
+        with pytest.raises(TimeoutError, match="report worker shutdown still pending"):
+            sidecar.stop()
+        assert sidecar.snapshot().health is WarriorCaptureHealth.DEGRADED
+        assert sidecar._report_worker is worker
+        assert sidecar._writer is writer and sidecar._service is service
+        assert not sidecar._accept_execution
+        sidecar.start("TEST")
+        assert sidecar._writer is writer  # No second capture session/worker.
+        worker.ready = True
+        sidecar.stop()
+        assert sidecar.snapshot().health is WarriorCaptureHealth.STOPPED
+        assert sidecar._writer is None and sidecar._report_worker is None
+        ends = [r for r in ForwardCaptureStore(sidecar.storage_path).records()
+                if r.record_type is CaptureRecordType.OBSERVATION_SESSION and r.payload.get("action") == "END"]
+        assert len(ends) == 1
+    finally:
+        worker.ready = True
+        if sidecar._writer is not None:
+            sidecar.stop()
+
+
 def test_report_memory_metrics_count_materialized_rows_without_retaining_report(
     tmp_path: Path,
 ) -> None:

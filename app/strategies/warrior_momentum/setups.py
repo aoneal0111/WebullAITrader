@@ -396,6 +396,8 @@ def detect_best_setup(
         item
         for item in detections
         if item.state in {SetupState.TRIGGERED, SetupState.FORMING}
+        and (config.allowed_setup_types is None
+             or item.setup_type.value in config.allowed_setup_types)
     )
 
     if not actionable:

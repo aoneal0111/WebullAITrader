@@ -215,6 +215,10 @@ def _reference_price(
     order: PaperOrder,
     quote: MarketQuote,
 ) -> Decimal:
+    # A stop's execution shortfall is measured against its trigger level.
+    # This is attribution only: the executable bid/ask still sets the fill.
+    if order.request.order_type is OrderType.STOP and order.request.stop_price is not None:
+        return order.request.stop_price
     if quote.last_trade_price is not None:
         return quote.last_trade_price
 
