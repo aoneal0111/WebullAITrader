@@ -44,3 +44,9 @@ Each table entry uses closed trades excluding forced period-end liquidation. Net
 | BB altered entries | 15 / 86.7% | +94.42 | 46 / 82.6% | -215.61 |
 
 The original E0 and repaired BB controls were profitable in these two research periods but generated few trades. Faster entries increased activity while worsening terminal results. A higher win rate alone would select losing settings. Twenty-four hard-stop/target variants were also tested; their full results and rejection reasons are in `crypto-parameter-results-2026-11-08.json`.
+
+## Interrupted PowerShell log capture
+
+The first Windows application passed its eight native repair regressions, then stopped BB before PowerShell classified ordinary `docker logs` stderr as a terminating `NativeCommandError`. The code-application step had not run. Log capture now uses a Python subprocess that combines stdout/stderr into a file, checks the actual process exit code and captures before stopping a worker. Regression tests cover successful stderr output and a genuine nonzero exit with its diagnostic retained.
+
+For this specific stopped-and-paused interruption, pass `-ResumeInterruptedRepair`. It requires that state, applies the code-only repair, restarts BB, and permits paper entries only after the existing fresh-data/recorder health checks pass. Without that switch, an already stopped worker remains stopped and a prior entry pause is preserved. Wallets, config and all other workers remain unchanged. The Windows installer repeats the native tests locally; PowerShell is not available in the cloud test environment.

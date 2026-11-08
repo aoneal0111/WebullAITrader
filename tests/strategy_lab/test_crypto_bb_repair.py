@@ -31,3 +31,30 @@ class BBCodeRepair(unittest.TestCase):
             self.assertEqual((work/'strategies/bb.py').read_text(),'fixed')
             self.assertEqual((Path(result['backup'])/'strategies/bb.py').read_text(),'old')
             self.assertFalse(list(Path(result['backup']).glob('*.sqlite3')))
+
+class DockerLogCapture(unittest.TestCase):
+    def test_successful_native_stderr_is_captured_without_becoming_an_error(self):
+        import subprocess, sys
+        from app.strategy_lab.crypto_bb_repair import capture_docker_logs
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'native.log'
+            def runner(args,**kwargs):
+                self.assertEqual(args,['docker','logs','--tail','1000','bb-container'])
+                return subprocess.run([sys.executable,'-c',
+                    'import sys; print("heartbeat", file=sys.stderr); print("stdout")'],**kwargs)
+            result=capture_docker_logs('bb-container',path,runner=runner)
+            self.assertEqual(result['status'],'BB_LOGS_CAPTURED')
+            self.assertIn('heartbeat',path.read_text())
+            self.assertIn('stdout',path.read_text())
+
+    def test_actual_native_failure_is_not_hidden_and_diagnostic_is_retained(self):
+        import subprocess, sys
+        from app.strategy_lab.crypto_bb_repair import capture_docker_logs
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'native.log'
+            def runner(args,**kwargs):
+                return subprocess.run([sys.executable,'-c',
+                    'import sys; print("real failure", file=sys.stderr); sys.exit(1)'],**kwargs)
+            with self.assertRaises(subprocess.CalledProcessError):
+                capture_docker_logs('bb-container',path,runner=runner)
+            self.assertIn('real failure',path.read_text())

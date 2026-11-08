@@ -60,11 +60,25 @@ def apply(fleet, shadow, source):
                 configuration_modified=False,other_services_modified=False)
 
 
+def capture_docker_logs(container, output, *, runner=None):
+    """Capture native stderr as bytes, outside PowerShell's error stream."""
+    import subprocess
+    runner = runner or subprocess.run
+    with Path(output).open('xb') as stream:
+        runner(['docker', 'logs', '--tail', '1000', container],
+               stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=30)
+    return dict(status='BB_LOGS_CAPTURED', path=str(output))
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--fleet',type=Path,required=True)
     p.add_argument('--shadow',type=Path,required=True);p.add_argument('--source',type=Path)
+    p.add_argument('--capture-container');p.add_argument('--log-output',type=Path)
     a=p.parse_args()
-    if a.source:print(json.dumps(apply(a.fleet,a.shadow,a.source),indent=2))
+    if a.capture_container:
+        if a.log_output is None:p.error('--log-output required')
+        print(json.dumps(capture_docker_logs(a.capture_container,a.log_output),indent=2))
+    elif a.source:print(json.dumps(apply(a.fleet,a.shadow,a.source),indent=2))
     else:stage(a.fleet/'bb',a.shadow)
 
 if __name__=='__main__':main()

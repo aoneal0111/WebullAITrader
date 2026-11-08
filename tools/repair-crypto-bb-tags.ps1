@@ -1,7 +1,8 @@
 param(
     [string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'),
     [Parameter(Mandatory=$true)][string]$Revision,
-    [string]$FleetRoot = (Join-Path $env:LOCALAPPDATA 'AtlasResearch\crypto-weekend-0db9d940ad9b48d68f0c2f3b5ded0ff5')
+    [string]$FleetRoot = (Join-Path $env:LOCALAPPDATA 'AtlasResearch\crypto-weekend-0db9d940ad9b48d68f0c2f3b5ded0ff5'),
+    [switch]$ResumeInterruptedRepair
 )
 $ErrorActionPreference = 'Stop'
 if ($Revision -notmatch '^[0-9a-f]{40}$') { throw 'Exact reviewed revision required.' }
@@ -35,17 +36,26 @@ try {
     $Name = $Config.services.bb.container_name
     $State = & docker inspect --format '{{.State.Running}}' $Name 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'BB container not found; original fleet start required before repair.' }
-    $WasRunning = ($State -eq 'true')
+    $IsRunning = ($State -eq 'true')
+    $WasRunning = $IsRunning
     $Pause = Join-Path $Work 'PAUSE_NEW_ENTRIES'
     $WasPaused = Test-Path -LiteralPath $Pause
-    if (-not $WasPaused) { $null = New-Item -ItemType File -Path $Pause }
-    if ($WasRunning) {
+    if ($ResumeInterruptedRepair) {
+        if ($IsRunning -or -not $WasPaused) { throw 'Recovery expects the interrupted BB to be stopped and paused. No changes applied.' }
+        $WasRunning = $true
+        $WasPaused = $false
+    }
+    # Docker writes normal logs to stderr. Capture both streams directly in
+    # Python before stopping a worker; PowerShell must not classify log text.
+    & $Python -m app.strategy_lab.crypto_bb_repair --fleet $Fleet --shadow $Shadow --capture-container $Name --log-output (Join-Path $Root 'before-native.log')
+    if ($LASTEXITCODE -ne 0) { throw 'Docker log capture failed before code changes. Existing worker state retained.' }
+    if (-not (Test-Path -LiteralPath $Pause)) { $null = New-Item -ItemType File -Path $Pause }
+    if ($IsRunning) {
         & docker compose -f $Compose stop -t 120 bb
         if ($LASTEXITCODE -ne 0) { throw 'BB stop failed; entries remain paused.' }
     }
     & docker inspect --format '{{.State.Running}}' $Name | ForEach-Object { if ($_ -ne 'false') { throw 'BB must be stopped.' } }
     if ($LASTEXITCODE -ne 0) { throw 'Stopped-state verification failed.' }
-    & docker logs --tail 1000 $Name *> (Join-Path $Root 'before-native.log')
     & $Python -m app.strategy_lab.crypto_bb_repair --fleet $Fleet --shadow $Shadow --source $Source
     if ($LASTEXITCODE -ne 0) { throw 'Code repair failed; BB left stopped and paused; retain repair folder.' }
     if ($WasRunning) {
