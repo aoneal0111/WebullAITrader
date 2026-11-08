@@ -1,0 +1,382 @@
+"""Frozen, unlevered crypto income screening. No trading or provider entry point.
+
+These are research adaptations, not reproductions of repository performance.
+The accelerated OHLC model must be checked against native execution before use.
+"""
+import argparse
+from dataclasses import asdict, dataclass
+from hashlib import sha1, sha256
+from itertools import product
+import json
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from numba import njit
+from app.strategy_lab.broad_strategy_lab import indicators
+
+FAMILIES = {
+ 'RSI2_DIP': (5, 15, 30), 'RSI14_RECOVER': (25, 35, 45),
+ 'BB_REENTRY': (1.5, 2., 2.5), 'IBS_REVERSAL': (.1, .25, .4),
+ 'DONCHIAN': (10, 20, 55), 'EMA_PULLBACK': (10, 20, 50),
+ 'EMA_CROSS': (10, 20, 50), 'MACD_TURN': (0., .001, .003),
+ 'STOCH_RECOVER': (10, 20, 30), 'ADX_BREAKOUT': (15, 25, 35),
+ 'KELTNER_BREAKOUT': (1., 1.5, 2.), 'CCI_RECOVER': (-150, -100, -50),
+ 'MFI_RECOVER': (15, 25, 35), 'SUPERTREND_TURN': (2., 3., 4.),
+ 'ABSOLUTE_OVERSOLD': (.15, .25, .30), 'ROC_RECOVER': (.03, .06, .10),
+}
+
+@dataclass(frozen=True)
+class Spec:
+    family: str
+    trigger: float
+    stop_atr: float
+    target_atr: float
+    hold_hours: int
+
+    @property
+    def name(self):
+        return f'{self.family}_P{self.trigger}_S{self.stop_atr}_T{self.target_atr}_H{self.hold_hours}'
+
+
+def grid():
+    return [Spec(f, p, s, t, h) for f, values in FAMILIES.items()
+            for p, s, (t, h) in product(values, (2., 3., 5.), ((2., 24), (4., 72), (8., 168)))]
+
+
+def features(frame):
+    f = indicators(frame)
+    c, h, lo, v = (f[k] for k in ('close', 'high', 'low', 'volume'))
+    f['sma1200'] = c.rolling(1200).mean()
+    f['high24'] = h.rolling(24).max().shift()
+    stoch = 100*(c-lo.rolling(14).min())/(h.rolling(14).max()-lo.rolling(14).min())
+    f['stoch'] = stoch.rolling(3).mean()
+    typical = (h+lo+c)/3
+    mean = typical.rolling(20).mean()
+    mad = typical.rolling(20).apply(lambda a: np.mean(np.abs(a-a.mean())), raw=True)
+    f['cci'] = (typical-mean)/(.015*mad)
+    money = typical*v
+    pos = money.where(typical.diff()>0, 0.).rolling(14).sum()
+    neg = money.where(typical.diff()<0, 0.).rolling(14).sum()
+    f['mfi'] = 100-100/(1+pos/neg)
+    up, down = h.diff(), -lo.diff()
+    plus = up.where((up>down)&(up>0), 0.).ewm(alpha=1/14,adjust=False,min_periods=14).mean()
+    minus = down.where((down>up)&(down>0), 0.).ewm(alpha=1/14,adjust=False,min_periods=14).mean()
+    f['adx'] = (100*(plus-minus).abs()/(plus+minus)).ewm(alpha=1/14,adjust=False,min_periods=14).mean()
+    fast = c.ewm(span=12,adjust=False,min_periods=12).mean()
+    slow = c.ewm(span=26,adjust=False,min_periods=26).mean()
+    macd = fast-slow
+    f['macd_hist'] = (macd-macd.ewm(span=9,adjust=False,min_periods=9).mean())/c
+    f['super_mid'] = (h+lo)/2
+    return f
+
+
+def signals(f, spec):
+    c, p, family = f.close, spec.trigger, spec.family
+    trend = c>f.sma200
+    if family=='RSI2_DIP':
+        buy=trend&(f.rsi2<p);sell=c>f.sma5
+    elif family=='RSI14_RECOVER':
+        buy=(f.rsi14>=p)&(f.rsi14.shift()<p)&(c>c.shift());sell=f.rsi14>65
+    elif family=='BB_REENTRY':
+        lower=f.sma20-p*f.std20
+        buy=(c>=lower)&(c.shift()<lower.shift());sell=c>=f.sma20
+    elif family=='IBS_REVERSAL':
+        buy=(f.ibs<p)&(c<c.shift())&(c>f.sma50);sell=f.ibs>.8
+    elif family=='DONCHIAN':
+        high=f['priorhigh'+str(int(p))];buy=c>high;sell=c<f.priorlow10
+    elif family=='EMA_PULLBACK':
+        ema=f['ema'+str(int(p))];buy=trend&(f.low<=ema)&(c>ema)&(c>f.open);sell=c<f.ema50
+    elif family=='EMA_CROSS':
+        ema=f['ema'+str(int(p))];buy=(ema>f.ema100)&(ema.shift()<=f.ema100.shift());sell=ema<f.ema100
+    elif family=='MACD_TURN':
+        buy=(f.macd_hist>p)&(f.macd_hist.shift()<=p)&trend;sell=f.macd_hist<0
+    elif family=='STOCH_RECOVER':
+        buy=(f.stoch>=p)&(f.stoch.shift()<p)&(c>f.sma100);sell=f.stoch>80
+    elif family=='ADX_BREAKOUT':
+        buy=(f.adx>=p)&(c>f.priorhigh20)&(f.ema20>f.ema50);sell=c<f.ema20
+    elif family=='KELTNER_BREAKOUT':
+        upper=f.ema20+p*f.atr
+        buy=(c>upper)&(c.shift()<=upper.shift())&trend;sell=c<f.ema20
+    elif family=='CCI_RECOVER':
+        buy=(f.cci>=p)&(f.cci.shift()<p)&(c>f.sma100);sell=f.cci>100
+    elif family=='MFI_RECOVER':
+        buy=(f.mfi>=p)&(f.mfi.shift()<p)&trend;sell=f.mfi>80
+    elif family=='SUPERTREND_TURN':
+        # Causal ATR trailing-band state, not a vendor's exact implementation.
+        direction=supertrend(f.high.to_numpy(),f.low.to_numpy(),c.to_numpy(),f.atr.to_numpy(),p)
+        state=pd.Series(direction,index=f.index)
+        buy=(state==1)&(state.shift()==-1);sell=state==-1
+    elif family=='ABSOLUTE_OVERSOLD':
+        buy=(f.rsi14<30)&(f.rsi14.shift()>=30)&(c<f.sma1200*(1-p))
+        sell=pd.Series(False,index=f.index)
+    elif family=='ROC_RECOVER':
+        buy=(c<f.high24*(1-p))&(c>f.high.shift())&(f.rsi14>f.rsi14.shift());sell=c>=f.sma20
+    else:raise ValueError('UNKNOWN_FAMILY')
+    return (buy.fillna(False)&(f.volume>0)&f['eligible']).to_numpy(),sell.fillna(False).to_numpy()
+
+
+@njit(cache=True)
+def supertrend(high, low, close, atr, multiple):
+    n=len(close);state=np.zeros(n,dtype=np.int8);upper=0.;lower=0.;last=-1
+    for i in range(n):
+        if not np.isfinite(atr[i]) or not np.isfinite(close[i]):continue
+        u=(high[i]+low[i])/2+multiple*atr[i];l=(high[i]+low[i])/2-multiple*atr[i]
+        if i==0 or not np.isfinite(close[i-1]) or state[i-1]==0:
+            upper=u;lower=l;last=-1
+        else:
+            if u<upper or close[i-1]>upper:upper=u
+            if l>lower or close[i-1]<lower:lower=l
+            if last==-1 and close[i]>upper:last=1
+            elif last==1 and close[i]<lower:last=-1
+        state[i]=last
+    return state
+
+
+@njit(cache=True)
+def engine(ohlcv, atr, buy, sell, day_ids, n_days, initial, fee, slip,
+           slots, stop_mult, target_mult, hold_bars, min_notional=10.):
+    """One wallet, no borrowing, next-open decisions; stop wins bar ambiguity."""
+    n,m,_=ohlcv.shape
+    qty=np.zeros(m);cost=np.zeros(m);stop=np.zeros(m);target=np.zeros(m)
+    marks=np.zeros(m);age=np.zeros(m,dtype=np.int64);pending=np.zeros(m,dtype=np.int8)
+    pending_atr=np.zeros(m)
+    daily=np.full(n_days,initial);realized_daily=np.zeros(n_days);entry_daily=np.zeros(n_days)
+    cash=initial;entries=0;closed=0;wins=0;gain=0.;loss=0.;realized=0.;forced=0
+    peak=initial;drawdown=0.;fees=0.;volume_limited=0
+    for t in range(n):
+        day=day_ids[t]
+        # Prior-close exits execute before entries at this open.
+        for j in range(m):
+            op=ohlcv[t,j,0]
+            if pending[j]==-1 and qty[j]>0 and np.isfinite(op) and op>0:
+                proceeds=qty[j]*op*(1-slip)*(1-fee);pnl=proceeds-cost[j]
+                fees+=qty[j]*op*(1-slip)*fee;cash+=proceeds;realized+=pnl
+                realized_daily[day]+=pnl;closed+=1
+                if pnl>0:wins+=1;gain+=pnl
+                else:loss-=pnl
+                qty[j]=0.;cost[j]=0.
+        for j in range(m):
+            op=ohlcv[t,j,0]
+            if pending[j]!=1 or qty[j]>0 or not np.isfinite(op) or op<=0:continue
+            count=0;equity=cash
+            for k in range(m):
+                if qty[k]>0:count+=1;equity+=qty[k]*marks[k]
+            if count>=slots:continue
+            budget=min(cash,equity/slots)
+            # Size from preceding completed candle, never current candle volume.
+            liquidity=ohlcv[t-1,j,4]*ohlcv[t-1,j,3]*.01 if t>0 else 0.
+            if not np.isfinite(liquidity) or liquidity<=0:continue
+            if budget>liquidity:budget=liquidity;volume_limited+=1
+            px=op*(1+slip);amount=np.floor(budget/(px*(1+fee))*1e8)/1e8
+            if amount*px<min_notional or not np.isfinite(pending_atr[j]) or pending_atr[j]<=0:continue
+            qty[j]=amount;cost[j]=amount*px*(1+fee);cash-=cost[j]
+            fees+=amount*px*fee;age[j]=0
+            stop[j]=max(px*.01,px-stop_mult*pending_atr[j])
+            target[j]=px+target_mult*pending_atr[j]
+            entries+=1;entry_daily[day]+=1
+        pending[:]=0
+        for j in range(m):
+            op,hi,lo,cl,vol=ohlcv[t,j]
+            if not np.isfinite(cl) or cl<=0:continue
+            marks[j]=cl
+            if qty[j]>0:
+                age[j]+=1;exit_price=0.
+                if op<=stop[j]:exit_price=op
+                elif lo<=stop[j]:exit_price=stop[j]
+                elif hi>=target[j]:exit_price=target[j]
+                if exit_price>0:
+                    proceeds=qty[j]*exit_price*(1-slip)*(1-fee);pnl=proceeds-cost[j]
+                    fees+=qty[j]*exit_price*(1-slip)*fee;cash+=proceeds;realized+=pnl
+                    realized_daily[day]+=pnl;closed+=1
+                    if pnl>0:wins+=1;gain+=pnl
+                    else:loss-=pnl
+                    qty[j]=0.;cost[j]=0.
+            if qty[j]>0:
+                if sell[t,j] or age[j]>=hold_bars:pending[j]=-1
+            elif buy[t,j]:pending[j]=1;pending_atr[j]=atr[t,j]
+        equity=cash
+        for j in range(m):equity+=qty[j]*marks[j]*(1-slip)*(1-fee)
+        peak=max(peak,equity);drawdown=max(drawdown,(peak-equity)/peak)
+        daily[day]=equity
+        if cash<-.00001:raise ValueError('UNLEVERED_CASH_RECONCILIATION_FAILED')
+    # Realize remaining inventory conservatively at final mark, with exit costs.
+    for j in range(m):
+        if qty[j]>0:
+            proceeds=qty[j]*marks[j]*(1-slip)*(1-fee);pnl=proceeds-cost[j]
+            fees+=qty[j]*marks[j]*(1-slip)*fee;cash+=proceeds;realized+=pnl
+            realized_daily[-1]+=pnl;forced+=1;qty[j]=0.
+    daily[-1]=cash
+    error=abs(cash-initial-realized)
+    if error>.00001:raise ValueError('TERMINAL_LEDGER_RECONCILIATION_FAILED')
+    stats=np.array([entries,closed,wins,gain,loss,realized,cash,drawdown,forced,fees,volume_limited,error])
+    return stats,daily,realized_daily,entry_daily
+
+
+def metrics(result, initial, overhead=2., target=100.):
+    s,equity,realized,entries=result
+    daily=np.diff(np.r_[initial,equity])-overhead
+    net=float(s[5])-len(daily)*overhead
+    return dict(entries=int(s[0]),closed_trades=int(s[1]),wins=int(s[2]),
+        win_rate=float(s[2]/s[1]) if s[1] else None,
+        profit_factor=float(s[3]/s[4]) if s[4]>0 else (999. if s[3]>0 else None),
+        terminal_net_before_overhead=float(s[5]),terminal_net_after_overhead=net,
+        maximum_drawdown=float(s[7]),terminal_forced_closes=int(s[8]),fees_paid=float(s[9]),
+        volume_limited_entries=int(s[10]),ledger_error=float(s[11]),
+        calendar_days=len(daily),average_net_per_day=net/len(daily),
+        median_net_day=float(np.median(daily)),worst_net_day=float(daily.min()),
+        best_net_day=float(daily.max()),positive_net_days=int((daily>0).sum()),
+        days_at_or_above_target=int((daily>=target).sum()),
+        realized_days_at_or_above_target=int((realized-overhead>=target).sum()),
+        losing_days=int((daily<0).sum()),entry_active_days=int((entries>0).sum()),
+        overhead_per_day_assumption=overhead,initial_cash=initial,target_per_day=target,
+        average_target_met=bool(net/len(daily)>=target),
+        every_day_target_met=bool((daily>=target).all()))
+
+
+def write(path, value):
+    Path(path).write_text(json.dumps(value,indent=2,allow_nan=False)+'\n')
+
+
+def prepare(root, history):
+    root=Path(root);root.mkdir(exist_ok=False,parents=True)
+    lock=json.loads((Path(__file__).parent/'nfi-history-source-lock.json').read_text())
+    files=[]
+    for path in sorted(Path(history).glob('*_USDT-1h.feather')):
+        item=next((i for i in lock['files'] if Path(i['path']).name==path.name),None)
+        if item is None:raise ValueError('ONLY_PINNED_DATA_ALLOWED')
+        raw=path.read_bytes()
+        if sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()!=item['git_blob_sha']:
+            raise ValueError('PINNED_HISTORY_IDENTITY_REQUIRED')
+        files.append(dict(path=str(path.resolve()),git_blob_sha=item['git_blob_sha'],sha256=sha256(raw).hexdigest()))
+    if len(files)!=14:raise ValueError('FOURTEEN_PINNED_PAIRS_REQUIRED')
+    protocol=dict(scope='FROZEN_DAILY_INCOME_SCREEN_V1',history=files,history_commit=lock['commit'],
+        specs=[asdict(s) for s in grid()],timeframes=['1h','4h'],
+        development=['2022-01-01','2024-01-01'],validation=['2024-01-01','2025-01-01'],
+        assessment=['2025-01-01','2025-05-01'],fee_per_side=[.004,.008],slippage_per_side=.0005,
+        capital_scenarios=[10000.,25000.,50000.,100000.],slots=6,overhead_per_day_assumption=2.,
+        target_per_day=100.,selection_count=24,
+        implementation_sha256=sha256(Path(__file__).read_bytes()).hexdigest(),
+        source_faithful=False,qualification_eligible=False,prior_period_research_seen=True,
+        limitations=['Retrospective screening, not an unseen market holdout or native execution validation',
+         'Fourteen surviving Binance USDT pairs; not historical point-in-time universe or Kraken USD data',
+         'OHLC stops before targets; next-open signal execution; no queue or precision simulation',
+         'No leverage, futures, funding, Grok, orders, or running-worker changes',
+         'Capital scaling does not establish achievable liquidity or expected income'])
+    write(root/'protocol.json',protocol)
+    write(root/'protocol-lock.json',dict(sha256=sha256((root/'protocol.json').read_bytes()).hexdigest()))
+    return protocol
+
+
+def load_protocol(root):
+    root=Path(root);raw=(root/'protocol.json').read_bytes()
+    if sha256(raw).hexdigest()!=json.loads((root/'protocol-lock.json').read_text())['sha256']:
+        raise ValueError('FROZEN_PROTOCOL_CHANGED')
+    p=json.loads(raw)
+    if p['implementation_sha256']!=sha256(Path(__file__).read_bytes()).hexdigest():raise ValueError('FROZEN_IMPLEMENTATION_CHANGED')
+    return p
+
+
+def load_frames(p, tf):
+    from app.strategy_lab.regime_recovery_lab import aggregate_hourly
+    frames={}
+    for item in p['history']:
+        path=Path(item['path']);raw=path.read_bytes()
+        if sha256(raw).hexdigest()!=item['sha256']:raise ValueError('PINNED_DATA_CHANGED')
+        f=pd.read_feather(path);f.date=pd.to_datetime(f.date,utc=True)
+        f=f[(f.date>=pd.Timestamp('2021-05-01',tz='UTC'))&(f.date<pd.Timestamp('2025-05-01',tz='UTC'))]
+        if f.date.duplicated().any() or not f.date.is_monotonic_increasing:raise ValueError('UNIQUE_CHRONOLOGICAL_DATA_REQUIRED')
+        if tf=='4h':f=aggregate_hourly(f)
+        f=features(f.reset_index(drop=True))
+        # Require an uninterrupted 200-bar warmup, without fabricating missing prices.
+        frequency=pd.Timedelta(tf)
+        continuous=f.date.diff().eq(frequency).rolling(200,min_periods=200).sum().eq(200)
+        f['eligible']=continuous&f.atr.notna()
+        frames[path.name.split('_')[0]]=f
+    return frames
+
+
+def pack(frames, p, tf, period, spec):
+    start,end=[pd.Timestamp(x,tz='UTC') for x in p[period]]
+    dates=pd.date_range(start,end,freq=tf,inclusive='left');symbols=sorted(frames)
+    values=np.full((len(dates),len(symbols),5),np.nan)
+    atr=np.full((len(dates),len(symbols)),np.nan)
+    buys=np.zeros((len(dates),len(symbols)),dtype=np.bool_);sells=buys.copy()
+    for j,symbol in enumerate(symbols):
+        f=frames[symbol];b,s=signals(f,spec);f=f.copy();f['buy']=b;f['sell']=s
+        f=f.set_index('date').reindex(dates)
+        values[:,j]=f[['open','high','low','close','volume']].to_numpy()
+        atr[:,j]=f.atr.to_numpy();buys[:,j]=f.buy.fillna(False).to_numpy();sells[:,j]=f.sell.fillna(False).to_numpy()
+    day_ids=((dates-dates[0]).total_seconds()//86400).astype(np.int64).to_numpy()
+    return values,atr,buys,sells,day_ids,int((end-start).days)
+
+
+def simulate(packed, spec, tf, fee, capital=10000., slip=.0005, slots=6):
+    return engine(*packed,capital,fee,slip,slots,spec.stop_atr,spec.target_atr,
+                  max(1,spec.hold_hours//(1 if tf=='1h' else 4)))
+
+
+def run(root, stage):
+    root=Path(root);p=load_protocol(root)
+    if stage not in ('development','validation','assessment'):raise ValueError('KNOWN_STAGE_REQUIRED')
+    out=root/(stage+'.json')
+    if out.exists():raise ValueError('FRESH_RESULT_REQUIRED')
+    if stage=='development':selected=[(tf,Spec(**s)) for tf in p['timeframes'] for s in p['specs']]
+    else:
+        selection=json.loads((root/'selection.json').read_text())
+        selected=[(s['timeframe'],Spec(**s['spec'])) for s in selection['selected']]
+    rows=[];frames_by_tf={};last_key=None;packed=None
+    for index,(tf,spec) in enumerate(selected):
+        if tf not in frames_by_tf:frames_by_tf[tf]=load_frames(p,tf)
+        key=(tf,spec.family,spec.trigger)
+        if key!=last_key:
+            packed=pack(frames_by_tf[tf],p,tf,stage,spec);last_key=key
+        for fee in p['fee_per_side']:
+            capitals=[10000.] if stage=='development' else p['capital_scenarios']
+            for capital in capitals:
+                result=simulate(packed,spec,tf,fee,capital,p['slippage_per_side'],p['slots'])
+                r=metrics(result,capital,p['overhead_per_day_assumption'],p['target_per_day'])
+                rows.append(dict(name=spec.name,timeframe=tf,spec=asdict(spec),fee_per_side=fee,**r))
+                if stage!='development':
+                    ledger=root/'daily';ledger.mkdir(exist_ok=True)
+                    np.savez_compressed(ledger/(stage+'-'+tf+'-'+spec.name+'-'+str(fee)+'-'+str(capital)+'.npz'),
+                      equity=result[1],realized=result[2],entries=result[3])
+        if (index+1)%24==0 or index+1==len(selected):
+            write(out,dict(stage=stage,configurations_completed=index+1,runs=len(rows),rows=rows,orders=0))
+            print('INCOME_SCREEN',stage,'CONFIGURATIONS',index+1,'RUNS',len(rows),flush=True)
+    if stage=='development':
+        # Freeze finalists using development alone, before reading new-stage results.
+        pairs={}
+        for row in rows:pairs.setdefault((row['timeframe'],row['name']),[]).append(row)
+        ranked=[]
+        for group in pairs.values():
+            baseline=next(r for r in group if r['fee_per_side']==.004)
+            robust=min(r['average_net_per_day'] for r in group)
+            valid=all(r['closed_trades']>=30 and r['maximum_drawdown']<=.35 and r['terminal_net_after_overhead']>0 for r in group)
+            ranked.append((valid,robust,baseline))
+        ranked.sort(key=lambda x:(not x[0],-x[1],x[2]['name'],x[2]['timeframe']))
+        # Family diversity prevents one parameter neighborhood filling every slot.
+        chosen=[];counts={}
+        for valid,rank,r in ranked:
+            family=r['spec']['family']
+            if counts.get(family,0)>=2:continue
+            chosen.append(dict(timeframe=r['timeframe'],spec=r['spec'],development_robust_valid=valid,
+                               worst_fee_average_net_per_day=rank))
+            counts[family]=counts.get(family,0)+1
+            if len(chosen)==p['selection_count']:break
+        with (root/'selection.json').open('x') as f:
+            json.dump(dict(selected=chosen,stage_used='development',later_periods_used=False),f,indent=2)
+    return rows
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--root',type=Path,required=True)
+    parser.add_argument('--prepare-history',type=Path)
+    parser.add_argument('--stage',choices=['development','validation','assessment'])
+    args=parser.parse_args()
+    if args.prepare_history:prepare(args.root,args.prepare_history)
+    if args.stage:run(args.root,args.stage)
+
+
+if __name__=='__main__':main()
