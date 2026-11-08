@@ -155,12 +155,51 @@ def run(root, history, metadata, stage, fee, names=None):
         write(work/'callback-audit.json',audit.report())
 
 
+def select(root):
+    """Freeze one passing candidate before any later holdout is opened."""
+    root=Path(root)
+    if (root/'selection.json').exists() or (root/'selection-review.json').exists():
+        raise ValueError('SELECTION_ALREADY_FROZEN')
+    protocol=json.loads((root/'protocol.json').read_text())
+    reports={stage:json.loads((root/(stage+'-0_004')/'scores.json').read_text())
+             for stage in ('development','validation')}
+    if any(not r['callback_audit']['result_valid'] for r in reports.values()):
+        raise ValueError('INVALID_NATIVE_RESULT')
+    candidates=[];rejections={}
+    for row in protocol['grid']:
+        name=row['name'];reasons=[]
+        if row.get('control')=='original':continue
+        family=next(f for f,(key,_) in PRESETS.items() if key==row['key'])
+        for stage,report in reports.items():
+            score=report['strategies'][name]
+            baseline=report['strategies'][family+'Original']
+            minimum=30 if stage=='development' else 20
+            if score['closed_trades']<minimum:reasons.append(stage+': too few closed trades')
+            if (score['closed_win_rate'] or 0)<.6:reasons.append(stage+': win rate below 60 percent')
+            pf=score['closed_profit_factor']
+            if pf is None:
+                if score['closed_net_usdt']<=0:reasons.append(stage+': no positive closed expectancy')
+            elif pf<1.15:reasons.append(stage+': profit factor below 1.15')
+            if score['terminal_net_usdt']<=0:reasons.append(stage+': nonpositive terminal PnL')
+            if score['native_drawdown']>.15:reasons.append(stage+': native drawdown above 15 percent')
+            if score['closed_trades']<=baseline['closed_trades']:reasons.append(stage+': no activity improvement')
+        if reasons:rejections[name]=reasons
+        else:candidates.append(name)
+    winner=max(candidates,key=lambda n:sum(r['strategies'][n]['terminal_net_usdt'] for r in reports.values())) if candidates else None
+    result=dict(selected=winner,passing_candidates=candidates,rejections=rejections,
+                holdout_opened=False,qualification_eligible=False)
+    write(root/'selection-review.json',result)
+    if winner:write(root/'selection.json',dict(name=winner,review_sha256=digest(root/'selection-review.json')))
+    return result
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--root',type=Path,required=True)
     p.add_argument('--sources',type=Path);p.add_argument('--history',type=Path);p.add_argument('--metadata',type=Path)
     p.add_argument('--stage',choices=['development','validation','holdout']);p.add_argument('--fee',type=float,default=.004)
-    p.add_argument('--names',nargs='+');a=p.parse_args()
-    if a.sources:prepare_study(a.root,a.sources)
+    p.add_argument('--names',nargs='+');p.add_argument('--select',action='store_true');a=p.parse_args()
+    if a.select:print(json.dumps(select(a.root),indent=2))
+    elif a.sources:prepare_study(a.root,a.sources)
     else:run(a.root,a.history,a.metadata,a.stage,a.fee,a.names)
 
 if __name__=='__main__':main()

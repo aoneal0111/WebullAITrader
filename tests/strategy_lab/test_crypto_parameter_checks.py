@@ -65,3 +65,48 @@ class BBRealSourceContract(unittest.TestCase):
             self.assertIn('sell_profit_t_0_1', result)
             self.assertIn('bb', result)
             verify_sources(source)
+
+    def test_e0_looser_discount_really_changes_native_entry_signal(self):
+        import os, tempfile
+        from copy import deepcopy
+        import pandas as pd
+        from app.strategy_lab.crypto_fleet import prepare
+        from app.strategy_lab.crypto_fleet_runtime import check, resolve
+        source=os.environ.get('ATLAS_FLEET_TEST_SOURCES')
+        if not source:self.skipTest('Verified source cache required')
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'fleet';prepare(root,source);check(root/'e0')
+            _,_,original,_=resolve(root/'e0')
+            isolate_native_parameters(original)
+            changed=deepcopy(original)
+            changed.buy_ema_low.value=.98
+            changed.buy_sma15_32.value=.98
+            frame=pd.DataFrame(dict(close=[97.5,97.5],ema_8=[100.,100.],ema_16=[100.,100.],
+                sma_15=[100.,100.],rsi_fast=[20.,20.],rsi=[25.,25.],rsi_slow=[40.,39.],
+                cti=[-.9,-.9],EWO=[0.,0.]))
+            before=original.populate_entry_trend(frame.copy(),{})
+            after=changed.populate_entry_trend(frame.copy(),{})
+            self.assertEqual(before.get('enter_long',pd.Series([0,0])).fillna(0).sum(),0)
+            self.assertEqual(after['enter_long'].iloc[-1],1)
+            self.assertEqual(original.buy_ema_low.value,.942)
+
+
+class NativeScoreContract(unittest.TestCase):
+    def test_forced_inventory_is_not_a_closed_win_and_terminal_losses_remain(self):
+        from app.strategy_lab.crypto_parameter_lab import score
+        stats=dict(trades=[dict(is_open=False,exit_reason='roi',profit_abs=10),
+                           dict(is_open=False,exit_reason='force_exit',profit_abs=-50)],
+                   profit_total_abs=-40,max_drawdown_account=.01)
+        result=score(stats)
+        self.assertEqual(result['closed_trades'],1)
+        self.assertEqual(result['closed_win_rate'],1)
+        self.assertEqual(result['terminal_net_usdt'],-40)
+        self.assertEqual(result['force_exit_count'],1)
+
+    def test_grid_retains_each_original_and_has_unique_parameter_variants(self):
+        from app.strategy_lab.crypto_parameter_lab import grid
+        rows=grid()
+        self.assertEqual(len(rows),30)
+        self.assertEqual(len({r['name'] for r in rows}),30)
+        self.assertEqual(sum(r.get('control')=='original' for r in rows),3)
+        self.assertEqual(sum(r['overlay'] for r in rows),24)
