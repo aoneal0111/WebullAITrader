@@ -16,6 +16,19 @@ from app.strategy_lab.nfi_forward_status import ledger_status
 DEFINITIONS = {**PROFILES, 'roc': dict(strategy='FleetROCPullback', timeframe='1h', startup=200)}
 
 
+def repair_bb_tag_names(converted):
+    """Finish the v3 tag migration without touching pinned upstream bytes."""
+    import io
+    import token
+    import tokenize
+    result = []
+    for item in tokenize.generate_tokens(io.StringIO(converted).readline):
+        if item.type == token.NAME and item.string == 'buy_tag':
+            item = tokenize.TokenInfo(item.type, 'enter_tag', item.start, item.end, item.line)
+        result.append(item)
+    return tokenize.untokenize(result)
+
+
 def verify(work, *, compiled=True):
     work=Path(work);profile=json.loads((work/'profile.json').read_text())
     if profile.get('scope')!='NATIVE_CRYPTO_FLEET_PROFILE_V1' or profile.get('key') not in DEFINITIONS:
@@ -69,6 +82,7 @@ def compile_profile(work):
             roc="informative_1h['roc'] = ta.ROC(dataframe, timeperiod=9)"
             if converted.count(roc)!=1:raise ValueError('EXACT_BB_ROC_ADAPTER_REQUIRED')
             converted=converted.replace(roc,"informative_1h['roc'] = ta.ROC(informative_1h, timeperiod=9)")
+            converted=repair_bb_tag_names(converted)
         reference=definition['strategy']+'Reference'
         (folder/(reference+'.py')).write_text(converted,encoding='utf-8')
         (folder/(definition['strategy']+'.py')).write_text(
