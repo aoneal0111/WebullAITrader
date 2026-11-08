@@ -81,7 +81,8 @@ def prepare_replay(frames,case,bars_by_date=None):
     return bars_by_date,allrules,signals
 
 
-def replay(frames,case,calendar,*,fee,slip,initial=10000.,slots=6,equity_shares=False,prepared=None,min_notional=0.):
+def replay(frames,case,calendar,*,fee,slip,initial=10000.,slots=6,equity_shares=False,prepared=None,min_notional=0.,signal_exit_floor=None):
+    if signal_exit_floor is not None and (not math.isfinite(signal_exit_floor) or signal_exit_floor<0):raise ValueError('NONNEGATIVE_SIGNAL_EXIT_FLOOR_REQUIRED')
     if not math.isfinite(min_notional) or min_notional<0:raise ValueError('MINIMUM_NOTIONAL_REQUIRED')
     if not calendar or not 0<=fee<.1 or not 0<=slip<.1 or initial<=0 or slots<=0:raise ValueError('BOUNDED_REPLAY_INPUT_REQUIRED')
     bars_by_date,allrules,signals=prepared or prepare_replay(frames,case)
@@ -122,7 +123,9 @@ def replay(frames,case,calendar,*,fee,slip,initial=10000.,slots=6,equity_shares=
             buy,sell,atr=signals[s][at];cfg=allrules[s]
             if s in positions:
                 p=positions[s]
-                if sell or p['bars']>=cfg['timeout']:pending[s]=dict(action='SELL',signal=at)
+                estimated_net_return=p['qty']*float(b['close'])*(1-slip)*(1-fee)/p['cost']-1
+                signal_exit=bool(sell) and (signal_exit_floor is None or estimated_net_return>=signal_exit_floor)
+                if signal_exit or p['bars']>=cfg['timeout']:pending[s]=dict(action='SELL',signal=at)
                 if cfg['trail_atr'] and math.isfinite(atr):p['stop']=max(p['stop'],float(b['close'])-cfg['trail_atr']*atr)
             elif buy:pending[s]=dict(action='BUY',signal=at,atr=atr)
         value=cash+sum(p['qty']*marks.get(s,p['price']) for s,p in positions.items());curve.append(dict(at=str(at),equity=value))
