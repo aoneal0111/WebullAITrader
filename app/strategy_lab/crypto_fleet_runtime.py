@@ -212,20 +212,8 @@ def rate_gate(path):
 
 
 def pace_public_requests(path):
-    import ccxt
-    import ccxt.async_support as async_ccxt
-    import asyncio
-    original=ccxt.kraken.fetch
-    @wraps(original)
-    def paced(self,*args,**kwargs):
-        rate_gate(path);return original(self,*args,**kwargs)
-    ccxt.kraken.fetch=paced
-    original_async=async_ccxt.kraken.fetch
-    @wraps(original_async)
-    async def paced_async(self,*args,**kwargs):
-        await asyncio.to_thread(rate_gate,path)
-        return await original_async(self,*args,**kwargs)
-    async_ccxt.kraken.fetch=paced_async
+    from app.strategy_lab.kraken_public_transport import install
+    return install(path,rate_gate)
 
 
 def capture_native_actions(bot,evidence):
@@ -272,7 +260,9 @@ def run(work,shared):
         write(work/'engine-status.json',status)
         write(work/'recording-session.json',dict(session=str(evidence.root)))
         try:
-            pace_public_requests(shared/'public-request-clock')
+            transport=pace_public_requests(shared/'public-request-clock')
+            from app.strategy_lab.kraken_public_transport import monitor
+            monitor(transport,work)
             worker=Worker(args,config=config)
             bot=worker.freqtrade;evidence.attach(bot,work);capture_native_actions(bot,evidence)
             state=None
@@ -311,7 +301,10 @@ def main():
     p.add_argument('--check',action='store_true');p.add_argument('--nfi',action='store_true');a=p.parse_args()
     if a.nfi:
         from app.strategy_lab.nfi_forward_engine import run as run_nfi
-        clean_environment();pace_public_requests((a.shared or a.work.parent/'shared')/'public-request-clock')
+        clean_environment()
+        transport=pace_public_requests((a.shared or a.work.parent/'shared')/'public-request-clock')
+        from app.strategy_lab.kraken_public_transport import monitor
+        monitor(transport,a.work)
         run_nfi(a.work);return
     if a.check:print(json.dumps(check(a.work),indent=2))
     else:run(a.work,a.shared or a.work.parent/'shared')
