@@ -170,12 +170,27 @@ def ready(bot,pair,now,key):
     except Exception:return False
 
 
-def snapshot(frame):
+def snapshot(frame,*,strategy=None):
     row=frame.iloc[-1];value=row.get('enter_long')
     import pandas as pd
+    import math
     buy=None if value is None or pd.isna(value) else int(value)
+    inputs={}
+    for name in ('close','volume','rsi','rsi2','rsi_fast','rsi_slow','cti','EWO','roc3',
+                 'ema_8','ema_16','sma_15','sma200','sma_200','atr'):
+        value=row.get(name)
+        if value is not None and pd.notna(value) and math.isfinite(float(value)):
+            inputs[name]=float(value)
+    params={}
+    if strategy is not None:
+        for name in ('buy_ema_low','buy_sma15_32','buy_cti_32','buy_rsi_fast',
+                     'buy_rsi_fast_32','buy_ewo','buy_ema_high','buy_rsi','buy_rsi_32',
+                     'low_offset','low_offset_2','ewo_high','ewo_low','rsi_buy'):
+            parameter=getattr(strategy,name,None)
+            if parameter is not None:params[name]=getattr(parameter,'value',parameter)
     return dict(state='SOURCE_BUY_SIGNAL' if buy==1 else 'NO_SOURCE_BUY_SIGNAL',
-        buy=buy,candle_at=row['date'].isoformat(),enter_tag=str(row.get('enter_tag','')))
+        buy=buy,candle_at=row['date'].isoformat(),enter_tag=str(row.get('enter_tag','')),
+        entry_inputs=inputs,entry_parameters=params)
 
 
 def rate_gate(path):
@@ -244,12 +259,12 @@ def run(work,shared):
     with (work/'engine.lock').open('a') as lock:
         try:fcntl.flock(lock.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
         except OSError:raise ValueError('PROFILE_ALREADY_RUNNING') from None
-        args,config,_,profile=resolve(work)
+        args,config,strategy,profile=resolve(work)
         def request_stop(signum,frame):raise KeyboardInterrupt()
         signal.signal(signal.SIGTERM,request_stop)
         evidence=Evidence(work,digest(work/'config.json'),timeframes=frames_for(profile['key']),
             primary=profile['timeframe'],ready=lambda bot,pair,now:ready(bot,pair,now,profile['key']),
-            snapshot=snapshot,prefix='FLEET')
+            snapshot=lambda frame:snapshot(frame,strategy=strategy),prefix='FLEET')
         worker=None;failed=None
         status=dict(scope='FLEET_NATIVE_PAPER_STATUS_V1',state='STARTING',
             updated_at=datetime.now(UTC).isoformat(),recording_id=evidence.root.name,

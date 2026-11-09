@@ -57,8 +57,10 @@ def features(bars,mode):
     return out
 
 
-def signals(rows,mode):
+def signals(rows,mode,*,entry_rsi=None):
     if mode not in CANDIDATES:raise ValueError('REGISTERED_CANDIDATE_REQUIRED')
+    threshold=(5 if mode=='RSI2_SPY_REGIME' else 10) if entry_rsi is None else entry_rsi
+    if not math.isfinite(threshold) or not 0<threshold<=30:raise ValueError('BOUNDED_ENTRY_RSI_REQUIRED')
     f={s:features(b,mode) for s,b in rows.items()};out={}
     for symbol,bars in rows.items():
         if symbol=='SPY' and mode=='RSI2_SPY_REGIME':continue
@@ -66,18 +68,18 @@ def signals(rows,mode):
             x=f[symbol][day];spy=f['SPY'].get(day)
             if x['sma200'] is None:continue
             regime=bool(spy and spy['sma200'] is not None and spy['close']>spy['sma200'])
-            buy=x['close']>x['sma200'] and x['rsi']<(5 if mode=='RSI2_SPY_REGIME' else 10)
+            buy=x['close']>x['sma200'] and x['rsi']<threshold
             if mode=='RSI2_SPY_REGIME':buy=buy and regime
             sell=x['rsi']>60 if mode=='RSI2_SPY_REGIME' else x['close']>x['sma5']
             out[(day,symbol)]=(buy,sell,x['close'])
     return out
 
 
-def replay(rows,mode,start,*,wallet=10000.,stake=1000.,fee_bps=5.,slippage_bps=5.,overhead=0.,include_curve=False):
+def replay(rows,mode,start,*,wallet=10000.,stake=1000.,fee_bps=5.,slippage_bps=5.,overhead=0.,include_curve=False,entry_rsi=None):
     for v in (wallet,stake,fee_bps,slippage_bps,overhead):
         if not math.isfinite(v) or v<0:raise ValueError('FINITE_NONNEGATIVE_COSTS_REQUIRED')
     if not wallet or not stake or slippage_bps>=10000:raise ValueError('BOUNDED_CAPITAL_AND_SLIPPAGE_REQUIRED')
-    start=date.fromisoformat(start).isoformat();events=signals(rows,mode)
+    start=date.fromisoformat(start).isoformat();events=signals(rows,mode,entry_rsi=entry_rsi)
     calendar=sorted(rows['SPY']);cash=wallet;positions={};pending={};trades=[];skipped=0;curve=[];marks={}
     fee=fee_bps/10000;slip=slippage_bps/10000
     for day in calendar:

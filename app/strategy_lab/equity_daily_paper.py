@@ -15,6 +15,8 @@ from app.strategy_research.source_candidate_lab import signals,CANDIDATES,featur
 
 SYMBOLS=('SPY','QQQ','IWM','DIA','XLK','XLF','XLE','XLI','XLP','XLU','GLD','TLT')
 NY=ZoneInfo('America/New_York')
+ENTRY_CASES={c:(c,None) for c in CANDIDATES}
+ENTRY_CASES['CONNORS_RSI2_R12_5']=('CONNORS_RSI2',12.5)
 
 
 def write(path,value):
@@ -53,7 +55,8 @@ def parse(raw,now):
                     observed_age_seconds=(now-at).total_seconds(),source='YAHOO_PUBLIC_TRADE_PRICE_PROXY_NOT_EXECUTABLE_NBBO')
 
 
-def database(path):
+def database(path,*,cases=CANDIDATES):
+    if set(cases)-ENTRY_CASES.keys():raise ValueError('KNOWN_ENTRY_CASES_REQUIRED')
     db=sqlite3.connect(path,timeout=10)
     db.executescript('''PRAGMA journal_mode=WAL;
     CREATE TABLE IF NOT EXISTS wallets(strategy TEXT PRIMARY KEY,cash REAL NOT NULL);
@@ -61,14 +64,27 @@ def database(path):
     CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY,strategy TEXT,symbol TEXT,side TEXT,signal_day TEXT,at TEXT,quantity INTEGER,price REAL,fee REAL,net REAL,model TEXT,UNIQUE(strategy,symbol,side,signal_day));
     CREATE TABLE IF NOT EXISTS observations(id INTEGER PRIMARY KEY,at TEXT,payload TEXT);
     ''')
-    for case in CANDIDATES:db.execute('INSERT OR IGNORE INTO wallets VALUES(?,10000)',(case,))
+    for case in cases:db.execute('INSERT OR IGNORE INTO wallets VALUES(?,10000)',(case,))
     db.commit();return db
 
 
-def cycle(db,rows,quotes,now,*,paused=False):
-    reasons={};events=[]
-    for case in CANDIDATES:
-        decisions=signals(rows,case) if 'SPY' in rows else {}
+def cycle(db,rows,quotes,now,*,paused=False,cases=CANDIDATES):
+    if set(cases)-ENTRY_CASES.keys():raise ValueError('KNOWN_ENTRY_CASES_REQUIRED')
+    reasons={};events=[];entry_conditions={}
+    for case in cases:
+        mode,level=ENTRY_CASES[case]
+        decisions=signals(rows,mode,entry_rsi=level) if 'SPY' in rows else {}
+        computed={s:features(b,mode) for s,b in rows.items() if b}
+        for symbol,values in computed.items():
+            day=max(values);x=values[day];spy=computed.get('SPY',{}).get(day)
+            threshold=level if level is not None else 5 if mode=='RSI2_SPY_REGIME' else 10
+            entry_conditions[case+'|'+symbol]=dict(completed_day=day,close=x['close'],
+                sma200=x['sma200'],rsi2=x['rsi'],entry_rsi_threshold=threshold,
+                above_sma200=x['sma200'] is not None and x['close']>x['sma200'],
+                rsi_pass=x['rsi']<threshold,
+                benchmark_required=mode=='RSI2_SPY_REGIME',
+                benchmark_pass=bool(spy and spy['sma200'] is not None and spy['close']>spy['sma200']),
+                trade_symbol_allowed=not(symbol=='SPY' and mode=='RSI2_SPY_REGIME'))
         # Exits first; each strategy has independent cash and holdings.
         for phase in ('SELL','BUY'):
             for symbol in SYMBOLS:
@@ -78,11 +94,11 @@ def cycle(db,rows,quotes,now,*,paused=False):
                 buy,sell,_=decisions.get((day,symbol),(False,False,0))
                 pos=db.execute('SELECT quantity,entry,cost,entry_signal FROM positions WHERE strategy=? AND symbol=?',(case,symbol)).fetchone()
                 if pos:
-                    x=features(bars,case)[day]
-                    sell=(x['rsi']>60 if case=='RSI2_SPY_REGIME' else x['sma5'] is not None and x['close']>x['sma5'])
+                    x=features(bars,mode)[day]
+                    sell=(x['rsi']>60 if mode=='RSI2_SPY_REGIME' else x['sma5'] is not None and x['close']>x['sma5'])
                 if not pos and (not spy_days or max(spy_days)!=day):reasons[case+'|'+symbol]='BENCHMARK_DATE_MISMATCH';continue
                 reason='HOLDING' if pos else 'NO_BUY_SIGNAL'
-                stop=bool(pos and case=='RSI2_SPY_REGIME' and bars[day]['close']<=pos[1]*.9)
+                stop=bool(pos and mode=='RSI2_SPY_REGIME' and bars[day]['close']<=pos[1]*.9)
                 action='SELL' if pos and (sell or stop) else 'BUY' if buy and not pos else None
                 observed=datetime.fromisoformat(quote['at'])
                 fresh=(quote['fresh_regular_session'] and -2<=(now-observed).total_seconds()<=120
@@ -112,15 +128,15 @@ def cycle(db,rows,quotes,now,*,paused=False):
                 db.execute('INSERT INTO orders(strategy,symbol,side,signal_day,at,quantity,price,fee,net,model) VALUES(:strategy,:symbol,:side,:signal_day,:at,:quantity,:price,:fee,:net,:model)',event)
                 events.append(event);reasons[case+'|'+symbol]='PAPER_'+action+'_FILLED'
     # Persist evidence and transactions together; rollback prevents an unrecorded buy.
-    payload=dict(at=now.isoformat(),reasons=reasons,orders=events,quotes=quotes,
+    payload=dict(at=now.isoformat(),reasons=reasons,orders=events,quotes=quotes,entry_conditions=entry_conditions,
         completed_input_sha256={s:sha256(json.dumps(b,sort_keys=True).encode()).hexdigest() for s,b in rows.items()})
     db.execute('INSERT INTO observations(at,payload) VALUES(?,?)',(now.isoformat(),json.dumps(payload)))
     db.commit();return payload
 
 
-def status(db):
+def status(db,*,cases=CANDIDATES):
     out={}
-    for case in CANDIDATES:
+    for case in cases:
         trades=db.execute('SELECT net FROM orders WHERE strategy=? AND side="SELL"',(case,)).fetchall()
         wins=sum(x[0]>0 for x in trades)
         out[case]=dict(cash=db.execute('SELECT cash FROM wallets WHERE strategy=?',(case,)).fetchone()[0],
@@ -131,12 +147,13 @@ def status(db):
     return out
 
 
-def run(work):
+def run(work,*,entry_experiments=False):
     import fcntl
     work=Path(work)
+    cases=tuple(ENTRY_CASES) if entry_experiments else CANDIDATES
     with (work/'worker.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        db=database(work/'equity-paper.sqlite3')
+        db=database(work/'equity-paper.sqlite3',cases=cases)
         while not (work/'STOP').exists():
             now=datetime.now(UTC);rows={};quotes={};errors={}
             for symbol in SYMBOLS:
@@ -150,21 +167,21 @@ def run(work):
                 except Exception as exc:errors[symbol]=type(exc).__name__+':'+str(exc)[:180]
                 time.sleep(1)
             try:
-                result=cycle(db,rows,quotes,datetime.now(UTC),paused=(work/'PAUSE_NEW_ENTRIES').exists())
+                result=cycle(db,rows,quotes,datetime.now(UTC),paused=(work/'PAUSE_NEW_ENTRIES').exists(),cases=cases)
                 write(work/'engine-status.json',dict(state='RUNNING',updated_at=datetime.now(UTC).isoformat(),
                     live_trading_enabled=False,broker_orders=0,price_model='PUBLIC_PRICE_PROXY',errors=errors,
-                    last_cycle=result,strategies=status(db),capture_ok=True,market='US_EQUITY_REGULAR_SESSION_ONLY'))
+                    last_cycle=result,strategies=status(db,cases=cases),capture_ok=True,market='US_EQUITY_REGULAR_SESSION_ONLY'))
             except Exception as exc:
                 db.rollback();write(work/'engine-status.json',dict(state='FAILED',updated_at=datetime.now(UTC).isoformat(),error=type(exc).__name__));raise
             for _ in range(300):
                 if (work/'STOP').exists():break
                 time.sleep(1)
-        write(work/'engine-status.json',dict(state='STOPPED',updated_at=datetime.now(UTC).isoformat(),strategies=status(db),live_trading_enabled=False))
+        write(work/'engine-status.json',dict(state='STOPPED',updated_at=datetime.now(UTC).isoformat(),strategies=status(db,cases=cases),live_trading_enabled=False))
         db.close()
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--work',type=Path,required=True);a=p.parse_args();run(a.work)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--work',type=Path,required=True);p.add_argument('--entry-experiments',action='store_true');a=p.parse_args();run(a.work,entry_experiments=a.entry_experiments)
 
 
 if __name__=='__main__':main()
