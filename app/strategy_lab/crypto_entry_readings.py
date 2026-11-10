@@ -54,7 +54,7 @@ def conditions(key,current,previous=None):
     return out
 
 
-def collect_worker(work,key):
+def collect_worker(work,key,*,market_wide=False):
     work=Path(work);engine=read(work/'engine-status.json');pointer=read(work/'recording-session.json')
     name=str(pointer['session']).replace('\\','/').rstrip('/').split('/')[-1]
     if not re.fullmatch(r'recording-\d{8}T\d{6}Z-[0-9a-f]{32}',name):raise ValueError('RECORDING_POINTER')
@@ -65,10 +65,10 @@ def collect_worker(work,key):
     config=work/('resolved-config.json' if key=='nfi' else 'config.json')
     if sha256(config.read_bytes()).hexdigest()!=baseline:raise ValueError('SOURCE_CONFIG_MISMATCH')
     limit=anchor['counts']['written'];signals={};candles={};scanned=0;verified=0
-    partial=0;revisions=0
+    partial=0;revisions=0;budget=1024*1024*1024 if market_wide and key in ('bb','nfi') else BUDGET
     for path in sorted(root.glob('events-*.jsonl'),reverse=True):
         if path.is_symlink():raise ValueError('JOURNAL_LINK')
-        size=path.stat().st_size;take=min(size,BUDGET-scanned)
+        size=path.stat().st_size;take=min(size,budget-scanned)
         if take<=0:break
         with path.open('rb') as f:f.seek(size-take);raw=f.read(take)
         scanned+=len(raw);lines=raw.splitlines(keepends=True)
@@ -87,8 +87,9 @@ def collect_worker(work,key):
                 history=signals.setdefault(pair,[])
                 if len(history)<2 and source.get('candle_at') not in {r.get('candle_at') for r in history}:
                     history.append(source)
-            elif kind.endswith('_NATIVE_CANDLES') and payload.get('pair') in PAIRS:
+            elif kind.endswith('_NATIVE_CANDLES') and (re.fullmatch(r'[A-Z0-9]+/USD',payload.get('pair','')) if market_wide else payload.get('pair') in PAIRS):
                 if payload.get('timeframe') not in ('5m','15m','1h','4h','1d'):continue
+                if market_wide and payload['timeframe'] not in ('1h','4h'):continue
                 index=(payload['pair'],payload['timeframe']);bucket=candles.setdefault(index,{})
                 for bar in reversed(payload['rows']):
                     at=bar['date']
@@ -104,7 +105,7 @@ def collect_worker(work,key):
         recording_id=name,checkpoint_at=anchor['updated_at'],config_sha256=baseline,
         observed_strategy_sha256={p.name:sha256(p.read_bytes()).hexdigest() for p in sorted((work/'strategies').glob('*.py'))},
         journal_bytes_scanned=scanned,rows_hash_verified=verified,partial_tail_lines_ignored=partial,
-        scan_bound_reached=scanned>=BUDGET,full_hash_chain_verified=False,
+        scan_bound_reached=scanned>=budget,full_hash_chain_verified=False,
         latest_signals=latest,nfi_pair_flags=nfi,
         nfi_empty_candle_pairs={p:v for p,v in nfi.items() if v.get('state')=='SOURCE_EMPTY_CANDLE_LIMIT'},
         retained_candle_revisions=revisions,
@@ -113,14 +114,14 @@ def collect_worker(work,key):
     return result,data
 
 
-def collect(fleet,addon,output):
+def collect(fleet,addon,output,*,market_wide=False):
     fleet,addon,output=map(Path,(fleet,addon,output));manifest=read(fleet/'fleet.json')
     if manifest.get('live_trading_enabled') is not False:raise ValueError('PAPER_FLEET_REQUIRED')
     works={key:fleet/key for key in ('e0','nasos','bb','crsi','wave')}
     works['nfi']=Path(manifest['nfi_work']);works['roc']=addon/'crypto'
     output.mkdir(parents=True,exist_ok=False)
     report=dict(scope='READ_ONLY_CURRENT_CRYPTO_ENTRY_READINGS_V1',captured_at=datetime.now(UTC).isoformat(),
-        profiles={},collector_orders=0,collector_network_requests=0,workers_restarted=False,source_files_modified=False,
+        profiles={},market_wide_hourly_and_four_hour=market_wide,collector_orders=0,collector_network_requests=0,workers_restarted=False,source_files_modified=False,
         limitations=['Bounded live-journal tails; individual hashes checked, not a complete chain audit',
             'Missing conditions remain unknown; recent signal observations are not win-rate samples',
             'Native candles may contain source zero-volume normalization; no missing rows invented',
@@ -129,7 +130,7 @@ def collect(fleet,addon,output):
     with zipfile.ZipFile(archive,'x',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as z:
         for key,work in works.items():
             try:
-                result,data=collect_worker(work,key);report['profiles'][key]=result
+                result,data=collect_worker(work,key,market_wide=market_wide);report['profiles'][key]=result
                 for name,rows in data.items():z.writestr(key+'/candles/'+name,json.dumps(rows,separators=(',',':')))
             except Exception as exc:report['profiles'][key]=dict(error=type(exc).__name__,detail=str(exc))
         raw=json.dumps(report,indent=2,allow_nan=False)
@@ -144,4 +145,5 @@ def collect(fleet,addon,output):
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--fleet',required=True)
     p.add_argument('--addon',required=True);p.add_argument('--output',required=True)
-    a=p.parse_args();collect(a.fleet,a.addon,a.output)
+    p.add_argument('--market-wide',action='store_true')
+    a=p.parse_args();collect(a.fleet,a.addon,a.output,market_wide=a.market_wide)

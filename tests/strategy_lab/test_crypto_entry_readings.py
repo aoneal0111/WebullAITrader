@@ -90,5 +90,14 @@ class EntryReadingsTests(unittest.TestCase):
             self.assertIn('entry-readings.json',z.namelist())
         self.assertLess((output/'crypto-entry-readings.zip').stat().st_size,4*1024*1024)
 
+    def test_market_wide_retains_extra_hourly_pairs_and_excludes_five_minute(self):
+        self.append('FLEET_NATIVE_CANDLES',dict(pair='AAVE/USD',timeframe='1h',rows=[dict(date='2026-11-09T23:00:00+00:00',open=95,high=96,low=94,close=95,volume=10)]))
+        self.finish()
+        _,small=collect_worker(self.work,'e0')
+        _,wide=collect_worker(self.work,'e0',market_wide=True)
+        self.assertNotIn('AAVE_USD-1h.json',small)
+        self.assertIn('AAVE_USD-1h.json',wide)
+        self.assertNotIn('BTC_USD-5m.json',wide)
+
 
 if __name__=='__main__':unittest.main()
