@@ -7,8 +7,9 @@ model request, database mutation, or parameter change occurs.
 The exporter verifies the original manifest, every checkpoint-prefix record hash,
 sequence and baseline, each segment hash, and aggregate byte count and chain head.
 It excludes all bytes after the reviewed checkpoint. The private compact archive
-contains all recorded native assessments, confirmation diagnostics, PAPER events,
-and readiness failures, plus stream assessments and market events received from
+contains all recorded native assessments, confirmation diagnostics, PAPER events for traded symbols,
+and readiness failures, plus stream assessments and market events for the same
+traded symbol received from
 60 seconds before each filled trade through 60 seconds after its close.
 
 All-prefix stream reason counts distinguish negative provider age from nonnegative
@@ -21,3 +22,6 @@ If the bound is exceeded, export refuses and removes its partial file rather tha
 silently cutting coverage. Original history stays unchanged. The selected sample
 supports causal debugging and later parameter comparisons, not independent proof
 of profitability. Wider stops and extra buy signals do not establish improvement.
+
+Whole-market eligibility snapshots and unrelated-symbol events are excluded with
+explicit counts. All records still participate in full-prefix hash verification.

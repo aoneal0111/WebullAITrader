@@ -47,10 +47,13 @@ def export(review, output):
         if native.get('status')=='RECONCILIATION_FAILED':raise ValueError('RECONCILED_REVIEW_REQUIRED')
         windows=[]
         for item in native['outcomes']:
-            windows.append((at(item['opened_at'])-timedelta(seconds=60),
+            symbol=str(item.get('instrument','')).strip().upper()
+            if not symbol:raise ValueError('TRADE_SYMBOL_REQUIRED')
+            windows.append((symbol,at(item['opened_at'])-timedelta(seconds=60),
                 at(item['closed_at'])+timedelta(seconds=60)))
         if not windows:raise ValueError('FILLED_TRADE_WINDOWS_REQUIRED')
-        reasons=Counter();decisions=Counter();freshness=Counter();selected=Counter()
+        reasons=Counter();decisions=Counter();freshness=Counter();selected=Counter();excluded=Counter()
+        traded_symbols={symbol for symbol,_,_ in windows}
         seen=0;size=0;records=0;previous='0'*64;total=0
         temporary=output.with_name(output.name+'.partial-'+uuid4().hex)
         try:
@@ -90,9 +93,15 @@ def export(review, output):
                                                 age=(at(now)-at(value)).total_seconds()
                                                 freshness[component+('_FUTURE' if age<0 else '_NONFUTURE')]+=1
                                 received=at(row['received_at'])
-                                near=any(start<=received<=end for start,end in windows)
-                                keep=(kind in {'ASSESSMENT','SCALPER_CONFIRMATION_DIAGNOSTIC','READINESS_CHECK_FAILED','PAPER_EVENT'}
-                                    or near and kind in {'STREAM_ASSESSMENT','MARKET_EVENT','MARKET_ELIGIBILITY'})
+                                symbol=str(p.get('symbol') or p.get('snapshot',{}).get('symbol') or '').strip().upper()
+                                near=any(symbol==trade_symbol and start<=received<=end
+                                    for trade_symbol,start,end in windows)
+                                # Eligibility snapshots contain whole-market state, not the quote
+                                # sequence. Retaining them per event overwhelmed compact exports.
+                                keep=(kind in {'ASSESSMENT','SCALPER_CONFIRMATION_DIAGNOSTIC','READINESS_CHECK_FAILED'}
+                                    or kind=='PAPER_EVENT' and symbol in traded_symbols
+                                    or near and kind in {'STREAM_ASSESSMENT','MARKET_EVENT'})
+                                if not keep:excluded[kind]+=1
                                 if keep:
                                     size+=len(line);records+=1
                                     if size>MAX_SELECTED or records>MAX_RECORDS:raise ValueError('SELECTED_EVIDENCE_BOUND')
@@ -104,11 +113,13 @@ def export(review, output):
                 result=dict(scope='EQUITY_ENTRY_AND_STOP_DIAGNOSTIC_EVIDENCE_V1',trial_id=report['trial_id'],
                     review_sha256=sha256(review.read_bytes()).hexdigest(),verified_records=seen,
                     selected_records=records,selected_bytes=size,selected_kinds=dict(selected),
+                    excluded_kinds=dict(excluded),selection_version='TRADE_SYMBOL_WINDOWS_V2',
                     stream_reasons=dict(reasons),stream_decisions=dict(decisions),
                     stale_component_classification=dict(freshness),
-                    trade_windows=[dict(start=s.isoformat(),end=e.isoformat()) for s,e in windows],
+                    trade_windows=[dict(symbol=symbol,start=s.isoformat(),end=e.isoformat()) for symbol,s,e in windows],
                     orders=0,network_requests=0,parameters_changed=False,
                     limitations=['Verified checkpoint prefix only; later journal bytes excluded',
+                        'Whole-market eligibility snapshots and unrelated-symbol events deliberately excluded; excluded counts reported',
                         'Stale component classification distinguishes negative age only, not full freshness approval',
                         'Repeated assessments are not independent opportunities or win-rate samples',
                         'Trade windows use received time; provider and processing times remain unmodified',
