@@ -31,7 +31,7 @@ def passes(row):
         row['terminal_forced_closes']<=max(1,row['closed_trades']*.2) and row['maximum_drawdown']<=.15)
 
 
-def run(archive,output):
+def run(archive,output,*,market_wide=False):
     output=Path(output);output.mkdir(parents=True,exist_ok=False)
     cases=[Case(f,p) for f,ps in GRID.items() for p in ps]
     geometry=list(product((2.,3.,5.,8.),(2.,3.,5.,8.),(12,24,48,96),(False,True)))
@@ -40,13 +40,13 @@ def run(archive,output):
         capital=10000,slots=6,fees_per_side=[.004,.008],slippage_per_side=.0005,overhead_per_day=2,
         prior_completed_candle_volume_participation_limit=.01,min_notional=10,
         gate='>60% closed wins, positive net after costs, entries every complete day, >=20 closes, drawdown <=15%',
-        qualification_eligible=False,orders=0,workers_modified=False,
+        qualification_eligible=False,orders=0,workers_modified=False,market_wide=market_wide,
         limitations=['Exploratory, previously inspected latest-revision candle capture',
             'Later chronological split is not a pristine untouched holdout',
             'Screening engine; native replay required before any deployment'])
     (output/'protocol.json').write_text(json.dumps(protocol,indent=2))
     with zipfile.ZipFile(archive) as z:
-      for tf,prefix in [('1h','roc'),('4h','wave')]:
+      for tf,prefix in ([('1h','bb'),('4h','nfi')] if market_wide else [('1h','roc'),('4h','wave')]):
         frames={}
         for name in z.namelist():
             if name.startswith(prefix+'/candles/') and name.endswith('-'+tf+'.json'):
@@ -87,4 +87,5 @@ def run(archive,output):
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--archive',required=True);p.add_argument('--output',required=True)
-    a=p.parse_args();run(a.archive,a.output)
+    p.add_argument('--market-wide',action='store_true')
+    a=p.parse_args();run(a.archive,a.output,market_wide=a.market_wide)

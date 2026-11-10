@@ -13,7 +13,8 @@ from app.strategy_lab.nfi_forward_engine import Evidence, clean_environment
 from app.strategy_lab.nfi_forward_status import ledger_status
 
 # Add-on definitions do not alter the original five-profile fleet.
-DEFINITIONS = {**PROFILES, 'roc': dict(strategy='FleetROCPullback', timeframe='1h', startup=200)}
+DEFINITIONS = {**PROFILES, 'roc': dict(strategy='FleetROCPullback', timeframe='1h', startup=200),
+               'boll':dict(strategy='FleetBollinger',timeframe='4h',startup=200)}
 
 
 def repair_bb_tag_names(converted):
@@ -95,6 +96,10 @@ def compile_profile(work):
         if original.count(before)!=1:raise ValueError('EXACT_CRSI_CAUSAL_ADAPTER_REQUIRED')
         (folder/'FleetCRSIReference.py').write_text(original.replace(before,"df['sma_200'] = df['sma_200'].copy()"))
         (folder/'FleetCRSI.py').write_bytes((MODULE/'FleetCRSI.py').read_bytes())
+    elif key=='boll':
+        for name in ('AtlasIncomeEMA.py','AtlasBollingerResearch.py'):
+            (folder/name).write_bytes((MODULE/name).read_bytes())
+        (folder/'FleetBollinger.py').write_text('from AtlasBollingerResearch import AtlasBollingerResearch\nclass FleetBollinger(AtlasBollingerResearch):\n    pass\n')
     elif key=='roc':
         (folder/'FleetROCPullback.py').write_bytes((MODULE/'FleetROCPullback.py').read_bytes())
     else:
@@ -177,7 +182,7 @@ def snapshot(frame,*,strategy=None):
     buy=None if value is None or pd.isna(value) else int(value)
     inputs={}
     for name in ('close','volume','rsi','rsi2','rsi_fast','rsi_slow','cti','EWO','roc3',
-                 'ema_8','ema_16','sma_15','sma200','sma_200','atr'):
+                 'ema_8','ema_16','sma_15','sma200','sma_200','atr','sma20','std20'):
         value=row.get(name)
         if value is not None and pd.notna(value) and math.isfinite(float(value)):
             inputs[name]=float(value)
@@ -185,7 +190,7 @@ def snapshot(frame,*,strategy=None):
     if strategy is not None:
         for name in ('buy_ema_low','buy_sma15_32','buy_cti_32','buy_rsi_fast',
                      'buy_rsi_fast_32','buy_ewo','buy_ema_high','buy_rsi','buy_rsi_32',
-                     'low_offset','low_offset_2','ewo_high','ewo_low','rsi_buy'):
+                     'low_offset','low_offset_2','ewo_high','ewo_low','rsi_buy','WIDTH','STOP_ATR','TARGET_ATR','HOLD_HOURS'):
             parameter=getattr(strategy,name,None)
             if parameter is not None:params[name]=getattr(parameter,'value',parameter)
     return dict(state='SOURCE_BUY_SIGNAL' if buy==1 else 'NO_SOURCE_BUY_SIGNAL',
