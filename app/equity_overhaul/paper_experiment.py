@@ -24,12 +24,15 @@ ACCOUNT_LIMITS={k:(v if k=='hours' else None) for k,v in LIMITS.items()}
 V2_FAMILIES={'WARRIOR_MOMENTUM':('MICRO_PULLBACK','MOMENTUM_REACCELERATION','RECLAIM_CONTINUATION'),
              'QUICK_SCALPER':FAMILIES['QUICK_SCALPER']}
 V2_CENT_POLICY=dict(minimum='0.05',maximum='0.10',minimum_net_reward_r='1')
+CLOCK_POLICY=dict(maximum_future_ms=250,maximum_book_age_ms=5000,provider_timestamps_modified=False)
 PROFILES=PAPER_PROFILES
 EXTENDED_ENTRY_SESSIONS=frozenset({'PREMARKET','REGULAR','AFTER_HOURS'})
 
 
-def create(directory,clock=lambda:datetime.now(UTC),*,profile='LEGACY_V1',extended_sessions=False):
+def create(directory,clock=lambda:datetime.now(UTC),*,profile='LEGACY_V1',extended_sessions=False,clock_tolerance=False):
     if profile not in PROFILES:raise ValueError('UNKNOWN_EXPERIMENT_PROFILE')
+    if type(clock_tolerance) is not bool or clock_tolerance and profile!=ACCOUNT_SIZING_PROFILE:
+        raise ValueError('EXPLICIT_ACCOUNT_PAPER_CLOCK_PROFILE_REQUIRED')
     if type(extended_sessions) is not bool or extended_sessions and profile not in GROK_CONTROL_PROFILES:
         raise ValueError('EXPLICIT_GROK_PAPER_EXTENDED_SESSIONS_REQUIRED')
     root=Path(directory);root.mkdir(parents=True,exist_ok=True)
@@ -41,6 +44,7 @@ def create(directory,clock=lambda:datetime.now(UTC),*,profile='LEGACY_V1',extend
         spec['families']={**V2_FAMILIES,'WARRIOR_MOMENTUM':(*V2_FAMILIES['WARRIOR_MOMENTUM'],'GROK_DIRECTED')}
     if profile==ACCOUNT_SIZING_PROFILE:spec.update(scope='NATIVE_PAPER_EXPERIMENT_V6',limits=dict(ACCOUNT_LIMITS))
     if extended_sessions:spec['entry_sessions']=sorted(EXTENDED_ENTRY_SESSIONS)
+    if clock_tolerance:spec['scalper_clock_policy']=dict(CLOCK_POLICY)
     with (root/'experiment.json').open('x',encoding='utf-8') as f:json.dump(spec,f,indent=2)
     return spec
 
@@ -52,6 +56,9 @@ def load(path,clock=lambda:datetime.now(UTC)):
     if 'entry_sessions' in spec and (spec.get('profile') not in GROK_CONTROL_PROFILES
             or spec['entry_sessions']!=sorted(EXTENDED_ENTRY_SESSIONS)):
         raise ValueError('EXPERIMENT_SESSION_POLICY_INVALID')
+    if 'scalper_clock_policy' in spec and (spec.get('profile')!=ACCOUNT_SIZING_PROFILE
+            or spec['scalper_clock_policy']!=CLOCK_POLICY):
+        raise ValueError('EXPERIMENT_CLOCK_POLICY_INVALID')
     v2=spec.get('scope') in {'NATIVE_PAPER_EXPERIMENT_V2','NATIVE_PAPER_EXPERIMENT_V3','NATIVE_PAPER_EXPERIMENT_V4','NATIVE_PAPER_EXPERIMENT_V5','NATIVE_PAPER_EXPERIMENT_V6'}
     expected_profile=ACCOUNT_SIZING_PROFILE if spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V6' else 'GROK_WARRIOR_V5' if spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V5' else 'CENT_DEFENSE_V4' if spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V4' else 'CENT_EXECUTABLE_V3' if spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V3' else 'CENT_EARLY_V2'
     families=({**V2_FAMILIES,'WARRIOR_MOMENTUM':(*V2_FAMILIES['WARRIOR_MOMENTUM'],'GROK_DIRECTED')}
@@ -105,6 +112,7 @@ class PaperExperiment(EquityQualificationPolicy):
     def scalper_config(self,config):
         if not self.cent_early:return config
         return replace(config,cent_target_minimum=D('0.05'),cent_target_maximum=D('0.10'),
+            provider_future_tolerance_seconds=D('.25') if self.spec.get('scalper_clock_policy')==CLOCK_POLICY else D('0'),
             allowed_sessions=EXTENDED_ENTRY_SESSIONS if self.spec.get('entry_sessions') else config.allowed_sessions,
             minimum_net_target_reward_r=D('1'),cent_pullback_support_enabled=True,
             cent_fill_anchored_economics=self.spec.get('profile') in {'CENT_EXECUTABLE_V3','CENT_DEFENSE_V4',*GROK_CONTROL_PROFILES},
@@ -198,12 +206,15 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--create',required=True)
     p.add_argument('--profile',choices=PROFILES,default='LEGACY_V1')
     p.add_argument('--extended-sessions',action='store_true')
+    p.add_argument('--clock-tolerance',action='store_true')
     args=p.parse_args();root=Path(args.create)
-    spec=load(root/'experiment.json')[1] if (root/'experiment.json').exists() else create(root,profile=args.profile,extended_sessions=args.extended_sessions)
+    spec=load(root/'experiment.json')[1] if (root/'experiment.json').exists() else create(root,profile=args.profile,extended_sessions=args.extended_sessions,clock_tolerance=args.clock_tolerance)
     if spec.get('profile','LEGACY_V1') != args.profile:
         raise ValueError('EXISTING_EXPERIMENT_PROFILE_MISMATCH')
     if bool(spec.get('entry_sessions')) != args.extended_sessions:
         raise ValueError('EXISTING_EXPERIMENT_SESSION_POLICY_MISMATCH')
+    if bool(spec.get('scalper_clock_policy')) != args.clock_tolerance:
+        raise ValueError('EXISTING_EXPERIMENT_CLOCK_POLICY_MISMATCH')
     print('PAPER_EXPERIMENT_ID='+spec['trial_id']);print('EXPERIMENT_EXPIRES_AT='+spec['expires_at'])
 
 

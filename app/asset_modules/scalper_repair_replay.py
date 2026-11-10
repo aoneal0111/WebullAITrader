@@ -62,6 +62,11 @@ def source_binding(recorded, source_root):
     if all(value in (V3_SOURCE[i], V3_CRLF_SOURCE[i])
            for i, value in enumerate(recorded)):
         return 'PRIOR_V3'
+    # Exact V6 before the opt-in timing field; its default remains zero.
+    v6=(
+        ('417a9b051bb4174fa68f71e8de6b5bb900ad0d8ebbd26ebac7439f78ec89b5dd','199190d1d31ce4fa7ecd0ae7be9967743a4f9a495c071d63e11d8725d3815dcc'),
+        ('6bb064fff42545cfa9b8ff6be52b3e0349d32fbc63ba43c252d919baceac73cd','7d2ed2a99f9b791b727df31b0cc54eff76ec218e86360b6f24e52e9582e7fde3'))
+    if all(value in v6[i] for i,value in enumerate(recorded)):return 'PRIOR_V6'
     # Check current first: V4's policy file itself is unchanged.
     current=True
     for name, value in zip(POLICY_FILES, recorded):

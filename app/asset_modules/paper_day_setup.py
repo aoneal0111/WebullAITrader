@@ -16,7 +16,9 @@ FLAGS={'WEBULL_TRADING_ENVIRONMENT':'PAPER','LIVE_TRADING_ENABLED':'false',
 def quote(value):return "'"+str(value).replace("'","''")+"'"
 
 
-def prepare(repo,output,*,profile='LEGACY_V1',teams=False,extended_sessions=False):
+def prepare(repo,output,*,profile='LEGACY_V1',teams=False,extended_sessions=False,clock_tolerance=False):
+    if type(clock_tolerance) is not bool or clock_tolerance and profile!=ACCOUNT_SIZING_PROFILE:
+        raise ValueError('EXPLICIT_ACCOUNT_PAPER_CLOCK_PROFILE_REQUIRED')
     if profile not in PAPER_PROFILES:raise ValueError('UNKNOWN_EXPERIMENT_PROFILE')
     if profile in GROK_CONTROL_PROFILES and teams:raise ValueError('WARRIOR_CONTROL_IS_EMBEDDED_NOT_OBSERVER_TEAMS')
     if type(extended_sessions) is not bool or extended_sessions and profile not in GROK_CONTROL_PROFILES:raise ValueError('EXPLICIT_GROK_PAPER_EXTENDED_SESSIONS_REQUIRED')
@@ -45,7 +47,7 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False,extended_sessions=Fals
     atlas=common+"Push-Location "+quote(repo)+"\ntry {\n"
     atlas+="    $Running = Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^python(w)?\\.exe$' -and $_.CommandLine -match 'app\\.gui\\.app|bootstrap-observer\\.py' }\n"
     atlas+="    if ($Running) { throw 'Close the existing Atlas normally first. Nothing else was started.' }\n"
-    atlas+="    & "+quote(python)+" -m app.equity_overhaul.paper_experiment --create "+quote(output)+" --profile "+quote(profile)+(" --extended-sessions" if extended_sessions else "")+"\n"
+    atlas+="    & "+quote(python)+" -m app.equity_overhaul.paper_experiment --create "+quote(output)+" --profile "+quote(profile)+(" --extended-sessions" if extended_sessions else "")+(" --clock-tolerance" if clock_tolerance else "")+"\n"
     atlas+="    if ($LASTEXITCODE -ne 0) { throw 'Experiment expired or invalid. Nothing started.' }\n"
     if profile in GROK_CONTROL_PROFILES:
         atlas+="    Write-Host 'GROK CONTROLS WARRIOR ONLY; NATIVE CANDIDATE REVIEW + DIRECTED ENTRIES/EXITS; MAX 20 PAID CALLS; SCALPER INDEPENDENT; PROTECTIVE EXITS RETAINED'\n"
@@ -94,6 +96,7 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False,extended_sessions=Fals
         summary.update(position_sizing='NATIVE_ACCOUNT_RISK',trial_size_overrides=False,trial_entry_attempt_cap=None,trial_cumulative_notional_cap=None,
             native_risk='Configured account buying power, exposure, quantity/position limits and per-trade risk are enforced at dispatch',
             limitations=summary['limitations']+['Eight-hour expiry and twenty Warrior paid attempts remain; normal account/strategy controls still apply.'])
+    summary['scalper_clock_tolerance_ms']=250 if clock_tolerance else 0
     target=output/'preparation-summary.json';target.write_text(json.dumps(summary,indent=2),encoding='utf-8')
     print('TRIAL_DIRECTORY='+str(output));print('MANUAL_ATLAS='+str(output/'Start-Atlas-Paper-Trial.ps1'))
     if profile not in GROK_CONTROL_PROFILES:print('MANUAL_GROK='+str(output/('Start-Grok-Teams.ps1' if teams else 'Start-Grok-Intentions.ps1')))
@@ -105,8 +108,8 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False,extended_sessions=Fals
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--repo',required=True);p.add_argument('--output',required=True)
     p.add_argument('--profile',choices=PAPER_PROFILES,default='LEGACY_V1')
-    p.add_argument('--teams',action='store_true');p.add_argument('--extended-sessions',action='store_true')
-    args=p.parse_args();prepare(args.repo,args.output,profile=args.profile,teams=args.teams,extended_sessions=args.extended_sessions)
+    p.add_argument('--teams',action='store_true');p.add_argument('--extended-sessions',action='store_true');p.add_argument('--clock-tolerance',action='store_true')
+    args=p.parse_args();prepare(args.repo,args.output,profile=args.profile,teams=args.teams,extended_sessions=args.extended_sessions,clock_tolerance=args.clock_tolerance)
 
 
 if __name__=='__main__':main()

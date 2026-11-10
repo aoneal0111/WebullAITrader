@@ -21,6 +21,7 @@ def report(trial):
         'orders_enabled_by_this_check': False,
         'position_sizing':('NATIVE_ACCOUNT_RISK' if spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V6' else 'BOUNDED_TRIAL'),
         'trial_limits':spec.get('limits'),
+        'scalper_clock_policy':spec.get('scalper_clock_policy'),
         'entry_sessions':spec.get('entry_sessions',['PREMARKET','REGULAR'])}
     if spec:
         remaining=max(0,(datetime.fromisoformat(spec['expires_at'])-datetime.now(UTC)).total_seconds())

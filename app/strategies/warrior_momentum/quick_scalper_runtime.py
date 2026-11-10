@@ -1133,7 +1133,7 @@ class QuickScalperPaperRuntimeAdapter:
         if state is None or executable_bid is None or quote_timestamp is None:
             return
         age = Decimal(str((observed_at - quote_timestamp).total_seconds()))
-        if age < ZERO or age > self.config.provider_freshness_seconds:
+        if age < -self.config.provider_future_tolerance_seconds or age > self.config.provider_freshness_seconds:
             return
         quantity = max(0, int(self.position_quantity_source(state.symbol)))
         if quantity <= 0:

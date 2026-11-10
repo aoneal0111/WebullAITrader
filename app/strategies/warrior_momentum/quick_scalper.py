@@ -44,6 +44,7 @@ class QuickScalperConfig:
         {"PREMARKET", "REGULAR"}
     )
     provider_freshness_seconds: Decimal = Decimal("5")
+    provider_future_tolerance_seconds: Decimal = Decimal("0")
     absolute_minimum_move: Decimal = Decimal("0.05")
     volatility_move_fraction: Decimal = Decimal("0.50")
     execution_cost_multiple: Decimal = Decimal("1.75")
@@ -86,6 +87,10 @@ class QuickScalperConfig:
             raise ValueError('Quick Scalper minimum price must remain $1.00')
         if self.maximum_price is not None:
             raise ValueError('Quick Scalper must not impose a maximum price')
+        if (not self.provider_future_tolerance_seconds.is_finite()
+                or not ZERO <= self.provider_future_tolerance_seconds <= Decimal('0.25')
+                or self.provider_future_tolerance_seconds and not self.cent_fill_anchored_economics):
+            raise ValueError('Future tolerance requires explicit cent PAPER profile and at most 250ms')
         if self.provider_freshness_seconds != Decimal("5"):
             raise ValueError("Quick Scalper must preserve the 5-second provider limit")
         if not (
@@ -357,16 +362,17 @@ class QuickScalperPolicy:
         # whether a new trade happened to print recently.  A retained LAST can
         # legitimately be older in thin or extended-hours trading while a
         # current BID/ASK still represents the market we can actually enter
-        # and exit against.  Future provider timestamps remain fail-closed for
-        # every component because they indicate a clock/provenance defect.
+        # and exit against. Only an explicit PAPER timing experiment permits
+        # up to 250ms of provider/local clock difference. Original timestamps
+        # are preserved; larger future ages and books older than 5s fail closed.
         last_age = Decimal(str(
             (value.decision_at - value.last_timestamp).total_seconds()
         ))
-        if last_age < ZERO:
+        if last_age < -self.config.provider_future_tolerance_seconds:
             return OpportunityReason.PROVIDER_DATA_STALE
         for timestamp in (value.bid_timestamp, value.ask_timestamp):
             age = Decimal(str((value.decision_at - timestamp).total_seconds()))
-            if age < ZERO or age > self.config.provider_freshness_seconds:
+            if age < -self.config.provider_future_tolerance_seconds or age > self.config.provider_freshness_seconds:
                 return OpportunityReason.PROVIDER_DATA_STALE
         return None
 
@@ -508,7 +514,8 @@ class QuickScalper:
             and (not self.config.cent_pullback_support_enabled
                  or self.policy._cent_support_ready(snapshot))
             and not any(
-                timestamp > snapshot.decision_at
+                Decimal(str((timestamp - snapshot.decision_at).total_seconds()))
+                > self.config.provider_future_tolerance_seconds
                 for timestamp in (
                     snapshot.last_timestamp,
                     snapshot.bid_timestamp,

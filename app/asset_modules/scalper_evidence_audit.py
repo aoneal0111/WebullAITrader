@@ -18,6 +18,9 @@ POLICY_FILES=('app/strategies/warrior_momentum/quick_scalper.py',
 
 def typed(cls,raw):
     """Exact dataclass schema and original decimal/time types, never retiming."""
+    if cls.__name__=='QuickScalperConfig' and isinstance(raw,dict) and 'provider_future_tolerance_seconds' not in raw:
+        # Additive timing option defaults strictly OFF for historical captures.
+        raw={**raw,'provider_future_tolerance_seconds':'0'}
     names={f.name for f in fields(cls)}
     if not isinstance(raw,dict) or set(raw)!=names:raise ValueError('RECORDED_SCHEMA_CHANGED')
     hints=get_type_hints(cls);values={}
