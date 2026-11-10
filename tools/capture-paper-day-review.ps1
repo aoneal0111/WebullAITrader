@@ -2,7 +2,8 @@ param(
     [string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'),
     [Parameter(Mandatory=$true)][string]$Revision,
     [Parameter(Mandatory=$true)][string]$Trial,
-    [string]$Ledger = ''
+    [string]$Ledger = '',
+    [switch]$Interrupted
 )
 $ErrorActionPreference = 'Stop'
 if ($Revision -notmatch '^[0-9a-f]{40}$') { throw 'Exact reviewed revision required.' }
@@ -52,9 +53,11 @@ $Source = Join-Path $Root 'review-source'
 if ($LASTEXITCODE -ne 0) { throw 'Read-only review checkout failed.' }
 Push-Location $Source
 try {
-    & $Python -m unittest tests.strategy_research.test_paper_day_review_stdlib tests.strategy_research.test_audit_stdlib -v
+    & $Python -m unittest tests.strategy_research.test_paper_day_review_stdlib tests.strategy_research.test_audit_stdlib tests.strategy_research.test_interrupted_paper_review -v
     if ($LASTEXITCODE -ne 0) { throw 'Fill reconciliation/export checks failed. No source database changed.' }
-    & $Python -m app.strategy_research.paper_day_review --trial $Trial --ledger $Ledger --output (Join-Path $Root 'export')
+    $ReviewOptions = @()
+    if ($Interrupted) { $ReviewOptions += '--interrupted' }
+    & $Python -m app.strategy_research.paper_day_review --trial $Trial --ledger $Ledger --output (Join-Path $Root 'export') @ReviewOptions
     if ($LASTEXITCODE -ne 0) { throw 'Review export failed. Preserve the error; do not rerun Atlas.' }
 } finally { Pop-Location }
 Invoke-Item (Join-Path $Root 'export')

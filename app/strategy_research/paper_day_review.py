@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 import re
 import shutil
+import subprocess
+import sys
 import sqlite3
 import time
 import zipfile
@@ -125,14 +127,92 @@ def call_reviews(rows):
     return reviews
 
 
-def collect(trial,ledger,output):
+def require_stopped_desktop():
+    """Inspect actual Windows processes; saved writer_alive flags are historical."""
+    if sys.platform != 'win32':
+        raise ValueError('WINDOWS_PROCESS_CHECK_REQUIRED_FOR_INTERRUPTED_REVIEW')
+    script = r"""$ErrorActionPreference='Stop'
+$p=@(Get-CimInstance Win32_Process | Where-Object {
+    $_.Name -match '^python(w)?\.exe$' -and
+    $_.CommandLine -match 'app\.gui\.app|bootstrap-observer\.py|grok_day_proposals'
+})
+$p.Count
+"""
+    result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',script],
+        capture_output=True,text=True,timeout=30,check=True)
+    if result.stdout.strip() != '0':
+        raise ValueError('ACTIVE_ATLAS_OR_OBSERVER_PROCESS_INTERRUPTED_REVIEW_REFUSED')
+
+
+def verify_interrupted_prefix(session, manifest):
+    """Verify only the durable checkpoint prefix; never copy or finalize raw history."""
+    journal=session/'journal'
+    checkpoint=read_json(journal/'journal-status.json')
+    baseline=manifest.get('baseline_sha256')
+    if not isinstance(baseline,str) or not re.fullmatch('[0-9a-f]{64}',baseline):
+        raise ValueError('MANIFEST_BASELINE_REQUIRED')
+    if checkpoint.get('baseline_sha256')!=baseline:
+        raise ValueError('CHECKPOINT_BASELINE_MISMATCH')
+    wanted=checkpoint.get('counts',{}).get('written')
+    expected_bytes=checkpoint.get('bytes_written')
+    if (type(wanted) is not int or not 0<=wanted<=8_000_000 or
+            type(expected_bytes) is not int or not 0<=expected_bytes<=4*1024**3):
+        raise ValueError('CHECKPOINT_BOUND')
+    previous='0'*64; sequence=0; total=0; counts=Counter(); segments=[]
+    paths=sorted(journal.glob('events-*.jsonl'))
+    if journal.is_symlink() or len(paths)>4096:raise ValueError('JOURNAL_DIRECTORY_BOUND_OR_LINK')
+    for index,path in enumerate(paths,1):
+        if sequence==wanted:break
+        if path.name!=f'events-{index:05d}.jsonl' or path.is_symlink():
+            raise ValueError('JOURNAL_SEGMENT_SEQUENCE_OR_LINK')
+        h=sha256(); size=0
+        with path.open('rb') as stream:
+            while sequence<wanted:
+                line=stream.readline(128*1024+1)
+                if not line:break
+                if len(line)>128*1024 or not line.endswith(b'\n'):
+                    raise ValueError('JOURNAL_PARTIAL_OR_OVERSIZE_RECORD')
+                row=json.loads(line); claimed=row.pop('sha256'); sequence+=1; total+=len(line)
+                canonical=json.dumps(row,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+                if (total>expected_bytes or row['schema']!='ATLAS_DAILY_EVIDENCE_V1'
+                        or row['sequence']!=sequence or row['previous_sha256']!=previous
+                        or row['baseline_sha256']!=baseline or sha256(canonical).hexdigest()!=claimed):
+                    raise ValueError('JOURNAL_CHAIN_MISMATCH')
+                previous=claimed; counts[row['kind']]+=1; h.update(line); size+=len(line)
+        segments.append(dict(name=path.name,bytes=size,sha256=h.hexdigest()))
+        print('REVIEW_PREFIX_RECORDS='+str(sequence),flush=True)
+    if sequence!=wanted or total!=expected_bytes or previous!=checkpoint.get('chain_head'):
+        raise ValueError('CHECKPOINT_PREFIX_MISMATCH')
+    return checkpoint,dict(scope='INTERRUPTED_SESSION_WRITTEN_PREFIX_REVIEW_V1',
+        records=sequence,bytes=total,chain_head=previous,baseline_sha256=baseline,
+        kinds=dict(counts),segments=segments,checkpoint_at=checkpoint.get('updated_at'),
+        final_summary_present=False,full_run_complete=False,
+        tail_after_checkpoint='EXCLUDED_UNVERIFIED',
+        writer_alive_is_historical_observation=True)
+
+
+def collect(trial,ledger,output,*,interrupted=False):
     trial,ledger,output=Path(trial).resolve(),Path(ledger).resolve(),Path(output).resolve()
     spec=read_json(trial/'experiment.json');pointer=read_json(trial/'recording-session.json')
     if pointer['trial_id']!=spec['trial_id']:raise ValueError('TRIAL_POINTER_MISMATCH')
     session=Path(pointer['session']);manifest=read_json(session/'research-manifest.json')
-    final=read_json(session/'research-summary.json')
+    summary=session/'research-summary.json'
+    if interrupted:
+        require_stopped_desktop()
+        if summary.exists():raise ValueError('SUMMARY_PRESENT_USE_NORMAL_REVIEW')
+        watched=[trial/'experiment.json',trial/'recording-session.json',
+            session/'research-manifest.json',session/'journal/journal-status.json']
+        watched_hashes={p:digest(p) for p in watched}
+        def journal_state():
+            return [(p.name,p.stat().st_size,p.stat().st_mtime_ns)
+                for p in sorted((session/'journal').glob('events-*.jsonl'))]
+        segment_state=journal_state()
+        checkpoint,prefix=verify_interrupted_prefix(session,manifest)
+        final={'journal':checkpoint,'reason':'INTERRUPTED_NO_FINAL_SUMMARY'}
+    else:
+        final=read_json(summary)
     if manifest.get('paper_experiment')!=spec:raise ValueError('NATIVE_MANIFEST_TRIAL_MISMATCH')
-    if not final.get('journal',{}).get('closed') or not final['journal'].get('writer_stopped'):
+    if not interrupted and (not final.get('journal',{}).get('closed') or not final['journal'].get('writer_stopped')):
         raise ValueError('FINALIZED_RECORDING_REQUIRED')
     if output.exists():raise ValueError('NEW_PRIVATE_REVIEW_DIRECTORY_REQUIRED')
     sources=[ledger,trial/'entry-attempts.sqlite3',trial/'grok-team-budget.sqlite3']
@@ -191,8 +271,21 @@ def collect(trial,ledger,output):
             'http_status':r.get('http_status'),'citation_count':len(r.get('citations',[])),
             'latency_ms':r.get('latency_ms')} for engine,stage,at,_,raw in rows
             if engine=='NEWS_DESK' and stage=='NEWS' for r in [json.loads(raw) if raw else {}]]
+    if interrupted:
+        require_stopped_desktop()
+        if (summary.exists() or journal_state()!=segment_state
+                or any(digest(p)!=value for p,value in watched_hashes.items())):
+            raise ValueError('RECORDING_CHANGED_DURING_INTERRUPTED_REVIEW')
+        report['scope']='PRIVATE_INTERRUPTED_PAPER_SESSION_REVIEW_V1'
+        report['verified_prefix']=prefix
+        report['limitations']=[
+            'Interrupted session: original unclosed checkpoint preserved; writer_alive is a stale observation, not process health',
+            'Only checkpoint-written records verified; queued records and all later bytes are excluded and unverified',
+            'Ledger snapshots are consistent separately; journal and ledger are not one atomic snapshot',
+            'No final entry diagnostics exist; event-kind counts do not establish unique trades or final engine totals',
+            'Grok intentions are decisions, not filled trades or measurable win rate']
     (payload/'paper-day-review.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
-    archive=output/'closed-paper-day-review.zip'
+    archive=output/('interrupted-paper-session-review.zip' if interrupted else 'closed-paper-day-review.zip')
     with zipfile.ZipFile(archive,'x',compression=zipfile.ZIP_DEFLATED) as z:
         for path in sorted(payload.rglob('*')):
             if path.is_file():z.write(path,path.relative_to(payload).as_posix())
@@ -203,7 +296,8 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--trial',required=True,type=Path);p.add_argument('--ledger',required=True,type=Path)
     p.add_argument('--output',required=True,type=Path)
-    a=p.parse_args();report,archive=collect(a.trial,a.ledger,a.output)
+    p.add_argument('--interrupted',action='store_true',help='Missing final summary; verify stopped Windows producers and saved journal prefix')
+    a=p.parse_args();report,archive=collect(a.trial,a.ledger,a.output,interrupted=a.interrupted)
     result=report['native_trial'];metrics=result.get('overall',{})
     print('REVIEW=COMPLETE; ORDERS=0; API_REQUESTS=0')
     print('TRIAL_CLOSED='+str(result.get('closed_lifecycles'))+'; WINS='+str(metrics.get('wins'))+
