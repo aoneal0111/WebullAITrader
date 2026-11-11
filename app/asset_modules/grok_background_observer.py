@@ -31,7 +31,7 @@ class BackgroundAdvisers:
 
     def offer(self,snapshot,context):
         if (not isinstance(snapshot,Snapshot) or snapshot.engine not in OWNERS
-                or snapshot.source!='WEBULL_OPENAPI' or snapshot.baseline_sha256!=self.baseline
+                or snapshot.source not in {'WEBULL_OPENAPI','WEBULL_STREAM'} or snapshot.baseline_sha256!=self.baseline
                 or not isinstance(context,StrategyContext)):
             raise ValueError('Owned current native context required')
         context.payload(snapshot)  # Identity, completed-bar causality and bounds.
@@ -143,7 +143,7 @@ def run_background(capture_path,baseline,output,client,*,clock=lambda:datetime.n
                 previous=complete
                 try:records=decode_capture(complete,baseline)
                 except Exception:reason='INVALID_CAPTURE';break
-                if any(s.source!='WEBULL_OPENAPI' for s,c in records):reason='NON_NATIVE_CAPTURE';break
+                if any(s.source not in {'WEBULL_OPENAPI','WEBULL_STREAM'} for s,c in records):reason='NON_NATIVE_CAPTURE';break
                 for snapshot,context in records:
                     identity=(snapshot.engine,snapshot.event_id)
                     if identity in seen:continue

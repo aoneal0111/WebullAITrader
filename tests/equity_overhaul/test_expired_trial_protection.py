@@ -30,3 +30,25 @@ def test_expired_launcher_preflight_keeps_original_id_and_expiry(tmp_path,monkey
     module.main()
     assert 'PROTECTION_ONLY' in capsys.readouterr().out
     assert path.read_bytes()==before
+
+
+def test_explicit_24_hour_account_trial_stays_active_through_next_regular_session(tmp_path):
+    import json
+    # 8:42 p.m. CST: the old eight-hour window ended before regular trading.
+    evening=datetime(2026,11,11,2,42,tzinfo=UTC)
+    create(tmp_path,lambda:evening,profile='GROK_WARRIOR_ACCOUNT_V6',hours=24)
+    path=tmp_path/'experiment.json'
+    noon=evening+timedelta(hours=16)
+    _,spec=load(path,lambda:noon)
+    exp=PaperExperiment(path,spec,clock=lambda:noon,timer=lambda:0)
+    exp.capture_ready=lambda:True
+    assert exp.active() and spec['limits']['maximum_quantity'] is None
+    assert spec['expires_at']==(evening+timedelta(hours=24)).isoformat()
+    with pytest.raises(ValueError,match='EXPIRED'):load(path,lambda:evening+timedelta(hours=24))
+    spec['limits']['hours']=25;path.write_text(json.dumps(spec))
+    with pytest.raises(ValueError,match='DURATION'):load(path,lambda:noon)
+
+
+def test_24_hours_requires_explicit_account_profile(tmp_path):
+    with pytest.raises(ValueError,match='DURATION'):create(tmp_path,hours=24)
+    assert not (tmp_path/'experiment.json').exists()

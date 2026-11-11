@@ -18,6 +18,7 @@ class PaperStreamQuoteSource:
         self.rest,self.clock,self.future_tolerance=rest,clock,future_tolerance
         self._lock=RLock();self._symbols=OrderedDict();self._counts=Counter()
         self._last_source='NONE'
+        self._evidence=ContextVar('paper_quote_evidence_'+str(id(self)),default=None)
         self._selection=ContextVar('paper_quote_selection_'+str(id(self)),default='NONE')
 
     def observe_market_event(self,event):
@@ -58,7 +59,16 @@ class PaperStreamQuoteSource:
             self._counts['stream_used' if chosen is not None else 'rest_requested']+=1
             self._last_source='WEBULL_STREAM' if chosen is not None else 'WEBULL_REST'
         self._selection.set('WEBULL_STREAM' if chosen is not None else 'WEBULL_REST')
-        return chosen if chosen is not None else self.rest(symbol)
+        result=chosen if chosen is not None else self.rest(symbol)
+        self._evidence.set((result,self._selection.get()))
+        return result
+
+    def observer_provenance(self,quote):
+        evidence=self._evidence.get()
+        if evidence is None or evidence[0] is not quote:return None
+        if evidence[1]=='WEBULL_STREAM':return 'WEBULL_STREAM'
+        from .execution_quote import WebullExecutionQuoteSource
+        return 'WEBULL_OPENAPI' if isinstance(self.rest,WebullExecutionQuoteSource) else None
 
     def record_decision(self,**values):
         if self._selection.get()=='WEBULL_REST':

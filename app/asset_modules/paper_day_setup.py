@@ -16,7 +16,9 @@ FLAGS={'WEBULL_TRADING_ENVIRONMENT':'PAPER','LIVE_TRADING_ENABLED':'false',
 def quote(value):return "'"+str(value).replace("'","''")+"'"
 
 
-def prepare(repo,output,*,profile='LEGACY_V1',teams=False,extended_sessions=False,clock_tolerance=False):
+def prepare(repo,output,*,profile='LEGACY_V1',teams=False,extended_sessions=False,clock_tolerance=False,hours=8):
+    if type(hours) is not int or hours not in (8,24) or (hours!=8 and profile!=ACCOUNT_SIZING_PROFILE):
+        raise ValueError('EXPLICIT_ACCOUNT_PAPER_DURATION_REQUIRED')
     if type(clock_tolerance) is not bool or clock_tolerance and profile!=ACCOUNT_SIZING_PROFILE:
         raise ValueError('EXPLICIT_ACCOUNT_PAPER_CLOCK_PROFILE_REQUIRED')
     if profile not in PAPER_PROFILES:raise ValueError('UNKNOWN_EXPERIMENT_PROFILE')
@@ -47,13 +49,13 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False,extended_sessions=Fals
     atlas=common+"Push-Location "+quote(repo)+"\ntry {\n"
     atlas+="    $Running = Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^python(w)?\\.exe$' -and $_.CommandLine -match 'app\\.gui\\.app|bootstrap-observer\\.py' }\n"
     atlas+="    if ($Running) { throw 'Close the existing Atlas normally first. Nothing else was started.' }\n"
-    atlas+="    & "+quote(python)+" -m app.equity_overhaul.paper_experiment --create "+quote(output)+" --profile "+quote(profile)+(" --extended-sessions" if extended_sessions else "")+(" --clock-tolerance" if clock_tolerance else "")+"\n"
+    atlas+="    & "+quote(python)+" -m app.equity_overhaul.paper_experiment --create "+quote(output)+" --profile "+quote(profile)+(" --extended-sessions" if extended_sessions else "")+(" --clock-tolerance" if clock_tolerance else "")+" --hours "+str(hours)+"\n"
     atlas+="    if ($LASTEXITCODE -ne 0) { throw 'Experiment expired or invalid. Nothing started.' }\n"
     if profile in GROK_CONTROL_PROFILES:
         atlas+="    Write-Host 'GROK CONTROLS WARRIOR ONLY; NATIVE CANDIDATE REVIEW + DIRECTED ENTRIES/EXITS; MAX 20 PAID CALLS; SCALPER INDEPENDENT; PROTECTIVE EXITS RETAINED'\n"
-    sizing_notice=("EXPERIMENTAL PAPER; 8 HOURS; NATIVE ACCOUNT SIZING; NO TRIAL POSITION OR ENTRY-NOTIONAL OVERRIDES; GROK WARRIOR CONTROL ON" if profile==ACCOUNT_SIZING_PROFILE else "EXPERIMENTAL PAPER; 8 HOURS; 50 ENTRY ATTEMPTS; 10 SHARES; $100 POSITION; $1 MODELED INITIAL RISK; "+("GROK WARRIOR CONTROL ON" if profile in GROK_CONTROL_PROFILES else "GROK ORDERS OFF"))
+    sizing_notice=(f"EXPERIMENTAL PAPER; {hours} HOURS; NATIVE ACCOUNT SIZING; NO TRIAL POSITION OR ENTRY-NOTIONAL OVERRIDES; GROK WARRIOR CONTROL ON" if profile==ACCOUNT_SIZING_PROFILE else "EXPERIMENTAL PAPER; 8 HOURS; 50 ENTRY ATTEMPTS; 10 SHARES; $100 POSITION; $1 MODELED INITIAL RISK; "+("GROK WARRIOR CONTROL ON" if profile in GROK_CONTROL_PROFILES else "GROK ORDERS OFF"))
     atlas+="    Write-Host "+quote(sizing_notice)+"\n"
-    if extended_sessions:atlas+="    Write-Host 'PAPER ENTRY SESSIONS: PREMARKET / REGULAR / AFTER_HOURS; EIGHT-HOUR EXPIRY, PAID-REQUEST CAP AND NATIVE ACCOUNT RISK STILL APPLY'\n"
+    if extended_sessions:atlas+="    Write-Host 'PAPER ENTRY SESSIONS: PREMARKET / REGULAR / AFTER_HOURS; EXPLICIT EXPIRY, PAID-REQUEST CAP AND NATIVE ACCOUNT RISK STILL APPLY'\n"
     atlas+="    & "+quote(python)+" -m app.gui.app\n"+finally_block
     grok=common+"Push-Location "+quote(repo)+"\ntry {\n"
     grok+="    & "+quote(python)+" -m app.asset_modules.grok_day_proposals --repo "+quote(repo)+" --trial "+quote(output)+(" --teams" if teams else "")+"\n"
@@ -73,7 +75,7 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False,extended_sessions=Fals
     summary=dict(experiment_profile=profile,scope='MANUAL_PAPER_DAY_TRIAL_PREPARATION_V1',prepared_only=True,atlas_started=False,requests=0,extended_sessions=extended_sessions,
         entry_sessions=['PREMARKET','REGULAR','AFTER_HOURS'] if extended_sessions else ['PREMARKET','REGULAR'],
         flags=FLAGS,lease_created_on_manual_launch=True,capture='Local learning outcome collection; subscribed market events, bar windows, assessments, paper order/fill events, rejection/freshness diagnostics',
-        raw_journal_limit_bytes=4*1024**3,raw_journal_limit_records=8_000_000,max_recording_hours=16,
+        raw_journal_limit_bytes=4*1024**3,raw_journal_limit_records=8_000_000,max_recording_hours=max(16,hours),entry_window_hours=hours,
         context_limits='10000 fresh contexts / 64 MiB; raw journal continues afterward',
         grok='At most twenty paid order-intention calls over eight hours; no order dispatch or simulated fills',
         trial='Current canonical native Warrior/Quick Scalper adapters only; no claim that all public repositories are installed',
@@ -95,7 +97,7 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False,extended_sessions=Fals
     if profile==ACCOUNT_SIZING_PROFILE:
         summary.update(position_sizing='NATIVE_ACCOUNT_RISK',trial_size_overrides=False,trial_entry_attempt_cap=None,trial_cumulative_notional_cap=None,
             native_risk='Configured account buying power, exposure, quantity/position limits and per-trade risk are enforced at dispatch',
-            limitations=summary['limitations']+['Eight-hour expiry and twenty Warrior paid attempts remain; normal account/strategy controls still apply.'])
+            limitations=summary['limitations']+['Explicit trial expiry and twenty Warrior paid attempts remain; normal account/strategy controls still apply.'])
     summary['scalper_clock_tolerance_ms']=250 if clock_tolerance else 0
     target=output/'preparation-summary.json';target.write_text(json.dumps(summary,indent=2),encoding='utf-8')
     print('TRIAL_DIRECTORY='+str(output));print('MANUAL_ATLAS='+str(output/'Start-Atlas-Paper-Trial.ps1'))
@@ -109,7 +111,8 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--repo',required=True);p.add_argument('--output',required=True)
     p.add_argument('--profile',choices=PAPER_PROFILES,default='LEGACY_V1')
     p.add_argument('--teams',action='store_true');p.add_argument('--extended-sessions',action='store_true');p.add_argument('--clock-tolerance',action='store_true')
-    args=p.parse_args();prepare(args.repo,args.output,profile=args.profile,teams=args.teams,extended_sessions=args.extended_sessions,clock_tolerance=args.clock_tolerance)
+    p.add_argument('--hours',type=int,choices=(8,24),default=8)
+    args=p.parse_args();prepare(args.repo,args.output,profile=args.profile,teams=args.teams,extended_sessions=args.extended_sessions,clock_tolerance=args.clock_tolerance,hours=args.hours)
 
 
 if __name__=='__main__':main()

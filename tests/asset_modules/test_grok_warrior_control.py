@@ -394,3 +394,17 @@ def test_native_review_includes_actual_partial_policy_without_enlarging_candidat
     assert policy['configured_partial_exit_fractions']['first_target']=='0.50'
     assert policy['native_minimum_remaining_reward_r']['final_target']=='1.5'
     assert context['candidates'][0]['evidence']['target_levels']==[str(p) for p in value.target_levels]
+
+
+@pytest.mark.parametrize('control',['GROK_WARRIOR_ACCOUNT_V6'],indirect=True)
+def test_full_day_director_is_paced_across_24_hours_without_increasing_paid_cap(control,setup):
+    spec=control.experiment.spec
+    spec['limits']['hours']=24
+    spec['expires_at']=(NOW+timedelta(hours=24)).isoformat()
+    control.experiment.path.write_text(json.dumps(spec))
+    for offset,expected in ((0,0),(2,0),(3,1),(21,7),(23,7)):
+        setup[-1][0]=NOW+timedelta(hours=offset)
+        with control._lock:control._contexts['SPY']=(point(),setup[-1][0])
+        control._review_director()
+        assert control._last_hour==expected
+    assert control.budget.report()['reserved_attempts']<=8

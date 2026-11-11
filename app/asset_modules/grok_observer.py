@@ -55,7 +55,7 @@ class Snapshot:
         for at in (self.bid_at,self.ask_at,self.captured_at):aware(at)
         if not isinstance(self.baseline_sha256,str) or not re.fullmatch('[0-9a-f]{64}',self.baseline_sha256):
             raise ValueError('baseline fingerprint required')
-        if self.source not in {'RECORDED_FIXTURE','WEBULL_OPENAPI','ALPACA_SIP'}:
+        if self.source not in {'RECORDED_FIXTURE','WEBULL_OPENAPI','WEBULL_STREAM','ALPACA_SIP'}:
             raise ValueError('explicit supported source required')
 
     def fresh(self,now):

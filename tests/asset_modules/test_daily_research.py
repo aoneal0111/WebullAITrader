@@ -234,3 +234,18 @@ def test_optional_storage_failure_does_not_block_normal_protection_start(monkeyp
     def failed(*args,**kwargs):raise OSError('fixture storage failure')
     monkeypatch.setattr(module,'DailyResearch',failed)
     assert configured_research(config(),RuntimeMode.PAPER) is None
+
+
+@pytest.mark.parametrize('expired',[False,True])
+def test_full_day_recording_and_expired_protection_startup_preserve_original_lease(tmp_path,monkeypatch,expired):
+    from app.equity_overhaul.paper_experiment import create,ENV
+    root=tmp_path/'trial'
+    create(root,lambda:NOW-timedelta(hours=25) if expired else NOW,profile='GROK_WARRIOR_ACCOUNT_V6',hours=24)
+    before=(root/'experiment.json').read_bytes()
+    monkeypatch.setenv(ENV,str(root/'experiment.json'))
+    recording=DailyResearch(config(),root=tmp_path/'recordings',clock=lambda:NOW)
+    try:
+        manifest=json.loads((recording.directory/'research-manifest.json').read_text())
+        assert manifest['max_seconds']==24*3600
+    finally:recording.close()
+    assert (root/'experiment.json').read_bytes()==before

@@ -92,11 +92,15 @@ class RuntimeContextTap:
         except Exception:return False
 
     def record(self,*,engine,quote,source,at,baseline_result,setup_state,preview=None):
+        from app.strategies.warrior_momentum.execution_quote import WebullExecutionQuoteSource
+        from app.strategies.warrior_momentum.paper_stream_quote import PaperStreamQuoteSource
+        provenance=('WEBULL_OPENAPI' if isinstance(source,WebullExecutionQuoteSource) else
+            source.observer_provenance(quote) if isinstance(source,PaperStreamQuoteSource) else None)
         event_id=uuid4().hex
         if self._journal is not None:
             self._journal.submit('ASSESSMENT',dict(event_id=event_id,engine=engine,quote=quote,
-                assessed_at=at,baseline_result=baseline_result,setup_state=setup_state,preview=preview))
-        return self._put(('ASSESS',engine,quote,source,at,baseline_result,setup_state,self._capture._clock(),preview,event_id))
+                assessed_at=at,baseline_result=baseline_result,setup_state=setup_state,preview=preview,quote_provenance=provenance))
+        return self._put(('ASSESS',engine,quote,source,at,baseline_result,setup_state,self._capture._clock(),preview,event_id,provenance))
 
     def record_scalper_preview(self,snapshot,assessment):
         """Numeric initial-stream rejection diagnostics; no requests or authority."""
@@ -180,16 +184,16 @@ class RuntimeContextTap:
                     self._bars.pop(symbol,None);self._bars[symbol]=(bars,known)
                     if len(self._bars)>128:self._bars.popitem(last=False)
                     continue
-                _,engine,quote,source,native_at,result,setup,enqueued_at,preview,event_id=item
+                _,engine,quote,source,native_at,result,setup,enqueued_at,preview,event_id,provenance=item
                 from app.strategies.warrior_momentum.execution_quote import ExecutionQuoteSnapshot,WebullExecutionQuoteSource
-                if (not isinstance(source,WebullExecutionQuoteSource) or not isinstance(quote,ExecutionQuoteSnapshot)
+                if (provenance not in {'WEBULL_OPENAPI','WEBULL_STREAM'} or not isinstance(quote,ExecutionQuoteSnapshot)
                         or quote.bid_timestamp!=quote.ask_timestamp):
                     self._count('unsupported_quote_provenance');continue
                 captured_now=self._capture._clock()
                 # The native market event can precede the synchronous REST
                 # confirmation. Keep both clocks; never rewrite provider time.
                 at=quote.confirmed_at if quote.confirmed_at is not None else native_at
-                if engine is EngineId.SCALPER and preview is not None:
+                if engine is EngineId.SCALPER and preview is not None and provenance=='WEBULL_OPENAPI':
                     self._compare_scalper_confirmation(preview,quote,native_at)
                 native_age=(native_at-quote.bid_timestamp).total_seconds()
                 assessed_age=(at-quote.bid_timestamp).total_seconds()
@@ -216,10 +220,10 @@ class RuntimeContextTap:
                 completed=tuple(ContextBar(b.timestamp+timedelta(minutes=1),known,
                     b.open,b.high,b.low,b.close,b.volume) for b in bars if b.timestamp+timedelta(minutes=1)<=known)
                 snapshot=Snapshot(engine,event_id,quote.symbol,quote.bid,quote.ask,
-                    quote.bid_timestamp,quote.ask_timestamp,at,self._baseline,'WEBULL_OPENAPI')
+                    quote.bid_timestamp,quote.ask_timestamp,at,self._baseline,provenance)
                 context=StrategyContext(engine,snapshot.event_id,quote.symbol,self._baseline,at,
-                    'WEBULL_OPENAPI',setup,result,completed)
-                accepted=self._capture.submit(snapshot,context,quote_basis='WEBULL_PROVIDER_QUOTE_TIME_SHARED')
+                    provenance,setup,result,completed)
+                accepted=self._capture.submit(snapshot,context,quote_basis=('WEBULL_SUBSCRIBED_QUOTE_TIME_SHARED' if provenance=='WEBULL_STREAM' else 'WEBULL_PROVIDER_QUOTE_TIME_SHARED'))
                 self._count('captured' if accepted else 'capture_refused')
             except Exception:self._count('invalid_native_evidence')
 

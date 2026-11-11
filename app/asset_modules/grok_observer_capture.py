@@ -43,7 +43,7 @@ def _encode(snapshot,context,baseline,now,quote_basis=None):
     context.payload(snapshot)
     basis=quote_basis or ('FIXTURE_ONLY' if snapshot.source=='RECORDED_FIXTURE' else None)
     if not ((snapshot.source=='RECORDED_FIXTURE' and basis=='FIXTURE_ONLY') or
-            (snapshot.source=='WEBULL_OPENAPI' and basis=='WEBULL_PROVIDER_QUOTE_TIME_SHARED'
+            (snapshot.source in {'WEBULL_OPENAPI','WEBULL_STREAM'} and basis==('WEBULL_SUBSCRIBED_QUOTE_TIME_SHARED' if snapshot.source=='WEBULL_STREAM' else 'WEBULL_PROVIDER_QUOTE_TIME_SHARED')
              and snapshot.bid_at==snapshot.ask_at)):
         raise ValueError('Explicit supported provider timestamp basis required')
     row=dict(schema='ATLAS_OBSERVER_CONTEXT_CAPTURE_V1',snapshot=asdict(snapshot),

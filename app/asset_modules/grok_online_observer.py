@@ -50,7 +50,7 @@ def run(capture_path, baseline, output, client, *, clock=lambda:datetime.now(UTC
                 previous_complete=complete
                 try:records=decode_capture(complete,baseline)
                 except Exception:reason='INVALID_CAPTURE';break
-                if any(s.source!='WEBULL_OPENAPI' for s,c in records):
+                if any(s.source not in {'WEBULL_OPENAPI','WEBULL_STREAM'} for s,c in records):
                     reason='NON_NATIVE_CAPTURE';break
                 for snapshot,context in records:
                     identity=(snapshot.engine,snapshot.event_id)

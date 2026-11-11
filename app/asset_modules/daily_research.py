@@ -35,7 +35,8 @@ class DailyResearch:
             seconds=self.crypto_capture['seconds']
         from app.equity_overhaul.paper_experiment import ENV, load
         experiment_path=os.environ.get(ENV,'').strip()
-        experiment=load(experiment_path,clock=clock)[1] if experiment_path else None
+        experiment=load(experiment_path,clock=clock,allow_expired=True)[1] if experiment_path else None
+        if experiment:seconds=max(seconds,experiment['limits']['hours']*3600)
         baseline_material=dict(source=source_hash,configuration=config_hash)
         if experiment:baseline_material['paper_experiment']=experiment
         if self.crypto_capture is not None:baseline_material['crypto_observation_capture']=self.crypto_capture

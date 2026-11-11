@@ -272,3 +272,54 @@ def test_paired_confirmation_refuses_foreign_symbol_and_reports_changed_price_sa
     assert r['tap_counts']['confirmation_preview_missing_or_mismatched']==1
     assert r['scalper_confirmation_comparison']['counts']['samples']==1
     assert r['scalper_confirmation_comparison']['counts']['changed_prices_with_same_quote_timestamps']==1
+
+
+def test_stream_wrapper_provenance_survives_queue_and_is_not_mislabeled_rest(tmp_path):
+    from app.strategies.warrior_momentum.paper_stream_quote import PaperStreamQuoteSource
+    from app.market_data.models import MarketEvent,MarketEventType,QuotePayload,TradePayload
+    capture=ContextCapture(tmp_path/'capture',BASE,clock=lambda:NOW)
+    tap=RuntimeContextTap(capture,BASE);rest=FixtureSource()
+    source=PaperStreamQuoteSource(rest,clock=lambda:NOW)
+    at=NOW-timedelta(milliseconds=200)
+    source.observe_market_event(MarketEvent(1,at,'AAPL','webull',MarketEventType.TRADE,
+        TradePayload(D(100),D(1),'t'),received_timestamp=NOW))
+    source.observe_market_event(MarketEvent(2,at,'AAPL','webull',MarketEventType.QUOTE,
+        QuotePayload(D(100),D('100.1'),D(10),D(10)),received_timestamp=NOW))
+    q=source('AAPL')
+    try:
+        tap.remember_bars('AAPL',bars(),known_at=NOW)
+        tap.record(engine=EngineId.SCALPER,quote=q,source=source,at=NOW,
+            baseline_result='WAIT',setup_state='FORMING')
+        # An unrelated equivalent-looking quote has no wrapper provenance.
+        tap.record(engine=EngineId.SCALPER,quote=replace(q),source=source,at=NOW,
+            baseline_result='WAIT',setup_state='FORMING')
+    finally:result=tap.close()
+    assert result['tap_counts']['captured']==1
+    assert result['tap_counts']['unsupported_quote_provenance']==1
+    assert rest.calls==0
+    rows=load_capture(tmp_path/'capture/private-observer-context.jsonl',BASE)
+    assert rows[0][0].source=='WEBULL_STREAM'
+    assert rows[0][0].bid_at==at
+    raw=json.loads((tmp_path/'capture/private-observer-context.jsonl').read_text())
+    assert raw['quote_timestamp_basis']=='WEBULL_SUBSCRIBED_QUOTE_TIME_SHARED'
+
+
+def test_stream_wrapper_rest_fallback_retains_native_rest_provenance(tmp_path):
+    from app.strategies.warrior_momentum.paper_stream_quote import PaperStreamQuoteSource
+    class Rest(FixtureSource):
+        def __call__(self,symbol):
+            self.calls+=1
+            return quote()
+    rest=Rest();source=PaperStreamQuoteSource(rest,clock=lambda:NOW)
+    q=source('AAPL')
+    capture=ContextCapture(tmp_path/'capture',BASE,clock=lambda:NOW)
+    tap=RuntimeContextTap(capture,BASE)
+    try:
+        tap.remember_bars('AAPL',bars(),known_at=NOW)
+        tap.record(engine=EngineId.SCALPER,quote=q,source=source,at=NOW,
+            baseline_result='WAIT',setup_state='FORMING')
+    finally:result=tap.close()
+    assert result['tap_counts']['captured']==1 and rest.calls==1
+    row=json.loads((tmp_path/'capture/private-observer-context.jsonl').read_text())
+    assert row['snapshot']['source']=='WEBULL_OPENAPI'
+    assert row['quote_timestamp_basis']=='WEBULL_PROVIDER_QUOTE_TIME_SHARED'

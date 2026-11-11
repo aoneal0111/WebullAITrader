@@ -155,7 +155,7 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
                         line,buffer=buffer.split(b'\n',1)
                         if len(line)>MAX_LINE:raise ValueError('CAPTURE_LINE_BOUND')
                         snapshot,context=decode_capture(line+b'\n',manifest['baseline_sha256'])[0]
-                        if snapshot.source!='WEBULL_OPENAPI':raise ValueError('NATIVE_CONTEXT_REQUIRED')
+                        if snapshot.source not in {'WEBULL_OPENAPI','WEBULL_STREAM'}:raise ValueError('NATIVE_CONTEXT_REQUIRED')
                         health_counts['append_contexts_seen']+=1
                         if snapshot.fresh(clock()):latest[snapshot.engine.value]=(snapshot,context)
                         else:health_counts['append_contexts_stale_when_read']+=1
@@ -167,7 +167,7 @@ def run(repo,trial,*,max_seconds=8*3600,clock=lambda:datetime.now(UTC),timer=tim
                             with cached.open('rb') as stream:raw=stream.read(MAX_LINE+1)
                             if len(raw)>MAX_LINE:raise ValueError('LATEST_CONTEXT_BOUND')
                             s,c=decode_capture(raw,manifest['baseline_sha256'])[0]
-                            if s.engine.value!=owner or s.source!='WEBULL_OPENAPI':raise ValueError('LATEST_CONTEXT_OWNER_MISMATCH')
+                            if s.engine.value!=owner or s.source not in {'WEBULL_OPENAPI','WEBULL_STREAM'}:raise ValueError('LATEST_CONTEXT_OWNER_MISMATCH')
                             health_counts['latest_contexts_read']+=1
                             if not s.fresh(clock()):health_counts['latest_contexts_stale_when_read']+=1
                             old=latest.get(owner)

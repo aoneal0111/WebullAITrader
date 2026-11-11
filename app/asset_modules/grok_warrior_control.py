@@ -217,7 +217,8 @@ class WarriorControl:
     def _review_director(self):
         if not self.active():return
         now=self.clock();start=datetime.fromisoformat(self.experiment.spec['created_at'])
-        hour=int((now-start).total_seconds()//3600)
+        slot_seconds=self.experiment.spec['limits']['hours']*3600/8
+        hour=int((now-start).total_seconds()//slot_seconds)
         if not 0<=hour<8 or hour==self._last_hour:return
         with self._lock:
             available={s:(p,at) for s,(p,at) in self._contexts.items() if 0<=(now-at).total_seconds()<=2}

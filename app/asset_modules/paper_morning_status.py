@@ -18,7 +18,7 @@ def report(trial):
     trial = Path(trial).resolve()
     spec = read(trial / 'experiment.json')
     result = {'trial_started': bool(spec), 'expires_at': spec.get('expires_at'),
-        'orders_enabled_by_this_check': False,
+        'orders_enabled_by_this_check': False,'checked_at':datetime.now(UTC).isoformat(),
         'position_sizing':('NATIVE_ACCOUNT_RISK' if spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V6' else 'BOUNDED_TRIAL'),
         'trial_limits':spec.get('limits'),
         'scalper_clock_policy':spec.get('scalper_clock_policy'),
@@ -26,6 +26,10 @@ def report(trial):
     if spec:
         remaining=max(0,(datetime.fromisoformat(spec['expires_at'])-datetime.now(UTC)).total_seconds())
         result['remaining_trial_hours']=round(remaining/3600,2)
+        result['entry_window_state']='EXPIRED' if remaining==0 else 'WITHIN_WINDOW'
+        result['entry_window_hours']=spec.get('limits',{}).get('hours',8)
+        result['entry_blockers']=['TRIAL_EXPIRED'] if remaining==0 else []
+        if (trial/'PAUSE_ENTRIES').exists():result['entry_blockers'].append('PAUSE_ENTRIES')
         entry_db=trial/'entry-attempts.sqlite3'
         if entry_db.is_file():
             db=sqlite3.connect(entry_db.as_uri()+'?mode=ro',uri=True)
@@ -56,6 +60,9 @@ def report(trial):
             written_records=journal.get('counts',{}).get('written'),
             contexts_by_engine={k:v for k,v in readiness.get('tap_counts',{}).items() if k.startswith('assessments_queued_')},
             final_reason=final.get('reason'))
+    if pointer:
+        result['observer_input_warnings']={k:v for k,v in readiness.get('tap_counts',{}).items() if k in ('unsupported_quote_provenance','capture_refused','queue_full') and v}
+        result['scalper_bridge_rejections']=readiness.get('scalper_execution_status',{}).get('bridge_rejections',{})
     control=read(trial/'warrior-control-status.json')
     if control:result['warrior_control_status']=control
     db_path = trial / 'grok-team-budget.sqlite3'

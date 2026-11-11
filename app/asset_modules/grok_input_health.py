@@ -79,7 +79,7 @@ def input_health(session, baseline, now, *, cases=0,pending=0,counters=None):
             with path.open('rb') as stream:raw=stream.read(MAX_LINE+1)
             if len(raw)>MAX_LINE:raise ValueError('BOUND')
             s,_=decode_capture(raw,baseline)[0]
-            if s.engine.value!=engine or s.source!='WEBULL_OPENAPI':raise ValueError('SOURCE')
+            if s.engine.value!=engine or s.source not in {'WEBULL_OPENAPI','WEBULL_STREAM'}:raise ValueError('SOURCE')
             cached[engine]={'status':'FRESH' if s.fresh(now) else 'STALE_OR_FUTURE',
                 'capture_age_seconds':round((now-s.captured_at).total_seconds(),3),
                 'bid_age_seconds':round((now-s.bid_at).total_seconds(),3),

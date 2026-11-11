@@ -48,3 +48,14 @@ def test_team_launchers_are_manual_paper_only_and_have_readiness_report(tmp_path
     assert result['shared_paid_attempt_cap']==60 and not result['crypto_nfi_connected']
     assert not result['credentials_validated_online']
     assert 'fixture-only' not in ''.join(p.read_text() for p in root.iterdir())
+
+
+def test_explicit_full_day_launcher_uses_24_hours_without_starting_or_renewing(tmp_path,monkeypatch):
+    monkeypatch.setenv('XAI_API_KEY','fixture-only')
+    monkeypatch.setenv('ATLAS_GROK_MODEL','grok-4.7')
+    repo=tmp_path/'repo';repo.mkdir()
+    result=prepare(repo,tmp_path/'trial',profile='GROK_WARRIOR_ACCOUNT_V6',hours=24,clock_tolerance=True,extended_sessions=True)
+    script=(tmp_path/'trial/Start-Atlas-Paper-Trial.ps1').read_text()
+    assert '--hours 24' in script and '24 HOURS' in script
+    assert result['entry_window_hours']==24 and result['max_recording_hours']==24
+    assert not (tmp_path/'trial/experiment.json').exists()

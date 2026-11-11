@@ -29,20 +29,23 @@ PROFILES=PAPER_PROFILES
 EXTENDED_ENTRY_SESSIONS=frozenset({'PREMARKET','REGULAR','AFTER_HOURS'})
 
 
-def create(directory,clock=lambda:datetime.now(UTC),*,profile='LEGACY_V1',extended_sessions=False,clock_tolerance=False):
+def create(directory,clock=lambda:datetime.now(UTC),*,profile='LEGACY_V1',extended_sessions=False,clock_tolerance=False,hours=8):
     if profile not in PROFILES:raise ValueError('UNKNOWN_EXPERIMENT_PROFILE')
     if type(clock_tolerance) is not bool or clock_tolerance and profile!=ACCOUNT_SIZING_PROFILE:
         raise ValueError('EXPLICIT_ACCOUNT_PAPER_CLOCK_PROFILE_REQUIRED')
     if type(extended_sessions) is not bool or extended_sessions and profile not in GROK_CONTROL_PROFILES:
         raise ValueError('EXPLICIT_GROK_PAPER_EXTENDED_SESSIONS_REQUIRED')
+    if type(hours) is not int or hours not in (8,24) or (hours!=8 and profile!=ACCOUNT_SIZING_PROFILE):
+        raise ValueError('EXPLICIT_ACCOUNT_PAPER_DURATION_REQUIRED')
     root=Path(directory);root.mkdir(parents=True,exist_ok=True)
     now=clock();spec=dict(scope='NATIVE_PAPER_EXPERIMENT_V1',trial_id=uuid4().hex,
-        created_at=now.isoformat(),expires_at=(now+timedelta(hours=8)).isoformat(),limits=dict(LIMITS),families=FAMILIES)
+        created_at=now.isoformat(),expires_at=(now+timedelta(hours=hours)).isoformat(),limits=dict(LIMITS),families=FAMILIES)
     if profile in PROFILES[1:]:
         spec.update(scope=('NATIVE_PAPER_EXPERIMENT_V5' if profile in GROK_CONTROL_PROFILES else 'NATIVE_PAPER_EXPERIMENT_V4' if profile=='CENT_DEFENSE_V4' else 'NATIVE_PAPER_EXPERIMENT_V3' if profile=='CENT_EXECUTABLE_V3' else 'NATIVE_PAPER_EXPERIMENT_V2'),profile=profile,families=V2_FAMILIES,cent_policy=V2_CENT_POLICY)
     if profile in GROK_CONTROL_PROFILES:
         spec['families']={**V2_FAMILIES,'WARRIOR_MOMENTUM':(*V2_FAMILIES['WARRIOR_MOMENTUM'],'GROK_DIRECTED')}
     if profile==ACCOUNT_SIZING_PROFILE:spec.update(scope='NATIVE_PAPER_EXPERIMENT_V6',limits=dict(ACCOUNT_LIMITS))
+    spec['limits']['hours']=hours
     if extended_sessions:spec['entry_sessions']=sorted(EXTENDED_ENTRY_SESSIONS)
     if clock_tolerance:spec['scalper_clock_policy']=dict(CLOCK_POLICY)
     with (root/'experiment.json').open('x',encoding='utf-8') as f:json.dump(spec,f,indent=2)
@@ -63,15 +66,20 @@ def load(path,clock=lambda:datetime.now(UTC),*,allow_expired=False):
     expected_profile=ACCOUNT_SIZING_PROFILE if spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V6' else 'GROK_WARRIOR_V5' if spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V5' else 'CENT_DEFENSE_V4' if spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V4' else 'CENT_EXECUTABLE_V3' if spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V3' else 'CENT_EARLY_V2'
     families=({**V2_FAMILIES,'WARRIOR_MOMENTUM':(*V2_FAMILIES['WARRIOR_MOMENTUM'],'GROK_DIRECTED')}
               if expected_profile in GROK_CONTROL_PROFILES else V2_FAMILIES if v2 else FAMILIES)
+    duration=spec.get('limits',{}).get('hours')
+    expected_limits=dict(ACCOUNT_LIMITS if expected_profile==ACCOUNT_SIZING_PROFILE else LIMITS)
+    if type(duration) is not int or duration not in ((8,24) if expected_profile==ACCOUNT_SIZING_PROFILE else (8,)):
+        raise ValueError('EXPERIMENT_DURATION_INVALID')
+    expected_limits['hours']=duration
     if (spec.get('scope') not in {'NATIVE_PAPER_EXPERIMENT_V1','NATIVE_PAPER_EXPERIMENT_V2','NATIVE_PAPER_EXPERIMENT_V3','NATIVE_PAPER_EXPERIMENT_V4','NATIVE_PAPER_EXPERIMENT_V5','NATIVE_PAPER_EXPERIMENT_V6'}
         or (v2 and (spec.get('profile')!=expected_profile or spec.get('cent_policy')!=V2_CENT_POLICY))
         or (not v2 and (spec.get('profile','LEGACY_V1')!='LEGACY_V1' or 'cent_policy' in spec))
-        or spec.get('limits')!=(ACCOUNT_LIMITS if expected_profile==ACCOUNT_SIZING_PROFILE else LIMITS)
+        or spec.get('limits')!=expected_limits
         or spec.get('families')!={k:list(v) for k,v in families.items()}
         or len(spec.get('trial_id',''))!=32):raise ValueError('EXPERIMENT_SPEC_INVALID')
     start,end=(datetime.fromisoformat(spec[k]) for k in ('created_at','expires_at'))
     now=clock()
-    if start.utcoffset() is None or end.utcoffset() is None or end-start!=timedelta(hours=8) or now<start or (not allow_expired and now>=end):
+    if start.utcoffset() is None or end.utcoffset() is None or end-start!=timedelta(hours=duration) or now<start or (not allow_expired and now>=end):
         raise ValueError('EXPERIMENT_EXPIRED_OR_FUTURE')
     return path,spec
 
@@ -127,7 +135,7 @@ class PaperExperiment(EquityQualificationPolicy):
             wall=(self.clock()-self._wall_start).total_seconds()
             return bool(self.capture_ready and self.capture_ready()
                 and (self.grok_execution is None or self.grok_execution.active())
-                and not self.path.with_name('PAUSE_ENTRIES').exists() and spec==self.spec and 0<=elapsed<8*3600 and abs(wall-elapsed)<=2)
+                and not self.path.with_name('PAUSE_ENTRIES').exists() and spec==self.spec and 0<=elapsed<self.spec['limits']['hours']*3600 and abs(wall-elapsed)<=2)
         except Exception:return False
 
     def bind(self,attribution):
@@ -187,7 +195,7 @@ class PaperExperiment(EquityQualificationPolicy):
         return replace(placement,order=replace(placement.order,metadata=metadata))
 
     def notice(self):
-        state='entry trial enabled, subject to native checks' if self.active() else 'new entries paused, expired or capture unavailable'
+        state='entry trial enabled, subject to native checks' if self.active() else ('ENTRY WINDOW EXPIRED; protection only; prepare a new trial for new buys' if self.clock()>=datetime.fromisoformat(self.spec['expires_at']) else 'new entries paused or capture unavailable')
         profile=('Grok-directed Warrior; native five-cent-defense Scalper. ' if self.spec.get('profile') in GROK_CONTROL_PROFILES else 'V4 five-cent stop-defense floor; early native Warrior. ' if self.spec.get('profile')=='CENT_DEFENSE_V4' else 'V3 fill-anchored cent Scalper; early native Warrior. ' if self.spec.get('profile')=='CENT_EXECUTABLE_V3' else 'Early native Warrior; cent-pullback Scalper. ') if self.cent_early else ''
         mode='Grok WARRIOR review + directed entries/exits ON; Scalper native' if self.spec.get('profile') in GROK_CONTROL_PROFILES else 'Grok native order review ON; crypto requires its visible AI switch' if self.grok_execution else 'Grok orders OFF'
         sizing=('Native account sizing; no trial quantity, position, risk, attempt or cumulative-notional overrides; '
@@ -208,8 +216,11 @@ def main():
     p.add_argument('--profile',choices=PROFILES,default='LEGACY_V1')
     p.add_argument('--extended-sessions',action='store_true')
     p.add_argument('--clock-tolerance',action='store_true')
+    p.add_argument('--hours',type=int,choices=(8,24),default=8)
     args=p.parse_args();root=Path(args.create)
-    spec=load(root/'experiment.json',allow_expired=True)[1] if (root/'experiment.json').exists() else create(root,profile=args.profile,extended_sessions=args.extended_sessions,clock_tolerance=args.clock_tolerance)
+    spec=load(root/'experiment.json',allow_expired=True)[1] if (root/'experiment.json').exists() else create(root,profile=args.profile,extended_sessions=args.extended_sessions,clock_tolerance=args.clock_tolerance,hours=args.hours)
+    if spec['limits']['hours']!=args.hours:
+        raise ValueError('EXISTING_EXPERIMENT_DURATION_MISMATCH')
     if spec.get('profile','LEGACY_V1') != args.profile:
         raise ValueError('EXISTING_EXPERIMENT_PROFILE_MISMATCH')
     if bool(spec.get('entry_sessions')) != args.extended_sessions:
