@@ -8,6 +8,8 @@ import re
 import ssl
 from threading import BoundedSemaphore, Lock
 from time import monotonic
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -21,6 +23,11 @@ REASONING_MODELS = frozenset({'grok-4.5','grok-4.6','grok-4.7'})
 
 class GrokUnavailable(RuntimeError):
     """Safe status without provider error bodies or credentials."""
+    def __init__(self,message,*,failure_category=None,http_status=None,retry_after_seconds=None):
+        super().__init__(message)
+        self.failure_category=failure_category if failure_category=='RATE_LIMITED' else None
+        self.http_status=http_status if type(http_status) is int and http_status==429 else None
+        self.retry_after_seconds=retry_after_seconds if type(retry_after_seconds) is int and 1<=retry_after_seconds<=3600 else None
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -61,6 +68,7 @@ class GrokClient:
                                  latency_ms_total=0, latency_ms_max=0, failures={})
         self._lock, self._slots = Lock(), BoundedSemaphore(2)
         self._next = {}
+        self._rate_limit_until=0
         self.requests = 0
         self._usage = {"input_tokens":0,"output_tokens":0,"responses_with_usage":0,"responses_without_usage":0}
 
@@ -84,6 +92,9 @@ class GrokClient:
         try:
             with self._lock:
                 now = self._clock()
+                if now < self._rate_limit_until:
+                    raise GrokUnavailable('GROK_RATE_LIMIT_COOLDOWN',failure_category='RATE_LIMITED',http_status=429,
+                        retry_after_seconds=max(1,min(3600,int(self._rate_limit_until-now)+1)))
                 if self.requests >= 120:
                     raise GrokUnavailable("GROK_SESSION_REQUEST_LIMIT")
                 if now < self._next.get(role, 0):
@@ -96,6 +107,7 @@ class GrokClient:
             started = self._latency_clock()
             received = False
             failure = 'TRANSPORT_OTHER'
+            retry_delay=None
             try:
                 raw = self._transport(request)
                 received = True
@@ -136,6 +148,16 @@ class GrokClient:
                     if isinstance(exc, HTTPError):
                         code = exc.code
                         failure = 'HTTP_' + str(code) if type(code) is int and 400 <= code <= 599 else 'HTTP_OTHER'
+                        if code==429:
+                            retry_delay=60
+                            try:
+                                value=exc.headers.get('Retry-After','')
+                                if value.isdigit():retry_delay=max(1,min(3600,int(value)))
+                                elif value:
+                                    until=parsedate_to_datetime(value)
+                                    if until.tzinfo is not None:retry_delay=max(1,min(3600,int((until-datetime.now(UTC)).total_seconds())))
+                            except (TypeError,ValueError,AttributeError,OverflowError):pass
+                            with self._lock:self._rate_limit_until=max(self._rate_limit_until,self._clock()+retry_delay)
                         try:exc.close()
                         except Exception:pass
                     elif isinstance(exc, TimeoutError):failure = 'TIMEOUT'
@@ -143,6 +165,9 @@ class GrokClient:
                     elif isinstance(exc, URLError):
                         failure = ('TIMEOUT' if isinstance(exc.reason, TimeoutError) else
                                    'TLS_ERROR' if isinstance(exc.reason, ssl.SSLError) else 'NETWORK_ERROR')
+                if retry_delay is not None:
+                    raise GrokUnavailable('GROK_RATE_LIMITED',failure_category='RATE_LIMITED',http_status=429,
+                        retry_after_seconds=retry_delay) from None
                 raise GrokUnavailable("GROK_REQUEST_FAILED") from None
             finally:
                 elapsed = max(0, round((self._latency_clock() - started) * 1000))

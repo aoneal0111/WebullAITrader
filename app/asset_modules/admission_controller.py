@@ -225,9 +225,11 @@ class PaperAdmissionController:
     MAX_ENTRY_VALIDITY_SECONDS = 60
     MAX_ACTIVE_COMMANDS = 1000
 
-    def __init__(self, path: Path, *, native_scalper_quote_age_seconds=2):
+    def __init__(self, path: Path, *, native_scalper_quote_age_seconds=2,native_scalper_future_tolerance_seconds=0):
         if native_scalper_quote_age_seconds not in (2,5):raise ValueError("Explicit native Scalper quote policy required")
         self.native_scalper_quote_age_seconds=native_scalper_quote_age_seconds
+        if native_scalper_future_tolerance_seconds not in (0,.25):raise ValueError('Explicit bounded PAPER clock tolerance required')
+        self.native_scalper_future_tolerance_seconds=native_scalper_future_tolerance_seconds
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._transaction() as db:
@@ -281,7 +283,8 @@ class PaperAdmissionController:
         age = (now - datetime.fromisoformat(payload["quote_at"])).total_seconds()
         remaining = (datetime.fromisoformat(payload["expires_at"]) - now).total_seconds()
         limit=self.native_scalper_quote_age_seconds if payload.get('engine')=='QUICK_SCALPER' else self.MAX_QUOTE_AGE_SECONDS
-        if not 0 <= age <= limit:
+        tolerance=self.native_scalper_future_tolerance_seconds if payload.get('engine')=='QUICK_SCALPER' else 0
+        if not -tolerance <= age <= limit:
             return "QUOTE_NOT_CURRENT"
         if not 0 < remaining <= PaperAdmissionController.MAX_ENTRY_VALIDITY_SECONDS:
             return "ENTRY_NOT_CURRENT"

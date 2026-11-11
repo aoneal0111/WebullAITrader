@@ -227,12 +227,12 @@ class PaperOrderGateway:
         order = request.order
         with self._mutation():
             self._require_durability()
-            if (
-                order.side.value == "SELL"
-                and self._position_quantity_source is not None
-                and order.quantity
-                > self._position_quantity_source(order.symbol)
-            ):
+            from app.paper_trading.owned_quantity import scalper_open_quantity
+            proven = (scalper_open_quantity(self._order_book.history(), order.symbol, order.strategy_lifecycle_id)
+                if order.side.value == "SELL" else None)
+            available = (proven if proven is not None else
+                self._position_quantity_source(order.symbol) if order.side.value == "SELL" and self._position_quantity_source is not None else None)
+            if order.side.value == "SELL" and available is not None and order.quantity > available:
                 message = (
                     "paper sell quantity exceeds the projected long position"
                 )

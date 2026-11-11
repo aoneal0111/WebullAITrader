@@ -17,7 +17,7 @@ SHARED = (
     "strategies/warrior_momentum/autonomous_paper.py", "strategies/warrior_momentum/configuration.py",
     "strategies/warrior_momentum/opportunity_engine.py", "paper_gateway/gateway.py",
     "composition/desktop.py", "strategies/warrior_momentum/desktop_sidecar.py",
-    "services/trading_service.py",
+    "services/trading_service.py", "paper_trading/owned_quantity.py",
     "market/scalp_session.py", "equity_overhaul/paper_experiment.py", "equity_overhaul/admission.py",
 )
 SOURCE_FILES = {
@@ -25,11 +25,11 @@ SOURCE_FILES = {
         "strategies/warrior_momentum/forward_runtime.py", "strategies/warrior_momentum/models.py",
         "strategies/warrior_momentum/setups.py", "strategies/warrior_momentum/features.py",
         "strategies/warrior_momentum/runtime.py", "strategies/warrior_momentum/risk.py",
-        "strategies/warrior_momentum/trade_management.py", "asset_modules/grok_warrior_control.py", "asset_modules/grok_desktop_producer.py",
+        "strategies/warrior_momentum/trade_management.py", "asset_modules/grok_warrior_control.py", "asset_modules/grok_desktop_producer.py", "asset_modules/grok.py",
     ),
     EngineId.SCALPER.value: SHARED + (
         "strategies/warrior_momentum/quick_scalper.py",
-        "strategies/warrior_momentum/quick_scalper_runtime.py",
+        "strategies/warrior_momentum/quick_scalper_runtime.py", "strategies/warrior_momentum/paper_stream_quote.py",
     ),
 }
 

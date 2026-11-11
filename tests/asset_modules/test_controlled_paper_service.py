@@ -331,3 +331,23 @@ def test_after_hours_scalp_buy_is_refused_while_protective_sell_is_delegated(set
     with patch.object(service.service,'place_order',return_value=marker) as delegate:
         assert service.place_order(sell) is marker
         delegate.assert_called_once_with(sell)
+
+
+def test_explicit_scalper_clock_bound_reaches_both_controller_gates(setup):
+    from app.asset_modules.engine_catalog import EngineId
+    commands,bridge,service,account,quote,clock=setup
+    service.native_scalper_future_tolerance_seconds=.25
+    service.router.controller.native_scalper_future_tolerance_seconds=.25
+    quote[0]=replace(quote[0],bid_timestamp=NOW+timedelta(milliseconds=130),ask_timestamp=NOW+timedelta(milliseconds=130))
+    result=service.place_order(placement(commands,engine="QUICK_SCALPER"))
+    assert result.success,service.last_reason
+
+
+def test_controller_still_rejects_large_future_and_old_scalper_books(setup):
+    commands,bridge,service,account,quote,clock=setup
+    service.native_scalper_future_tolerance_seconds=.25
+    service.router.controller.native_scalper_future_tolerance_seconds=.25
+    for delta in (timedelta(milliseconds=251),timedelta(seconds=-6)):
+        quote[0]=replace(quote[0],bid_timestamp=NOW+delta,ask_timestamp=NOW+delta)
+        assert not service.place_order(placement(commands,engine="QUICK_SCALPER")).success
+        assert service.last_reason=='PROVIDER_QUOTE_NOT_CURRENT'

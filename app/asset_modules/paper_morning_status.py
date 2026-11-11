@@ -50,6 +50,7 @@ def report(trial):
             grok_order_review_enabled=manifest.get('grok_order_review_enabled'),recording_session=str(session), live_trading_enabled=manifest.get('live_trading_enabled'),
             warrior_running=readiness.get('warrior_service_running'),scalper_enabled=readiness.get('scalper_enabled'),
             engine_status_updated_at=readiness.get('updated_at'), recording_closed=journal.get('closed'),
+            scalper_execution_status=readiness.get('scalper_execution_status'),
             writer_alive=journal.get('writer_alive'),writer_failed=journal.get('writer_failed'),
             capacity_reached=journal.get('capacity_reached'),evidence_complete=journal.get('evidence_complete'),
             written_records=journal.get('counts',{}).get('written'),

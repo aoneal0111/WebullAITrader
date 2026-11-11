@@ -49,7 +49,7 @@ def create(directory,clock=lambda:datetime.now(UTC),*,profile='LEGACY_V1',extend
     return spec
 
 
-def load(path,clock=lambda:datetime.now(UTC)):
+def load(path,clock=lambda:datetime.now(UTC),*,allow_expired=False):
     path=Path(path).resolve()
     if path.stat().st_size>16384:raise ValueError('EXPERIMENT_SPEC_BOUND')
     spec=json.loads(path.read_text(encoding='utf-8'))
@@ -70,7 +70,8 @@ def load(path,clock=lambda:datetime.now(UTC)):
         or spec.get('families')!={k:list(v) for k,v in families.items()}
         or len(spec.get('trial_id',''))!=32):raise ValueError('EXPERIMENT_SPEC_INVALID')
     start,end=(datetime.fromisoformat(spec[k]) for k in ('created_at','expires_at'))
-    if start.utcoffset() is None or end.utcoffset() is None or end-start!=timedelta(hours=8) or not start<=clock()<end:
+    now=clock()
+    if start.utcoffset() is None or end.utcoffset() is None or end-start!=timedelta(hours=8) or now<start or (not allow_expired and now>=end):
         raise ValueError('EXPERIMENT_EXPIRED_OR_FUTURE')
     return path,spec
 
@@ -83,7 +84,7 @@ def configured(configuration,runtime_mode):
     if (runtime_mode!='PAPER' or configuration.environment.value!='PAPER' or configuration.live_trading_enabled
         or (configuration.grok_paper_entries_enabled and grok_lease is None) or not configuration.daily_research_enabled):
         raise ValueError('EXPERIMENT_REQUIRES_PAPER_LIVE_OFF_GROK_ORDERS_OFF_AND_CAPTURE')
-    path,spec=load(value)
+    path,spec=load(value,allow_expired=True)
     result=PaperExperiment(path,spec);result.grok_execution=grok_lease
     return result
 
@@ -208,13 +209,15 @@ def main():
     p.add_argument('--extended-sessions',action='store_true')
     p.add_argument('--clock-tolerance',action='store_true')
     args=p.parse_args();root=Path(args.create)
-    spec=load(root/'experiment.json')[1] if (root/'experiment.json').exists() else create(root,profile=args.profile,extended_sessions=args.extended_sessions,clock_tolerance=args.clock_tolerance)
+    spec=load(root/'experiment.json',allow_expired=True)[1] if (root/'experiment.json').exists() else create(root,profile=args.profile,extended_sessions=args.extended_sessions,clock_tolerance=args.clock_tolerance)
     if spec.get('profile','LEGACY_V1') != args.profile:
         raise ValueError('EXISTING_EXPERIMENT_PROFILE_MISMATCH')
     if bool(spec.get('entry_sessions')) != args.extended_sessions:
         raise ValueError('EXISTING_EXPERIMENT_SESSION_POLICY_MISMATCH')
     if bool(spec.get('scalper_clock_policy')) != args.clock_tolerance:
         raise ValueError('EXISTING_EXPERIMENT_CLOCK_POLICY_MISMATCH')
+    if datetime.fromisoformat(spec['expires_at'])<=datetime.now(UTC):
+        print('PAPER_EXPERIMENT_EXPIRED; NEW_ENTRIES_DISABLED; OWNED_POSITION_PROTECTION_ONLY')
     print('PAPER_EXPERIMENT_ID='+spec['trial_id']);print('EXPERIMENT_EXPIRES_AT='+spec['expires_at'])
 
 

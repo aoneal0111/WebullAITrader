@@ -129,6 +129,8 @@ class DailyResearch:
             warrior_control='GROK_NATIVE_REVIEW_AND_DIRECTED' if control is not None else 'NATIVE',
             scalper_grok_review_bound=getattr(scalper,'_paper_entry_reviewer',None) is not None,
             grok_requests=control.budget.report()['reserved_attempts'] if control is not None else 0)
+        execution_status=getattr(scalper,'execution_status',None)
+        if callable(execution_status):report['scalper_execution_status']=execution_status()
         if service is not None:self._last_active_readiness=report
         target=self.directory/'engine-readiness.json';temporary=target.with_suffix('.tmp')
         temporary.write_text(json.dumps(report,indent=2),encoding='utf-8');temporary.replace(target)

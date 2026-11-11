@@ -5,7 +5,7 @@ autonomous bridge, TradingService, and PaperOrderGateway.
 """
 from __future__ import annotations
 
-from collections import OrderedDict, deque
+from collections import Counter, OrderedDict, deque
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_FLOOR
@@ -189,6 +189,8 @@ class QuickScalperPaperRuntimeAdapter:
         ] = OrderedDict()
         self._positions: dict[str, _ScalpPositionState] = {}
         self._closed_lifecycles: set[str] = set()
+        self._bridge_rejection_reasons = Counter()
+        self._exit_failure_reasons = Counter()
         self._current_generation: dict[str, str] = {}
         self._stream_samples: OrderedDict[
             str, deque[_StreamQuoteSample]
@@ -604,6 +606,7 @@ class QuickScalperPaperRuntimeAdapter:
             state.lifecycle_id, strategy_owner=OWNER,
         )
         if not protection.requested_order_active:
+            self._exit_failure_evidence(state, "STOP", protection)
             return
         target = self.bridge.ensure_exit(
             state.symbol, quantity, state.target_price, "SCALP_TARGET",
@@ -867,6 +870,15 @@ class QuickScalperPaperRuntimeAdapter:
         accepted = (
             decision.result is PaperEntryAuthorizationResult.AUTHORIZED
         )
+        if not accepted:
+            self._bridge_rejection_reasons[decision.reason.value]+=1
+            service_reason=(getattr(self.bridge.trading_service, 'last_reason', None)
+                if getattr(decision,'submission_attempted',False) and hasattr(self.bridge,'trading_service') else None)
+            if isinstance(service_reason,str) and service_reason.isupper() and len(service_reason)<=80 and len(self._bridge_rejection_reasons)<64:
+                self._bridge_rejection_reasons['CONTROLLER_'+service_reason]+=1
+            performance_diagnostics.record_entry_funnel(symbol=refreshed.symbol,stage='SCALPER_BRIDGE_REJECTED',
+                outcome='REJECTED',reason=decision.reason.value,timestamp=evaluated_at,
+                controller_reason=service_reason,lifecycle_id=lifecycle)
         performance_diagnostics.increment(
             "quick_scalper_bridge_authorized"
             if accepted else "quick_scalper_bridge_rejected"
@@ -1135,7 +1147,9 @@ class QuickScalperPaperRuntimeAdapter:
         age = Decimal(str((observed_at - quote_timestamp).total_seconds()))
         if age < -self.config.provider_future_tolerance_seconds or age > self.config.provider_freshness_seconds:
             return
-        quantity = max(0, int(self.position_quantity_source(state.symbol)))
+        from app.paper_trading.owned_quantity import scalper_open_quantity
+        proven = scalper_open_quantity(self.order_book.history(), state.symbol, state.lifecycle_id)
+        quantity = max(0, int(proven if proven is not None else self.position_quantity_source(state.symbol)))
         if quantity <= 0:
             self.reconcile(state.symbol)
             return
@@ -1195,6 +1209,7 @@ class QuickScalperPaperRuntimeAdapter:
                 state.lifecycle_id, strategy_owner=OWNER,
             )
             if not result.requested_order_active:
+                self._exit_failure_evidence(state, decision.reason, result)
                 state.profit_state = prior_profit_state
                 return
             self._emit(
@@ -1211,6 +1226,7 @@ class QuickScalperPaperRuntimeAdapter:
             finally:
                 state.full_exit_submitting = False
             if not result.requested_order_active:
+                self._exit_failure_evidence(state, decision.reason, result)
                 state.profit_state = prior_profit_state
                 return
             self._emit(
@@ -1221,6 +1237,35 @@ class QuickScalperPaperRuntimeAdapter:
             self.engine.mark_exit_requested(
                 state.symbol, state.generation_id, at=observed_at,
             )
+
+    def _exit_failure_evidence(self, state, role, result):
+        reason=getattr(getattr(result, 'failure_reason', None), 'value', 'UNAVAILABLE')
+        self._exit_failure_reasons[role+'|'+reason]+=1
+        self._emit('SCALP_EXIT_SUBMISSION_FAILED', state.symbol,
+            generation=state.generation_id, reason=reason, state=role)
+        try:
+            performance_diagnostics.record_entry_funnel(symbol=state.symbol,stage='EXIT_SUBMISSION_FAILED',
+                outcome='REJECTED',reason=reason,lifecycle_id=state.lifecycle_id,exit_role=role,timestamp=self._clock())
+            recorder=getattr(self._observer_context_tap,'_journal',None)
+            if recorder is not None:recorder.submit('SCALPER_EXIT_SUBMISSION_FAILED',dict(
+                symbol=state.symbol,lifecycle_id=state.lifecycle_id,exit_role=role,reason=reason))
+        except Exception:pass
+
+    def execution_status(self):
+        with self._lock:
+            quote_status=getattr(self.execution_quote_source,'status',None)
+            return dict(bridge_rejections=dict(self._bridge_rejection_reasons),
+                exit_failures=dict(self._exit_failure_reasons),
+                quote_source=quote_status() if callable(quote_status) else {'source':'REST'},
+                owned_positions=[dict(symbol=s.symbol,lifecycle_id=s.lifecycle_id,
+                    open_quantity=str(sum((o.filled_quantity*(1 if o.side.value=='BUY' else -1)
+                        for o in self.order_book.history() if o.request.strategy_lifecycle_id==s.lifecycle_id),ZERO)),
+                    protected_quantity=str(max((o.remaining_quantity for o in self.order_book.open_orders_for_symbol(s.symbol)
+                        if o.side is OrderSide.SELL and o.request.order_type is OrderType.STOP
+                        and o.request.strategy_lifecycle_id==s.lifecycle_id),default=ZERO)),
+                    stop_present=any(o.side is OrderSide.SELL and o.request.order_type is OrderType.STOP
+                        and o.request.strategy_lifecycle_id==s.lifecycle_id
+                        for o in self.order_book.open_orders_for_symbol(s.symbol))) for s in self._positions.values()])
 
     def _current_stop(self, state: _ScalpPositionState) -> Decimal:
         values = [

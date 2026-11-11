@@ -630,7 +630,8 @@ class AutonomousPaperExecutionBridge:
                                 symbol,
                                 recovered_identity,
                                 context_identity,
-                                "TERMINAL_CONTEXT_WITHOUT_ACTIVE_OWNERSHIP",
+                                ("INDEPENDENT_SCALPER_DURABLE_OWNER" if recovered_identity.startswith("QUICK_SCALPER|")
+                                 else "TERMINAL_CONTEXT_WITHOUT_ACTIVE_OWNERSHIP"),
                             )
                             self._record_recovery_event(
                                 "RECOVERED_LIFECYCLE_SELECTED",
@@ -712,7 +713,15 @@ class AutonomousPaperExecutionBridge:
     def _stale_context_can_be_ignored(
         self, symbol: str, current_identity: str, context_identity: str,
     ) -> bool:
-        """Prove that a mismatched projection is closed historical state."""
+        """Prove that context cannot own the canonical position being recovered."""
+        from app.paper_trading.owned_quantity import scalper_open_quantity
+        if self.order_book is not None:
+            proven=scalper_open_quantity(self.order_book.history(),symbol,current_identity)
+            if (proven is not None and proven>0
+                    and not self._lifecycle_has_active_ownership(symbol,context_identity)
+                    and all(o.request.strategy_lifecycle_id==current_identity
+                        for o in self.order_book.open_orders_for_symbol(symbol))):
+                return True
         if not self._durable_lifecycle_is_current(symbol, current_identity):
             return False
         if self._lifecycle_has_active_ownership(symbol, context_identity):
@@ -2022,10 +2031,11 @@ class AutonomousPaperExecutionBridge:
                 symbol=normalized, lifecycle_id=lifecycle_id, role=reason_key,
                 failure_reason=PaperExitSubmissionFailureReason.BRIDGE_NOT_READY,
             )
-        if (
-            self.position_quantity_source is not None
-            and Decimal(self.position_quantity_source(normalized)) < Decimal(quantity)
-        ):
+        from app.paper_trading.owned_quantity import scalper_open_quantity
+        proven = scalper_open_quantity(self.order_book.history(), normalized, lifecycle_id) if self.order_book is not None else None
+        available = (proven if proven is not None else
+            Decimal(self.position_quantity_source(normalized)) if self.position_quantity_source is not None else None)
+        if available is not None and available < Decimal(quantity):
             return self._exit_failure(
                 state=PaperExitSubmissionState.UNAVAILABLE,
                 symbol=normalized, lifecycle_id=lifecycle_id, role=reason_key,
@@ -2224,7 +2234,7 @@ class AutonomousPaperExecutionBridge:
                         if order.request.order_type is OrderType.STOP
                     ), None)
                     authoritative_quantity = (
-                        int(self.position_quantity_source(normalized))
+                        int(self._management_quantity(normalized, identity))
                         if self.position_quantity_source is not None
                         else int(self._authoritative_quantity(normalized))
                     )
@@ -2754,7 +2764,7 @@ class AutonomousPaperExecutionBridge:
         if not target.protection_active:
             self._place_exit(
                 normalized,
-                int(self.position_quantity_source(normalized)),
+                int(self._management_quantity(normalized, identity)),
                 replacement_stop_price,
                 "STOP",
                 identity,
@@ -2768,7 +2778,7 @@ class AutonomousPaperExecutionBridge:
         # the target and promotes this stop to active protection before match.
         protection = self._place_exit(
             normalized,
-            int(self.position_quantity_source(normalized)),
+            int(self._management_quantity(normalized, identity)),
             replacement_stop_price,
             "STOP",
             identity,
@@ -2787,7 +2797,7 @@ class AutonomousPaperExecutionBridge:
             self._reconcile_terminal_exits()
             restored = self._place_exit(
                 normalized,
-                int(self.position_quantity_source(normalized)),
+                int(self._management_quantity(normalized, identity)),
                 replacement_stop_price,
                 "STOP",
                 identity,
@@ -2850,7 +2860,7 @@ class AutonomousPaperExecutionBridge:
              if order.request.order_type is not OrderType.STOP),
             0,
         )
-        authoritative = int(self.position_quantity_source(normalized))
+        authoritative = int(self._management_quantity(normalized, identity))
         contingent = (
             stop.request.metadata.get("reservation_mode") == "CONTINGENT_OCO"
         )
@@ -3052,6 +3062,12 @@ class AutonomousPaperExecutionBridge:
             and item.request.strategy_lifecycle_id == identity
             for item in self.order_book.history()
         )
+
+    def _management_quantity(self, symbol, identity):
+        from app.paper_trading.owned_quantity import scalper_open_quantity
+        proven=scalper_open_quantity(self.order_book.history(),symbol,identity) if self.order_book is not None else None
+        if proven is not None:return proven
+        return Decimal(self.position_quantity_source(symbol))
 
     def _authoritative_quantity(self, symbol: str) -> Decimal:
         quantity = Decimal("0")

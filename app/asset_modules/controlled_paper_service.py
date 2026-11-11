@@ -25,13 +25,16 @@ class ControlledPaperTradingService:
     """
 
     def __init__(self, service, controller, gateway, *, account_id, session_id,
-                 account_source, quote_source, risk_config, entry_ready, clock=None, native_scalper_quote_age_seconds=2):
+                 account_source, quote_source, risk_config, entry_ready, clock=None, native_scalper_quote_age_seconds=2,native_scalper_future_tolerance_seconds=0,scalper_quote_source=None):
         self.service = service
         self.account_source = account_source
         self.quote_source = quote_source
+        self.scalper_quote_source=scalper_quote_source or quote_source
         self.risk_config = risk_config
         if native_scalper_quote_age_seconds not in (2,5):raise ValueError("Explicit native Scalper freshness policy required")
         self.native_scalper_quote_age_seconds=native_scalper_quote_age_seconds
+        if native_scalper_future_tolerance_seconds not in (0,.25):raise ValueError('Explicit bounded PAPER clock tolerance required')
+        self.native_scalper_future_tolerance_seconds=native_scalper_future_tolerance_seconds
         self.entry_ready = entry_ready
         self.clock = clock or (lambda: datetime.now(UTC))
         self._lock = RLock()
@@ -56,8 +59,9 @@ class ControlledPaperTradingService:
                 self.last_reason = "ENTRY_NOT_EXECUTABLE"
                 return False
             quote_limit=self.native_scalper_quote_age_seconds if request.engine is EngineId.SCALPER else 2
+            tolerance=self.native_scalper_future_tolerance_seconds if request.engine is EngineId.SCALPER else 0
             for stamp in (quote.bid_timestamp, quote.ask_timestamp):
-                if stamp.tzinfo is None or not 0 <= (now - stamp).total_seconds() <= quote_limit:
+                if stamp.tzinfo is None or not -tolerance <= (now - stamp).total_seconds() <= quote_limit:
                     self.last_reason = "PROVIDER_QUOTE_NOT_CURRENT"
                     return False
             account = self.account_source()
@@ -105,7 +109,7 @@ class ControlledPaperTradingService:
             self._quote = None
             try:
                 self.router.reconcile()
-                self._quote = self.quote_source(r.symbol)
+                self._quote = (self.scalper_quote_source if engine is EngineId.SCALPER else self.quote_source)(r.symbol)
                 if self._quote is None:
                     return self._refused(placement, "EXECUTION_QUOTE_UNAVAILABLE")
                 now = self.clock()

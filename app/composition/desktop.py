@@ -408,6 +408,15 @@ def create_desktop_composition(
         if not quarantine_ok:
             paper_trading_commands.close()
             raise RuntimeError("Unqualified working BUY cancellation is unconfirmed; desktop startup stopped")
+        scalper_execution_quote_source=execution_quote_source
+        if equity_experiment is not None and equity_experiment.spec.get('scalper_clock_policy'):
+            from app.strategies.warrior_momentum.paper_stream_quote import PaperStreamQuoteSource
+            scalper_execution_quote_source=PaperStreamQuoteSource(execution_quote_source,clock=paper_clock or utc_now)
+            original_market_observer=market_event_observer
+            def observe_paper_market(event):
+                scalper_execution_quote_source.observe_market_event(event)
+                return original_market_observer(event)
+            market_event_observer=observe_paper_market
         if operational_configuration.paper_controller_enabled:
             if not paper_environment or operational_configuration.live_trading_enabled:
                 raise ValueError("The entry controller is PAPER-only with live trading disabled")
@@ -419,6 +428,8 @@ def create_desktop_composition(
                 risk_config=warrior_strategy_config.risk,
                 native_scalper_quote_age_seconds=(5 if equity_experiment is not None and equity_experiment.spec.get('profile') in GROK_CONTROL_PROFILES else 2),
                 clock=paper_clock,
+                native_scalper_future_tolerance_seconds=(.25 if equity_experiment is not None and equity_experiment.spec.get('scalper_clock_policy') else 0),
+                scalper_quote_source=scalper_execution_quote_source,
             )
             paper_trading_commands = replace(paper_trading_commands, trading_service=paper_controller_service)
         scalper_config = QuickScalperConfig(enabled=operational_configuration.quick_scalper_enabled)
@@ -431,7 +442,7 @@ def create_desktop_composition(
             order_book=paper_trading_commands.order_book,
             account_context_source=trading_state_sources.warrior_account_context,
             position_quantity_source=trading_state_sources.position_quantity,
-            execution_quote_source=execution_quote_source,
+            execution_quote_source=scalper_execution_quote_source,
             risk_config=warrior_strategy_config.risk,
             live_trading_enabled=operational_configuration.live_trading_enabled,
             environment=operational_configuration.environment.value,
