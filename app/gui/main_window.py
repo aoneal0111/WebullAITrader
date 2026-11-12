@@ -201,7 +201,9 @@ class MainWindow(QMainWindow):
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
+        self._crypto_monitor_window = None
         self.asset_navigation = AssetNavigation(self._asset_modules)
+        self.asset_navigation.crypto_monitor_requested.connect(self._open_crypto_monitor)
         content_layout.addWidget(self.asset_navigation)
         self.asset_surface = QStackedWidget()
         self._asset_pages = {}
@@ -692,6 +694,14 @@ class MainWindow(QMainWindow):
             self._render_replay_state
         )
 
+    def _open_crypto_monitor(self):
+        from app.gui.crypto_monitor import create_window
+        if self._crypto_monitor_window is None:
+            self._crypto_monitor_window = create_window(parent=self)
+        self._crypto_monitor_window.show()
+        self._crypto_monitor_window.raise_()
+        self._crypto_monitor_window.activateWindow()
+
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.asset_navigation.task is not None:
             event.ignore()
@@ -713,6 +723,8 @@ class MainWindow(QMainWindow):
             event.ignore()
             QTimer.singleShot(50, self.close)
             return
+        if self._crypto_monitor_window is not None:
+            self._crypto_monitor_window.close()
         self._warrior_refresh_timer.stop()
         if self._chart_presenter is not None:
             self._chart_presenter.close()

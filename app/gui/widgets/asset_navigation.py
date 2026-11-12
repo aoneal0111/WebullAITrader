@@ -23,6 +23,7 @@ class _LifecycleTask(QThread):
 
 class AssetNavigation(QWidget):
     asset_selected = Signal(object)
+    crypto_monitor_requested = Signal()
 
     def __init__(self, modules=None, parent=None):
         super().__init__(parent)
@@ -41,6 +42,11 @@ class AssetNavigation(QWidget):
         row.addWidget(self.tabs)
         self.status = QLabel()
         row.addWidget(self.status, 1)
+        self.crypto_monitor_button = QPushButton("Crypto bots")
+        self.crypto_monitor_button.setObjectName("secondaryButton")
+        self.crypto_monitor_button.setToolTip("Read-only Docker crypto PAPER wallets; does not activate a market")
+        self.crypto_monitor_button.clicked.connect(self.crypto_monitor_requested.emit)
+        row.addWidget(self.crypto_monitor_button)
         self.budget = QComboBox()
         self.budget.addItems(['One active market', 'Up to two active markets'])
         self.budget.setCurrentIndex((modules.maximum_active if modules else 2)-1)
