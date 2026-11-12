@@ -1312,6 +1312,12 @@ class DesktopBrokerRuntimeDriver:
                 } else "WATCHDOG"
             )
             self._market_data_failure_exception_class = type(exc).__name__
+            from app.webull.errors import safe_error_identity
+            performance_diagnostics.record_stream_observability("CONSUMER_FAILED",
+                failure_stage=self._market_data_failure_stage, **safe_error_identity(exc))
+            if not isinstance(exc, AuthoritativeLaneFailure) and not getattr(self,"_terminal_stream_failure_published",False):
+                performance_diagnostics.record_stream_lifecycle("terminal_failure",
+                    generation=getattr(transport,"generation_metrics",{}).get("generation"))
             self._market_data_consumer_state = "TERMINAL_FAILED"
             halt_ingestion = getattr(transport, "halt_callback_ingestion", None)
             if callable(halt_ingestion):

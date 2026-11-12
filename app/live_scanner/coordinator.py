@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
-from threading import Event, Thread
+from threading import Event, Thread, RLock
 from time import perf_counter
 from typing import Any
 
@@ -93,6 +93,7 @@ class LiveScannerCoordinator:
         self._evaluation_stop = Event()
         self._evaluation_thread: Thread | None = None
 
+        self._subscription_lock = RLock()
         self._channels: tuple[str, ...] = ()
         self._scanner_channels: tuple[str, ...] = self._default_channels
         self._connected = False
@@ -957,14 +958,21 @@ class LiveScannerCoordinator:
         self,
         scanner_channels: Iterable[str],
     ) -> tuple[str, ...]:
-        selected = self._effective_channels(scanner_channels)
-        if not selected:
-            raise ValueError("at least one channel is required")
-        self._transport.subscribe(selected)
-        self._channels = selected
-        return selected
+        with self._subscription_lock:
+            selected = self._effective_channels(scanner_channels)
+            if not selected:
+                raise ValueError("at least one channel is required")
+            self._transport.subscribe(selected)
+            self._channels = selected
+            return selected
 
     def _sync_subscription(self) -> tuple[str, ...]:
+        # Reference/universe workers and the receive consumer share this
+        # transaction: compare, issue SDK update, then publish channel state.
+        with self._subscription_lock:
+            return self._sync_subscription_locked()
+
+    def _sync_subscription_locked(self) -> tuple[str, ...]:
         selected = self._effective_channels(self._scanner_channels)
         if selected == self._channels:
             return selected
