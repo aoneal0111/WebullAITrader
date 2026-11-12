@@ -133,6 +133,7 @@ class _ScalpPositionState:
     cent_target_move: Decimal | None = None
     cent_profit_defense_floor: Decimal | None = None
     last_exit_diagnostic_second: int | None = None
+    last_triggered_stop: tuple[str, Decimal] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +192,7 @@ class QuickScalperPaperRuntimeAdapter:
         self._closed_lifecycles: set[str] = set()
         self._bridge_rejection_reasons = Counter()
         self._exit_failure_reasons = Counter()
+        self._exit_progress_reasons = Counter()
         self._current_generation: dict[str, str] = {}
         self._stream_samples: OrderedDict[
             str, deque[_StreamQuoteSample]
@@ -600,6 +602,32 @@ class QuickScalperPaperRuntimeAdapter:
             }
             for order in self.order_book.open_orders_for_symbol(state.symbol)
         ):
+            return
+        triggered = [order for order in self.order_book.open_orders_for_symbol(state.symbol)
+            if order.request.strategy_lifecycle_id == state.lifecycle_id
+            and order.request.side is OrderSide.SELL
+            and order.request.order_type is OrderType.STOP
+            and order.request.metadata.get("strategy_owner") == OWNER
+            and order.request.metadata.get("stop_triggered") is True]
+        if len(triggered) == 1 and quantity > 0 and triggered[0].remaining_quantity == Decimal(quantity):
+            # An activated stop is already liquidating exactly the remaining
+            # inventory. Preserve it through partial fills and rebounds; do
+            # not submit a replacement stop or recreate its cancelled target.
+            stop = triggered[0]
+            identity = (stop.order_id, stop.remaining_quantity)
+            if state.last_triggered_stop != identity:
+                state.last_triggered_stop = identity
+                self._exit_progress_reasons['TRIGGERED_STOP_WORKING'] += 1
+                self._emit('SCALP_EXIT_IN_PROGRESS', state.symbol,
+                    generation=state.generation_id, reason='TRIGGERED_STOP_WORKING', qty=quantity)
+                try:
+                    recorder = getattr(self._observer_context_tap, '_journal', None)
+                    if recorder is not None:
+                        recorder.submit('SCALPER_EXIT_IN_PROGRESS', dict(symbol=state.symbol,
+                            lifecycle_id=state.lifecycle_id, order_id=stop.order_id,
+                            remaining_quantity=str(stop.remaining_quantity), reason='TRIGGERED_STOP_WORKING'))
+                except Exception:
+                    pass
             return
         protection = self.bridge.ensure_exit(
             state.symbol, quantity, state.initial_stop, "STOP",
@@ -1256,6 +1284,7 @@ class QuickScalperPaperRuntimeAdapter:
             quote_status=getattr(self.execution_quote_source,'status',None)
             return dict(bridge_rejections=dict(self._bridge_rejection_reasons),
                 exit_failures=dict(self._exit_failure_reasons),
+                exit_progress=dict(self._exit_progress_reasons),
                 quote_source=quote_status() if callable(quote_status) else {'source':'REST'},
                 owned_positions=[dict(symbol=s.symbol,lifecycle_id=s.lifecycle_id,
                     open_quantity=str(sum((o.filled_quantity*(1 if o.side.value=='BUY' else -1)
