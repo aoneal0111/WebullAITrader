@@ -130,8 +130,9 @@ class LiveScannerCoordinator:
         *,
         preserve_authoritative_lane: bool = False,
         transport_timeout_seconds: float | None = None,
+        force_transport: bool = False,
     ) -> None:
-        if not self._connected:
+        if not self._connected and not force_transport:
             self._running = False
             if not preserve_authoritative_lane:
                 self._stop_background_workers()
@@ -365,7 +366,16 @@ class LiveScannerCoordinator:
             self.connect()
             restored = self._subscribe_effective(self._scanner_channels)
         except Exception:
-            self.disconnect()
+            # connect() may have started an SDK loop before it timed out, while
+            # our connected flag is still false. Retire that transport too.
+            # A retry must keep the same accepted authoritative event lane.
+            try:
+                self.disconnect(preserve_authoritative_lane=True,
+                    transport_timeout_seconds=RECOVERY_TRANSPORT_TIMEOUT_SECONDS,
+                    force_transport=True)
+            except Exception as cleanup_error:
+                performance_diagnostics.record_stream_observability(
+                    "RECOVERY_CLEANUP_FAILED", exception_class=type(cleanup_error).__name__)
             raise
 
         self._running = True

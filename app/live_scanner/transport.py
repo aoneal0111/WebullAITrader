@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from threading import Thread
+from threading import Thread, Lock
 
 
 class ReceiveTransportAdapter:
@@ -18,9 +18,14 @@ class ReceiveTransportAdapter:
 
     def __init__(self, client: Any) -> None:
         self._client = client
+        self._disconnect_lock = Lock()
+        self._disconnect_thread: Thread | None = None
 
     def connect(self) -> None:
-        self._client.connect()
+        with self._disconnect_lock:
+            if self._disconnect_thread is not None and self._disconnect_thread.is_alive():
+                raise TimeoutError("previous market-data disconnect still pending")
+            self._client.connect()
 
     def disconnect(self, *, timeout_seconds: float = 5.0) -> None:
         """Disconnect without allowing an SDK stop call to hang Atlas."""
@@ -35,8 +40,12 @@ class ReceiveTransportAdapter:
             except BaseException as exc:
                 completed.append(exc)
 
-        thread = Thread(target=invoke, name="atlas-market-data-disconnect", daemon=True)
-        thread.start()
+        with self._disconnect_lock:
+            if self._disconnect_thread is not None and self._disconnect_thread.is_alive():
+                raise TimeoutError("previous market-data disconnect still pending")
+            thread = Thread(target=invoke, name="atlas-market-data-disconnect", daemon=True)
+            self._disconnect_thread = thread
+            thread.start()
         thread.join(max(0.0, float(timeout_seconds)))
         if thread.is_alive():
             raise TimeoutError("market-data disconnect timed out")

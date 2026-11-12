@@ -311,7 +311,10 @@ class OfficialSdkStreamBackend:
         setattr(client, "on_quotes_message", self._on_quotes_message)
         setattr(client, "on_connect_success", self._on_connect_success)
         if hasattr(client, "on_disconnect"):
-            setattr(client, "on_disconnect", self._on_disconnect)
+            # Bind the SDK object, since SDK disconnect callback signatures
+            # vary. A retired client's late callback must not clear new state.
+            setattr(client, "on_disconnect", lambda *args, **kwargs:
+                self._on_client_disconnect(client, *args, **kwargs))
         self._emit_diagnostic("SESSION_IDENTITY_CREATED")
 
     def _replace_client(self) -> None:
@@ -415,6 +418,9 @@ class OfficialSdkStreamBackend:
             self._original_on_quotes_message(client, topic, quotes)
 
     def _on_connect_success(self, client: object, api_client: object, session_id: object) -> None:
+        if client is not self.client:
+            self._emit_diagnostic("STALE_CLIENT_CONNECT_REJECTED")
+            return
         if self._owner_api_client is None and client is self.client:
             self._owner_api_client = api_client
         if (
@@ -439,6 +445,12 @@ class OfficialSdkStreamBackend:
         )
         if callable(self._original_on_connect_success):
             self._original_on_connect_success(client, api_client, session_id)
+
+    def _on_client_disconnect(self, client: object, *args: object, **kwargs: object) -> None:
+        if client is not self.client:
+            self._emit_diagnostic("STALE_CLIENT_DISCONNECT_REJECTED")
+            return
+        self._on_disconnect(*args, **kwargs)
 
     def _on_disconnect(self, *args: object, **kwargs: object) -> None:
         self._connected.clear()
@@ -1158,7 +1170,12 @@ class WebullWebSocketClient:
             )
             self.backend.connect(); self.health = update_health(self.health, websocket_connected=True, connected=True); self.decoder_health = "STREAM_CONNECTED"; self.logger.log("stream_connect", "succeeded")
         except Exception as exc:
-            self.logger.log("stream_connect", "failed", error_type=type(exc).__name__); raise NetworkError("Webull stream connection failed", retryable=True) from exc
+            self.health = update_health(self.health, websocket_connected=False, connected=False)
+            performance_diagnostics.record_stream_observability(
+                "CONNECT_FAILED", generation=getattr(self.backend,"generation_metrics",{}).get("generation"),
+                exception_class=type(exc).__name__, cause_class=type(exc.__cause__).__name__ if exc.__cause__ else None)
+            self.logger.log("stream_connect", "failed", error_type=type(exc).__name__)
+            raise NetworkError("Webull stream connection failed", retryable=True) from exc
 
     def disconnect(self):
         self.backend.disconnect()

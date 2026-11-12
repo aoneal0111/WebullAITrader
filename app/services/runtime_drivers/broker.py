@@ -12,7 +12,7 @@ from time import monotonic, perf_counter, sleep
 
 from app.broker_plugins import BrokerRuntime
 from app.broker_plugins.webull.capabilities import map_webull_capabilities
-from app.configuration import OperationalConfiguration
+from app.configuration import OperationalConfiguration, TradingEnvironment
 from app.live_execution.account_polling import (
     BrokerAccountSnapshot,
     poll_broker_account,
@@ -1986,7 +1986,10 @@ class DesktopBrokerRuntimeDriver:
                 recovery_attempt_id=recovery_id,
                 generation=generation_metrics.get("generation"),
                 exception_class=type(exc).__name__,
+                cause_class=type(exc.__cause__).__name__ if exc.__cause__ else None,
             )
+            performance_diagnostics.record_stream_lifecycle("reconnect_failed", attempt=recovery_id,
+                error=exc, generation=generation_metrics.get("generation"), reconnect_result="WATCHDOG_FAILED")
             self._publish_health(
                 "MARKET_DATA_RECOVERY_FAILED",
                 "Market-data recovery failed; execution remains blocked.",
@@ -2007,6 +2010,11 @@ class DesktopBrokerRuntimeDriver:
                 self._feed_recovery_owner_claimed = False
 
     def _complete_feed_recovery(self) -> None:
+        transport=self._market_data_transport()
+        performance_diagnostics.record_stream_lifecycle("reconnected",
+            attempt=getattr(self,"_diagnostic_recovery_attempt_sequence",0),
+            generation=getattr(transport,"generation_metrics",{}).get("generation"),
+            reconnect_result="WATCHDOG_FRESH_PAYLOAD")
         self._feed_recovery_pending = False
         self._feed_recovery_started_monotonic = None
         self._feed_stale = False
@@ -2230,16 +2238,16 @@ class DesktopBrokerRuntimeDriver:
                     self._scanner_error(
                         "Unable to apply the PAPER session-boundary policy.", exc,
                     )
-            snapshot = self._account_poller(
-                self._broker,
-                clock=self._clock,
-            )
+            snapshot = self._poll_account_with_retry(stop_event)
+            if snapshot is None:
+                return
             self._account_snapshot_sink(snapshot)
+            feed_degraded = getattr(self,"_feed_stale",False) or getattr(self,"_feed_recovery_pending",False)
             self._publish_health(
                 "BROKER_REST_OBSERVED",
                 "Broker account, balances, positions, and orders loaded.",
                 RuntimeHealthUpdate(
-                    runtime_status="RUNNING",
+                    runtime_status="DEGRADED" if feed_degraded else "RUNNING",
                     broker_status="CONNECTED",
                     trading_rest_status="CONNECTED",
                     account_status="AVAILABLE",
@@ -2255,6 +2263,29 @@ class DesktopBrokerRuntimeDriver:
             self._retry_scanner_after_session_transition(stop_event)
             if stop_event.wait(interval_seconds):
                 break
+
+    def _poll_account_with_retry(self, stop_event: Event):
+        """Retry only known transient read failures, never an order mutation."""
+        from app.webull.errors import NetworkError, TimeoutError as WebullTimeoutError
+        for attempt in range(1, 4):
+            if stop_event.is_set():return None
+            try:
+                return self._account_poller(self._broker, clock=self._clock)
+            except Exception as exc:
+                retry = (self._configuration.environment is TradingEnvironment.PAPER
+                    and isinstance(exc, (NetworkError, WebullTimeoutError)) and exc.retryable and attempt < 3)
+                performance_diagnostics.record_stream_observability(
+                    "ACCOUNT_POLL_FAILED", exception_class=type(exc).__name__,
+                    cause_class=type(exc.__cause__).__name__ if exc.__cause__ else None,
+                    attempt=attempt, retry_pending=retry)
+                if not retry:raise
+                # No snapshot is published on failure; existing account-age
+                # and risk checks continue to use the last actual observation.
+                self._publish_health("BROKER_ACCOUNT_RETRY_PENDING",
+                    "Transient account read failed; retrying without refreshing account data.",
+                    RuntimeHealthUpdate(runtime_status="DEGRADED", trading_rest_status="RECONNECTING",
+                        account_status="STALE", last_error=type(exc).__name__))
+                if stop_event.wait(attempt):return None
 
     def _retry_scanner_after_session_transition(self, stop_event: Event) -> None:
         session = current_market_data_session(self._clock)

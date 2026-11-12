@@ -62,6 +62,8 @@ def report(trial):
             final_reason=final.get('reason'))
     if pointer:
         result['observer_input_warnings']={k:v for k,v in readiness.get('tap_counts',{}).items() if k in ('unsupported_quote_provenance','capture_refused','queue_full') and v}
+        result['engine_status_is_historical']=bool(journal.get('closed'))
+        if journal.get('closed'):result['entry_blockers'].append('RECORDING_CLOSED')
         result['scalper_bridge_rejections']=readiness.get('scalper_execution_status',{}).get('bridge_rejections',{})
     control=read(trial/'warrior-control-status.json')
     if control:result['warrior_control_status']=control
