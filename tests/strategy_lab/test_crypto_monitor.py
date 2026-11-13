@@ -88,15 +88,19 @@ def test_gui_displays_separate_wallets_and_reopens(tmp_path):
     window.close();assert not window.timer.isActive()
     window.show();app.processEvents();assert window.timer.isActive();window.close()
 
-def test_navigation_monitor_does_not_activate_market():
+def test_crypto_navigation_does_not_activate_unrelated_supervisor():
     from PySide6.QtWidgets import QApplication
     from app.gui.widgets.asset_navigation import AssetNavigation
+    from app.assets import AssetType
     app=QApplication.instance() or QApplication([])
     widget=AssetNavigation();events=[]
-    widget.crypto_monitor_requested.connect(lambda:events.append('monitor'))
-    widget.crypto_monitor_button.click()
-    assert events==['monitor'] and widget.task is None
+    widget.asset_selected.connect(events.append)
+    widget.tabs.setCurrentIndex(widget.assets.index(AssetType.CRYPTO))
+    assert events==[AssetType.CRYPTO] and widget.task is None
+    assert widget.toggle.isHidden()
+    assert 'PAPER BOTS' in widget.status.text()
     widget.close()
+
 
 def test_old_capture_final_does_not_mark_restart_stopped(tmp_path):
     work=wallet(tmp_path);status=json.loads((work/'engine-status.json').read_text())

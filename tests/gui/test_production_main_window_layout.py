@@ -100,3 +100,34 @@ def test_production_main_window_keeps_trade_intelligence_in_middle_row(
     finally:
         window.close()
         composition.close()
+
+
+def test_existing_crypto_tab_reads_fleet_without_activating_execution(application, tmp_path, monkeypatch):
+    from app.assets import AssetType
+    from app.gui import crypto_monitor
+    class Reader:
+        base=tmp_path
+        def read(self):return dict(engines=[],checked_at='2026-11-13T12:00:00+00:00')
+    monkeypatch.setattr(crypto_monitor,'CryptoMonitorReader',Reader)
+    composition=create_desktop_composition()
+    window=MainWindow(composition.bus,composition.state_store,composition.runtime_service,
+        composition.trading_service,composition.order_command_factory,
+        settings=QSettings(str(tmp_path/'crypto-layout.ini'),QSettings.Format.IniFormat))
+    try:
+        window.show();application.processEvents()
+        window.asset_navigation.tabs.setCurrentIndex(window.asset_navigation.assets.index(AssetType.CRYPTO))
+        application.processEvents()
+        page=window.asset_surface.currentWidget()
+        assert page is window._crypto_fleet_page and not page.isWindow()
+        assert page.timer.isActive() and page.tabs.tabText(0)=='Bots'
+        assert not composition.runtime_service.is_active
+        window.pages.setCurrentIndex(1);application.processEvents()
+        assert window.asset_surface.currentWidget() is page and page.tabs.currentIndex()==1
+        window.pages.setCurrentIndex(2);application.processEvents()
+        assert page.tabs.currentIndex()==3
+        window.asset_navigation.tabs.setCurrentIndex(0);application.processEvents()
+        assert not page.timer.isActive() and not composition.runtime_service.is_active
+        window.asset_navigation.tabs.setCurrentIndex(1);application.processEvents()
+        assert page.timer.isActive()
+    finally:
+        window.close();application.processEvents()

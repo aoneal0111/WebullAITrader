@@ -15,7 +15,7 @@ def display(value):
     return str(value)[:300]
 
 
-def create_window(reader=None, parent=None):
+def create_window(reader=None, parent=None, *, embedded=False):
     # Keep the --check path usable without Qt or the Atlas trading runtime.
     from PySide6.QtCore import QTimer, Qt
     from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QLabel,
@@ -24,7 +24,9 @@ def create_window(reader=None, parent=None):
 
     class MonitorWindow(QMainWindow):
         def __init__(self):
-            super().__init__(parent, Qt.WindowType.Window)
+            super().__init__(parent, Qt.WindowType.Widget if embedded else Qt.WindowType.Window)
+            if embedded:
+                self.setWindowFlags(Qt.WindowType.Widget)
             self.setWindowTitle('Atlas · Crypto PAPER bots · Read only')
             self.resize(1250,720)
             self.setStyleSheet(application_stylesheet())
@@ -56,6 +58,9 @@ def create_window(reader=None, parent=None):
 
         def showEvent(self,event):
             super().showEvent(event);self.timer.start();self.refresh_timer.start();self.refresh()
+
+        def hideEvent(self,event):
+            self.timer.stop();self.refresh_timer.stop();super().hideEvent(event)
 
         def closeEvent(self,event):
             self.timer.stop();self.refresh_timer.stop();super().closeEvent(event)

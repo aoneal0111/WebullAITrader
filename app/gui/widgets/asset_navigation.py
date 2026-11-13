@@ -23,7 +23,6 @@ class _LifecycleTask(QThread):
 
 class AssetNavigation(QWidget):
     asset_selected = Signal(object)
-    crypto_monitor_requested = Signal()
 
     def __init__(self, modules=None, parent=None):
         super().__init__(parent)
@@ -42,11 +41,6 @@ class AssetNavigation(QWidget):
         row.addWidget(self.tabs)
         self.status = QLabel()
         row.addWidget(self.status, 1)
-        self.crypto_monitor_button = QPushButton("Crypto bots")
-        self.crypto_monitor_button.setObjectName("secondaryButton")
-        self.crypto_monitor_button.setToolTip("Read-only Docker crypto PAPER wallets; does not activate a market")
-        self.crypto_monitor_button.clicked.connect(self.crypto_monitor_requested.emit)
-        row.addWidget(self.crypto_monitor_button)
         self.budget = QComboBox()
         self.budget.addItems(['One active market', 'Up to two active markets'])
         self.budget.setCurrentIndex((modules.maximum_active if modules else 2)-1)
@@ -73,8 +67,10 @@ class AssetNavigation(QWidget):
         asset = self.assets[self.tabs.currentIndex()]
         state = ("EQUITY STRATEGY VIEW" if isinstance(asset, EngineId) else
                  "NOT AVAILABLE" if self.modules is None else self.modules.status(asset))
+        if asset is AssetType.CRYPTO:
+            state = 'PAPER BOTS · HEALTH IN CRYPTO VIEW'
         self.status.setText(self.last_error or f"{asset.value.title()}: {state}")
-        self.toggle.setVisible(asset is AssetType.CRYPTO)
+        self.toggle.setVisible(False)
         self.toggle.setText("Stop market" if state == "ACTIVE" else "Start market")
         self.toggle.setEnabled(state != "NOT AVAILABLE" and self.task is None)
 
