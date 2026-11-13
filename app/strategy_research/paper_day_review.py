@@ -191,7 +191,7 @@ def verify_interrupted_prefix(session, manifest):
         writer_alive_is_historical_observation=True)
 
 
-def collect(trial,ledger,output,*,interrupted=False):
+def collect(trial,ledger,output,*,interrupted=False,crypto_base=None):
     trial,ledger,output=Path(trial).resolve(),Path(ledger).resolve(),Path(output).resolve()
     spec=read_json(trial/'experiment.json');pointer=read_json(trial/'recording-session.json')
     if pointer['trial_id']!=spec['trial_id']:raise ValueError('TRIAL_POINTER_MISMATCH')
@@ -215,7 +215,8 @@ def collect(trial,ledger,output,*,interrupted=False):
     if not interrupted and (not final.get('journal',{}).get('closed') or not final['journal'].get('writer_stopped')):
         raise ValueError('FINALIZED_RECORDING_REQUIRED')
     if output.exists():raise ValueError('NEW_PRIVATE_REVIEW_DIRECTORY_REQUIRED')
-    sources=[ledger,trial/'entry-attempts.sqlite3',trial/'grok-team-budget.sqlite3']
+    continuous=spec.get('scope')=='NATIVE_PAPER_OPERATION_V1'
+    sources=[ledger,trial/'entry-attempts.sqlite3']+([] if continuous else [trial/'grok-team-budget.sqlite3'])
     required=2*sum(p.stat().st_size for source in sources for p in (source,Path(str(source)+'-wal')) if p.is_file())+256*1024**2
     if shutil.disk_usage(output.parent).free<required:raise ValueError('PRIVATE_REVIEW_FREE_SPACE_REQUIRED')
     output.mkdir(parents=True)
@@ -231,14 +232,14 @@ def collect(trial,ledger,output,*,interrupted=False):
         files[relative]={'bytes':target.stat().st_size,'sha256':digest(target)}
     databases=[(ledger,'native/paper-ledger.sqlite3'),
         (trial/'entry-attempts.sqlite3','trial/entry-attempts.sqlite3'),
-        (trial/'grok-team-budget.sqlite3','grok/grok-team-budget.sqlite3')]
+        *([] if continuous else [(trial/'grok-team-budget.sqlite3','grok/grok-team-budget.sqlite3')])]
     for source,relative in databases:
         if not source.is_file():
             if source==ledger:raise ValueError('NATIVE_PAPER_LEDGER_REQUIRED')
             continue
         target=payload/relative;target.parent.mkdir(parents=True,exist_ok=True)
         files[relative]=snapshot(source,target)
-    for name in ('experiment.json','preparation-summary.json','recording-session.json','warrior-control-status.json'):
+    for name in ('experiment.json','preparation-summary.json','recording-session.json','warrior-control-status.json','account-recovery-status.json'):
         copy(trial/name,'trial/'+name)
     for name in ('research-manifest.json','research-summary.json','engine-readiness.json'):
         copy(session/name,'capture/'+name)
@@ -261,7 +262,15 @@ def collect(trial,ledger,output,*,interrupted=False):
     except (ValueError,KeyError,TypeError,sqlite3.Error) as exc:
         report['native_trial']={'status':'RECONCILIATION_FAILED','error_type':type(exc).__name__}
     budget=payload/'grok/grok-team-budget.sqlite3'
-    if budget.is_file():
+    if continuous and (trial/'grok-team-budget.sqlite3').is_file():
+        from .paper_call_summary import summarize
+        calls=summarize(trial/'grok-team-budget.sqlite3')
+        report['grok_call_summary']=calls
+        report['grok_roles']=calls['roles']
+        report['grok_reviews']=calls['recent_reviews']
+        report['performance_scope']='Current persistent operating identity across restarts; latest recording diagnostics only; older trials excluded'
+        report['limitations'].append('Raw Grok accounting database and prompts omitted from compact continuous review; recent details limited to 500 calls.')
+    elif budget.is_file():
         with read_database(budget) as db:
             rows=bounded_rows(db,'SELECT engine,stage,started,context,result FROM calls ORDER BY rowid LIMIT 61',(),60,8*1024**2)
         report['grok_roles']=dict(Counter(engine+'|'+stage for engine,stage,_,_,_ in rows))
@@ -284,6 +293,13 @@ def collect(trial,ledger,output,*,interrupted=False):
             'Ledger snapshots are consistent separately; journal and ledger are not one atomic snapshot',
             'No final entry diagnostics exist; event-kind counts do not establish unique trades or final engine totals',
             'Grok intentions are decisions, not filled trades or measurable win rate']
+    if crypto_base is not None:
+        from app.strategy_lab.crypto_monitor import CryptoMonitorReader
+        crypto=CryptoMonitorReader(crypto_base).read()
+        target=payload/'crypto-paper-status.json'
+        target.write_text(json.dumps(crypto,indent=2,allow_nan=False),encoding='utf-8')
+        files['crypto-paper-status.json']={'bytes':target.stat().st_size,'sha256':digest(target)}
+        report['crypto_snapshot_scope']='Separate crypto paper wallets at export time; not equity capital or a reconstructed closing snapshot'
     (payload/'paper-day-review.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
     archive=output/('interrupted-paper-session-review.zip' if interrupted else 'closed-paper-day-review.zip')
     with zipfile.ZipFile(archive,'x',compression=zipfile.ZIP_DEFLATED) as z:
@@ -297,7 +313,8 @@ def main():
     p.add_argument('--trial',required=True,type=Path);p.add_argument('--ledger',required=True,type=Path)
     p.add_argument('--output',required=True,type=Path)
     p.add_argument('--interrupted',action='store_true',help='Missing final summary; verify stopped Windows producers and saved journal prefix')
-    a=p.parse_args();report,archive=collect(a.trial,a.ledger,a.output,interrupted=a.interrupted)
+    p.add_argument('--crypto-base',type=Path)
+    a=p.parse_args();report,archive=collect(a.trial,a.ledger,a.output,interrupted=a.interrupted,crypto_base=a.crypto_base)
     result=report['native_trial'];metrics=result.get('overall',{})
     print('REVIEW=COMPLETE; ORDERS=0; API_REQUESTS=0')
     print('TRIAL_CLOSED='+str(result.get('closed_lifecycles'))+'; WINS='+str(metrics.get('wins'))+

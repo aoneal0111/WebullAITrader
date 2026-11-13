@@ -49,3 +49,10 @@ private SQLite snapshot retains the original model evidence and results.
 No provider requests or paid inference occur during export. Raw market journals
 stay in their original folders; the aggregate quote comparison does not prove
 feed entitlement or identify a quote-parser defect on its own.
+
+
+## Persistent PAPER operation review
+
+Continuous operations use a compact model-call summary instead of the old 60-call export limit or a copy of the raw Grok accounting database. All calls in the operation are counted through one read transaction; at most 500 recent decision details are retained. Cumulative token usage is deduplicated by usage identity using maxima rather than adding repeated snapshots. Missing attribution and unknown dollar charges remain explicit. The native ledger is still snapshotted and reconciled by operating identity, excluding older trials and mixed inventory. Latest-recording diagnostics do not attest coverage across all restarts or rescan the entire raw journal.
+
+Close Atlas normally first; export does not stop processes or manufacture a final summary. The existing `-Interrupted` mode remains available for a missing final summary after a confirmed stopped process, subject to its original prefix bounds. `-IncludeCrypto` adds a current read-only snapshot of the known independent Docker paper wallets. It does not stop crypto, call market providers, combine wallets, or turn open positions into wins. Its timestamp is export time, not a reconstruction of the equity closing time. No execution settings or installed source files are updated by this exporter.

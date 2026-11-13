@@ -3,13 +3,18 @@ param(
     [Parameter(Mandatory=$true)][string]$Revision,
     [Parameter(Mandatory=$true)][string]$Trial,
     [string]$Ledger = '',
-    [switch]$Interrupted
+    [switch]$Interrupted,
+    [switch]$IncludeCrypto
 )
 $ErrorActionPreference = 'Stop'
 if ($Revision -notmatch '^[0-9a-f]{40}$') { throw 'Exact reviewed revision required.' }
 $Repo = (Resolve-Path -LiteralPath $Repo).Path
 $Trial = (Resolve-Path -LiteralPath $Trial).Path
 $Python = Join-Path $Repo '.venv\Scripts\python.exe'
+$Running = Get-CimInstance Win32_Process | Where-Object {
+    $_.Name -match '^python(w)?\.exe$' -and $_.CommandLine -match 'app\.gui\.app|bootstrap-observer\.py|grok_day_proposals'
+}
+if ($Running) { throw 'Close Atlas normally to finalize the equity recording before export. Crypto containers can stay running.' }
 if (-not $Ledger) {
     $Lookup = @'
 import json, os, sys
@@ -53,11 +58,13 @@ $Source = Join-Path $Root 'review-source'
 if ($LASTEXITCODE -ne 0) { throw 'Read-only review checkout failed.' }
 Push-Location $Source
 try {
-    & $Python -m unittest tests.strategy_research.test_paper_day_review_stdlib tests.strategy_research.test_audit_stdlib tests.strategy_research.test_interrupted_paper_review -v
+    & $Python -m unittest tests.strategy_research.test_paper_day_review_stdlib tests.strategy_research.test_audit_stdlib tests.strategy_research.test_interrupted_paper_review tests.strategy_research.test_paper_call_summary -v
     if ($LASTEXITCODE -ne 0) { throw 'Fill reconciliation/export checks failed. No source database changed.' }
     $ReviewOptions = @()
     if ($Interrupted) { $ReviewOptions += '--interrupted' }
+    if ($IncludeCrypto) { $ReviewOptions += @('--crypto-base', (Join-Path $env:LOCALAPPDATA 'AtlasResearch')) }
     & $Python -m app.strategy_research.paper_day_review --trial $Trial --ledger $Ledger --output (Join-Path $Root 'export') @ReviewOptions
     if ($LASTEXITCODE -ne 0) { throw 'Review export failed. Preserve the error; do not rerun Atlas.' }
 } finally { Pop-Location }
+Write-Host ('UPLOAD_DIRECTORY=' + (Join-Path $Root 'export'))
 Invoke-Item (Join-Path $Root 'export')
