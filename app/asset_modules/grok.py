@@ -69,6 +69,8 @@ class GrokClient:
         self._lock, self._slots = Lock(), BoundedSemaphore(2)
         self._next = {}
         self._rate_limit_until=0
+        self.maximum_requests = 120
+        self.role_cooldown_seconds = 60
         self.requests = 0
         self._usage = {"input_tokens":0,"output_tokens":0,"responses_with_usage":0,"responses_without_usage":0}
 
@@ -95,14 +97,14 @@ class GrokClient:
                 if now < self._rate_limit_until:
                     raise GrokUnavailable('GROK_RATE_LIMIT_COOLDOWN',failure_category='RATE_LIMITED',http_status=429,
                         retry_after_seconds=max(1,min(3600,int(self._rate_limit_until-now)+1)))
-                if self.requests >= 120:
+                if self.maximum_requests is not None and self.requests >= self.maximum_requests:
                     raise GrokUnavailable("GROK_SESSION_REQUEST_LIMIT")
                 if now < self._next.get(role, 0):
                     raise GrokUnavailable("GROK_ROLE_COOLDOWN")
                 # Reserve a durable attempt only after local validation, slot and
                 # cooldown checks. A rejected reservation must never dispatch.
                 if before_transport is not None:before_transport()
-                self._next[role] = now + 60
+                self._next[role] = now + self.role_cooldown_seconds
                 self.requests += 1  # failed requests count; never retry an order decision
             started = self._latency_clock()
             received = False

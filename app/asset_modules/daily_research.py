@@ -36,7 +36,8 @@ class DailyResearch:
         from app.equity_overhaul.paper_experiment import ENV, load
         experiment_path=os.environ.get(ENV,'').strip()
         experiment=load(experiment_path,clock=clock,allow_expired=True)[1] if experiment_path else None
-        if experiment:seconds=max(seconds,experiment['limits']['hours']*3600)
+        continuous=bool(experiment and experiment.get('scope')=='NATIVE_PAPER_OPERATION_V1')
+        if experiment and not continuous:seconds=max(seconds,experiment['limits']['hours']*3600)
         baseline_material=dict(source=source_hash,configuration=config_hash)
         if experiment:baseline_material['paper_experiment']=experiment
         if self.crypto_capture is not None:baseline_material['crypto_observation_capture']=self.crypto_capture
@@ -46,7 +47,7 @@ class DailyResearch:
         self.directory.mkdir(parents=True,exist_ok=False)
         try:
             self.journal=DailyJournal(self.directory/'journal',self.baseline,clock=clock,
-                **({'max_bytes':4*1024*1024*1024,'max_records':8_000_000} if experiment else {}))
+                **({'max_bytes':4*1024*1024*1024,'max_records':8_000_000,'continuous':continuous} if experiment else {}))
             if self.crypto_capture is not None:
                 request.with_name('recording-session.json').write_text(json.dumps(dict(
                     session=str(self.directory),capture_id=self.crypto_capture['id'])),encoding='utf-8')
@@ -61,11 +62,11 @@ class DailyResearch:
             from .grok_observer_session import _entry_diagnostic_counts
             self._entry_counts_before=_entry_diagnostic_counts()
             self._last_active_readiness=None
-            self._deadline=monotonic()+seconds
+            self._deadline=None if continuous else monotonic()+seconds
             manifest=dict(scope='NORMAL_DESKTOP_DAILY_RESEARCH_V1',paper_experiment=experiment,baseline_sha256=self.baseline,
                 crypto_observation_capture=self.crypto_capture,
                 source_sha256=source_hash,configuration_sha256=config_hash,source_files=source,
-                started_at=clock().isoformat(),max_seconds=seconds,live_trading_enabled=False,
+                started_at=clock().isoformat(),max_seconds=None if continuous else seconds,live_trading_enabled=False,
                 grok_order_review_enabled=bool(self.grok_execution) or bool(experiment and experiment.get('profile') in GROK_CONTROL_PROFILES),automatic_grok_requests=0,
                 warrior_control=('GROK_NATIVE_REVIEW_AND_DIRECTED' if experiment and experiment.get('profile') in GROK_CONTROL_PROFILES else 'NATIVE'),
                 scalper_control=('NATIVE' if self.grok_execution is None else 'GROK_REVIEW'),
@@ -79,7 +80,7 @@ class DailyResearch:
                 limitations=['No unobserved symbols, pre-start ticks, options chains or news invented',
                     'Fresh context sample limited to 10000 records/64MiB; raw journal continues if context fills',
                     'Paper experiments additionally publish one bounded latest context per engine for independent team sampling',
-                    f'Raw journal bounded to {self.journal.max_bytes} bytes/{self.journal.max_records} records; queue drops invalidate complete replay',
+                    ('Raw journal has no total byte or record quota; segment files rotate without deletion; disk failure pauses new entries' if continuous else f'Raw journal bounded to {self.journal.max_bytes} bytes/{self.journal.max_records} records; queue drops invalidate complete replay'),
                     'Recording grants no entries; native admission or an explicit bounded PAPER experiment controls buys'])
             (self.directory/'research-manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
             self._thread=Thread(target=self._monitor,name='atlas-daily-recording-lifecycle',daemon=True)
@@ -161,7 +162,7 @@ class DailyResearch:
                 self._policy_changed=True
             try:self._write_readiness()
             except Exception:self.journal.submit('READINESS_CHECK_FAILED',{})
-            if monotonic()>=self._deadline:
+            if self._deadline is not None and monotonic()>=self._deadline:
                 self.close('TIME_LIMIT');return
 
     def close(self,reason='ATLAS_CLOSED'):

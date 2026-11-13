@@ -72,7 +72,8 @@ class TeamBudget:
 
     def reserve(self, engine, stage, context, *, maximum_stage=None):
         from app.equity_overhaul.paper_experiment import load
-        load(self.root / 'experiment.json', clock=self.clock)
+        _,spec=load(self.root / 'experiment.json', clock=self.clock)
+        continuous=spec.get('scope')=='NATIVE_PAPER_OPERATION_V1' and engine=='WARRIOR_MOMENTUM_V1' and stage in ('DIRECTOR','NATIVE_REVIEW')
         if (self.root / 'STOP_GROK').exists():
             raise GrokUnavailable('TEAM_OBSERVER_STOPPED')
         if not ((engine in ENGINES and stage in ('ANALYST', 'COORDINATOR'))
@@ -92,7 +93,7 @@ class TeamBudget:
             stage_count=db.execute('SELECT count(*) FROM calls WHERE engine=? AND stage=?',(engine,stage)).fetchone()[0]
             if maximum_stage is not None and stage_count>=maximum_stage:
                 raise GrokUnavailable('DURABLE_STAGE_REQUEST_CAP')
-            if own >= 20 or total >= 60:
+            if not continuous and (own >= 20 or total >= 60):
                 raise GrokUnavailable('DURABLE_TEAM_REQUEST_CAP')
             identifier = uuid4().hex
             event_key = engine + ':' + stage + ':' + str(context['event_id']) if 'event_id' in context else identifier
@@ -109,7 +110,10 @@ class TeamBudget:
     def report(self):
         with self.connect() as db:
             rows = db.execute('SELECT engine,stage,count(*),sum(result IS NULL) FROM calls GROUP BY engine,stage').fetchall()
-        return {'reserved_attempts': sum(r[2] for r in rows), 'maximum_attempts': 60, 'maximum_per_team': 20,
+        from app.equity_overhaul.paper_experiment import load
+        _,spec=load(self.root/'experiment.json',clock=self.clock,allow_expired=True)
+        continuous=spec.get('scope')=='NATIVE_PAPER_OPERATION_V1'
+        return {'reserved_attempts': sum(r[2] for r in rows), 'maximum_attempts': None if continuous else 60, 'maximum_per_team': None if continuous else 20,
             'unfinalized_attempts': sum(r[3] for r in rows),
             'roles': [{'engine': r[0], 'stage': r[1], 'attempts': r[2]} for r in rows]}
 

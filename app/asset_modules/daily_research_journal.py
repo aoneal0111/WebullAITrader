@@ -43,9 +43,11 @@ def canonical(value):
 
 class DailyJournal:
     def __init__(self,directory,baseline,*,clock=lambda:datetime.now(UTC),timer=monotonic,
-                 max_bytes=DEFAULT_BYTES,max_records=DEFAULT_RECORDS):
+                 max_bytes=DEFAULT_BYTES,max_records=DEFAULT_RECORDS,continuous=False):
         if len(baseline)!=64 or any(c not in '0123456789abcdef' for c in baseline):raise ValueError('BASELINE_HASH_REQUIRED')
         if not 1<=max_bytes<=MAX_BYTES or not 1<=max_records<=MAX_RECORDS:raise ValueError('JOURNAL_BOUND_REQUIRED')
+        if type(continuous) is not bool:raise ValueError('EXPLICIT_JOURNAL_MODE_REQUIRED')
+        if continuous:max_bytes=max_records=None
         self.directory=Path(directory);self.directory.mkdir(parents=True,exist_ok=False)
         self.baseline,self.clock,self.timer=baseline,clock,timer
         self.max_bytes,self.max_records=max_bytes,max_records
@@ -126,7 +128,7 @@ class DailyJournal:
                     with self._lock:self._counts['invalid_record']+=1
                     continue
                 with self._lock:
-                    if sequence>self.max_records or self._bytes+len(line)>self.max_bytes:
+                    if (self.max_records is not None and sequence>self.max_records) or (self.max_bytes is not None and self._bytes+len(line)>self.max_bytes):
                         self._limited=True;self._counts['capacity_dropped']+=1;continue
                 if stream is None or segment_bytes+len(line)>SEGMENT_BYTES:
                     if stream is not None:stream.close()

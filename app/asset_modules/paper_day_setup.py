@@ -16,7 +16,9 @@ FLAGS={'WEBULL_TRADING_ENVIRONMENT':'PAPER','LIVE_TRADING_ENABLED':'false',
 def quote(value):return "'"+str(value).replace("'","''")+"'"
 
 
-def prepare(repo,output,*,profile='LEGACY_V1',teams=False,extended_sessions=False,clock_tolerance=False,hours=8):
+def prepare(repo,output,*,profile='LEGACY_V1',teams=False,extended_sessions=False,clock_tolerance=False,hours=8,continuous=False):
+    if type(continuous) is not bool or continuous and profile!=ACCOUNT_SIZING_PROFILE:
+        raise ValueError('EXPLICIT_ACCOUNT_PAPER_OPERATION_REQUIRED')
     if type(hours) is not int or hours not in (8,24) or (hours!=8 and profile!=ACCOUNT_SIZING_PROFILE):
         raise ValueError('EXPLICIT_ACCOUNT_PAPER_DURATION_REQUIRED')
     if type(clock_tolerance) is not bool or clock_tolerance and profile!=ACCOUNT_SIZING_PROFILE:
@@ -49,24 +51,28 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False,extended_sessions=Fals
     atlas=common+"Push-Location "+quote(repo)+"\ntry {\n"
     atlas+="    $Running = Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^python(w)?\\.exe$' -and $_.CommandLine -match 'app\\.gui\\.app|bootstrap-observer\\.py' }\n"
     atlas+="    if ($Running) { throw 'Close the existing Atlas normally first. Nothing else was started.' }\n"
-    atlas+="    & "+quote(python)+" -m app.equity_overhaul.paper_experiment --create "+quote(output)+" --profile "+quote(profile)+(" --extended-sessions" if extended_sessions else "")+(" --clock-tolerance" if clock_tolerance else "")+" --hours "+str(hours)+"\n"
+    atlas+="    & "+quote(python)+" -m app.equity_overhaul.paper_experiment --create "+quote(output)+" --profile "+quote(profile)+(" --extended-sessions" if extended_sessions else "")+(" --clock-tolerance" if clock_tolerance else "")+" --hours "+str(hours)+(" --continuous" if continuous else "")+"\n"
     atlas+="    if ($LASTEXITCODE -ne 0) { throw 'Experiment expired or invalid. Nothing started.' }\n"
-    if profile in GROK_CONTROL_PROFILES:
+    if continuous:
+        atlas+="    Write-Host 'CONTINUOUS PAPER; NO EXPIRY OR PAID-CALL QUOTA; FAIR WATCHLIST GROK REVIEWS; STRATEGY PARAMETERS FIXED'\n"
+    elif profile in GROK_CONTROL_PROFILES:
         atlas+="    Write-Host 'GROK CONTROLS WARRIOR ONLY; NATIVE CANDIDATE REVIEW + DIRECTED ENTRIES/EXITS; MAX 20 PAID CALLS; SCALPER INDEPENDENT; PROTECTIVE EXITS RETAINED'\n"
     sizing_notice=(f"EXPERIMENTAL PAPER; {hours} HOURS; NATIVE ACCOUNT SIZING; NO TRIAL POSITION OR ENTRY-NOTIONAL OVERRIDES; GROK WARRIOR CONTROL ON" if profile==ACCOUNT_SIZING_PROFILE else "EXPERIMENTAL PAPER; 8 HOURS; 50 ENTRY ATTEMPTS; 10 SHARES; $100 POSITION; $1 MODELED INITIAL RISK; "+("GROK WARRIOR CONTROL ON" if profile in GROK_CONTROL_PROFILES else "GROK ORDERS OFF"))
+    if continuous:sizing_notice="CONTINUOUS PAPER; NATIVE ACCOUNT SIZING; LIVE OFF; SCALPER NATIVE; GROK WARRIOR CONTROL ON"
     atlas+="    Write-Host "+quote(sizing_notice)+"\n"
-    if extended_sessions:atlas+="    Write-Host 'PAPER ENTRY SESSIONS: PREMARKET / REGULAR / AFTER_HOURS; EXPLICIT EXPIRY, PAID-REQUEST CAP AND NATIVE ACCOUNT RISK STILL APPLY'\n"
+    if extended_sessions:atlas+="    Write-Host 'PAPER ENTRY SESSIONS: PREMARKET / REGULAR / AFTER_HOURS; NATIVE ACCOUNT RISK AND MARKET-DATA VALIDATION APPLY'\n"
     atlas+="    & "+quote(python)+" -m app.gui.app\n"+finally_block
     grok=common+"Push-Location "+quote(repo)+"\ntry {\n"
     grok+="    & "+quote(python)+" -m app.asset_modules.grok_day_proposals --repo "+quote(repo)+" --trial "+quote(output)+(" --teams" if teams else "")+"\n"
     grok+="    if ($LASTEXITCODE -ne 0) { throw 'Grok intentions stopped with a diagnostic. Native PAPER protection is independent.' }\n"+finally_block
-    (output/'Start-Atlas-Paper-Trial.ps1').write_text(atlas,encoding='utf-8')
+    atlas_name='Start-Atlas-Paper.ps1' if continuous else 'Start-Atlas-Paper-Trial.ps1'
+    (output/atlas_name).write_text(atlas,encoding='utf-8')
     if profile not in GROK_CONTROL_PROFILES:
         (output/'Start-Grok-Intentions.ps1').write_text(grok,encoding='utf-8')
     if teams:
         (output/'Start-Grok-Teams.ps1').write_text(grok,encoding='utf-8')
     if teams or profile in GROK_CONTROL_PROFILES:
-        (output/'Show-Morning-Status.ps1').write_text(
+        (output/('Show-Atlas-Status.ps1' if continuous else 'Show-Morning-Status.ps1')).write_text(
             "$ErrorActionPreference = 'Stop'\nPush-Location "+quote(repo)+"\ntry {\n    & "+quote(python)+
             " -m app.asset_modules.paper_morning_status --trial "+quote(output)+
             "\n} finally { Pop-Location }\n",encoding='utf-8')
@@ -98,9 +104,18 @@ def prepare(repo,output,*,profile='LEGACY_V1',teams=False,extended_sessions=Fals
         summary.update(position_sizing='NATIVE_ACCOUNT_RISK',trial_size_overrides=False,trial_entry_attempt_cap=None,trial_cumulative_notional_cap=None,
             native_risk='Configured account buying power, exposure, quantity/position limits and per-trade risk are enforced at dispatch',
             limitations=summary['limitations']+['Explicit trial expiry and twenty Warrior paid attempts remain; normal account/strategy controls still apply.'])
+    if continuous:
+        summary.update(scope='CONTINUOUS_PAPER_PREPARATION_V1',operating_mode='CONTINUOUS_PAPER',
+            trial=False,grok='Embedded Warrior with no lifetime/session paid-call quota; fair eligible-watchlist batches',
+            shared_warrior_paid_cap=None,director_call_cap=None,native_review_call_cap=None,
+            raw_journal_limit_bytes=None,raw_journal_limit_records=None,max_recording_hours=None,entry_window_hours=None,
+            limitations=['PAPER only; native account risk, fresh quotes and protective exits remain.',
+                'Grok calls are paid; token usage and every transport attempt are recorded.',
+                'All means subscribed eligible watchlist, not unseen exchange symbols.',
+                'Provider rate limits, disk or capture failures remain visible operational conditions.'])
     summary['scalper_clock_tolerance_ms']=250 if clock_tolerance else 0
     target=output/'preparation-summary.json';target.write_text(json.dumps(summary,indent=2),encoding='utf-8')
-    print('TRIAL_DIRECTORY='+str(output));print('MANUAL_ATLAS='+str(output/'Start-Atlas-Paper-Trial.ps1'))
+    print(('PAPER_DIRECTORY=' if continuous else 'TRIAL_DIRECTORY=')+str(output));print('MANUAL_ATLAS='+str(output/atlas_name))
     if profile not in GROK_CONTROL_PROFILES:print('MANUAL_GROK='+str(output/('Start-Grok-Teams.ps1' if teams else 'Start-Grok-Intentions.ps1')))
     else:print('GROK_CONTROL=EMBEDDED_WARRIOR_ONLY; NO_SEPARATE_GROK_OBSERVER_NEEDED')
     print('UPLOAD_SUMMARY='+str(target))
@@ -112,7 +127,8 @@ def main():
     p.add_argument('--profile',choices=PAPER_PROFILES,default='LEGACY_V1')
     p.add_argument('--teams',action='store_true');p.add_argument('--extended-sessions',action='store_true');p.add_argument('--clock-tolerance',action='store_true')
     p.add_argument('--hours',type=int,choices=(8,24),default=8)
-    args=p.parse_args();prepare(args.repo,args.output,profile=args.profile,teams=args.teams,extended_sessions=args.extended_sessions,clock_tolerance=args.clock_tolerance,hours=args.hours)
+    p.add_argument('--continuous',action='store_true')
+    args=p.parse_args();prepare(args.repo,args.output,profile=args.profile,teams=args.teams,extended_sessions=args.extended_sessions,clock_tolerance=args.clock_tolerance,hours=args.hours,continuous=args.continuous)
 
 
 if __name__=='__main__':main()

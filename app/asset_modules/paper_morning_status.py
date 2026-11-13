@@ -17,16 +17,18 @@ def read(path):
 def report(trial):
     trial = Path(trial).resolve()
     spec = read(trial / 'experiment.json')
+    continuous=spec.get('scope')=='NATIVE_PAPER_OPERATION_V1'
     result = {'trial_started': bool(spec), 'expires_at': spec.get('expires_at'),
         'orders_enabled_by_this_check': False,'checked_at':datetime.now(UTC).isoformat(),
-        'position_sizing':('NATIVE_ACCOUNT_RISK' if spec.get('scope')=='NATIVE_PAPER_EXPERIMENT_V6' else 'BOUNDED_TRIAL'),
+        'position_sizing':('NATIVE_ACCOUNT_RISK' if spec.get('scope') in ('NATIVE_PAPER_EXPERIMENT_V6','NATIVE_PAPER_OPERATION_V1') else 'BOUNDED_TRIAL'),
         'trial_limits':spec.get('limits'),
         'scalper_clock_policy':spec.get('scalper_clock_policy'),
         'entry_sessions':spec.get('entry_sessions',['PREMARKET','REGULAR'])}
     if spec:
-        remaining=max(0,(datetime.fromisoformat(spec['expires_at'])-datetime.now(UTC)).total_seconds())
-        result['remaining_trial_hours']=round(remaining/3600,2)
-        result['entry_window_state']='EXPIRED' if remaining==0 else 'WITHIN_WINDOW'
+        remaining=None if continuous else max(0,(datetime.fromisoformat(spec['expires_at'])-datetime.now(UTC)).total_seconds())
+        result['operating_mode']='CONTINUOUS_PAPER' if continuous else 'BOUNDED_TRIAL'
+        result['remaining_trial_hours']=None if continuous else round(remaining/3600,2)
+        result['entry_window_state']='CONTINUOUS' if continuous else 'EXPIRED' if remaining==0 else 'WITHIN_WINDOW'
         result['entry_window_hours']=spec.get('limits',{}).get('hours',8)
         result['entry_blockers']=['TRIAL_EXPIRED'] if remaining==0 else []
         if (trial/'PAUSE_ENTRIES').exists():result['entry_blockers'].append('PAUSE_ENTRIES')
@@ -74,7 +76,7 @@ def report(trial):
             rows = db.execute('SELECT engine,stage,count(*),sum(result IS NULL) FROM calls GROUP BY engine,stage').fetchall()
             result.update(grok_reserved_attempts=sum(r[2] for r in rows),
                 grok_unfinalized_attempts=sum(r[3] for r in rows),
-                grok_attempts_remaining_by_team={engine:max(0,20-sum(r[2] for r in rows if r[0]==engine))
+                grok_attempts_remaining_by_team={engine:None if continuous and engine=='WARRIOR_MOMENTUM_V1' else max(0,20-sum(r[2] for r in rows if r[0]==engine))
                     for engine in ('WARRIOR_MOMENTUM_V1','QUICK_SCALPER','NEWS_DESK')},
                 grok_roles={r[0]+'|'+r[1]:r[2] for r in rows})
         finally:

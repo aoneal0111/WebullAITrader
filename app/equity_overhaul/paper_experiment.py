@@ -26,10 +26,12 @@ V2_FAMILIES={'WARRIOR_MOMENTUM':('MICRO_PULLBACK','MOMENTUM_REACCELERATION','REC
 V2_CENT_POLICY=dict(minimum='0.05',maximum='0.10',minimum_net_reward_r='1')
 CLOCK_POLICY=dict(maximum_future_ms=250,maximum_book_age_ms=5000,provider_timestamps_modified=False)
 PROFILES=PAPER_PROFILES
+CONTINUOUS_SCOPE='NATIVE_PAPER_OPERATION_V1'
+CONTINUOUS_POLICY=dict(scheduler='FAIR_WATCHLIST',batch_size=4,minimum_batch_seconds=10,minimum_symbol_seconds=60)
 EXTENDED_ENTRY_SESSIONS=frozenset({'PREMARKET','REGULAR','AFTER_HOURS'})
 
 
-def create(directory,clock=lambda:datetime.now(UTC),*,profile='LEGACY_V1',extended_sessions=False,clock_tolerance=False,hours=8):
+def create(directory,clock=lambda:datetime.now(UTC),*,profile='LEGACY_V1',extended_sessions=False,clock_tolerance=False,hours=8,continuous=False):
     if profile not in PROFILES:raise ValueError('UNKNOWN_EXPERIMENT_PROFILE')
     if type(clock_tolerance) is not bool or clock_tolerance and profile!=ACCOUNT_SIZING_PROFILE:
         raise ValueError('EXPLICIT_ACCOUNT_PAPER_CLOCK_PROFILE_REQUIRED')
@@ -37,6 +39,8 @@ def create(directory,clock=lambda:datetime.now(UTC),*,profile='LEGACY_V1',extend
         raise ValueError('EXPLICIT_GROK_PAPER_EXTENDED_SESSIONS_REQUIRED')
     if type(hours) is not int or hours not in (8,24) or (hours!=8 and profile!=ACCOUNT_SIZING_PROFILE):
         raise ValueError('EXPLICIT_ACCOUNT_PAPER_DURATION_REQUIRED')
+    if type(continuous) is not bool or continuous and profile!=ACCOUNT_SIZING_PROFILE:
+        raise ValueError('EXPLICIT_ACCOUNT_PAPER_OPERATION_REQUIRED')
     root=Path(directory);root.mkdir(parents=True,exist_ok=True)
     now=clock();spec=dict(scope='NATIVE_PAPER_EXPERIMENT_V1',trial_id=uuid4().hex,
         created_at=now.isoformat(),expires_at=(now+timedelta(hours=hours)).isoformat(),limits=dict(LIMITS),families=FAMILIES)
@@ -48,6 +52,9 @@ def create(directory,clock=lambda:datetime.now(UTC),*,profile='LEGACY_V1',extend
     spec['limits']['hours']=hours
     if extended_sessions:spec['entry_sessions']=sorted(EXTENDED_ENTRY_SESSIONS)
     if clock_tolerance:spec['scalper_clock_policy']=dict(CLOCK_POLICY)
+    if continuous:
+        spec.update(scope=CONTINUOUS_SCOPE,operating_mode='CONTINUOUS_PAPER',expires_at=None,
+            limits={k:None for k in LIMITS},grok_policy=dict(CONTINUOUS_POLICY))
     with (root/'experiment.json').open('x',encoding='utf-8') as f:json.dump(spec,f,indent=2)
     return spec
 
@@ -56,6 +63,9 @@ def load(path,clock=lambda:datetime.now(UTC),*,allow_expired=False):
     path=Path(path).resolve()
     if path.stat().st_size>16384:raise ValueError('EXPERIMENT_SPEC_BOUND')
     spec=json.loads(path.read_text(encoding='utf-8'))
+    if spec.get('scope')==CONTINUOUS_SCOPE:
+        validate_continuous(spec,clock())
+        return path,spec
     if 'entry_sessions' in spec and (spec.get('profile') not in GROK_CONTROL_PROFILES
             or spec['entry_sessions']!=sorted(EXTENDED_ENTRY_SESSIONS)):
         raise ValueError('EXPERIMENT_SESSION_POLICY_INVALID')
@@ -84,6 +94,20 @@ def load(path,clock=lambda:datetime.now(UTC),*,allow_expired=False):
     return path,spec
 
 
+def validate_continuous(spec,now):
+    families={**V2_FAMILIES,'WARRIOR_MOMENTUM':(*V2_FAMILIES['WARRIOR_MOMENTUM'],'GROK_DIRECTED')}
+    start=datetime.fromisoformat(spec['created_at'])
+    if (spec.get('profile')!=ACCOUNT_SIZING_PROFILE or spec.get('operating_mode')!='CONTINUOUS_PAPER'
+            or spec.get('expires_at') is not None or spec.get('limits')!={k:None for k in LIMITS}
+            or spec.get('cent_policy')!=V2_CENT_POLICY or spec.get('grok_policy')!=CONTINUOUS_POLICY
+            or spec.get('families')!={k:list(v) for k,v in families.items()}
+            or not re.fullmatch('[0-9a-f]{32}',spec.get('trial_id',''))
+            or start.utcoffset() is None or now<start
+            or ('entry_sessions' in spec and spec['entry_sessions']!=sorted(EXTENDED_ENTRY_SESSIONS))
+            or ('scalper_clock_policy' in spec and spec['scalper_clock_policy']!=CLOCK_POLICY)):
+        raise ValueError('CONTINUOUS_PAPER_SPEC_INVALID')
+
+
 def configured(configuration,runtime_mode):
     value=os.environ.get(ENV,'').strip()
     if not value:return None
@@ -107,7 +131,10 @@ class PaperExperiment(EquityQualificationPolicy):
             db.execute('CREATE TABLE IF NOT EXISTS attempts (trial TEXT,request TEXT,notional TEXT,record TEXT,PRIMARY KEY(trial,request))');db.commit()
 
     @property
-    def cent_early(self):return self.spec['scope'] in {'NATIVE_PAPER_EXPERIMENT_V2','NATIVE_PAPER_EXPERIMENT_V3','NATIVE_PAPER_EXPERIMENT_V4','NATIVE_PAPER_EXPERIMENT_V5','NATIVE_PAPER_EXPERIMENT_V6'}
+    def continuous(self):return self.spec.get('scope')==CONTINUOUS_SCOPE
+
+    @property
+    def cent_early(self):return self.spec['scope'] in {CONTINUOUS_SCOPE,'NATIVE_PAPER_EXPERIMENT_V2','NATIVE_PAPER_EXPERIMENT_V3','NATIVE_PAPER_EXPERIMENT_V4','NATIVE_PAPER_EXPERIMENT_V5','NATIVE_PAPER_EXPERIMENT_V6'}
 
     @property
     def account_sizing(self):return self.spec.get('profile')==ACCOUNT_SIZING_PROFILE
@@ -135,7 +162,7 @@ class PaperExperiment(EquityQualificationPolicy):
             wall=(self.clock()-self._wall_start).total_seconds()
             return bool(self.capture_ready and self.capture_ready()
                 and (self.grok_execution is None or self.grok_execution.active())
-                and not self.path.with_name('PAUSE_ENTRIES').exists() and spec==self.spec and 0<=elapsed<self.spec['limits']['hours']*3600 and abs(wall-elapsed)<=2)
+                and not self.path.with_name('PAUSE_ENTRIES').exists() and spec==self.spec and (self.continuous or (0<=elapsed<self.spec['limits']['hours']*3600 and abs(wall-elapsed)<=2)))
         except Exception:return False
 
     def bind(self,attribution):
@@ -181,7 +208,8 @@ class PaperExperiment(EquityQualificationPolicy):
 
     def constrain_placement(self,placement):
         metadata=dict(placement.order.metadata)
-        deadline=min(datetime.fromisoformat(self.spec['expires_at']),self.clock()+timedelta(seconds=60))
+        deadline=self.clock()+timedelta(seconds=60)
+        if not self.continuous:deadline=min(datetime.fromisoformat(self.spec['expires_at']),deadline)
         if self.grok_execution is not None:
             deadline=min(deadline,datetime.fromisoformat(self.grok_execution.doc['expires_at']))
         for key in ('chase_deadline','opportunity_deadline'):
@@ -195,6 +223,10 @@ class PaperExperiment(EquityQualificationPolicy):
         return replace(placement,order=replace(placement.order,metadata=metadata))
 
     def notice(self):
+        if self.continuous:
+            return ('CONTINUOUS PAPER: '+('entries enabled' if self.active() else 'entries paused or capture unavailable')+
+                '; no trial expiry or paid-call quota. Fixed native account and strategy settings. '
+                'Grok Warrior fair watchlist review; Scalper native. Position protection remains available.')
         state='entry trial enabled, subject to native checks' if self.active() else ('ENTRY WINDOW EXPIRED; protection only; prepare a new trial for new buys' if self.clock()>=datetime.fromisoformat(self.spec['expires_at']) else 'new entries paused or capture unavailable')
         profile=('Grok-directed Warrior; native five-cent-defense Scalper. ' if self.spec.get('profile') in GROK_CONTROL_PROFILES else 'V4 five-cent stop-defense floor; early native Warrior. ' if self.spec.get('profile')=='CENT_DEFENSE_V4' else 'V3 fill-anchored cent Scalper; early native Warrior. ' if self.spec.get('profile')=='CENT_EXECUTABLE_V3' else 'Early native Warrior; cent-pullback Scalper. ') if self.cent_early else ''
         mode='Grok WARRIOR review + directed entries/exits ON; Scalper native' if self.spec.get('profile') in GROK_CONTROL_PROFILES else 'Grok native order review ON; crypto requires its visible AI switch' if self.grok_execution else 'Grok orders OFF'
@@ -205,9 +237,9 @@ class PaperExperiment(EquityQualificationPolicy):
                 '. Position protection remains available.')
 
     def status(self):
-        return dict(policy=self.spec['scope'],entry_mode='BOUNDED_PAPER_EXPERIMENT',approved_policies=[],
+        return dict(policy=self.spec['scope'],entry_mode='CONTINUOUS_PAPER' if self.continuous else 'BOUNDED_PAPER_EXPERIMENT',approved_policies=[],
             trial_id=self.spec['trial_id'],profile=self.spec.get('profile','LEGACY_V1'),expires_at=self.spec['expires_at'],limits=self.spec['limits'],families=self.spec['families'],
-            protective_sells='AVAILABLE',reason='EXPERIMENTAL_NOT_RELEASE_QUALIFIED')
+            protective_sells='AVAILABLE',reason='PAPER_OPERATION_NOT_LIVE_QUALIFICATION' if self.continuous else 'EXPERIMENTAL_NOT_RELEASE_QUALIFIED')
 
 
 def main():
@@ -217,9 +249,11 @@ def main():
     p.add_argument('--extended-sessions',action='store_true')
     p.add_argument('--clock-tolerance',action='store_true')
     p.add_argument('--hours',type=int,choices=(8,24),default=8)
+    p.add_argument('--continuous',action='store_true')
     args=p.parse_args();root=Path(args.create)
-    spec=load(root/'experiment.json',allow_expired=True)[1] if (root/'experiment.json').exists() else create(root,profile=args.profile,extended_sessions=args.extended_sessions,clock_tolerance=args.clock_tolerance,hours=args.hours)
-    if spec['limits']['hours']!=args.hours:
+    spec=load(root/'experiment.json',allow_expired=True)[1] if (root/'experiment.json').exists() else create(root,profile=args.profile,extended_sessions=args.extended_sessions,clock_tolerance=args.clock_tolerance,hours=args.hours,continuous=args.continuous)
+    if (spec.get('scope')==CONTINUOUS_SCOPE)!=args.continuous:raise ValueError('EXISTING_OPERATING_MODE_MISMATCH')
+    if not args.continuous and spec['limits']['hours']!=args.hours:
         raise ValueError('EXISTING_EXPERIMENT_DURATION_MISMATCH')
     if spec.get('profile','LEGACY_V1') != args.profile:
         raise ValueError('EXISTING_EXPERIMENT_PROFILE_MISMATCH')
@@ -227,9 +261,9 @@ def main():
         raise ValueError('EXISTING_EXPERIMENT_SESSION_POLICY_MISMATCH')
     if bool(spec.get('scalper_clock_policy')) != args.clock_tolerance:
         raise ValueError('EXISTING_EXPERIMENT_CLOCK_POLICY_MISMATCH')
-    if datetime.fromisoformat(spec['expires_at'])<=datetime.now(UTC):
+    if spec['expires_at'] is not None and datetime.fromisoformat(spec['expires_at'])<=datetime.now(UTC):
         print('PAPER_EXPERIMENT_EXPIRED; NEW_ENTRIES_DISABLED; OWNED_POSITION_PROTECTION_ONLY')
-    print('PAPER_EXPERIMENT_ID='+spec['trial_id']);print('EXPERIMENT_EXPIRES_AT='+spec['expires_at'])
+    print('PAPER_EXPERIMENT_ID='+spec['trial_id']);print('EXPERIMENT_EXPIRES_AT='+str(spec['expires_at']))
 
 
 if __name__=='__main__':main()

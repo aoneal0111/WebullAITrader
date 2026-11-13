@@ -156,15 +156,15 @@ def test_explicit_native_scalper_freshness_does_not_inherit_grok_warrior_deadlin
     assert not rejected.success and service.last_reason=='PROVIDER_QUOTE_NOT_CURRENT'
 
 
-@pytest.mark.parametrize('profile',['GROK_WARRIOR_V5','GROK_WARRIOR_ACCOUNT_V6'])
+@pytest.mark.parametrize('profile,continuous',[('GROK_WARRIOR_V5',False),('GROK_WARRIOR_ACCOUNT_V6',False),('GROK_WARRIOR_ACCOUNT_V6',True)])
 @pytest.mark.parametrize('extended',[False,True])
-def test_real_desktop_profile_binds_only_warrior_and_starts_no_model_before_operator_start(tmp_path,monkeypatch,historical_intelligence_artifact,extended,profile):
+def test_real_desktop_profile_binds_only_warrior_and_starts_no_model_before_operator_start(tmp_path,monkeypatch,historical_intelligence_artifact,extended,profile,continuous):
     from app.configuration import load_configuration
     import app.composition.desktop as desktop_module
     import app.asset_modules.grok_warrior_control as control_module
     from tests.test_support.session_clock import create_session_paper_composition
     from app.equity_overhaul.paper_experiment import ENV
-    root=tmp_path/'desktop-trial';create(root,profile=profile,extended_sessions=extended)
+    root=tmp_path/'desktop-trial';create(root,profile=profile,extended_sessions=extended,continuous=continuous)
     monkeypatch.setenv(ENV,str(root/'experiment.json'))
     config=load_configuration({'WEBULL_TRADING_ENVIRONMENT':'PAPER','LIVE_TRADING_ENABLED':'false',
         'ATLAS_DAILY_RESEARCH_ENABLED':'true','WARRIOR_FORWARD_PAPER_ENABLED':'true','QUICK_SCALPER_ENABLED':'true',
@@ -177,6 +177,7 @@ def test_real_desktop_profile_binds_only_warrior_and_starts_no_model_before_oper
     try:
         c=graph.warrior_forward_sidecar._grok_warrior_control
         assert c is not None and not c.active()
+        assert c.continuous==continuous
         assert c.account_sizing==(profile=='GROK_WARRIOR_ACCOUNT_V6')
         assert graph.quick_scalper_runtime.risk_config==graph.warrior_forward_sidecar.strategy_config.risk
         assert (graph.quick_scalper_runtime.risk_config.maximum_quantity>10)==c.account_sizing
