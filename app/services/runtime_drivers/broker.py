@@ -6,6 +6,8 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import logging
+import json
+import os
 from queue import Empty, Full, Queue
 from threading import Event, RLock, Thread
 from time import monotonic, perf_counter, sleep
@@ -111,6 +113,16 @@ class DesktopBrokerRuntimeDriver:
             raise ValueError("source must be non-empty text")
 
         self._configuration = configuration
+        self._continuous_paper_root = None
+        if configuration.environment is TradingEnvironment.PAPER:
+            from app.equity_overhaul.paper_experiment import ENV, load, CONTINUOUS_SCOPE
+            configured_path = os.environ.get(ENV, '').strip()
+            if configured_path:
+                path, spec = load(configured_path, allow_expired=True)
+                if spec['scope'] == CONTINUOUS_SCOPE:
+                    self._continuous_paper_root = path.parent
+                    # No new entry may use a prior process's account observation.
+                    (path.parent / 'ACCOUNT_DATA_UNAVAILABLE').touch()
         self._broker_runtime = broker_runtime
         self._broker = broker_runtime.execution
         self._event_sink = event_sink
@@ -335,8 +347,14 @@ class DesktopBrokerRuntimeDriver:
             )
         except Exception as exc:
             primary_error = (exc, exc.__traceback__)
+            performance_diagnostics.record_stream_observability('DRIVER_PRIMARY_FAILURE',
+                failure_stage='ACCOUNT_RECONCILIATION_OR_BACKGROUND_CHECK',
+                exception_class=type(exc).__name__,
+                cause_class=type(exc.__cause__).__name__ if exc.__cause__ else None)
         finally:
-            self._shutdown_requested = stop_event.is_set()
+            # Cleanup follows both operator stops and failures. Its intentional
+            # consumer exit must not be logged as another unexpected failure.
+            self._shutdown_requested = True
             cleanup_phases = (
                 ("background research stop", self._stop_background_research),
                 ("dynamic momentum research stop", self._stop_dynamic_momentum_discovery),
@@ -2029,12 +2047,12 @@ class DesktopBrokerRuntimeDriver:
             "MARKET_DATA_RECONNECTED",
             "Fresh market-data payload received after recovery.",
             RuntimeHealthUpdate(
-                runtime_status="RUNNING",
+                runtime_status="DEGRADED" if self._account_data_unavailable() else "RUNNING",
                 market_data_status="CONNECTED",
                 streaming_status="CONNECTED",
                 subscription_status="ACCEPTED",
                 scanner_status="RUNNING",
-                execution_status="ENABLED",
+                execution_status="BLOCKED - ACCOUNT DATA" if self._account_data_unavailable() else "ENABLED",
                 last_warning=None,
                 last_error=None,
             ),
@@ -2247,13 +2265,16 @@ class DesktopBrokerRuntimeDriver:
             snapshot = self._poll_account_with_retry(stop_event)
             if snapshot is None:
                 return
+            account_was_unavailable = self._account_data_unavailable()
             self._account_snapshot_sink(snapshot)
+            self._account_recovery_observed()
             feed_degraded = getattr(self,"_feed_stale",False) or getattr(self,"_feed_recovery_pending",False)
             self._publish_health(
                 "BROKER_REST_OBSERVED",
                 "Broker account, balances, positions, and orders loaded.",
                 RuntimeHealthUpdate(
                     runtime_status="DEGRADED" if feed_degraded else "RUNNING",
+                    execution_status=("BLOCKED - STALE DATA" if feed_degraded else "ENABLED") if account_was_unavailable else None,
                     broker_status="CONNECTED",
                     trading_rest_status="CONNECTED",
                     account_status="AVAILABLE",
@@ -2270,28 +2291,65 @@ class DesktopBrokerRuntimeDriver:
             if stop_event.wait(interval_seconds):
                 break
 
+    def _account_data_unavailable(self):
+        root = getattr(self, '_continuous_paper_root', None)
+        return root is not None and (root / 'ACCOUNT_DATA_UNAVAILABLE').exists()
+
+    def _account_recovery_observed(self):
+        root = getattr(self, '_continuous_paper_root', None)
+        if root is None:
+            return
+        # Clear the pause only after the actual snapshot sink has accepted data.
+        self._write_account_recovery(dict(state='ACCOUNT_OBSERVED', account_available=True))
+        (root / 'ACCOUNT_DATA_UNAVAILABLE').unlink(missing_ok=True)
+
+    def _write_account_recovery(self, details):
+        root = getattr(self, '_continuous_paper_root', None)
+        if root is None:
+            return
+        record = dict(scope='PAPER_ACCOUNT_RECOVERY_V1', updated_at=self._clock().isoformat(),
+            **details)
+        path = root / 'account-recovery-status.json'
+        temporary = path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(record, indent=2), encoding='utf-8')
+        temporary.replace(path)
+
     def _poll_account_with_retry(self, stop_event: Event):
-        """Retry only known transient read failures, never an order mutation."""
-        from app.webull.errors import NetworkError, TimeoutError as WebullTimeoutError
-        for attempt in range(1, 4):
-            if stop_event.is_set():return None
+        """Keep transient PAPER account outages observable; never retry mutations."""
+        from app.webull.errors import NetworkError, TimeoutError as WebullTimeoutError, safe_error_identity
+        persistent = (self._configuration.environment is TradingEnvironment.PAPER
+            and getattr(self, '_continuous_paper_root', None) is not None)
+        attempt = 0
+        while not stop_event.is_set():
+            attempt += 1
             try:
                 return self._account_poller(self._broker, clock=self._clock)
             except Exception as exc:
-                retry = (self._configuration.environment is TradingEnvironment.PAPER
-                    and isinstance(exc, (NetworkError, WebullTimeoutError)) and exc.retryable and attempt < 3)
+                transient = (self._configuration.environment is TradingEnvironment.PAPER
+                    and isinstance(exc, (NetworkError, WebullTimeoutError)) and exc.retryable)
+                retry = transient and (persistent or attempt < 3)
+                identity = safe_error_identity(exc.__cause__ or exc)
                 performance_diagnostics.record_stream_observability(
-                    "ACCOUNT_POLL_FAILED", exception_class=type(exc).__name__,
-                    cause_class=type(exc.__cause__).__name__ if exc.__cause__ else None,
-                    attempt=attempt, retry_pending=retry)
-                if not retry:raise
-                # No snapshot is published on failure; existing account-age
-                # and risk checks continue to use the last actual observation.
-                self._publish_health("BROKER_ACCOUNT_RETRY_PENDING",
-                    "Transient account read failed; retrying without refreshing account data.",
-                    RuntimeHealthUpdate(runtime_status="DEGRADED", trading_rest_status="RECONNECTING",
-                        account_status="STALE", last_error=type(exc).__name__))
-                if stop_event.wait(attempt):return None
+                    'ACCOUNT_POLL_FAILED', exception_class=type(exc).__name__,
+                    cause_class=identity['exception_class'],
+                    sdk_error_code=identity['sdk_error_code'], http_status=identity['http_status'],
+                    attempt=attempt, retry_pending=retry, continuous_paper=persistent)
+                if persistent:
+                    (self._continuous_paper_root / 'ACCOUNT_DATA_UNAVAILABLE').touch()
+                    self._write_account_recovery(dict(state='RETRY_PENDING' if retry else 'NONRETRYABLE_FAILURE',
+                        account_available=False, attempt=attempt, exception_class=type(exc).__name__,
+                        cause_identity=identity))
+                if not retry:
+                    raise
+                self._publish_health('BROKER_ACCOUNT_RETRY_PENDING',
+                    'Transient account read failed; new entries paused while account recovery continues.',
+                    RuntimeHealthUpdate(runtime_status='DEGRADED', trading_rest_status='RECONNECTING',
+                        account_status='STALE', execution_status='BLOCKED - ACCOUNT DATA',
+                        last_error=type(exc).__name__))
+                delay = min(30, 2 ** min(attempt-1, 5)) if persistent else attempt
+                if stop_event.wait(delay):
+                    return None
+        return None
 
     def _retry_scanner_after_session_transition(self, stop_event: Event) -> None:
         session = current_market_data_session(self._clock)

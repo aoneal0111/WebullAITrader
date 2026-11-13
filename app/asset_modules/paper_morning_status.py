@@ -32,6 +32,9 @@ def report(trial):
         result['entry_window_hours']=spec.get('limits',{}).get('hours',8)
         result['entry_blockers']=['TRIAL_EXPIRED'] if remaining==0 else []
         if (trial/'PAUSE_ENTRIES').exists():result['entry_blockers'].append('PAUSE_ENTRIES')
+        if continuous:
+            if (trial/'ACCOUNT_DATA_UNAVAILABLE').exists():result['entry_blockers'].append('ACCOUNT_DATA_UNAVAILABLE')
+            result['account_recovery_status']=read(trial/'account-recovery-status.json')
         entry_db=trial/'entry-attempts.sqlite3'
         if entry_db.is_file():
             db=sqlite3.connect(entry_db.as_uri()+'?mode=ro',uri=True)

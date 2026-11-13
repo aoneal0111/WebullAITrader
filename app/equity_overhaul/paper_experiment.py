@@ -162,7 +162,8 @@ class PaperExperiment(EquityQualificationPolicy):
             wall=(self.clock()-self._wall_start).total_seconds()
             return bool(self.capture_ready and self.capture_ready()
                 and (self.grok_execution is None or self.grok_execution.active())
-                and not self.path.with_name('PAUSE_ENTRIES').exists() and spec==self.spec and (self.continuous or (0<=elapsed<self.spec['limits']['hours']*3600 and abs(wall-elapsed)<=2)))
+                and not self.path.with_name('PAUSE_ENTRIES').exists()
+                and not (self.continuous and self.path.with_name('ACCOUNT_DATA_UNAVAILABLE').exists()) and spec==self.spec and (self.continuous or (0<=elapsed<self.spec['limits']['hours']*3600 and abs(wall-elapsed)<=2)))
         except Exception:return False
 
     def bind(self,attribution):
