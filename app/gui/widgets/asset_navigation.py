@@ -67,8 +67,10 @@ class AssetNavigation(QWidget):
         asset = self.assets[self.tabs.currentIndex()]
         state = ("EQUITY STRATEGY VIEW" if isinstance(asset, EngineId) else
                  "NOT AVAILABLE" if self.modules is None else self.modules.status(asset))
+        if asset is AssetType.CRYPTO:
+            state = 'PAPER BOTS · HEALTH IN CRYPTO VIEW'
         self.status.setText(self.last_error or f"{asset.value.title()}: {state}")
-        self.toggle.setVisible(asset is AssetType.CRYPTO)
+        self.toggle.setVisible(False)
         self.toggle.setText("Stop market" if state == "ACTIVE" else "Start market")
         self.toggle.setEnabled(state != "NOT AVAILABLE" and self.task is None)
 

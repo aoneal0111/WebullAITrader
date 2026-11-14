@@ -17,16 +17,22 @@ class DesktopGrokProducer:
     from those branches, not invented by the model. No provider is invoked on
     this owner lane; NativeGrokReview submits to its bounded background worker.
     """
-    def __init__(self, review, *, permitted):
+    def __init__(self, review, *, permitted, history_source=None, engines=None):
         if not isinstance(review, NativeGrokReview) or not callable(permitted):
             raise TypeError("Native PAPER review and local permission source required")
         self.review, self.permitted = review, permitted
+        self.engines = frozenset(engines if engines is not None else (EngineId.WARRIOR, EngineId.SCALPER))
+        if not self.engines or not self.engines <= {EngineId.WARRIOR, EngineId.SCALPER}:
+            raise ValueError("Explicit native equity engines required")
+        self.history_source = history_source
+        self.warrior_policy_source = None
         self._requests = {}
+        self.control_permission = lambda: True
         review.bind_execution_permission(self._permitted)
 
     def _permitted(self):
         try:
-            return (self.permitted() is True and self.review.bridge.enabled
+            return (self.permitted() is True and self.control_permission() is True and self.review.bridge.enabled
                     and self.review.bridge.mode == "PAPER")
         except Exception:
             return False
@@ -48,11 +54,28 @@ class DesktopGrokProducer:
             "native_signal_timestamp": signal.timestamp.isoformat(), "session": signal.session,
             "setup": str(getattr(signal, "setup_type", "QUICK_SCALP_MOMENTUM")),
             "target_levels": [str(p) for p in getattr(signal, "target_levels", ())]}
+        if getattr(signal, 'taxonomy_strategy_id', None):
+            evidence['strategy_family']=signal.taxonomy_strategy_id
+            evidence['strategy_memberships']=list(signal.taxonomy_strategy_memberships)
+        if self.history_source is not None:
+            # Bounded local evidence only: no provider call or model wait here.
+            try:
+                from .daily_research_journal import safe
+                bars = tuple(self.history_source(signal.symbol, at))[-32:]
+                bars = tuple(b for b in bars if b.symbol == signal.symbol
+                    and b.timestamp + BAR_INTERVAL <= at)
+                evidence["completed_native_bars"] = safe(bars)
+                evidence["history_status"] = "RETAINED_COMPLETED_BARS" if bars else "UNAVAILABLE"
+            except Exception:
+                evidence["history_status"] = "UNAVAILABLE"
         request = self.review.prepare(signal, shares, risk, authorization=authorization,
             evidence=evidence, float_provenance=float_provenance, symbol_authorization=symbol_authorization)
         if not isinstance(request, NativeReviewRequest):
             return NativeReviewReceipt("NOT_SENT", request.decision.reason.value)
-        receipt = self.review.submit([request], engine_evidence={request.entry.prepared.candidate.engine.value: evidence},
+        review_evidence=dict(evidence)
+        if request.entry.prepared.candidate.engine is EngineId.WARRIOR and self.warrior_policy_source is not None:
+            review_evidence['native_management']=self.warrior_policy_source()
+        receipt = self.review.submit([request], engine_evidence={request.entry.prepared.candidate.engine.value: review_evidence},
             account_evidence={"mode": "PAPER", "risk_sizing": "NATIVE_APPROVED",
                 "account_validation": "CONTROLLED_SERVICE_RECHECKS_AT_DISPATCH"})
         if receipt.pending:
@@ -60,10 +83,12 @@ class DesktopGrokProducer:
         return receipt
 
     def warrior_offer(self, signal, shares, risk, *, float_provenance, symbol_authorization, evaluated_at):
+        if EngineId.WARRIOR not in self.engines:return NativeReviewReceipt("NOT_SENT", "ENGINE_NOT_CONTROLLED")
         return self._offer(signal, shares, risk, evaluated_at,
             float_provenance=float_provenance, symbol_authorization=symbol_authorization)
 
     def scalper_offer(self, intent, shares, risk):
+        if EngineId.SCALPER not in self.engines:return NativeReviewReceipt("NOT_SENT", "ENGINE_NOT_CONTROLLED")
         return self._offer(intent, shares, risk, intent.timestamp)
 
     def _refresh(self, engine, symbol, at, *, matches):

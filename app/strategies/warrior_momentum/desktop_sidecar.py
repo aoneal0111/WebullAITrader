@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from hashlib import sha256
@@ -308,7 +308,9 @@ class WarriorDesktopSidecar:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         paper_order_source: Callable[[str], object] | None = None,
         paper_acknowledgement_adopter: Callable[..., bool] | None = None,
+        observer_context_tap: object | None = None,
     ) -> None:
+        self._observer_context_tap = observer_context_tap
         self.enabled = bool(enabled)
         self.storage_path = Path(storage_path)
         self.environment = str(environment).strip().upper() or "UNKNOWN"
@@ -325,6 +327,7 @@ class WarriorDesktopSidecar:
         self._paper_acknowledgement_adopter = paper_acknowledgement_adopter
         self._grok_runtime_handoff = None
         self._grok_native_producer = None
+        self._grok_warrior_control = None
         self._grok_native_producer_factory = None
         self._paper_exit_submitter = paper_exit_submitter
         self._paper_entry_canceller = paper_entry_canceller
@@ -462,10 +465,21 @@ class WarriorDesktopSidecar:
             state = self._grok_runtime_handoff.snapshot()
             if not state["closed"] or state["pending_entries"] or state["reconciliation_required"]:
                 raise ValueError("Prior handoff requires reconciliation")
-        observer.bind_native_review_callbacks(producer.scalper_offer, producer.scalper_refresh)
+        from app.asset_modules.engine_catalog import EngineId
+        if EngineId.SCALPER in producer.engines:
+            observer.bind_native_review_callbacks(producer.scalper_offer,producer.scalper_refresh)
+        elif observer._paper_entry_reviewer is not None:
+            raise ValueError('Warrior-only control requires a fresh native Scalper runtime')
         producer.permitted = self.grok_native_execution_permitted
+        producer.history_source = self._grok_completed_history
         self._grok_native_producer = producer
         self._grok_runtime_handoff = producer.review.handoff
+
+    def _grok_completed_history(self, symbol, at):
+        """Copy retained bars under the native lock; never request more data."""
+        with self._lock:
+            return tuple(bar for bar in self._bars.get(symbol, ())[-32:]
+                if bar.timestamp + timedelta(minutes=1) <= at)
 
 
     def bind_grok_native_producer_factory(self, factory):
@@ -513,6 +527,9 @@ class WarriorDesktopSidecar:
             return self._drain_grok_completions()
 
     def _drain_grok_completions(self):
+        if self._grok_warrior_control is not None:
+            try:self._grok_warrior_control.drain(self._service)
+            except Exception as exc:self._grok_warrior_control.failed('DIRECTOR_DRAIN_FAILED',exc)
         if self._grok_native_producer is not None:
             return self._grok_native_producer.drain(self._service, self._quick_scalper_observer, at=self._aware_now())
         handoff = self._grok_runtime_handoff
@@ -735,6 +752,7 @@ class WarriorDesktopSidecar:
                 self._service = WarriorForwardCaptureService(
                     self._store, self._writer, self.strategy_config,
                     self.capture_config,
+                    observer_context_tap=self._observer_context_tap,
                     configuration_fingerprint=self.configuration_fingerprint,
                     paper_entry_submitter=self._paper_entry_submitter,
                     paper_entry_reviewer=None if self._grok_native_producer is None else self._grok_native_producer.warrior_offer,
@@ -886,6 +904,7 @@ class WarriorDesktopSidecar:
             return
 
         lifecycle_phase = "shadow outcome finalization"
+        report_shutdown_pending = False
         try:
             now = self._aware_now()
             if service is not None:
@@ -905,7 +924,13 @@ class WarriorDesktopSidecar:
                 self._request_report_refresh(
                     now.astimezone(EASTERN).date(), persist=True
                 )
-                report_worker.close(timeout_seconds=5.0)
+                if not report_worker.close(timeout_seconds=5.0):
+                    # The worker may still persist the final report. Keep its
+                    # writer/service ownership until a subsequent Stop drains
+                    # it; do not advertise a clean stop or allow a new session.
+                    report_shutdown_pending = True
+                    from .report_worker import ReportWorkerShutdownPending
+                    raise ReportWorkerShutdownPending("Warrior report worker shutdown still pending")
                 report_metrics = report_worker.metrics()
             else:
                 report_metrics = None
@@ -936,11 +961,14 @@ class WarriorDesktopSidecar:
             self._close_auxiliary_observers()
             with self._lock:
                 performance_diagnostics.set_diagnostic_sink(None)
-                self._report_worker = None
-                self._writer = None
-                self._service = None
+                if not report_shutdown_pending:
+                    self._report_worker = None
+                    self._writer = None
+                    self._service = None
 
     def _close_auxiliary_observers(self) -> None:
+        if self._grok_warrior_control is not None:
+            self._grok_warrior_control.stop()
         entry_value_stop = getattr(self._entry_value_observer, "close", None)
         if callable(entry_value_stop):
             try:
@@ -1400,6 +1428,17 @@ class WarriorDesktopSidecar:
         symbol = event.symbol.strip().upper()
         lookup_started = perf_counter()
         observation = adapter.observation_for(symbol)
+        if self._grok_warrior_control is not None and (
+            observation is None or not observation.tradable or observation.halted):
+            self._grok_warrior_control.invalidate(symbol)
+        if self._observer_context_tap is not None and observation is not None:
+            try:
+                self._observer_context_tap.record_market_eligibility(
+                    symbol, tradable=observation.tradable,
+                    halted=observation.halted, at=self._aware_now(),
+                )
+            except Exception:
+                pass
         if event.event_type is MarketEventType.QUOTE and isinstance(event.payload, QuotePayload):
             # Execution forensics must see raw quotes even when Warrior has no
             # completed bar, qualified candidate, or complete reference data.
@@ -1527,6 +1566,12 @@ class WarriorDesktopSidecar:
                 reason="NEW_COMPLETED_BAR",
                 processing_time=self._aware_now(),
             )
+        if self._grok_warrior_control is not None:
+            try:
+                now=self._aware_now()
+                self._grok_warrior_control.offer_stream(observation,self._grok_completed_history(symbol,now),
+                    scanner_session(now).value,service)
+            except Exception as exc:self._grok_warrior_control.failed('DIRECTOR_INPUT_FAILED',exc)
         scheduling_timestamp = event.received_timestamp or event.timestamp
         intraminute_due = False
         if symbol in self._first_observed and not completed:

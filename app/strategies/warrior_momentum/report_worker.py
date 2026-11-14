@@ -22,6 +22,10 @@ from .forward_store import ForwardCaptureStore
 _LOGGER = logging.getLogger("atlas.warrior.report")
 
 
+class ReportWorkerShutdownPending(TimeoutError):
+    """Execution is stopped, but an observational report still owns capture."""
+
+
 @dataclass(frozen=True, slots=True)
 class ReportWorkerMetrics:
     requests: int = 0

@@ -397,15 +397,15 @@ def test_stale_market_data_still_blocks_entry_after_setup_detection() -> None:
     assert ReasonCode.STALE_MARKET_DATA in assessed.reason_codes
 
 
-def test_default_entry_sessions_explicitly_allow_after_hours_but_not_overnight() -> None:
+def test_default_entry_sessions_allow_premarket_regular_and_exclude_after_hours() -> None:
     assert WARRIOR_ENTRY_ALLOWED_SESSIONS == frozenset({
-        "PREMARKET", "REGULAR", "AFTER_HOURS",
+        "PREMARKET", "REGULAR",
     })
     assert WarriorMomentumConfig().entry.allowed_sessions == WARRIOR_ENTRY_ALLOWED_SESSIONS
     assert "OVERNIGHT" not in WARRIOR_ENTRY_ALLOWED_SESSIONS
 
 
-@pytest.mark.parametrize("session", ("PREMARKET", "REGULAR", "AFTER_HOURS"))
+@pytest.mark.parametrize("session", ("PREMARKET", "REGULAR"))
 def test_valid_entry_is_allowed_in_each_authorized_session(session: str) -> None:
     runtime = WarriorMomentumRuntime()
     candidate = runtime.discover(observation(), hod_bars(), session=session)
@@ -417,53 +417,28 @@ def test_valid_entry_is_allowed_in_each_authorized_session(session: str) -> None
     assert signal_value is not None and signal_value.session == session
 
 
-def test_after_hours_valid_entry_has_premarket_strategy_parity() -> None:
-    runtime = WarriorMomentumRuntime()
-    premarket, premarket_signal = runtime.assess_entry(
-        runtime.discover(observation(), hod_bars(), session="PREMARKET")
-    )
-    after_hours, after_hours_signal = runtime.assess_entry(
-        runtime.discover(observation(), hod_bars(), session="AFTER_HOURS")
-    )
-
-    assert premarket_signal is not None and after_hours_signal is not None
-    assert premarket.status is after_hours.status is CandidateStatus.ENTRY_READY
-    assert replace(
-        after_hours_signal,
-        session="PREMARKET",
-        structural_episode_id=premarket_signal.structural_episode_id,
-    ) == premarket_signal
-    assert after_hours_signal.structural_episode_id != premarket_signal.structural_episode_id
-    assert after_hours_signal.execution_authorized is False
-    assert runtime.authorize_live(after_hours_signal) is False
+def test_after_hours_trigger_is_observed_but_cannot_authorize_default_entry() -> None:
+    runtime=WarriorMomentumRuntime()
+    candidate=runtime.discover(observation(),hod_bars(),session="AFTER_HOURS")
+    assessed,signal=runtime.assess_entry(candidate)
+    assert candidate.setup is not None
+    assert signal is None and ReasonCode.SESSION_NOT_ALLOWED in assessed.reason_codes
+    assert runtime.technical_entry_signal(candidate) is None
 
 
-def test_after_hours_without_setup_is_rejected_only_by_remaining_entry_gates() -> None:
-    runtime = WarriorMomentumRuntime()
-    candidate = runtime.discover(observation(), hod_bars(), session="AFTER_HOURS")
-
-    assessed, signal_value = runtime.assess_entry(replace(candidate, setup=None))
-
-    assert signal_value is None
-    assert set(assessed.reason_codes) == {ReasonCode.NO_SETUP}
+def test_after_hours_without_setup_records_both_rejections() -> None:
+    runtime=WarriorMomentumRuntime()
+    candidate=runtime.discover(observation(),hod_bars(),session="AFTER_HOURS")
+    assessed,signal=runtime.assess_entry(replace(candidate,setup=None))
+    assert signal is None
+    assert set(assessed.reason_codes)=={ReasonCode.NO_SETUP,ReasonCode.SESSION_NOT_ALLOWED}
 
 
-def test_after_hours_wide_spread_retains_signal_but_waits_for_quality() -> None:
-    runtime = WarriorMomentumRuntime()
-    candidate = runtime.discover(
-        observation(bid=D("9"), ask=D("11")), hod_bars(), session="AFTER_HOURS",
-    )
-
-    assessed, signal_value = runtime.assess_entry(candidate)
-
-    assert signal_value is not None
-    assert assessed.status is CandidateStatus.ENTRY_READY
-    assert ReasonCode.SPREAD_WIDE not in assessed.reason_codes
-    assert assessed.execution_quality.value == "TEMPORARILY_BLOCKED"
-    assert runtime.current_execution_liquidity_ok(
-        assessed, quote_fresh=True,
-    ) is False
-    assert ReasonCode.SESSION_NOT_ALLOWED not in assessed.reason_codes
+def test_after_hours_spread_adaptation_cannot_bypass_session_policy() -> None:
+    runtime=WarriorMomentumRuntime()
+    candidate=runtime.discover(observation(bid=D("9"),ask=D("11")),hod_bars(),session="AFTER_HOURS")
+    assessed,signal=runtime.assess_entry(candidate)
+    assert signal is None and ReasonCode.SESSION_NOT_ALLOWED in assessed.reason_codes
 
 
 def test_overnight_remains_session_blocked() -> None:

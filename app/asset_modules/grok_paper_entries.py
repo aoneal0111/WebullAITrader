@@ -140,17 +140,19 @@ class GrokPaperEntries:
                     raise ValueError("Current account/session and bounded deadline required")
             if any(self.authorize(e) is not True for e in entries):
                 return EntryDispatch("NOT_SENT", "STRATEGY_NOT_AUTHORIZED")
-            for engine in (EngineId.WARRIOR, EngineId.SCALPER):
+            if self.suite.single_pass:
+                advice=self.suite.review_batch(tuple(e.candidate for e in entries),
+                    engine_evidence=engine_evidence,account_evidence=account_evidence)
+            else:
+                for engine in (EngineId.WARRIOR, EngineId.SCALPER):
+                    if entry_enabled() is not True:
+                        return EntryDispatch("NOT_SENT", "ENTRY_WORKER_STOPPED")
+                    candidates = tuple(e.candidate for e in entries if e.candidate.engine is engine)
+                    # Clear prior engine advice; never leak another batch.
+                    self.suite.review(engine, candidates, evidence=engine_evidence.get(engine.value, {}))
                 if entry_enabled() is not True:
                     return EntryDispatch("NOT_SENT", "ENTRY_WORKER_STOPPED")
-                candidates = tuple(e.candidate for e in entries if e.candidate.engine is engine)
-                # Clear the other engine's prior advice too. An empty review
-                # performs no API request and cannot leak an old candidate into
-                # the master selection for this immutable batch.
-                self.suite.review(engine, candidates, evidence=engine_evidence.get(engine.value, {}))
-            if entry_enabled() is not True:
-                return EntryDispatch("NOT_SENT", "ENTRY_WORKER_STOPPED")
-            advice = self.suite.coordinate(account_evidence=account_evidence)
+                advice = self.suite.coordinate(account_evidence=account_evidence)
             bound = {e.candidate.candidate_id: e for e in entries}
             now = self.clock()
             if (advice.role != "MASTER" or advice.session != self.suite.master.session

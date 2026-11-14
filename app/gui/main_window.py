@@ -61,7 +61,6 @@ from app.services.chart_market_data import ChartMarketDataService
 from app.gui.formatters.warrior_paper import format_warrior_paper
 from app.assets import AssetType
 from app.gui.widgets.asset_navigation import AssetNavigation
-from app.gui.pages.crypto_paper import CryptoPaperPage
 from app.asset_modules.engine_catalog import EngineId
 from app.gui.pages.strategy_orders import StrategyOrdersPage
 
@@ -206,7 +205,10 @@ class MainWindow(QMainWindow):
         self.asset_surface = QStackedWidget()
         self._asset_pages = {}
         self.pages = QStackedWidget()
+        from app.equity_overhaul.paper_experiment import PaperExperiment
+        admission_policy=getattr(self._trading_service,'policy',None)
         self.dashboard = DashboardPage(
+            admission_notice_provider=admission_policy.notice if isinstance(admission_policy,PaperExperiment) else None,
             warrior_observability=(
                 None if self._warrior_forward_sidecar is None
                 else getattr(self._warrior_forward_sidecar, "_observability", None)
@@ -647,10 +649,11 @@ class MainWindow(QMainWindow):
                 page = StrategyOrdersPage(asset)
             elif asset is AssetType.CRYPTO and route == 7:
                 page = self.crypto_research
-            elif asset is AssetType.CRYPTO and getattr(self._asset_modules, 'crypto_supervisor', None):
-                names = ('Mission Control','Positions','Orders','Strategies','Settings',
-                         'Activity','Decisions','Scanner','Replay','Operator Workspace')
-                page = CryptoPaperPage(names[route], self._asset_modules.crypto_supervisor)
+            elif asset is AssetType.CRYPTO:
+                if not hasattr(self, '_crypto_fleet_page'):
+                    from app.gui.crypto_monitor import create_window
+                    self._crypto_fleet_page = create_window(parent=self.asset_surface, embedded=True)
+                page = self._crypto_fleet_page
             elif asset in {AssetType.FUTURES, AssetType.OPTIONS}:
                 names = ("Mission Control", "Positions", "Orders", "Strategies",
                          "Settings", "Activity", "Decisions", "Scanner", "Replay", "Operator Workspace")
@@ -667,7 +670,12 @@ class MainWindow(QMainWindow):
                     else "Crypto research is available under Scanner. Paper execution integration is pending.",
                 )
             self._asset_pages[key] = page
-            self.asset_surface.addWidget(page)
+            if self.asset_surface.indexOf(page) < 0:
+                self.asset_surface.addWidget(page)
+        if asset is AssetType.CRYPTO and route != 7:
+            # The same wallet snapshot powers each navigation route, never the
+            # unrelated native crypto supervisor's simulator or equity ledger.
+            self._crypto_fleet_page.tabs.setCurrentIndex({1: 1, 2: 3, 5: 2}.get(route, 0))
         self.asset_surface.setCurrentWidget(self._asset_pages[key])
         if isinstance(asset, EngineId):
             self._asset_pages[key].render_state(self._state_store.snapshot())
@@ -710,6 +718,8 @@ class MainWindow(QMainWindow):
             event.ignore()
             QTimer.singleShot(50, self.close)
             return
+        if hasattr(self, '_crypto_fleet_page'):
+            self._crypto_fleet_page.close()
         self._warrior_refresh_timer.stop()
         if self._chart_presenter is not None:
             self._chart_presenter.close()

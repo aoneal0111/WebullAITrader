@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
-from threading import Event, Thread
+from threading import Event, Thread, RLock
 from time import perf_counter
 from typing import Any
 
@@ -93,6 +93,7 @@ class LiveScannerCoordinator:
         self._evaluation_stop = Event()
         self._evaluation_thread: Thread | None = None
 
+        self._subscription_lock = RLock()
         self._channels: tuple[str, ...] = ()
         self._scanner_channels: tuple[str, ...] = self._default_channels
         self._connected = False
@@ -130,8 +131,9 @@ class LiveScannerCoordinator:
         *,
         preserve_authoritative_lane: bool = False,
         transport_timeout_seconds: float | None = None,
+        force_transport: bool = False,
     ) -> None:
-        if not self._connected:
+        if not self._connected and not force_transport:
             self._running = False
             if not preserve_authoritative_lane:
                 self._stop_background_workers()
@@ -365,7 +367,16 @@ class LiveScannerCoordinator:
             self.connect()
             restored = self._subscribe_effective(self._scanner_channels)
         except Exception:
-            self.disconnect()
+            # connect() may have started an SDK loop before it timed out, while
+            # our connected flag is still false. Retire that transport too.
+            # A retry must keep the same accepted authoritative event lane.
+            try:
+                self.disconnect(preserve_authoritative_lane=True,
+                    transport_timeout_seconds=RECOVERY_TRANSPORT_TIMEOUT_SECONDS,
+                    force_transport=True)
+            except Exception as cleanup_error:
+                performance_diagnostics.record_stream_observability(
+                    "RECOVERY_CLEANUP_FAILED", exception_class=type(cleanup_error).__name__)
             raise
 
         self._running = True
@@ -947,14 +958,21 @@ class LiveScannerCoordinator:
         self,
         scanner_channels: Iterable[str],
     ) -> tuple[str, ...]:
-        selected = self._effective_channels(scanner_channels)
-        if not selected:
-            raise ValueError("at least one channel is required")
-        self._transport.subscribe(selected)
-        self._channels = selected
-        return selected
+        with self._subscription_lock:
+            selected = self._effective_channels(scanner_channels)
+            if not selected:
+                raise ValueError("at least one channel is required")
+            self._transport.subscribe(selected)
+            self._channels = selected
+            return selected
 
     def _sync_subscription(self) -> tuple[str, ...]:
+        # Reference/universe workers and the receive consumer share this
+        # transaction: compare, issue SDK update, then publish channel state.
+        with self._subscription_lock:
+            return self._sync_subscription_locked()
+
+    def _sync_subscription_locked(self) -> tuple[str, ...]:
         selected = self._effective_channels(self._scanner_channels)
         if selected == self._channels:
             return selected

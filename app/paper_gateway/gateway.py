@@ -227,12 +227,12 @@ class PaperOrderGateway:
         order = request.order
         with self._mutation():
             self._require_durability()
-            if (
-                order.side.value == "SELL"
-                and self._position_quantity_source is not None
-                and order.quantity
-                > self._position_quantity_source(order.symbol)
-            ):
+            from app.paper_trading.owned_quantity import scalper_open_quantity
+            proven = (scalper_open_quantity(self._order_book.history(), order.symbol, order.strategy_lifecycle_id)
+                if order.side.value == "SELL" else None)
+            available = (proven if proven is not None else
+                self._position_quantity_source(order.symbol) if order.side.value == "SELL" and self._position_quantity_source is not None else None)
+            if order.side.value == "SELL" and available is not None and order.quantity > available:
                 message = (
                     "paper sell quantity exceeds the projected long position"
                 )
@@ -1050,6 +1050,7 @@ class PaperOrderGateway:
                 order.side is not PaperOrderSide.BUY
                 or stop is None
                 or quote.ask_price > stop
+                or quote.timestamp < order.updated_at
             ):
                 continue
             cancelled = transition_cancel_order(
@@ -1537,6 +1538,12 @@ def _entry_valid_until_from_placement(
     """Persist the authorization-time validity supplied by Warrior PAPER."""
 
     metadata = getattr(order, "metadata", {})
+    scalp_deadline = None
+    if (metadata.get("source") == "autonomous-paper"
+            and str(getattr(order, "strategy_lifecycle_id", "")).startswith("QUICK_SCALPER|")
+            and getattr(getattr(order, "side", None), "value", None) == "BUY"):
+        from app.market.scalp_session import scalp_entry_deadline
+        scalp_deadline = scalp_entry_deadline(created_at, metadata)
     deadline = metadata.get("chase_deadline")
     if deadline is not None:
         try:
@@ -1544,17 +1551,18 @@ def _entry_valid_until_from_placement(
         except (TypeError, ValueError):
             parsed = None
         if parsed is not None and parsed.tzinfo is not None:
-            return parsed
+            return min(parsed, scalp_deadline) if scalp_deadline is not None else parsed
     if metadata.get("source") != "autonomous-paper":
         return None
     value = metadata.get("entry_validity_seconds")
     try:
         seconds = Decimal(str(value))
     except Exception:
-        return None
+        return scalp_deadline
     if not seconds.is_finite() or seconds <= 0:
-        return None
-    return created_at + timedelta(seconds=float(seconds))
+        return scalp_deadline
+    expiry = created_at + timedelta(seconds=float(seconds))
+    return min(expiry, scalp_deadline) if scalp_deadline is not None else expiry
 
 
 def _cancellation_reason(

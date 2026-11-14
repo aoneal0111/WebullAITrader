@@ -21,7 +21,13 @@ def create_grok_paper_suite(configuration, runtime_mode, *, clock=None):
         raise ValueError("Configure valid XAI_API_KEY and ATLAS_GROK_MODEL for Grok PAPER entries") from None
     if client is None:
         raise ValueError("Configure XAI_API_KEY and ATLAS_GROK_MODEL for Grok PAPER entries")
-    return GrokSuite(client, clock=clock or utc_now)
+    from app.asset_modules.grok_execution_trial import configured, BudgetClient
+    lease=configured(configuration,clock=clock or utc_now)
+    if lease is not None:
+        from app.asset_modules.grok import REASONING_MODELS
+        if client.model in REASONING_MODELS:client.reasoning_effort='low'
+        client=BudgetClient(client,lease)
+    return GrokSuite(client, clock=clock or utc_now, single_pass=lease is not None)
 
 
 def bind_grok_paper_entries(sidecar, suite, service, bridge, *, clock):

@@ -55,6 +55,7 @@ _ENTRY_FUNNEL_STAGES = (
     "ENTRY_REVIEW_PENDING", "ENTRY_REVIEW_RESOLVED",
     "ORDER_INTENT", "ORDER_SUBMITTED", "ORDER_ACKNOWLEDGED",
     "ORDER_REJECTED", "FILL", "PARTIAL_FILL",
+    "EXIT_DECISION", "EXIT_FILL",
     "OPPORTUNITY_ARMED", "OPPORTUNITY_WAITING_EXECUTION",
     "OPPORTUNITY_EXECUTABLE", "OPPORTUNITY_AUTHORIZED",
     "OPPORTUNITY_INVALIDATED", "OPPORTUNITY_EXPIRED",
@@ -401,6 +402,7 @@ class PerformanceSnapshot:
     discovery_strategy_coverage: tuple[str, ...] = ()
     component_timings: dict[str, dict[str, object]] = field(default_factory=dict)
     authoritative_stage: dict[str, object] = field(default_factory=dict)
+    authoritative_failure: dict[str, object] = field(default_factory=dict)
     stream_observability: dict[str, object] = field(default_factory=dict)
 
 
@@ -551,6 +553,8 @@ class PerformanceDiagnostics:
         self._component_max: dict[str, float] = {}
         self._component_slow: dict[str, int] = {}
         self._component_failures: dict[str, int] = {}
+        self._authoritative_failure: dict[str, object] = {}
+        self._authoritative_failure_id: int | None = None
         self._component_last_diagnostic: dict[str, float] = {}
         self._authoritative_stage: dict[str, object] = {
             "stage": None,
@@ -2245,6 +2249,23 @@ class PerformanceDiagnostics:
         try:
             yield
             success = True
+        except BaseException as exc:
+            # Preserve the innermost failing stage before finally restores the
+            # live timing marker. A later GUI close must not erase this cause.
+            try:
+                from app.exception_diagnostics import safe_exception_details
+                detail = safe_exception_details(exc)
+                with self._lock:
+                    if self._authoritative_failure_id != id(exc):
+                        self._authoritative_failure_id = id(exc)
+                        self._authoritative_failure = dict(
+                            at=datetime.now(UTC).isoformat(), stage=str(stage),
+                            symbol=symbol, event_type=event_type, **detail,
+                        )
+                self.request_checkpoint()
+            except Exception:
+                pass
+            raise
         finally:
             elapsed_ms = max(0.0, (monotonic() - started) * 1000.0)
             try:
@@ -2629,6 +2650,7 @@ class PerformanceDiagnostics:
                 event_processing_age_p99_ms=_percentile(ages, 0.99),
                 event_processing_age_max_ms=self._processing_age_max_ms,
                 authoritative_stage=authoritative_stage,
+                authoritative_failure=dict(self._authoritative_failure),
                 scanner_duration_max_ms=self._scanner_duration_max_ms,
                 scanner_duration_ms=self._scanner_duration_ms,
                 experiment_capture_duration_max_ms=(

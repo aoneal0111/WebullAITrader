@@ -35,12 +35,24 @@ def test_discovery_has_no_execution_dependency_or_authority():
         assert forbidden_calls.isdisjoint(calls)
 
 
-def test_only_research_sidecar_modules_import_discovery():
+def test_discovery_consumers_are_explicit_paper_boundaries():
+    # The full-library PAPER operation now has deliberate metadata consumers;
+    # arbitrary runtimes still cannot import discovery and bypass its bridge.
+    import ast
+    allowed = {
+        Path('app/equity_overhaul/paper_experiment.py'),
+        Path('app/strategy_research/sip_regenerated_replay.py'),
+        Path('app/asset_modules/grok_warrior_control.py'),
+        Path('app/asset_modules/paper_morning_status.py'),
+    }
     hits = []
-    for path in Path("app").rglob("*.py"):
-        if "opportunity_discovery" in path.parts:
+    for path in Path('app').rglob('*.py'):
+        if 'opportunity_discovery' in path.parts:
             continue
-        if "opportunity_discovery" in path.read_text(encoding="utf-8"):
+        tree = ast.parse(path.read_text(encoding='utf-8-sig'))
+        imported = [node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+        imported += [alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names]
+        if any(name and name.startswith('app.opportunity_discovery') for name in imported):
             hits.append(path)
     assert hits
-    assert all("trade_intelligence" in path.parts for path in hits)
+    assert all('trade_intelligence' in path.parts or path in allowed for path in hits)

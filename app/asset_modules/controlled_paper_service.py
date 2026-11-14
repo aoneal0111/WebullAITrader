@@ -9,6 +9,7 @@ from app.asset_modules.admission_controller import EntryReservation
 from app.asset_modules.engine_catalog import EngineId, lifecycle_owner
 from app.asset_modules.paper_controller_router import ControllerEntryRefused, PaperControllerRouter
 from app.configuration.models import PaperSymbolAuthorizationMode
+from app.market.scalp_session import scalp_entry_deadline
 from app.order_placement import (AcknowledgementState, NormalizedOrderStatus, OrderPlacementDecision,
                                  OrderPlacementResult)
 from app.performance_diagnostics import performance_diagnostics
@@ -24,11 +25,16 @@ class ControlledPaperTradingService:
     """
 
     def __init__(self, service, controller, gateway, *, account_id, session_id,
-                 account_source, quote_source, risk_config, entry_ready, clock=None):
+                 account_source, quote_source, risk_config, entry_ready, clock=None, native_scalper_quote_age_seconds=2,native_scalper_future_tolerance_seconds=0,scalper_quote_source=None):
         self.service = service
         self.account_source = account_source
         self.quote_source = quote_source
+        self.scalper_quote_source=scalper_quote_source or quote_source
         self.risk_config = risk_config
+        if native_scalper_quote_age_seconds not in (2,5):raise ValueError("Explicit native Scalper freshness policy required")
+        self.native_scalper_quote_age_seconds=native_scalper_quote_age_seconds
+        if native_scalper_future_tolerance_seconds not in (0,.25):raise ValueError('Explicit bounded PAPER clock tolerance required')
+        self.native_scalper_future_tolerance_seconds=native_scalper_future_tolerance_seconds
         self.entry_ready = entry_ready
         self.clock = clock or (lambda: datetime.now(UTC))
         self._lock = RLock()
@@ -52,8 +58,10 @@ class ControlledPaperTradingService:
             if quote.ask < quote.bid or quote.ask > request.entry_limit or quote.bid <= request.structural_stop:
                 self.last_reason = "ENTRY_NOT_EXECUTABLE"
                 return False
+            quote_limit=self.native_scalper_quote_age_seconds if request.engine is EngineId.SCALPER else 2
+            tolerance=self.native_scalper_future_tolerance_seconds if request.engine is EngineId.SCALPER else 0
             for stamp in (quote.bid_timestamp, quote.ask_timestamp):
-                if stamp.tzinfo is None or not 0 <= (now - stamp).total_seconds() <= 2:
+                if stamp.tzinfo is None or not -tolerance <= (now - stamp).total_seconds() <= quote_limit:
                     self.last_reason = "PROVIDER_QUOTE_NOT_CURRENT"
                     return False
             account = self.account_source()
@@ -101,13 +109,17 @@ class ControlledPaperTradingService:
             self._quote = None
             try:
                 self.router.reconcile()
-                self._quote = self.quote_source(r.symbol)
+                self._quote = (self.scalper_quote_source if engine is EngineId.SCALPER else self.quote_source)(r.symbol)
                 if self._quote is None:
                     return self._refused(placement, "EXECUTION_QUOTE_UNAVAILABLE")
                 now = self.clock()
                 metadata = dict(r.metadata)
                 deadline = metadata.get("chase_deadline") or metadata.get("opportunity_deadline")
                 expiry = datetime.fromisoformat(str(deadline)) if deadline else now + timedelta(seconds=60)
+                if engine is EngineId.SCALPER:
+                    expiry = min(expiry, scalp_entry_deadline(now, metadata))
+                    if now >= expiry:
+                        return self._refused(placement, "SCALP_SESSION_WINDOW")
                 # Metadata provenance is part of immutable command identity.
                 signature = sha256(json.dumps(metadata, sort_keys=True, default=str).encode()).hexdigest()
                 sequence = str(metadata.get("replacement_sequence", "0"))

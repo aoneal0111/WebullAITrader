@@ -24,7 +24,7 @@ from app.paper_trading.command_composition import (
     create_paper_trading_command_composition,
 )
 from app.paper_trading.order_book import PaperOrderBook
-from app.paper_trading.order_models import OrderStatus, OrderTerminalReason, TimeInForce
+from app.paper_trading.order_models import OrderSide, OrderStatus, OrderTerminalReason, TimeInForce
 from app.services.order_command_factory import OrderEntryCommand
 from app.strategies.warrior_momentum.autonomous_paper import (
     AutonomousManagementReadiness,
@@ -627,3 +627,54 @@ def test_live_mode_remains_fail_closed_for_autonomous_paper_entry() -> None:
     assert not execution.submit_entry(Signal(), 100, Decimal("50"))
     assert composition.order_book.history() == ()
     composition.close()
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+def test_scalper_unfilled_remainder_expires_before_session_change(tmp_path, legacy):
+    from app.paper_gateway.order_validity import temporal_terminal_reason
+    clock = Clock(datetime(2026, 10, 8, 15, 54, 45, tzinfo=ET))
+    composition = create_paper_trading_command_composition(clock=clock)
+    try:
+        request = composition.order_command_factory.create_placement_request(OrderEntryCommand(
+            symbol='PMI', side='BUY', quantity=Decimal(10), order_type='LIMIT',
+            limit_price=Decimal(10), stop_price=None, time_in_force='DAY',
+            strategy_lifecycle_id='QUICK_SCALPER|PMI|test',
+            metadata={'source': 'autonomous-paper', 'entry_validity_seconds': '60',
+                      'chase_deadline': (clock.value + timedelta(minutes=10)).isoformat()}))
+        result = composition.trading_service.place_order(request)
+        assert result.success
+        order = composition.order_book.get(result.broker_order_id)
+        deadline = datetime(2026, 10, 8, 15, 55, tzinfo=ET)
+        assert order.request.entry_valid_until == deadline
+        if legacy:
+            order = replace(order, request=replace(order.request, entry_valid_until=None))
+        order = replace(order, status=OrderStatus.PARTIALLY_FILLED, filled_quantity=Decimal(2), average_fill_price=Decimal(10))
+        assert temporal_terminal_reason(order, evaluated_at=deadline,
+            long_position_quantity=Decimal(2)) is OrderTerminalReason.ENTRY_STALE
+        sell = replace(order, request=replace(order.request,
+            side=OrderSide.SELL))
+        assert temporal_terminal_reason(sell, evaluated_at=deadline,
+            long_position_quantity=Decimal(2)) is None
+    finally:
+        composition.close()
+
+
+def test_scalper_session_cutoff_expires_before_gateway_matching():
+    clock = Clock(datetime(2026, 10, 8, 15, 54, 45, tzinfo=ET))
+    composition = create_paper_trading_command_composition(clock=clock)
+    try:
+        request = composition.order_command_factory.create_placement_request(OrderEntryCommand(
+            symbol='PMI', side='BUY', quantity=Decimal(10), order_type='LIMIT',
+            limit_price=Decimal(10), stop_price=None, time_in_force='DAY',
+            strategy_lifecycle_id='QUICK_SCALPER|PMI|late',
+            metadata={'source': 'autonomous-paper', 'entry_validity_seconds': '60'}))
+        result = composition.trading_service.place_order(request)
+        assert result.success
+        clock.value = datetime(2026, 10, 8, 15, 55, tzinfo=ET)
+        assert composition.gateway.process_market_event(quote(clock.value)) == ()
+        expired = composition.order_book.get(result.broker_order_id)
+        assert expired.status is OrderStatus.EXPIRED
+        assert expired.terminal_reason is OrderTerminalReason.ENTRY_STALE
+        assert not expired.fills
+    finally:
+        composition.close()

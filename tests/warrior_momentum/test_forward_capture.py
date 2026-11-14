@@ -533,19 +533,19 @@ def test_transitions_blocked_diagnostics_and_counterfactual_are_separate(capture
     assert not store.records(record_type=CaptureRecordType.PAPER_FILL)
 
 
-def test_after_hours_risk_rejection_remains_blocked(capture) -> None:
+def test_regular_session_risk_rejection_remains_blocked(capture) -> None:
     store, writer, service = capture
     rejected_account = PaperAccountContext(
         D("50000"), D("25000"), frozenset({"XYZ"}), risk_engine_approved=False,
     )
 
     candidate, signal = service.observe(
-        point(session="AFTER_HOURS"), account=rejected_account,
+        point(session="REGULAR"), account=rejected_account,
     )
     writer.flush()
 
     assert signal is None
-    assert candidate.session == "AFTER_HOURS"
+    assert candidate.session == "REGULAR"
     transitions = [
         item.payload
         for item in store.records(record_type=CaptureRecordType.STATE_TRANSITION)
@@ -607,7 +607,7 @@ def test_each_stale_market_component_independently_blocks_paper_submission(
 
     candidate, signal = service.observe(
         point(
-            session="AFTER_HOURS",
+            session="REGULAR",
             quote_freshness_seconds=quote_age,
             last_price_freshness_seconds=last_age,
         ),
@@ -656,46 +656,19 @@ def test_stale_market_data_remains_visible_with_another_blocker(capture) -> None
     assert not store.records(record_type=CaptureRecordType.PAPER_FILL)
 
 
-def test_after_hours_signal_reaches_normal_paper_gateway_once(tmp_path: Path) -> None:
-    store = ForwardCaptureStore(tmp_path / "after-hours-forward.sqlite3")
-    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
-    after_hours = datetime(2026, 8, 10, 22, 0, tzinfo=UTC)
-    composition = create_paper_trading_command_composition(at=after_hours)
-    bridge = AutonomousPaperExecutionBridge(
-        composition.trading_service,
-        composition.order_command_factory,
-        order_book=composition.order_book,
-    )
-    service = WarriorForwardCaptureService(
-        store, writer, paper_entry_submitter=bridge.submit_entry,
-    )
+def test_after_hours_trigger_cannot_reach_paper_gateway(tmp_path: Path) -> None:
+    store=ForwardCaptureStore(tmp_path/"after-hours-forward.sqlite3")
+    writer=ForwardCaptureWriter(store,flush_interval_seconds=.01)
+    composition=create_paper_trading_command_composition(at=datetime(2026,8,10,22,0,tzinfo=UTC))
+    bridge=AutonomousPaperExecutionBridge(composition.trading_service,composition.order_command_factory,
+        order_book=composition.order_book)
+    service=WarriorForwardCaptureService(store,writer,paper_entry_submitter=bridge.submit_entry)
     try:
-        candidate, signal = service.observe(
-            point(session="AFTER_HOURS"), account=account(),
-        )
-
-        assert candidate.status.value == "ENTRY_READY"
-        assert signal is not None and signal.session == "AFTER_HOURS"
-        assert len(composition.order_book.open_orders()) == 1
-        assert bridge.submit_entry(signal, 100, D("50")) is False
-        assert len(composition.order_book.open_orders()) == 1
-
-        reports = composition.gateway.process_market_event(MarketEvent(
-            1, session_timestamp(1, at=after_hours), signal.symbol, "after-hours-test",
-            MarketEventType.QUOTE,
-            QuotePayload(
-                signal.entry_trigger - D("0.01"), signal.entry_trigger,
-                D("1000"), D("1000"),
-            ),
-        ))
-
-        assert reports and reports[0].fills
-        assert reports[0].fills[0].quantity > 0
-        assert len(composition.order_book.history()) == 1
-        assert composition.order_book.history()[0].symbol == signal.symbol
+        candidate,signal=service.observe(point(session="AFTER_HOURS"),account=account())
+        assert signal is None and candidate.status.value=="INELIGIBLE_FOR_EXECUTION"
+        assert composition.order_book.history()==()
     finally:
-        writer.close()
-        composition.close()
+        writer.close();composition.close()
 
 
 def test_adaptive_premarket_structural_entry_ignores_old_turnover_proxy(tmp_path: Path) -> None:
@@ -1883,8 +1856,10 @@ def test_pcvx_failed_target_does_not_claim_pending_or_starve_stop_tightening(
         writer.close()
 
 
+@pytest.mark.parametrize('next_bid', ['5.00', '4.98'])
+@pytest.mark.parametrize('harvest_volume', [10000, 30])
 def test_ipdn_rearmed_generation_harvests_executable_profit_and_locks_runner(
-    tmp_path: Path,
+    tmp_path: Path, next_bid: str, harvest_volume: int,
 ) -> None:
     """IPDN: a fresh rearm must be managed, harvested, and protected durably."""
 
@@ -1914,14 +1889,14 @@ def test_ipdn_rearmed_generation_harvests_executable_profit_and_locks_runner(
         ),
     )
 
-    def market(sequence: int, bid: str, ask: str) -> None:
+    def market(sequence: int, bid: str, ask: str, volume=10000) -> None:
         composition.gateway.process_market_event(MarketEvent(
             sequence,
             session_timestamp(sequence, at=T0 + timedelta(minutes=20)),
             "XYZ",
             "ipdn-profit-harvest-test",
             MarketEventType.QUOTE,
-            QuotePayload(D(bid), D(ask), D("10000"), D("10000")),
+            QuotePayload(D(bid), D(ask), D(volume), D(volume)),
         ))
 
     try:
@@ -2003,6 +1978,8 @@ def test_ipdn_rearmed_generation_harvests_executable_profit_and_locks_runner(
             if order.request.order_type.value == "STOP"
         )
         assert int(harvest.remaining_quantity) == 110
+        assert harvest.request.order_type.value == 'MARKET'
+        assert harvest.request.limit_price is None
         assert int(canonical_stop.remaining_quantity) == 441
         assert canonical_stop.request.stop_price == state.stop
 
@@ -2013,12 +1990,25 @@ def test_ipdn_rearmed_generation_harvests_executable_profit_and_locks_runner(
             if order.request.execution_reason == "PROFIT_HARVEST_1"
         ]) == 1
 
-        market(2, "5.00", "5.01")
+        # A retreat from the observed 4.99 peak no longer strands a
+        # harvest LIMIT above the market. Actual fill uses the next bid.
+        market(2, next_bid, str(D(next_bid) + D('.01')), harvest_volume)
+        if harvest_volume == 30:
+            position['XYZ'] = D('411')
+            service._synchronize_authoritative_position(state, profitable_at)
+            assert state.profit_harvest_stage == 0
+            assert state.pending_profit_harvest_role == 'PROFIT_HARVEST_1'
+            service._manage_executable_profit_harvest(state, profitable_at)
+            assert not any(o.request.execution_reason == 'PROFIT_HARVEST_2'
+                           for o in composition.order_book.history())
+            market(3, next_bid, str(D(next_bid) + D('.01')))
+
         harvest = next(
             order for order in composition.order_book.history()
             if order.order_id == harvest.order_id
         )
         assert int(harvest.filled_quantity) == 110
+        assert harvest.average_fill_price == D(next_bid)
         position["XYZ"] = D("331")
         follow_at = profitable_at + timedelta(seconds=2)
         service.observe(point(

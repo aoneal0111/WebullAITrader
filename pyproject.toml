@@ -23,6 +23,10 @@ dependencies = [
   "webull-openapi-python-sdk==2.0.14",
 ]
 
+[project.optional-dependencies]
+repository-research = ["TA-Lib==0.6.8"]
+income-research = ["numba==0.68.1"]
+
 [project.scripts]
 webull-account-summary = "app.cli:main"
 

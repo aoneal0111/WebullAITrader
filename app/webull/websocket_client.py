@@ -5,14 +5,14 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from collections import deque
 from queue import Empty, Full, Queue
-from threading import Event, Lock
+from threading import Event, Lock, RLock
 from time import monotonic, sleep
 from typing import Callable, Protocol
 
 from app.market_data.models import HeartbeatPayload, MarketEventLog, MarketEventType
 from app.market_data.validation import validate_event
 from app.performance_diagnostics import performance_diagnostics, subscription_fingerprint
-from app.webull.errors import NetworkError, SerializationError
+from app.webull.errors import NetworkError, SerializationError, safe_error_identity
 from app.webull.health import ConnectionHealth, update_health
 from app.webull.market_event_parser import decoder_failure_metadata, payload_metadata
 
@@ -82,6 +82,7 @@ class OfficialSdkStreamBackend:
         if ingestion_capacity <= 0:
             raise ValueError("ingestion capacity must be positive")
 
+        self._session_lock = RLock()
         self.client = sdk_client
         self._subscription_mapper = subscription_mapper
         self._receive_timeout_seconds = receive_timeout_seconds
@@ -311,7 +312,10 @@ class OfficialSdkStreamBackend:
         setattr(client, "on_quotes_message", self._on_quotes_message)
         setattr(client, "on_connect_success", self._on_connect_success)
         if hasattr(client, "on_disconnect"):
-            setattr(client, "on_disconnect", self._on_disconnect)
+            # Bind the SDK object, since SDK disconnect callback signatures
+            # vary. A retired client's late callback must not clear new state.
+            setattr(client, "on_disconnect", lambda *args, **kwargs:
+                self._on_client_disconnect(client, *args, **kwargs))
         self._emit_diagnostic("SESSION_IDENTITY_CREATED")
 
     def _replace_client(self) -> None:
@@ -415,6 +419,9 @@ class OfficialSdkStreamBackend:
             self._original_on_quotes_message(client, topic, quotes)
 
     def _on_connect_success(self, client: object, api_client: object, session_id: object) -> None:
+        if client is not self.client:
+            self._emit_diagnostic("STALE_CLIENT_CONNECT_REJECTED")
+            return
         if self._owner_api_client is None and client is self.client:
             self._owner_api_client = api_client
         if (
@@ -440,6 +447,12 @@ class OfficialSdkStreamBackend:
         if callable(self._original_on_connect_success):
             self._original_on_connect_success(client, api_client, session_id)
 
+    def _on_client_disconnect(self, client: object, *args: object, **kwargs: object) -> None:
+        if client is not self.client:
+            self._emit_diagnostic("STALE_CLIENT_DISCONNECT_REJECTED")
+            return
+        self._on_disconnect(*args, **kwargs)
+
     def _on_disconnect(self, *args: object, **kwargs: object) -> None:
         self._connected.clear()
         self._registration_ready.clear()
@@ -457,6 +470,10 @@ class OfficialSdkStreamBackend:
             self._original_on_disconnect(*args, **kwargs)
 
     def connect(self) -> None:
+        with self._session_lock:
+            return self._connect_session()
+
+    def _connect_session(self) -> None:
         next_generation = (
             int(self._generation_allocator())
             if self._generation_allocator is not None
@@ -577,6 +594,10 @@ class OfficialSdkStreamBackend:
         )
 
     def disconnect(self) -> None:
+        with self._session_lock:
+            return self._disconnect_session()
+
+    def _disconnect_session(self) -> None:
         retiring_generation = self._generation
         performance_diagnostics.record_stream_observability(
             "DISCONNECT_REQUESTED", generation=retiring_generation,
@@ -643,6 +664,10 @@ class OfficialSdkStreamBackend:
             self._emit_diagnostic("CALLBACK_INGESTION_HALTED", drained=drained)
 
     def subscribe(self, channels: tuple[str, ...]) -> None:
+        with self._session_lock:
+            return self._subscribe_session(channels)
+
+    def _subscribe_session(self, channels: tuple[str, ...]) -> None:
         if not self._connected.is_set() or not self._registration_ready.is_set():
             raise RuntimeError("streaming session registration is not ready")
         normalized_channels = tuple(sorted(set(channels)))
@@ -689,7 +714,18 @@ class OfficialSdkStreamBackend:
                 raise TypeError(
                     "official SDK streaming client has no unsubscribe method"
                 )
-            unsubscribe(unsubscribe_all=True)
+            self._subscription_acknowledged.clear()
+            try:
+                unsubscribe(unsubscribe_all=True)
+            except Exception as exc:
+                performance_diagnostics.record_stream_observability(
+                    "UNSUBSCRIBE_FAILED", generation=self._generation,
+                    operation="FULL_REPLACE", active_count=len(prior_channels),
+                    duration_ms=(monotonic()-unsubscribe_started)*1000.0,
+                    **safe_error_identity(exc))
+                # Server state is unknown. Retain the prior set so any later
+                # attempt still retires it; never pretend it was acknowledged.
+                raise
             self._active_subscription = None
             self._active_subscription_generation = None
             self._subscription_acknowledged.clear()
@@ -744,11 +780,13 @@ class OfficialSdkStreamBackend:
                     subscribe(*mapped)
                 else:
                     raise TypeError("subscription_mapper must return a tuple or dict")
+                if not self._connected.is_set() or not self._registration_ready.is_set():
+                    raise RuntimeError("streaming session changed during subscription")
             except Exception as exc:
                 performance_diagnostics.record_stream_observability(
                     "SUBSCRIBE_FAILED", generation=self._generation,
                     desired_count=len(normalized_channels), desired_fingerprint=desired_fp,
-                    operation=subscription_operation, exception_class=type(exc).__name__,
+                    operation=subscription_operation, **safe_error_identity(exc),
                     duration_ms=(monotonic() - subscribe_started) * 1000.0,
                 )
                 code = str(getattr(exc, "error_code", type(exc).__name__))
@@ -1158,7 +1196,12 @@ class WebullWebSocketClient:
             )
             self.backend.connect(); self.health = update_health(self.health, websocket_connected=True, connected=True); self.decoder_health = "STREAM_CONNECTED"; self.logger.log("stream_connect", "succeeded")
         except Exception as exc:
-            self.logger.log("stream_connect", "failed", error_type=type(exc).__name__); raise NetworkError("Webull stream connection failed", retryable=True) from exc
+            self.health = update_health(self.health, websocket_connected=False, connected=False)
+            performance_diagnostics.record_stream_observability(
+                "CONNECT_FAILED", generation=getattr(self.backend,"generation_metrics",{}).get("generation"),
+                exception_class=type(exc).__name__, cause_class=type(exc.__cause__).__name__ if exc.__cause__ else None)
+            self.logger.log("stream_connect", "failed", error_type=type(exc).__name__)
+            raise NetworkError("Webull stream connection failed", retryable=True) from exc
 
     def disconnect(self):
         self.backend.disconnect()
