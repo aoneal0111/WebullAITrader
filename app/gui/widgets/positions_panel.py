@@ -17,8 +17,9 @@ from app.gui.widgets.orders_panel import MissionControlOrdersPanel
 class PositionsPanel(QWidget):
     selected_symbol_changed = Signal(str)
 
-    def __init__(self) -> None:
+    def __init__(self, *, compact: bool = False) -> None:
         super().__init__()
+        self.compact = compact
         self._runtime_phase: RuntimeState | None = None
         self._runtime_started = False
         self._account_loaded = False
@@ -52,23 +53,38 @@ class PositionsPanel(QWidget):
         facts.setHorizontalSpacing(14)
         facts.setVerticalSpacing(3)
         self._facts: dict[str, QLabel] = {}
-        for index, title in enumerate((
+        compact_facts = {
+            "SIDE / QTY", "AVERAGE ENTRY", "UNREALIZED", "REALIZED",
+            "CURRENT CANONICAL STOP", "NEXT TARGET", "MANAGEMENT STATE", "STRATEGY / SETUP",
+        }
+        visible_index = 0
+        for title in (
             "SIDE / QTY", "AVERAGE ENTRY", "MARK", "UNREALIZED",
             "REALIZED", "ENTRY NOTIONAL", "MARKET VALUE",
             "CURRENT R", "CURRENT CANONICAL STOP", "PROJECTED / NEXT STOP",
             "NEXT TARGET", "MANAGEMENT STATE",
             "STRATEGY / SETUP", "UPDATED", "THESIS",
-        )):
-            column = index % 4
-            row = (index // 4) * 2
+        ):
+            column = visible_index % 4
+            row = (visible_index // 4) * 2
             key = QLabel(title)
             key.setObjectName("metricTitle")
             value = QLabel("—")
             value.setObjectName("monitorValue")
+            self._facts[title] = value
+            if compact and title not in compact_facts:
+                # Mission Control already shows the full position table and
+                # intelligence rail. Keep the summary short enough for native
+                # Windows font metrics; the Positions page keeps every fact.
+                key.setParent(self._management)
+                key.hide()
+                value.setParent(self._management)
+                value.hide()
+                continue
+            visible_index += 1
             facts.addWidget(key, row, column)
             facts.addWidget(value, row + 1, column)
             facts.setColumnStretch(column, 1)
-            self._facts[title] = value
         management_layout.addLayout(facts)
 
         protection = QHBoxLayout()

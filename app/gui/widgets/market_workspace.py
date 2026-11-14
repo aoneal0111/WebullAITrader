@@ -975,7 +975,7 @@ class MarketWorkspace(QWidget):
 
         self.atlas_activity = AtlasActivityPanel()
         self.portfolio_summary = PortfolioSummaryStrip()
-        self.positions_panel = PositionsPanel()
+        self.positions_panel = PositionsPanel(compact=True)
         self.orders_panel = self.positions_panel.recent_orders_panel
         self.atlas_reasoning = AtlasReasoningPanel()
         self.market_overview = MarketOverviewPanel()
