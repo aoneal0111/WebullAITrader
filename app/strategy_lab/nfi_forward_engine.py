@@ -288,6 +288,8 @@ class Evidence:
                             parts=[(pair,result[pair]) for pair in sorted(allowed & result.keys())]
                         else:parts=[(str(args[0]) if args else method,result)]
                         for subject,response in parts:
+                            from app.strategy_lab.crypto_workspace_telemetry import observe
+                            observe(self,method,subject,response)
                             fingerprint=sha256(json.dumps(response,sort_keys=True,allow_nan=False).encode()).hexdigest()
                             key=(method,subject)
                             if self._response_hashes.get(key)==fingerprint:continue
@@ -372,6 +374,8 @@ def _run_locked(work):
             state=worker._worker(old_state=state)
             bot=worker.freqtrade;now=datetime.now(UTC)
             evidence.capture(bot,now)
+            from app.strategy_lab.crypto_workspace_telemetry import publish
+            publish(work,bot,evidence,now)
             status=dict(scope='NFI_FORWARD_PAPER_STATUS_V1',updated_at=now.isoformat(),
                 recording_id=evidence.root.name,
                 state=str(state),dry_run=True,exchange='kraken',stake_currency='USD',

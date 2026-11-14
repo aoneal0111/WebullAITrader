@@ -21,6 +21,7 @@ class TradeIntelligencePanel(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self.native_strategy = False
         self._runtime_phase: RuntimeState | None = None
         self._runtime_started = False
         self.setMinimumHeight(488)
@@ -221,7 +222,7 @@ class TradeIntelligencePanel(QWidget):
             "Rank": f"#{row.rank}" if row.rank != "--" else "--",
             "Scanner score": row.score,
             "Scanner status": row.classification,
-            "Warrior momentum": row.warrior_status,
+            "Warrior momentum": row.strategy_name if self.native_strategy else row.warrior_status,
             "Session": _first_available(row.warrior_session, row.session),
             "Freshness": row.freshness if row.freshness != "--" else row.stale,
         }
@@ -236,16 +237,17 @@ class TradeIntelligencePanel(QWidget):
             "Spread": row.spread,
             "Catalyst": row.catalyst,
             "Warrior score": row.warrior_score,
-            "Warrior status": row.warrior_status,
+            "Warrior status": row.strategy_status if self.native_strategy else row.warrior_status,
             "Setup": row.setup,
-            "Warrior session": row.warrior_session,
+            "Warrior session": row.session if self.native_strategy else row.warrior_session,
         }
         _render_values(self._watching_values, watching)
         _set_text(self._reason, row.explanations)
         _set_text(self._passed_rules, row.passed_rules)
         _set_text(self._failed_rules, row.failed_rules)
 
-        decision, explanation, autonomous = _warrior_decision(row)
+        decision, explanation, autonomous = ((row.strategy_status.replace('_',' '),
+            row.explanations, 'NATIVE PAPER WORKER') if self.native_strategy else _warrior_decision(row))
         _set_text(self._decision, decision)
         _set_tone(self._decision, _decision_tone(decision))
         _set_text(self._decision_explanation, explanation)

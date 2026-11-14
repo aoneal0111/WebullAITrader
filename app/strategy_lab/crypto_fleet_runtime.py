@@ -274,6 +274,8 @@ def run(work,shared):
             while not (work/'STOP').exists():
                 state=worker._worker(old_state=state)
                 now=datetime.now(UTC);evidence.capture(bot,now)
+                from app.strategy_lab.crypto_workspace_telemetry import publish
+                publish(work,bot,evidence,now)
                 status.update(state=str(state),updated_at=now.isoformat(),
                     capture=evidence.journal.status(),capture_error=evidence.error,
                     pause_new_entries=(work/'PAUSE_NEW_ENTRIES').exists(),

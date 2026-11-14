@@ -157,6 +157,20 @@ class CryptoMonitorReader:
                 row['health']='CAPTURE_ERROR'
             if (work/'PAUSE_NEW_ENTRIES').is_file():row['pause_new_entries']=True
             row.update(read_ledger(work/('nfi-paper.sqlite3' if (work/'paper-manifest.json').is_file() else 'paper.sqlite3')))
+            try:
+                telemetry=read_json(work/'workspace-snapshot.json')
+                if telemetry:
+                    at=datetime.fromisoformat(str(telemetry.get('updated_at','')).replace('Z','+00:00'))
+                    age=(now-at).total_seconds() if at.tzinfo else -1
+                    valid=(telemetry.get('scope')=='CRYPTO_WORKSPACE_TELEMETRY_V1'
+                        and telemetry.get('live_trading_enabled') is False and not telemetry.get('error')
+                        and telemetry.get('recording_id')==engine.get('recording_id') and 0<=age<=90)
+                    row['workspace_telemetry']=telemetry if valid else None
+                    row['workspace_telemetry_state']='RECENT' if valid else 'STALE_OR_UNAVAILABLE'
+                else:row['workspace_telemetry_state']='WORKER_UPDATE_REQUIRED'
+            except (OSError,ValueError,TypeError):
+                row['workspace_telemetry_state']='INVALID_SNAPSHOT'
+
         except (OSError,ValueError,TypeError,sqlite3.Error) as error:
             row.update(health='READ_ERROR',read_error=type(error).__name__)
         return row
