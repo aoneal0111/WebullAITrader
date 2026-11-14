@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import tempfile
+import sys
 
 from app.strategy_lab import nfi_forward_paper as paper
 from app.strategy_lab import nfi_forward_engine as engine
@@ -71,23 +72,31 @@ class PaperTests(unittest.TestCase):
         return Public
 
     def test_public_preflight_and_seal_keep_universe_inside_source(self):
-        with patch('ccxt.kraken',self.fake_exchange()):
-            report=engine.preflight(self.work)
+        with patch.dict(sys.modules,{'ccxt':None}),patch('socket.socket',side_effect=AssertionError('NO_NETWORK')):
+            report=engine.preflight(self.work,exchange_factory=self.fake_exchange())
         self.assertEqual(report['status'],'PUBLIC_MARKET_READY')
         c=paper.selected_config(self.work)
         self.assertEqual(len(c['exchange']['pair_whitelist']),12)
         self.assertEqual(report['orders'],0)
         # A later start reuses the exact selection and checks current markets.
         before=(self.work/'resolved-config.json').read_bytes()
-        with patch('ccxt.kraken',self.fake_exchange()):engine.preflight(self.work)
+        with patch.dict(sys.modules,{'ccxt':None}),patch('socket.socket',side_effect=AssertionError('NO_NETWORK')):
+            engine.preflight(self.work,exchange_factory=self.fake_exchange())
         self.assertEqual(before,(self.work/'resolved-config.json').read_bytes())
         changed=c;changed['stake_amount']=100
         paper.write(self.work/'resolved-config.json',changed)
         with self.assertRaisesRegex(ValueError,'CHANGED'):paper.selected_config(self.work)
 
+    def test_default_factory_still_uses_ccxt_in_native_runtime(self):
+        fake_module=SimpleNamespace(kraken=self.fake_exchange())
+        with patch.dict(sys.modules,{'ccxt':fake_module}),patch('socket.socket',side_effect=AssertionError('NO_NETWORK')):
+            report=engine.preflight(self.work)
+        self.assertEqual(report['status'],'PUBLIC_MARKET_READY')
+        self.assertEqual(report['orders'],0)
+
     def test_missing_current_history_never_creates_ready_universe(self):
-        with patch('ccxt.kraken',self.fake_exchange(True)),self.assertRaisesRegex(ValueError,'WARMUP|SOURCE_ACTIVITY'):
-            engine.preflight(self.work)
+        with patch.dict(sys.modules,{'ccxt':None}),patch('socket.socket',side_effect=AssertionError('NO_NETWORK')),self.assertRaisesRegex(ValueError,'WARMUP|SOURCE_ACTIVITY'):
+            engine.preflight(self.work,exchange_factory=self.fake_exchange(True))
         self.assertFalse((self.work/'resolved-config.json').exists())
         self.assertEqual(json.loads((self.work/'market-preflight.json').read_text())['status'],'FAILED')
 

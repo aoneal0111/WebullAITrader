@@ -48,3 +48,12 @@ worker-state preservation, telemetry staleness, selected-wallet GUI routing,
 font/layout checks, and the existing reader/runtime regression suites. Actual
 Docker connectivity on the operator's Windows workstation is verified at install
 and command execution; it cannot be established by offline fixtures.
+
+## Windows installer dependency isolation
+
+The preflight unit tests inject an exchange factory and block network sockets
+and the `ccxt` import. They exercise the full preflight checks without needing
+CCXT in the GUI environment. The production preflight still imports and uses
+CCXT by default inside the native crypto runtime. A separate fake-module test
+covers that default factory path. No dependency installation or test skipping
+is needed to address the Windows `ModuleNotFoundError: ccxt` installer failure.

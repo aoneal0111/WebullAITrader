@@ -65,15 +65,17 @@ def check(work):
     return report
 
 
-def preflight(work):
+def preflight(work, *, exchange_factory=None):
     """Public metadata/current OHLCV only. Never use offline Binance recordings."""
-    import ccxt
+    if exchange_factory is None:
+        import ccxt
+        exchange_factory=ccxt.kraken
     import re
     base,manifest=verify(work)
     report=dict(scope='NFI_PUBLIC_KRAKEN_PREFLIGHT_V1',status='FAILED',
         checked_at=datetime.now(UTC).isoformat(),public_api_operations=0,orders=0,
         exchange='kraken',stake_currency='USD',checks=[])
-    exchange=ccxt.kraken({'enableRateLimit':True,'timeout':20000,
+    exchange=exchange_factory({'enableRateLimit':True,'timeout':20000,
                          'options':{'maxRetriesOnFailure':0}})
     try:
         report['public_api_operations']+=1
