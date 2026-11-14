@@ -62,9 +62,9 @@ def test_real_crypto_pages_do_not_show_equity_rows(monkeypatch, tmp_path):
         window.asset_navigation.tabs.setCurrentIndex(1)
         app.processEvents()
         page = window.asset_surface.currentWidget()
-        assert page is window._crypto_fleet_page
+        assert page is window._market_pages[AssetType.CRYPTO]
         assert not hasattr(page, 'supervisor')
-        assert page.tables['Open positions'].rowCount() == 0
+        assert page.positions._table.rowCount() == 0
         assert not composition.runtime_service.is_active
         assert not window.global_status.isVisible()
         window.asset_navigation.tabs.setCurrentIndex(0)

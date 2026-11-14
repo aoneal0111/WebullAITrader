@@ -104,7 +104,7 @@ def test_production_main_window_keeps_trade_intelligence_in_middle_row(
 
 def test_existing_crypto_tab_reads_fleet_without_activating_execution(application, tmp_path, monkeypatch):
     from app.assets import AssetType
-    from app.gui import crypto_monitor
+    from app.strategy_lab import crypto_monitor
     class Reader:
         base=tmp_path
         def read(self):return dict(engines=[],checked_at='2026-11-13T12:00:00+00:00')
@@ -118,13 +118,13 @@ def test_existing_crypto_tab_reads_fleet_without_activating_execution(applicatio
         window.asset_navigation.tabs.setCurrentIndex(window.asset_navigation.assets.index(AssetType.CRYPTO))
         application.processEvents()
         page=window.asset_surface.currentWidget()
-        assert page is window._crypto_fleet_page and not page.isWindow()
-        assert page.timer.isActive() and page.tabs.tabText(0)=='Bots'
+        assert page is window._market_pages[AssetType.CRYPTO] and not page.isWindow()
+        assert page.timer.isActive() and page.pages.currentWidget() is page.dashboard
         assert not composition.runtime_service.is_active
         window.pages.setCurrentIndex(1);application.processEvents()
-        assert window.asset_surface.currentWidget() is page and page.tabs.currentIndex()==1
+        assert window.asset_surface.currentWidget() is page and page.pages.currentIndex()==1
         window.pages.setCurrentIndex(2);application.processEvents()
-        assert page.tabs.currentIndex()==3
+        assert page.pages.currentIndex()==2
         window.asset_navigation.tabs.setCurrentIndex(0);application.processEvents()
         assert not page.timer.isActive() and not composition.runtime_service.is_active
         window.asset_navigation.tabs.setCurrentIndex(1);application.processEvents()

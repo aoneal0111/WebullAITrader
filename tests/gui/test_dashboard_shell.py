@@ -102,7 +102,8 @@ def test_asset_navigation_separates_scanners_without_starting_runtime(window):
     window.pages.setCurrentIndex(7)
     window.asset_navigation.tabs.setCurrentIndex(1)
     assert window._selected_asset is AssetType.CRYPTO
-    assert window.asset_surface.currentWidget() is window.crypto_research
+    assert window.asset_surface.currentWidget() is window._market_pages[AssetType.CRYPTO]
+    assert window._market_pages[AssetType.CRYPTO].pages.currentIndex() == 7
     window.asset_navigation.tabs.setCurrentIndex(2)
     assert window.asset_surface.currentWidget() is not window.pages
     assert not window.asset_navigation.toggle.isEnabled()

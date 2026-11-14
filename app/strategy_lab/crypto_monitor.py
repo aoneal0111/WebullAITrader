@@ -63,7 +63,8 @@ def read_ledger(path):
             open_lifecycle_realized_usd=finite(db.execute('SELECT COALESCE(SUM(realized_profit),0) FROM trades WHERE is_open=1').fetchone()[0]) if 'realized_profit' in columns else None,
             unrealized_usd=None,open_positions_counted_as_wins=False)
         fields=[n for n in ('id','pair','amount','open_rate','close_rate','open_date','close_date',
-                           'close_profit_abs','exit_reason','realized_profit') if n in columns]
+                           'close_profit_abs','exit_reason','realized_profit','stop_loss','initial_stop_loss',
+                           'stake_amount','enter_tag') if n in columns]
         sql=','.join('"'+n+'"' for n in fields)
         result['holdings']=[dict(r) for r in db.execute(f'SELECT {sql} FROM trades WHERE is_open=1 ORDER BY id DESC LIMIT 50')]
         result['closed']=[dict(r) for r in db.execute(f'SELECT {sql} FROM trades WHERE is_open=0 ORDER BY id DESC LIMIT 20')]

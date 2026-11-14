@@ -98,7 +98,7 @@ def test_crypto_navigation_does_not_activate_unrelated_supervisor():
     widget.tabs.setCurrentIndex(widget.assets.index(AssetType.CRYPTO))
     assert events==[AssetType.CRYPTO] and widget.task is None
     assert widget.toggle.isHidden()
-    assert 'PAPER BOTS' in widget.status.text()
+    assert 'PAPER WORKSPACE' in widget.status.text()
     widget.close()
 
 

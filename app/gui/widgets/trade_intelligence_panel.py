@@ -487,6 +487,7 @@ def _first_available(*values: str) -> str:
 
 
 def _direction_tone(value: str) -> str:
+    if value in {'--', '—'}:return 'neutral'
     return "good" if value.startswith("+") else "danger" if value.startswith("-") else "neutral"
 
 
