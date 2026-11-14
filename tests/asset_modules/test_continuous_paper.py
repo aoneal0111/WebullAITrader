@@ -187,3 +187,24 @@ def test_operation_accepts_more_than_old_sixty_four_symbol_cache(control,tmp_pat
         assert len(c._contexts)==70
         assert c.coverage_status()['fresh_symbols']==70
     finally:c.stop();c.producer.request_stop()
+
+
+def test_full_library_reaches_director_with_explicit_unavailable_entries(control,tmp_path):
+    from app.equity_overhaul.warrior_library_repair import migrate
+    c=persistent_control(control,tmp_path)
+    try:
+        migrate(c.root)
+        path,spec=load(c.experiment.path,clock=c.clock)
+        c.experiment=PaperExperiment(path,spec,clock=c.clock,timer=lambda:0)
+        c.experiment.capture_ready=lambda:True
+        c._contexts['SPY']=(point(),NOW)
+        c._review_director()
+        evidence=c.client.request.call_args.args[2]
+        catalog=evidence['warrior_strategy_library']
+        assert len(catalog)==30
+        assert sum(row['availability']=='ACTIVE' for row in catalog)==23
+        assert all(row['unavailable_reason'] for row in catalog if row['availability']!='ACTIVE')
+        status=report(c.root)
+        assert status['warrior_library_policy']=='IMPLEMENTED_TAXONOMY_PAPER_V1'
+        assert len(status['warrior_detector_catalog'])==30
+    finally:c.stop();c.producer.request_stop()

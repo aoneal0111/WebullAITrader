@@ -25,6 +25,13 @@ SOURCE_FILES = {
         "strategies/warrior_momentum/forward_runtime.py", "strategies/warrior_momentum/models.py",
         "strategies/warrior_momentum/setups.py", "strategies/warrior_momentum/features.py",
         "strategies/warrior_momentum/runtime.py", "strategies/warrior_momentum/risk.py",
+        "trade_intelligence/taxonomy_paper_bridge.py",
+        "opportunity_discovery/taxonomy.py", "opportunity_discovery/contracts.py",
+        "opportunity_discovery/context.py", "opportunity_discovery/detectors.py",
+        "opportunity_discovery/engine.py", "opportunity_discovery/execution_adapter.py",
+        "opportunity_discovery/__init__.py", "opportunity_discovery/episodes.py",
+        "opportunity_discovery/capabilities.py", "research_core/detectors.py",
+        "research_core/contracts.py", "research_core/lifecycle.py",
         "strategies/warrior_momentum/trade_management.py", "asset_modules/grok_warrior_control.py", "asset_modules/grok_desktop_producer.py", "asset_modules/grok.py",
     ),
     EngineId.SCALPER.value: SHARED + (

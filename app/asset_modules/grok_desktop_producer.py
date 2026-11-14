@@ -54,6 +54,9 @@ class DesktopGrokProducer:
             "native_signal_timestamp": signal.timestamp.isoformat(), "session": signal.session,
             "setup": str(getattr(signal, "setup_type", "QUICK_SCALP_MOMENTUM")),
             "target_levels": [str(p) for p in getattr(signal, "target_levels", ())]}
+        if getattr(signal, 'taxonomy_strategy_id', None):
+            evidence['strategy_family']=signal.taxonomy_strategy_id
+            evidence['strategy_memberships']=list(signal.taxonomy_strategy_memberships)
         if self.history_source is not None:
             # Bounded local evidence only: no provider call or model wait here.
             try:

@@ -1856,8 +1856,10 @@ def test_pcvx_failed_target_does_not_claim_pending_or_starve_stop_tightening(
         writer.close()
 
 
+@pytest.mark.parametrize('next_bid', ['5.00', '4.98'])
+@pytest.mark.parametrize('harvest_volume', [10000, 30])
 def test_ipdn_rearmed_generation_harvests_executable_profit_and_locks_runner(
-    tmp_path: Path,
+    tmp_path: Path, next_bid: str, harvest_volume: int,
 ) -> None:
     """IPDN: a fresh rearm must be managed, harvested, and protected durably."""
 
@@ -1887,14 +1889,14 @@ def test_ipdn_rearmed_generation_harvests_executable_profit_and_locks_runner(
         ),
     )
 
-    def market(sequence: int, bid: str, ask: str) -> None:
+    def market(sequence: int, bid: str, ask: str, volume=10000) -> None:
         composition.gateway.process_market_event(MarketEvent(
             sequence,
             session_timestamp(sequence, at=T0 + timedelta(minutes=20)),
             "XYZ",
             "ipdn-profit-harvest-test",
             MarketEventType.QUOTE,
-            QuotePayload(D(bid), D(ask), D("10000"), D("10000")),
+            QuotePayload(D(bid), D(ask), D(volume), D(volume)),
         ))
 
     try:
@@ -1976,6 +1978,8 @@ def test_ipdn_rearmed_generation_harvests_executable_profit_and_locks_runner(
             if order.request.order_type.value == "STOP"
         )
         assert int(harvest.remaining_quantity) == 110
+        assert harvest.request.order_type.value == 'MARKET'
+        assert harvest.request.limit_price is None
         assert int(canonical_stop.remaining_quantity) == 441
         assert canonical_stop.request.stop_price == state.stop
 
@@ -1986,12 +1990,25 @@ def test_ipdn_rearmed_generation_harvests_executable_profit_and_locks_runner(
             if order.request.execution_reason == "PROFIT_HARVEST_1"
         ]) == 1
 
-        market(2, "5.00", "5.01")
+        # A retreat from the observed 4.99 peak no longer strands a
+        # harvest LIMIT above the market. Actual fill uses the next bid.
+        market(2, next_bid, str(D(next_bid) + D('.01')), harvest_volume)
+        if harvest_volume == 30:
+            position['XYZ'] = D('411')
+            service._synchronize_authoritative_position(state, profitable_at)
+            assert state.profit_harvest_stage == 0
+            assert state.pending_profit_harvest_role == 'PROFIT_HARVEST_1'
+            service._manage_executable_profit_harvest(state, profitable_at)
+            assert not any(o.request.execution_reason == 'PROFIT_HARVEST_2'
+                           for o in composition.order_book.history())
+            market(3, next_bid, str(D(next_bid) + D('.01')))
+
         harvest = next(
             order for order in composition.order_book.history()
             if order.order_id == harvest.order_id
         )
         assert int(harvest.filled_quantity) == 110
+        assert harvest.average_fill_price == D(next_bid)
         position["XYZ"] = D("331")
         follow_at = profitable_at + timedelta(seconds=2)
         service.observe(point(

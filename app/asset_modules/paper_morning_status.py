@@ -26,6 +26,13 @@ def report(trial):
         'entry_sessions':spec.get('entry_sessions',['PREMARKET','REGULAR'])}
     if spec:
         remaining=None if continuous else max(0,(datetime.fromisoformat(spec['expires_at'])-datetime.now(UTC)).total_seconds())
+        result['warrior_library_policy']=spec.get('warrior_library_policy','NATIVE_THREE_SETUP_PROFILE')
+        result['warrior_permitted_families']=spec.get('families',{}).get('WARRIOR_MOMENTUM',[])
+        if spec.get('warrior_library_policy'):
+            from app.opportunity_discovery.taxonomy import STRATEGY_TAXONOMY
+            result['warrior_detector_catalog']=[dict(strategy=x.strategy_id,
+                availability=x.availability.value, missing_reason=x.unavailable_reason)
+                for x in STRATEGY_TAXONOMY]
         result['operating_mode']='CONTINUOUS_PAPER' if continuous else 'BOUNDED_TRIAL'
         result['remaining_trial_hours']=None if continuous else round(remaining/3600,2)
         result['entry_window_state']='CONTINUOUS' if continuous else 'EXPIRED' if remaining==0 else 'WITHIN_WINDOW'

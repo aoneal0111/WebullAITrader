@@ -30,6 +30,15 @@ _IMMEDIATE_EXIT_REASONS = frozenset({
 })
 
 
+# Harvest is an already-earned partial liquidation, not another resting target.
+# Keep it separate from full exits: the correlated stop must protect the runner
+# and any unfilled harvest quantity throughout partial fills and recovery.
+_MARKET_PROFIT_HARVEST_REASONS = frozenset({
+    "PROFIT_HARVEST_1", "PROFIT_HARVEST_2", "PROFIT_HARVEST_3",
+})
+_MARKET_EXIT_REASONS = _IMMEDIATE_EXIT_REASONS | _MARKET_PROFIT_HARVEST_REASONS
+
+
 class AutonomousPaperReadiness(StrEnum):
     NOT_STARTED = "NOT_STARTED"
     RECONCILING = "RECONCILING"
@@ -2384,11 +2393,11 @@ class AutonomousPaperExecutionBridge:
                         and (
                             int(working_sell.remaining_quantity) != int(quantity)
                             or (
-                                reason_key in _IMMEDIATE_EXIT_REASONS
+                                reason_key in _MARKET_EXIT_REASONS
                                 and working_sell.request.order_type is not OrderType.MARKET
                             )
                             or (
-                                reason_key not in _IMMEDIATE_EXIT_REASONS
+                                reason_key not in _MARKET_EXIT_REASONS
                                 and (working_sell.request.limit_price is None
                                      or Decimal(working_sell.request.limit_price) != Decimal(price))
                             )
@@ -2522,7 +2531,7 @@ class AutonomousPaperExecutionBridge:
         strategy_owner: str | None = None,
     ) -> PaperExitSubmissionDecision:
         protective = reason_key in {"STOP", "STOP_LOSS"}
-        immediate = reason_key in _IMMEDIATE_EXIT_REASONS
+        immediate = reason_key in _MARKET_EXIT_REASONS
         if protective:
             performance_diagnostics.record_protection_event(
                 state="PROTECTION_SUBMIT_ATTEMPT",

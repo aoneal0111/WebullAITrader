@@ -929,6 +929,21 @@ class WarriorForwardCaptureService:
                     symbol, stage="SETUP_TRIGGERED", timestamp=value.evaluation_timestamp or observation.timestamp,
                 )
         legacy_candidate = candidate
+        if (self.config.taxonomy_paper_execution_enabled
+                and self._taxonomy_execution_bridge is not None):
+            # Every selected taxonomy pattern enters BEFORE the same technical,
+            # quote, account, reward, risk, Grok and ownership gates as Warrior.
+            # Retain a valid native setup when it already supplies an entry.
+            try:
+                selected = self._taxonomy_execution_bridge.select_paper_candidate(
+                    value, candidate, self.capture_config.quote_stale_after_seconds)
+                if self.runtime.technical_entry_signal(candidate) is None:
+                    candidate = selected
+            except Exception:
+                performance_diagnostics.record_entry_funnel(symbol,
+                    stage="TAXONOMY_CANDIDATE", outcome="REJECTED",
+                    reason="TAXONOMY_CONTEXT_UNAVAILABLE",
+                    timestamp=value.evaluation_timestamp or observation.timestamp)
         with _service_stage("entry_assessment", symbol=symbol):
             assessed, signal = self.runtime.assess_entry(candidate)
             technical_signal = self.runtime.technical_entry_signal(candidate)
@@ -1259,7 +1274,7 @@ class WarriorForwardCaptureService:
                         )
                 except Exception:
                     pass
-        taxonomy_bridge = self._taxonomy_execution_bridge
+        taxonomy_bridge = None if self.config.taxonomy_paper_execution_enabled else self._taxonomy_execution_bridge
         intelligence_identity = self._intelligence_identity(
             value, assessed, completed_version,
         )
@@ -4236,7 +4251,7 @@ class WarriorForwardCaptureService:
         symbol = request.identity.symbol
         taxonomy_candidate = None
         taxonomy_signal = None
-        bridge = self._taxonomy_execution_bridge
+        bridge = None if self.config.taxonomy_paper_execution_enabled else self._taxonomy_execution_bridge
         with _service_stage("taxonomy_async", symbol=symbol):
             if bridge is not None:
                 taxonomy_candidate, taxonomy_signal = bridge.evaluate(
@@ -4948,21 +4963,7 @@ class WarriorForwardCaptureService:
                     state.realized_pnl += realized
                     state.realized_from_partials += realized
                 if role and role.startswith("PROFIT_HARVEST_"):
-                    try:
-                        state.profit_harvest_stage = max(
-                            state.profit_harvest_stage,
-                            int(role.rsplit("_", 1)[-1]),
-                        )
-                    except ValueError:
-                        pass
-                    state.pending_profit_harvest_role = None
-                    state.exit_reason = None
-                    state.exit_price = None
-                    self._record_management_event(
-                        state, "PROFIT_HARVEST_FILLED",
-                        timestamp=observed_at, fill_quantity=filled,
-                        order_id=order_id,
-                    )
+                    self._record_harvest_progress(state, role, order_id, filled, observed_at)
             state.remaining = quantity
             changed = True
         state.managed_quantity = (
@@ -5044,6 +5045,32 @@ class WarriorForwardCaptureService:
             ),))
             changed = True
         return changed
+
+    def _record_harvest_progress(self, state, role, order_id, filled, observed_at):
+        """A partial fill cannot complete a harvest milestone or free its slot."""
+        complete = False
+        book = self._paper_order_book()
+        if book is not None and order_id:
+            try:
+                order = book.get(order_id)
+                complete = (order.request.strategy_lifecycle_id == lifecycle_identity(state.signal)
+                    and order.request.execution_reason == role
+                    and order.is_terminal and order.remaining_quantity == ZERO
+                    and order.filled_quantity > ZERO)
+            except Exception:
+                pass
+        if complete:
+            state.profit_harvest_stage = max(state.profit_harvest_stage,
+                int(role.rsplit('_', 1)[-1]))
+            state.pending_profit_harvest_role = None
+            state.exit_reason = None
+            state.exit_price = None
+        else:
+            state.pending_profit_harvest_role = role
+            state.exit_reason = role
+        self._record_management_event(state,
+            'PROFIT_HARVEST_FILLED' if complete else 'PROFIT_HARVEST_PARTIAL_FILL',
+            timestamp=observed_at, target_stage=role, fill_quantity=filled, order_id=order_id)
 
     def _update_executable_profit_state(self, state: _PaperState) -> bool:
         evidence = state.latest_exit_evidence
@@ -6040,25 +6067,15 @@ class WarriorForwardCaptureService:
                     ) * Decimal(fill_quantity)
                     state.realized_pnl += realized
                     state.realized_from_partials += realized
-                try:
-                    state.profit_harvest_stage = max(
-                        state.profit_harvest_stage,
-                        int(exit_role.rsplit("_", 1)[-1]),
-                    )
-                except ValueError:
-                    pass
-                state.pending_profit_harvest_role = None
-                self._record_management_event(
-                    state, "PROFIT_HARVEST_FILLED", timestamp=observed_at,
-                    target_stage=exit_role, fill_quantity=fill_quantity,
-                    order_id=exit_order_id,
-                )
+                self._record_harvest_progress(state, exit_role, exit_order_id,
+                    fill_quantity, observed_at)
             elif exit_role == "PROTECTIVE_STOP":
                 # Do not let a stale persisted FIRST_TARGET label relabel a
                 # protective-stop fill.  The target stage remains incomplete.
                 state.exit_reason = None
                 state.exit_price = None
-            if not (exit_role == "FIRST_TARGET" and not first_target_complete):
+            if (not (exit_role == "FIRST_TARGET" and not first_target_complete)
+                    and state.pending_profit_harvest_role != exit_role):
                 state.exit_reason = None
                 state.exit_price = None
             records.append(CaptureRecord.create(

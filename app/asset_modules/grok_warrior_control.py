@@ -123,6 +123,7 @@ class WarriorControl:
             configured_management={k:safe(getattr(management,k)) for k in ('move_stop_to_breakeven_after_r',
                 'profit_defense_enabled','profit_defense_activation_r','profit_defense_exit_activation_r',
                 'profit_harvest_enabled','profit_harvest_activation_r','profit_harvest_fraction','adaptive_exit_enabled')},
+            profit_harvest_execution='MARKET_PARTIAL_WITH_CORRELATED_RUNNER_STOP',
             interpretation='First target may be a partial exit; assess the whole plan. Configured fractions are subject to whole-share rounding and native protection; targets and fills are not guaranteed.')
 
     def _sizing_evidence(self):
@@ -280,6 +281,11 @@ class WarriorControl:
             schema=deepcopy(SCHEMA)
             schema['properties']['quantity']['maximum']=self.service.risk_config.maximum_quantity
             context['position_sizing']=self._sizing_evidence()
+        if self.experiment.warrior_library_enabled:
+            from app.opportunity_discovery.taxonomy import STRATEGY_TAXONOMY
+            context['warrior_strategy_library']=[dict(strategy=x.strategy_id,
+                availability=x.availability.value, rule=x.description,
+                unavailable_reason=x.unavailable_reason) for x in STRATEGY_TAXONOMY]
         context['native_management']=self._policy_evidence()
         if self.continuous:
             for symbol in contexts:self._reviewed_at[symbol]=now

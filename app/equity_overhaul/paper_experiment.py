@@ -29,6 +29,17 @@ PROFILES=PAPER_PROFILES
 CONTINUOUS_SCOPE='NATIVE_PAPER_OPERATION_V1'
 CONTINUOUS_POLICY=dict(scheduler='FAIR_WATCHLIST',batch_size=4,minimum_batch_seconds=10,minimum_symbol_seconds=60)
 EXTENDED_ENTRY_SESSIONS=frozenset({'PREMARKET','REGULAR','AFTER_HOURS'})
+WARRIOR_LIBRARY_POLICY='IMPLEMENTED_TAXONOMY_PAPER_V1'
+
+
+def warrior_library_families():
+    from app.opportunity_discovery.taxonomy import STRATEGY_TAXONOMY
+    from app.opportunity_discovery.contracts import DetectorAvailability
+    from app.strategies.warrior_momentum.models import SetupType
+    return sorted({item.strategy_id for item in STRATEGY_TAXONOMY
+                   if item.availability is DetectorAvailability.ACTIVE}
+                  | {item.value for item in SetupType})
+
 
 
 def create(directory,clock=lambda:datetime.now(UTC),*,profile='LEGACY_V1',extended_sessions=False,clock_tolerance=False,hours=8,continuous=False):
@@ -96,6 +107,10 @@ def load(path,clock=lambda:datetime.now(UTC),*,allow_expired=False):
 
 def validate_continuous(spec,now):
     families={**V2_FAMILIES,'WARRIOR_MOMENTUM':(*V2_FAMILIES['WARRIOR_MOMENTUM'],'GROK_DIRECTED')}
+    library=spec.get('warrior_library_policy')
+    if library is not None:
+        if library != WARRIOR_LIBRARY_POLICY:raise ValueError('UNKNOWN_WARRIOR_LIBRARY_POLICY')
+        families={**families,'WARRIOR_MOMENTUM':warrior_library_families()}
     start=datetime.fromisoformat(spec['created_at'])
     if (spec.get('profile')!=ACCOUNT_SIZING_PROFILE or spec.get('operating_mode')!='CONTINUOUS_PAPER'
             or spec.get('expires_at') is not None or spec.get('limits')!={k:None for k in LIMITS}
@@ -139,7 +154,16 @@ class PaperExperiment(EquityQualificationPolicy):
     @property
     def account_sizing(self):return self.spec.get('profile')==ACCOUNT_SIZING_PROFILE
 
+    @property
+    def warrior_library_enabled(self):
+        return self.continuous and self.spec.get('warrior_library_policy')==WARRIOR_LIBRARY_POLICY
+
     def warrior_config(self,config):
+        if self.warrior_library_enabled:
+            return replace(config,taxonomy_paper_execution_enabled=True,
+                entry=replace(config.entry,allowed_sessions=EXTENDED_ENTRY_SESSIONS)
+                    if self.spec.get('entry_sessions') else config.entry,
+                setups=replace(config.setups,allowed_setup_types=None))
         if not self.cent_early:return config
         return replace(config,entry=replace(config.entry,allowed_sessions=EXTENDED_ENTRY_SESSIONS)
             if self.spec.get('entry_sessions') else config.entry,setups=replace(config.setups,

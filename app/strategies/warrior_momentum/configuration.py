@@ -315,6 +315,7 @@ class WarriorMomentumConfig:
     observability_root: Path | None = field(default=None, repr=False)
     observability_session_id: str | None = field(default=None, repr=False)
     adaptive_context_enabled: bool = False
+    taxonomy_paper_execution_enabled: bool = False
 
     def __post_init__(self) -> None:
         if self.live_execution_enabled:

@@ -467,7 +467,7 @@ def create_desktop_composition(
         if equity_experiment is not None:
             equity_experiment.bind(attribution)
             def trial_attribution(signal):
-                return {**attribution(signal,native_only=equity_experiment.cent_early),
+                return {**attribution(signal,native_only=equity_experiment.cent_early and not equity_experiment.warrior_library_enabled),
                         'strategy_trial_id': equity_experiment.spec['trial_id']}
             autonomous_paper_bridge.strategy_provenance_source = trial_attribution
         else:
