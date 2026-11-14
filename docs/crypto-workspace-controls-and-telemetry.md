@@ -33,15 +33,29 @@ unrealized P/L uses native fee-inclusive calculations. Missing or mismatched
 position marks suppress aggregate valuation. Snapshots expire after 90 seconds
 and must match the current recording. Stopped workers do not supply current values.
 
-The upgrade prepares file-bind overlays over each container's existing read-only
-source. Only display observation and cycle-publish hooks are added to those exact
-runtime files, plus the telemetry helper. Unrecognized hooks are refused. Existing
-strategy modules, configs, wallet mounts, image, entry command, and ledger are
-preserved. Applying overlays stops and recreates workers individually, preserving
-their previous running state and entry-pause markers. Keep the repair directory:
-Docker bind mounts reference its generated display files. No automatic strategy tuning
-or liquidation occurs. An apply failure is reported; preserve its output and
-inspect worker states before proceeding.
+The upgrade copies each worker's existing `app/strategy_lab` directory and adds
+only the two display hooks and telemetry helper to that copy. It mounts the
+whole directory at the existing `/check/app/strategy_lab` directory, read-only.
+It does not create individual file mountpoints inside the read-only parent.
+All other copied module bytes are checked for preservation. Strategy modules in
+`/work`, configurations, wallet mounts, image, entry command and ledger remain
+unchanged. Existing nested module overrides are incorporated into the copy.
+
+The generated Compose override uses `volumes: !override` to remove the previous
+individual file mounts instead of merging them back in. Docker Compose 2.24.4
+or later is required; actual Compose rendering is checked before any worker is
+stopped. See [Docker's merge reference](https://docs.docker.com/reference/compose-file/merge/).
+Rendering must preserve everything outside the module-directory mount, including
+wallet and shared-data mounts. Bundle file hashes are checked again at apply.
+
+With `-RecoverPlan`, the installer first tries to recover a previously running,
+currently stopped worker using the saved plan's original Compose files. It then
+prepares the new directory mounts and restores the plan's previous running
+states. Configuration hashes and container-to-wallet identities must match.
+A failed display-update start triggers an attempt to restore the original
+Compose configuration and running state, reports the result, and still fails
+the update visibly. No positions are liquidated. Retain both the saved recovery
+plan and repair directories because Docker bind mounts reference their files.
 
 Validation covers offline command targeting, mount identity, failure reporting,
 worker-state preservation, telemetry staleness, selected-wallet GUI routing,

@@ -2,7 +2,8 @@ param(
     [string]$Repo = (Join-Path $env:USERPROFILE 'WebullAITrader'),
     [Parameter(Mandatory=$true)][string]$Revision,
     [Parameter(Mandatory=$true)][string]$PaperDirectory,
-    [switch]$ApplyWorkers
+    [switch]$ApplyWorkers,
+    [string]$RecoverPlan
 )
 $ErrorActionPreference = 'Stop'
 if ($Revision -notmatch '^[0-9a-f]{40}$') { throw 'Exact reviewed revision required.' }
@@ -49,8 +50,15 @@ if __name__=='__main__':
     & $Python $Runner $Source $Root
     if ($LASTEXITCODE -ne 0) { throw 'Crypto workspace checks failed. Installed source unchanged.' }
     $Overlays = Join-Path $Root 'worker-overlays'
-    & $Python -m app.strategy_lab.crypto_workspace_upgrade --output $Overlays
-    if ($LASTEXITCODE -ne 0) { throw 'Worker overlay preparation failed. Workers unchanged.' }
+    $PrepareArgs = @('--output', $Overlays)
+    if ($RecoverPlan) {
+        $RecoverPlan = (Resolve-Path -LiteralPath $RecoverPlan).Path
+        & $Python -m app.strategy_lab.crypto_workspace_upgrade --output $Overlays --restore-original --recover-plan $RecoverPlan
+        if ($LASTEXITCODE -ne 0) { throw 'Original worker recovery failed. Preserve output and inspect Docker state.' }
+        $PrepareArgs += @('--recover-plan', $RecoverPlan)
+    }
+    & $Python -m app.strategy_lab.crypto_workspace_upgrade @PrepareArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Worker overlay preparation failed. No new telemetry applied; any original recovery is reported above.' }
 } finally {
     [Environment]::SetEnvironmentVariable('QT_QPA_PLATFORM',$PreviousQt,'Process')
     Pop-Location
@@ -79,7 +87,7 @@ Write-Host "UPDATE_VERIFIED=$Revision"
 Write-Host "APPLY_WORKER_TELEMETRY=$Apply"
 Write-Host "MANUAL_ATLAS=$(Join-Path $PaperDirectory 'Start-Atlas-Paper.ps1')"
 if ($ApplyWorkers) {
-    Write-Host 'APPLYING_TELEMETRY; EXISTING_CRYPTO_WORKERS_RECREATED_WITH_SAME_WALLETS_AND_STRATEGIES; PREVIOUS_RUNNING_STATE_RESTORED'
+    Write-Host 'APPLYING_TELEMETRY; EXISTING_CRYPTO_WORKERS_RECREATED_WITH_SAME_WALLETS_AND_STRATEGIES; PREVIOUS_RUNNING_STATE_WILL_BE_VERIFIED'
     & $Apply
 } else { Write-Host 'GUI_INSTALLED; WORKER_OVERLAYS_PREPARED_ONLY; RUN_APPLY_WORKER_TELEMETRY_TO_CONNECT_NATIVE_VALUES' }
 Write-Host 'KEEP_REPAIR_DIRECTORY; WORKER_TELEMETRY_BINDS_REFERENCE_ITS_FILES'
