@@ -95,3 +95,10 @@ existing native status-publication sites. Runtime thresholds, wallet configs,
 image, exchange source and ledgers are retained. Applying without a recovery
 plan preserves current stopped states; use the Crypto START WALLET control to
 resume selected wallets explicitly after installation.
+
+
+The status-I/O worker-loop unit test supplies its own single-instance-lock
+module, as well as the existing fake exchange worker, so it runs on Windows
+without importing Linux-only `fcntl`. Its assertions still exercise the actual
+worker loop, the permission-denied publication path, continued exit cycles,
+entry pausing and recovery. Production container locking remains unchanged.

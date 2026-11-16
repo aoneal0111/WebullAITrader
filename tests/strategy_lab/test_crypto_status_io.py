@@ -72,6 +72,12 @@ def test_worker_keeps_native_exit_cycles_running_and_resumes_entries_after_recov
             cycle[0]+=1;bot.execute_entry('BTC/USD',100);bot.execute_trade_exit()
             return State.STOPPED if cycle[0]==3 else State.RUNNING
         def exit(self):pass
+    # The real worker runs in Linux containers. This status-I/O unit test
+    # models its single-instance lock so the same assertions run on Windows.
+    locks=[]
+    lock_module=ModuleType('fcntl');lock_module.LOCK_EX=2;lock_module.LOCK_NB=4
+    lock_module.flock=lambda fd,flags:locks.append((fd,flags))
+    monkeypatch.setitem(sys.modules,'fcntl',lock_module)
     worker_module=ModuleType('freqtrade.worker');worker_module.Worker=Worker
     enum_module=ModuleType('freqtrade.enums');enum_module.State=State
     monkeypatch.setitem(sys.modules,'freqtrade.worker',worker_module);monkeypatch.setitem(sys.modules,'freqtrade.enums',enum_module)
@@ -93,6 +99,7 @@ def test_worker_keeps_native_exit_cycles_running_and_resumes_entries_after_recov
         return original(path,status,ev,replace=replace,sleep=lambda _:None)
     monkeypatch.setattr(io,'publish_status',publish)
     runtime.run(tmp_path,tmp_path/'shared')
+    assert len(locks)==1 and locks[0][1]==(lock_module.LOCK_EX|lock_module.LOCK_NB)
     assert [n for kind,n in actions if kind=='exit']==[1,2,3]
     assert [n for kind,n in actions if kind=='entry']==[1,3]
     assert evidence.error is None
