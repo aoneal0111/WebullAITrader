@@ -1023,7 +1023,7 @@ def test_reconciliation_barrier_and_contradiction_fail_closed(tmp_path) -> None:
 
 
 def test_recovery_active_lifecycle_conflict_stays_blocked_and_preserves_stop(
-    tmp_path,
+    tmp_path, monkeypatch,
 ) -> None:
     path = tmp_path / "active-lifecycle-conflict.sqlite3"
     position = {"PMI": Decimal("0")}
@@ -1084,9 +1084,14 @@ def test_recovery_active_lifecycle_conflict_stays_blocked_and_preserves_stop(
         management_context_source=lambda _symbol: "trade-b",
     )
     before_history = tuple(second.order_book.history())
-    before_events = len(
-        performance_diagnostics.reconciliation_metrics()["protection_events"]
-    )
+    # Capture this reconciliation directly: the global diagnostic ring may
+    # already be full when this test follows the complete forward-runtime suite.
+    events = []
+    original_record = performance_diagnostics.record_protection_event
+    def record_protection(**values):
+        events.append(values)
+        return original_record(**values)
+    monkeypatch.setattr(performance_diagnostics, "record_protection_event", record_protection)
     try:
         assert recovered.reconcile() is AutonomousPaperReadiness.BLOCKED
         result = recovered.ensure_exit(
@@ -1105,9 +1110,6 @@ def test_recovery_active_lifecycle_conflict_stays_blocked_and_preserves_stop(
             order.request.execution_reason == "FIRST_TARGET"
             for order in second.order_book.history()
         )
-        events = performance_diagnostics.reconciliation_metrics()[
-            "protection_events"
-        ][before_events:]
         assert any(
             event["state"] == "ACTIVE_LIFECYCLE_CONFLICT"
             and event["reason"] == "ACTIVE_ENTRY_LIFECYCLE_MISMATCH"

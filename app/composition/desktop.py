@@ -253,6 +253,7 @@ def create_desktop_composition(
     shared_rest_market_data = market_services.shared_rest_market_data
     chart_market_data_service = market_services.chart_market_data_service
     execution_quote_source = market_services.execution_quote_source
+    warrior_execution_quote_source = execution_quote_source
 
 
     paper_trading_commands = None
@@ -412,6 +413,7 @@ def create_desktop_composition(
         if equity_experiment is not None and equity_experiment.spec.get('scalper_clock_policy'):
             from app.strategies.warrior_momentum.paper_stream_quote import PaperStreamQuoteSource
             scalper_execution_quote_source=PaperStreamQuoteSource(execution_quote_source,clock=paper_clock or utc_now)
+            warrior_execution_quote_source = scalper_execution_quote_source
             original_market_observer=market_event_observer
             def observe_paper_market(event):
                 scalper_execution_quote_source.observe_market_event(event)
@@ -424,7 +426,7 @@ def create_desktop_composition(
             paper_controller_service = attach_paper_controller(
                 paper_trading_commands, autonomous_paper_bridge,
                 account_source=trading_state_sources.warrior_account_context,
-                quote_source=execution_quote_source,
+                quote_source=warrior_execution_quote_source,
                 risk_config=warrior_strategy_config.risk,
                 native_scalper_quote_age_seconds=(5 if equity_experiment is not None and equity_experiment.spec.get('profile') in GROK_CONTROL_PROFILES else 2),
                 clock=paper_clock,
@@ -513,7 +515,7 @@ def create_desktop_composition(
             None if autonomous_paper_bridge is None
             else autonomous_paper_bridge.has_working_entry
         ),
-        execution_quote_source=execution_quote_source,
+        execution_quote_source=warrior_execution_quote_source,
         order_flow_client=shared_rest_market_data,
         research_observer=trade_intelligence_observer,
         entry_value_observer=entry_opportunity_value_observer,

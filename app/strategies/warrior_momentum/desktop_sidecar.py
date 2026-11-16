@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import insort
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -794,7 +795,14 @@ class WarriorDesktopSidecar:
                     self._service.restore_execution_lifecycles(
                         self._execution_recovery_orders
                     )
-                self._restore_bars()
+                recovery_started = perf_counter()
+                try:
+                    self._restore_bars()
+                finally:
+                    performance_diagnostics.record_component_duration(
+                        "warrior.startup.bar_recovery",
+                        (perf_counter() - recovery_started) * 1000,
+                    )
                 now = self._aware_now()
                 self._started_at = now
                 self._run_key = sha256(
@@ -2148,7 +2156,7 @@ class WarriorDesktopSidecar:
         assert self._store is not None
         records = (
             record for record, fingerprint in records_with_configuration_fingerprint(
-                self._store.records()
+                self._store.records_for_bar_recovery()
             ) if fingerprint == self.configuration_fingerprint
             and record.record_type is CaptureRecordType.MINUTE_BAR
         )
@@ -2160,9 +2168,10 @@ class WarriorDesktopSidecar:
                 Decimal(payload["low"]), Decimal(payload["close"]),
                 Decimal(payload["volume"]),
             )
-            self._bars.setdefault(record.symbol, []).append(bar)
-        for symbol, values in self._bars.items():
-            self._bars[symbol] = sorted(values, key=lambda item: item.timestamp)[-120:]
+            values = self._bars.setdefault(record.symbol, [])
+            insort(values, bar, key=lambda item: item.timestamp)
+            if len(values) > 120:
+                del values[:-120]
 
     def _session_record(self, action: str, now: datetime) -> CaptureRecord:
         metrics = None if self._writer is None else self._writer.metrics()
