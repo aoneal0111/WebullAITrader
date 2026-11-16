@@ -262,7 +262,8 @@ def run(work,shared):
         status=dict(scope='FLEET_NATIVE_PAPER_STATUS_V1',state='STARTING',
             updated_at=datetime.now(UTC).isoformat(),recording_id=evidence.root.name,
             live_trading_enabled=False,capture=evidence.journal.status())
-        write(work/'engine-status.json',status)
+        from app.strategy_lab.crypto_status_io import publish_status
+        publish_status(work/'engine-status.json',status,evidence)
         write(work/'recording-session.json',dict(session=str(evidence.root)))
         try:
             transport=pace_public_requests(shared/'public-request-clock')
@@ -285,7 +286,7 @@ def run(work,shared):
                         entry_reviews=evidence.entry_reviews))
                 try:status.update(ledger_status(work,filename='paper.sqlite3'))
                 except Exception as exc:status['ledger_status_error']=type(exc).__name__
-                temporary=work/'engine-status.json.tmp';write(temporary,status);temporary.replace(work/'engine-status.json')
+                publish_status(work/'engine-status.json',status,evidence)
                 if state not in (State.RUNNING,State.PAUSED):break
         except KeyboardInterrupt:status['state']='STOPPED'
         except Exception as exc:
@@ -297,7 +298,7 @@ def run(work,shared):
             finally:
                 evidence.journal.close()
                 status.update(updated_at=datetime.now(UTC).isoformat(),capture=evidence.journal.status(),capture_error=evidence.error)
-                write(work/'engine-status.json',status)
+                publish_status(work/'engine-status.json',status,evidence)
                 write(work/'capture-final.json',dict(recording_id=evidence.root.name,
                     journal=evidence.journal.status(),error=evidence.error))
 

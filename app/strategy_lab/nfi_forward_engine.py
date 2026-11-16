@@ -395,10 +395,8 @@ def _run_locked(work):
                 note='Fresh data is not a source BUY signal. Repeated snapshots are not win-rate samples.')
             try:status.update(ledger_status(work))
             except Exception as exc:status['ledger_status_error']=type(exc).__name__
-            try:
-                temporary=work/'engine-status.json.tmp'
-                write(temporary,status);temporary.replace(work/'engine-status.json')
-            except OSError:evidence.error='STATUS_WRITE_FAILED'
+            from app.strategy_lab.crypto_status_io import publish_status
+            publish_status(work/'engine-status.json',status,evidence)
             if state not in (State.RUNNING,State.PAUSED):
                 print('NFI_NATIVE_STATE='+str(state)+'; SEE_NATIVE_LOG; NO_AUTOMATIC_RESTART',flush=True)
                 break

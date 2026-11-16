@@ -69,10 +69,11 @@ def test_emergency_targets_discovered_crypto_only_and_retains_holdings(tmp_path)
 
 
 def test_overlay_is_idempotent_and_refuses_unrecognized_source():
-    raw='                now=datetime.now(UTC);evidence.capture(bot,now)\n'
+    raw="        write(work/'engine-status.json',status)\n                now=datetime.now(UTC);evidence.capture(bot,now)\n                temporary=work/'engine-status.json.tmp';write(temporary,status);temporary.replace(work/'engine-status.json')\n                write(work/'engine-status.json',status)\n"
     patched=patch_engine(raw,'crypto_fleet_runtime.py')
     assert patch_engine(patched,'crypto_fleet_runtime.py')==patched
-    assert patched.startswith(raw) and 'publish(work,bot,evidence,now)' in patched
+    assert 'publish(work,bot,evidence,now)' in patched and 'publish_status(work/' in patched
+    assert 'temporary.replace(work/' not in patched
     with pytest.raises(ValueError):patch_engine('different source','crypto_fleet_runtime.py')
 
 @pytest.mark.parametrize('running,paused',[(True,False),(True,True),(False,True),(False,False)])

@@ -71,3 +71,27 @@ CCXT in the GUI environment. The production preflight still imports and uses
 CCXT by default inside the native crypto runtime. A separate fake-module test
 covers that default factory path. No dependency installation or test skipping
 is needed to address the Windows `ModuleNotFoundError: ccxt` installer failure.
+
+
+## Status-file permission contention
+
+The NASOS, CRSI and ROC traceback exports confirmed the same failure in the
+native worker loop: replacing `/work/engine-status.json.tmp` with
+`/work/engine-status.json` raised `PermissionError` and terminated the worker.
+The logs identify the failed rename; they do not identify which process or host
+component held the conflicting file access.
+
+Status publication now uses a unique temporary file and up to five short
+permission-error retry delays (0.385 seconds total). It never falls back to
+truncating the visible JSON. Exhausted I/O failures preserve the last complete
+status and timestamp, log the failure, and set a reporting error in Evidence.
+The existing Evidence entry gate then pauses new entries while native exit
+cycles continue. A successful publication clears only this reporting error;
+other capture failures remain in force. Native trade operations are not retried
+or altered by the helper. Atomic rename recovery does not establish profitability.
+
+The directory overlay also copies this status helper and patches the exact
+existing native status-publication sites. Runtime thresholds, wallet configs,
+image, exchange source and ledgers are retained. Applying without a recovery
+plan preserves current stopped states; use the Crypto START WALLET control to
+resume selected wallets explicitly after installation.

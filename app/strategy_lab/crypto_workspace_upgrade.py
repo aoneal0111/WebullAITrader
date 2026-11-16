@@ -27,6 +27,19 @@ def patch_engine(raw, name):
     if 'crypto_workspace_telemetry import publish' not in raw:
         if raw.count(old)!=1:raise ValueError('UNRECOGNIZED_CYCLE_HOOK')
         raw=raw.replace(old,new)
+    if 'crypto_status_io import publish_status' not in raw:
+        if name=='crypto_fleet_runtime.py':
+            initial="        write(work/'engine-status.json',status)"
+            cycle="                temporary=work/'engine-status.json.tmp';write(temporary,status);temporary.replace(work/'engine-status.json')"
+            final="                write(work/'engine-status.json',status)"
+            if raw.count(cycle)!=1 or raw.count(initial)!=2:raise ValueError('UNRECOGNIZED_STATUS_PUBLICATION')
+            raw=raw.replace(initial,"        from app.strategy_lab.crypto_status_io import publish_status\n        publish_status(work/'engine-status.json',status,evidence)",1)
+            raw=raw.replace(cycle,"                publish_status(work/'engine-status.json',status,evidence)")
+            raw=raw.replace(final,"                publish_status(work/'engine-status.json',status,evidence)")
+        else:
+            old="            try:\n                temporary=work/'engine-status.json.tmp'\n                write(temporary,status);temporary.replace(work/'engine-status.json')\n            except OSError:evidence.error='STATUS_WRITE_FAILED'"
+            if raw.count(old)!=1:raise ValueError('UNRECOGNIZED_STATUS_PUBLICATION')
+            raw=raw.replace(old,"            from app.strategy_lab.crypto_status_io import publish_status\n            publish_status(work/'engine-status.json',status,evidence)")
     return raw
 
 
@@ -96,11 +109,11 @@ def copy_module(source, bundle, mounts):
     for directory in [bundle]+[p for p in bundle.rglob('*') if p.is_dir()]:
         directory.chmod(directory.stat().st_mode|stat.S_IWUSR|stat.S_IXUSR)
     before={str(p.relative_to(bundle)):sha256(p.read_bytes()).hexdigest() for p in bundle.rglob('*') if p.is_file()}
-    changed={'nfi_forward_engine.py','crypto_fleet_runtime.py','crypto_workspace_telemetry.py'}
+    changed={'nfi_forward_engine.py','crypto_fleet_runtime.py','crypto_workspace_telemetry.py','crypto_status_io.py'}
     for filename in changed:
         target=bundle/filename
         if target.exists():target.chmod(target.stat().st_mode|stat.S_IWUSR)
-        if filename=='crypto_workspace_telemetry.py':shutil.copyfile(Path(__file__).with_name(filename),target)
+        if filename in {'crypto_workspace_telemetry.py','crypto_status_io.py'}:shutil.copyfile(Path(__file__).with_name(filename),target)
         else:target.write_text(patch_engine(target.read_text(encoding='utf-8'),filename),encoding='utf-8')
         compile(target.read_text(encoding='utf-8'),str(target),'exec')
     after={str(p.relative_to(bundle)):sha256(p.read_bytes()).hexdigest() for p in bundle.rglob('*') if p.is_file()}

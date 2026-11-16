@@ -44,6 +44,7 @@ if __name__=='__main__':
     import pytest
     raise SystemExit(pytest.main(['tests/gui','tests/strategy_lab/test_crypto_monitor.py',
         'tests/strategy_lab/test_crypto_workspace_control.py','tests/strategy_lab/test_crypto_workspace_telemetry.py',
+        'tests/strategy_lab/test_crypto_status_io.py',
         'tests/strategy_lab/test_crypto_fleet.py','tests/strategy_lab/test_nfi_forward_paper.py',
         '-q','--basetemp',str(Path(sys.argv[2])/'checks')]))
 '@ | Set-Content -LiteralPath $Runner -Encoding UTF8
