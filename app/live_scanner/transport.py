@@ -52,6 +52,14 @@ class ReceiveTransportAdapter:
         if completed:
             raise completed[0]
 
+    def request_stop(self) -> bool:
+        """Cancel receive/reconnect waits before the owner joins its worker."""
+        stop = getattr(self._client, "request_stop", None)
+        if not callable(stop):
+            return False
+        stop()
+        return True
+
     def halt_callback_ingestion(self) -> bool:
         """Forward terminal callback admission closure to the wrapped client."""
         halt = getattr(self._client, "halt_callback_ingestion", None)

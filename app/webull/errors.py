@@ -11,6 +11,10 @@ class WebullTransportError(Exception):
     retryable: bool = False
     retry_after: Decimal | None = None
     def __str__(self): return self.message
+class StreamShutdownRequested(RuntimeError):
+    """Cooperative local cancellation; never a provider failure."""
+
+
 class AuthenticationError(WebullTransportError): pass
 class NetworkError(WebullTransportError): pass
 class TimeoutError(WebullTransportError): pass

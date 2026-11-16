@@ -855,6 +855,28 @@ class PerformanceDiagnostics:
             )
             with self._lock:
                 if self._shutdown_requested_at is not None:
+                    # Preserve initiating intent, but retain the first subsequent
+                    # cleanup failure instead of reducing it to a boolean.
+                    same_session = (runtime_session_id is None
+                        or runtime_session_id == self._shutdown_runtime_session_id)
+                    if failure_present and same_session:
+                        self._shutdown_failure_present = True
+                        failure_class = _bounded_shutdown_text(exception_class)
+                        if self._shutdown_exception_class is None:
+                            self._shutdown_exception_class = failure_class
+                        self._shutdown_events.append({
+                            "event_type": "RUNTIME_CLEANUP_FAILED",
+                            "timestamp": timestamp,
+                            "origin": normalized_origin,
+                            "reason": normalized_reason,
+                            "component": _bounded_shutdown_text(component),
+                            "runtime_session_id": self._shutdown_runtime_session_id,
+                            "exception_class": failure_class,
+                            "failure_present": True,
+                            "operator_initiated": bool(operator_initiated),
+                            "runtime_state": _bounded_shutdown_text(runtime_state),
+                        })
+                        self.request_checkpoint()
                     return False
                 session_id = _bounded_shutdown_text(
                     runtime_session_id or self._shutdown_runtime_session_id,

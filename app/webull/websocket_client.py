@@ -12,7 +12,7 @@ from typing import Callable, Protocol
 from app.market_data.models import HeartbeatPayload, MarketEventLog, MarketEventType
 from app.market_data.validation import validate_event
 from app.performance_diagnostics import performance_diagnostics, subscription_fingerprint
-from app.webull.errors import NetworkError, SerializationError, safe_error_identity
+from app.webull.errors import NetworkError, SerializationError, StreamShutdownRequested, safe_error_identity
 from app.webull.health import ConnectionHealth, update_health
 from app.webull.market_event_parser import decoder_failure_metadata, payload_metadata
 
@@ -110,6 +110,7 @@ class OfficialSdkStreamBackend:
         self._oldest_buffered_age_ms = 0.0
         self._oldest_buffered_age_high_water_ms = 0.0
         self._dequeue_residence_ms: deque[float] = deque(maxlen=2048)
+        self._stop_requested = Event()
         self._connected = Event()
         self._registration_ready = Event()
         self._identity_mismatch = Event()
@@ -419,6 +420,9 @@ class OfficialSdkStreamBackend:
             self._original_on_quotes_message(client, topic, quotes)
 
     def _on_connect_success(self, client: object, api_client: object, session_id: object) -> None:
+        if self._stop_requested.is_set():
+            self._emit_diagnostic("STOPPED_CONNECT_CALLBACK_REJECTED")
+            return
         if client is not self.client:
             self._emit_diagnostic("STALE_CLIENT_CONNECT_REJECTED")
             return
@@ -430,6 +434,12 @@ class OfficialSdkStreamBackend:
             or str(session_id) != self._expected_session_id
         ):
             self._emit_diagnostic("SESSION_IDENTITY_MISMATCH")
+            performance_diagnostics.record_stream_observability(
+                "CONNECT_IDENTITY_MISMATCH", generation=self._generation,
+                client_matches=client is self.client,
+                api_client_matches=api_client is self._owner_api_client,
+                session_id_matches=str(session_id) == self._expected_session_id,
+            )
             self._identity_mismatch.set()
             return
         self._connected.set()
@@ -473,7 +483,26 @@ class OfficialSdkStreamBackend:
         with self._session_lock:
             return self._connect_session()
 
+    def request_stop(self) -> None:
+        """Cancel connection waits without acquiring the SDK session lock."""
+        self._stop_requested.set()
+        self.halt_callback_ingestion()
+
+    def _wait_for_connection(self) -> bool:
+        deadline = monotonic() + self._connect_timeout_seconds
+        while True:
+            if self._stop_requested.is_set():
+                raise StreamShutdownRequested("Stream connection cancelled by operator Stop")
+            if self._connected.is_set():
+                return True
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return False
+            self._connected.wait(min(remaining, 0.05))
+
     def _connect_session(self) -> None:
+        if self._stop_requested.is_set():
+            raise StreamShutdownRequested("Stream session was stopped")
         next_generation = (
             int(self._generation_allocator())
             if self._generation_allocator is not None
@@ -546,7 +575,7 @@ class OfficialSdkStreamBackend:
                 connect_and_loop_start(logger_enable=False)
             except TypeError:
                 connect_and_loop_start()
-            if not self._connected.wait(timeout=self._connect_timeout_seconds):
+            if not self._wait_for_connection():
                 if not self._identity_mismatch.is_set() or self._sdk_client_factory is None:
                     raise TimeoutError("official SDK streaming connection timed out")
                 self._replace_client()
@@ -558,7 +587,7 @@ class OfficialSdkStreamBackend:
                     connect_and_loop_start(logger_enable=False)
                 except TypeError:
                     connect_and_loop_start()
-                if not self._connected.wait(timeout=self._connect_timeout_seconds):
+                if not self._wait_for_connection():
                     raise TimeoutError("official SDK streaming connection timed out")
             if self.actual_transport == "websockets":
                 self._notify("websocket_http_upgrade")
@@ -1056,6 +1085,7 @@ class WebullWebSocketClient:
         self.consecutive_decode_failures = 0
         self._receive_loop_observed = False
         self._recovery_attempt_sequence = 0
+        self._stop_requested = Event()
         self._recovery_lock = Lock()
         self._recovery_owner: str | None = None
         self.decoder_health = "STREAM_CONNECTED"
@@ -1187,6 +1217,8 @@ class WebullWebSocketClient:
         )
 
     def connect(self):
+        if self._stop_requested.is_set():
+            raise StreamShutdownRequested("Stream session was stopped")
         self._receive_loop_observed = False
         try:
             self.logger.log(
@@ -1195,13 +1227,22 @@ class WebullWebSocketClient:
                 transport=getattr(self.backend, "actual_transport", "unknown"),
             )
             self.backend.connect(); self.health = update_health(self.health, websocket_connected=True, connected=True); self.decoder_health = "STREAM_CONNECTED"; self.logger.log("stream_connect", "succeeded")
+        except StreamShutdownRequested:
+            raise
         except Exception as exc:
             self.health = update_health(self.health, websocket_connected=False, connected=False)
             performance_diagnostics.record_stream_observability(
                 "CONNECT_FAILED", generation=getattr(self.backend,"generation_metrics",{}).get("generation"),
-                exception_class=type(exc).__name__, cause_class=type(exc.__cause__).__name__ if exc.__cause__ else None)
+                **safe_error_identity(exc))
             self.logger.log("stream_connect", "failed", error_type=type(exc).__name__)
             raise NetworkError("Webull stream connection failed", retryable=True) from exc
+
+    def request_stop(self):
+        """Stop retries and wake the backend connection waiter."""
+        self._stop_requested.set()
+        cancel = getattr(self.backend, "request_stop", None)
+        if callable(cancel):
+            cancel()
 
     def disconnect(self):
         self.backend.disconnect()
@@ -1269,6 +1310,8 @@ class WebullWebSocketClient:
     def _receive_from(self, receiver):
         network_attempt = 0
         while network_attempt <= self.policy.maximum_attempts:
+            if self._stop_requested.is_set():
+                return None
             try:
                 message = receiver()
                 if message is None: return None
@@ -1525,7 +1568,13 @@ class WebullWebSocketClient:
                 if threshold_reached:
                     raise
                 continue
+            except StreamShutdownRequested:
+                if self._stop_requested.is_set():
+                    return None
+                raise
             except Exception as exc:
+                if self._stop_requested.is_set():
+                    return None
                 if self.recovery_active:
                     performance_diagnostics.record_stream_observability(
                         "RECOVERY_COALESCED",
@@ -1561,8 +1610,14 @@ class WebullWebSocketClient:
                     return None
                 try:
                     self.sleeper(self.policy.backoff_seconds)
+                    if self._stop_requested.is_set():
+                        return None
                     self.backend.connect()
                     self.backend.subscribe(self.channels)
+                except StreamShutdownRequested:
+                    if self._stop_requested.is_set():
+                        return None
+                    raise
                 except Exception as reconnect_error:
                     performance_diagnostics.record_stream_observability(
                         "RECOVERY_FAILED", controller="TRANSPORT",

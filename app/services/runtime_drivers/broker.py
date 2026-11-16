@@ -1321,6 +1321,10 @@ class DesktopBrokerRuntimeDriver:
                     exception_class=None
                 )
         except Exception as exc:
+            from app.webull.errors import StreamShutdownRequested
+            if isinstance(exc, StreamShutdownRequested) and (
+                    stop_event.is_set() or self._market_data_stop.is_set()):
+                return
             transport = self._market_data_transport()
             scanner_stage = getattr(self._scanner, "last_failure_stage", None)
             self._market_data_failure_stage = (
@@ -1663,6 +1667,10 @@ class DesktopBrokerRuntimeDriver:
         if self._market_data is None:
             return
         self._market_data_stop.set()
+        transport = self._market_data_transport()
+        cancel = getattr(transport, "request_stop", None)
+        if callable(cancel):
+            cancel()
         # Close callback admission before joining the consumer.  Raw market
         # observations left after an intentional consumer stop are
         # observational and may be discarded; authoritative lane events are
@@ -1841,6 +1849,10 @@ class DesktopBrokerRuntimeDriver:
         return max(available) if available else None
 
     def _run_feed_watchdog(self) -> None:
+        if getattr(self, "_shutdown_requested", False) or (
+                getattr(self, "_market_data_stop", None) is not None
+                and self._market_data_stop.is_set()):
+            return
         if not hasattr(self, "_configuration"):
             return
         if hasattr(self, "_clock"):
@@ -1974,6 +1986,10 @@ class DesktopBrokerRuntimeDriver:
             stale_age_seconds=age,
         )
         performance_diagnostics.record_startup_stage("reconnect_started")
+        performance_diagnostics.record_stream_lifecycle(
+            "reconnecting", attempt=recovery_id,
+            generation=generation_metrics.get("generation"),
+        )
         self._publish_health(
             "MARKET_DATA_RECONNECTING",
             "Market-data inactivity exceeded the reconnect threshold.",
@@ -2005,6 +2021,12 @@ class DesktopBrokerRuntimeDriver:
             )
         except Exception as exc:
             self._feed_recovery_pending = False
+            from app.webull.errors import StreamShutdownRequested
+            if isinstance(exc, StreamShutdownRequested) and (
+                    getattr(self, "_shutdown_requested", False)
+                    or getattr(self, "_market_data_stop", None) is not None
+                    and self._market_data_stop.is_set()):
+                return
             performance_diagnostics.record_stream_observability(
                 "RECOVERY_FAILED", controller="WATCHDOG",
                 recovery_attempt_id=recovery_id,
