@@ -397,7 +397,22 @@ class DesktopBrokerRuntimeDriver:
     def _stop_observer(self) -> None:
         observer_stop = getattr(self._market_event_observer, "stop", None)
         if callable(observer_stop):
-            observer_stop()
+            from app.strategies.warrior_momentum.report_worker import ReportWorkerShutdownPending
+            # Native execution has already stopped. Give the retained report
+            # owner up to three bounded close attempts; this is the same
+            # idempotent continuation previously requiring another manual Stop.
+            for attempt in range(3):
+                try:
+                    observer_stop()
+                    return
+                except ReportWorkerShutdownPending:
+                    if attempt == 2:
+                        raise
+                    self._publish_health(
+                        "WARRIOR_REPORT_FINALIZING",
+                        "Trading stopped; waiting for the Warrior report to finish.",
+                        RuntimeHealthUpdate(runtime_status="STOPPING"),
+                    )
 
     def _start_projection_worker(self) -> None:
         if self._projection_thread is not None and self._projection_thread.is_alive():

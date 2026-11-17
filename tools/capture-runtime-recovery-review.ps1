@@ -1,11 +1,23 @@
+param([string]$DiagnosticPath = '', [string]$RunId = '')
 # Read-only capture: never starts Atlas, Docker, a provider request or an order.
 $ErrorActionPreference = 'Stop'
 $Base = Join-Path $env:LOCALAPPDATA 'AtlasResearch'
 $Root = Join-Path $Base ('runtime-recovery-review-' + [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $Root
-$Files = @(Get-ChildItem (Join-Path $env:TEMP 'atlas-performance') -Filter '*.json' -File |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 3)
-if (-not $Files.Count) { throw 'No performance diagnostics found. Nothing started.' }
+if ($RunId) {
+    if ($DiagnosticPath) { throw 'Supply either RunId or DiagnosticPath, not both.' }
+    if ($RunId -notmatch '^[0-9a-f]{32}$') { throw 'Exact Atlas performance run ID required.' }
+    $DiagnosticPath = Join-Path $env:TEMP "atlas-performance\$RunId.json"
+}
+if (-not $DiagnosticPath) {
+    throw 'Explicit DiagnosticPath or RunId required. Latest files may belong to installer tests.'
+}
+$File = Get-Item -LiteralPath $DiagnosticPath
+if ($File.Length -gt 16MB) { throw 'Diagnostic exceeds compact bound.' }
+$Diagnostic = Get-Content -LiteralPath $File.FullName -Raw | ConvertFrom-Json
+if (-not $Diagnostic.run_id -or -not $Diagnostic.startup) { throw 'Atlas performance artifact required.' }
+if ($RunId -and $Diagnostic.run_id -ne $RunId) { throw 'Artifact run ID mismatch.' }
+$Files = @($File)
 $Copied = @()
 foreach ($File in $Files) {
     if ($File.Length -gt 16MB) { throw "Diagnostic exceeds compact bound: $($File.Name)" }
