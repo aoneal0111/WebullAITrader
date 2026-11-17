@@ -19,6 +19,9 @@ def test_explicit_market_data_probe_has_no_desktop_account_or_order_dependency(m
     monkeypatch.setattr(module, 'monotonic', lambda:next(clock))
     report = check(configuration(), seconds=2, factory=lambda config:transport)
     assert report['status'] == 'SUBSCRIBED_NO_PAYLOADS'
+    assert report['disconnect'] == 'COMPLETED'
+    assert report['disconnect_duration_ms'] >= 0
+    assert report['connection_after_disconnect'] == {}
     assert report['orders'] == 0 and report['trading_runtime_started'] is False
     assert calls == ['connect', ('subscribe', ('AAPL',)), 'stop', ('disconnect', {'timeout_seconds':5})]
 
@@ -44,3 +47,24 @@ def test_connect_failure_retains_safe_cause_and_always_disconnects():
 def test_unsafe_mode_is_refused_before_factory(config):
     with pytest.raises(ValueError):
         check(config, factory=lambda _:pytest.fail('must not construct provider'))
+
+
+def test_pending_disconnect_is_retained_with_post_cleanup_worker_state(monkeypatch):
+    state = {'worker_alive': True, 'connected': True}
+    class Backend:
+        @property
+        def connection_diagnostics(self): return dict(state)
+    def stop(): state['connected'] = False
+    def disconnect(**kwargs): raise TimeoutError('private diagnostic omitted')
+    transport = NS(connect=lambda:None, subscribe=lambda symbols:None,
+        request_stop=stop, disconnect=disconnect, read_event=lambda:None,
+        client=NS(backend=Backend()))
+    clock = iter([0, 3])
+    monkeypatch.setattr(module, 'monotonic', lambda:next(clock))
+    report = check(configuration(), seconds=2, factory=lambda _:transport)
+    assert report['status'] == 'SUBSCRIBED_NO_PAYLOADS'
+    assert report['disconnect'] == 'FAILED_OR_PENDING'
+    assert report['connection']['connected'] is True
+    assert report['connection_after_disconnect'] == {'worker_alive':True, 'connected':False}
+    assert report['disconnect_error']['exception_class'] == 'TimeoutError'
+    assert 'private diagnostic' not in str(report)

@@ -150,7 +150,7 @@ def test_stale_session_identity_is_rejected_and_replaced_once() -> None:
 
     assert stream.client is fresh
     assert stream.registration_ready is True
-    assert stale.calls[:3] == ["connect", "loop_stop", "disconnect"]
+    assert stale.calls[:3] == ["connect", "disconnect", "loop_stop"]
     assert fresh.calls == ["connect"]
 
 

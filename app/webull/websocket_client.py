@@ -418,7 +418,10 @@ class OfficialSdkStreamBackend:
             raise RuntimeError("stream reconnect requires a fresh SDK client identity")
         old_client = self.client
         self._retiring_client = old_client
-        for method_name in ("loop_stop", "disconnect"):
+        cancel = getattr(old_client, "_atlas_request_stop", None)
+        if callable(cancel):
+            cancel()
+        for method_name in ("disconnect", "loop_stop"):
             method = getattr(old_client, method_name, None)
             if callable(method):
                 try:
@@ -563,7 +566,7 @@ class OfficialSdkStreamBackend:
             self._original_on_connect_success(client, api_client, session_id)
 
     def _on_client_disconnect(self, client: object, *args: object, **kwargs: object) -> None:
-        if client is not self.client:
+        if client is not self.client or client is self._retiring_client:
             self._emit_diagnostic("STALE_CLIENT_DISCONNECT_REJECTED")
             return
         self._on_disconnect(*args, **kwargs)
@@ -592,6 +595,9 @@ class OfficialSdkStreamBackend:
         """Cancel connection waits without acquiring the SDK session lock."""
         self._stop_requested.set()
         self.halt_callback_ingestion()
+        cancel = getattr(self.client, "_atlas_request_stop", None)
+        if callable(cancel):
+            cancel()
 
     def _wait_for_connection(self) -> bool:
         deadline = monotonic() + self._connect_timeout_seconds
@@ -750,14 +756,21 @@ class OfficialSdkStreamBackend:
         self._active_subscription_generation = None
         self._emit_diagnostic("SESSION_IDENTITY_INVALIDATED")
         self._expected_session_id = ""
-        loop_stop = getattr(self.client, "loop_stop", None)
-        if callable(loop_stop):
-            loop_stop()
-
+        cancel = getattr(self.client, "_atlas_request_stop", None)
+        if callable(cancel):
+            cancel()
         disconnect = getattr(self.client, "disconnect", None)
         if not callable(disconnect):
             raise TypeError("official SDK streaming client has no disconnect method")
-        disconnect()
+        # Request MQTT disconnect while its loop can still process the packet.
+        # Joining first can make the SDK treat loop termination as a failed
+        # connection and enter its retry delay before disconnect is ever sent.
+        try:
+            disconnect()
+        finally:
+            loop_stop = getattr(self.client, "loop_stop", None)
+            if callable(loop_stop):
+                loop_stop()
         performance_diagnostics.record_stream_boundary("transport_disconnected")
         if self._generation_accounting:
             self._generation_accounting["remaining_depth_at_retirement"] = self._message_queue_depth

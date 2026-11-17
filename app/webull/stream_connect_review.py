@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
-from time import monotonic
+from time import monotonic, perf_counter
 
 from app.configuration import load_configuration, TradingEnvironment
 from app.live_execution.broker_factory import build_webull_market_data_stream
@@ -53,6 +53,7 @@ def check(configuration, *, seconds=10, symbol='AAPL', factory=build_webull_mark
             client = getattr(transport, 'client', None)
             backend = getattr(client, 'backend', None)
             report['connection'] = getattr(backend, 'connection_diagnostics', {})
+            disconnect_started = perf_counter()
             try:
                 stop = getattr(transport, 'request_stop', None)
                 if callable(stop): stop()
@@ -61,6 +62,9 @@ def check(configuration, *, seconds=10, symbol='AAPL', factory=build_webull_mark
             except Exception as error:
                 report['disconnect'] = 'FAILED_OR_PENDING'
                 report['disconnect_error'] = safe_error_identity(error)
+            finally:
+                report['disconnect_duration_ms'] = round((perf_counter() - disconnect_started) * 1000, 3)
+                report['connection_after_disconnect'] = getattr(backend, 'connection_diagnostics', {})
         report['stream_observability'] = performance_diagnostics.stream_observability()
     return report
 
