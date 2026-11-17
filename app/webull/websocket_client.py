@@ -111,6 +111,11 @@ class OfficialSdkStreamBackend:
         self._oldest_buffered_age_high_water_ms = 0.0
         self._dequeue_residence_ms: deque[float] = deque(maxlen=2048)
         self._stop_requested = Event()
+        self._sdk_loop_lock = Lock()
+        self._sdk_loop_error = None
+        self._sdk_stage_failure = None
+        self._retiring_client = None
+        self._sdk_startup_phase = "NOT_STARTED"
         self._connected = Event()
         self._registration_ready = Event()
         self._identity_mismatch = Event()
@@ -305,6 +310,10 @@ class OfficialSdkStreamBackend:
         if not session_id:
             raise ValueError("official SDK client has no streaming session identity")
         self.client = client
+        with self._sdk_loop_lock:
+            self._sdk_loop_error = None
+            self._sdk_stage_failure = None
+            self._sdk_startup_phase = "SDK_LOOP_STARTING"
         self._expected_session_id = session_id
         self._owner_api_client = getattr(client, "api_client", None) or getattr(client, "_api_client", None)
         self._original_on_quotes_message = getattr(client, "on_quotes_message", None)
@@ -317,12 +326,98 @@ class OfficialSdkStreamBackend:
             # vary. A retired client's late callback must not clear new state.
             setattr(client, "on_disconnect", lambda *args, **kwargs:
                 self._on_client_disconnect(client, *args, **kwargs))
+        loop = getattr(client, "connect_and_loop_forever", None)
+        if callable(loop):
+            def observe_loop(*args, **kwargs):
+                generation = self._generation
+                try:
+                    result = loop(*args, **kwargs)
+                except Exception as error:
+                    self._record_sdk_loop_failure(client, generation, error)
+                    return
+                if not self._stop_requested.is_set() and not self._deliberate_shutdown:
+                    self._record_sdk_loop_failure(client, generation,
+                        RuntimeError("SDK stream loop returned without shutdown"))
+                return result
+            setattr(client, "connect_and_loop_forever", observe_loop)
+        for method_name, phase in (("_init_client", "SDK_INITIALIZATION"),
+                                   ("_quotes_connect", "SDK_SOCKET_CONNECT")):
+            original = getattr(client, method_name, None)
+            if not callable(original):
+                continue
+            def observe_stage(*args, _method=original, _phase=phase, **kwargs):
+                if client is self.client and client is not self._retiring_client:
+                    with self._sdk_loop_lock:
+                        self._sdk_startup_phase = _phase
+                    performance_diagnostics.record_stream_observability(
+                        _phase + "_STARTED", generation=self._generation)
+                try:
+                    result = _method(*args, **kwargs)
+                except Exception as error:
+                    if (client is self.client and client is not self._retiring_client
+                            and not self._stop_requested.is_set()):
+                        detail = dict(failure_stage=_phase, **safe_error_identity(error))
+                        with self._sdk_loop_lock:
+                            self._sdk_stage_failure = detail
+                        performance_diagnostics.record_stream_observability(
+                            "SDK_STAGE_FAILED", generation=self._generation, **detail)
+                    raise
+                if client is self.client and client is not self._retiring_client:
+                    with self._sdk_loop_lock:
+                        self._sdk_startup_phase = _phase + "_COMPLETED"
+                    performance_diagnostics.record_stream_observability(
+                        _phase + "_COMPLETED", generation=self._generation)
+                return result
+            setattr(client, method_name, observe_stage)
         self._emit_diagnostic("SESSION_IDENTITY_CREATED")
+
+    def _record_sdk_loop_failure(self, client, generation, error) -> None:
+        with self._sdk_loop_lock:
+            if (client is not self.client or client is self._retiring_client
+                    or generation != self._generation
+                    or self._stop_requested.is_set() or self._deliberate_shutdown):
+                return
+            if self._sdk_loop_error is not None:
+                return
+            self._sdk_loop_error = error
+            phase = self._sdk_startup_phase
+            self._connected.clear()
+            self._registration_ready.clear()
+            self._subscription_acknowledged.clear()
+        performance_diagnostics.record_stream_observability(
+            "SDK_LOOP_FAILED", generation=generation,
+            failure_stage=phase, **safe_error_identity(error))
+
+    def _raise_sdk_loop_failure(self) -> None:
+        if self._stop_requested.is_set():
+            raise StreamShutdownRequested("Stream session was stopped")
+        with self._sdk_loop_lock:
+            error = self._sdk_loop_error
+        if error is not None:
+            raise error
+
+    @property
+    def connection_diagnostics(self) -> dict[str, object]:
+        with self._sdk_loop_lock:
+            error = self._sdk_loop_error
+            phase = self._sdk_startup_phase
+            stage_failure = self._sdk_stage_failure
+        worker = getattr(self.client, "_thread", None)
+        return {
+            "generation": self._generation,
+            "phase": phase,
+            "worker_alive": bool(worker is not None and worker.is_alive()),
+            "connected": self._connected.is_set(),
+            "registration_ready": self._registration_ready.is_set(),
+            "failure": None if error is None else safe_error_identity(error),
+            "last_stage_failure": None if stage_failure is None else dict(stage_failure),
+        }
 
     def _replace_client(self) -> None:
         if self._sdk_client_factory is None:
             raise RuntimeError("stream reconnect requires a fresh SDK client identity")
         old_client = self.client
+        self._retiring_client = old_client
         for method_name in ("loop_stop", "disconnect"):
             method = getattr(old_client, method_name, None)
             if callable(method):
@@ -330,7 +425,10 @@ class OfficialSdkStreamBackend:
                     method()
                 except Exception:
                     pass
-        self._attach_client(self._sdk_client_factory())
+        try:
+            self._attach_client(self._sdk_client_factory())
+        finally:
+            self._retiring_client = None
         self._emit_diagnostic("STALE_SESSION_REPLACED")
 
     def _on_quotes_message(self, client: object, topic: object, quotes: object) -> None:
@@ -423,6 +521,11 @@ class OfficialSdkStreamBackend:
         if self._stop_requested.is_set():
             self._emit_diagnostic("STOPPED_CONNECT_CALLBACK_REJECTED")
             return
+        with self._sdk_loop_lock:
+            failed = self._sdk_loop_error is not None
+        if failed and client is self.client:
+            self._emit_diagnostic("FAILED_LOOP_CONNECT_CALLBACK_REJECTED")
+            return
         if client is not self.client:
             self._emit_diagnostic("STALE_CLIENT_CONNECT_REJECTED")
             return
@@ -443,6 +546,8 @@ class OfficialSdkStreamBackend:
             self._identity_mismatch.set()
             return
         self._connected.set()
+        with self._sdk_loop_lock:
+            self._sdk_startup_phase = "MQTT_CONNECTED"
         performance_diagnostics.record_startup_stage("transport_connected")
         self._emit_diagnostic(
             "MQTT_CONNECTED",
@@ -493,6 +598,7 @@ class OfficialSdkStreamBackend:
         while True:
             if self._stop_requested.is_set():
                 raise StreamShutdownRequested("Stream connection cancelled by operator Stop")
+            self._raise_sdk_loop_failure()
             if self._connected.is_set():
                 return True
             remaining = deadline - monotonic()
@@ -562,6 +668,10 @@ class OfficialSdkStreamBackend:
         if replacing_generation:
             self._replace_client()
         self._has_connected = True
+        with self._sdk_loop_lock:
+            self._sdk_loop_error = None
+            self._sdk_stage_failure = None
+            self._sdk_startup_phase = "SDK_LOOP_STARTING"
         self._connected.clear()
         self._registration_ready.clear()
         self._identity_mismatch.clear()
@@ -882,6 +992,7 @@ class OfficialSdkStreamBackend:
         return self._registration_ready.is_set()
 
     def receive(self) -> object | None:
+        self._raise_sdk_loop_failure()
         while True:
             try:
                 message = self._messages.get(timeout=self._receive_timeout_seconds)
@@ -947,6 +1058,7 @@ class OfficialSdkStreamBackend:
             return message
 
     def receive_nowait(self) -> object | None:
+        self._raise_sdk_loop_failure()
         while True:
             try:
                 message = self._messages.get_nowait()
@@ -1233,7 +1345,9 @@ class WebullWebSocketClient:
             self.health = update_health(self.health, websocket_connected=False, connected=False)
             performance_diagnostics.record_stream_observability(
                 "CONNECT_FAILED", generation=getattr(self.backend,"generation_metrics",{}).get("generation"),
-                **safe_error_identity(exc))
+                **safe_error_identity(exc),
+                failure_stage=getattr(self.backend, "connection_diagnostics", {}).get("phase"),
+                sdk_worker_alive=getattr(self.backend, "connection_diagnostics", {}).get("worker_alive"))
             self.logger.log("stream_connect", "failed", error_type=type(exc).__name__)
             raise NetworkError("Webull stream connection failed", retryable=True) from exc
 
