@@ -75,3 +75,15 @@ def test_warrior_fresh_stream_keeps_provider_times_and_avoids_rest():
     assert quote.last_timestamp==quote.bid_timestamp
     assert source.observer_provenance(quote)=='WEBULL_STREAM'
     assert calls==[]
+
+
+def test_warrior_volume_only_snapshot_cannot_refresh_an_old_trade():
+    from app.strategies.warrior_momentum.paper_stream_quote import WarriorPaperStreamQuoteSource
+    calls=[];source=WarriorPaperStreamQuoteSource(lambda s:calls.append(s) or 'REST',clock=lambda:NOW)
+    source.observe_market_event(events(-30)[0])
+    source.observe_market_event(events()[1])
+    retained=replace(events()[0],payload=TradePayload(D('5'),D('1000'),'snapshot-retained-price'))
+    source.observe_market_event(retained)
+    assert source('ABC')=='REST' and calls==['ABC']
+    source.observe_market_event(events()[0])
+    assert source('ABC').last_timestamp==NOW

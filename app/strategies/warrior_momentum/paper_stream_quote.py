@@ -96,5 +96,16 @@ class WarriorPaperStreamQuoteSource(PaperStreamQuoteSource):
     def __init__(self,rest,*,clock=lambda:datetime.now(UTC)):
         super().__init__(rest,clock=clock,future_tolerance=0)
 
+    def observe_market_event(self,event):
+        # A volume-only snapshot borrows the parser's prior price. Its event
+        # timestamp belongs to that update, not to a newly observed trade.
+        if (isinstance(event,MarketEvent) and event.event_type is MarketEventType.TRADE
+                and isinstance(event.payload,TradePayload)
+                and event.payload.trade_id=='snapshot-retained-price'):
+            with self._lock:
+                self._counts['retained_price_update_ignored']+=1
+            return
+        super().observe_market_event(event)
+
     def _usable_ages(self,book_age,processing_age,last_age):
         return all(0<=age<=2 for age in (book_age,processing_age,last_age))
