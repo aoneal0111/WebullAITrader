@@ -67,6 +67,7 @@ def report(trial):
             warrior_running=readiness.get('warrior_service_running'),scalper_enabled=readiness.get('scalper_enabled'),
             engine_status_updated_at=readiness.get('updated_at'), recording_closed=journal.get('closed'),
             scalper_execution_status=readiness.get('scalper_execution_status'),
+            warrior_execution_status=readiness.get('warrior_execution_status'),
             writer_alive=journal.get('writer_alive'),writer_failed=journal.get('writer_failed'),
             capacity_reached=journal.get('capacity_reached'),evidence_complete=journal.get('evidence_complete'),
             written_records=journal.get('counts',{}).get('written'),

@@ -1,4 +1,6 @@
 """Native desktop callbacks; no model waits or activation configuration."""
+from collections import Counter
+from threading import RLock
 from datetime import datetime
 from decimal import Decimal
 
@@ -27,6 +29,9 @@ class DesktopGrokProducer:
         self.history_source = history_source
         self.warrior_policy_source = None
         self._requests = {}
+        self._status_lock = RLock()
+        self._offer_counts = Counter()
+        self._last_offer = None
         self.control_permission = lambda: True
         review.bind_execution_permission(self._permitted)
 
@@ -38,6 +43,22 @@ class DesktopGrokProducer:
             return False
 
     def _offer(self, signal, shares, risk, at, *, float_provenance=None, symbol_authorization=None):
+        receipt = self._offer_native(signal, shares, risk, at,
+            float_provenance=float_provenance, symbol_authorization=symbol_authorization)
+        with self._status_lock:
+            self._offer_counts[receipt.state + '|' + receipt.reason] += 1
+            self._last_offer = dict(symbol=signal.symbol, at=at.isoformat() if isinstance(at, datetime) else None,
+                state=receipt.state, reason=receipt.reason)
+        return receipt
+
+    def status(self):
+        with self._status_lock:
+            result = dict(offers=dict(self._offer_counts),
+                          last_offer=None if self._last_offer is None else dict(self._last_offer))
+        result['review'] = self.review.status()
+        return result
+
+    def _offer_native(self, signal, shares, risk, at, *, float_provenance=None, symbol_authorization=None):
         if not self._permitted():
             return NativeReviewReceipt("NOT_SENT", "EXECUTION_NOT_PERMITTED")
         identity = lifecycle_identity(signal)
@@ -68,8 +89,13 @@ class DesktopGrokProducer:
                 evidence["history_status"] = "RETAINED_COMPLETED_BARS" if bars else "UNAVAILABLE"
             except Exception:
                 evidence["history_status"] = "UNAVAILABLE"
-        request = self.review.prepare(signal, shares, risk, authorization=authorization,
-            evidence=evidence, float_provenance=float_provenance, symbol_authorization=symbol_authorization)
+        try:
+            request = self.review.prepare(signal, shares, risk, authorization=authorization,
+                evidence=evidence, float_provenance=float_provenance, symbol_authorization=symbol_authorization)
+        except (ValueError, TypeError):
+            # This boundary constructs only; submit has not run. Report a
+            # definite no-order refusal instead of latching ambiguous dispatch.
+            return NativeReviewReceipt("NOT_SENT", "NATIVE_PREPARATION_INVALID")
         if not isinstance(request, NativeReviewRequest):
             return NativeReviewReceipt("NOT_SENT", request.decision.reason.value)
         review_evidence=dict(evidence)

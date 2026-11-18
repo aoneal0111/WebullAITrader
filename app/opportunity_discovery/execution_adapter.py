@@ -115,7 +115,13 @@ class ExecutionCandidate:
             taxonomy_strategy_memberships=self.strategy_memberships,
             taxonomy_opportunity_id=self.opportunity_id,
             taxonomy_opportunity_anchor=self.opportunity_anchor,
-            taxonomy_execution_identity=self.execution_identity,
+            # Discovery hashes deduplicate research opportunities. At this
+            # execution seam, name the owning engine and symbol as required
+            # by native review, admission, GUI attribution and protection.
+            # Existing stored signals/ledger identities are not rewritten.
+            taxonomy_execution_identity=(
+                f"WARRIOR_MOMENTUM_V1|{self.symbol}|TAXONOMY|{self.execution_identity}"
+            ),
             taxonomy_invalidation_reason=self.invalidation_reason,
         )
 

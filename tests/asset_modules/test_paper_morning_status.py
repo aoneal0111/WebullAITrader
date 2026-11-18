@@ -41,3 +41,20 @@ def test_closed_recording_does_not_present_saved_running_state_as_current(tmp_pa
     assert result['engine_status_is_historical']
     assert 'RECORDING_CLOSED' in result['entry_blockers']
     assert not result['orders_enabled_by_this_check']
+
+
+def test_warrior_execution_status_is_reported_without_mutation(tmp_path):
+    from app.equity_overhaul.paper_experiment import create
+    create(tmp_path,profile='GROK_WARRIOR_ACCOUNT_V6',continuous=True)
+    spec=json.loads((tmp_path/'experiment.json').read_text())
+    session=tmp_path/'session';session.mkdir();(session/'journal').mkdir()
+    (tmp_path/'recording-session.json').write_text(json.dumps(dict(session=str(session),trial_id=spec['trial_id'])))
+    (session/'research-manifest.json').write_text(json.dumps(dict(paper_experiment=spec)))
+    status=dict(quote_source={'counts':{'rest_replaced_by_stream':3}},native_review={'review':{'pending':[]}})
+    (session/'engine-readiness.json').write_text(json.dumps(dict(warrior_execution_status=status)))
+    (session/'journal/journal-status.json').write_text(json.dumps(dict(closed=False,writer_alive=True)))
+    before={str(p):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    result=report(tmp_path)
+    assert result['warrior_execution_status']==status
+    assert not result['orders_enabled_by_this_check']
+    assert before=={str(p):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}

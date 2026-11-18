@@ -5397,6 +5397,11 @@ class WarriorForwardCaptureService:
                         reason = PaperEntryAuthorizationReason.AI_REVIEW_PENDING
                     elif isinstance(receipt, NativeReviewReceipt) and receipt.state == "NOT_SENT" and receipt.reason == "BUSY":
                         reason = PaperEntryAuthorizationReason.AI_REVIEW_BUSY
+                    elif isinstance(receipt, NativeReviewReceipt) and receipt.state == "NOT_SENT":
+                        reason = PaperEntryAuthorizationReason.AI_REVIEW_NOT_SENT
+                        performance_diagnostics.record_entry_funnel(signal.symbol,
+                            stage="ENTRY_REVIEW_NOT_SENT", outcome="NOT_SENT",
+                            reason=receipt.reason, timestamp=at, lifecycle_id=identity)
                     elif not isinstance(receipt, NativeReviewReceipt) or receipt.pending:
                         raise ValueError("Unbound review outcome")
                 except Exception:

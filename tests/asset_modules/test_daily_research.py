@@ -249,3 +249,18 @@ def test_full_day_recording_and_expired_protection_startup_preserve_original_lea
         assert manifest['max_seconds']==24*3600
     finally:recording.close()
     assert (root/'experiment.json').read_bytes()==before
+
+
+def test_readiness_projects_warrior_quote_and_native_review_status_without_actions(tmp_path):
+    from types import SimpleNamespace as NS
+    recorder=DailyResearch(config(),root=tmp_path,clock=lambda:NOW)
+    quote_status={'source':'WEBULL_STREAM','counts':{'rest_replaced_by_stream':2}}
+    review_status={'offers':{'NOT_SENT|NATIVE_PREPARATION_INVALID':1},'review':{'pending':[]}}
+    recorder._composition=NS(warrior_forward_sidecar=NS(
+        _execution_quote_source=NS(status=lambda:quote_status),
+        _grok_native_producer=NS(status=lambda:review_status)))
+    try:
+        report=recorder._write_readiness()
+        assert report['warrior_execution_status']==dict(quote_source=quote_status,native_review=review_status)
+        assert report['orders_dispatched']==report['recorder_grok_requests']==0
+    finally:recorder.close()
