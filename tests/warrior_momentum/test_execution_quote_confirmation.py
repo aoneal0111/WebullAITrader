@@ -247,3 +247,42 @@ def test_parser_requires_provider_times_and_bid_ask() -> None:
     assert parse_execution_quote("XYZ", {
         "price": "9.99", "last_trade_time": epoch, "quote_time": epoch,
     }) is None
+
+
+def test_controlled_warrior_refreshes_three_second_observation_before_entry(tmp_path):
+    from app.strategies.warrior_momentum.paper_stream_quote import WarriorPaperStreamQuoteSource
+    calls=[]
+    source=WarriorPaperStreamQuoteSource(lambda s:calls.append(s) or snapshot(),clock=lambda:NOW)
+    candidate,signal=evaluate(tmp_path,source,value=point(evaluation_timestamp=NOW,
+        quote_freshness_seconds=D(3),last_price_freshness_seconds=D(3)))
+    assert calls==['XYZ']
+    assert signal is not None and candidate.status.value=='ENTRY_READY'
+
+
+@pytest.mark.parametrize('field,age,reason',[
+    ('ask_timestamp',3,'QUOTE_REJECTED_ASK_STALE'),
+    ('ask_timestamp',-.01,'QUOTE_REJECTED_ASK_FUTURE'),
+    ('bid_timestamp',-.01,'QUOTE_REJECTED_BID_FUTURE'),
+    ('last_timestamp',3,'QUOTE_REJECTED_LAST_TRADE_STALE'),
+    ('last_timestamp',-.01,'QUOTE_REJECTED_LAST_TRADE_FUTURE'),
+])
+def test_controlled_warrior_rejects_each_bad_component_with_exact_reason(tmp_path,monkeypatch,field,age,reason):
+    from app.strategies.warrior_momentum.paper_stream_quote import WarriorPaperStreamQuoteSource
+    from app.performance_diagnostics import PerformanceDiagnostics
+    import app.strategies.warrior_momentum.forward_runtime as module
+    diagnostics=PerformanceDiagnostics();monkeypatch.setattr(module,'performance_diagnostics',diagnostics)
+    quote=replace(snapshot(),**{field:NOW-timedelta(seconds=age)})
+    source=WarriorPaperStreamQuoteSource(lambda s:quote,clock=lambda:NOW)
+    _,signal=evaluate(tmp_path,source)
+    assert signal is None
+    metrics=diagnostics.entry_conversion_metrics()
+    assert metrics['execution_gate_counters'][reason]==1
+
+
+def test_missing_confirmation_is_counted_instead_of_disappearing(tmp_path,monkeypatch):
+    from app.performance_diagnostics import PerformanceDiagnostics
+    import app.strategies.warrior_momentum.forward_runtime as module
+    diagnostics=PerformanceDiagnostics();monkeypatch.setattr(module,'performance_diagnostics',diagnostics)
+    _,signal=evaluate(tmp_path,lambda s:None)
+    assert signal is None
+    assert diagnostics.entry_conversion_metrics()['execution_gate_counters']['QUOTE_REJECTED_MISSING']==1

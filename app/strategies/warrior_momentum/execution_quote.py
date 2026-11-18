@@ -29,6 +29,31 @@ class ExecutionQuoteSnapshot:
     confirmed_at: datetime | None = None
 
 
+def execution_quote_rejection(snapshot, symbol, at, *, maximum_age):
+    """Validate each price/timestamp without rewriting provider evidence."""
+    if snapshot is None:
+        return 'QUOTE_REJECTED_MISSING'
+    if not isinstance(snapshot,ExecutionQuoteSnapshot):
+        return 'QUOTE_REJECTED_INVALID'
+    if snapshot.symbol != symbol:
+        return 'QUOTE_REJECTED_SYMBOL_MISMATCH'
+    try:
+        prices = (snapshot.last, snapshot.bid, snapshot.ask)
+        if any(not isinstance(p, Decimal) or not p.is_finite() or p<=0 for p in prices) or snapshot.ask<snapshot.bid:
+            return 'QUOTE_REJECTED_INVALID'
+        for name, stamp in (('BID',snapshot.bid_timestamp),('ASK',snapshot.ask_timestamp),('LAST_TRADE',snapshot.last_timestamp)):
+            if not isinstance(stamp,datetime) or stamp.tzinfo is None:
+                return 'QUOTE_REJECTED_INVALID'
+            age = Decimal(str((at-stamp).total_seconds()))
+            if age<0:
+                return 'QUOTE_REJECTED_'+name+'_FUTURE'
+            if age>maximum_age:
+                return 'QUOTE_REJECTED_'+name+'_STALE'
+    except (TypeError,ValueError,ArithmeticError):
+        return 'QUOTE_REJECTED_INVALID'
+    return None
+
+
 class WebullExecutionQuoteSource:
     """One existing Webull REST snapshot call for one actionable symbol."""
 

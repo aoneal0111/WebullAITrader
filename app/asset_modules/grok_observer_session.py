@@ -241,7 +241,10 @@ def _entry_diagnostic_counts():
     snapshot=performance_diagnostics.snapshot()
     counts={k:getattr(snapshot,k) for k in snapshot.__dataclass_fields__
             if k.startswith('quick_scalper_') and not k.endswith('_max') and type(getattr(snapshot,k)) is int}
-    funnel=performance_diagnostics.entry_conversion_metrics().get('funnel_counts',{})
+    conversion=performance_diagnostics.entry_conversion_metrics()
+    gates=conversion.get('execution_gate_counters',{})
+    counts.update({'equity_execution_gate_'+k:v for k,v in gates.items() if type(v) is int})
+    funnel=conversion.get('funnel_counts',{})
     counts.update({'equity_funnel_'+k:v for k,v in funnel.items() if type(v) is int})
     return counts
 

@@ -49,3 +49,29 @@ def test_out_of_order_quote_cannot_replace_fresh_book_and_stream_decision_is_not
     assert s('ABC').bid_timestamp==NOW
     s.record_decision(outcome='ACCEPTED')
     assert not rest.decisions and s.status()['counts']['out_of_order_ignored']==1
+
+
+def test_warrior_does_not_reuse_scalper_timing_or_hide_fresh_rest():
+    from app.strategies.warrior_momentum.paper_stream_quote import WarriorPaperStreamQuoteSource
+    # All these stream inputs satisfy the unchanged native Scalper selector,
+    # but each would fail an existing Warrior validation gate.
+    for book_offset,trade_offset in [(-3,-1),(-1,-30),(.13,-1),(-1,.13)]:
+        calls=[]
+        warrior=WarriorPaperStreamQuoteSource(lambda symbol:calls.append(symbol) or 'FRESH_REST',clock=lambda:NOW)
+        scalper=PaperStreamQuoteSource(lambda symbol:'UNEXPECTED_REST',clock=lambda:NOW)
+        trade=events(trade_offset)[0];book=events(book_offset)[1]
+        for source in (warrior,scalper):
+            source.observe_market_event(trade);source.observe_market_event(book)
+        assert warrior('ABC')=='FRESH_REST' and calls==['ABC']
+        assert scalper('ABC')!='UNEXPECTED_REST'
+
+
+def test_warrior_fresh_stream_keeps_provider_times_and_avoids_rest():
+    from app.strategies.warrior_momentum.paper_stream_quote import WarriorPaperStreamQuoteSource
+    calls=[];source=WarriorPaperStreamQuoteSource(lambda s:calls.append(s),clock=lambda:NOW)
+    for event in events(-1):source.observe_market_event(event)
+    quote=source('ABC')
+    assert quote.bid_timestamp==NOW-timedelta(seconds=1)
+    assert quote.last_timestamp==quote.bid_timestamp
+    assert source.observer_provenance(quote)=='WEBULL_STREAM'
+    assert calls==[]

@@ -25,7 +25,7 @@ from .forward_models import (
     records_with_configuration_fingerprint,
 )
 from .autonomous_paper import lifecycle_identity
-from .execution_quote import ExecutionQuoteSource
+from .execution_quote import ExecutionQuoteSource, execution_quote_rejection
 from .entry_economics import remaining_reward_ok
 from .entry_extension import assess_entry_extension
 from .execution_pursuit import (
@@ -1009,14 +1009,14 @@ class WarriorForwardCaptureService:
             stop=(None if setup is None else setup.stop_price),
             reason=(None if not assessed.reason_codes else assessed.reason_codes[-1].value),
         )
-        market_data_stale = (
-            value.last_price_freshness_seconds is None
-            or value.quote_freshness_seconds is None
-            or value.last_price_freshness_seconds
-            > self.capture_config.quote_stale_after_seconds
-            or value.quote_freshness_seconds
-            > self.capture_config.quote_stale_after_seconds
-        )
+        # In explicit controlled PAPER, reject/refresh with the same quote age
+        # the final Warrior controller uses. Do not send a 2-5s quote to Grok
+        # only to have the final two-second dispatch gate reject it.
+        entry_quote_age_limit = min(self.capture_config.quote_stale_after_seconds,
+            getattr(self._execution_quote_source, 'maximum_entry_age_seconds',
+                    self.capture_config.quote_stale_after_seconds))
+        market_data_stale = any(age is None or not ZERO<=age<=entry_quote_age_limit
+            for age in (value.last_price_freshness_seconds,value.quote_freshness_seconds))
         processing_delayed = (
             (
                 value.processing_age_seconds is not None
@@ -1120,13 +1120,19 @@ class WarriorForwardCaptureService:
                 ).replace(second=0, microsecond=0)
                 provenance_outcome = "EXECUTION_QUOTE_REJECTED"
                 provenance_rejection_reason: str | None = "QUOTE_REJECTED_MISSING"
+                quote_rejection = execution_quote_rejection(refreshed,symbol,evaluated_at,
+                    maximum_age=entry_quote_age_limit)
+                if refreshed is None:
+                    performance_diagnostics.record_entry_funnel(symbol,stage="EXECUTION_QUOTE_REJECTED",
+                        outcome="QUOTE_REJECTED_MISSING",reason="QUOTE_REJECTED_MISSING",timestamp=evaluated_at)
                 if refreshed is not None:
-                    quote_age = Decimal(str((evaluated_at - refreshed.bid_timestamp).total_seconds()))
-                    last_age = Decimal(str((evaluated_at - refreshed.last_timestamp).total_seconds()))
+                    try:
+                        quote_age = Decimal(str((evaluated_at - refreshed.bid_timestamp).total_seconds()))
+                        last_age = Decimal(str((evaluated_at - refreshed.last_timestamp).total_seconds()))
+                    except (TypeError,ValueError,AttributeError):
+                        quote_age = last_age = None
                     if (
-                        refreshed.symbol == symbol
-                        and Decimal("0") <= quote_age <= self.capture_config.quote_stale_after_seconds
-                        and Decimal("0") <= last_age <= self.capture_config.quote_stale_after_seconds
+                        quote_rejection is None
                         # Do not reuse setup geometry if a new minute could
                         # have completed while the bounded request was open.
                         and evaluated_at.replace(second=0, microsecond=0) == technical_minute
@@ -1168,6 +1174,20 @@ class WarriorForwardCaptureService:
                         refreshed_candidate = _bind_decision_generation(
                             refreshed_candidate, refreshed_value,
                         )
+                        # Fresh confirmation must rerun the same library path
+                        # as the first assessment. Native discover alone drops
+                        # taxonomy-only setups and labels the original identity
+                        # obsolete even when the fresh quote leaves it valid.
+                        if (self.config.taxonomy_paper_execution_enabled
+                                and self._taxonomy_execution_bridge is not None
+                                and self.runtime.technical_entry_signal(refreshed_candidate) is None):
+                            try:
+                                refreshed_candidate = self._taxonomy_execution_bridge.select_paper_candidate(
+                                    refreshed_value,refreshed_candidate,entry_quote_age_limit)
+                            except Exception:
+                                performance_diagnostics.record_entry_funnel(symbol,
+                                    stage="TAXONOMY_CANDIDATE",outcome="REJECTED",
+                                    reason="TAXONOMY_CONTEXT_UNAVAILABLE",timestamp=evaluated_at)
                         refreshed_assessed, refreshed_signal = self.runtime.assess_entry(
                             refreshed_candidate
                         )
@@ -1229,20 +1249,7 @@ class WarriorForwardCaptureService:
                         quote_age_value = None if refreshed is None else quote_age
                         last_age_value = None if refreshed is None else last_age
                         quote_minute = None if refreshed is None else evaluated_at.replace(second=0, microsecond=0)
-                        rejection_reason = "QUOTE_REJECTED_MISSING"
-                        if refreshed is not None and refreshed.symbol != symbol:
-                            rejection_reason = "QUOTE_REJECTED_SYMBOL_MISMATCH"
-                        elif refreshed is not None and not (Decimal("0") <= quote_age <= self.capture_config.quote_stale_after_seconds):
-                            rejection_reason = "QUOTE_REJECTED_BID_STALE"
-                        elif refreshed is not None and not (Decimal("0") <= last_age <= self.capture_config.quote_stale_after_seconds):
-                            rejection_reason = "QUOTE_REJECTED_LAST_TRADE_STALE"
-                        elif refreshed is not None and evaluated_at.replace(second=0, microsecond=0) != technical_minute:
-                            rejection_reason = "QUOTE_REJECTED_TECHNICAL_MINUTE"
-                        elif refreshed is not None and (
-                            refreshed.bid is None or refreshed.ask is None
-                            or refreshed.bid <= 0 or refreshed.ask < refreshed.bid
-                        ):
-                            rejection_reason = "QUOTE_REJECTED_INVALID"
+                        rejection_reason = quote_rejection or "QUOTE_REJECTED_TECHNICAL_MINUTE"
                         provenance_rejection_reason = rejection_reason
                         performance_diagnostics.record_entry_funnel(
                             symbol, stage="EXECUTION_QUOTE_REJECTED",

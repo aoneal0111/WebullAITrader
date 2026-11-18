@@ -49,7 +49,8 @@ def test_explicit_paper_warrior_and_controller_share_subscribed_quote_confirmati
         source = sidecar._execution_quote_source
         assert isinstance(source, PaperStreamQuoteSource)
         assert composition.paper_controller_service.quote_source is source
-        assert composition.paper_controller_service.scalper_quote_source is source
+        assert composition.paper_controller_service.scalper_quote_source is not source
+        assert source.maximum_entry_age_seconds == D(2)
         # Evidence reaches the source through desktop's actual event observer.
         observer = captured['observer']
         trade = MarketEvent(1, now, 'XYZ', 'webull', MarketEventType.TRADE,

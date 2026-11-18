@@ -411,12 +411,13 @@ def create_desktop_composition(
             raise RuntimeError("Unqualified working BUY cancellation is unconfirmed; desktop startup stopped")
         scalper_execution_quote_source=execution_quote_source
         if equity_experiment is not None and equity_experiment.spec.get('scalper_clock_policy'):
-            from app.strategies.warrior_momentum.paper_stream_quote import PaperStreamQuoteSource
+            from app.strategies.warrior_momentum.paper_stream_quote import PaperStreamQuoteSource, WarriorPaperStreamQuoteSource
             scalper_execution_quote_source=PaperStreamQuoteSource(execution_quote_source,clock=paper_clock or utc_now)
-            warrior_execution_quote_source = scalper_execution_quote_source
+            warrior_execution_quote_source = WarriorPaperStreamQuoteSource(execution_quote_source,clock=paper_clock or utc_now)
             original_market_observer=market_event_observer
             def observe_paper_market(event):
                 scalper_execution_quote_source.observe_market_event(event)
+                warrior_execution_quote_source.observe_market_event(event)
                 return original_market_observer(event)
             market_event_observer=observe_paper_market
         if operational_configuration.paper_controller_enabled:

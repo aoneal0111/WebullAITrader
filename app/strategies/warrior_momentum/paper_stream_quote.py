@@ -52,8 +52,7 @@ class PaperStreamQuoteSource:
                 age=(now-book.timestamp).total_seconds();processing=(now-received).total_seconds()
                 last_age=(now-trade.timestamp).total_seconds()
                 if (all(v.is_finite() and v>0 for v in (p.bid,p.ask,trade.payload.price))
-                        and p.bid<=p.ask and -self.future_tolerance<=age<=5
-                        and 0<=processing<=5 and last_age>=-self.future_tolerance):
+                        and p.bid<=p.ask and self._usable_ages(age,processing,last_age)):
                     chosen=ExecutionQuoteSnapshot(symbol,trade.payload.price,p.bid,p.ask,
                         trade.timestamp,book.timestamp,book.timestamp,now)
             self._counts['stream_used' if chosen is not None else 'rest_requested']+=1
@@ -62,6 +61,12 @@ class PaperStreamQuoteSource:
         result=chosen if chosen is not None else self.rest(symbol)
         self._evidence.set((result,self._selection.get()))
         return result
+
+    def _usable_ages(self,book_age,processing_age,last_age):
+        # Preserve the native Scalper's existing five-second book policy and
+        # permission to use an older last trade. Warrior has its own view below.
+        return (-self.future_tolerance<=book_age<=5
+                and 0<=processing_age<=5 and last_age>=-self.future_tolerance)
 
     def observer_provenance(self,quote):
         evidence=self._evidence.get()
@@ -78,3 +83,18 @@ class PaperStreamQuoteSource:
 
     def status(self):
         with self._lock:return dict(source=self._last_source,counts=dict(self._counts))
+
+
+class WarriorPaperStreamQuoteSource(PaperStreamQuoteSource):
+    """Select against Warrior's existing final two-second, zero-future gate.
+
+    A stream snapshot that would fail Warrior must not hide a fresh REST
+    snapshot. Scalper keeps its independent selector and original timing policy.
+    """
+    maximum_entry_age_seconds = Decimal('2')
+
+    def __init__(self,rest,*,clock=lambda:datetime.now(UTC)):
+        super().__init__(rest,clock=clock,future_tolerance=0)
+
+    def _usable_ages(self,book_age,processing_age,last_age):
+        return all(0<=age<=2 for age in (book_age,processing_age,last_age))

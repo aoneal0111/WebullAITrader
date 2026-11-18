@@ -117,3 +117,54 @@ def test_every_family_passes_source_bound_permission_with_original_name(tmp_path
     assert not exp.claim_order(request)
     request=placement(exp,'tampered');request.order.metadata['strategy_code_fingerprint']='e'*64
     assert not exp.claim_order(request)
+
+
+@pytest.mark.parametrize('quote_valid,review_required',[(True,False),(True,True),(False,False)])
+def test_taxonomy_only_setup_survives_fresh_quote_reassessment(tmp_path,monkeypatch,quote_valid,review_required):
+    from datetime import timedelta
+    from app.strategies.warrior_momentum.execution_quote import ExecutionQuoteSnapshot
+    from app.strategies.warrior_momentum.paper_stream_quote import WarriorPaperStreamQuoteSource
+    from app.performance_diagnostics import PerformanceDiagnostics
+    import app.strategies.warrior_momentum.forward_runtime as runtime_module
+    diagnostics=PerformanceDiagnostics()
+    monkeypatch.setattr(runtime_module,'performance_diagnostics',diagnostics)
+    value=point(evaluation_timestamp=T0+timedelta(minutes=20),
+        quote_freshness_seconds=D(3),last_price_freshness_seconds=D(3))
+    at=value.evaluation_timestamp
+    quote=ExecutionQuoteSnapshot('XYZ',D('10.20') if quote_valid else D('8'),
+        D('10.18') if quote_valid else D('7.99'),D('10.22') if quote_valid else D('8.01'),at,at,at,at)
+    calls=[]
+    source=WarriorPaperStreamQuoteSource(lambda symbol:calls.append(symbol) or quote,clock=lambda:at)
+    store=ForwardCaptureStore(tmp_path/'capture.sqlite3');writer=ForwardCaptureWriter(store,flush_interval_seconds=.01)
+    service=WarriorForwardCaptureService(store,writer,
+        config=replace(WarriorMomentumConfig(),taxonomy_paper_execution_enabled=True),
+        taxonomy_execution_bridge=TaxonomyPaperExecutionBridge(),execution_quote_source=source)
+    offered=[]
+    if review_required:
+        from app.asset_modules.grok_native_review import NativeReviewReceipt
+        def reviewer(signal,*args,**kwargs):
+            offered.append(signal)
+            return NativeReviewReceipt('PENDING_REVIEW','QUEUED',('synthetic-review',))
+        service._paper_entry_reviewer=reviewer
+    original=service.runtime.discover
+    def no_native(*args,**kwargs):
+        candidate=original(*args,**kwargs)
+        return replace(candidate,setup=replace(candidate.setup,state=SetupState.NOT_FORMED,score=D(10)))
+    monkeypatch.setattr(service.runtime,'discover',no_native)
+    try:
+        candidate,signal=service.observe(value,account=account())
+        assert calls==['XYZ']
+        if not quote_valid:
+            assert signal is None and offered==[]
+            assert diagnostics.entry_conversion_metrics()['execution_gate_counters']['QUOTE_REJECTED_OBSOLETE_GENERATION']==1
+        elif review_required:
+            assert signal is None and len(offered)==1
+            assert offered[0].taxonomy_strategy_id in ACTIVE_STRATEGY_ORDER
+            assert 'synthetic-review' in service._pending_native_reviews
+            assert service.open_paper_symbols==()
+        else:
+            assert signal is not None
+            assert signal.taxonomy_strategy_id in ACTIVE_STRATEGY_ORDER
+            assert candidate.setup.taxonomy_execution_identity==signal.taxonomy_execution_identity
+            assert signal.execution_authorized is False
+    finally:writer.close()

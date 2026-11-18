@@ -330,10 +330,12 @@ def test_entry_counter_export_is_redacted_and_delta_is_reset_aware(monkeypatch):
     diag.increment('quick_scalper_assessments',3)
     diag.increment('quick_scalper_initial_insufficient_edge',2)
     diag.record_entry_funnel('PRIVATE_SYMBOL','EXECUTION_QUOTE_REQUESTED')
+    diag.record_entry_funnel('PRIVATE_SYMBOL','EXECUTION_QUOTE_REJECTED',reason='QUOTE_REJECTED_BID_STALE')
     delta=session._entry_diagnostic_delta(before,session._entry_diagnostic_counts())
     assert delta['counts']['quick_scalper_assessments']==3
     assert delta['counts']['quick_scalper_initial_insufficient_edge']==2
     assert delta['counts']['equity_funnel_EXECUTION_QUOTE_REQUESTED']==1
+    assert delta['counts']['equity_execution_gate_QUOTE_REJECTED_BID_STALE']==1
     assert 'PRIVATE_SYMBOL' not in str(delta)
     assert not session._entry_diagnostic_delta({'x':2},{'x':1})['counts']
     assert session._entry_diagnostic_delta({'x':2},{'x':1})['counter_reset_observed']
