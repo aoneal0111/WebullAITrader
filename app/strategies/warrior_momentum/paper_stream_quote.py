@@ -44,7 +44,21 @@ class PaperStreamQuoteSource:
             while len(self._symbols)>512:self._symbols.popitem(last=False)
 
     def __call__(self,symbol):
-        symbol=symbol.strip().upper();now=self.clock();chosen=None
+        symbol=symbol.strip().upper()
+        chosen=self._stream_quote(symbol,self.clock())
+        with self._lock:
+            self._counts['stream_used' if chosen is not None else 'rest_requested']+=1
+            self._last_source='WEBULL_STREAM' if chosen is not None else 'WEBULL_REST'
+        self._selection.set('WEBULL_STREAM' if chosen is not None else 'WEBULL_REST')
+        result=chosen if chosen is not None else self._after_rest(symbol,self.rest(symbol))
+        self._evidence.set((result,self._selection.get()))
+        return result
+
+    def _after_rest(self,symbol,result):
+        return result
+
+    def _stream_quote(self,symbol,now):
+        chosen=None
         with self._lock:
             state=self._symbols.get(symbol,{})
             if 'book' in state and 'trade' in state:
@@ -55,12 +69,7 @@ class PaperStreamQuoteSource:
                         and p.bid<=p.ask and self._usable_ages(age,processing,last_age)):
                     chosen=ExecutionQuoteSnapshot(symbol,trade.payload.price,p.bid,p.ask,
                         trade.timestamp,book.timestamp,book.timestamp,now)
-            self._counts['stream_used' if chosen is not None else 'rest_requested']+=1
-            self._last_source='WEBULL_STREAM' if chosen is not None else 'WEBULL_REST'
-        self._selection.set('WEBULL_STREAM' if chosen is not None else 'WEBULL_REST')
-        result=chosen if chosen is not None else self.rest(symbol)
-        self._evidence.set((result,self._selection.get()))
-        return result
+        return chosen
 
     def _usable_ages(self,book_age,processing_age,last_age):
         # Preserve the native Scalper's existing five-second book policy and
@@ -106,6 +115,19 @@ class WarriorPaperStreamQuoteSource(PaperStreamQuoteSource):
                 self._counts['retained_price_update_ignored']+=1
             return
         super().observe_market_event(event)
+
+    def _after_rest(self,symbol,result):
+        # Subscribed events continue arriving while REST is in flight. Recheck
+        # one complete stream snapshot against the same Warrior policy; never
+        # combine REST and stream fields or issue another provider request.
+        chosen=self._stream_quote(symbol,self.clock())
+        if chosen is None:return result
+        with self._lock:
+            self._counts['stream_used']+=1
+            self._counts['rest_replaced_by_stream']+=1
+            self._last_source='WEBULL_STREAM'
+        self._selection.set('WEBULL_STREAM')
+        return chosen
 
     def _usable_ages(self,book_age,processing_age,last_age):
         return all(0<=age<=2 for age in (book_age,processing_age,last_age))

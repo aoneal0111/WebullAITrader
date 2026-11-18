@@ -87,3 +87,80 @@ def test_warrior_volume_only_snapshot_cannot_refresh_an_old_trade():
     assert source('ABC')=='REST' and calls==['ABC']
     source.observe_market_event(events()[0])
     assert source('ABC').last_timestamp==NOW
+
+
+def test_warrior_rechecks_complete_stream_after_rest_without_second_request():
+    from app.strategies.warrior_momentum.paper_stream_quote import WarriorPaperStreamQuoteSource
+    from app.strategies.warrior_momentum.execution_quote import ExecutionQuoteSnapshot
+    class Rest:
+        def __init__(self):self.calls=[];self.decisions=[]
+        def __call__(self,symbol):
+            self.calls.append(symbol)
+            for event in events(-1):source.observe_market_event(event)
+            return ExecutionQuoteSnapshot(symbol,D('4'),D('3.99'),D('4.01'),
+                NOW-timedelta(seconds=30),NOW-timedelta(seconds=30),NOW-timedelta(seconds=30),NOW)
+        def record_decision(self,**values):self.decisions.append(values)
+    rest=Rest();source=WarriorPaperStreamQuoteSource(rest,clock=lambda:NOW)
+    quote=source(' abc ')
+    assert quote.last==D('5') and quote.bid==D('4.99')
+    assert quote.last_timestamp==quote.bid_timestamp==NOW-timedelta(seconds=1)
+    assert quote.confirmed_at==NOW
+    assert rest.calls==['ABC']
+    assert source.observer_provenance(quote)=='WEBULL_STREAM'
+    source.record_decision(outcome='ACCEPTED')
+    assert rest.decisions==[]
+    assert source.status()['counts']==dict(rest_requested=1,stream_used=1,rest_replaced_by_stream=1)
+
+
+def test_warrior_post_rest_recheck_never_mixes_or_refreshes_invalid_components():
+    from app.strategies.warrior_momentum.paper_stream_quote import WarriorPaperStreamQuoteSource
+    for mode in ('book_only','trade_only','stale_book','stale_trade','future','untrusted','retained_price','delayed_book'):
+        calls=[];decisions=[];fallback=object()
+        def rest(symbol):
+            calls.append(symbol)
+            trade,book=events(-1)
+            if mode=='stale_book':book=events(-3)[1]
+            if mode=='stale_trade':trade=events(-3)[0]
+            if mode=='future':trade,book=events(.001)
+            if mode=='untrusted':trade,book=events(-1,'other')
+            if mode=='retained_price':trade=replace(trade,payload=TradePayload(D('5'),D('1000'),'snapshot-retained-price'))
+            if mode=='delayed_book':book=replace(book,received_timestamp=NOW-timedelta(seconds=3))
+            if mode!='book_only':source.observe_market_event(trade)
+            if mode!='trade_only':source.observe_market_event(book)
+            return fallback
+        rest.record_decision=lambda **values:decisions.append(values)
+        source=WarriorPaperStreamQuoteSource(rest,clock=lambda:NOW)
+        assert source('ABC') is fallback,mode
+        assert calls==['ABC']
+        assert source.observer_provenance(fallback) is None
+        source.record_decision(outcome='REJECTED')
+        assert decisions==[dict(outcome='REJECTED')]
+        assert source.status()['counts'].get('rest_replaced_by_stream',0)==0
+
+
+def test_scalper_retains_pre_rest_selection_when_stream_arrives_during_request():
+    fallback=object();calls=[]
+    def rest(symbol):
+        calls.append(symbol)
+        for event in events():source.observe_market_event(event)
+        return fallback
+    source=PaperStreamQuoteSource(rest,clock=lambda:NOW)
+    assert source('ABC') is fallback and calls==['ABC']
+    assert source.status()['counts']==dict(rest_requested=1)
+
+
+def test_warrior_post_rest_recheck_uses_return_time_and_preserves_rest_errors():
+    import pytest
+    from app.strategies.warrior_momentum.paper_stream_quote import WarriorPaperStreamQuoteSource
+    now=[NOW];fallback=object()
+    def rest(symbol):
+        for event in events():source.observe_market_event(event)
+        now[0]=NOW+timedelta(seconds=3)
+        return fallback
+    source=WarriorPaperStreamQuoteSource(rest,clock=lambda:now[0])
+    assert source('ABC') is fallback
+    def failing_rest(symbol):
+        for event in events():source.observe_market_event(event)
+        raise RuntimeError('REST_FAILURE')
+    source=WarriorPaperStreamQuoteSource(failing_rest,clock=lambda:NOW)
+    with pytest.raises(RuntimeError,match='REST_FAILURE'):source('ABC')
