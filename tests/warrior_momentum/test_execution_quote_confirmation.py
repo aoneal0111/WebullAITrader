@@ -452,7 +452,7 @@ def test_working_paper_buy_reprice_uses_same_exhaustion_gate(tmp_path):
             "price_at_first_observation": D("9"),
         }
         service._paper["XYZ"] = SimpleNamespace(
-            remaining=10, initial_quantity=10,
+            remaining=10, initial_quantity=10, signal=signal,
         )
         gate_calls = []
         original_gate = service._initial_breakout_exhausted
