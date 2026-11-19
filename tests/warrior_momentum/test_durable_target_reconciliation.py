@@ -735,3 +735,26 @@ def test_without_atomic_amender_quantity_repair_does_not_cancel_stop(tmp_path):
     finally:
         writer.close()
         composition.close()
+
+
+def test_recovery_without_atomic_amender_does_not_cancel_mismatched_stop(tmp_path):
+    """Recovery may report incomplete, but must not open a cancel-first gap."""
+    composition, bridge, _submitter, writer, _service, position = _harness(tmp_path)
+    try:
+        original = next(order for order in _active_sells(composition)
+                        if order.request.order_type.value == "STOP")
+        bridge.protection_amender = None
+        canceled = []
+        bridge._cancel_working_order = lambda order: canceled.append(order.order_id) or False
+        position["XRPN"] = D("24")
+        recovered = bridge.reconcile_protection()
+        assert "XRPN" not in recovered
+        assert canceled == []
+        stops = [o for o in _active_sells(composition)
+                 if o.request.order_type.value == "STOP"]
+        assert len(stops) == 1
+        assert stops[0].order_id == original.order_id
+        assert "XRPN" in bridge._management_incomplete
+    finally:
+        writer.close()
+        composition.close()
