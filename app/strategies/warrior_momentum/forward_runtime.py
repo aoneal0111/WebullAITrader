@@ -910,9 +910,21 @@ class WarriorForwardCaptureService:
             self._deliver_completed_bar_deltas(
                 symbol, completed_snapshot, observation.timestamp,
             )
+        # Discovery uses the local observation boundary. A provider clock ahead
+        # of that boundary must not install a future canonical candidate which
+        # would then defeat the out-of-order guard during fresh confirmation.
+        # Keep the source observation and its component timestamps unchanged;
+        # the original times below still require quote confirmation before entry.
+        discovery_observation = observation
+        if (self._execution_quote_source is not None
+                and value.evaluation_timestamp is not None
+                and observation.timestamp > value.evaluation_timestamp):
+            discovery_observation = replace(
+                observation, timestamp=value.evaluation_timestamp,
+            )
         with _service_stage("runtime_discover", symbol=symbol):
             candidate = self.runtime.discover(
-                observation, completed, session=value.session,
+                discovery_observation, completed, session=value.session,
             )
         candidate = _bind_decision_generation(candidate, value)
         if candidate.discovery_qualified:
@@ -1015,7 +1027,15 @@ class WarriorForwardCaptureService:
         entry_quote_age_limit = min(self.capture_config.quote_stale_after_seconds,
             getattr(self._execution_quote_source, 'maximum_entry_age_seconds',
                     self.capture_config.quote_stale_after_seconds))
-        market_data_stale = any(age is None or not ZERO<=age<=entry_quote_age_limit
+        decision_at = value.evaluation_timestamp or observation.timestamp
+        # Some adapter age fields clamp a future provider time to zero. Check
+        # original timestamps too, so a future event requests real confirmation
+        # instead of reaching native review with an impossible signal time.
+        provider_time_ahead = any(stamp is not None and stamp > decision_at
+            for stamp in (observation.timestamp, value.last_price_observed_at,
+                          value.quote_observed_at, observation.last_price_timestamp,
+                          observation.quote_timestamp))
+        market_data_stale = provider_time_ahead or any(age is None or not ZERO<=age<=entry_quote_age_limit
             for age in (value.last_price_freshness_seconds,value.quote_freshness_seconds))
         processing_delayed = (
             (
@@ -1142,9 +1162,14 @@ class WarriorForwardCaptureService:
                         performance_diagnostics.record_entry_funnel(
                             symbol, stage="EXECUTION_QUOTE_ACCEPTED",
                             timestamp=evaluated_at,
+                            source_observation_timestamp=observation.timestamp,
+                            confirmation_observed_at=evaluated_at,
                         )
                         refreshed_observation = replace(
-                            observation, price=refreshed.last,
+                            # This is a new confirmed observation, not the old
+                            # event with new prices. Provider component times
+                            # below stay original and pass the zero-future gate.
+                            observation, timestamp=evaluated_at, price=refreshed.last,
                             bid=refreshed.bid, ask=refreshed.ask,
                             quote_timestamp=refreshed.bid_timestamp,
                             last_price_timestamp=refreshed.last_timestamp,

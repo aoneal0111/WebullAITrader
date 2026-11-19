@@ -128,20 +128,27 @@ def test_review_status_is_passive_and_exposes_expired_authorization(setup):
         producer.request_stop();release.set();finished(review)
 
 
-def test_observation_and_fresh_quote_refresh_reach_real_native_review_and_controller(setup, warrior, monkeypatch):
+@pytest.mark.parametrize('provider_future_ms', [0, 65, 1164])
+@pytest.mark.parametrize('confirmation_future_ms', [None, 0, 65])
+def test_observation_and_fresh_quote_refresh_reach_real_native_review_and_controller(setup, warrior, monkeypatch, provider_future_ms, confirmation_future_ms):
     from app.trade_intelligence.taxonomy_paper_bridge import TaxonomyPaperExecutionBridge
     from app.strategies.warrior_momentum.models import SetupState
     from app.strategies.warrior_momentum.execution_quote import ExecutionQuoteSnapshot
     from app.strategies.warrior_momentum.paper_stream_quote import WarriorPaperStreamQuoteSource
     from tests.warrior_momentum.test_forward_capture import point
+    from datetime import timedelta
     template=point();offset=NOW-template.observation.timestamp
-    observation=replace(template.observation,symbol='SPY',timestamp=NOW,
-                        quote_timestamp=NOW,last_price_timestamp=NOW)
+    provider_at=NOW+timedelta(milliseconds=provider_future_ms)
+    observation=replace(template.observation,symbol='SPY',timestamp=provider_at,
+                        quote_timestamp=provider_at,last_price_timestamp=provider_at)
     value=replace(template,observation=observation,
         bars=tuple(replace(b,symbol='SPY',timestamp=b.timestamp+offset) for b in template.bars),
-        quote_observed_at=NOW,last_price_observed_at=NOW,evaluation_timestamp=NOW,
-        quote_freshness_seconds=D(3),last_price_freshness_seconds=D(3))
-    setup[4][0]=ExecutionQuoteSnapshot('SPY',D('10.02'),D('10.01'),D('10.02'),NOW,NOW,NOW,NOW)
+        quote_observed_at=provider_at,last_price_observed_at=provider_at,evaluation_timestamp=NOW,
+        # The sidecar currently clamps future component ages to zero.
+        quote_freshness_seconds=D(0) if provider_future_ms else D(3),
+        last_price_freshness_seconds=D(0) if provider_future_ms else D(3))
+    confirmed_provider_at=NOW+timedelta(milliseconds=confirmation_future_ms or 0)
+    setup[4][0]=(None if confirmation_future_ms is None else ExecutionQuoteSnapshot('SPY',D('10.02'),D('10.01'),D('10.02'),confirmed_provider_at,confirmed_provider_at,confirmed_provider_at,NOW))
     warrior.config=replace(warrior.config,taxonomy_paper_execution_enabled=True,adaptive_context_enabled=True)
     warrior._taxonomy_execution_bridge=TaxonomyPaperExecutionBridge()
     warrior._execution_quote_source=WarriorPaperStreamQuoteSource(lambda _:setup[4][0],clock=lambda:NOW)
@@ -154,8 +161,16 @@ def test_observation_and_fresh_quote_refresh_reach_real_native_review_and_contro
     warrior._paper_entry_reviewer=producer.warrior_offer
     try:
         _,returned=warrior.observe(value,account=setup[3][0])
-        assert returned is None and len(producer._requests)==1
+        assert returned is None
         assert warrior._execution_quote_source.status()['counts']['rest_requested']==1
+        assert value.observation.timestamp==provider_at  # Original input not retimed.
+        if setup[4][0] is not None:
+            assert setup[4][0].bid_timestamp==confirmed_provider_at
+        if confirmation_future_ms is None or confirmation_future_ms:
+            assert not producer._requests and not setup[0].order_book.history()
+            return  # A still-future confirmation cannot reach Grok or orders.
+        assert len(producer._requests)==1, producer.status()
+        assert next(iter(producer._requests.values())).entry.signal.timestamp==NOW
         prepared_economics=[(r.entry.prepared.placement.order.limit_price,r.entry.signal.stop_price) for r in producer._requests.values()]
         finished(review);producer.drain(warrior,None,at=NOW)
         buys=[o for o in setup[0].order_book.history() if o.request.side.value=='BUY']
