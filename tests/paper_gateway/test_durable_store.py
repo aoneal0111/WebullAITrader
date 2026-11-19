@@ -982,7 +982,17 @@ def test_atomic_target_and_existing_stop_durable_restart_and_partial_target_fill
         assert target.remaining_quantity == Decimal("50")
         assert stop.request.metadata["correlated_target_order_id"] == target.order_id
 
-        second.gateway.process_market_event(quote(2, "10.50", "10.51"))
+        second.gateway.process_market_event(MarketEvent(
+            2, session_timestamp(2), "PMI", "test",
+            MarketEventType.QUOTE,
+            QuotePayload(Decimal("10.50"), Decimal("10.51"),
+                         Decimal("20"), Decimal("20")),
+        ))
+        stop = second.order_book.get(original_stop.order_id)
+        target = second.order_book.get(placed.broker_order_id)
+        assert target.remaining_quantity == Decimal("30")
+        assert stop.remaining_quantity == Decimal("80")
+        second.gateway.process_market_event(quote(3, "10.50", "10.51"))
         stop = second.order_book.get(original_stop.order_id)
         assert stop.remaining_quantity == Decimal("50")
     finally:
