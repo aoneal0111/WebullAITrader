@@ -440,6 +440,13 @@ def bind(sidecar,bridge,service,experiment,ownership,configuration,*,clock):
     if (configuration.environment.value!='PAPER' or configuration.live_trading_enabled
             or not configuration.paper_controller_enabled or configuration.grok_paper_entries_enabled):
         raise ValueError('DEDICATED_WARRIOR_CONTROL_FLAGS_REQUIRED')
+    # STOP_GROK is a startup mode selection, not merely a provider-call pause.
+    # Do not bind the native entry reviewer when Grok is disabled: otherwise
+    # Warrior final-gate entries are refused despite a valid native setup.
+    # Switching an already running operation requires a normal stop/restart
+    # so pending Grok decisions and acknowledgements can be reconciled first.
+    if (experiment.path.parent/'STOP_GROK').exists():
+        return None
     from app.configuration.environment import resolve_runtime_environment
     from .grok_research_transport import compact_transport
     client=configured_client(resolve_runtime_environment(),transport=compact_transport)
