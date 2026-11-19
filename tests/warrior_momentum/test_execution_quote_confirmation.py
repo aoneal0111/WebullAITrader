@@ -376,3 +376,31 @@ def test_initial_breakout_anti_chase_blocks_execution_even_if_trigger_renews(
         assert service._execution_entry_signal(fresh, candidate, signal) is not None
     finally:
         writer.close()
+
+
+@pytest.mark.parametrize("changes,expected_exhausted", [
+    ({}, True),
+    ({"catalyst_confirmed": True}, True),
+    ({"catalyst_confirmed": True, "relative_volume": D("3"),
+      "velocity_1m": D("0.5"), "velocity_5m": D("2"),
+      "acceleration": D("0.2"), "setup_score": D("90")}, False),
+    ({"catalyst_confirmed": True, "relative_volume": D("3"),
+      "velocity_1m": D("-0.1"), "velocity_5m": D("2"),
+      "acceleration": D("0.2"), "setup_score": D("90")}, True),
+    ({"catalyst_confirmed": True, "relative_volume": D("3"),
+      "velocity_1m": D("0.5"), "velocity_5m": D("2"),
+      "acceleration": D("-0.1"), "setup_score": D("90")}, True),
+    ({"catalyst_confirmed": True, "relative_volume": D("1.2"),
+      "velocity_1m": D("0.5"), "velocity_5m": D("2"),
+      "acceleration": D("0.2"), "setup_score": D("90")}, True),
+])
+def test_catalyst_alone_does_not_excuse_chase_but_confirmed_second_leg_can(
+    changes, expected_exhausted,
+):
+    from app.strategies.warrior_momentum.entry_extension import (
+        initial_breakout_move_exhausted,
+    )
+    assert initial_breakout_move_exhausted(
+        executable_ask=D("1.11"), first_observation_price=D("1.01"),
+        setup_type="HIGH_OF_DAY_BREAKOUT", **changes,
+    ) is expected_exhausted
