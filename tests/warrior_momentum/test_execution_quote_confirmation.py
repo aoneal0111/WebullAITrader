@@ -440,7 +440,11 @@ def test_working_paper_buy_reprice_uses_same_exhaustion_gate(tmp_path):
     attempted = []
     service._paper_entry_replacer = lambda **kwargs: attempted.append(kwargs)
     try:
-        value = point(evaluation_timestamp=NOW)
+        value = point(
+            evaluation_timestamp=NOW,
+            processing_age_seconds=D("0.1"),
+            delivery_age_seconds=D("0.1"),
+        )
         candidate = service.runtime.discover(
             value.observation, value.bars, session=value.session,
         )
