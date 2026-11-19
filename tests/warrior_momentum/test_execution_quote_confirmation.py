@@ -318,3 +318,61 @@ def test_fresh_confirmed_quote_clears_old_staleness_before_intelligence(tmp_path
         assert handoff.requests[0].value.last_price_freshness_seconds == D("1")
     finally:
         writer.close()
+
+
+@pytest.mark.parametrize("setup,first,ask,expected", [
+    ("HIGH_OF_DAY_BREAKOUT", "1.01", "1.11", True),
+    ("FLAT_TOP_BREAKOUT", "1.01", "1.11", True),
+    ("MOMENTUM_ACCELERATION", "1.01", "1.11", True),
+    ("HIGH_OF_DAY_BREAKOUT", "1.01", "1.04", False),
+    ("HIGH_OF_DAY_BREAKOUT", "1.01", "1.0403", True),
+    ("HIGH_OF_DAY_BREAKOUT", "1.01", "1.00", False),
+    ("BULL_FLAG", "1.01", "1.11", False),
+    ("HIGH_OF_DAY_BREAKOUT", None, "1.11", False),
+])
+def test_initial_breakout_anti_chase_uses_first_observation_not_moving_trigger(
+    setup, first, ask, expected,
+):
+    from app.strategies.warrior_momentum.entry_extension import (
+        initial_breakout_move_exhausted,
+    )
+    assert initial_breakout_move_exhausted(
+        executable_ask=D(ask),
+        first_observation_price=None if first is None else D(first),
+        setup_type=setup,
+    ) is expected
+
+
+def test_initial_breakout_anti_chase_blocks_execution_even_if_trigger_renews(
+    tmp_path,
+):
+    """A newer rising trigger must not reset a known 10% move from discovery."""
+    store = ForwardCaptureStore(tmp_path / "execution.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(store, writer)
+    try:
+        value = point(evaluation_timestamp=NOW)
+        candidate = service.runtime.discover(
+            value.observation, value.bars, session=value.session,
+        )
+        signal = service.runtime.technical_entry_signal(candidate)
+        assert signal is not None
+        from app.strategies.warrior_momentum.models import SetupType
+        signal = replace(
+            signal,
+            setup_type=SetupType.HIGH_OF_DAY_BREAKOUT,
+            structural_entry_trigger=D("10.00"),
+            entry_trigger=D("10.00"),
+            stop_price=D("9.80"),
+        )
+        fresh = replace(value, observation=replace(
+            value.observation, price=D("10.10"), bid=D("10.09"), ask=D("10.10"),
+        ))
+        service._setup_lifecycles["XYZ"] = {
+            "price_at_first_observation": D("9.00"),
+        }
+        assert service._execution_entry_signal(fresh, candidate, signal) is None
+        service._setup_lifecycles["XYZ"]["price_at_first_observation"] = D("10.00")
+        assert service._execution_entry_signal(fresh, candidate, signal) is not None
+    finally:
+        writer.close()
