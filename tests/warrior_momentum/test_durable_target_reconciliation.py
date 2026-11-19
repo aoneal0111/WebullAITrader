@@ -959,3 +959,28 @@ def test_atomic_durable_failure_keeps_original_stop_and_creates_no_target(tmp_pa
     finally:
         writer.close()
         composition.close()
+
+
+def test_atomic_bridge_preserves_market_profit_harvest_order_type(tmp_path):
+    composition, bridge, _submitter, writer, _service, _position = _harness(tmp_path)
+    bridge.correlated_bracket_stager = (
+        composition.gateway.stage_correlated_target_with_stop
+    )
+    original = next(order for order in _active_sells(composition)
+                    if order.request.order_type.value == "STOP")
+    try:
+        result = bridge.ensure_exit(
+            "XRPN", 5, D("18.50"), "PROFIT_HARVEST_1", LIFECYCLE,
+        )
+        assert result.request_succeeded
+        markets = [order for order in _active_sells(composition)
+                   if order.request.order_type.value == "MARKET"]
+        stops = [order for order in _active_sells(composition)
+                 if order.request.order_type.value == "STOP"]
+        assert len(markets) == len(stops) == 1
+        assert markets[0].remaining_quantity == D("5")
+        assert stops[0].order_id == original.order_id
+        assert stops[0].request.metadata["correlated_target_order_id"] == markets[0].order_id
+    finally:
+        writer.close()
+        composition.close()
