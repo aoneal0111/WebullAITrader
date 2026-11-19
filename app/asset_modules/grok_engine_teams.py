@@ -32,7 +32,10 @@ class TeamBudget:
     def __init__(self, root, *, clock=lambda: datetime.now(UTC)):
         self.root, self.clock = Path(root), clock
         self.path = self.root / 'grok-team-budget.sqlite3'
+        from .grok_cost_policy import load
+        self.cost_policy=load(self.root)
         with self.connect() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS cost_reservations (id TEXT PRIMARY KEY, day TEXT, stage TEXT, micro_usd INTEGER, model TEXT)')
             db.execute('CREATE TABLE IF NOT EXISTS samples (engine TEXT, slot INTEGER, event TEXT, PRIMARY KEY(engine,slot))')
             db.execute('CREATE TABLE IF NOT EXISTS calls '
                 '(id TEXT PRIMARY KEY, engine TEXT, stage TEXT, started TEXT, context TEXT, result TEXT, event_key TEXT UNIQUE)')
@@ -70,7 +73,7 @@ class TeamBudget:
         next_boundary = (self.sample_slot('NEWS_DESK') + 1) * 3600 - 300
         return max(1, min(60, next_boundary - elapsed))
 
-    def reserve(self, engine, stage, context, *, maximum_stage=None):
+    def reserve(self, engine, stage, context, *, maximum_stage=None, cost_estimate=None):
         from app.equity_overhaul.paper_experiment import load
         _,spec=load(self.root / 'experiment.json', clock=self.clock)
         continuous=spec.get('scope')=='NATIVE_PAPER_OPERATION_V1' and engine=='WARRIOR_MOMENTUM_V1' and stage in ('DIRECTOR','NATIVE_REVIEW')
@@ -99,6 +102,9 @@ class TeamBudget:
             event_key = engine + ':' + stage + ':' + str(context['event_id']) if 'event_id' in context else identifier
             if db.execute('SELECT 1 FROM calls WHERE event_key=?', (event_key,)).fetchone():
                 raise GrokUnavailable('DUPLICATE_TEAM_EVENT')
+            if continuous and self.cost_policy is not None:
+                from .grok_cost_policy import reserve
+                reserve(db,self.cost_policy,identifier,stage,cost_estimate,self.clock())
             db.execute('INSERT INTO calls VALUES (?,?,?,?,?,NULL,?)',
                 (identifier, engine, stage, self.clock().isoformat(), raw, event_key))
         return identifier
@@ -110,10 +116,12 @@ class TeamBudget:
     def report(self):
         with self.connect() as db:
             rows = db.execute('SELECT engine,stage,count(*),sum(result IS NULL) FROM calls GROUP BY engine,stage').fetchall()
+            from .grok_cost_policy import report
+            cost=report(db,self.cost_policy,self.clock())
         from app.equity_overhaul.paper_experiment import load
         _,spec=load(self.root/'experiment.json',clock=self.clock,allow_expired=True)
         continuous=spec.get('scope')=='NATIVE_PAPER_OPERATION_V1'
-        return {'reserved_attempts': sum(r[2] for r in rows), 'maximum_attempts': None if continuous else 60, 'maximum_per_team': None if continuous else 20,
+        return {'cost_budget':cost,'reserved_attempts': sum(r[2] for r in rows), 'maximum_attempts': None if continuous else 60, 'maximum_per_team': None if continuous else 20,
             'unfinalized_attempts': sum(r[3] for r in rows),
             'roles': [{'engine': r[0], 'stage': r[1], 'attempts': r[2]} for r in rows]}
 

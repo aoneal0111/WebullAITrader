@@ -11,6 +11,8 @@ def failure_diagnostic(exc):
     if isinstance(exc, URLError):
         return {'failure_category': 'NETWORK_ERROR'}
     if isinstance(exc, GrokUnavailable):
+        if str(exc) in {'GROK_DAILY_COST_BUDGET','GROK_DIRECTOR_COST_BUDGET','GROK_COST_PRICING_UNAVAILABLE','GROK_COST_CONTEXT_BOUND'}:
+            return {'failure_category':'COST_CONTROL','reason_code':str(exc)}
         if exc.failure_category in {'RATE_LIMITED','PAYMENT_REQUIRED'}:
             return {'failure_category':exc.failure_category,'http_status':exc.http_status,'retry_after_seconds':exc.retry_after_seconds}
         return {'failure_category': 'PROVIDER_UNAVAILABLE'}
