@@ -667,8 +667,17 @@ class PaperOrderGateway:
                     raise PaperDurabilityError(
                         "atomic PAPER bracket persistence failed; PAPER is disabled"
                     ) from exc
-            self._order_book.submit(target_order)
-            self._order_book.update(updated_stop)
+            try:
+                self._order_book.submit(target_order)
+                self._order_book.update(updated_stop)
+            except Exception as exc:
+                # An unexpected in-memory mutation failure after durable
+                # commit cannot be safely retried. Disable PAPER until its
+                # authoritative orders have been reloaded and reconciled.
+                self._mark_durability_failed(exc, stop.symbol)
+                raise PaperDurabilityError(
+                    "atomic PAPER bracket adoption failed; PAPER is disabled"
+                ) from exc
             for event in (accepted, working, amended):
                 self._emit_event(event)
             return BrokerOrderAcknowledgement(
