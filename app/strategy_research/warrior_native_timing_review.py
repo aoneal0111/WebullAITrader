@@ -81,6 +81,46 @@ def native_gates(path,start,end):
         identity_scope='Exact symbol/lifecycle and adjacent serialized capture sequence; not runtime PID attestation')
 
 
+
+def paper_entry_gates(path, start, end):
+    """Bounded native/PAPER decisions, irrespective of whether Grok is enabled.
+
+    Treat this as observed gate evidence, not proof of a broker submission.
+    The historic native_gates() report intentionally remains available for
+    previously recorded AI-review timing investigations.
+    """
+    counts = {}
+    rows = []
+    with readonly(path) as db:
+        for raw, count in db.execute(
+            "SELECT json_extract(payload_json,'$.final_reason'), COUNT(*) "
+            "FROM capture_records WHERE record_type='EXECUTION_GATE_DECISION' "
+            "AND timestamp>=? AND timestamp<=? GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 32",
+            (start.isoformat(), end.isoformat()),
+        ):
+            key = str(raw) if raw is not None else 'UNSPECIFIED'
+            counts[key] = count
+        for sequence, symbol, timestamp, raw in db.execute(
+            "SELECT sequence,symbol,timestamp,payload_json FROM capture_records "
+            "WHERE record_type='EXECUTION_GATE_DECISION' AND timestamp>=? AND timestamp<=? "
+            "ORDER BY sequence DESC LIMIT 64",
+            (start.isoformat(), end.isoformat()),
+        ):
+            payload = json.loads(raw)
+            rows.append(dict(
+                sequence=sequence, symbol=symbol, at=timestamp,
+                result=payload.get('result'), reason=payload.get('final_reason'),
+                setup=payload.get('setup'),
+                order_constructed=payload.get('order_constructed'),
+                submission_attempted=payload.get('submission_attempted'),
+                placement_decision=payload.get('placement_decision'),
+                failed_gates=[str(g.get('gate')) for g in payload.get('gates', ())
+                              if isinstance(g, dict) and g.get('passed') is False][:12],
+            ))
+    return dict(reason_counts=counts, recent=rows, limit=64,
+                scope='OBSERVED_CAPTURE_DECISIONS_NOT_BROKER_ORDER_HISTORY')
+
+
 def native_calls(path,start,end):
     result=[]
     with readonly(path) as db:
@@ -112,6 +152,7 @@ def collect(paper,capture,diagnostics,*,now):
         recording_session=str(session),recording_started_at=start.isoformat(),window_end=end.isoformat(),
         capture_path=str(capture),orders=0,provider_requests=0,grok_requests=0,parameters_changed=False)
     for key,reader,path in (('native_gate_evidence',native_gates,capture),
+                           ('paper_entry_gate_evidence',paper_entry_gates,capture),
                            ('native_model_calls',native_calls,paper/'grok-team-budget.sqlite3')):
         try:report[key]=reader(path,start,end)
         except (OSError,ValueError,TypeError,sqlite3.Error) as exc:
