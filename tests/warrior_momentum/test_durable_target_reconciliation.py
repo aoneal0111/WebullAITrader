@@ -758,3 +758,35 @@ def test_recovery_without_atomic_amender_does_not_cancel_mismatched_stop(tmp_pat
     finally:
         writer.close()
         composition.close()
+
+
+def test_failed_target_submission_restores_stop_and_stays_incomplete(tmp_path):
+    """The existing cancel-first bracket path must not claim completion on failure."""
+    composition, bridge, _submitter, writer, _service, position = _harness(tmp_path)
+    original_place = bridge._place_exit
+    roles = []
+
+    def reject_first_target(symbol, qty, price, role, identity, **kwargs):
+        roles.append(role)
+        if role == "FIRST_TARGET":
+            return PaperExitSubmissionDecision(
+                PaperExitSubmissionState.UNAVAILABLE,
+                symbol, identity, role,
+                failure_reason=PaperExitSubmissionFailureReason.GATEWAY_REJECTED,
+            )
+        return original_place(symbol, qty, price, role, identity, **kwargs)
+    bridge._place_exit = reject_first_target
+    try:
+        result = bridge.ensure_exit(
+            "XRPN", 23, D("18.427490"), "FIRST_TARGET", LIFECYCLE,
+        )
+        assert result.failure_reason == PaperExitSubmissionFailureReason.GATEWAY_REJECTED
+        assert roles == ["FIRST_TARGET", "STOP"]
+        stops = [o for o in _active_sells(composition)
+                 if o.request.order_type.value == "STOP"]
+        assert len(stops) == 1
+        assert int(stops[0].remaining_quantity) == 25
+        assert "XRPN" in bridge._management_incomplete
+    finally:
+        writer.close()
+        composition.close()
