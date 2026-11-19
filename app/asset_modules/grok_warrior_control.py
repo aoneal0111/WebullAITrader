@@ -80,7 +80,7 @@ class ControlClient:
             result['usage_scope']=c.usage_identity
             result['usage_cumulative_not_per_request']=c.client.usage()
             if identifier is not None:c.budget.finish(identifier,result)
-            else:c._record('MODEL_REQUEST_NOT_SENT',stage=self.stage,**{k:v for k,v in result.items() if k in {'failure_category','reason_code'}})
+            else:c._record('MODEL_REQUEST_NOT_SENT',stage=self.stage,**{k:v for k,v in result.items() if k in {'failure_category','reason_code','http_status','retry_after_seconds'}})
 
 
 class WarriorControl:
@@ -215,8 +215,11 @@ class WarriorControl:
         with self._lock:events=list(self._events);state=self._status
         budget=self.budget.report()
         remaining={stage:None if self.continuous else max(0,cap-sum(r['attempts'] for r in budget['roles'] if r['engine']==EngineId.WARRIOR.value and r['stage']==stage)) for stage,cap in [('DIRECTOR',8),('NATIVE_REVIEW',12)]}
+        diagnostics=self.client.diagnostics()
+        if diagnostics.get('provider_access',{}).get('state')=='PAYMENT_REQUIRED':
+            state='GROK_PAYMENT_REQUIRED'
         payload=dict(scope='WARRIOR_DUAL_CONTROL_STATUS_V1',updated_at=self.clock().isoformat(),state=state,
-            entry_control_active=self.active(),model_usage=self.client.usage(),client_diagnostics=self.client.diagnostics(),
+            entry_control_active=self.active(),model_usage=self.client.usage(),client_diagnostics=diagnostics,
             warrior_mode='GROK_NATIVE_REVIEW_AND_DIRECTED',scalper_mode='NATIVE',
             position_sizing='NATIVE_ACCOUNT_RISK' if self.account_sizing else 'BOUNDED_TRIAL',
             entry_sessions=sorted(self.entry_sessions),

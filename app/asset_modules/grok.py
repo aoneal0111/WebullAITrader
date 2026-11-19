@@ -3,6 +3,7 @@
 No credentials enter engine messages. No network request occurs at construction.
 """
 import json
+from math import ceil
 import os
 import re
 import ssl
@@ -17,6 +18,7 @@ from app.asset_modules.engine_catalog import EngineId
 
 MASTER = "MASTER"
 LEARNING = "LEARNING"
+PAYMENT_RECHECK_SECONDS = 300
 ROLES = frozenset({engine.value for engine in EngineId} | {MASTER, LEARNING, "NEWS", "SCOUT"})
 REASONING_MODELS = frozenset({'grok-4.5','grok-4.6','grok-4.7'})
 
@@ -25,8 +27,9 @@ class GrokUnavailable(RuntimeError):
     """Safe status without provider error bodies or credentials."""
     def __init__(self,message,*,failure_category=None,http_status=None,retry_after_seconds=None):
         super().__init__(message)
-        self.failure_category=failure_category if failure_category=='RATE_LIMITED' else None
-        self.http_status=http_status if type(http_status) is int and http_status==429 else None
+        allowed_status={'RATE_LIMITED':429,'PAYMENT_REQUIRED':402}
+        self.failure_category=failure_category if failure_category in allowed_status else None
+        self.http_status=http_status if type(http_status) is int and http_status==allowed_status.get(self.failure_category) else None
         self.retry_after_seconds=retry_after_seconds if type(retry_after_seconds) is int and 1<=retry_after_seconds<=3600 else None
 
 
@@ -69,6 +72,9 @@ class GrokClient:
         self._lock, self._slots = Lock(), BoundedSemaphore(2)
         self._next = {}
         self._rate_limit_until=0
+        self._payment_required=False
+        self._payment_retry_at=0
+        self._payment_probe_active=False
         self.maximum_requests = 120
         self.role_cooldown_seconds = 60
         self.requests = 0
@@ -91,9 +97,15 @@ class GrokClient:
                                    "Authorization": "Bearer " + self._key}, method="POST")
         if not self._slots.acquire(blocking=False):
             raise GrokUnavailable("GROK_BUSY")
+        payment_probe=False
         try:
             with self._lock:
                 now = self._clock()
+                if self._payment_required:
+                    if now < self._payment_retry_at or self._payment_probe_active:
+                        raise GrokUnavailable(
+                            "GROK_PAYMENT_REQUIRED_COOLDOWN",failure_category="PAYMENT_REQUIRED",http_status=402,
+                            retry_after_seconds=max(1,ceil(self._payment_retry_at-now)))
                 if now < self._rate_limit_until:
                     raise GrokUnavailable('GROK_RATE_LIMIT_COOLDOWN',failure_category='RATE_LIMITED',http_status=429,
                         retry_after_seconds=max(1,min(3600,int(self._rate_limit_until-now)+1)))
@@ -104,12 +116,15 @@ class GrokClient:
                 # Reserve a durable attempt only after local validation, slot and
                 # cooldown checks. A rejected reservation must never dispatch.
                 if before_transport is not None:before_transport()
+                payment_probe=self._payment_required
+                if payment_probe:self._payment_probe_active=True
                 self._next[role] = now + self.role_cooldown_seconds
                 self.requests += 1  # failed requests count; never retry an order decision
             started = self._latency_clock()
             received = False
             failure = 'TRANSPORT_OTHER'
             retry_delay=None
+            payment_failure=False
             try:
                 raw = self._transport(request)
                 received = True
@@ -142,6 +157,10 @@ class GrokClient:
                     raise ValueError("Exactly one structured answer required")
                 answer = _json(outputs[0])
                 failure = None
+                if payment_probe:
+                    with self._lock:
+                        self._payment_required=False
+                        self._payment_retry_at=0
                 return answer
             except Exception as exc:
                 # Only fixed categories and numeric HTTP statuses leave here.
@@ -150,6 +169,11 @@ class GrokClient:
                     if isinstance(exc, HTTPError):
                         code = exc.code
                         failure = 'HTTP_' + str(code) if type(code) is int and 400 <= code <= 599 else 'HTTP_OTHER'
+                        if code==402:
+                            payment_failure=True
+                            with self._lock:
+                                self._payment_required=True
+                                self._payment_retry_at=max(self._payment_retry_at,self._clock()+PAYMENT_RECHECK_SECONDS)
                         if code==429:
                             retry_delay=60
                             try:
@@ -167,6 +191,9 @@ class GrokClient:
                     elif isinstance(exc, URLError):
                         failure = ('TIMEOUT' if isinstance(exc.reason, TimeoutError) else
                                    'TLS_ERROR' if isinstance(exc.reason, ssl.SSLError) else 'NETWORK_ERROR')
+                if payment_failure:
+                    raise GrokUnavailable('GROK_PAYMENT_REQUIRED',failure_category='PAYMENT_REQUIRED',http_status=402,
+                        retry_after_seconds=PAYMENT_RECHECK_SECONDS) from None
                 if retry_delay is not None:
                     raise GrokUnavailable('GROK_RATE_LIMITED',failure_category='RATE_LIMITED',http_status=429,
                         retry_after_seconds=retry_delay) from None
@@ -182,13 +209,26 @@ class GrokClient:
                     d['latency_ms_max'] = max(d['latency_ms_max'], elapsed)
                     if failure is not None:d['failures'][failure] = d['failures'].get(failure, 0) + 1
         finally:
+            if payment_probe:
+                with self._lock:
+                    self._payment_probe_active=False
+                    # An unsuccessful recovery response must not reopen a
+                    # ten-second retry loop, even if its failure wasn't 402.
+                    if self._payment_required:
+                        self._payment_retry_at=max(self._payment_retry_at,self._clock()+PAYMENT_RECHECK_SECONDS)
             self._slots.release()
 
 
     def diagnostics(self):
         """Redacted client-lifetime counts; no response content or credentials."""
         with self._lock:
-            return {**self._diagnostics, 'failures':dict(self._diagnostics['failures'])}
+            return {**self._diagnostics, 'failures':dict(self._diagnostics['failures']),
+                    'provider_access':dict(
+                        state='PAYMENT_REQUIRED' if self._payment_required else 'NO_PAYMENT_BLOCK_OBSERVED',
+                        http_status=402 if self._payment_required else None,
+                        retry_after_seconds=max(0,ceil(self._payment_retry_at-self._clock())) if self._payment_required else 0,
+                        recovery_probe_in_progress=self._payment_probe_active,
+                        required_action='CHECK_XAI_API_TEAM_BILLING' if self._payment_required else None)}
 
     def usage(self):
         """Provider-reported token totals only; missing usage is not zero cost."""

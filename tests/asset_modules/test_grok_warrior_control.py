@@ -409,3 +409,25 @@ def test_full_day_director_is_paced_across_24_hours_without_increasing_paid_cap(
         control._review_director()
         assert control._last_hour==expected
     assert control.budget.report()['reserved_attempts']<=8
+
+
+def test_payment_failure_has_visible_status_and_no_extra_durable_attempts(control):
+    from urllib.error import HTTPError
+    from app.asset_modules.grok import GrokClient
+    sent=[]
+    def transport(request):
+        sent.append(request)
+        raise HTTPError('https://secret.invalid/',402,'secret',{},None)
+    control.client=GrokClient('fixture-key','grok-test',transport=transport,clock=lambda:100)
+    for stage in ('DIRECTOR','NATIVE_REVIEW'):
+        with pytest.raises(GrokUnavailable):
+            ControlClient(control,stage).request('MASTER','',{'mode':'PAPER','event_id':stage},{})
+    assert len(sent)==1 and control.budget.report()['reserved_attempts']==1
+    assert control.budget.report()['unfinalized_attempts']==0
+    assert control._events[-1]['failure_category']=='PAYMENT_REQUIRED'
+    assert control._events[-1]['http_status']==402
+    control._write_status()
+    report=json.loads((control.root/'warrior-control-status.json').read_text())
+    assert report['state']=='GROK_PAYMENT_REQUIRED'
+    assert report['client_diagnostics']['provider_access']['retry_after_seconds']==300
+    assert 'secret' not in json.dumps(report)
