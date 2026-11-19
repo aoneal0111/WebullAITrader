@@ -2768,13 +2768,20 @@ class AutonomousPaperExecutionBridge:
                     Decimal(replacement_stop_price), average_entry,
                 )
         if not target.protection_active:
-            self._place_exit(
+            # A failed target placement follows cancellation of the original
+            # stop. Restore protection immediately and retain an incomplete
+            # reconciliation state even if the restore succeeds: the intended
+            # target/stop bracket was never installed.
+            self._management_incomplete.add(normalized)
+            restored = self._place_exit(
                 normalized,
                 int(self._management_quantity(normalized, identity)),
                 replacement_stop_price,
                 "STOP",
                 identity,
             )
+            if not restored.protection_active:
+                self._management_incomplete.add(normalized)
             return target
         if reason_key in _IMMEDIATE_EXIT_REASONS:
             return target
