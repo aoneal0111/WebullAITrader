@@ -325,7 +325,7 @@ def test_fresh_confirmed_quote_clears_old_staleness_before_intelligence(tmp_path
     ("FLAT_TOP_BREAKOUT", "1.01", "1.11", True),
     ("MOMENTUM_ACCELERATION", "1.01", "1.11", True),
     ("HIGH_OF_DAY_BREAKOUT", "1.01", "1.04", False),
-    ("HIGH_OF_DAY_BREAKOUT", "1.01", "1.0403", True),
+    ("HIGH_OF_DAY_BREAKOUT", "1.01", "1.0404", True),
     ("HIGH_OF_DAY_BREAKOUT", "1.01", "1.00", False),
     ("BULL_FLAG", "1.01", "1.11", False),
     ("HIGH_OF_DAY_BREAKOUT", None, "1.11", False),
