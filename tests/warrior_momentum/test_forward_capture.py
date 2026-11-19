@@ -930,6 +930,7 @@ def test_authoritative_exit_submission_and_partial_fill_do_not_close(tmp_path: P
     bridge = AutonomousPaperExecutionBridge(
         composition.trading_service, composition.order_command_factory,
         order_book=composition.order_book,
+        protection_amender=composition.gateway.amend_protective_stop,
         position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
     )
     service = WarriorForwardCaptureService(
@@ -1212,6 +1213,7 @@ def test_activation_bar_cannot_retroactively_stop_and_targets_remain_eligible(tm
     bridge = AutonomousPaperExecutionBridge(
         composition.trading_service, composition.order_command_factory,
         order_book=composition.order_book,
+        protection_amender=composition.gateway.amend_protective_stop,
         position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
     )
     service = WarriorForwardCaptureService(
@@ -1297,6 +1299,7 @@ def test_recovered_position_can_heal_protection_then_resume_target_management(
         composition.trading_service,
         composition.order_command_factory,
         order_book=composition.order_book,
+        protection_amender=composition.gateway.amend_protective_stop,
         position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
         management_context_source=lambda symbol: (
             context["identity"] if symbol == "XYZ" else None
@@ -1339,6 +1342,7 @@ def test_recovered_position_can_heal_protection_then_resume_target_management(
             composition.trading_service,
             composition.order_command_factory,
             order_book=composition.order_book,
+            protection_amender=composition.gateway.amend_protective_stop,
             position_quantity_source=lambda symbol: position.get(
                 symbol, Decimal("0"),
             ),
@@ -1422,6 +1426,7 @@ def test_bridge_rebalances_correlated_stop_across_targets_and_runner(tmp_path: P
         composition.trading_service,
         composition.order_command_factory,
         order_book=composition.order_book,
+        protection_amender=composition.gateway.amend_protective_stop,
         position_quantity_source=lambda symbol: position.get(symbol, Decimal("0")),
     )
     service = WarriorForwardCaptureService(
@@ -1876,6 +1881,7 @@ def test_ipdn_rearmed_generation_harvests_executable_profit_and_locks_runner(
         composition.trading_service,
         composition.order_command_factory,
         order_book=composition.order_book,
+        protection_amender=composition.gateway.amend_protective_stop,
         position_quantity_source=lambda symbol: position.get(
             symbol, Decimal("0"),
         ),
