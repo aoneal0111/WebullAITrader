@@ -79,3 +79,38 @@ def assess_entry_extension(
         vwap_extension, move_from(first_observation_price),
         move_from(forming_price), move_from(trigger_price), seconds,
     )
+
+# A new upward technical trigger must not reset the move already observed
+# during an initial breakout. This guard is PAPER-only at its call site.
+INITIAL_BREAKOUT_MAX_MOVE_FROM_FIRST_OBSERVATION_PERCENT = Decimal("3")
+
+
+def initial_breakout_move_exhausted(
+    *,
+    executable_ask: Decimal,
+    first_observation_price: Decimal | None,
+    setup_type: str,
+) -> bool:
+    """Reject late initial breakouts with a known same-session price anchor.
+
+    Unknown/nonpositive anchors are not inferred or fabricated. Their
+    existing structural, freshness, spread, and economic gates still apply.
+    Continuations and fresh structural reclaims use their own setup evidence.
+    """
+    if setup_type not in {
+        "HIGH_OF_DAY_BREAKOUT", "FLAT_TOP_BREAKOUT", "MOMENTUM_ACCELERATION",
+    }:
+        return False
+    if (
+        first_observation_price is None
+        or not first_observation_price.is_finite()
+        or first_observation_price <= ZERO
+        or not executable_ask.is_finite()
+        or executable_ask <= ZERO
+    ):
+        return False
+    return (
+        (executable_ask - first_observation_price)
+        / first_observation_price * HUNDRED
+        > INITIAL_BREAKOUT_MAX_MOVE_FROM_FIRST_OBSERVATION_PERCENT
+    )
