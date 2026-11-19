@@ -581,6 +581,11 @@ class PaperOrderGateway:
                 or target.side.value != "SELL"
                 or target.order_type.value not in {"LIMIT", "MARKET"}
                 or (target.order_type.value == "LIMIT" and target.limit_price is None)
+                or target.time_in_force.value != "GTC"
+                or (
+                    self._durable_store is not None
+                    and target.account_id != self._durable_store.account_id
+                )
                 or target.symbol != stop.symbol
                 or not stop.request.strategy_lifecycle_id
                 or target.strategy_lifecycle_id != stop.request.strategy_lifecycle_id
