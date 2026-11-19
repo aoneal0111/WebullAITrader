@@ -2835,6 +2835,12 @@ class WarriorForwardCaptureService:
             executable_ask=Decimal(ask),
             first_observation_price=lifecycle.get("price_at_first_observation"),
             setup_type=signal.setup_type.value,
+            catalyst_confirmed=signal.catalyst_state.value == "TRUE",
+            relative_volume=candidate.relative_volume,
+            velocity_1m=candidate.price_velocity_percent_1m,
+            velocity_5m=candidate.price_velocity_percent_5m,
+            acceleration=candidate.price_acceleration_percent,
+            setup_score=signal.setup_score,
         ):
             _publish_price_gate(
                 "ENTRY_MOVE_EXHAUSTED", proposed=Decimal(ask),
