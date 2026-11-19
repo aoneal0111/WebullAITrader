@@ -135,6 +135,7 @@ def test_real_paper_bridge_creates_and_resizes_correlated_stop(tmp_path: Path):
         composition.trading_service,
         composition.order_command_factory,
         order_book=composition.order_book,
+        protection_amender=composition.gateway.amend_protective_stop,
         position_quantity_source=lambda symbol: position.get(symbol, D("0")),
     )
     store = ForwardCaptureStore(tmp_path / "bridge-protection.sqlite3")
@@ -189,6 +190,7 @@ def test_partial_fill_protection_survives_parent_entry_expiry_with_stale_context
         composition.trading_service,
         composition.order_command_factory,
         order_book=composition.order_book,
+        protection_amender=composition.gateway.amend_protective_stop,
         position_quantity_source=lambda symbol: position.get(symbol, D("0")),
         management_context_source=lambda _symbol: "previous-lifecycle",
     )
@@ -257,6 +259,7 @@ def test_repeated_protection_reconciliation_preserves_correlated_target_bracket(
         composition.trading_service,
         composition.order_command_factory,
         order_book=composition.order_book,
+        protection_amender=composition.gateway.amend_protective_stop,
         position_quantity_source=lambda symbol: position.get(symbol, D("0")),
         management_context_source=lambda _symbol: lifecycle,
     )
