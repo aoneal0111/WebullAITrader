@@ -694,3 +694,44 @@ def test_full_first_target_completion_advances_to_second_target(tmp_path):
     finally:
         writer.close()
         composition.close()
+
+
+def test_without_atomic_amender_tighter_stop_preserves_existing_protection(tmp_path):
+    composition, bridge, _submitter, writer, _service, _position = _harness(tmp_path)
+    try:
+        original = next(order for order in _active_sells(composition)
+                        if order.request.order_type.value == "STOP")
+        bridge.protection_amender = None
+        canceled = []
+        bridge._cancel_working_order = lambda order: canceled.append(order.order_id) or False
+        decision = bridge.ensure_exit("XRPN", 25, D("16.80"), "STOP", LIFECYCLE)
+        assert decision.failure_reason == PaperExitSubmissionFailureReason.PROTECTION_RECONCILIATION_FAILED
+        assert canceled == []
+        stops = [o for o in _active_sells(composition)
+                 if o.request.order_type.value == "STOP"]
+        assert len(stops) == 1
+        assert stops[0].order_id == original.order_id
+        assert stops[0].request.stop_price == D("16.57")
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_without_atomic_amender_quantity_repair_does_not_cancel_stop(tmp_path):
+    composition, bridge, _submitter, writer, _service, position = _harness(tmp_path)
+    try:
+        original = next(order for order in _active_sells(composition)
+                        if order.request.order_type.value == "STOP")
+        bridge.protection_amender = None
+        canceled = []
+        bridge._cancel_working_order = lambda order: canceled.append(order.order_id) or False
+        position["XRPN"] = D("24")
+        assert bridge._reconcile_protective_quantity("XRPN", LIFECYCLE) is False
+        assert canceled == []
+        stops = [o for o in _active_sells(composition)
+                 if o.request.order_type.value == "STOP"]
+        assert len(stops) == 1
+        assert stops[0].order_id == original.order_id
+    finally:
+        writer.close()
+        composition.close()
