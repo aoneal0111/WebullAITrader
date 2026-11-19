@@ -749,13 +749,18 @@ def test_recovery_without_atomic_amender_does_not_cancel_mismatched_stop(tmp_pat
     try:
         original = next(order for order in _active_sells(composition)
                         if order.request.order_type.value == "STOP")
+        # Change the durable STOP quantity, not merely an external projected
+        # position source: recovery derives authoritative inventory from
+        # filled order history and would otherwise see no mismatch.
+        assert composition.gateway.amend_protective_stop(
+            original.order_id, 24, original.request.stop_price,
+        )
         bridge.protection_amender = None
         canceled = []
         monkeypatch.setattr(
             AutonomousPaperExecutionBridge, "_cancel_working_order",
             lambda self, order: canceled.append(order.order_id) or False,
         )
-        position["XRPN"] = D("24")
         recovered = bridge.reconcile_protection()
         assert "XRPN" not in recovered
         assert canceled == []
@@ -946,6 +951,8 @@ def test_atomic_durable_failure_keeps_original_stop_and_creates_no_target(tmp_pa
             ),
         )
         class FailedDurability:
+            account_id = composition.account_id
+
             def persist_batch(self, *args, **kwargs):
                 raise OSError("synthetic write failure")
 
