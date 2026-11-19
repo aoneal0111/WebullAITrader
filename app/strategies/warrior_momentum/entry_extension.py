@@ -90,12 +90,19 @@ def initial_breakout_move_exhausted(
     executable_ask: Decimal,
     first_observation_price: Decimal | None,
     setup_type: str,
+    catalyst_confirmed: bool = False,
+    relative_volume: Decimal | None = None,
+    velocity_1m: Decimal | None = None,
+    velocity_5m: Decimal | None = None,
+    acceleration: Decimal | None = None,
+    setup_score: Decimal | None = None,
 ) -> bool:
-    """Reject late initial breakouts with a known same-session price anchor.
+    """Identify exhausted initial breakouts, not strong catalyst-driven legs.
 
-    Unknown/nonpositive anchors are not inferred or fabricated. Their
-    existing structural, freshness, spread, and economic gates still apply.
-    Continuations and fresh structural reclaims use their own setup evidence.
+    An extended initial breakout can continue only when independent current
+    momentum measurements are favorable. A catalyst flag alone (possibly
+    hours old) cannot excuse a late entry. The existing quote, structural,
+    reward/risk, and account gates remain mandatory after this check.
     """
     if setup_type not in {
         "HIGH_OF_DAY_BREAKOUT", "FLAT_TOP_BREAKOUT", "MOMENTUM_ACCELERATION",
@@ -109,8 +116,20 @@ def initial_breakout_move_exhausted(
         or executable_ask <= ZERO
     ):
         return False
-    return (
+    move = (
         (executable_ask - first_observation_price)
         / first_observation_price * HUNDRED
-        > INITIAL_BREAKOUT_MAX_MOVE_FROM_FIRST_OBSERVATION_PERCENT
     )
+    if move <= INITIAL_BREAKOUT_MAX_MOVE_FROM_FIRST_OBSERVATION_PERCENT:
+        return False
+    # Explicit current momentum confluence supports a genuine second leg.
+    # Never equate a catalyst by itself with fresh price/volume confirmation.
+    confirmed_continuation = (
+        catalyst_confirmed
+        and relative_volume is not None and relative_volume >= Decimal("2")
+        and velocity_1m is not None and velocity_1m > ZERO
+        and velocity_5m is not None and velocity_5m > ZERO
+        and acceleration is not None and acceleration > ZERO
+        and setup_score is not None and setup_score >= Decimal("75")
+    )
+    return not confirmed_continuation
