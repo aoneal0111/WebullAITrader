@@ -2758,7 +2758,14 @@ class AutonomousPaperExecutionBridge:
             target_request = self.order_command_factory.create_placement_request(
                 OrderEntryCommand(
                     symbol=normalized, side="SELL", quantity=Decimal(quantity),
-                    order_type="LIMIT", limit_price=Decimal(price),
+                    order_type=(
+                        "MARKET" if reason_key in _MARKET_EXIT_REASONS
+                        else "LIMIT"
+                    ),
+                    limit_price=(
+                        None if reason_key in _MARKET_EXIT_REASONS
+                        else Decimal(price)
+                    ),
                     stop_price=None, time_in_force="GTC",
                     strategy_lifecycle_id=identity,
                     metadata={
