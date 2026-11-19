@@ -22,7 +22,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Fetch failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Revision outside reviewed branch.' }
 & git -C $Repo merge-base --is-ancestor HEAD $Revision
 if ($LASTEXITCODE -ne 0) { throw 'Repository requires integration. Nothing reset.' }
-$Root = Join-Path $env:LOCALAPPDATA ('AtlasResearch\warrior-confirmation-clock-repair-' + [guid]::NewGuid().ToString('N'))
+# Nested recording fixtures include their own session and private-capture paths.
+# Keep this root short for Windows hosts without long-path support.
+$Root = Join-Path $env:LOCALAPPDATA ('AtlasChecks\wc-' + [guid]::NewGuid().ToString('N').Substring(0,12))
 $null = New-Item -ItemType Directory -Path $Root
 $Source = Join-Path $Root 'review-source'
 & git -C $Repo worktree add --detach $Source $Revision

@@ -35,3 +35,12 @@ published revision. It checks a detached checkout offline before a backup and
 fast-forward update. It retains the persistent operating spec and ledgers and
 does not launch Atlas or restart crypto. A fresh workstation recording is
 required to verify external entry flow after installation.
+
+## Windows installer check paths
+
+The installer uses a short, unique `LOCALAPPDATA/AtlasChecks/wc-<id>`
+checkout and test root. Nested recording fixtures under the former verbose
+repair directory exceeded legacy Windows path limits, causing missing context
+files and recording initialization failures before installation. The short root
+keeps those fixtures below the limit without changing machine-wide settings,
+skipping tests, or altering recording paths used by the actual Atlas operation.
