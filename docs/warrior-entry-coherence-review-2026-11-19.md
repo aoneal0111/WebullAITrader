@@ -126,3 +126,43 @@ transaction or equivalent verified state machine, not a speculative
 cancel-and-submit retry. Do not approve production installation on these
 changes alone. Check paused PAPER runtime's existing protective orders and
 run controlled deterministic failure-injection and replay tests first.
+
+
+## Required gateway atomic target/STOP transaction — design contract
+
+Source inspection on November 19 confirms that the gateway currently
+provides `amend_protective_stop(order_id, remaining, price, correlated_target_order_id)`
+under its mutation lock, but this operation only amends an **existing**
+STOP and validates an **existing** target. It does not create a target and
+link it to the STOP in one atomic durable state transition.
+
+The present bridge method
+`_place_target_with_correlated_protection` cancels the standalone STOP
+first, then submits a target, then submits a new correlated STOP.
+An additional characterization regression records that **zero working
+STOP orders exist at the instant target placement begins**. A successful
+final bracket does not erase that intermediate protection gap.
+
+The correct follow-up is a gateway-level, PAPER-only
+`stage_correlated_target_with_existing_stop` transaction, not a
+blind bridge-level reordering:
+- Take gateway's exclusive order/matching mutation lock; verify position,
+  account/lifecycle ownership, authoritative quantity, stop identity/price,
+  target quantity and duplicate target state.
+- Construct a target reservation and a STOP correlated to that target
+  as one validated state change. Journal all affected durable order
+  transitions together before publishing any event.
+- If validation or durability fails, leave the previously working STOP
+  unchanged. Never claim success on partial persistence, and never
+  convert into an uncovered position.
+- On success, retain STOP trigger authority for the full remaining
+  position, ensure the target reservation does not double-reserve shares,
+  and use the existing trigger-side OCO and target-fill reconciliation.
+- Exercise immediate downside quote, concurrent fill, partial target fill,
+  restart with WAL replay, persistence failure and duplicate recovery
+  deterministically before enabling the new operation.
+
+Until this transaction exists and is verified, do not assert
+zero-gap target protection, and do not install these changes based solely
+on passing unit tests. Existing PAPER protection checks and orders remain
+authoritative; no LIVE support is authorized.
