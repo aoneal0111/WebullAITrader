@@ -163,16 +163,20 @@ def test_real_paper_bridge_creates_and_resizes_correlated_stop(tmp_path: Path):
         ]
         assert len(stops) == 1 and stops[0].quantity == D("40")
 
+        # A projection saying 575 shares without any additional durable
+        # BUY fills is not authority to enlarge a protective SELL. The PAPER
+        # gateway must retain the proven 40-share STOP and refuse the
+        # unverified change instead of risking a naked short.
         position["XYZ"] = D("575")
-        assert service.reconcile_authoritative_protection("XYZ", NOW) is True
+        assert service.reconcile_authoritative_protection("XYZ", NOW) is False
         stops = [
             order for order in composition.order_book.open_orders_for_symbol("XYZ")
             if order.request.side.value == "SELL"
             and order.request.order_type.value == "STOP"
         ]
-        assert len(stops) == 1 and stops[0].quantity == D("575")
+        assert len(stops) == 1 and stops[0].quantity == D("40")
         assert all(
-            order.quantity <= position["XYZ"]
+            order.quantity <= D("40")
             for order in composition.order_book.open_orders_for_symbol("XYZ")
             if order.request.side.value == "SELL"
         )
