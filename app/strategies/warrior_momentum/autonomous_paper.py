@@ -321,6 +321,7 @@ class AutonomousPaperExecutionBridge:
     position_quantity_source: Callable[[str], Decimal] | None = None
     management_context_source: Callable[[str], str | None] | None = None
     protection_amender: Callable[..., bool] | None = None
+    correlated_bracket_stager: Callable[[str, OrderPlacementRequest, Decimal], object] | None = None
     strategy_provenance_source: Callable[[object], dict] | None = None
     # Desktop always injects release qualification. Standalone mechanical
     # bridges retain their existing dependency-injected test/research contract.
@@ -2742,6 +2743,92 @@ class AutonomousPaperExecutionBridge:
                 order_id=protective_order.order_id,
                 activation_timestamp=protective_order.created_at,
             )
+        if self.correlated_bracket_stager is not None:
+            # The desktop PAPER gateway owns one durable mutation that stages
+            # the target and upgrades this existing STOP. No cancel-first gap.
+            replacement_stop_price = Decimal(protective_order.request.stop_price)
+            if reason_key == "FIRST_TARGET" and promote_stop:
+                _filled, _consumed, average_entry = self._lifecycle_fill_state(
+                    identity, replacement_stop_price,
+                )
+                if average_entry is not None:
+                    replacement_stop_price = max(
+                        replacement_stop_price, average_entry,
+                    )
+            target_request = self.order_command_factory.create_placement_request(
+                OrderEntryCommand(
+                    symbol=normalized, side="SELL", quantity=Decimal(quantity),
+                    order_type="LIMIT", limit_price=Decimal(price),
+                    stop_price=None, time_in_force="GTC",
+                    strategy_lifecycle_id=identity,
+                    metadata={
+                        **self._lifecycle_strategy_metadata(identity),
+                        "source": "autonomous-paper",
+                        "reason": reason_key,
+                        "lifecycle_id": identity,
+                        "strategy_owner": self._durable_strategy_owner(identity),
+                    },
+                ),
+            )
+            try:
+                accepted = self.correlated_bracket_stager(
+                    protective_order.order_id,
+                    target_request,
+                    replacement_stop_price,
+                )
+            except Exception:
+                self._management_incomplete.add(normalized)
+                return self._exit_failure(
+                    state=PaperExitSubmissionState.UNAVAILABLE,
+                    symbol=normalized, lifecycle_id=identity, role=reason_key,
+                    failure_reason=PaperExitSubmissionFailureReason.CORRELATED_PROTECTION_FAILED,
+                    order_id=protective_order.order_id,
+                )
+            if not getattr(accepted, "accepted", False):
+                self._management_incomplete.add(normalized)
+                return self._exit_failure(
+                    state=PaperExitSubmissionState.UNAVAILABLE,
+                    symbol=normalized, lifecycle_id=identity, role=reason_key,
+                    failure_reason=PaperExitSubmissionFailureReason.CORRELATED_PROTECTION_FAILED,
+                    order_id=protective_order.order_id,
+                )
+            target_id = getattr(accepted, "broker_order_id", None)
+            try:
+                target_order = self.order_book.get(target_id)
+                still_protected = self.order_book.get(protective_order.order_id)
+                verified = (
+                    not target_order.is_terminal
+                    and not still_protected.is_terminal
+                    and still_protected.request.metadata.get("reservation_mode")
+                    == "CONTINGENT_OCO"
+                    and still_protected.request.metadata.get(
+                        "correlated_target_order_id"
+                    ) == target_id
+                    and int(still_protected.remaining_quantity)
+                    == int(self._management_quantity(normalized, identity))
+                )
+            except Exception:
+                verified = False
+                target_order = None
+            if not verified:
+                self._management_incomplete.add(normalized)
+                return self._exit_failure(
+                    state=PaperExitSubmissionState.UNAVAILABLE,
+                    symbol=normalized, lifecycle_id=identity, role=reason_key,
+                    failure_reason=PaperExitSubmissionFailureReason.CORRELATED_PROTECTION_FAILED,
+                    order_id=target_id,
+                )
+            self._remember(self._exit_keys, (identity, reason_key))
+            self._exit_orders[(identity, reason_key)] = target_id
+            self._management_incomplete.discard(normalized)
+            return PaperExitSubmissionDecision(
+                PaperExitSubmissionState.SUBMITTED,
+                normalized, identity, reason_key,
+                target_id, target_order.created_at,
+            )
+        # Legacy standalone research bridges without a gateway atomic port
+        # retain their previous behavior. The desktop explicitly injects
+        # the atomic port and never enters this cancel-first fallback.
         if not self._cancel_working_order(protective_order):
             return self._exit_failure(
                 state=PaperExitSubmissionState.WORKING,
