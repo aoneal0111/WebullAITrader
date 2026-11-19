@@ -538,6 +538,143 @@ class PaperOrderGateway:
             },
         )
 
+    def stage_correlated_target_with_stop(
+        self,
+        stop_order_id: str,
+        target_request: OrderPlacementRequest,
+        stop_price: Decimal,
+    ) -> BrokerOrderAcknowledgement:
+        """Atomically stage a PAPER target and upgrade its existing STOP.
+
+        This transaction is intentionally not a generic placement API. Both
+        order states and their events are committed together before any
+        in-memory order mutation or externally visible event. A rejected
+        validation leaves the existing STOP unchanged.
+        """
+        if not isinstance(target_request, OrderPlacementRequest):
+            raise TypeError("target_request must be OrderPlacementRequest")
+        target = target_request.order
+
+        def refuse(reason: str) -> BrokerOrderAcknowledgement:
+            return BrokerOrderAcknowledgement(
+                client_order_id=target.client_order_id,
+                broker_order_id="",
+                accepted=False,
+                status=NormalizedOrderStatus.REJECTED,
+                message=reason,
+                metadata={"source": "paper_order_gateway"},
+            )
+
+        with self._mutation():
+            self._require_durability()
+            try:
+                stop = self._order_book.get(stop_order_id)
+            except OrderNotFoundError:
+                return refuse("working protective STOP not found")
+            if (
+                stop.is_terminal
+                or stop.side is not PaperOrderSide.SELL
+                or stop.request.order_type is not PaperOrderType.STOP
+                or stop.request.stop_price is None
+                or stop.request.metadata.get("stop_triggered") is True
+                or stop.request.metadata.get("reservation_mode") == "CONTINGENT_OCO"
+                or target.side.value != "SELL"
+                or target.order_type.value != "LIMIT"
+                or target.limit_price is None
+                or target.symbol != stop.symbol
+                or not stop.request.strategy_lifecycle_id
+                or target.strategy_lifecycle_id != stop.request.strategy_lifecycle_id
+                or target.quantity <= 0
+                or target.quantity >= stop.remaining_quantity
+                or not stop_price.is_finite()
+                or stop_price < stop.request.stop_price
+                or stop.remaining_quantity != self._long_position_quantity(stop.symbol)
+                or self._order_book.contains(target.client_order_id)
+            ):
+                return refuse("correlated target/STOP prerequisites not met")
+            open_sells = tuple(
+                order for order in self._order_book.open_orders_for_symbol(stop.symbol)
+                if order.side is PaperOrderSide.SELL
+                and order.request.strategy_lifecycle_id == stop.request.strategy_lifecycle_id
+            )
+            if len(open_sells) != 1 or open_sells[0].order_id != stop.order_id:
+                return refuse("another exit order already owns this lifecycle")
+            if any(
+                order.request.client_order_id == target.client_order_id
+                for order in self._order_book.history()
+            ):
+                return refuse("duplicate target client order ID")
+
+            now = self._now()
+            target_order = accept_order(create_order(
+                PaperOrderRequest(
+                    symbol=target.symbol,
+                    asset_class=AssetClass.STOCK,
+                    side=PaperOrderSide.SELL,
+                    order_type=PaperOrderType.LIMIT,
+                    quantity=target.quantity,
+                    time_in_force=PaperTimeInForce(target.time_in_force.value),
+                    limit_price=target.limit_price,
+                    stop_price=None,
+                    client_order_id=target.client_order_id,
+                    strategy_lifecycle_id=target.strategy_lifecycle_id,
+                    structural_stop_price=_structural_stop_from_placement(target),
+                    execution_reason=_execution_reason_from_placement(target),
+                    metadata=dict(target.metadata),
+                ),
+                clock=lambda: now,
+            ), at=now)
+            if self._order_book.contains(target_order.order_id):
+                return refuse("duplicate target order ID")
+            updated_stop = replace(
+                stop, updated_at=max(now, stop.updated_at),
+                request=replace(
+                    stop.request,
+                    stop_price=Decimal(stop_price),
+                    metadata={
+                        **stop.request.metadata,
+                        "reservation_mode": "CONTINGENT_OCO",
+                        "correlated_target_order_id": target_order.order_id,
+                    },
+                ),
+            )
+            accepted = self._order_event(
+                target_order, event_type="ORDER_ACCEPTED",
+                message="Atomic PAPER correlated target accepted.",
+            )
+            working = self._order_event(
+                target_order, event_type="ORDER_WORKING",
+                message="Atomic PAPER correlated target is working.",
+                status="WORKING",
+            )
+            amended = self._order_event(
+                updated_stop, event_type="ORDER_UPDATED",
+                message="Existing STOP atomically correlated to PAPER target.",
+            )
+            if self._durable_store is not None:
+                try:
+                    self._durable_store.persist_batch(
+                        (accepted, working, amended),
+                        orders=(target_order, updated_stop),
+                    )
+                except Exception as exc:
+                    self._mark_durability_failed(exc, stop.symbol)
+                    raise PaperDurabilityError(
+                        "atomic PAPER bracket persistence failed; PAPER is disabled"
+                    ) from exc
+            self._order_book.submit(target_order)
+            self._order_book.update(updated_stop)
+            for event in (accepted, working, amended):
+                self._emit_event(event)
+            return BrokerOrderAcknowledgement(
+                client_order_id=target.client_order_id,
+                broker_order_id=target_order.order_id,
+                accepted=True,
+                status=NormalizedOrderStatus.SUBMITTED,
+                message="atomic PAPER target and existing STOP committed",
+                metadata={"source": "paper_order_gateway"},
+            )
+
     def amend_protective_stop(
         self, order_id: str, remaining: int, price: Decimal,
         correlated_target_order_id: str | None = None,
