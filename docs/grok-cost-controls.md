@@ -62,3 +62,29 @@ existing cost policy preserves a backup. The operating spec, wallets, ledgers,
 API credentials and model choice are retained. No trading process is launched.
 Restart is required to load policy changes; deleting the optional policy file
 would remove these controls on the next start. The policy is not tamper protection.
+
+## Selecting native-only versus Grok-assisted startup
+
+This is a stopped-only PAPER startup switch, not a hot swap of in-flight entry
+reviews. After a normal Atlas shutdown, run
+`tools/Set-Atlas-GrokMode.ps1 -Mode OFF -PaperDirectory <existing-paper-directory>`
+to create the existing `STOP_GROK` marker. The dedicated Grok Warrior bind
+function detects that marker **before** constructing the Grok client or binding
+its entry reviewer. On the next startup, Warrior uses the existing native
+entry submitter, and the native scalper remains independent of Grok. No xAI
+calls should be made by this dedicated controller in OFF mode. Other separately
+configured Grok observers should be stopped and independently disabled as needed.
+
+With Atlas stopped, use `-Mode ON` to remove the marker. The next startup
+installs the Grok Warrior review path again if provider configuration is valid.
+The command does not start Atlas, modify order ledgers, cancel protective
+orders, change strategy policy, bypass risk checks or change LIVE settings.
+Do not remove the marker while Atlas is running: a mid-session change can
+leave a previously bound Grok reviewer in place until restart. Pending or
+uncertain acknowledgements must be reconciled through normal shutdown and
+restart. Switching OFF does not automatically fall back to native execution
+for an already running Grok reviewer.
+
+This is the first safe operating-mode boundary. An interactive desktop GUI
+control must be built separately after a reliable shutdown/reconciliation and
+status model exists. Do not label this initial implementation a live toggle.
