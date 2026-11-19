@@ -579,8 +579,8 @@ class PaperOrderGateway:
                 or stop.request.metadata.get("stop_triggered") is True
                 or stop.request.metadata.get("reservation_mode") == "CONTINGENT_OCO"
                 or target.side.value != "SELL"
-                or target.order_type.value != "LIMIT"
-                or target.limit_price is None
+                or target.order_type.value not in {"LIMIT", "MARKET"}
+                or (target.order_type.value == "LIMIT" and target.limit_price is None)
                 or target.symbol != stop.symbol
                 or not stop.request.strategy_lifecycle_id
                 or target.strategy_lifecycle_id != stop.request.strategy_lifecycle_id
@@ -611,7 +611,7 @@ class PaperOrderGateway:
                     symbol=target.symbol,
                     asset_class=AssetClass.STOCK,
                     side=PaperOrderSide.SELL,
-                    order_type=PaperOrderType.LIMIT,
+                    order_type=PaperOrderType(target.order_type.value),
                     quantity=target.quantity,
                     time_in_force=PaperTimeInForce(target.time_in_force.value),
                     limit_price=target.limit_price,
