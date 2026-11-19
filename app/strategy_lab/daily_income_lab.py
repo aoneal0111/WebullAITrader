@@ -12,7 +12,16 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from numba import njit
+try:
+    from numba import njit
+except ModuleNotFoundError:
+    # This is an offline research accelerator, never an order path.
+    # Keep the reference Python implementation importable on machines
+    # without optional JIT support. Large searches run slower.
+    def njit(*args, **kwargs):
+        def decorate(fn):
+            return fn
+        return decorate
 from app.strategy_lab.broad_strategy_lab import indicators
 
 FAMILIES = {
