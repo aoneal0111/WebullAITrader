@@ -2291,24 +2291,17 @@ class AutonomousPaperExecutionBridge:
                                 order_id=correlated_stop.order_id,
                                 activation_timestamp=correlated_stop.created_at,
                             )
-                        if not self._cancel_working_order(correlated_stop):
-                            self._management_incomplete.add(normalized)
-                            return self._exit_failure(
-                                state=PaperExitSubmissionState.UNAVAILABLE,
-                                symbol=normalized, lifecycle_id=identity,
-                                role=reason_key,
-                                failure_reason=PaperExitSubmissionFailureReason.CANCELLATION_FAILED,
-                                order_id=correlated_stop.order_id,
-                            )
-                        self._exit_orders.pop((identity, "STOP"), None)
-                        self._exit_keys.pop((identity, "STOP"), None)
-                        self._reconcile_terminal_exits()
-                        return self._place_exit(
-                            normalized, authoritative_quantity, price, "STOP",
-                            identity, contingent_target_order_id=(
-                                next((order.order_id for order in correlated_sells
-                                      if order.request.order_type is not OrderType.STOP), None)
-                            ),
+                        # No atomic amendment port: preserve the working
+                        # correlated stop and target instead of canceling
+                        # protection before an unconfirmed replacement.
+                        self._management_incomplete.add(normalized)
+                        return self._exit_failure(
+                            state=PaperExitSubmissionState.WORKING,
+                            symbol=normalized, lifecycle_id=identity,
+                            role=reason_key,
+                            failure_reason=PaperExitSubmissionFailureReason.PROTECTION_RECONCILIATION_FAILED,
+                            order_id=correlated_stop.order_id,
+                            activation_timestamp=correlated_stop.created_at,
                         )
                     if (
                         target_reservation
@@ -2479,18 +2472,17 @@ class AutonomousPaperExecutionBridge:
                                 order_id=working_sell.order_id,
                                 activation_timestamp=working_sell.created_at,
                             )
-                        if not self._cancel_working_order(working_sell):
-                            self._management_incomplete.add(normalized)
-                            return self._exit_failure(
-                                state=PaperExitSubmissionState.UNAVAILABLE,
-                                symbol=normalized, lifecycle_id=identity,
-                                role=reason_key,
-                                failure_reason=PaperExitSubmissionFailureReason.CANCELLATION_FAILED,
-                                order_id=working_sell.order_id,
-                            )
-                        self._reconcile_terminal_exits()
-                        return self._place_exit(
-                            normalized, quantity, price, reason_key, identity,
+                        # A tighter stop is optional until it can be amended
+                        # atomically. Do not cancel a working protective stop
+                        # to attempt a new submission that may fail.
+                        self._management_incomplete.add(normalized)
+                        return self._exit_failure(
+                            state=PaperExitSubmissionState.WORKING,
+                            symbol=normalized, lifecycle_id=identity,
+                            role=reason_key,
+                            failure_reason=PaperExitSubmissionFailureReason.PROTECTION_RECONCILIATION_FAILED,
+                            order_id=working_sell.order_id,
+                            activation_timestamp=working_sell.created_at,
                         )
                     if protective:
                         self._management_incomplete.discard(normalized)
@@ -2915,18 +2907,18 @@ class AutonomousPaperExecutionBridge:
             # when that capability is unavailable.
             self._management_incomplete.add(normalized)
             return False
+        if desired > 0:
+            # Without an atomic quantity amendment, retain the old stop
+            # and report unresolved coverage. Cancel-first replacement can
+            # produce a gap after a rejected new STOP.
+            self._management_incomplete.add(normalized)
+            return False
         if not self._cancel_working_order(stop):
             self._management_incomplete.add(normalized)
             return False
         self._exit_orders.pop((identity, "STOP"), None)
         self._exit_keys.pop((identity, "STOP"), None)
         self._reconcile_terminal_exits()
-        if desired:
-            replacement = self._place_exit(
-                normalized, desired, stop.request.stop_price,
-                "STOP", identity,
-            )
-            return replacement.protection_active
         return True
 
     def _reconcile_terminal_exits(self) -> None:
