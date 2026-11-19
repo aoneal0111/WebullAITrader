@@ -821,3 +821,70 @@ def test_target_transition_currently_has_unprotected_cancel_first_window(tmp_pat
     finally:
         writer.close()
         composition.close()
+
+
+def test_atomic_gateway_bracket_preserves_same_stop_identity_and_inventory(tmp_path):
+    from app.services.order_command_factory import OrderEntryCommand
+    composition, bridge, _submitter, writer, _service, _position = _harness(tmp_path)
+    try:
+        prior_stop = next(
+            o for o in _active_sells(composition)
+            if o.request.order_type.value == "STOP"
+        )
+        request = bridge.order_command_factory.create_placement_request(
+            OrderEntryCommand(
+                symbol="XRPN", side="SELL", quantity=D("23"),
+                order_type="LIMIT", limit_price=D("18.427490"),
+                stop_price=None, time_in_force="GTC",
+                strategy_lifecycle_id=LIFECYCLE,
+                metadata={"reason": "FIRST_TARGET"},
+            ),
+        )
+        ack = composition.gateway.stage_correlated_target_with_stop(
+            prior_stop.order_id, request, prior_stop.request.stop_price,
+        )
+        assert ack.accepted
+        active = _active_sells(composition)
+        stops = [o for o in active if o.request.order_type.value == "STOP"]
+        targets = [o for o in active if o.request.order_type.value == "LIMIT"]
+        assert len(stops) == len(targets) == 1
+        assert stops[0].order_id == prior_stop.order_id
+        assert stops[0].remaining_quantity == D("25")
+        assert stops[0].request.metadata["reservation_mode"] == "CONTINGENT_OCO"
+        assert stops[0].request.metadata["correlated_target_order_id"] == targets[0].order_id
+        assert targets[0].order_id == ack.broker_order_id
+        assert int(targets[0].remaining_quantity) == 23
+        second = composition.gateway.stage_correlated_target_with_stop(
+            prior_stop.order_id, request, prior_stop.request.stop_price,
+        )
+        assert not second.accepted
+        assert len(_active_sells(composition)) == 2
+    finally:
+        writer.close()
+        composition.close()
+
+
+def test_atomic_gateway_bracket_rejected_target_keeps_stop_unchanged(tmp_path):
+    from app.services.order_command_factory import OrderEntryCommand
+    composition, bridge, _submitter, writer, _service, _position = _harness(tmp_path)
+    try:
+        prior_stop = next(
+            o for o in _active_sells(composition)
+            if o.request.order_type.value == "STOP"
+        )
+        request = bridge.order_command_factory.create_placement_request(
+            OrderEntryCommand(
+                symbol="XRPN", side="SELL", quantity=D("25"),
+                order_type="LIMIT", limit_price=D("18.427490"),
+                stop_price=None, time_in_force="GTC",
+                strategy_lifecycle_id=LIFECYCLE,
+            ),
+        )
+        ack = composition.gateway.stage_correlated_target_with_stop(
+            prior_stop.order_id, request, prior_stop.request.stop_price,
+        )
+        assert not ack.accepted
+        assert _active_sells(composition) == (prior_stop,)
+    finally:
+        writer.close()
+        composition.close()
