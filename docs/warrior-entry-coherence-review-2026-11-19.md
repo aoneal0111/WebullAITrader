@@ -166,3 +166,36 @@ Until this transaction exists and is verified, do not assert
 zero-gap target protection, and do not install these changes based solely
 on passing unit tests. Existing PAPER protection checks and orders remain
 authoritative; no LIVE support is authorized.
+
+
+## Atomic PAPER bracket implementation — research branch only
+
+The gateway now exposes `stage_correlated_target_with_stop`. Under the
+existing gateway mutation lock it validates the working protective STOP,
+same-symbol/same-lifecycle target, filled inventory, order quantity,
+duplicate client IDs, and the absence of conflicting sibling SELL orders.
+It builds a target (LIMIT or the existing immediate MARKET role) and
+upgrades the **same STOP identity** to contingent OCO. The durable store's
+existing multi-order `persist_batch(events, orders=(target, updated_stop))`
+persists both orders and their three events in **one SQLite transaction**.
+Only after successful persistence does the gateway mutate the in-memory
+order book or emit events. If durability fails, the gateway becomes
+fail-closed and the old in-memory STOP is preserved.
+
+The desktop PAPER composition injects this gateway operation into Warrior's
+`AutonomousPaperExecutionBridge`. In that path, staging a new target no
+longer cancels an existing STOP. The legacy standalone bridge fallback
+remains for isolated research harnesses that do not inject the new port;
+those callers are not evidence of uninterrupted protection.
+
+Added tests cover direct atomic staging, stable stop identity, rejected
+quantity, duplicate target, desktop-equivalent bridge injection, synthetic
+durable-write failure, restart with both orders restored, and a target fill
+reducing the correlated STOP. CI's focused step now includes the durable
+target and gateway suite before the unrelated full test collection.
+
+This is a proposed PAPER-only repair, not an installed or validated
+real-broker OCO feature. Do not represent the local matching guarantee
+as protection that survives shutdown or loss of market data. Verify
+multi-process durabilities, partial and simultaneous matching, full
+recovery, and effective Windows configuration before promotion.
