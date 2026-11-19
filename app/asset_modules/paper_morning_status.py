@@ -78,6 +78,16 @@ def report(trial):
         result['engine_status_is_historical']=bool(journal.get('closed'))
         if journal.get('closed'):result['entry_blockers'].append('RECORDING_CLOSED')
         result['scalper_bridge_rejections']=readiness.get('scalper_execution_status',{}).get('bridge_rejections',{})
+    # Current startup mode is determined by the stopped-only STOP_GROK marker,
+    # not the historical recording manifest or a persisted controller report.
+    # Do not rewrite the manifest: it is forensic provenance of the operation.
+    if spec.get('scope') == 'NATIVE_PAPER_OPERATION_V1':
+        grok_off = (trial/'STOP_GROK').is_file()
+        result['grok_startup_disabled'] = grok_off
+        result['configured_warrior_mode'] = 'NATIVE_ONLY' if grok_off else result.get('warrior_control', 'NATIVE')
+        result['grok_controller_status_historical'] = grok_off
+        result['mode_verification'] = ('STARTUP_MARKER_ONLY; confirm runtime binding separately'
+                                       if grok_off else 'CONFIGURED; confirm runtime binding separately')
     control=read(trial/'warrior-control-status.json')
     if control:result['warrior_control_status']=control
     db_path = trial / 'grok-team-budget.sqlite3'
