@@ -286,3 +286,35 @@ def test_missing_confirmation_is_counted_instead_of_disappearing(tmp_path,monkey
     _,signal=evaluate(tmp_path,lambda s:None)
     assert signal is None
     assert diagnostics.entry_conversion_metrics()['execution_gate_counters']['QUOTE_REJECTED_MISSING']==1
+
+
+def test_fresh_confirmed_quote_clears_old_staleness_before_intelligence(tmp_path):
+    """A valid current confirmation cannot stay stale in the downstream handoff."""
+    store = ForwardCaptureStore(tmp_path / "execution.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(
+        store, writer, execution_quote_source=lambda _symbol: snapshot(),
+    )
+    class CaptureHandoff:
+        def __init__(self):
+            self.requests = []
+        def lookup(self, _symbol):
+            return None
+        def submit(self, _symbol, _identity, request):
+            self.requests.append(request)
+    handoff = CaptureHandoff()
+    service._intelligence_handoff = handoff
+    try:
+        candidate, signal = service.observe(
+            point(evaluation_timestamp=NOW,
+                  quote_freshness_seconds=D("30"),
+                  last_price_freshness_seconds=D("30")),
+            account=account(),
+        )
+        assert candidate.status.value == "ENTRY_READY"
+        assert signal is not None
+        assert len(handoff.requests) == 1
+        assert handoff.requests[0].stale is False
+        assert handoff.requests[0].value.last_price_freshness_seconds == D("1")
+    finally:
+        writer.close()
