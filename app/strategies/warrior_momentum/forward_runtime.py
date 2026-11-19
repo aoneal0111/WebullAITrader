@@ -1262,6 +1262,16 @@ class WarriorForwardCaptureService:
                             )
                         else:
                             technical_signal = refreshed_technical
+                            # A complete provider-timestamp-validated quote is
+                            # now the canonical current observation. Do not
+                            # carry the earlier stale-source label into the
+                            # downstream treatment and entry-intelligence
+                            # decision: that would misclassify a successfully
+                            # refreshed native entry as stale. The existing
+                            # quote, generation, execution, and risk checks
+                            # above remain mandatory.
+                            market_data_stale = False
+                            processing_delayed = False
                         if refreshed_signal is not None:
                             if self._account_refresh_source is not None:
                                 account = self._account_refresh_source()
