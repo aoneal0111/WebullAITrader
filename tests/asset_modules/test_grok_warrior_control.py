@@ -431,3 +431,15 @@ def test_payment_failure_has_visible_status_and_no_extra_durable_attempts(contro
     assert report['state']=='GROK_PAYMENT_REQUIRED'
     assert report['client_diagnostics']['provider_access']['retry_after_seconds']==300
     assert 'secret' not in json.dumps(report)
+
+
+def test_stop_grok_selects_native_entry_binding_before_model_configuration(control, setup, tmp_path):
+    """Startup OFF mode must not bind a reviewer or require paid API access."""
+    from app.asset_modules.grok_warrior_control import bind
+    sidecar = NS(bind_grok_native_producer_factory=Mock())
+    config = NS(environment=NS(value='PAPER'), live_trading_enabled=False,
+                paper_controller_enabled=True, grok_paper_entries_enabled=False)
+    control.root.joinpath('STOP_GROK').touch()
+    assert bind(sidecar, setup[1], setup[2], control.experiment,
+                control.ownership, config, clock=lambda: NOW) is None
+    sidecar.bind_grok_native_producer_factory.assert_not_called()
