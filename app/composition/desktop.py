@@ -384,6 +384,7 @@ def create_desktop_composition(
             order_book=paper_trading_commands.order_book,
             durable_store=paper_trading_commands.durable_store,
             protection_amender=paper_trading_commands.gateway.amend_protective_stop,
+            correlated_bracket_stager=paper_trading_commands.gateway.stage_correlated_target_with_stop,
             position_quantity_source=trading_state_sources.position_quantity,
             management_context_source=warrior_management_context_source,
             entry_qualification=lambda signal: equity_qualification.permits(
