@@ -2714,6 +2714,29 @@ class WarriorForwardCaptureService:
         except Exception:
             return False
 
+    def _initial_breakout_exhausted(
+        self,
+        value: PointInTimeObservation,
+        candidate: MomentumCandidate,
+        signal: MomentumEntrySignal,
+        executable_ask: Decimal,
+    ) -> bool:
+        """One shared anti-chase policy for initial and working PAPER BUYs."""
+        lifecycle = self._setup_lifecycles.get(candidate.symbol.strip().upper(), {})
+        return initial_breakout_move_exhausted(
+            executable_ask=executable_ask,
+            first_observation_price=lifecycle.get("price_at_first_observation"),
+            setup_type=signal.setup_type.value,
+            catalyst_confirmed=signal.catalyst_state.value == "TRUE",
+            relative_volume=candidate.relative_volume,
+            velocity_1m=candidate.price_velocity_percent_1m,
+            velocity_5m=candidate.price_velocity_percent_5m,
+            acceleration=candidate.price_acceleration_percent,
+            setup_score=signal.setup_score,
+            first_observed_at=lifecycle.get("first_observed_at"),
+            evaluated_at=value.evaluation_timestamp or value.observation.timestamp,
+        )
+
     def _execution_entry_signal(
         self,
         value: PointInTimeObservation,
@@ -2831,18 +2854,8 @@ class WarriorForwardCaptureService:
         # so a late trigger cannot authorize buying after the bulk of the move.
         # This is an independent anti-chase check; it never changes the quote
         # timestamps, risk sizing, or exit protection.
-        if initial_breakout_move_exhausted(
-            executable_ask=Decimal(ask),
-            first_observation_price=lifecycle.get("price_at_first_observation"),
-            setup_type=signal.setup_type.value,
-            catalyst_confirmed=signal.catalyst_state.value == "TRUE",
-            relative_volume=candidate.relative_volume,
-            velocity_1m=candidate.price_velocity_percent_1m,
-            velocity_5m=candidate.price_velocity_percent_5m,
-            acceleration=candidate.price_acceleration_percent,
-            setup_score=signal.setup_score,
-            first_observed_at=lifecycle.get("first_observed_at"),
-            evaluated_at=evaluated_at,
+        if self._initial_breakout_exhausted(
+            value, candidate, signal, Decimal(ask),
         ):
             _publish_price_gate(
                 "ENTRY_MOVE_EXHAUSTED", proposed=Decimal(ask),
@@ -3074,6 +3087,15 @@ class WarriorForwardCaptureService:
             or any(age is None or age > stale_limit for age in freshness)
         ):
             record_pursuit("QUOTE_STALE")
+            return
+
+        # A working BUY may not pursue an exhausted initial breakout
+        # through a separate repricing path. Genuine independently
+        # confirmed continuation retains the same exception as new entries.
+        if self._initial_breakout_exhausted(
+            value, candidate, signal, Decimal(ask),
+        ):
+            record_pursuit("ENTRY_MOVE_EXHAUSTED")
             return
 
         # This gate also applies to the legacy path without depth/size data.
