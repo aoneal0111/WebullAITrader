@@ -27,7 +27,7 @@ from .forward_models import (
 from .autonomous_paper import lifecycle_identity
 from .execution_quote import ExecutionQuoteSource, execution_quote_rejection
 from .entry_economics import remaining_reward_ok
-from .entry_extension import assess_entry_extension
+from .entry_extension import assess_entry_extension, initial_breakout_move_exhausted
 from .execution_pursuit import (
     ExecutionPursuitAssessment, ExecutionPursuitDecision,
     assess_top_of_book_pursuit, depth_features, depth_transition,
@@ -2826,6 +2826,34 @@ class WarriorForwardCaptureService:
             value, candidate, signal, entry_price=Decimal(ask),
             displacement_limit=maximum,
         )
+        # The current structural trigger can ratchet upward after an initial
+        # breakout. For PAPER entry, retain the first observed price anchor
+        # so a late trigger cannot authorize buying after the bulk of the move.
+        # This is an independent anti-chase check; it never changes the quote
+        # timestamps, risk sizing, or exit protection.
+        if initial_breakout_move_exhausted(
+            executable_ask=Decimal(ask),
+            first_observation_price=lifecycle.get("price_at_first_observation"),
+            setup_type=signal.setup_type.value,
+        ):
+            _publish_price_gate(
+                "ENTRY_MOVE_EXHAUSTED", proposed=Decimal(ask),
+                displacement_percent_value=_actual_displacement(ask),
+                displacement_dollars=Decimal(ask) - structural,
+                effective_maximum=maximum,
+            )
+            if diagnostic is not None:
+                diagnostic(
+                    "ENTRY_MOVE_EXHAUSTED", structural=structural,
+                    bid=value.observation.bid, ask=ask,
+                    proposed_execution_price=ask,
+                    maximum_percent_price=maximum_percent_price,
+                    maximum_absolute_price=maximum_absolute_price,
+                    effective_maximum=maximum,
+                    displacement_percent=_actual_displacement(ask),
+                    displacement_absolute=Decimal(ask) - structural,
+                )
+            return None
         # If the live ask is already at/below the canonical trigger, preserve
         # the detector-owned limit.  The bounded displacement policy applies
         # only when execution would require paying above that trigger.
