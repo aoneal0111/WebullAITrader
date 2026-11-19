@@ -130,6 +130,7 @@ def _harness(tmp_path: Path):
         composition.trading_service,
         composition.order_command_factory,
         order_book=composition.order_book,
+        protection_amender=composition.gateway.amend_protective_stop,
         position_quantity_source=lambda symbol: position.get(symbol, D("0")),
         management_context_source=lambda _symbol: LIFECYCLE,
     )
