@@ -1,0 +1,44 @@
+# Warrior entry coherence review — 2026-11-19
+
+Scope: current `research/high-win-rate-comparison` source only. PAPER, Grok OFF. No Windows runtime, broker orders, ledgers, or installed configuration changed by this review. A code default is not proof of the effective Windows configuration.
+
+## Goal and invariant
+
+Participate early in justified momentum; permit a genuine catalyst-supported second leg; decline stale, structurally invalid, uneconomic, or risk-unapproved entries. Do not manufacture a buy by adding independent exceptions or allowing one gate to bypass another.
+
+Existing pipeline: scanner discovery -> completed-bar setup / taxonomy -> native technical structure -> quote freshness and same-generation confirmation -> adaptive executable price and economics -> trigger confirmation -> account/risk/ownership -> PAPER authorization and bracket protection. The October 24 early-entry study is OFFLINE; it is not an authorization route.
+
+## Current control inventory
+
+| Concern | Current source | Default / behavior | Consistency finding |
+| --- | --- | --- | --- |
+| Discovery | `configuration.DiscoveryConfig` | $1-$100, >=5% preferred gain, 2x preferred RVOL, $250k dollar-volume baseline | Adaptive PAPER context does not treat every preferred ranking metric as a hard stop. |
+| Scoring | `ScoreWeights`, `EntryConfig` | 0-100; preference >=55; technical setup score >=55 | Score is an adaptive priority; triggered structure can be retained below preference. Do not create a second momentum score. |
+| Structure | `setups.py`, taxonomy adapter | Completed-bar triggers, pullbacks, HOD/flat-top/acceleration, structural invalidation | Seeing a high-scoring scanner row is not an entry. Earlier intrabar hypotheses remain research-only. |
+| Executable quote | `execution_quote.py`, `paper_stream_quote.py` | Strict Webull component timestamps, same generation; Warrior 2s execution limit | Never retimestamp provider data to create an entry. |
+| Price displacement | `runtime.execution_displacement_percent`, `forward_runtime._execution_entry_signal` | Baseline 1.5% from current structural trigger, adaptive maximum 3%, absolute outer limit $0.50 | Existing absolute and percent constraints stay authoritative even with strong news/volume. |
+| Initial-move extension | `entry_extension.py`; `forward_runtime._execution_entry_signal` | Provisional >3% from first observed price is exhausted absent **all**: catalyst TRUE, RVOL>=2, positive 1m/5m price velocity and acceleration, setup score >=75 | This overlaps trigger displacement but measures a different origin. Do not interpret the 3% as a global daily-change cap. Same-day anchor check added. |
+| Remaining economics | `entry_economics.remaining_reward_ok` | Min first target 0.5R, last target 1.5R after one quoted spread | 0.5R first-target floor is **not** equivalent to management's first planned 1R partial. Actual executable entry can deteriorate reward. |
+| Adaptive order replacement | `AdaptiveEntryConfig`, `_consider_adaptive_entry_replacement` | Up to 2 replacements, 5s repricing interval, 1.5% and $0.05 configured pursuit caps | Different scope from a new entry. Must not be used to evade original risk or ownership constraints. |
+| Trade management | `TradeManagementConfig` | Planned 50% at 1R, 25% at 2R, 25% runner; executable-BID harvest and profit defense separate | Reconciliation and stop/target continuity take precedence over entry-frequency tuning. |
+| Session/account authority | `session_risk.py`, risk bridge, controller | PAPER-only; runtime can have expanded allowed sessions | Check effective operator configuration and ownership; do not infer from historical docs. |
+| Grok | STOP_GROK operation marker | Native-only configured startup; historical controller manifest may say Grok | Verify actual runtime binding after install. |
+
+## Specific divergences / gaps
+
+1. `docs/warrior_momentum_v1.md` describes older conservative defaults ($1-$20, >=10%, 5x RVOL, 60 score, etc.) rather than the current Balanced values. Treat its concepts as historical, not the installed parameters.
+2. The new extended-breakout continuation exception reads `CatalystStatus.TRUE`, **not a timestamped fresh headline**. The five independent conditions reduce but do not remove the risk of stale catalyst attribution. Do not claim verification of *news freshness* from this predicate.
+3. `_setup_lifecycles` is symbol-keyed; its `first_observed_at` is a symbol observation anchor, not a new setup episode. The anti-chase guard now declines to apply the old anchor when its UTC calendar date differs from evaluation. Same-day distinct episodes still require separate lifecycle-aware validation.
+4. Entry-age and price extension are not interchangeable. Do not add a universal 'minutes since earnings' or 'price already up x%' rejection. A fresh pullback/reclaim needs its own setup and risk evaluation.
+5. The provisional 3%/2x/75/positive-velocity thresholds are **not** measured profitable settings. They need shadow replay by setup family, session, provider-time coverage, net R, MAE/MFE, slippage, and holdout; compare to unchanged baseline and the two losing Nov 19 cases.
+6. The PDD and SVRE local captures prove timing observations, but **not** that either alternate entry would have been profitable or that this new rule would have prevented losses under real-time available evidence.
+
+## Release checklist
+
+- Focused Warrior entry, quote, controlled PAPER service, entry economics, opportunity, ownership and protection tests pass.
+- Explicitly test early valid entries, stale/future quotes, high-momentum continuation and fading move, missing velocity, renewed trigger, prior-day cache anchor and normal pullback route.
+- Run local same-data baseline-versus-candidate replay **after costs**. Track false negatives (missed sustained movers) as well as losses avoided. The anti-chase policy must not secretly change scalper or existing SELL/cancel behavior.
+- Verify exact Windows code/config hash, stop marker, PAPER account and existing protective orders before any controlled trial.
+- Never promote a policy solely because one synthetic test succeeds or because trade count increases.
+
+**Decision:** keep the new anti-chase policy provisional and uninstalled pending controlled tests and historical performance comparison. Prioritize consolidation and evidence over more independent entry heuristics.
