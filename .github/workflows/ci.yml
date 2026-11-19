@@ -36,6 +36,17 @@ jobs:
       - name: Compile application
         run: python -m compileall -q app main.py
 
+      - name: Validate Warrior momentum entry repair
+        run: |
+          python -m pytest -q \
+            tests/warrior_momentum/test_execution_quote_confirmation.py \
+            tests/warrior_momentum/test_paper_stream_quote.py \
+            tests/warrior_momentum/test_warrior_library_operation.py \
+            tests/asset_modules/test_paper_morning_status.py \
+            tests/strategy_research/test_warrior_native_timing_review.py \
+            tests/asset_modules/test_native_review_branches.py \
+            tests/asset_modules/test_controlled_paper_service.py
+
       - name: Run tests
         run: python -m pytest -q
 
