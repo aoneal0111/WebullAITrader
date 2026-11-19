@@ -585,7 +585,7 @@ class PaperOrderGateway:
                 or not stop.request.strategy_lifecycle_id
                 or target.strategy_lifecycle_id != stop.request.strategy_lifecycle_id
                 or target.quantity <= 0
-                or target.quantity >= stop.remaining_quantity
+                or target.quantity > stop.remaining_quantity
                 or not stop_price.is_finite()
                 or stop_price < stop.request.stop_price
                 or stop.remaining_quantity != self._long_position_quantity(stop.symbol)
