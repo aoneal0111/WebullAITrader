@@ -790,3 +790,34 @@ def test_failed_target_submission_restores_stop_and_stays_incomplete(tmp_path):
     finally:
         writer.close()
         composition.close()
+
+
+def test_target_transition_currently_has_unprotected_cancel_first_window(tmp_path):
+    """Characterize the outstanding non-atomic conversion before changing it."""
+    composition, bridge, _submitter, writer, _service, _position = _harness(tmp_path)
+    observed = []
+    original_place = bridge._place_exit
+
+    def observe_target(symbol, qty, price, role, identity, **kwargs):
+        if role == "FIRST_TARGET":
+            active_stops = [
+                o for o in _active_sells(composition)
+                if o.request.order_type.value == "STOP"
+            ]
+            observed.append(len(active_stops))
+        return original_place(symbol, qty, price, role, identity, **kwargs)
+
+    bridge._place_exit = observe_target
+    try:
+        result = bridge.ensure_exit(
+            "XRPN", 23, D("18.427490"), "FIRST_TARGET", LIFECYCLE,
+        )
+        assert result.request_succeeded
+        # The target is currently placed AFTER the original stop is canceled.
+        # This is a characterization of the known gap, not evidence of safety.
+        assert observed == [0]
+        assert len([o for o in _active_sells(composition)
+                    if o.request.order_type.value == "STOP"]) == 1
+    finally:
+        writer.close()
+        composition.close()
