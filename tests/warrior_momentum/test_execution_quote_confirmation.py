@@ -404,3 +404,23 @@ def test_catalyst_alone_does_not_excuse_chase_but_confirmed_second_leg_can(
         executable_ask=D("1.11"), first_observation_price=D("1.01"),
         setup_type="HIGH_OF_DAY_BREAKOUT", **changes,
     ) is expected_exhausted
+
+
+def test_initial_breakout_does_not_use_prior_day_or_naive_anchor():
+    from app.strategies.warrior_momentum.entry_extension import (
+        initial_breakout_move_exhausted,
+    )
+    base = dict(
+        executable_ask=D("11"), first_observation_price=D("9"),
+        setup_type="HIGH_OF_DAY_BREAKOUT",
+        evaluated_at=NOW,
+    )
+    assert initial_breakout_move_exhausted(
+        **base, first_observed_at=NOW - timedelta(days=1),
+    ) is False
+    assert initial_breakout_move_exhausted(
+        **base, first_observed_at=NOW,
+    ) is True
+    assert initial_breakout_move_exhausted(
+        **base, first_observed_at=NOW.replace(tzinfo=None),
+    ) is False
