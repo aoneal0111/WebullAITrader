@@ -99,3 +99,30 @@ and duplicate STOP states with the real PAPER gateway and durable order book.
 Observe coverage and market-event ordering, not just submission boolean.
 Keep new entries paused until a confirmed quantity-matched stop is working.
 No live orders, ledger migration, or global cleanup is authorized.
+
+
+## Follow-up protection pass: recoveries and target submission failure
+
+Additional source audit found a cancel-first recovery branch in
+`AutonomousPaperExecutionBridge.reconcile_protection`: when a working STOP
+did not match authoritative quantity and no atomic amendment port existed,
+the existing STOP could be canceled before replacement submission. Recovery
+now retains the old STOP, reports management incomplete and awaits an explicit
+safe amendment. This does not make mismatched inventory safe.
+
+The correlated target-install branch still cancels a standalone STOP
+before submitting the target and its contingent replacement STOP. Its current
+recovery logic attempts an immediate STOP re-install on target failure.
+That failure path now also marks the lifecycle **incomplete**, even when
+the replacement STOP is accepted, since the profit bracket was not installed.
+Regression tests model the target placement failure using the actual in-memory
+PAPER gateway/order book, exercise replacement STOP restoration and assert the
+incomplete state; independent recovery tests assert no cancel-first attempt.
+
+**Outstanding structural problem:** no guarantee of zero unprotected
+milliseconds during standalone STOP -> target+contingent STOP conversion.
+Eliminating that requires a gateway-supported atomic reservation/replace
+transaction or equivalent verified state machine, not a speculative
+cancel-and-submit retry. Do not approve production installation on these
+changes alone. Check paused PAPER runtime's existing protective orders and
+run controlled deterministic failure-injection and replay tests first.
