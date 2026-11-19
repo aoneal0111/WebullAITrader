@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 import json
 import sqlite3
 import pytest
-from app.strategy_research.warrior_native_timing_review import native_gates, native_calls, readonly, collect
+from app.strategy_research.warrior_native_timing_review import native_gates, native_calls, paper_entry_gates, readonly, collect
 
 NOW=datetime(2026,11,19,14,tzinfo=UTC)
 START=NOW-timedelta(hours=1)
@@ -96,3 +96,28 @@ def test_pointer_or_manifest_mismatch_is_refused(tmp_path):
     paper,_=operation(tmp_path)
     (paper/'experiment.json').write_text(json.dumps({'trial_id':'other'}))
     with pytest.raises(ValueError,match='EXACT_PAPER_RECORDING'):collect(paper,tmp_path/'unused',tmp_path,now=NOW)
+
+
+def test_native_paper_gate_export_without_grok_filters_and_bounds(tmp_path):
+    path=tmp_path/'native.sqlite3'
+    db=database(path)
+    for seq,reason in enumerate(('EXECUTION_DATA_UNAVAILABLE','ENTRY_AUTHORIZATION_ACCEPTED','EXECUTION_DATA_UNAVAILABLE'),1):
+        payload=dict(result='DEFERRED' if seq!=2 else 'AUTHORIZED',
+                     final_reason=reason,setup='MICRO_PULLBACK',
+                     order_constructed=seq==2,submission_attempted=seq==2,
+                     gates=[dict(gate='quote_freshness',passed=False,observed='stale',required='fresh'),
+                            dict(gate='risk',passed=True)])
+        db.execute('INSERT INTO capture_records VALUES(?,?,?,?,?)',
+                   (seq,'EXECUTION_GATE_DECISION','ABC',NOW.isoformat(),json.dumps(payload)))
+    db.execute('INSERT INTO capture_records VALUES(?,?,?,?,?)',
+               (4,'EXECUTION_GATE_DECISION','ABC',(START-timedelta(seconds=1)).isoformat(),
+                json.dumps(dict(final_reason='PRIOR_SESSION'))))
+    db.commit()
+    report=paper_entry_gates(path,START,NOW)
+    assert report['reason_counts']=={'EXECUTION_DATA_UNAVAILABLE':2,'ENTRY_AUTHORIZATION_ACCEPTED':1}
+    assert len(report['recent'])==3 and report['recent'][0]['sequence']==3
+    assert report['recent'][0]['failed_gates']==['quote_freshness']
+    assert report['recent'][1]['submission_attempted'] is True
+    assert 'PRIOR_SESSION' not in str(report)
+    assert 'OBSERVED_CAPTURE_DECISIONS' in report['scope']
+    db.close()
