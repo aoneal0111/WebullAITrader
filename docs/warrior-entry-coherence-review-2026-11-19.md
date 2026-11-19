@@ -42,3 +42,31 @@ Existing pipeline: scanner discovery -> completed-bar setup / taxonomy -> native
 - Never promote a policy solely because one synthetic test succeeds or because trade count increases.
 
 **Decision:** keep the new anti-chase policy provisional and uninstalled pending controlled tests and historical performance comparison. Prioritize consolidation and evidence over more independent entry heuristics.
+
+## Follow-up repair: working BUY pursuit uses same anti-chase policy
+
+The optional `_consider_adaptive_entry_replacement` previously reassessed current
+reward, quote, liquidity, depth, risk, and bounded replacement budget without
+rechecking the initial-breakout move since first observation. A working BUY
+could therefore pursue a later price through a separate route after a fresh
+initial entry was refused. Both initial executable price evaluation and
+working BUY pursuit now invoke the same `_initial_breakout_exhausted` method,
+which delegates to `entry_extension.initial_breakout_move_exhausted`.
+A valid catalyst-supported acceleration can pass either route, and existing
+account/quote/reward/sizing/replacement constraints still apply. No SELL or
+protective-order path was altered.
+
+Regression explicitly asserts that the working BUY path reaches the shared
+predicate; a stale quote or absent order adapter must not make the test pass
+for the wrong reason. Test success is not proof of profitable entries.
+
+## Profit-target alignment held for historical comparison
+
+The configured first protective target is nominally 1R from the structural
+entry plan, but the remaining-reward guard requires only 0.5R after spread
+and repricing. PDD and SVRE forensic fills show under-1R initial-target
+geometry. Raising the minimum to 1R can reduce trades and still not account
+for actual partial fills, so it is **not silently promoted** here. Compare
+0.5R (baseline), 1.0R and net-of-cost first-target alternatives on matched
+executions and held-out dates, then check first-target fills, giveback,
+win rate, net expectancy, and unprotected exposure before changing execution.
