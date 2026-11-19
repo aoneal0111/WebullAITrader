@@ -70,3 +70,32 @@ for actual partial fills, so it is **not silently promoted** here. Compare
 0.5R (baseline), 1.0R and net-of-cost first-target alternatives on matched
 executions and held-out dates, then check first-target fills, giveback,
 win rate, net expectancy, and unprotected exposure before changing execution.
+
+
+## After-close protection review — 2026-11-19
+
+Forensic PAPER orders contained repeated STOP cancel/replacement events for
+SVRE and PDD. Order timestamps alone cannot prove the position was unprotected
+at every instant; the paper simulator and correlated target reservation state
+must be considered.
+
+Source review found two **optional stop-tightening** branches and one
+**positive-quantity stop reconciliation** branch that canceled the existing
+STOP before a replacement STOP was durably accepted when an atomic amendment
+port was unavailable. These branches now fail-closed: preserve the existing
+STOP, mark management incomplete, and report reconciliation failure rather
+than claiming a successful change. Target-first correlated bracket creation
+still has a cancel-first transition and is **not declared solved by this patch**.
+
+Retaining an old stop is not the same as complete coverage: after quantity
+growth, it can underprotect inventory; after quantity shrinkage it can
+over-cover and must not be treated as risk-approved. A missing stop or a broken
+target/stop correlation still requires safe repair. A STOP in the local PAPER
+simulator is also not a continuously active broker stop while Atlas is offline.
+
+Validation requirement: exercise failed amendment, failed replacement,
+partial fill, quantity mismatch, contingent target transition, outage/restart
+and duplicate STOP states with the real PAPER gateway and durable order book.
+Observe coverage and market-event ordering, not just submission boolean.
+Keep new entries paused until a confirmed quantity-matched stop is working.
+No live orders, ledger migration, or global cleanup is authorized.
