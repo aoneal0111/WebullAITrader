@@ -942,7 +942,11 @@ class AutonomousPaperExecutionBridge:
                     else:
                         self._management_incomplete.add(symbol)
                     continue
-                if stops and target is not None:
+                if stops and desired_stop_quantity > 0:
+                    # A mismatched working STOP cannot safely be replaced
+                    # by cancel-first recovery when atomic amendment is
+                    # unavailable. Retain its existing protection and keep
+                    # reconciliation incomplete for an explicit repair.
                     self._management_incomplete.add(symbol)
                     continue
                 if stops and not self._cancel_working_order(stops[0]):
