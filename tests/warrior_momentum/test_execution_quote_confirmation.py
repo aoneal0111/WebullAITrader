@@ -424,3 +424,40 @@ def test_initial_breakout_does_not_use_prior_day_or_naive_anchor():
     assert initial_breakout_move_exhausted(
         **base, first_observed_at=NOW.replace(tzinfo=None),
     ) is False
+
+
+def test_working_paper_buy_reprice_uses_same_exhaustion_gate(tmp_path):
+    """A rejected late initial breakout cannot re-enter via BUY pursuit."""
+    from types import SimpleNamespace
+    from app.strategies.warrior_momentum.models import SetupType
+    store = ForwardCaptureStore(tmp_path / "execution.sqlite3")
+    writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
+    service = WarriorForwardCaptureService(store, writer)
+    attempted = []
+    service._paper_entry_replacer = lambda **kwargs: attempted.append(kwargs)
+    try:
+        value = point(evaluation_timestamp=NOW)
+        candidate = service.runtime.discover(
+            value.observation, value.bars, session=value.session,
+        )
+        signal = service.runtime.technical_entry_signal(candidate)
+        assert signal is not None
+        signal = replace(signal, setup_type=SetupType.HIGH_OF_DAY_BREAKOUT)
+        service._setup_lifecycles["XYZ"] = {
+            "first_observed_at": NOW,
+            "price_at_first_observation": D("9"),
+        }
+        service._paper["XYZ"] = SimpleNamespace(
+            remaining=10, initial_quantity=10,
+        )
+        service._consider_adaptive_entry_replacement(
+            value, candidate, signal, account(),
+        )
+        assert attempted == []
+        # This guard is not a second structural veto on a developing early entry.
+        service._setup_lifecycles["XYZ"]["price_at_first_observation"] = D("10.20")
+        assert service._initial_breakout_exhausted(
+            value, candidate, signal, D("10.22"),
+        ) is False
+    finally:
+        writer.close()
