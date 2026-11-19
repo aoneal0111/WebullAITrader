@@ -366,7 +366,7 @@ def test_initial_breakout_anti_chase_blocks_execution_even_if_trigger_renews(
             stop_price=D("9.80"),
         )
         fresh = replace(value, observation=replace(
-            value.observation, price=D("10.10"), bid=D("10.09"), ask=D("10.10"),
+            value.observation, price=D("10.006"), bid=D("10.005"), ask=D("10.006"),
         ))
         service._setup_lifecycles["XYZ"] = {
             "price_at_first_observation": D("9.00"),
