@@ -96,6 +96,8 @@ def initial_breakout_move_exhausted(
     velocity_5m: Decimal | None = None,
     acceleration: Decimal | None = None,
     setup_score: Decimal | None = None,
+    first_observed_at: datetime | None = None,
+    evaluated_at: datetime | None = None,
 ) -> bool:
     """Identify exhausted initial breakouts, not strong catalyst-driven legs.
 
@@ -116,6 +118,15 @@ def initial_breakout_move_exhausted(
         or executable_ask <= ZERO
     ):
         return False
+    # The lifecycle cache is symbol-keyed, not one immutable setup episode.
+    # Never apply yesterday's first-observation anchor to today's breakout.
+    if first_observed_at is not None and evaluated_at is not None:
+        if (
+            first_observed_at.tzinfo is None
+            or evaluated_at.tzinfo is None
+            or first_observed_at.date() != evaluated_at.date()
+        ):
+            return False
     move = (
         (executable_ask - first_observation_price)
         / first_observation_price * HUNDRED
