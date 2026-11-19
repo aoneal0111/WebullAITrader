@@ -58,3 +58,23 @@ def test_warrior_execution_status_is_reported_without_mutation(tmp_path):
     assert result['warrior_execution_status']==status
     assert not result['orders_enabled_by_this_check']
     assert before=={str(p):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+
+
+def test_native_off_marker_reports_configured_mode_without_erasing_manifest(tmp_path):
+    from app.equity_overhaul.paper_experiment import create
+    create(tmp_path,profile='GROK_WARRIOR_ACCOUNT_V6',continuous=True)
+    spec=json.loads((tmp_path/'experiment.json').read_text())
+    session=tmp_path/'session';session.mkdir();(session/'journal').mkdir()
+    (tmp_path/'recording-session.json').write_text(json.dumps(dict(session=str(session),trial_id=spec['trial_id'])))
+    manifest=dict(paper_experiment=spec,warrior_control='GROK_NATIVE_REVIEW_AND_DIRECTED',
+                  grok_order_review_enabled=True)
+    (session/'research-manifest.json').write_text(json.dumps(manifest))
+    (session/'journal/journal-status.json').write_text(json.dumps(dict(closed=False)))
+    (tmp_path/'STOP_GROK').touch()
+    before=(session/'research-manifest.json').read_bytes()
+    status=report(tmp_path)
+    assert status['configured_warrior_mode']=='NATIVE_ONLY'
+    assert status['grok_startup_disabled'] is True
+    assert status['grok_controller_status_historical'] is True
+    assert status['warrior_control']=='GROK_NATIVE_REVIEW_AND_DIRECTED'
+    assert (session/'research-manifest.json').read_bytes()==before
