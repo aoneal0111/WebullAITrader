@@ -351,7 +351,11 @@ def test_initial_breakout_anti_chase_blocks_execution_even_if_trigger_renews(
     writer = ForwardCaptureWriter(store, flush_interval_seconds=0.01)
     service = WarriorForwardCaptureService(store, writer)
     try:
-        value = point(evaluation_timestamp=NOW)
+        value = point(
+            evaluation_timestamp=NOW,
+            processing_age_seconds=D("0.1"),
+            delivery_age_seconds=D("0.1"),
+        )
         candidate = service.runtime.discover(
             value.observation, value.bars, session=value.session,
         )
@@ -450,9 +454,17 @@ def test_working_paper_buy_reprice_uses_same_exhaustion_gate(tmp_path):
         service._paper["XYZ"] = SimpleNamespace(
             remaining=10, initial_quantity=10,
         )
+        gate_calls = []
+        original_gate = service._initial_breakout_exhausted
+        def observed_gate(*args):
+            outcome = original_gate(*args)
+            gate_calls.append(outcome)
+            return outcome
+        service._initial_breakout_exhausted = observed_gate
         service._consider_adaptive_entry_replacement(
             value, candidate, signal, account(),
         )
+        assert gate_calls == [True]
         assert attempted == []
         # This guard is not a second structural veto on a developing early entry.
         service._setup_lifecycles["XYZ"]["price_at_first_observation"] = D("10.20")
