@@ -2841,6 +2841,8 @@ class WarriorForwardCaptureService:
             velocity_5m=candidate.price_velocity_percent_5m,
             acceleration=candidate.price_acceleration_percent,
             setup_score=signal.setup_score,
+            first_observed_at=lifecycle.get("first_observed_at"),
+            evaluated_at=evaluated_at,
         ):
             _publish_price_gate(
                 "ENTRY_MOVE_EXHAUSTED", proposed=Decimal(ask),
