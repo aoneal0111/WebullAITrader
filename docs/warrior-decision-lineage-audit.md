@@ -42,3 +42,32 @@ To test this pull request, use a worktree checked out at its proposed branch,
 not the old research worktree. No historical October capture can acquire the
 new source decision ID retroactively. Observe a new bounded PAPER capture and
 review exact-source comparison before proposing any runtime admission change.
+
+
+## Timing report follow-up
+
+`app.trade_intelligence.knowledge.capture_authorization_timing` now
+propagates the source decision status, state/type, agreement with the
+authorized TRIGGERED setup/trigger, and age into each bounded trade row.
+Its summary independently counts exact-source agreements, exact-source
+mismatches and unknown exact-source identities. The earlier
+`latest_decision_mismatches` remains a separate count.
+
+The four October trades predate source-ID instrumentation, so their
+source decision identities remain unknown; this change cannot fill them
+in. A nonzero exact-source mismatch is an **investigation lead**, not
+automatic proof of a gateway error or lost profit. Existing
+`no_gateway_snapshot_lineage_proven` remains true, and no runtime
+admission, timing, protection, PAPER or LIVE setting changes.
+
+To verify on an isolated worktree of the follow-up branch:
+
+```powershell
+$Python = "$env:USERPROFILE\WebullAITrader\.venv\Scripts\python.exe"
+& $Python -m pytest -q tests/trade_intelligence/test_capture_authorization_timing.py
+```
+
+The comparison accepts legacy reports with omitted new fields as unknown.
+For matched source IDs it requires a boolean agreement result and a
+nonnegative finite source age; non-matched sources cannot assert an
+agreement or age.
