@@ -56,6 +56,7 @@ jobs:
             tests/test_paper_position_protection_integrity.py \
             tests/integration/test_quick_scalper_event_feedback.py \
             tests/test_authorization.py \
+            tests/test_stream_connect_review.py \
             tests/test_desktop_paper_order_execution.py \
             tests/asset_modules/test_grok_request_diagnostics.py \
             tests/asset_modules/test_grok_observer_session.py \
