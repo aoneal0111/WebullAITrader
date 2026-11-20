@@ -160,3 +160,47 @@ def test_naut_signal_does_not_claim_fill_without_next_market_quote(tmp_path):
     finally:
         writer.close()
         composition.close()
+
+
+def test_naut_pending_partial_harvest_survives_gateway_restart(tmp_path):
+    composition, bridge, writer, clock, position, signal = _seed(tmp_path)
+    harvest_id = None
+    try:
+        clock.value = OBSERVED_SIGNAL_AT
+        decision = bridge.ensure_exit(
+            "NAUT", CANDIDATE_PARTIAL, SIGNAL_BID,
+            "PROFIT_HARVEST_1", lifecycle_identity(signal),
+        )
+        assert decision.requested_order_active
+        harvest_id = decision.order_id
+        _quote(composition, clock, 1, "2.41", "2.42", 30)
+        position["NAUT"] = D(354)
+        assert composition.order_book.get(harvest_id).filled_quantity == D(30)
+        assert len(_active(composition, "STOP")) == 1
+    finally:
+        writer.close()
+        composition.close()
+
+    restored = create_session_paper_composition(
+        at=clock.value, clock=clock,
+        persistence_path=str(tmp_path / "naut-gateway.sqlite3"),
+        position_quantity_source=lambda symbol: position.get(symbol, D("0")),
+    )
+    try:
+        partial = restored.order_book.get(harvest_id)
+        assert partial.filled_quantity == D(30)
+        assert partial.remaining_quantity == D(66)
+        stops = _active(restored, "STOP")
+        assert len(stops) == 1
+        assert stops[0].request.stop_price == STOP
+
+        # The pending market harvest keeps its durable ID; remaining shares
+        # can execute only on a new eligible market event after restoration.
+        _quote(restored, clock, 2, "2.40", "2.41", 100)
+        completed = restored.order_book.get(harvest_id)
+        assert completed.filled_quantity == D(CANDIDATE_PARTIAL)
+        assert completed.remaining_quantity == D(0)
+        assert completed.average_fill_price is not None
+        assert len(_active(restored, "STOP")) == 1
+    finally:
+        restored.close()
