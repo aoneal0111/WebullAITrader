@@ -40,6 +40,11 @@ def create_desktop_composition(**kwargs):
     )
 
 
+def gateway_test_service(composition):
+    """Exercise PAPER order gateway without changing desktop BUY admission."""
+    return composition.paper_trading_commands.trading_service.service
+
+
 def quote(
     *,
     sequence: int,
@@ -115,24 +120,11 @@ def test_gui_submission_enters_single_paper_authority_and_presenter(
         application.processEvents()
 
         state = composition.state_store.snapshot()
-        assert len(composition.paper_order_book) == 1
-        assert (
-            composition.paper_execution_engine.order_book
-            is composition.paper_order_book
-        )
-        assert len(state.order_projection.orders) == 1
-        assert state.order_projection.orders[0].status == "WORKING"
-        assert state.portfolio_projection.working_orders == 1
-        assert len(state.decision_projection.decisions) == 1
-        assert state.decision_projection.decisions[0].strategy_id == (
-            "operator-order-entry"
-        )
-        assert state.decision_projection.decisions[
-            0
-        ].execution_outcome.value == "ACCEPTED"
-        assert window.orders._orders_table.rowCount() == 1
-        assert "Submitted:" in (
-            window.orders.order_entry_panel._validation_status.text()
+        # Unreviewed manual BUYs remain blocked by the release registry.
+        assert len(composition.paper_order_book) == 0
+        assert state.portfolio_projection.working_orders == 0
+        assert composition.paper_trading_commands.trading_service.last_reason == (
+            "STRATEGY_NOT_QUALIFIED"
         )
     finally:
         window.close()
@@ -156,7 +148,7 @@ def test_partial_and_complete_fills_update_all_existing_projections() -> None:
                 source="desktop-broker-runtime:test",
             )
         )
-        placement = composition.trading_service.place_order(request)
+        placement = gateway_test_service(composition).place_order(request)
         authority = composition.paper_trading_commands.gateway
 
         partial = authority.process_market_event(
@@ -226,7 +218,7 @@ def test_cancellation_updates_authority_projection_and_timeline() -> None:
     )
 
     try:
-        placement = composition.trading_service.place_order(request)
+        placement = gateway_test_service(composition).place_order(request)
         cancellation = composition.trading_service.cancel_order(
             OrderCancellationRequest(
                 request_id="cancel-aapl-1",
@@ -263,8 +255,8 @@ def test_duplicate_submission_is_rejected_without_parallel_order() -> None:
     request = placement_request(composition)
 
     try:
-        first = composition.trading_service.place_order(request)
-        duplicate = composition.trading_service.place_order(request)
+        first = gateway_test_service(composition).place_order(request)
+        duplicate = gateway_test_service(composition).place_order(request)
         state = composition.state_store.snapshot()
 
         assert first.success is True
@@ -349,7 +341,8 @@ def test_paper_submission_never_constructs_or_invokes_live_broker(
             placement_request(composition)
         )
 
-        assert result.success is True
+        assert result.success is False
+        assert result.gateway_message == "STRATEGY_NOT_QUALIFIED"
         assert invoked == []
         assert composition.paper_trading_commands.gateway.execution_engine is (
             composition.paper_execution_engine
