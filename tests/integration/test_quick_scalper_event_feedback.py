@@ -65,8 +65,17 @@ def test_initial_stop_failure_recovers_on_next_fresh_quote_without_another_fill(
             QuotePayload(D("4.99"), D("5"), D("120"), D("120")),
         ))
         assert quantity("FAST") == D("120")
-        assert not any(o.request.execution_reason == "STOP"
-                       for o in composition.order_book.open_orders_for_symbol("FAST"))
+        # Durable BUY fills can prove inventory even when an asynchronous
+        # position callback lags. Immediate STOP placement is desirable;
+        # only missing lifecycle ownership must defer it.
+        def working_stops():
+            return tuple(o for o in composition.order_book.open_orders_for_symbol("FAST")
+                         if o.request.execution_reason == "STOP")
+        if failure == "projection_lag":
+            assert len(working_stops()) == 1
+            assert working_stops()[0].remaining_quantity == D("120")
+        else:
+            assert working_stops() == ()
         history_count = len(composition.order_book.history())
         later = NOW + timedelta(seconds=2)
         for quote_timestamp in (NOW - timedelta(seconds=60), later + timedelta(seconds=1)):
@@ -81,8 +90,10 @@ def test_initial_stop_failure_recovers_on_next_fresh_quote_without_another_fill(
             symbol="FAST", executable_bid=D("5.01"), quote_timestamp=later,
             observed_at=later, momentum_stalled=False,
         )
-        assert not any(o.request.execution_reason == "STOP"
-                       for o in composition.order_book.open_orders_for_symbol("FAST"))
+        if failure == "projection_lag":
+            assert len(working_stops()) == 1
+        else:
+            assert working_stops() == ()
         lagging = False
         bridge._active_by_symbol["FAST"] = identity
         # No further fill or order callback arrives. An ordinary fresh quote
