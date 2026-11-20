@@ -1,3 +1,7 @@
+
+# Native provider adapters are tested in the isolated research-native CI job.
+import pytest as _native_pytest
+_native_pytest.importorskip("ccxt", reason="Optional ccxt research dependency")
 import asyncio
 from copy import deepcopy
 import json
