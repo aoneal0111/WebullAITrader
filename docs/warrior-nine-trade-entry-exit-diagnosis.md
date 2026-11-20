@@ -56,3 +56,38 @@ sampled bid with a fill or cherry-pick a decision threshold from these
 nine trades.
 
 **No runtime trading policy is changed by this analysis.**
+
+## Choosing the strongest duplicate export
+
+The November review identified 16 capture files but only nine distinct
+lifecycles. Early exports of CCI, FSLY, IBRX, JAGX and NAUT lacked
+`entry_context`; later duplicate exports each contain an exact
+matching authorized `STATE_TRANSITION`. Selecting the first file
+alphabetically produced an artificial 5/9 authorization-evidence gap.
+
+The new `capture_copy_selection` module ranks candidate files by
+strictly matching, successful authorization events and bounded context
+completeness, then chooses a non-overlapping file set. It rejects
+different ledgers or execution-price histories for the same lifecycle
+instead of mixing conflicting copies. This is a deliberately
+conservative check; if an old export has incomplete price-path data,
+inspect the conflict before choosing one version.
+
+Use explicit JSON filenames, not a ZIP or manifest, and do not delete
+old exports. In PowerShell:
+
+```powershell
+$Copies = @(Get-ChildItem -LiteralPath $CaptureRoot -Filter "*_capture.json" -File -Recurse |
+    Sort-Object FullName | Select-Object -ExpandProperty FullName)
+& $Python -m app.trade_intelligence.knowledge.capture_copy_selection @Copies |
+    Set-Content -LiteralPath $SelectionPath -Encoding utf8
+if ($LASTEXITCODE -ne 0) { throw "Capture-copy selection failed: inspect conflicts" }
+$Selection = Get-Content -LiteralPath $SelectionPath -Raw | ConvertFrom-Json
+& $Python -m app.trade_intelligence.knowledge.capture_entry_exit_diagnosis @($Selection.selected_files) |
+    Set-Content -LiteralPath $DiagnosisPath -Encoding utf8
+if ($LASTEXITCODE -ne 0) { throw "Entry/exit diagnosis failed" }
+```
+
+Research correction is **not** evidence that the historical trading
+gateway was missing authorization. Avoid changing live/PAPER entry
+requirements from an artifact-selection error.
