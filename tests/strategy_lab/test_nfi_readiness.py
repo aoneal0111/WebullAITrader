@@ -1,3 +1,7 @@
+
+# Native provider adapters are tested in the isolated research-native CI job.
+import pytest as _native_pytest
+_native_pytest.importorskip("ccxt", reason="Optional ccxt research dependency")
 from datetime import UTC,datetime,timedelta
 import unittest
 from unittest.mock import patch
