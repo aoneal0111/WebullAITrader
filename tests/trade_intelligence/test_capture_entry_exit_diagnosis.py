@@ -147,6 +147,9 @@ def test_new_source_decision_id_exactly_matches_authorization_record():
     detail = row["entry_details"][0]
     assert detail["source_decision_id"] == source_id
     assert detail["source_decision_status"] == "SOURCE_DECISION_ID_MATCHED"
+    assert detail["source_decision_state"] == "TRIGGERED"
+    assert detail["source_decision_matches_authorization"] is True
+    assert detail["source_decision_age_seconds"] == "1.0"
     assert detail["source_decision_is_gateway_snapshot_proof"] is False
 
 
