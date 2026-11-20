@@ -58,8 +58,23 @@ Deterministic engine and runtime packages do not read environment variables.
 
 ## Running tests
 
+Atlas has three explicit local test tiers:
+
 ```powershell
-python -m pytest
+.\\tools\\run-atlas-tests.ps1 -Tier Fast
+.\\tools\\run-atlas-tests.ps1 -Tier Critical
+.\\tools\\run-atlas-tests.ps1 -Tier Full
+```
+
+The wrapper also accepts `-PythonPath` to use an existing interpreter when
+the test worktree has no virtual environment. Fast is for ordinary local changes;
+Critical covers the PAPER order book, gateway, Warrior runtime, protection and
+restart recovery. Full retains all collected tests. **Tiers do not delete or
+disable any tests** and the main CI job continues to execute its full suite.
+
+For focused adapter certification and patch checks:
+
+```powershell
 python -m pytest tests/certification -q
 git diff --check
 ```
