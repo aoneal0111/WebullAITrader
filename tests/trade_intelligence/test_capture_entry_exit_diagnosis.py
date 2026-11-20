@@ -136,3 +136,44 @@ def test_duplicate_lifecycle_and_invalid_capture_count_fail_closed():
         diagnose_captures([data, deepcopy(data)])
     with pytest.raises(ValueError, match="INVALID_CAPTURE_COUNT"):
         diagnose_captures([])
+
+
+def test_new_source_decision_id_exactly_matches_authorization_record():
+    data = capture(entry_context=True)
+    source_id = "a" * 24
+    data["entry_context"]["records"][0]["payload"]["source_decision_id"] = source_id
+    data["entry_context"]["records"][1]["payload"]["decision_id"] = source_id
+    row = diagnose_captures([data])["trades"][0]
+    detail = row["entry_details"][0]
+    assert detail["source_decision_id"] == source_id
+    assert detail["source_decision_status"] == "SOURCE_DECISION_ID_MATCHED"
+    assert detail["source_decision_is_gateway_snapshot_proof"] is False
+
+
+def test_missing_source_decision_is_not_fabricated():
+    data = capture(entry_context=True)
+    detail = diagnose_captures([data])["trades"][0]["entry_details"][0]
+    assert detail["source_decision_id"] is None
+    assert detail["source_decision_status"] == "SOURCE_DECISION_ID_NOT_RECORDED"
+
+
+def test_incorrect_source_decision_id_is_not_matched_from_nearby_timestamp():
+    data = capture(entry_context=True)
+    data["entry_context"]["records"][0]["payload"]["source_decision_id"] = "a" * 24
+    data["entry_context"]["records"][1]["payload"]["decision_id"] = "b" * 24
+    detail = diagnose_captures([data])["trades"][0]["entry_details"][0]
+    assert detail["source_decision_status"] == "SOURCE_DECISION_ID_UNAVAILABLE"
+    assert detail["source_decision_timestamp"] is None
+
+
+def test_duplicate_source_decision_ids_are_ambiguous():
+    data = capture(entry_context=True)
+    auth, decision = data["entry_context"]["records"]
+    auth["payload"]["source_decision_id"] = "a" * 24
+    decision["payload"]["decision_id"] = "a" * 24
+    duplicated = deepcopy(decision)
+    duplicated["timestamp"] = stamp(1)
+    duplicated["payload"]["evaluation_timestamp"] = stamp(1)
+    data["entry_context"]["records"].append(duplicated)
+    detail = diagnose_captures([data])["trades"][0]["entry_details"][0]
+    assert detail["source_decision_status"] == "SOURCE_DECISION_ID_AMBIGUOUS"
