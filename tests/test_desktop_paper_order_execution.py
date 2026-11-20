@@ -41,8 +41,15 @@ def create_desktop_composition(**kwargs):
 
 
 def gateway_test_service(composition):
-    """Exercise PAPER order gateway without changing desktop BUY admission."""
-    return composition.paper_trading_commands.trading_service.service
+    """Exercise PAPER gateway independently from desktop entry qualification.
+
+    This helper is strictly test-local; the user-facing trading service
+    continues to reject unreviewed strategy or operator BUYs.
+    """
+    service = composition.paper_trading_commands.trading_service
+    while hasattr(service, "service"):
+        service = service.service
+    return service
 
 
 def quote(
