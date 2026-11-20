@@ -48,6 +48,7 @@ jobs:
             tests/warrior_momentum/test_forward_capture.py \
             tests/warrior_momentum/test_exit_request_acknowledgement.py \
             tests/test_paper_position_protection_integrity.py \
+            tests/integration/test_quick_scalper_event_feedback.py \
             tests/warrior_momentum/test_paper_stream_quote.py \
             tests/warrior_momentum/test_warrior_library_operation.py \
             tests/asset_modules/test_paper_morning_status.py \
