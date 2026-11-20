@@ -167,8 +167,9 @@ def test_rejects_reordered_observations_or_duplicate_multiplicity():
     full["capture_records"] = [a, b]
     reverse = data()
     reverse["capture_records"] = [b, a]
-    with pytest.raises(ValueError, match="CONFLICTING_LIFECYCLE_EVIDENCE"):
-        select_capture_copies([("full", full), ("reverse", reverse)])
+    # Distinct quote timestamps give an unambiguous chronological sequence.
+    result = select_capture_copies([("full", full), ("reverse", reverse)])
+    assert result["selected_files"] == ["full"]
     repeated = data()
     repeated["capture_records"] = [a, a]
     with pytest.raises(ValueError, match="CONFLICTING_LIFECYCLE_EVIDENCE"):
