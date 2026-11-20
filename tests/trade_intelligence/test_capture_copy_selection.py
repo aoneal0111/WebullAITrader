@@ -4,7 +4,7 @@ from copy import deepcopy
 import pytest
 
 from app.trade_intelligence.knowledge.capture_copy_selection import (
-    select_capture_copies,
+    select_capture_copies, inspect_capture_conflicts,
 )
 
 
@@ -85,3 +85,43 @@ def test_outside_scope_and_empty_input_rejected():
             {"paper_campaign_id": "campaign",
              "request": {"symbol": "ABC", "strategy_lifecycle_id": "OTHER"}}
         ]})])
+
+
+def test_conflict_inspection_reports_exact_lifecycle_and_class():
+    original, changed = data(), data(auth=True)
+    changed["capture_records"][0]["payload"]["bid"] = "11"
+    report = inspect_capture_conflicts([
+        ("old.json", original), ("new.json", changed)
+    ])
+    assert report["unique_lifecycles"] == 1
+    assert report["repeated_lifecycles"] == 1
+    assert report["conflicting_lifecycles"] == 1
+    assert report["selection_permitted"] is False
+    item = report["conflicts"][0]
+    assert item["symbol"] == "ABC"
+    assert item["ledger_conflict"] is False
+    assert item["price_path_conflict"] is True
+    assert {r["file"] for r in item["files"]} == {"old.json", "new.json"}
+    assert "payload" not in str(report)
+
+
+def test_conflict_inspection_is_read_only_and_reports_clean_copies():
+    before = data()
+    newer = data(auth=True)
+    original = deepcopy(newer)
+    report = inspect_capture_conflicts([
+        ("old.json", before), ("new.json", newer)
+    ])
+    assert report["selection_permitted"] is True
+    assert report["conflicts"] == []
+    assert newer == original
+
+
+def test_conflict_inspection_catches_ledger_changes():
+    old, changed = data(), data(auth=True)
+    changed["orders"][0]["order_id"] = "new-order-id"
+    report = inspect_capture_conflicts([
+        ("old.json", old), ("new.json", changed)
+    ])
+    assert report["conflicts"][0]["ledger_conflict"] is True
+    assert report["conflicts"][0]["price_path_conflict"] is False
