@@ -169,8 +169,10 @@ def inspect_capture_conflicts(candidates):
                 "ledger_conflict": ledger_differs,
                 "price_path_conflict": path_differs,
                 "exact_subset_compatible": (
-                    not ledger_differs
-                    and _consistent_path_copies(path_values[key])
+                    not ledger_differs and _consistent_path_copies(path_values[key])
+                ),
+                "identical_record_multisets": (
+                    len({tuple(sorted(records)) for _, records in path_values[key]}) == 1
                 ),
                 "files": [{
                     k: v[k] for k in (
