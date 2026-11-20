@@ -50,6 +50,9 @@ jobs:
         run: |
           ./tools/run-atlas-tests.ps1 -Tier Fast -PythonPath (Get-Command python).Source
 
+      - name: Validate Warrior source decision authorization provenance
+        run: python -m pytest -q tests/warrior_momentum/test_source_decision_provenance.py
+
       - name: Validate Warrior authorization timing comparison
         run: python -m pytest -q tests/trade_intelligence/test_capture_authorization_timing.py
 

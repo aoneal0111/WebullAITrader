@@ -165,6 +165,7 @@ class WarriorOpportunityAssessment:
     provider_bid_timestamp: datetime | None = None
     provider_ask_timestamp: datetime | None = None
     execution_quote_timestamp: datetime | None = None
+    source_decision_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.symbol.strip() or not self.generation_id.strip() or not self.lifecycle_id.strip():
