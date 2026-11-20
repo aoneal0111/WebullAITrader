@@ -50,6 +50,12 @@ jobs:
         run: |
           ./tools/run-atlas-tests.ps1 -Tier Fast -PythonPath (Get-Command python).Source
 
+      - name: Validate evidence-complete Warrior capture selection
+        run: python -m pytest -q tests/trade_intelligence/test_capture_copy_selection.py
+
+      - name: Validate nine-trade Warrior entry and exit evidence joins
+        run: python -m pytest -q tests/trade_intelligence/test_capture_entry_exit_diagnosis.py
+
       - name: Validate Warrior multi-capture profit evidence
         run: python -m pytest -q tests/trade_intelligence/test_capture_profit_batch.py
 
