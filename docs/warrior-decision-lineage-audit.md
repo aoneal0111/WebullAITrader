@@ -71,3 +71,16 @@ The comparison accepts legacy reports with omitted new fields as unknown.
 For matched source IDs it requires a boolean agreement result and a
 nonnegative finite source age; non-matched sources cannot assert an
 agreement or age.
+
+
+The CLI's default comparison remains the four historical names.
+For an independently reconciled *new* PAPER diagnosis with a different cohort,
+supply uppercase symbols explicitly rather than modifying Python source:
+
+```powershell
+& $Python -m app.trade_intelligence.knowledge.capture_authorization_timing `
+    "C:\path\to\reconciled-diagnosis.json" --targets ABC XYZ
+```
+
+This command analyzes a saved diagnosis only; it does not capture market
+data or construct brokers. Missing requested symbols fail closed.
