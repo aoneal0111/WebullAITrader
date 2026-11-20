@@ -32,6 +32,8 @@ if (-not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
 
 $Fast = @(
     "tests/paper_gateway/test_gateway.py",
+    "tests/paper_gateway/test_automated_cancellation_attribution.py",
+    "tests/warrior_momentum/test_owned_position_exit_quote_freshness.py",
     "tests/paper_order_book/test_cancel_integration.py",
     "tests/paper_order_book/test_policy.py"
 )
