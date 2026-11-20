@@ -65,3 +65,40 @@ def test_record_bounds():
     data["entry_context"]["records"] *= 334
     with pytest.raises(ValueError, match="INPUT_RECORD_LIMIT"):
         audit_entries(data)
+
+
+def test_exact_source_decision_is_distinct_from_latest_nearby_state():
+    data = capture()
+    auth, confirmed, later = data["entry_context"]["records"]
+    auth["payload"]["source_decision_id"] = "a" * 24
+    confirmed["payload"]["decision_id"] = "a" * 24
+    later["payload"]["decision_id"] = "b" * 24
+    row = audit_entries(data)["entries"][0]
+    assert row["source_decision_status"] == "SOURCE_DECISION_ID_MATCHED"
+    assert row["source_decision_state"] == "TRIGGERED"
+    assert row["source_decision_matches_authorization"] is True
+    assert row["source_decision_age_seconds"] == "60.0"
+    assert row["current_confirmation_matches"] is False
+    assert row["source_decision_is_gateway_snapshot_proof"] is False
+
+
+def test_exact_source_decision_mismatch_remains_evidence_only():
+    data = capture()
+    auth, confirmed, later = data["entry_context"]["records"]
+    auth["payload"]["source_decision_id"] = "a" * 24
+    confirmed["payload"]["decision_id"] = "a" * 24
+    confirmed["payload"]["setup"]["state"] = "FORMING"
+    row = audit_entries(data)["entries"][0]
+    assert row["source_decision_status"] == "SOURCE_DECISION_ID_MATCHED"
+    assert row["source_decision_matches_authorization"] is False
+    assert row["source_decision_is_gateway_snapshot_proof"] is False
+
+
+def test_unavailable_source_decision_has_no_inferred_state_or_age():
+    data = capture()
+    data["entry_context"]["records"][0]["payload"]["source_decision_id"] = "a" * 24
+    row = audit_entries(data)["entries"][0]
+    assert row["source_decision_status"] == "SOURCE_DECISION_ID_UNAVAILABLE"
+    assert row["source_decision_matches_authorization"] is None
+    assert row["source_decision_age_seconds"] is None
+    assert row["source_decision_state"] is None
