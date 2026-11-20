@@ -45,6 +45,11 @@ jobs:
       - name: Compile application
         run: python -m compileall -q app main.py
 
+      - name: Smoke-test Atlas Fast test tier
+        shell: pwsh
+        run: |
+          ./tools/run-atlas-tests.ps1 -Tier Fast -PythonPath (Get-Command python).Source
+
       - name: Validate Warrior momentum entry repair
         run: |
           python -m pytest -q \
