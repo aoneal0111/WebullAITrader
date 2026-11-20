@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from hashlib import sha256
+from collections import Counter
 import json
 from pathlib import Path
 
@@ -51,6 +52,12 @@ def describe(data):
         ]
         quality[key] = len(authorization)
     paths = data.get("capture_records", ())
+    path_records = {
+        key: tuple(_canonical(r) for r in paths
+                   if (r.get("payload", {}).get("paper_campaign_id", "legacy-paper-campaign"),
+                       r.get("payload", {}).get("lifecycle_id")) == key)
+        for key in grouped
+    }
     return {
         "identities": tuple(grouped),
         "authorization_count": quality,
@@ -59,28 +66,47 @@ def describe(data):
             key: sha256(_canonical(sorted(orders, key=lambda x: x["order_id"])).encode()).hexdigest()
             for key, orders in grouped.items()
         },
+        "price_path_records": path_records,
         "price_path_fingerprints": {
-            key: sha256(_canonical([
-                r for r in paths
-                if (r.get("payload", {}).get("paper_campaign_id", "legacy-paper-campaign"),
-                    r.get("payload", {}).get("lifecycle_id")) == key
-            ]).encode()).hexdigest()
-            for key in grouped
+            key: sha256(_canonical(records).encode()).hexdigest()
+            for key, records in path_records.items()
         },
     }
 
 
 
+
+def _contained_observations(shorter, longer):
+    """Exact, multiplicity-preserving chronological subsequence.
+
+    No quote is synthesized. Reject same-length disagreements or missing /
+    altered earlier observations, including repeats and ordering differences.
+    """
+    if len(shorter) > len(longer):
+        return False
+    iterator = iter(longer)
+    return all(any(other == record for other in iterator) for record in shorter)
+
+
+def _consistent_path_copies(copies):
+    """One exact maximal path must contain all other observed paths."""
+    ordered = sorted(copies, key=lambda pair: (-len(pair[1]), pair[0]))
+    canonical = ordered[0][1]
+    return all(_contained_observations(records, canonical)
+               for _, records in ordered[1:])
+
+
 def inspect_capture_conflicts(candidates):
     """Summarize duplicate discrepancies without printing trade payloads.
 
-    Intentionally does not resolve mismatches. Count/order differences may
-    indicate partial exports; mismatched recorded orders require investigation.
+    Intentionally does not resolve mismatches. Exact ordered-subsequence
+    compatibility is reported, never used to invent missing quotes.
     """
     if not 1 <= len(candidates) <= MAX_FILES:
         raise ValueError("INVALID_CAPTURE_COUNT")
     originals = {}
     duplicates = {}
+    path_values = {}
     for path, data in candidates:
         info = describe(data)
         path = str(path)
@@ -101,6 +127,9 @@ def inspect_capture_conflicts(candidates):
                 ),
             }
             duplicates.setdefault(key, []).append(record)
+            path_values.setdefault(key, []).append(
+                (path, info["price_path_records"][key])
+            )
             originals[key] = True
     conflicts = []
     repeated = 0
@@ -117,6 +146,10 @@ def inspect_capture_conflicts(candidates):
                 "lifecycle": key[1],
                 "ledger_conflict": ledger_differs,
                 "price_path_conflict": path_differs,
+                "exact_subset_compatible": (
+                    not ledger_differs
+                    and _consistent_path_copies(path_values[key])
+                ),
                 "files": [{
                     k: v[k] for k in (
                         "file", "context_records", "matched_authorizations",
@@ -139,29 +172,34 @@ def select_capture_copies(candidates):
     """Return selected files only if identities, fills and price paths agree.
 
     A single file containing several lifecycles is selected only if it
-    contributes no overlapping lifecycle. Files are sorted by complete
-    matching authorization evidence before context quantity; tie by path.
+    contributes no overlapping lifecycle. Ledgers must be identical and each
+    older quote path an exact ordered subsequence of the selected full path.
+    Files rank by authorization evidence then path coverage then context.
     """
     if not 1 <= len(candidates) <= MAX_FILES:
         raise ValueError("INVALID_CAPTURE_COUNT")
     records = []
-    known = {}
+    by_lifecycle = {}
     for path, data in candidates:
         info = describe(data)
-        for key in info["identities"]:
-            fingerprint = (info["ledger_fingerprints"][key],
-                           info["price_path_fingerprints"][key])
-            old = known.setdefault(key, fingerprint)
-            if old != fingerprint:
-                raise ValueError("CONFLICTING_LIFECYCLE_EVIDENCE")
         records.append((str(path), info))
-    universe = set(known)
+        for key in info["identities"]:
+            by_lifecycle.setdefault(key, []).append((str(path), info))
+    for key, copies in by_lifecycle.items():
+        if len({info["ledger_fingerprints"][key] for _, info in copies}) > 1:
+            raise ValueError("CONFLICTING_LIFECYCLE_EVIDENCE")
+        if not _consistent_path_copies([
+            (path, info["price_path_records"][key]) for path, info in copies
+        ]):
+            raise ValueError("CONFLICTING_LIFECYCLE_EVIDENCE")
+    universe = set(by_lifecycle)
     selected = []
     covered = set()
     skipped = []
     ordered = sorted(records, key=lambda item: (
         -sum(item[1]["authorization_count"].values()),
         -sum(v > 0 for v in item[1]["authorization_count"].values()),
+        -sum(len(v) for v in item[1]["price_path_records"].values()),
         -item[1]["context_count"],
         item[0],
     ))
@@ -187,7 +225,7 @@ def select_capture_copies(candidates):
             for key in sorted(universe)
             if not any(info["authorization_count"].get(key, 0) for _, info in records)
         ],
-        "evidence": "IDENTICAL_LEDGER_AND_CAPTURE_PATHS_REQUIRED",
+        "evidence": "IDENTICAL_LEDGER_AND_EXACT_ORDERED_PRICE_PATH_SUBSETS_REQUIRED",
         "runtime_changed": False,
     }
 
