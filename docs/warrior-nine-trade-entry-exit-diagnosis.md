@@ -91,3 +91,24 @@ if ($LASTEXITCODE -ne 0) { throw "Entry/exit diagnosis failed" }
 Research correction is **not** evidence that the historical trading
 gateway was missing authorization. Avoid changing live/PAPER entry
 requirements from an artifact-selection error.
+
+## November 20 conflict classification
+
+The read-only conflict audit found exactly one duplicate discrepancy:
+CCI (three copies) has identical order ledgers but different captured
+execution-price-path digests. The updated copy selector can accept
+strictly chronological **exact-subsequence** exports of one larger
+observed path. Shared observations (including timestamp, payload,
+order and repeated observations) must agree byte-for-byte after stable
+JSON canonicalization. If different prices, timestamps, orderings, or
+duplicate counts contradict one another, selection still fails closed.
+The original copies are never modified.
+
+An `--inspect-conflicts` report records `exact_subset_compatible`;
+it still sets `selection_permitted=false` for any different digest,
+even when the normal selector can safely accept a verified subset.
+That conservative conflict-report flag indicates differing exports,
+not a broker error. A successful complete-copy selection is the
+authoritative readiness check for the subsequent offline diagnosis.
+
+Never use `--inspect-conflicts` output as input to the diagnosis.
