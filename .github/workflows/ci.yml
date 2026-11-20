@@ -50,6 +50,9 @@ jobs:
         run: |
           ./tools/run-atlas-tests.ps1 -Tier Fast -PythonPath (Get-Command python).Source
 
+      - name: Validate Warrior multi-capture profit evidence
+        run: python -m pytest -q tests/trade_intelligence/test_capture_profit_batch.py
+
       - name: Validate NAUT observed-signal PAPER gateway replay
         run: python -m pytest -q tests/warrior_momentum/test_naut_observed_signal_gateway_replay.py
 
