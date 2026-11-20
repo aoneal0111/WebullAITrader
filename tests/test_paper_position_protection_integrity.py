@@ -246,7 +246,9 @@ def test_partial_fill_protection_survives_parent_entry_expiry_with_stale_context
         assert len(stops) == 1
         events = performance_diagnostics.reconciliation_metrics()["protection_events"]
         assert any(item["state"] == "PROTECTION_SUBMIT_ACCEPTED" for item in events)
-        assert any(item["state"] == "PROTECTION_ALREADY_PRESENT" for item in events)
+        # An atomic STOP amendment is not a no-op "already present" case.
+        # Verify the durable tightened price, not an obsolete diagnostic.
+        assert stops[0].request.stop_price >= D("2.00")
     finally:
         writer.close()
         composition.close()
