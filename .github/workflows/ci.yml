@@ -5,6 +5,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Superseded branch commits must not exhaust CI capacity while
+# the latest safety/regression checks are queued.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
