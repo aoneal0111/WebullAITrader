@@ -95,11 +95,14 @@ tests/certification/     Cross-boundary adapter certification
 docs/                    Operational and architecture documentation
 ```
 
-## Original read-only account foundation
+## Original read-only account foundation (historical)
 
-This first version retrieves account balances and positions from a connected
-Webull MCP server and prints a redacted JSON summary. It does **not** place,
-preview, modify, cancel, or execute orders. Automated trading is not implemented.
+This section documents the **original** read-only foundation, not the current
+Atlas desktop/PAPER trading workstation. The initial version retrieved account
+balances and positions from Webull MCP, redacted account identifiers, and did
+not submit or manage orders. Modern PAPER execution, protective exits and
+trading diagnostics are separate, later capabilities. Historical examples in
+this section must not be mistaken for current runtime instructions.
 
 ## Requirements
 
