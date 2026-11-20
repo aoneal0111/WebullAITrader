@@ -112,3 +112,24 @@ not a broker error. A successful complete-copy selection is the
 authoritative readiness check for the subsequent offline diagnosis.
 
 Never use `--inspect-conflicts` output as input to the diagnosis.
+
+## Exact-content, different-order CCI exports
+
+The workstation verified all three CCI copies contain 255 identical
+observation records (7 FILL, 248 QUOTE), including duplicate
+multiplicity. The original NAUT/CCI export differs from the two broader
+exports in record order only; the two broader exports are identical.
+
+Since the existing profit signal audit sorts QUOTE observations by their
+recorded capture timestamp and independently sorts/reconciles fills
+against the canonical order ledger, the selector may treat **exact
+record multisets** as equivalent when no distinct QUOTE records share
+an identical captured timestamp. This is distinct from an exact
+chronological subsequence. Changed quote data, changed fills, extra
+unmatched records and ambiguous same-timestamp quotes remain refused.
+No archived file is rewritten or re-ordered.
+
+The inspection output retains `exact_subset_compatible` as a legacy
+compatibility field (now includes unambiguous equal-multiset order
+differences); consult the additional `identical_record_multisets` field
+to distinguish an order-only difference from a strict subset.
