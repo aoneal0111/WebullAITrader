@@ -7,7 +7,54 @@ import pytest
 from app.trade_intelligence.knowledge.capture_profit_matrix import (
     ACTIVATIONS, RETENTIONS, compare_capture,
 )
-from tests.trade_intelligence.test_capture_profit_audit import sample
+LIFE = "WARRIOR_MOMENTUM_V1|TEST|episode"
+
+
+def stamp(second):
+    return f"2026-10-09T15:00:{second:02d}+00:00"
+
+
+def sample(quotes=None):
+    orders, records = [], []
+    for index, (side, qty, price, second) in enumerate(
+        [("BUY", "10", "10", 0), ("SELL", "10", "9", 50)]
+    ):
+        oid = f"order-{index}"
+        fill = {
+            "fill_id": f"fill-{index}",
+            "quantity": qty, "price": price,
+            "timestamp": stamp(second), "commission": "0",
+        }
+        orders.append({
+            "order_id": oid, "paper_campaign_id": "campaign",
+            "filled_quantity": qty, "fills": [fill],
+            "request": {
+                "symbol": "TEST", "side": side,
+                "strategy_lifecycle_id": LIFE,
+                "structural_stop_price": "9" if side == "BUY" else None,
+            },
+        })
+        records.append({
+            "timestamp": fill["timestamp"], "symbol": "TEST",
+            "payload": {
+                "action": "FILL", "lifecycle_id": LIFE,
+                "paper_campaign_id": "campaign", "order_id": oid,
+                "fill_timestamp": fill["timestamp"],
+                "side": side, "quantity": qty, "price": price,
+            },
+        })
+    for second, bid in (quotes or [(10, "10.50"), (20, "10.20")]):
+        records.append({
+            "timestamp": stamp(second), "symbol": "TEST",
+            "payload": {
+                "action": "QUOTE", "lifecycle_id": LIFE,
+                "paper_campaign_id": "campaign",
+                "quote_timestamp": stamp(second), "bid": bid,
+                "ask": str(D(bid) + D("0.01")),
+                "stale_quote": False, "future_quote": False,
+            },
+        })
+    return {"orders": orders, "capture_records": records}
 
 
 def scenario(matrix, activation, retention):
