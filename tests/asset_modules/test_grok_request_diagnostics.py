@@ -23,8 +23,15 @@ def test_transport_categories_never_include_exception_text(failure,expected):
     with pytest.raises(GrokUnavailable,match='^GROK_REQUEST_FAILED$'):
         c.request('MASTER','',{'mode':'PAPER'},{})
     d=c.diagnostics()
-    assert d==dict(attempts_completed=1,responses_received=0,answers_parsed=0,
-                   latency_ms_total=6420,latency_ms_max=6420,failures={expected:1})
+    assert {k: d[k] for k in (
+        'attempts_completed', 'responses_received', 'answers_parsed',
+        'latency_ms_total', 'latency_ms_max', 'failures',
+    )} == dict(attempts_completed=1,responses_received=0,answers_parsed=0,
+              latency_ms_total=6420,latency_ms_max=6420,failures={expected:1})
+    # Provider payment/access state is a separate, sanitized diagnostic
+    # added after this failure-category contract was originally frozen.
+    assert d['provider_access']['state'] == 'NO_PAYMENT_BLOCK_OBSERVED'
+    assert 'PRIVATE' not in json.dumps(d['provider_access'])
     assert len(calls)==1 and 'PRIVATE' not in json.dumps(d)
     d['failures'].clear()
     assert c.diagnostics()['failures']=={expected:1}
