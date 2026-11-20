@@ -61,9 +61,9 @@ Deterministic engine and runtime packages do not read environment variables.
 Atlas has three explicit local test tiers:
 
 ```powershell
-.\\tools\\run-atlas-tests.ps1 -Tier Fast
-.\\tools\\run-atlas-tests.ps1 -Tier Critical
-.\\tools\\run-atlas-tests.ps1 -Tier Full
+.\tools\run-atlas-tests.ps1 -Tier Fast
+.\tools\run-atlas-tests.ps1 -Tier Critical
+.\tools\run-atlas-tests.ps1 -Tier Full
 ```
 
 The wrapper also accepts `-PythonPath` to use an existing interpreter when
