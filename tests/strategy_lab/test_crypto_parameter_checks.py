@@ -1,3 +1,7 @@
+
+# Native provider adapters are tested in the isolated research-native CI job.
+import pytest as _native_pytest
+_native_pytest.importorskip("freqtrade", reason="Optional freqtrade research dependency")
 from datetime import UTC, datetime
 import logging
 from pathlib import Path
