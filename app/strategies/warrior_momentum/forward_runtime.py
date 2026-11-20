@@ -798,6 +798,7 @@ class WarriorForwardCaptureService:
             provider_bid_timestamp=value.quote_observed_at,
             provider_ask_timestamp=value.quote_observed_at,
             execution_quote_timestamp=decision_at,
+            source_decision_id=candidate.decision_generation_id,
         )
 
     def _assess_executable_opportunity(
@@ -7765,6 +7766,13 @@ def _opportunity_authorization_record(
             "setup": assessment.setup_family,
             "generation_id": assessment.generation_id,
             "lifecycle_id": assessment.lifecycle_id,
+            "source_decision_id": (
+                assessment.source_decision_id
+                if isinstance(assessment.source_decision_id, str)
+                and len(assessment.source_decision_id) == 24
+                and all(ch in "0123456789abcdef" for ch in assessment.source_decision_id)
+                else None
+            ),
             "trigger": assessment.structural_trigger,
             "structural_stop": assessment.structural_stop,
             "execution_ask": assessment.executable_entry,
