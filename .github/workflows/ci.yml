@@ -66,8 +66,16 @@ jobs:
             tests/asset_modules/test_native_review_branches.py \
             tests/asset_modules/test_controlled_paper_service.py
 
+      - name: Validate dynamic momentum research worker lifecycle
+        # Run the producer/consumer shutdown stress suite in its own process.
+        # A prior Linux segfault occurred in worker-thread GC while Qt GUI
+        # tests were loaded into the same interpreter.
+        run: python -X faulthandler -m pytest -q tests/dynamic_momentum_discovery
+
       - name: Run tests
-        run: python -m pytest -q
+        # All remaining tests are still collected and executed. The research
+        # worker suite is tested above, not silently skipped.
+        run: python -X faulthandler -m pytest -q --ignore=tests/dynamic_momentum_discovery
 
       - name: Check patch whitespace
         run: git diff --check
