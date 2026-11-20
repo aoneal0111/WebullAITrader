@@ -70,6 +70,71 @@ def describe(data):
     }
 
 
+
+def inspect_capture_conflicts(candidates):
+    """Summarize duplicate discrepancies without printing trade payloads.
+
+    Intentionally does not resolve mismatches. Count/order differences may
+    indicate partial exports; mismatched recorded orders require investigation.
+    """
+    if not 1 <= len(candidates) <= MAX_FILES:
+        raise ValueError("INVALID_CAPTURE_COUNT")
+    originals = {}
+    duplicates = {}
+    for path, data in candidates:
+        info = describe(data)
+        path = str(path)
+        for key in info["identities"]:
+            record = {
+                "file": path,
+                "ledger_digest": info["ledger_fingerprints"][key],
+                "price_path_digest": info["price_path_fingerprints"][key],
+                "context_records": info["context_count"],
+                "matched_authorizations": info["authorization_count"][key],
+                "order_count": sum(
+                    order_key(o) == key for o in data.get("orders", ())
+                ),
+                "price_path_records": sum(
+                    (r.get("payload", {}).get("paper_campaign_id", "legacy-paper-campaign"),
+                     r.get("payload", {}).get("lifecycle_id")) == key
+                    for r in data.get("capture_records", ())
+                ),
+            }
+            duplicates.setdefault(key, []).append(record)
+            originals[key] = True
+    conflicts = []
+    repeated = 0
+    for key, variants in sorted(duplicates.items()):
+        if len(variants) <= 1:
+            continue
+        repeated += 1
+        ledger_differs = len({v["ledger_digest"] for v in variants}) > 1
+        path_differs = len({v["price_path_digest"] for v in variants}) > 1
+        if ledger_differs or path_differs:
+            conflicts.append({
+                "symbol": key[1].split("|")[1] if "|" in key[1] else None,
+                "campaign": key[0],
+                "lifecycle": key[1],
+                "ledger_conflict": ledger_differs,
+                "price_path_conflict": path_differs,
+                "files": [{
+                    k: v[k] for k in (
+                        "file", "context_records", "matched_authorizations",
+                        "order_count", "price_path_records",
+                    )
+                } for v in variants],
+            })
+    return {
+        "version": "WARRIOR_CAPTURE_COPY_CONFLICT_DIAGNOSIS_V1",
+        "unique_lifecycles": len(originals),
+        "repeated_lifecycles": repeated,
+        "conflicting_lifecycles": len(conflicts),
+        "conflicts": conflicts,
+        "selection_permitted": len(conflicts) == 0,
+        "no_runtime_changes": True,
+    }
+
+
 def select_capture_copies(candidates):
     """Return selected files only if identities, fills and price paths agree.
 
@@ -130,6 +195,7 @@ def select_capture_copies(candidates):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("inputs", nargs="+", type=Path)
+    parser.add_argument("--inspect-conflicts", action="store_true")
     args = parser.parse_args(argv)
     if len(args.inputs) > MAX_FILES:
         parser.error("Maximum 100 candidate copies")
@@ -143,6 +209,9 @@ def main(argv=None):
         if total > MAX_TOTAL_BYTES:
             parser.error("Combined copies exceed 80 MB")
         candidates.append((str(path), json.loads(raw.decode("utf-8-sig"))))
+    if args.inspect_conflicts:
+        print(json.dumps(inspect_capture_conflicts(candidates), indent=2))
+        return 0
     print(json.dumps(select_capture_copies(candidates), indent=2))
     return 0
 
