@@ -82,6 +82,9 @@ jobs:
           cache: pip
       - name: Install isolated native-research dependencies
         run: |
+          # The research adapters reuse Atlas utilities, but their native
+          # provider versions must stay out of the desktop trading job.
+          python -m pip install -r requirements.txt
           python -m pip install -r requirements-native-income-research.txt
           python -m pip install --no-deps .
       - name: Test native research adapters
