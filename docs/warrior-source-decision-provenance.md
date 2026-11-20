@@ -30,3 +30,21 @@ causal defect.
 
 This is an observability-only addition and does not change normal D3
 diagnostics defaults or introduce forensic file creation.
+
+## Offline exact-ID verification
+
+`capture_entry_audit.audit_entries` now reports each matched authorization's
+`source_decision_id` and `source_decision_status`:
+
+- `SOURCE_DECISION_ID_MATCHED`: exactly one same-campaign, same-config,
+  pre-authorization captured DECISION shares that ID.
+- `SOURCE_DECISION_ID_NOT_RECORDED`: legacy or unavailable field; not a
+  defective trading authorization.
+- `SOURCE_DECISION_ID_UNAVAILABLE`: field exists, but the bounded nearby
+  capture has no eligible decision with that ID.
+- `SOURCE_DECISION_ID_AMBIGUOUS`: multiple eligible records share that ID;
+  do not guess which was used.
+
+The entry/exit diagnosis repeats this evidence per entry order without
+altering its historical P&L, mismatch or success/failure classifications.
+All statuses are research observations, not automatic buy rejections.
