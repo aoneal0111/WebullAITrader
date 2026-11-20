@@ -89,11 +89,33 @@ def _contained_observations(shorter, longer):
 
 
 def _consistent_path_copies(copies):
-    """One exact maximal path must contain all other observed paths."""
+    """Accept exact subsequences or identical multisets with safe quote timing.
+
+    The downstream price audit sorts quotes by recorded timestamp, making
+    capture-order differences irrelevant only when there is no conflicting
+    quote payload for the same observation timestamp. Fill timestamps are
+    reconciled against the immutable order ledger independently.
+    """
     ordered = sorted(copies, key=lambda pair: (-len(pair[1]), pair[0]))
     canonical = ordered[0][1]
-    return all(_contained_observations(records, canonical)
-               for _, records in ordered[1:])
+    for _, records in ordered[1:]:
+        if _contained_observations(records, canonical):
+            continue
+        if len(records) != len(canonical) or Counter(records) != Counter(canonical):
+            return False
+        # Same exact records, different order: only safe to ignore capture order
+        # if equal-time quote observations cannot influence signal sequence.
+        # Canonical records are JSON strings, preserving all payload fields.
+        quote_by_time = {}
+        for raw in canonical:
+            record = json.loads(raw)
+            if record.get("payload", {}).get("action") != "QUOTE":
+                continue
+            time = record.get("timestamp")
+            old = quote_by_time.setdefault(time, raw)
+            if old != raw:
+                return False
+    return True
 
 
 def inspect_capture_conflicts(candidates):
@@ -172,9 +194,10 @@ def select_capture_copies(candidates):
     """Return selected files only if identities, fills and price paths agree.
 
     A single file containing several lifecycles is selected only if it
-    contributes no overlapping lifecycle. Ledgers must be identical and each
-    older quote path an exact ordered subsequence of the selected full path.
-    Files rank by authorization evidence then path coverage then context.
+    contributes no overlapping lifecycle. Ledgers must be identical; paths
+    must be exact ordered subsets or identical observation multisets with
+    unambiguous quote ordering by timestamp. Files rank by authorization
+    evidence then path coverage then context.
     """
     if not 1 <= len(candidates) <= MAX_FILES:
         raise ValueError("INVALID_CAPTURE_COUNT")
@@ -225,7 +248,7 @@ def select_capture_copies(candidates):
             for key in sorted(universe)
             if not any(info["authorization_count"].get(key, 0) for _, info in records)
         ],
-        "evidence": "IDENTICAL_LEDGER_AND_EXACT_ORDERED_PRICE_PATH_SUBSETS_REQUIRED",
+        "evidence": "IDENTICAL_LEDGER_AND_EXACT_SUBSET_OR_UNAMBIGUOUS_MULTISET_PATH_REQUIRED",
         "runtime_changed": False,
     }
 
