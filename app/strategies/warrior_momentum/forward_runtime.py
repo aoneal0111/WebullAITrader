@@ -4892,11 +4892,16 @@ class WarriorForwardCaptureService:
     ) -> None:
         observation = value.observation
         stale = self.capture_config.quote_stale_after_seconds
+        # Owned-position protection uses the executable quote, not the
+        # last-trade print. A stale last trade must not disable a fresh,
+        # coherent bid/ask quote for harvest and protective-stop decisions.
+        # Entry qualification continues enforcing its own trade freshness.
         quote_fresh = (
             value.quote_freshness_seconds is not None
-            and value.last_price_freshness_seconds is not None
             and ZERO <= value.quote_freshness_seconds <= stale
-            and ZERO <= value.last_price_freshness_seconds <= stale
+            and observation.bid is not None
+            and observation.ask is not None
+            and ZERO < observation.bid <= observation.ask
         )
         depth = depth_features(value.depth_bids, value.depth_asks)
         flow = value.order_flow
