@@ -144,6 +144,28 @@ def diagnose_captures(captures, *, activation_r=D("0.40"),
     closed = [r for r in rows if r["ledger_status"] == "RECONCILED"]
     winners = [r for r in closed if r["actual_closed_pnl"] > 0]
     losers = [r for r in closed if r["actual_closed_pnl"] < 0]
+    # Source-record lineage is a separate evidence dimension. It cannot be
+    # inferred from the latest nearby decision, actual P&L or sampled quotes.
+    source_counts = {
+        "exact_source_agrees": 0,
+        "exact_source_disagrees": 0,
+        "exact_source_unknown": 0,
+        "ambiguous_entry_orders": 0,
+    }
+    for trade in closed:
+        details = trade["entry_details"]
+        if len(details) != 1 or details[0].get("status") != "AUTHORIZATION_MATCHED":
+            source_counts["ambiguous_entry_orders"] += 1
+            continue
+        entry = details[0]
+        if entry.get("source_decision_status") != "SOURCE_DECISION_ID_MATCHED":
+            source_counts["exact_source_unknown"] += 1
+        elif entry.get("source_decision_matches_authorization") is True:
+            source_counts["exact_source_agrees"] += 1
+        elif entry.get("source_decision_matches_authorization") is False:
+            source_counts["exact_source_disagrees"] += 1
+        else:
+            source_counts["exact_source_unknown"] += 1
     return {
         "version": VERSION,
         "configuration": {
@@ -176,6 +198,7 @@ def diagnose_captures(captures, *, activation_r=D("0.40"),
                 r["entry_evidence_status"] == "MOST_RECENT_DECISION_MISMATCH"
                 for r in closed
             ),
+            "source_decision_evidence": source_counts,
             "winner_signals": sum(
                 r["candidate_signal_at"] is not None for r in winners
             ),

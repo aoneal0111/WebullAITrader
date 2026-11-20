@@ -180,3 +180,52 @@ def test_duplicate_source_decision_ids_are_ambiguous():
     data["entry_context"]["records"].append(duplicated)
     detail = diagnose_captures([data])["trades"][0]["entry_details"][0]
     assert detail["source_decision_status"] == "SOURCE_DECISION_ID_AMBIGUOUS"
+
+
+def test_source_quality_counts_do_not_confuse_latest_nearby_decisions():
+    agreeing = capture(entry_context=True, decision_state="TRIGGERED")
+    agreeing["entry_context"]["records"][0]["payload"]["source_decision_id"] = "a" * 24
+    agreeing["entry_context"]["records"][1]["payload"]["decision_id"] = "a" * 24
+
+    discrepant = capture(entry_context=True, decision_state="FORMING")
+    discrepant["orders"][0]["paper_campaign_id"] = "second"
+    discrepant["orders"][1]["paper_campaign_id"] = "second"
+    for record in discrepant["capture_records"]:
+        record["payload"]["paper_campaign_id"] = "second"
+    for record in discrepant["entry_context"]["records"]:
+        record["payload"]["paper_campaign_id"] = "second"
+    discrepant["entry_context"]["records"][0]["payload"]["source_decision_id"] = "b" * 24
+    discrepant["entry_context"]["records"][1]["payload"]["decision_id"] = "b" * 24
+
+    report = diagnose_captures([agreeing, discrepant])
+    quality = report["summary"]["source_decision_evidence"]
+    assert quality == {
+        "exact_source_agrees": 1,
+        "exact_source_disagrees": 1,
+        "exact_source_unknown": 0,
+        "ambiguous_entry_orders": 0,
+    }
+    assert report["summary"]["latest_decision_mismatch"] == 1
+    assert all(row["causal_entry_defect_proven"] is False for row in report["trades"])
+
+
+def test_source_quality_legacy_capture_remains_unknown():
+    report = diagnose_captures([capture(entry_context=True)])
+    assert report["summary"]["source_decision_evidence"] == {
+        "exact_source_agrees": 0,
+        "exact_source_disagrees": 0,
+        "exact_source_unknown": 1,
+        "ambiguous_entry_orders": 0,
+    }
+
+
+def test_unreconciled_trade_is_excluded_from_source_quality_counts():
+    data = capture(entry_context=True)
+    data["orders"][0]["filled_quantity"] = "11"
+    report = diagnose_captures([data])
+    assert report["summary"]["source_decision_evidence"] == {
+        "exact_source_agrees": 0,
+        "exact_source_disagrees": 0,
+        "exact_source_unknown": 0,
+        "ambiguous_entry_orders": 0,
+    }
