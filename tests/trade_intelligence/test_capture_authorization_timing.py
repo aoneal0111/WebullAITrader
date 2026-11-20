@@ -181,3 +181,21 @@ def test_rejects_invalid_exact_source_age():
     )
     with pytest.raises(ValueError, match="INVALID_CONFIRMATION_AGE"):
         compare_diagnosis(data)
+
+
+def test_new_paper_cohort_can_select_explicit_bounded_targets():
+    data = fixture()
+    data["trades"] = data["trades"][:2]
+    report = compare_diagnosis(data, targets=("FSLY", "JAGX"))
+    assert report["target_symbols"] == ["FSLY", "JAGX"]
+    assert report["summary"]["target_trades"] == 2
+    assert report["summary"]["exact_source_unknown"] == 2
+
+
+@pytest.mark.parametrize("targets", [
+    (), ("FSLY", "FSLY"), ("fsly",), ("../../bad",),
+    tuple("S" + str(i) for i in range(21)), ("",),
+])
+def test_invalid_cohorts_rejected_before_reconciliation(targets):
+    with pytest.raises(ValueError, match="INVALID_TARGET_SYMBOLS"):
+        compare_diagnosis(fixture(), targets=targets)
