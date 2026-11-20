@@ -173,3 +173,46 @@ def test_rejects_reordered_observations_or_duplicate_multiplicity():
     repeated["capture_records"] = [a, a]
     with pytest.raises(ValueError, match="CONFLICTING_LIFECYCLE_EVIDENCE"):
         select_capture_copies([("full", full), ("repeated", repeated)])
+
+
+def test_identical_multiset_permuted_fill_quote_accepts_full_auth_copy():
+    original = data()
+    original["capture_records"].append({
+        "timestamp": "2026-10-09T15:00:02+00:00",
+        "payload": {"action": "FILL", "paper_campaign_id": "campaign",
+                    "lifecycle_id": LIFE, "fill_timestamp": "2026-10-09T15:00:02+00:00",
+                    "order_id": "buy", "side": "BUY", "quantity": "1", "price": "10"},
+    })
+    improved = deepcopy(original)
+    improved["capture_records"] = list(reversed(improved["capture_records"]))
+    improved["entry_context"] = data(auth=True)["entry_context"]
+    result = select_capture_copies([
+        ("original", original), ("improved", improved),
+    ])
+    assert result["selected_files"] == ["improved"]
+    assert result["matching_authorization_coverage"] == 1
+    conflicts = inspect_capture_conflicts([
+        ("original", original), ("improved", improved)
+    ])["conflicts"]
+    assert conflicts[0]["price_path_conflict"] is True
+    assert conflicts[0]["exact_subset_compatible"] is True
+
+
+def test_reordered_quotes_with_conflicting_identical_timestamp_fail():
+    old = data()
+    newer = data(auth=True)
+    first = deepcopy(old["capture_records"][0])
+    second = deepcopy(first)
+    second["payload"]["bid"] = "10.50"
+    old["capture_records"] = [first, second]
+    newer["capture_records"] = [second, first]
+    with pytest.raises(ValueError, match="CONFLICTING_LIFECYCLE_EVIDENCE"):
+        select_capture_copies([("old", old), ("new", newer)])
+
+
+def test_changed_quote_multiset_still_refused():
+    old = data()
+    changed = data(auth=True)
+    changed["capture_records"][0]["payload"]["bid"] = "10.99"
+    with pytest.raises(ValueError, match="CONFLICTING_LIFECYCLE_EVIDENCE"):
+        select_capture_copies([("old", old), ("changed", changed)])
