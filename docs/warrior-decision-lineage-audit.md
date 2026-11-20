@@ -84,3 +84,27 @@ supply uppercase symbols explicitly rather than modifying Python source:
 
 This command analyzes a saved diagnosis only; it does not capture market
 data or construct brokers. Missing requested symbols fail closed.
+
+
+## Closed-trade evidence quality summary
+
+The bounded entry/exit diagnosis now reports a separate
+`summary.source_decision_evidence` object for **reconciled** closed
+Warrior lifecycles:
+
+- `exact_source_agrees`: exactly one matched entry authorization and a
+  matched source DECISION whose state/type/trigger agree
+- `exact_source_disagrees`: exactly one matched entry authorization and
+  a matched source DECISION whose state/type/trigger disagree
+- `exact_source_unknown`: an eligible entry exists, but its exact
+  source ID is missing, ambiguous, unavailable or incomplete
+- `ambiguous_entry_orders`: there is not exactly one matched entry
+  authorization for the closed lifecycle
+
+Unreconciled trades are not counted in this evidence breakdown. These
+categories are mutually exclusive, and their total equals the number
+of reconciled lifecycles. The existing `latest_decision_mismatch`
+count remains independent. Neither a matched source ID nor an observed
+profit-retention signal establishes broker gateway-snapshot identity,
+counterfactual fills, or that a strategy change will improve net P&L.
+No runtime trading behavior is modified.
