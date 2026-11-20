@@ -1,3 +1,4 @@
+from contextlib import closing
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -44,7 +45,7 @@ class RepairTests(unittest.TestCase):
                 self.assertEqual(volumes['/shared']['source'],str(self.fleet/'shared'))
         self.assertEqual(len(list((self.output/'backups').glob('*.sqlite3'))),7)
         for p in (self.output/'backups').glob('*.sqlite3'):
-            with sqlite3.connect(p) as db:self.assertEqual(db.execute('SELECT cash FROM wallet').fetchone()[0],8765.43)
+            with closing(sqlite3.connect(p)) as db:self.assertEqual(db.execute('SELECT cash FROM wallet').fetchone()[0],8765.43)
 
     def test_running_worker_refuses_before_any_compose_or_ledger_mutation(self):
         plan(self.fleet,self.addon,self.source,self.output)
