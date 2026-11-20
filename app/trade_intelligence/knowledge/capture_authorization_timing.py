@@ -31,6 +31,14 @@ def _age(value):
 
 
 def compare_diagnosis(report, *, targets=("FSLY", "JAGX", "WFF", "AEHL")):
+    # Bounded operator-selected symbols allow future PAPER captures to use
+    # the same read-only audit without reusing October's four-trade cohort.
+    if (not isinstance(targets, (list, tuple)) or not 1 <= len(targets) <= MAX_TRADES
+            or any(not isinstance(t, str) or not 1 <= len(t) <= 12
+                   or not t.isascii() or not t.replace(".", "").replace("-", "").isalnum()
+                   or t != t.upper() for t in targets)
+            or len(set(targets)) != len(targets)):
+        raise ValueError("INVALID_TARGET_SYMBOLS")
     rows = report.get("trades", [])
     if not 1 <= len(rows) <= MAX_TRADES:
         raise ValueError("INVALID_TRADE_COUNT")
@@ -169,12 +177,18 @@ def compare_diagnosis(report, *, targets=("FSLY", "JAGX", "WFF", "AEHL")):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("diagnosis", type=Path)
+    parser.add_argument(
+        "--targets", nargs="+", default=["FSLY", "JAGX", "WFF", "AEHL"],
+        help="One to twenty unique uppercase symbols for this saved cohort",
+    )
     args = parser.parse_args(argv)
     with args.diagnosis.open("rb") as handle:
         raw = handle.read(MAX_BYTES + 1)
     if len(raw) > MAX_BYTES:
         parser.error("Diagnosis exceeds 4 MB")
-    report = compare_diagnosis(json.loads(raw.decode("utf-8-sig")))
+    report = compare_diagnosis(
+        json.loads(raw.decode("utf-8-sig")), targets=args.targets
+    )
     print(json.dumps(report, indent=2))
     return 0
 
