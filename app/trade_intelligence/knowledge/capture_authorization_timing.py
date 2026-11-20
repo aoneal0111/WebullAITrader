@@ -31,6 +31,14 @@ def _age(value):
 
 
 def compare_diagnosis(report, *, targets=("FSLY", "JAGX", "WFF", "AEHL")):
+    # Bounded operator-selected symbols allow future PAPER captures to use
+    # the same read-only audit without reusing October's four-trade cohort.
+    if (not isinstance(targets, (list, tuple)) or not 1 <= len(targets) <= MAX_TRADES
+            or any(not isinstance(t, str) or not 1 <= len(t) <= 12
+                   or not t.isascii() or not t.replace(".", "").replace("-", "").isalnum()
+                   or t != t.upper() for t in targets)
+            or len(set(targets)) != len(targets)):
+        raise ValueError("INVALID_TARGET_SYMBOLS")
     rows = report.get("trades", [])
     if not 1 <= len(rows) <= MAX_TRADES:
         raise ValueError("INVALID_TRADE_COUNT")
@@ -59,6 +67,26 @@ def compare_diagnosis(report, *, targets=("FSLY", "JAGX", "WFF", "AEHL")):
         if created_at < authorization_at:
             raise ValueError("AUTHORIZATION_AFTER_ORDER")
         age = _age(entry.get("matching_confirmation_age_seconds"))
+        # PR #119's exact-source evidence is independent of the latest
+        # nearby confirmation. Historical diagnoses may lack these fields.
+        source_status = entry.get(
+            "source_decision_status", "SOURCE_DECISION_ID_NOT_RECORDED"
+        )
+        allowed_source_statuses = {
+            "SOURCE_DECISION_ID_MATCHED",
+            "SOURCE_DECISION_ID_AMBIGUOUS",
+            "SOURCE_DECISION_ID_UNAVAILABLE",
+            "SOURCE_DECISION_ID_NOT_RECORDED",
+        }
+        if source_status not in allowed_source_statuses:
+            raise ValueError("INVALID_SOURCE_DECISION_STATUS")
+        source_match = entry.get("source_decision_matches_authorization")
+        source_age = _age(entry.get("source_decision_age_seconds"))
+        if source_status == "SOURCE_DECISION_ID_MATCHED":
+            if type(source_match) is not bool or source_age is None:
+                raise ValueError("INCOMPLETE_MATCHED_SOURCE_DECISION")
+        elif source_match is not None or source_age is not None:
+            raise ValueError("UNSUPPORTED_SOURCE_DECISION_ASSERTION")
         pnl = Decimal(str(row["actual_closed_pnl"]))
         if not pnl.is_finite():
             raise ValueError("INVALID_PNL")
@@ -82,6 +110,15 @@ def compare_diagnosis(report, *, targets=("FSLY", "JAGX", "WFF", "AEHL")):
             "latest_decision_setup": entry.get("current_setup"),
             "matching_confirmation_age_seconds": str(age) if age is not None else None,
             "missing_matching_confirmation": age is None,
+            "source_decision_status": source_status,
+            "source_decision_state": entry.get("source_decision_state")
+                if source_status == "SOURCE_DECISION_ID_MATCHED" else None,
+            "source_decision_setup": entry.get("source_decision_setup")
+                if source_status == "SOURCE_DECISION_ID_MATCHED" else None,
+            "source_decision_matches_authorization": source_match,
+            "source_decision_age_seconds": (
+                str(source_age) if source_age is not None else None
+            ),
             "eligible_quotes": quote_count,
             "missing_interval_flags": row.get("missing_interval_flags"),
             "candidate_signal_at": row.get("candidate_signal_at"),
@@ -107,10 +144,25 @@ def compare_diagnosis(report, *, targets=("FSLY", "JAGX", "WFF", "AEHL")):
             "latest_decision_mismatches": sum(
                 r["latest_decision_matches"] is False for r in observed
             ),
+            "exact_source_matches": sum(
+                r["source_decision_status"] == "SOURCE_DECISION_ID_MATCHED"
+                and r["source_decision_matches_authorization"] is True
+                for r in observed
+            ),
+            "exact_source_mismatches": sum(
+                r["source_decision_status"] == "SOURCE_DECISION_ID_MATCHED"
+                and r["source_decision_matches_authorization"] is False
+                for r in observed
+            ),
+            "exact_source_unknown": sum(
+                r["source_decision_status"] != "SOURCE_DECISION_ID_MATCHED"
+                for r in observed
+            ),
             "with_matching_confirmation_age": len(ages),
             "max_observed_matching_confirmation_age_seconds": (
                 str(ages[-1]) if ages else None
             ),
+            # Record correlation is not gateway snapshot instrumentation.
             "no_gateway_snapshot_lineage_proven": True,
         },
         "follow_up": (
@@ -125,12 +177,18 @@ def compare_diagnosis(report, *, targets=("FSLY", "JAGX", "WFF", "AEHL")):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("diagnosis", type=Path)
+    parser.add_argument(
+        "--targets", nargs="+", default=["FSLY", "JAGX", "WFF", "AEHL"],
+        help="One to twenty unique uppercase symbols for this saved cohort",
+    )
     args = parser.parse_args(argv)
     with args.diagnosis.open("rb") as handle:
         raw = handle.read(MAX_BYTES + 1)
     if len(raw) > MAX_BYTES:
         parser.error("Diagnosis exceeds 4 MB")
-    report = compare_diagnosis(json.loads(raw.decode("utf-8-sig")))
+    report = compare_diagnosis(
+        json.loads(raw.decode("utf-8-sig")), targets=args.targets
+    )
     print(json.dumps(report, indent=2))
     return 0
 
