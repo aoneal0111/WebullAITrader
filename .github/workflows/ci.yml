@@ -65,6 +65,30 @@ jobs:
       - name: Verify generated state
         run: test -z "$(git status --porcelain)"
 
+  native-research:
+    name: Optional native crypto research tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install isolated native-research dependencies
+        run: |
+          python -m pip install -r requirements-native-income-research.txt
+          python -m pip install --no-deps .
+      - name: Test native research adapters
+        run: |
+          python -m pytest -q \
+            tests/strategy_lab/test_bollinger_paper_pilot.py \
+            tests/strategy_lab/test_crypto_parameter_checks.py \
+            tests/strategy_lab/test_kraken_public_transport.py \
+            tests/strategy_lab/test_nfi_readiness.py \
+            tests/strategy_lab/test_paper_candidate_addon.py
+
   docker:
     name: Docker build
     runs-on: ubuntu-latest
