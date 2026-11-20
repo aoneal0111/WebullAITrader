@@ -1724,6 +1724,8 @@ def _cancellation_reason(
         return OrderTerminalReason.PROTECTIVE_REPLACED
     if source == "autonomous-paper-entry-replace":
         return OrderTerminalReason.ENTRY_REPLACED
+    if source == "autonomous-paper-correlated-exit":
+        return OrderTerminalReason.SYSTEM_CANCELLED
     return OrderTerminalReason.OPERATOR_CANCELLED
 
 
