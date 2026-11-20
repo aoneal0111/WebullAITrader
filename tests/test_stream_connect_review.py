@@ -3,9 +3,14 @@ from types import SimpleNamespace as NS
 import pytest
 from tests.test_desktop_broker_runtime import configuration
 from app.configuration import TradingEnvironment
-from app.webull.stream_connect_review import check
+from app.diagnostics.webull_stream_connect_review import check
 from app.webull.errors import NetworkError
-import app.webull.stream_connect_review as module
+import app.diagnostics.webull_stream_connect_review as module
+
+
+def test_legacy_cli_entrypoint_remains_importable():
+    from app.webull.stream_connect_review import check as legacy_check
+    assert legacy_check is check
 
 
 def test_explicit_market_data_probe_has_no_desktop_account_or_order_dependency(monkeypatch):
