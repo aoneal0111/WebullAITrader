@@ -60,30 +60,14 @@ dist/
 project_inventory.txt
 project_symbols.txt
 
-# Python
-__pycache__/
-*.py[cod]
-
 # Test/runtime artifacts
-.pytest_cache/
-.pytest-temp/
 
 # Temporary test/verification directories
 /.pytest_*/
 *_full_temp/
 architecture_verification_temp_*/
 
-# Python
-__pycache__/
-*.py[cod]
-
-# Pytest
-.pytest_tmp/
-.pytest_cache/
-
 # Build output
-build/
-dist/
 installer_output/
 
 # GUI backups
