@@ -35,3 +35,19 @@ no working legacy SELL protection in the inspected snapshot.
 **Do not start the runtime or place recovery orders based only on this report.**
 First verify current authoritative positions, account scope, entry ownership,
 working protective orders, and a documented migration/reconciliation plan.
+
+
+## Active campaign comparison (V2)
+
+The same read-only snapshot also reports `active_campaign_inventory`:
+net recorded BUY minus SELL filled shares per symbol, unfilled working BUY
+and SELL quantities, and open-order counts. It separately reports
+`active_nonzero_positions`, `active_working_orders`,
+`active_negative_inventory`, and counts orders for any other campaign.
+
+The active campaign is **never** netted against legacy inventory. A net-zero
+active campaign does not imply that an excluded legacy position has disappeared,
+that the account is flat at a broker, or that the old positions are protected.
+Nonzero or working active inventory still requires a separate authoritative
+runtime/account reconciliation before restart. This tool never creates or
+amends orders or converts historical orders into current positions.
