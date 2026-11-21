@@ -39,3 +39,19 @@ def test_syntax_errors_reported_without_guessing(tmp_path):
     write(tmp_path, "tests/test_placeholder.py", "assert True\n")
     report = inspect(tmp_path)
     assert report["parse_errors"] == ["app/strategy/malformed.py: SyntaxError"]
+
+
+def test_detects_direct_cli_and_freqtrade_loader_without_python_imports(tmp_path):
+    write(tmp_path, "app/strategy_lab/my_cli.py", "if __name__ == '__main__':\n    pass\n")
+    write(tmp_path, "app/strategy_lab/MyStrategy.py",
+          "from freqtrade.strategy import IStrategy\nclass MyStrategy(IStrategy):\n    pass\n")
+    write(tmp_path, "tests/test_placeholder.py",
+          "SELECTED_STRATEGY = 'MyStrategy.py'\n")
+    report = inspect(tmp_path)
+    rows = {row["path"]: row for row in report["candidates"]}
+    assert rows["app/strategy_lab/my_cli.py"]["direct_cli_entrypoint"]
+    assert rows["app/strategy_lab/MyStrategy.py"]["freqtrade_istrategy_subclass"]
+    assert rows["app/strategy_lab/MyStrategy.py"]["literal_consumer_count"] == 1
+    assert report["no_static_import_but_direct_entrypoint"] == 1
+    assert report["no_static_import_but_freqtrade_strategy"] == 1
+    assert report["deletions_authorized"] is False
