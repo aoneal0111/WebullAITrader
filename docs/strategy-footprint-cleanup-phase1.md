@@ -44,3 +44,16 @@ test monkeypatches, and executable scripts still need review.
 6. Never treat deleting strategy code as evidence of improved trading win rate.
 
 **No strategy deletions are included in this Phase 1 audit.**
+
+
+## Phase 2: inspect standalone consumers before deleting anything
+
+The V2 audit distinguishes `if __name__ == "__main__"` CLI entrypoints,
+Freqtrade `IStrategy` subclasses, and Python string-literal references
+from normal imports. These signals can help explain why an apparently unused
+module is actually run by a CLI or an external loader. Literal matches are
+heuristic, not authoritative. Absence of all three signals is still **not**
+deletion proof: shell scripts, configuration files, external user-data
+directories and historical frozen source locks can invoke modules by name.
+
+Do not delete any of the original 20 candidates solely on this report.
