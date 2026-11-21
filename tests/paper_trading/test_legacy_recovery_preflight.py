@@ -84,3 +84,55 @@ def test_rejects_limit_and_invalid_metadata(tmp_path):
         db.execute("UPDATE metadata SET value='LIVE' WHERE key='environment'")
     with pytest.raises(ValueError, match="NOT_DEDICATED_PAPER_LEDGER"):
         preflight(path)
+
+
+def test_active_campaign_inventory_is_separate_from_legacy():
+    rows = [
+        order("ODD", "BUY", 200, 197, status="EXPIRED"),
+        order("ODD", "BUY", 10, 10, status="FILLED", campaign="paper-a"),
+        order("ODD", "SELL", 4, 4, status="FILLED", campaign="paper-a"),
+        order("ODD", "SELL", 6, 0, status="ACCEPTED", campaign="paper-a", kind="STOP"),
+        order("XYZ", "BUY", 3, 0, status="ACCEPTED", campaign="paper-a"),
+    ]
+    result = summarize_legacy_orders(rows, active_campaign="paper-a")
+    assert result["legacy_nonzero_positions"] == 1
+    assert result["legacy_positions"][0]["net_filled_shares"] == "197"
+    active = {row["symbol"]: row for row in result["active_campaign_inventory"]}
+    assert active["ODD"] == {
+        "symbol": "ODD", "net_filled_shares": "6",
+        "working_buy_shares": "0", "working_sell_shares": "6",
+        "working_order_count": 1, "negative_inventory": False,
+    }
+    assert active["XYZ"]["net_filled_shares"] == "0"
+    assert active["XYZ"]["working_buy_shares"] == "3"
+    assert result["active_nonzero_positions"] == 1
+    assert result["active_working_orders"] == 2
+    assert result["active_negative_inventory"] == 0
+    assert result["runtime_action"] == "NONE"
+
+
+def test_active_fills_must_reconcile_even_if_legacy_is_clean():
+    bad = json.loads(order("ODD", "BUY", 10, 5, status="EXPIRED", campaign="paper-a"))
+    bad["fills"] = []
+    with pytest.raises(ValueError, match="FILL_MISMATCH"):
+        summarize_legacy_orders([json.dumps(bad)], active_campaign="paper-a")
+
+
+def test_active_negative_inventory_is_reported_not_repaired():
+    result = summarize_legacy_orders(
+        [order("XYZ", "SELL", 3, 3, status="FILLED", campaign="paper-a")],
+        active_campaign="paper-a",
+    )
+    assert result["active_negative_inventory"] == 1
+    assert result["active_campaign_inventory"][0]["net_filled_shares"] == "-3"
+    assert result["recovery_authorized"] is False
+
+
+def test_other_campaign_not_conflated_with_active_or_legacy():
+    result = summarize_legacy_orders(
+        [order("XYZ", "BUY", 7, 7, status="FILLED", campaign="paper-old")],
+        active_campaign="paper-a",
+    )
+    assert result["other_campaign_orders"] == 1
+    assert result["active_campaign_inventory"] == []
+    assert result["legacy_positions"] == []

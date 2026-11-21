@@ -40,6 +40,7 @@ def summarize_legacy_orders(rows, *, active_campaign):
     groups = defaultdict(lambda: {"buy": Decimal(0), "sell": Decimal(0), "stops": [],
                                   "targets": [], "other_working": 0})
     campaigns = defaultdict(int)
+    active_positions = defaultdict(lambda: {"bought": Decimal(0), "sold": Decimal(0), "working_buys": Decimal(0), "working_sells": Decimal(0), "working_orders": 0})
     for raw in rows:
         if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_PAYLOAD_BYTES:
             raise ValueError("PAYLOAD_LIMIT")
@@ -51,7 +52,33 @@ def summarize_legacy_orders(rows, *, active_campaign):
         if not isinstance(campaign, str):
             raise ValueError("INVALID_CAMPAIGN")
         campaigns[campaign] += 1
+        if campaign == active_campaign:
+            # Observe the active-campaign state separately. Never mix its
+            # quantities with legacy ownership or infer broker positions.
+            symbol = request.get("symbol")
+            if not isinstance(symbol, str) or not symbol or len(symbol) > 16:
+                raise ValueError("INVALID_SYMBOL")
+            side, status = request.get("side"), order.get("status")
+            if side not in {"BUY", "SELL"} or status not in TERMINAL | {"NEW", "ACCEPTED", "PARTIALLY_FILLED"}:
+                raise ValueError("INVALID_ORDER_STATE")
+            qty = _quantity(request.get("quantity"), positive=True)
+            filled = _quantity(order.get("filled_quantity"))
+            if filled > qty:
+                raise ValueError("OVERFILLED_ORDER")
+            fills = order["fills"]
+            if any(not isinstance(f, dict) for f in fills):
+                raise ValueError("FILL_MISMATCH")
+            total = sum((_quantity(f.get("quantity"), positive=True) for f in fills), Decimal(0))
+            if total != filled or (status == "FILLED" and filled != qty):
+                raise ValueError("FILL_MISMATCH")
+            entry = active_positions[symbol]
+            entry["bought" if side == "BUY" else "sold"] += filled
+            if status not in TERMINAL:
+                entry["working_orders"] += 1
+                entry["working_buys" if side == "BUY" else "working_sells"] += qty - filled
+            continue
         if campaign != LEGACY:
+            # Unknown campaign is not silently imported into either inventory.
             continue
         symbol, lifecycle = request.get("symbol"), request.get("strategy_lifecycle_id")
         if not isinstance(symbol, str) or not symbol or len(symbol) > 16:
@@ -102,16 +129,33 @@ def summarize_legacy_orders(rows, *, active_campaign):
             "protection_gap": bool(net > 0 and stop_qty < net),
             "ambiguous_inventory": bool(net < 0 or len(group["stops"]) > 1 or stop_qty > net),
         })
+    active_rows = []
+    for symbol, entry in sorted(active_positions.items()):
+        net = entry["bought"] - entry["sold"]
+        if net != 0 or entry["working_orders"]:
+            active_rows.append({
+                "symbol": symbol,
+                "net_filled_shares": str(net),
+                "working_buy_shares": str(entry["working_buys"]),
+                "working_sell_shares": str(entry["working_sells"]),
+                "working_order_count": entry["working_orders"],
+                "negative_inventory": net < 0,
+            })
     return {
-        "version": "LEGACY_PAPER_RECOVERY_PREFLIGHT_V1",
+        "version": "LEGACY_PAPER_RECOVERY_PREFLIGHT_V2",
         "active_campaign": active_campaign,
         "orders_by_campaign": dict(sorted(campaigns.items())),
+        "active_campaign_inventory": active_rows,
+        "active_nonzero_positions": sum(row["net_filled_shares"] != "0" for row in active_rows),
+        "active_working_orders": sum(row["working_order_count"] for row in active_rows),
+        "active_negative_inventory": sum(row["negative_inventory"] for row in active_rows),
+        "other_campaign_orders": sum(count for campaign, count in campaigns.items() if campaign not in {LEGACY, active_campaign}),
         "legacy_positions": positions,
         "legacy_nonzero_positions": sum(p["net_filled_shares"] != "0" for p in positions),
         "legacy_stop_gaps": sum(p["protection_gap"] for p in positions),
         "legacy_ambiguities": sum(p["ambiguous_inventory"] for p in positions),
         "runtime_action": "NONE", "recovery_authorized": False,
-        "interpretation": "SAVED_LEGACY_ORDER_EVIDENCE_NOT_ACTIVE_CAMPAIGN_OR_BROKER_INVENTORY",
+        "interpretation": "SAVED_ORDER_EVIDENCE_SEPARATED_BY_CAMPAIGN_NOT_BROKER_INVENTORY",
     }
 
 
