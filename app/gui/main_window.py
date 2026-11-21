@@ -22,7 +22,7 @@ from app.gui.pages.dashboard import DashboardPage
 from app.gui.pages.crypto_research import CryptoResearchPage
 from app.gui.pages.orders import OrdersPage
 from app.gui.pages.placeholder import PlaceholderPage
-from app.gui.pages.market_analysis import DerivativeWorkspace
+from app.gui.pages.asset_workspace import AssetWorkspace
 from app.gui.pages.replay import ReplayPage
 from app.gui.presenters import (
     DashboardPresenter,
@@ -61,7 +61,6 @@ from app.services.chart_market_data import ChartMarketDataService
 from app.gui.formatters.warrior_paper import format_warrior_paper
 from app.assets import AssetType
 from app.gui.widgets.asset_navigation import AssetNavigation
-from app.gui.pages.crypto_paper import CryptoPaperPage
 from app.asset_modules.engine_catalog import EngineId
 from app.gui.pages.strategy_orders import StrategyOrdersPage
 
@@ -205,8 +204,12 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.asset_navigation)
         self.asset_surface = QStackedWidget()
         self._asset_pages = {}
+        self._market_pages = {}
         self.pages = QStackedWidget()
+        from app.equity_overhaul.paper_experiment import PaperExperiment
+        admission_policy=getattr(self._trading_service,'policy',None)
         self.dashboard = DashboardPage(
+            admission_notice_provider=admission_policy.notice if isinstance(admission_policy,PaperExperiment) else None,
             warrior_observability=(
                 None if self._warrior_forward_sidecar is None
                 else getattr(self._warrior_forward_sidecar, "_observability", None)
@@ -251,6 +254,13 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.operations)  # 9
         self.asset_surface.addWidget(self.pages)
         content_layout.addWidget(self.asset_surface, 1)
+        self.account_totals = QStackedWidget()
+        self.account_totals.setObjectName('persistentAccountRisk')
+        self.account_totals.setMaximumHeight(116)
+        equity_totals = self.dashboard.market_workspace.portfolio_section
+        self.dashboard.market_workspace.layout().removeWidget(equity_totals)
+        self.account_totals.addWidget(equity_totals)
+        content_layout.addWidget(self.account_totals)
         self.asset_navigation.asset_selected.connect(self._select_asset)
         self.pages.currentChanged.connect(self._on_page_changed)
         self.dashboard.market_workspace.crypto_scanner_section.hide()
@@ -285,7 +295,9 @@ class MainWindow(QMainWindow):
 
         status = QStatusBar()
         self.global_status = GlobalStatusBar(version=_application_version())
-        status.addWidget(self.global_status, 1)
+        self.market_status = QStackedWidget()
+        self.market_status.addWidget(self.global_status)
+        status.addWidget(self.market_status, 1)
         self.status_label = QLabel()
         self.status_label.setVisible(False)
         status.addWidget(self.status_label)
@@ -331,11 +343,9 @@ class MainWindow(QMainWindow):
                 self._decisions_presenter,
                 PortfolioPresenter(
                     self.dashboard.portfolio_panel,
-                    self.dashboard.operator_workspace.portfolio_intelligence,
-                    RenderAdapter(
-                        self.dashboard.runtime_header.render_portfolio
-                    ),
+                    RenderAdapter(self.dashboard.runtime_header.render_portfolio),
                 ),
+                PortfolioPresenter(self.dashboard.operator_workspace.portfolio_intelligence),
                 HealthPresenter(
                     self.dashboard.operator_health_panel,
                     self.sidebar,
@@ -368,7 +378,8 @@ class MainWindow(QMainWindow):
                 {1},       # Positions
                 {0, 5},    # Timeline + dashboard activity panel
                 {0, 6},    # Decisions + dashboard decisions panel
-                {0, 9},    # Portfolio + operator workspace
+                None,      # Persistent account/risk on every route
+                {9},       # Detailed portfolio only in Operator Workspace
                 None,      # Health/global status
                 {0, 7},    # Watchlist + scanner
                 {0, 8},    # Replay + dashboard replay panel
@@ -623,6 +634,7 @@ class MainWindow(QMainWindow):
         )
         if isinstance(self._selected_asset, EngineId):
             self.asset_surface.currentWidget().render_state(state)
+        self._render_market_sidebar()
 
     def _on_page_changed(self, index: int) -> None:
         self._select_asset(self._selected_asset)
@@ -636,41 +648,44 @@ class MainWindow(QMainWindow):
 
     def _select_asset(self, asset) -> None:
         self._selected_asset = asset
-        self.global_status.setVisible(asset is AssetType.EQUITY)
-        if asset is AssetType.EQUITY:
-            self.asset_surface.setCurrentWidget(self.pages)
-            return
-        route = self.pages.currentIndex()
-        key = (asset, -1 if isinstance(asset, EngineId) else route)
-        if key not in self._asset_pages:
-            if isinstance(asset, EngineId):
-                page = StrategyOrdersPage(asset)
-            elif asset is AssetType.CRYPTO and route == 7:
-                page = self.crypto_research
-            elif asset is AssetType.CRYPTO and getattr(self._asset_modules, 'crypto_supervisor', None):
-                names = ('Mission Control','Positions','Orders','Strategies','Settings',
-                         'Activity','Decisions','Scanner','Replay','Operator Workspace')
-                page = CryptoPaperPage(names[route], self._asset_modules.crypto_supervisor)
-            elif asset in {AssetType.FUTURES, AssetType.OPTIONS}:
-                names = ("Mission Control", "Positions", "Orders", "Strategies",
-                         "Settings", "Activity", "Decisions", "Scanner", "Replay", "Operator Workspace")
-                page = DerivativeWorkspace(asset, names[route],
-                    ledger_reader=getattr(self._asset_modules,'futures_ledger_reader',None)
-                    if asset is AssetType.FUTURES else getattr(self._asset_modules,'options_ledger_reader',None))
-            else:
-                names = ("Mission Control", "Positions", "Orders", "Strategies",
-                         "Settings", "Activity", "Decisions", "Scanner", "Replay", "Operator Workspace")
-                page = PlaceholderPage(
-                    f"{asset.value.title()} · {names[route]}",
-                    "Adapter not installed. No subscriptions or execution workers are running."
-                    if asset in {AssetType.FUTURES, AssetType.OPTIONS}
-                    else "Crypto research is available under Scanner. Paper execution integration is pending.",
-                )
-            self._asset_pages[key] = page
-            self.asset_surface.addWidget(page)
-        self.asset_surface.setCurrentWidget(self._asset_pages[key])
-        if isinstance(asset, EngineId):
+        self.global_status.setVisible(asset is AssetType.EQUITY or isinstance(asset, EngineId))
+        if asset is AssetType.EQUITY or isinstance(asset, EngineId):
+            self.account_totals.setCurrentWidget(self.dashboard.market_workspace.portfolio_section)
+            self.market_status.setCurrentWidget(self.global_status)
+            if asset is AssetType.EQUITY:
+                self.asset_surface.setCurrentWidget(self.pages)
+                self._schedule_state_render(self._state_store.snapshot(), route=self.pages.currentIndex())
+                return
+            key=(asset,-1)
+            if key not in self._asset_pages:
+                page=StrategyOrdersPage(asset)
+                self._asset_pages[key]=page;self.asset_surface.addWidget(page)
+            self.asset_surface.setCurrentWidget(self._asset_pages[key])
             self._asset_pages[key].render_state(self._state_store.snapshot())
+            return
+        if asset not in self._market_pages:
+            reader = (getattr(self._asset_modules,'futures_ledger_reader',None) if asset is AssetType.FUTURES
+                      else getattr(self._asset_modules,'options_ledger_reader',None) if asset is AssetType.OPTIONS else None)
+            page=AssetWorkspace(asset,reader=reader,version=_application_version())
+            self._market_pages[asset]=page
+            page.view_changed.connect(self._render_market_sidebar)
+            self.asset_surface.addWidget(page)
+            self.account_totals.addWidget(page.footer)
+            self.market_status.addWidget(page.status_bar)
+        page=self._market_pages[asset]
+        page.set_route(self.pages.currentIndex())
+        self.asset_surface.setCurrentWidget(page)
+        self.account_totals.setCurrentWidget(page.footer)
+        self.market_status.setCurrentWidget(page.status_bar)
+        self._render_market_sidebar()
+
+    def _render_market_sidebar(self,*_):
+        page=self._market_pages.get(self._selected_asset)
+        if page is None:return
+        view=page.view
+        self.sidebar.connection.set_status(self._selected_asset.value.title()+' '+view.state,
+            'good' if view.state=='RUNNING' else 'neutral')
+        self.sidebar.connection_detail.setText('Broker: '+view.broker+' · Feed: '+view.feed)
 
     def _render_replay_state(self, state: ApplicationState) -> None:
         self._replay_presenter.render(state)
@@ -710,6 +725,8 @@ class MainWindow(QMainWindow):
             event.ignore()
             QTimer.singleShot(50, self.close)
             return
+        for page in self._market_pages.values():
+            page.shutdown();page.close()
         self._warrior_refresh_timer.stop()
         if self._chart_presenter is not None:
             self._chart_presenter.close()

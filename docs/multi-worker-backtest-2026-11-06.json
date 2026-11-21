@@ -1,0 +1,487 @@
+{
+  "scope": "OFFLINE_SHARED_WALLET_MULTI_WORKER_V1",
+  "source_commit": "553525cf23aa1af1155aa64d071ab1ddd5f940c1",
+  "worker_count": 98,
+  "source_files": [
+    {
+      "path": "binance/1INCH_USDT-1d.feather",
+      "sha256": "9e31f704927df7b2883bc8260fc0bb77b5390a7d6efb667da22dd136c8c3df66",
+      "rows": 1096
+    },
+    {
+      "path": "binance/ADA_USDT-1d.feather",
+      "sha256": "6cef7f8df7cfcfcfa8c6a0f392cdfd76d41e17cb4c41f56f53c46f6852fce40d",
+      "rows": 1096
+    },
+    {
+      "path": "binance/ADX_USDT-1d.feather",
+      "sha256": "17565c62c7244c76f1254a79b9a4d4a11aeb26e71dad5f289788ac7d63f8fb17",
+      "rows": 1096
+    },
+    {
+      "path": "binance/AGLD_USDT-1d.feather",
+      "sha256": "053091b333c7ad54ec84e8d9b02a73b6358bdc7c06f7364493436828a46c0d9e",
+      "rows": 1096
+    },
+    {
+      "path": "binance/ALGO_USDT-1d.feather",
+      "sha256": "7eb05a104a6131d3732adc810a4b9a901282c247031b0769f2af8a901a66b104",
+      "rows": 1096
+    },
+    {
+      "path": "binance/ALICE_USDT-1d.feather",
+      "sha256": "f38fae483749a096405ca1567bca93ce3be5ea73f7f8a3be886cba6bb96dc53c",
+      "rows": 1096
+    },
+    {
+      "path": "binance/ALPACA_USDT-1d.feather",
+      "sha256": "a5d6f34d0eb6b56bf212f8fd79cf3ffd4fd1e587f0a2a591b3815239962d671c",
+      "rows": 1096
+    },
+    {
+      "path": "binance/ALPHA_USDT-1d.feather",
+      "sha256": "740c0222194eea11f06082d5bdfce56074853a5486053879f6574c8a9ca5908a",
+      "rows": 1096
+    },
+    {
+      "path": "binance/ARPA_USDT-1d.feather",
+      "sha256": "cedbeba05aa45c0a721ea012152a5197896e456d17095764d93113340331fc93",
+      "rows": 1096
+    },
+    {
+      "path": "binance/AR_USDT-1d.feather",
+      "sha256": "1ae28ca1fabbae7784f4af615d61760404fd572762e761282ad3d04d073d168f",
+      "rows": 1096
+    },
+    {
+      "path": "binance/ATM_USDT-1d.feather",
+      "sha256": "5cdfbe24d0a1bf521b9c3ba7a53ae2a5e81426b137eb9d6f6ff5048db7b97310",
+      "rows": 1096
+    },
+    {
+      "path": "binance/ATOM_USDT-1d.feather",
+      "sha256": "f4462925dae5600db1fb5b4b175c1a44bb282829f5acf0ba3427f140c6164c6a",
+      "rows": 1096
+    },
+    {
+      "path": "binance/AUCTION_USDT-1d.feather",
+      "sha256": "b217625c3fbcd0efe63dea5954213fcdb7e92db69338ec8370b47e7d180d8a0c",
+      "rows": 1096
+    },
+    {
+      "path": "binance/AUDIO_USDT-1d.feather",
+      "sha256": "5e37382ccc57a6b34edb51ac4ca98765f80cf58b57942136ac395a6c0d623680",
+      "rows": 1096
+    },
+    {
+      "path": "binance/AVAX_USDT-1d.feather",
+      "sha256": "d21926c6f24b716443821c428ded2ac9267770d643d96b0e82192bed557957c6",
+      "rows": 1096
+    },
+    {
+      "path": "binance/AVA_USDT-1d.feather",
+      "sha256": "c76b0d01148f00f815fc5cb74a2849dffc3fb24d39209b3b590814672639c3d4",
+      "rows": 1096
+    },
+    {
+      "path": "binance/AXS_USDT-1d.feather",
+      "sha256": "6e1b94d25770e808cfc496180752456b7506ce1a6490a8be5ef5a2d692ed4e32",
+      "rows": 1096
+    },
+    {
+      "path": "binance/BADGER_USDT-1d.feather",
+      "sha256": "2c7c01273b7d085f5c845fed37d58b718fc0d7438516ff39d876436281fbdd9c",
+      "rows": 1096
+    },
+    {
+      "path": "binance/BAKE_USDT-1d.feather",
+      "sha256": "ec27a8def5290cf03a4eab46ea8bf0bef4af6093533c1062a6d957a28b89aeb5",
+      "rows": 1096
+    },
+    {
+      "path": "binance/BAND_USDT-1d.feather",
+      "sha256": "373c0d43ffc7b35c464b53f8dfa7576ffa9261a0624e996963f4c3ec725a016e",
+      "rows": 1096
+    },
+    {
+      "path": "binance/BAR_USDT-1d.feather",
+      "sha256": "d760b2fc0725187d4df00cbd78dbdea5008fe77ca6bcd9215f8442f4ba43d9e7",
+      "rows": 1096
+    },
+    {
+      "path": "binance/BCH_USDT-1d.feather",
+      "sha256": "d0b3591394ddd06255ab8406e0fbf48a00b479278e46416628c7426f15d52588",
+      "rows": 1096
+    },
+    {
+      "path": "binance/BEL_USDT-1d.feather",
+      "sha256": "6a0fdaa64c9bd8e092d8306155e860d3c2aff8488e1c5d249cf9dfdbef7ce887",
+      "rows": 1096
+    },
+    {
+      "path": "binance/BETA_USDT-1d.feather",
+      "sha256": "b67b79332438ad94e4e8497e34dc04f709fb4f2d974cea96652a1ced25bf22d1",
+      "rows": 1096
+    },
+    {
+      "path": "binance/BNT_USDT-1d.feather",
+      "sha256": "5d733f56dea001af45069e21aef358ab7102c71cf6cc23195a0eabe7c36f540f",
+      "rows": 1096
+    },
+    {
+      "path": "binance/BTC_USDT-1d.feather",
+      "sha256": "45856e0d6c27d3a4d1bcadac46b4da49f24c253d7bacfa525ef00f05f02f1a5f",
+      "rows": 1096
+    },
+    {
+      "path": "binance/BURGER_USDT-1d.feather",
+      "sha256": "0782328a88e5ed78a256a87797f40d19f0de18a4f839859ebbe2a98423cc66bf",
+      "rows": 1096
+    },
+    {
+      "path": "binance/C98_USDT-1d.feather",
+      "sha256": "10790f62ded23a78305f61c2269445865d0b206f319c8af9d85178c91efb7900",
+      "rows": 1096
+    },
+    {
+      "path": "binance/CAKE_USDT-1d.feather",
+      "sha256": "a902815db0661d6a158c1ce6811c2536badec4fd997bb31ba3852ab1785fb0d0",
+      "rows": 1096
+    },
+    {
+      "path": "binance/CELR_USDT-1d.feather",
+      "sha256": "78a91f38b1a2a5e7fb8adb6c49932e7a005a0d35f691692a81e59dbfd3545d53",
+      "rows": 1096
+    },
+    {
+      "path": "binance/CFX_USDT-1d.feather",
+      "sha256": "dc814a9438706180f66429fcda9d3e26d6e3b0ae8a5016876546f0909cb00c61",
+      "rows": 1096
+    },
+    {
+      "path": "binance/CHR_USDT-1d.feather",
+      "sha256": "178a31945f6514c9dce1d746f518e8f38daf489e5f4aa2894701e9d9950ae08d",
+      "rows": 1096
+    },
+    {
+      "path": "binance/CHZ_USDT-1d.feather",
+      "sha256": "a64b5b5e0af9d4ba64b9c5cf9ddc43de676c9daf17105afd21790b28fdb12214",
+      "rows": 1096
+    },
+    {
+      "path": "binance/CKB_USDT-1d.feather",
+      "sha256": "dedc1c71e99cba0b468b242536a31955464ee394d7559c8966b42dfb28e2d544",
+      "rows": 1096
+    },
+    {
+      "path": "binance/COTI_USDT-1d.feather",
+      "sha256": "4491eed57bee115f6ad3c439c2bb0eed46cb4f35155bdc049f27dfe432a6ab9c",
+      "rows": 1096
+    },
+    {
+      "path": "binance/CRV_USDT-1d.feather",
+      "sha256": "12ff392907e66b837d476f3d43cd0e2be16d1aa60311bedda587f732de171e72",
+      "rows": 1096
+    },
+    {
+      "path": "binance/DASH_USDT-1d.feather",
+      "sha256": "9b96d6733b150326879b1104299d99c35ec45a4f1a5ac9f0bd20103a4ef9367c",
+      "rows": 1096
+    },
+    {
+      "path": "binance/DATA_USDT-1d.feather",
+      "sha256": "c5b41b4e2057de0167d5b967656346c37c6154ef7b5a7e21d4f9e97075a65b80",
+      "rows": 1096
+    },
+    {
+      "path": "binance/DEGO_USDT-1d.feather",
+      "sha256": "b98f834d599c5e30b5438cb6a08b6546378b730ff152cedf399cba78ee51feae",
+      "rows": 1096
+    },
+    {
+      "path": "binance/DEXE_USDT-1d.feather",
+      "sha256": "54e7e26d630a0a369f8d77bdb7b85880209202cc4f518112a589e37b4e7b789c",
+      "rows": 1096
+    },
+    {
+      "path": "binance/DF_USDT-1d.feather",
+      "sha256": "3424e94634b80cc5d9f65072a1da18659a9014896d3e26d7c8aa2084eba01703",
+      "rows": 1096
+    },
+    {
+      "path": "binance/DGB_USDT-1d.feather",
+      "sha256": "11f1066065e4a3b44d38365474718cb80bdfbde739f77e1cd0052b91bea41df0",
+      "rows": 1096
+    },
+    {
+      "path": "binance/DODO_USDT-1d.feather",
+      "sha256": "4f14cbca32dc03d3430945193c55a7315b154d0230609989d4d1f6979271ed12",
+      "rows": 1096
+    },
+    {
+      "path": "binance/DOGE_USDT-1d.feather",
+      "sha256": "8a7cdc24aa76c667156a48bead0fd75f3ff66d0cfd845d03721a52444225b25d",
+      "rows": 1096
+    },
+    {
+      "path": "binance/DOT_USDT-1d.feather",
+      "sha256": "38cad068097e2e1e0e7cb764bfecdd68a3d054e8225d40ecabf0b8dbaa06595e",
+      "rows": 1096
+    },
+    {
+      "path": "binance/DYDX_USDT-1d.feather",
+      "sha256": "5baadfca53ae4b30afa96f26a6629cd574b9ec05414f0b6c8de63ff097c1e9b2",
+      "rows": 1096
+    },
+    {
+      "path": "binance/EGLD_USDT-1d.feather",
+      "sha256": "9bf56040a510f0dd210ca132725b577745df05095c13aaeb116055a31de20fb8",
+      "rows": 1096
+    },
+    {
+      "path": "binance/ENJ_USDT-1d.feather",
+      "sha256": "78425d3151af922c56709adb9c24139311d9dade65d14f98a46551f47e1b938c",
+      "rows": 1096
+    },
+    {
+      "path": "binance/ENS_USDT-1d.feather",
+      "sha256": "40b94db06ebe8568647bb900a5626e7e45e53ede9ba33beed65c071b3b4bc160",
+      "rows": 1096
+    }
+  ],
+  "excluded_symbols": [
+    {
+      "symbol": "BNX_USDT",
+      "reason": "missing, duplicate or unordered candle; no gap filling"
+    }
+  ],
+  "duration_seconds": 10.84243362399991,
+  "cases": [
+    {
+      "window": "exploratory_2023",
+      "cost_multiplier": 1,
+      "closed_trades": 287,
+      "wins": 119,
+      "win_rate": 0.4146341463414634,
+      "realized_net": -737.5066906154041,
+      "profit_factor": 0.8556796360105092,
+      "workers": 98,
+      "independent_families": 2,
+      "symbols": 49,
+      "initial_cash": 10000.0,
+      "ending_cash": 489.95241864133754,
+      "ending_liquidation_equity": 10000.92575476238,
+      "marked_net": 0.9257547623801656,
+      "unrealized_net": 738.4324453777779,
+      "open_positions": 42,
+      "maximum_close_drawdown": 0.30062936064851875,
+      "maximum_open_gross_fraction": 1.0,
+      "minimum_cash": 0.0,
+      "accounting_residual": 6.366462912410498e-12,
+      "maximum_simultaneous_positions": 42,
+      "rejections": {
+        "SYMBOL_ALREADY_OWNED_OR_EXITED": 545,
+        "INSUFFICIENT_SHARED_CASH": 5
+      },
+      "costs": {
+        "fee_per_side": 0.001,
+        "slippage_per_side": 0.001
+      },
+      "per_family": {
+        "RSI2_TREND": {
+          "closed_trades": 137,
+          "wins": 57,
+          "win_rate": 0.41605839416058393,
+          "realized_net": -690.0652582656535,
+          "profit_factor": 0.7038910583129819
+        },
+        "DONCHIAN20_TREND": {
+          "closed_trades": 150,
+          "wins": 62,
+          "win_rate": 0.41333333333333333,
+          "realized_net": -47.44143234975061,
+          "profit_factor": 0.9829332722296977
+        }
+      },
+      "network_requests": 0,
+      "grok_requests": 0,
+      "orders": 0,
+      "execution_authorized": false
+    },
+    {
+      "window": "exploratory_2023",
+      "cost_multiplier": 2,
+      "closed_trades": 287,
+      "wins": 118,
+      "win_rate": 0.41114982578397213,
+      "realized_net": -1254.3542784575927,
+      "profit_factor": 0.7605135517568629,
+      "workers": 98,
+      "independent_families": 2,
+      "symbols": 49,
+      "initial_cash": 10000.0,
+      "ending_cash": 597.2962184273064,
+      "ending_liquidation_equity": 9398.735169709273,
+      "marked_net": -601.2648302907273,
+      "unrealized_net": 653.089448166864,
+      "open_positions": 42,
+      "maximum_close_drawdown": 0.3291636121340601,
+      "maximum_open_gross_fraction": 1.0,
+      "minimum_cash": 0.0,
+      "accounting_residual": 1.3642420526593924e-12,
+      "maximum_simultaneous_positions": 42,
+      "rejections": {
+        "SYMBOL_ALREADY_OWNED_OR_EXITED": 545,
+        "INSUFFICIENT_SHARED_CASH": 5
+      },
+      "costs": {
+        "fee_per_side": 0.002,
+        "slippage_per_side": 0.002
+      },
+      "per_family": {
+        "RSI2_TREND": {
+          "closed_trades": 137,
+          "wins": 56,
+          "win_rate": 0.40875912408759124,
+          "realized_net": -1084.135748901385,
+          "profit_factor": 0.5663802479715911
+        },
+        "DONCHIAN20_TREND": {
+          "closed_trades": 150,
+          "wins": 62,
+          "win_rate": 0.41333333333333333,
+          "realized_net": -170.2185295562077,
+          "profit_factor": 0.9378193647382975
+        }
+      },
+      "network_requests": 0,
+      "grok_requests": 0,
+      "orders": 0,
+      "execution_authorized": false
+    },
+    {
+      "window": "later_2024",
+      "cost_multiplier": 1,
+      "closed_trades": 451,
+      "wins": 204,
+      "win_rate": 0.4523281596452328,
+      "realized_net": 4480.026793876016,
+      "profit_factor": 1.4043286533863033,
+      "workers": 98,
+      "independent_families": 2,
+      "symbols": 49,
+      "initial_cash": 10000.0,
+      "ending_cash": 12802.035978986147,
+      "ending_liquidation_equity": 14614.883375692158,
+      "marked_net": 4614.883375692158,
+      "unrealized_net": 134.85658181613246,
+      "open_positions": 6,
+      "maximum_close_drawdown": 0.295244640750323,
+      "maximum_open_gross_fraction": 1.0,
+      "minimum_cash": 0.0,
+      "accounting_residual": 8.981260180007666e-12,
+      "maximum_simultaneous_positions": 46,
+      "rejections": {
+        "SYMBOL_ALREADY_OWNED_OR_EXITED": 862,
+        "INSUFFICIENT_SHARED_CASH": 129
+      },
+      "costs": {
+        "fee_per_side": 0.001,
+        "slippage_per_side": 0.001
+      },
+      "per_family": {
+        "RSI2_TREND": {
+          "closed_trades": 290,
+          "wins": 126,
+          "win_rate": 0.43448275862068964,
+          "realized_net": -2735.784644338747,
+          "profit_factor": 0.6207823432283709
+        },
+        "DONCHIAN20_TREND": {
+          "closed_trades": 161,
+          "wins": 78,
+          "win_rate": 0.484472049689441,
+          "realized_net": 7215.811438214763,
+          "profit_factor": 2.866540044404022
+        }
+      },
+      "network_requests": 0,
+      "grok_requests": 0,
+      "orders": 0,
+      "execution_authorized": false
+    },
+    {
+      "window": "later_2024",
+      "cost_multiplier": 2,
+      "closed_trades": 455,
+      "wins": 201,
+      "win_rate": 0.44175824175824174,
+      "realized_net": 3334.316357884998,
+      "profit_factor": 1.3028034661702201,
+      "workers": 98,
+      "independent_families": 2,
+      "symbols": 49,
+      "initial_cash": 10000.0,
+      "ending_cash": 11803.59238047205,
+      "ending_liquidation_equity": 13453.255462317891,
+      "marked_net": 3453.255462317891,
+      "unrealized_net": 118.93910443290137,
+      "open_positions": 6,
+      "maximum_close_drawdown": 0.3218136033950876,
+      "maximum_open_gross_fraction": 1.0,
+      "minimum_cash": 0.0,
+      "accounting_residual": -8.22808488010196e-12,
+      "maximum_simultaneous_positions": 46,
+      "rejections": {
+        "SYMBOL_ALREADY_OWNED_OR_EXITED": 863,
+        "INSUFFICIENT_SHARED_CASH": 124
+      },
+      "costs": {
+        "fee_per_side": 0.002,
+        "slippage_per_side": 0.002
+      },
+      "per_family": {
+        "RSI2_TREND": {
+          "closed_trades": 293,
+          "wins": 123,
+          "win_rate": 0.4197952218430034,
+          "realized_net": -3385.354340858931,
+          "profit_factor": 0.5365781270712198
+        },
+        "DONCHIAN20_TREND": {
+          "closed_trades": 162,
+          "wins": 78,
+          "win_rate": 0.48148148148148145,
+          "realized_net": 6719.670698743929,
+          "profit_factor": 2.813009548478196
+        }
+      },
+      "network_requests": 0,
+      "grok_requests": 0,
+      "orders": 0,
+      "execution_authorized": false
+    }
+  ],
+  "promotion": "NONE",
+  "tomorrow_execution_ready": false,
+  "blockers": [
+    "No live/shadow adapter or execution authority is connected to these workers",
+    "Daily candles cannot verify spread, seller/buyer flow, liquidity depth or intraday scalping",
+    "Historical market universe contains selection/survivorship bias",
+    "No Grok decisions reproduced: candle replay has no recorded model decisions",
+    "Existing Warrior/Scalper stale quote issue is outside this research runner"
+  ],
+  "limitations": [
+    "Two frozen strategy hypotheses across symbols, not 100 independent proven strategies",
+    "All cases retained; later window not certified unseen; no parameter selection",
+    "Fractional spot quantity; no venue rounding, minimum notional or order-book fills modeled",
+    "Assumed costs; Grok/hosting costs excluded; close-only drawdown misses intraday extremes",
+    "Stop losses may gap beyond planned risk; no copied Instagram profits or NFI reproduction"
+  ],
+  "test_environment": {
+    "python": "3.13.17",
+    "pandas": "3.0.3",
+    "pyarrow": "26.0.1",
+    "numpy": "2.5.1"
+  }
+}

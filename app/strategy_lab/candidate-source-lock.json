@@ -1,0 +1,26 @@
+{
+  "repository": "https://github.com/freqtrade/freqtrade-strategies.git",
+  "commit": "f3340ce11f5bdf62f598522e64d1f5638eaa13f5",
+  "license": "GPL-3.0",
+  "license_sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+  "candidates": [
+    {
+      "class": "Strategy001",
+      "path": "user_data/strategies/Strategy001.py",
+      "timeframe": "5m",
+      "sha256": "2357996e6594458e8db45b5f757918462afa3c998de9d06e2af0c009ddc4b80d"
+    },
+    {
+      "class": "BbandRsi",
+      "path": "user_data/strategies/berlinguyinca/BbandRsi.py",
+      "timeframe": "1h",
+      "sha256": "65718e8d0c14094b67be82b66238ea60a4af4bbf6fd9a6e1879dad5c48125547"
+    },
+    {
+      "class": "ADXMomentum",
+      "path": "user_data/strategies/berlinguyinca/ADXMomentum.py",
+      "timeframe": "1h",
+      "sha256": "7ed9c2306f337a1cc49cb2e11ddf6b66397853b9c4155faa13e5cf1ea61a651a"
+    }
+  ]
+}

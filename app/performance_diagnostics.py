@@ -55,6 +55,7 @@ _ENTRY_FUNNEL_STAGES = (
     "ENTRY_REVIEW_PENDING", "ENTRY_REVIEW_RESOLVED",
     "ORDER_INTENT", "ORDER_SUBMITTED", "ORDER_ACKNOWLEDGED",
     "ORDER_REJECTED", "FILL", "PARTIAL_FILL",
+    "EXIT_DECISION", "EXIT_FILL",
     "OPPORTUNITY_ARMED", "OPPORTUNITY_WAITING_EXECUTION",
     "OPPORTUNITY_EXECUTABLE", "OPPORTUNITY_AUTHORIZED",
     "OPPORTUNITY_INVALIDATED", "OPPORTUNITY_EXPIRED",
@@ -121,7 +122,10 @@ class ShutdownReason(StrEnum):
 _EXECUTION_GATE_COUNTERS = tuple(sorted({
     "QUOTE_REJECTED_MISSING", "QUOTE_REJECTED_SYMBOL_MISMATCH",
     "QUOTE_REJECTED_BID_STALE", "QUOTE_REJECTED_LAST_TRADE_STALE",
+    "QUOTE_REJECTED_ASK_STALE", "QUOTE_REJECTED_BID_FUTURE",
+    "QUOTE_REJECTED_ASK_FUTURE", "QUOTE_REJECTED_LAST_TRADE_FUTURE",
     "QUOTE_REJECTED_TECHNICAL_MINUTE", "QUOTE_REJECTED_INVALID",
+    "QUOTE_REJECTED_OBSOLETE_GENERATION",
     "ENTRY_PRICE_DISPLACED_PERCENT", "ENTRY_PRICE_DISPLACED_ABSOLUTE",
     "ENTRY_PRICE_DISPLACED_BOTH", "ENTRY_PRICE_INVALID", "ENTRY_PRICE_BELOW_STOP",
     "RISK_REJECTED_INVALID_INPUT", "RISK_REJECTED_STOP_DISTANCE",
@@ -401,6 +405,7 @@ class PerformanceSnapshot:
     discovery_strategy_coverage: tuple[str, ...] = ()
     component_timings: dict[str, dict[str, object]] = field(default_factory=dict)
     authoritative_stage: dict[str, object] = field(default_factory=dict)
+    authoritative_failure: dict[str, object] = field(default_factory=dict)
     stream_observability: dict[str, object] = field(default_factory=dict)
 
 
@@ -551,6 +556,8 @@ class PerformanceDiagnostics:
         self._component_max: dict[str, float] = {}
         self._component_slow: dict[str, int] = {}
         self._component_failures: dict[str, int] = {}
+        self._authoritative_failure: dict[str, object] = {}
+        self._authoritative_failure_id: int | None = None
         self._component_last_diagnostic: dict[str, float] = {}
         self._authoritative_stage: dict[str, object] = {
             "stage": None,
@@ -851,6 +858,28 @@ class PerformanceDiagnostics:
             )
             with self._lock:
                 if self._shutdown_requested_at is not None:
+                    # Preserve initiating intent, but retain the first subsequent
+                    # cleanup failure instead of reducing it to a boolean.
+                    same_session = (runtime_session_id is None
+                        or runtime_session_id == self._shutdown_runtime_session_id)
+                    if failure_present and same_session:
+                        self._shutdown_failure_present = True
+                        failure_class = _bounded_shutdown_text(exception_class)
+                        if self._shutdown_exception_class is None:
+                            self._shutdown_exception_class = failure_class
+                        self._shutdown_events.append({
+                            "event_type": "RUNTIME_CLEANUP_FAILED",
+                            "timestamp": timestamp,
+                            "origin": normalized_origin,
+                            "reason": normalized_reason,
+                            "component": _bounded_shutdown_text(component),
+                            "runtime_session_id": self._shutdown_runtime_session_id,
+                            "exception_class": failure_class,
+                            "failure_present": True,
+                            "operator_initiated": bool(operator_initiated),
+                            "runtime_state": _bounded_shutdown_text(runtime_state),
+                        })
+                        self.request_checkpoint()
                     return False
                 session_id = _bounded_shutdown_text(
                     runtime_session_id or self._shutdown_runtime_session_id,
@@ -2245,6 +2274,23 @@ class PerformanceDiagnostics:
         try:
             yield
             success = True
+        except BaseException as exc:
+            # Preserve the innermost failing stage before finally restores the
+            # live timing marker. A later GUI close must not erase this cause.
+            try:
+                from app.exception_diagnostics import safe_exception_details
+                detail = safe_exception_details(exc)
+                with self._lock:
+                    if self._authoritative_failure_id != id(exc):
+                        self._authoritative_failure_id = id(exc)
+                        self._authoritative_failure = dict(
+                            at=datetime.now(UTC).isoformat(), stage=str(stage),
+                            symbol=symbol, event_type=event_type, **detail,
+                        )
+                self.request_checkpoint()
+            except Exception:
+                pass
+            raise
         finally:
             elapsed_ms = max(0.0, (monotonic() - started) * 1000.0)
             try:
@@ -2629,6 +2675,7 @@ class PerformanceDiagnostics:
                 event_processing_age_p99_ms=_percentile(ages, 0.99),
                 event_processing_age_max_ms=self._processing_age_max_ms,
                 authoritative_stage=authoritative_stage,
+                authoritative_failure=dict(self._authoritative_failure),
                 scanner_duration_max_ms=self._scanner_duration_max_ms,
                 scanner_duration_ms=self._scanner_duration_ms,
                 experiment_capture_duration_max_ms=(

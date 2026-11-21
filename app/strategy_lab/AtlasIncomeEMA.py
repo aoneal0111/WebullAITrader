@@ -1,0 +1,136 @@
+"""Research-only native translation of the frozen four-hour EMA50/100 case.
+
+Standalone Freqtrade strategy, never installed or started by its research driver.
+ATR stops and targets are anchored to the completed signal candle, not a future
+entry candle. Costs are supplied by the explicit native research configuration.
+"""
+import math
+import pandas as pd
+from freqtrade.persistence import Trade
+from freqtrade.strategy import IStrategy, stoploss_from_absolute
+
+
+class AtlasIncomeEMA(IStrategy):
+    INTERFACE_VERSION=3
+    timeframe='4h'
+    startup_candle_count=200
+    can_short=False
+    process_only_new_candles=True
+    stoploss=-.99
+    use_custom_stoploss=True
+    use_custom_roi=True
+    minimal_roi={'0':100.}
+    use_exit_signal=True
+    exit_profit_only=False
+    ignore_roi_if_entry_signal=False
+    position_adjustment_enable=False
+    trailing_stop=False
+    STOP_ATR=3.
+    TARGET_ATR=8.
+    HOLD_HOURS=168
+    MAX_SLOTS=6
+    ENTRY_DELAY_BARS=0
+
+    def populate_indicators(self,dataframe,metadata):
+        f=dataframe.copy();c=f.close
+        f['ema50']=c.ewm(span=50,adjust=False,min_periods=50).mean()
+        f['ema100']=c.ewm(span=100,adjust=False,min_periods=100).mean()
+        tr=pd.concat([f.high-f.low,(f.high-c.shift()).abs(),(f.low-c.shift()).abs()],axis=1).max(axis=1)
+        f['atr']=tr.ewm(alpha=1/14,adjust=False,min_periods=14).mean()
+        f['signal_atr']=f.atr.shift(self.ENTRY_DELAY_BARS)
+        f['eligible']=f.date.diff().eq(pd.Timedelta(hours=4)).rolling(200,min_periods=200).sum().eq(200)
+        return f
+
+    def populate_entry_trend(self,dataframe,metadata):
+        f=dataframe
+        buy=(f.ema50>f.ema100)&(f.ema50.shift()<=f.ema100.shift())
+        if self.ENTRY_DELAY_BARS:buy=buy.shift(self.ENTRY_DELAY_BARS).fillna(False)
+        f['enter_long']=(buy&f.eligible&(f.volume>0)).astype(int)
+        f['enter_tag']='EMA50_100_FROZEN_RESEARCH'
+        self.entry_signal_dates=getattr(self,'entry_signal_dates',{})
+        self.entry_signal_dates[metadata['pair']]=[str(x) for x in f.loc[f.enter_long==1,'date']]
+        return f
+
+    def populate_exit_trend(self,dataframe,metadata):
+        dataframe['exit_long']=(dataframe.ema50<dataframe.ema100).astype(int)
+        return dataframe
+
+    def _entry_atr(self,pair,trade):
+        cached=trade.get_custom_data('income_signal_atr',default=None)
+        if cached is not None:return float(cached)
+        f,_=self.dp.get_analyzed_dataframe(pair,self.timeframe)
+        past=f.loc[f.date<trade.open_date_utc]
+        if past.empty:raise ValueError('COMPLETED_SIGNAL_CANDLE_REQUIRED')
+        value=float(past.iloc[-1].signal_atr)
+        if not math.isfinite(value) or value<=0:raise ValueError('FINITE_SIGNAL_ATR_REQUIRED')
+        trade.set_custom_data('income_signal_atr',value)
+        return value
+
+    def order_filled(self,pair,trade,order,current_time,**kwargs):
+        if order.ft_order_side==trade.entry_side:self._entry_atr(pair,trade)
+
+    def custom_stoploss(self,pair,trade,current_time,current_rate,current_profit,after_fill,**kwargs):
+        stop=max(.01*trade.open_rate,trade.open_rate-self.STOP_ATR*self._entry_atr(pair,trade))
+        return stoploss_from_absolute(stop,current_rate,is_short=False,leverage=1.)
+
+    def custom_roi(self,pair,trade,current_time,trade_duration,entry_tag,side,**kwargs):
+        price=trade.open_rate+self.TARGET_ATR*self._entry_atr(pair,trade)
+        # Convert the physical ATR target to native NET ROI, including both fees.
+        return price*(1-trade.fee_close)/(trade.open_rate*(1+trade.fee_open))-1
+
+    def custom_exit(self,pair,trade,current_time,current_rate,current_profit,**kwargs):
+        if (current_time-trade.open_date_utc).total_seconds()>=self.HOLD_HOURS*3600:
+            return 'INCOME_168H_TIMEOUT'
+        return None
+
+    def custom_stake_amount(self,pair,current_time,current_rate,proposed_stake,min_stake,
+                            max_stake,leverage,entry_tag,side,**kwargs):
+        f,_=self.dp.get_analyzed_dataframe(pair,self.timeframe)
+        completed=f.loc[f.date<current_time]
+        if completed.empty:return 0.
+        last=completed.iloc[-1]
+        liquidity=float(last.volume)*float(last.close)*.01
+        equity=self.wallets.get_free(self.config['stake_currency'])
+        for trade in Trade.get_trades_proxy(is_open=True):
+            other,_=self.dp.get_analyzed_dataframe(trade.pair,self.timeframe)
+            other=other.loc[other.date<current_time]
+            mark=float(other.iloc[-1].close) if not other.empty else trade.open_rate
+            equity+=trade.amount*mark
+        stake=min(proposed_stake,max_stake,equity/self.MAX_SLOTS,liquidity)
+        if not math.isfinite(stake) or stake<max(10.,min_stake or 0.):return 0.
+        return stake
+
+
+class AtlasIncomeEMACausal(AtlasIncomeEMA):
+    """Conservative native allocation: intrabar exits do not finance open fills."""
+    def _closed_intrabar(self,current_time):
+        return [t for t in Trade.get_trades_proxy(is_open=False)
+                if t.close_date_utc==current_time and t.exit_reason in
+                ('roi','stop_loss','trailing_stop_loss','liquidation')]
+
+    def confirm_trade_entry(self,pair,order_type,amount,rate,time_in_force,current_time,
+                            entry_tag,side,**kwargs):
+        active=Trade.get_trades_proxy(is_open=True)
+        allowed=len(active)+len(self._closed_intrabar(current_time))<self.MAX_SLOTS
+        if not allowed:self.causal_slot_rejections=getattr(self,'causal_slot_rejections',0)+1
+        return allowed
+
+    def custom_stake_amount(self,pair,current_time,current_rate,proposed_stake,min_stake,
+                            max_stake,leverage,entry_tag,side,**kwargs):
+        ghost=self._closed_intrabar(current_time)
+        available=self.wallets.get_free(self.config['stake_currency'])
+        # Reserve proceeds of any intrabar exits already processed by another pair.
+        available=max(0.,available-sum(t.amount*t.close_rate*(1-t.fee_close) for t in ghost))
+        equity=available
+        for t in [*Trade.get_trades_proxy(is_open=True),*ghost]:
+            f,_=self.dp.get_analyzed_dataframe(t.pair,self.timeframe)
+            f=f.loc[f.date<current_time]
+            mark=float(f.iloc[-1].close) if not f.empty else t.open_rate
+            equity+=t.amount*mark
+        f,_=self.dp.get_analyzed_dataframe(pair,self.timeframe)
+        f=f.loc[f.date<current_time]
+        if f.empty:return 0.
+        bar=f.iloc[-1];liquidity=float(bar.volume)*float(bar.close)*.01
+        stake=min(proposed_stake,max_stake,available,equity/self.MAX_SLOTS,liquidity)
+        if not math.isfinite(stake) or stake<max(10.,min_stake or 0.):return 0.
+        return stake

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 import logging
 import math
+import sqlite3
 from pathlib import Path
 from threading import Event, Lock, RLock, Thread, current_thread
 from types import MappingProxyType
@@ -111,7 +112,20 @@ class LearningOutcomeCollector:
                 except Exception as exc:
                     report["state"] = "PARTIAL_SOURCE_FAILURE"
                     report["sources"][engine] = {"state":stage+"_FAILED", "error_class":type(exc).__name__}
-                    LOG.warning("Outcome collection %s %s failed (%s)", engine, stage, type(exc).__name__)
+                    # SQLite exposes safe numeric/symbolic diagnostics. Retain
+                    # those without exporting SQL, exception text or file paths.
+                    details = {}
+                    if isinstance(exc, sqlite3.Error):
+                        code = getattr(exc, "sqlite_errorcode", None)
+                        name = getattr(exc, "sqlite_errorname", None)
+                        if type(code) is int:
+                            details["sqlite_errorcode"] = code
+                        if isinstance(name, str) and name.startswith("SQLITE_") and name.isidentifier():
+                            details["sqlite_errorname"] = name[:64]
+                    report["sources"][engine].update(details)
+                    LOG.warning("Outcome collection %s %s failed (%s) sqlite_code=%s sqlite_name=%s",
+                                engine, stage, type(exc).__name__, details.get("sqlite_errorcode"),
+                                details.get("sqlite_errorname"))
             report["completed_at"] = datetime.now(timezone.utc).isoformat()
             return self._publish(report)
         finally:

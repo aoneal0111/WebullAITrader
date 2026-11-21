@@ -43,6 +43,7 @@ class OrdersPage(QWidget):
         self,
         trading_service: TradingService | None = None,
         order_command_factory: OrderCommandFactory | None = None,
+        *, price_formatter=None,
     ) -> None:
         super().__init__()
 
@@ -51,6 +52,7 @@ class OrdersPage(QWidget):
                 "trading_service and order_command_factory must be provided together"
             )
 
+        self._price_formatter = price_formatter or format_price
         self._trading_service = trading_service
         self._order_command_factory = order_command_factory
 
@@ -892,13 +894,11 @@ class OrdersPage(QWidget):
     def _detail_known(value: str | None) -> str:
         return "Not available" if value is None else value
 
-    @staticmethod
-    def _table_price(value: str | None) -> str:
-        return "—" if value is None else format_price(Decimal(value))
+    def _table_price(self, value: str | None) -> str:
+        return "—" if value is None else self._price_formatter(Decimal(value))
 
-    @staticmethod
-    def _detail_price(value: str | None) -> str:
-        return "Not available" if value is None else format_price(Decimal(value))
+    def _detail_price(self, value: str | None) -> str:
+        return "Not available" if value is None else self._price_formatter(Decimal(value))
 
     @staticmethod
     def _compact_timestamp(value) -> str:

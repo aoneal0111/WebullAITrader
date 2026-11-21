@@ -143,7 +143,7 @@ class WarriorMomentumRuntime:
             # resurrected into order authority without fresh geometry.
             if (
                 prior_setup is not None
-                and getattr(prior_setup, "setup_type", None) not in {
+                and getattr(prior_setup[0], "setup_type", None) not in {
                     SetupType.MOMENTUM_ACCELERATION,
                     SetupType.MOMENTUM_REACCELERATION,
                     SetupType.RECLAIM_CONTINUATION,
@@ -173,6 +173,7 @@ class WarriorMomentumRuntime:
                     self._setup_continuity.pop(normalized_symbol, None)
             else:
                 self._legacy_episode_tracker.invalidate(observation.symbol)
+                self._setup_continuity.pop(normalized_symbol, None)
         else:
             setup = self._legacy_episode_tracker.observe(
                 observation.symbol, setup, session=session,

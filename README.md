@@ -58,8 +58,23 @@ Deterministic engine and runtime packages do not read environment variables.
 
 ## Running tests
 
+Atlas has three explicit local test tiers:
+
 ```powershell
-python -m pytest
+.\tools\run-atlas-tests.ps1 -Tier Fast
+.\tools\run-atlas-tests.ps1 -Tier Critical
+.\tools\run-atlas-tests.ps1 -Tier Full
+```
+
+The wrapper also accepts `-PythonPath` to use an existing interpreter when
+the test worktree has no virtual environment. Fast is for ordinary local changes;
+Critical covers the PAPER order book, gateway, Warrior runtime, protection and
+restart recovery. Full retains all collected tests. **Tiers do not delete or
+disable any tests** and the main CI job continues to execute its full suite.
+
+For focused adapter certification and patch checks:
+
+```powershell
 python -m pytest tests/certification -q
 git diff --check
 ```
@@ -80,11 +95,14 @@ tests/certification/     Cross-boundary adapter certification
 docs/                    Operational and architecture documentation
 ```
 
-## Original read-only account foundation
+## Original read-only account foundation (historical)
 
-This first version retrieves account balances and positions from a connected
-Webull MCP server and prints a redacted JSON summary. It does **not** place,
-preview, modify, cancel, or execute orders. Automated trading is not implemented.
+This section documents the **original** read-only foundation, not the current
+Atlas desktop/PAPER trading workstation. The initial version retrieved account
+balances and positions from Webull MCP, redacted account identifiers, and did
+not submit or manage orders. Modern PAPER execution, protective exits and
+trading diagnostics are separate, later capabilities. Historical examples in
+this section must not be mistaken for current runtime instructions.
 
 ## Requirements
 

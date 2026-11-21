@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from os import environ
-from threading import Lock
+from threading import Event, Lock
 from typing import Callable, Mapping, Sequence
 from uuid import uuid4
 
@@ -137,6 +137,28 @@ class WebullMarketSubscription:
         return arguments
 
 
+class _CancellableQuotesRetryPolicy:
+    """Keep SDK retry decisions/delays while allowing owned shutdown to wake it."""
+
+    def __init__(self, delegate: object, no_retry: int) -> None:
+        self.delegate = delegate
+        self.stopped = Event()
+        self.no_retry = no_retry
+
+    def should_retry(self, context):
+        if self.stopped.is_set():
+            return self.no_retry
+        return self.delegate.should_retry(context)
+
+    def compute_delay_before_next_retry(self, context):
+        delay_ms = self.delegate.compute_delay_before_next_retry(context)
+        # QuotesClient sleeps outside its connection try/except. Move that same
+        # delay into an interruptible per-instance wait, leaving only sleep(0)
+        # in the SDK. Never change another client's or HTTP retry policy.
+        self.stopped.wait(max(0.0, delay_ms / 1000.0))
+        return 0
+
+
 def _official_client_factory(**kwargs: object) -> object:
     try:
         from webull.data.data_streaming_client import DataStreamingClient
@@ -205,6 +227,17 @@ def create_official_stream_backend(
         # logging and deliberately keeps those credential-bearing dumps disabled.
         if hasattr(result, "_init_logger"):
             setattr(result, "_init_logger", lambda *args, **kwargs: None)
+        policy = getattr(result, "_retry_policy", None)
+        if policy is not None:
+            from webull.core.retry.retry_condition import RetryCondition
+            cancellable = _CancellableQuotesRetryPolicy(policy, RetryCondition.NO_RETRY)
+            result._retry_policy = cancellable
+            def request_stop():
+                # This is the flag Paho loop_stop sets before joining. Setting
+                # it before waking a retry prevents another connection attempt.
+                result._thread_terminate = True
+                cancellable.stopped.set()
+            result._atlas_request_stop = request_stop
         if transport == "websockets":
             set_websocket_options = getattr(result, "ws_set_options", None)
             if not callable(set_websocket_options):

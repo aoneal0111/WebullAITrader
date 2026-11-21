@@ -126,3 +126,20 @@ def test_market_overview_is_honest_when_projection_is_unavailable(application) -
     overview = dashboard.market_workspace.market_overview
     assert tuple(overview._rows) == ("SPY", "QQQ", "DIA", "VIX")
     assert all(value.text() == "--" for row in overview._values.values() for key, value in row.items() if key != "Instrument")
+
+
+def test_equity_entry_pause_is_visible_separately_from_runtime_health(application):
+    dashboard=DashboardPage()
+    assert dashboard.entry_admission_notice.objectName()=='equityEntryAdmissionNotice'
+    assert 'BUYs paused' in dashboard.entry_admission_notice.text()
+    assert 'Position protection remains available' in dashboard.entry_admission_notice.text()
+    assert not dashboard.entry_admission_notice.isHidden()
+
+
+def test_paper_experiment_notice_is_visible_and_updates_without_affecting_controls(application):
+    state=['EXPERIMENTAL PAPER: bounded entries enabled. Grok orders OFF.']
+    dashboard=DashboardPage(admission_notice_provider=lambda:state[0])
+    assert 'EXPERIMENTAL PAPER' in dashboard.entry_admission_notice.text()
+    state[0]='EXPERIMENTAL PAPER: entries paused. Position protection remains available.'
+    dashboard.refresh_entry_notice()
+    assert 'entries paused' in dashboard.entry_admission_notice.text()

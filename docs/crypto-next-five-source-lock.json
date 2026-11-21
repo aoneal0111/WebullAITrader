@@ -1,0 +1,137 @@
+{
+  "scope": "FIVE_PUBLISHED_HIGH_WIN_CRYPTO_CANDIDATES_V1",
+  "reviewed_on": "2026-11-06",
+  "baseline": "Existing pinned NFI retained separately",
+  "qualification": "PUBLISHED_CLAIMS_ONLY_NOT_ATLAS_VERIFIED",
+  "strategies_activated": 0,
+  "live_trading_enabled": false,
+  "orders": 0,
+  "grok_requests": 0,
+  "candidates": [
+    {
+      "id": "E0V1E",
+      "repository": "TheoBrigitte/freqtrade",
+      "commit": "c9def379b1036064d592c3a0518a07811f5a9a76",
+      "source_path": "strategies/e0v1e/E0V1E.py",
+      "reported_win_rate": 0.798,
+      "reported_trades": 2481,
+      "period": "2022-06-01 to 2023-06-01",
+      "timeframe": "5m",
+      "evidence_path": "strategies/e0v1e/README.md",
+      "hashes": {
+        "strategies/e0v1e/E0V1E.py": "e87c7b96477328e4ffd5d93d2626f435e88b1b6e39478a2249f1fcb8343880cd",
+        "strategies/e0v1e/README.md": "2ace499a598867b87aa3159a8a5232e5ed15d8cea5e309c42aabc4f8adc76bd7",
+        "strategies/e0v1e/config.json": "c4cbbecc116475ccc4d09bd187b6648bdbce8cdb31f17dac3885975015f3189d",
+        "strategies/e0v1e/E0V1E.old.json": "1f927271d3cdd1347d1c6a1867879b48a144f2d732ab68db9fd1cb7091ec53d7"
+      },
+      "limitations": [
+        "README references E0V1E.json, absent in this checkout; E0V1E.old.json is not automatically equivalent",
+        "Current config max positions is 6; reported run was 4",
+        "Published source-file/result/config binding not established; strategy source emergency stop is -99%",
+        "Old pandas_ta dependency and native runtime compatibility require testing"
+      ]
+    },
+    {
+      "id": "NASOS_HOv3",
+      "repository": "neozhou2009/freqtrade-strategies",
+      "commit": "fcca4013e724aacca72cd0599259466c487a1d04",
+      "source_path": "strategies/NotAnotherSMAOffsetStrategyHOv3/NotAnotherSMAOffsetStrategyHOv3.py",
+      "git_blob_sha": "5b6c5bb2be21bcda6fdd06359f59b0e9f7c7f1b1",
+      "reported_win_rate": 0.964,
+      "reported_trades": 991,
+      "period": "2022-01-01 to 2025-01-01",
+      "timeframe": "5m",
+      "evidence_url": "https://freqle.org/strategy/d8c6b3f47d4be717",
+      "evidence_section": "Full performance, revision 2 (NOT the separate league headline)",
+      "reported_profit_factor": 1.9,
+      "reported_max_drawdown": 0.1149,
+      "reported_fee_per_side": 0.001,
+      "limitations": [
+        "Third-party repaired v3 source is not proven byte-equivalent to this upstream v2 file",
+        "Do not mix 991-trade full-performance section with 2843-trade league headline",
+        "Trailing simulation needs finer candle detail and cost stress; reported worst trade -37.52%",
+        "Warmup 200 and EMA200 recursion need a separate stability test"
+      ]
+    },
+    {
+      "id": "BB_RPB_TSL_v104",
+      "repository": "jilv220/BB_RPB_TSL",
+      "commit": "33f83596e23ca214ef12352802aa798cb986b236",
+      "source_path": "BB_RPB_TSL.py",
+      "reported_win_rate": 0.9088960342979635,
+      "reported_win_rate_printed": 0.909,
+      "reported_wins": 1696,
+      "reported_trades": 1866,
+      "period": "2021-05-07 to 2021-09-22",
+      "timeframe": "5m",
+      "evidence_path": "backtest_result_v104/20210507-0922.txt",
+      "hashes": {
+        "BB_RPB_TSL.py": "a99b253c7e6f92560088b24072c8007df0a1f8b3d69a3e75ebc7a87ca6dac32e",
+        "BB_RPB_TSL_BI.py": "651fcfe9cc698c92e90ec14dff0240b2b3761223d6d16fec8afe4aa619915e55",
+        "backtest_result_v104/20210507-0922.txt": "e9e8806784857a5318ee6b8ca0450049a3c866adb0b5ab11ee074eb0e78b9207",
+        "README.md": "588e83f47a6b93f61c5474878f56a81af2bc6bbade2681cb30b0a026b0e8a439"
+      },
+      "limitations": [
+        "Source report includes six forced terminal closures",
+        "Report used up to 97 positions; not the current six-slot NFI account",
+        "Exact historical v104 implementation/config binding remains unresolved",
+        "README acknowledges substantial NFI ancestry and venue overfitting",
+        "Worst trade -33.31%; printed old drawdown 57.71% uses an unreconciled definition"
+      ]
+    },
+    {
+      "id": "CONNORS_RSI_BASELINE",
+      "repository": "MRCVEngineer/CRSI",
+      "commit": "d826a8e4d55c0d7a993e6f06303fcdb34205d31e",
+      "source_path": "src/strategy.py",
+      "reported_win_rate": 0.693,
+      "reported_trades": 3543,
+      "timeframe": "4h",
+      "evidence_path": "README.md",
+      "reported_profit_factor": 1.2,
+      "reported_max_drawdown": 0.332,
+      "hashes": {
+        "src/strategy.py": "0afe50968d02c41f66676fcab654c961f17f5b479b28f3a5afa13b34a4b174d1",
+        "src/final_validation.py": "c012ea1d14f59cfc859453a284169f697c966baf96a983f8388be8fa7737d6c0",
+        "results/final_validation_results.csv": "097d93a50443327ade7f023a6a4867a19fb4a00beedeb6cfd7f9a5da36f492d2",
+        "README.md": "fc7e0497e8d86496846c36170e01a953eceb2145aca6de2e36b78988a28e902f"
+      },
+      "limitations": [
+        "69.3%/3543 is the README baseline; do not substitute optimized 68.7%/884 variant",
+        "Original includes shorts and close-price entries",
+        "Explicit fee/slippage deductions not found in inspected baseline runner",
+        "Long-only next-price spot adaptation requires its own result"
+      ]
+    },
+    {
+      "id": "WAVERIDER_SOL_LONG",
+      "repository": "JudyaiLab/hackathon-trading-agent",
+      "commit": "b2f92dd9cd8af334f918640fe358424f031d1fb3",
+      "source_path": "strategies.py",
+      "reported_win_rate": 0.725,
+      "reported_trades": 51,
+      "evidence_path": "docs/wfo_summary.md",
+      "configuration_path": "config.py",
+      "scope": "SOL/USDT long parameters, not an all-coin aggregate",
+      "timeframe": "4h in public scan_pair implementation",
+      "hashes": {
+        "strategies.py": "daa72c7ea2e542b30b7abc526064fc55b9b24f195c2be193ee6df5e91ae9a760",
+        "config.py": "fe4376e7997ac5981db744d7c56f5b3a421f2e35f16363ff57214bb5842e5e54",
+        "docs/wfo_summary.md": "7480d33f0652ec58e88d7a750b58026c35c309d83c35326c7025b6505e3d1537"
+      },
+      "limitations": [
+        "WFO source data and validation pipeline are private; no independent reproduction",
+        "Per-pair claim does not transfer to all symbols or regimes",
+        "README 82.2% is a median-window statistic; separate 79.1% is an ensemble trade-weighted claim",
+        "Published profit factor is derived from assumed equal-R wins/losses, not a verified cash-flow ledger",
+        "Public code maps USDT labels to Kraken USD; do not relabel historical quote currencies in replay"
+      ]
+    }
+  ],
+  "next_test_requirements": [
+    "Verify the exact reported code/config or identify adaptation explicitly",
+    "Use a fixed common symbol basket, costs, next-price fills and untouched later evaluation period",
+    "Check prefix invariance, recursive warmup, stop gaps, terminal positions and cash reconciliation",
+    "Measure combined capital use and correlated entries before running alongside NFI"
+  ]
+}

@@ -166,6 +166,7 @@ def test_sell_stop_gap_uses_gap_bid_and_never_fabricates_stop_price() -> None:
     assert result.matched is True
     assert result.execution_price == D("4.50")
     assert result.execution_price != D("5.03")
+    assert result.slippage == D("0.53")
 
 
 def test_sell_stop_remains_working_above_trigger() -> None:

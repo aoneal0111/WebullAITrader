@@ -83,6 +83,25 @@ def test_import_conflict_does_not_rewrite_outcomes_or_block_other_engines(tmp_pa
     assert LearningJournal(c.journal_path).outcome_feedback()['groups'][0]['net_pnl'] == '19.00'
 
 
+def test_sqlite_failure_identifies_lock_without_leaking_database_or_sql(tmp_path, monkeypatch, caplog):
+    import sqlite3
+    import app.asset_modules.learning_collector as module
+    c = collector(tmp_path)
+    failure = sqlite3.OperationalError('private SQL /private/ledger.sqlite3')
+    failure.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    failure.sqlite_errorname = 'SQLITE_BUSY'
+    def fail(_):
+        raise failure
+    monkeypatch.setattr(module, 'read_equity_outcomes', fail)
+    report = c.collect_once()
+    assert report['sources']['EQUITY'] == {
+        'state':'READ_FAILED', 'error_class':'OperationalError',
+        'sqlite_errorcode':sqlite3.SQLITE_BUSY, 'sqlite_errorname':'SQLITE_BUSY'}
+    assert report['sources']['CRYPTO']['inserted'] == 1
+    assert 'SQLITE_BUSY' in caplog.text
+    assert 'private SQL' not in caplog.text + json.dumps(report)
+
+
 def test_worker_is_background_nonoverlapping_and_stop_retains_busy_ownership(tmp_path, monkeypatch):
     import app.asset_modules.learning_collector as module
     c = collector(tmp_path)

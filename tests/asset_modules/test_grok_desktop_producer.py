@@ -29,6 +29,29 @@ def offer(p, v=None):
         symbol_authorization=AUTH, evaluated_at=NOW)
 
 
+def test_model_evidence_uses_only_retained_completed_symbol_bars(setup, monkeypatch):
+    from app.strategies.warrior_momentum.models import MinuteBar
+    from app.asset_modules.grok_native_review import NativeReviewReceipt
+    p, ai, _ = producer(setup)
+    symbol = signal().symbol
+    completed = MinuteBar(symbol, NOW-timedelta(minutes=1), D(6), D(6), D(6), D(6), D(10))
+    future = replace(completed, timestamp=NOW)
+    other = replace(completed, symbol='OTHER')
+    p.history_source = lambda s, at: (completed, future, other)
+    received = []
+    def submit(requests, **evidence):
+        received.append(evidence['engine_evidence'][EngineId.WARRIOR.value])
+        return NativeReviewReceipt('NOT_SENT', 'FIXTURE')
+    monkeypatch.setattr(p.review, 'submit', submit)
+    try:
+        assert offer(p).state == 'NOT_SENT'
+        assert received[0]['history_status'] == 'RETAINED_COMPLETED_BARS'
+        assert len(received[0]['completed_native_bars']) == 1
+        assert received[0]['completed_native_bars'][0]['symbol'] == symbol
+        assert ai.client.requests == 0
+    finally:p.request_stop()
+
+
 def desktop(setup, tmp_path, p):
     commands, bridge, _, account, quote, _ = setup
     observer = scalper(setup)

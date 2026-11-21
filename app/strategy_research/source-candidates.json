@@ -1,0 +1,38 @@
+{
+  "reviewed_on": "2026-11-03",
+  "sources": [
+    {
+      "repository": "https://github.com/jballaith/Trading_Strategy_RSI_Regime",
+      "commit": "64fd903b026b5455d2c325f443e219becc89f259",
+      "files": {
+        "LICENSE": "63307fc385a1e7046f6f7d64b8bcf20eaebeacbffbb99a2711b8c9de8ba70adf",
+        "README.md": "03d50b326dfb4975498bc6a1d461925c968202359bbc9b739a31ae8a681fb360",
+        "rsi_regime_backtest.py": "c99ebadbe4d36f47f7541330e7ad3bd907298c627a405b3e4b0434cb937ac474",
+        "rsi_20250814_insample.txt": "57b7615524aaf8f1e447e2bab4e1122a2f33e76ca9fccacaafd35131f3525f4c"
+      },
+      "author_claim": {
+        "out_of_sample_trades": 239,
+        "win_rate": 0.653,
+        "profit_factor": 1.345
+      },
+      "reproduced": false,
+      "atlas_mode": "OFFLINE_NEXT_OPEN_ADAPTATION"
+    },
+    {
+      "repository": "https://github.com/jayadevrana/free-pine-script-indicators",
+      "commit": "705984151b871a01df4b32c41b022b940c2d203d",
+      "files": {
+        "LICENSE": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+        "README.md": "5f98da33d010b1d406d74f9e46f786b292b44c1796b0ca19b86e93068052315b",
+        "scripts/larry-connors-rsi-2.pine.txt": "ef696eeb0943354c38bf8cd63da1e4b4ff049d52a84e8b08e2c9eec16530a4bf"
+      },
+      "author_claim": {
+        "reported_trades": 254,
+        "win_rate": 0.75,
+        "profit_factor": 2.53
+      },
+      "reproduced": false,
+      "atlas_mode": "OFFLINE_NEXT_OPEN_ADAPTATION"
+    }
+  ]
+}

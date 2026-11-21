@@ -1,5 +1,9 @@
 # Grok desktop PAPER entry configuration
 
+**This is an order-review path, not an observer switch.** Keep
+`ATLAS_GROK_PAPER_ENTRIES_ENABLED=false` for an observation-only trial. See
+`grok-observer-weekend-review.md` for the separate disconnected fixture check.
+
 The desktop can now construct and bind the previously tested native Grok entry
 producer. It remains disabled by default. This is Warrior/Quick Scalper PAPER
 entry review plus a master ranking adviser; deterministic native exits,

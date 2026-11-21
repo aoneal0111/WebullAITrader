@@ -115,7 +115,13 @@ class ExecutionCandidate:
             taxonomy_strategy_memberships=self.strategy_memberships,
             taxonomy_opportunity_id=self.opportunity_id,
             taxonomy_opportunity_anchor=self.opportunity_anchor,
-            taxonomy_execution_identity=self.execution_identity,
+            # Discovery hashes deduplicate research opportunities. At this
+            # execution seam, name the owning engine and symbol as required
+            # by native review, admission, GUI attribution and protection.
+            # Existing stored signals/ledger identities are not rewritten.
+            taxonomy_execution_identity=(
+                f"WARRIOR_MOMENTUM_V1|{self.symbol}|TAXONOMY|{self.execution_identity}"
+            ),
             taxonomy_invalidation_reason=self.invalidation_reason,
         )
 
@@ -167,7 +173,8 @@ class MultiStrategyExecutionAdapter:
               observed_at: datetime, freshness_max_age: timedelta, freshness_authority: str,
               spread_percent: Decimal | None, dollar_volume: Decimal | None,
               diagnostics: object | None = None,
-              setup_quality: Decimal | None = None) -> AdapterResult:
+              setup_quality: Decimal | None = None,
+              claim_identity: bool = True) -> AdapterResult:
         """Validate one normalized opportunity without changing its source state."""
         memberships = tuple(opportunity.memberships)
         matched = tuple(item for item in memberships if item.strategy_id in self.execution_allowlist)
@@ -281,7 +288,7 @@ class MultiStrategyExecutionAdapter:
             ),
         )
         execution_identity = self._identity(opportunity)
-        if execution_identity in self._seen_identities:
+        if claim_identity and execution_identity in self._seen_identities:
             return self._result(opportunity, AdapterRejection.DUPLICATE_OPPORTUNITY, diagnostics,
                                 strategies_evaluated=tuple(item.strategy_id for item in memberships),
                                 strategies_matched=tuple(item.strategy_id for item in matched),
@@ -289,9 +296,10 @@ class MultiStrategyExecutionAdapter:
                                 opportunity_anchor=opportunity.structural_anchor,
                                 execution_identity=execution_identity,
                                 adapter_rejection_reason=AdapterRejection.DUPLICATE_OPPORTUNITY)
-        self._seen_identities[execution_identity] = None
-        while len(self._seen_identities) > self.maximum_identities:
-            self._seen_identities.pop(next(iter(self._seen_identities)))
+        if claim_identity:
+            self._seen_identities[execution_identity] = None
+            while len(self._seen_identities) > self.maximum_identities:
+                self._seen_identities.pop(next(iter(self._seen_identities)))
 
         suppressed = tuple(item.strategy_id for item in matched if item.strategy_id != selected.strategy_id)
         for evaluation in evaluations:

@@ -1,0 +1,6 @@
+# Isolated research environment; not the Atlas desktop requirements.
+numpy==2.5.4
+pandas==3.1.1
+pyarrow==26.0.1
+numba==0.68.1
+pytest==9.2.0

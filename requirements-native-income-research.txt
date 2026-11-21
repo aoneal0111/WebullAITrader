@@ -1,0 +1,4 @@
+# Separate native research environment; never install over the Atlas desktop.
+-r requirements-income-research.txt
+freqtrade==2026.9
+ccxt==4.5.84

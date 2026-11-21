@@ -110,7 +110,14 @@ class GlobalStatusBar(QWidget):
         self._session_values = dict(snapshot.sessions)
         self._render_capabilities()
 
+    def set_market_context(self, label: str) -> None:
+        self._market_context = label
+        self._render_capabilities()
+
     def _render_capabilities(self) -> None:
+        if getattr(self, '_market_context', None):
+            self.capabilities.setText(self._market_context)
+            return
         capability_values = self._capability_values
         session_values = self._session_values
         research_status = _crypto_research_status(self._crypto_research_source)

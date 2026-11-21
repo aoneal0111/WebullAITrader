@@ -708,6 +708,7 @@ class CompactWatchlistPanel(QWidget):
         controls = QHBoxLayout()
         controls.setSpacing(5)
         self._active_view_filter = "All"
+        self.classification_aliases = {}
         self._view_buttons: dict[str, QPushButton] = {}
         for label in ("All", "Qualifying", "Near Miss", "Watching"):
             button = QPushButton(label)
@@ -807,7 +808,7 @@ class CompactWatchlistPanel(QWidget):
         self._table.clearSelection()
         query = self.search.text().strip().upper()
         classification = (
-            self._active_view_filter.upper()
+            self.classification_aliases.get(self._active_view_filter,self._active_view_filter.upper())
             if self._active_view_filter != "All"
             else None
         )
@@ -975,7 +976,8 @@ class MarketWorkspace(QWidget):
 
         self.atlas_activity = AtlasActivityPanel()
         self.portfolio_summary = PortfolioSummaryStrip()
-        self.positions_panel = PositionsPanel()
+        self.warrior_enrichment = True
+        self.positions_panel = PositionsPanel(compact=True)
         self.orders_panel = self.positions_panel.recent_orders_panel
         self.atlas_reasoning = AtlasReasoningPanel()
         self.market_overview = MarketOverviewPanel()
@@ -1219,7 +1221,7 @@ class MarketWorkspace(QWidget):
 
     def _render_focus(self, snapshot: WatchlistSnapshot) -> None:
         atlas_rows = tuple(row for row in snapshot.rows if row.rank != "--")
-        if snapshot is self._atlas_snapshot:
+        if snapshot is self._atlas_snapshot and self.warrior_enrichment:
             atlas_rows = tuple(self._with_warrior_state(row) for row in atlas_rows)
         symbols = {row.symbol for row in atlas_rows}
         projected = next((row.symbol for row in atlas_rows if row.selected), None)

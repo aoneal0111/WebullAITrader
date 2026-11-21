@@ -25,9 +25,9 @@ from .forward_models import (
     records_with_configuration_fingerprint,
 )
 from .autonomous_paper import lifecycle_identity
-from .execution_quote import ExecutionQuoteSource
+from .execution_quote import ExecutionQuoteSource, execution_quote_rejection
 from .entry_economics import remaining_reward_ok
-from .entry_extension import assess_entry_extension
+from .entry_extension import assess_entry_extension, initial_breakout_move_exhausted
 from .execution_pursuit import (
     ExecutionPursuitAssessment, ExecutionPursuitDecision,
     assess_top_of_book_pursuit, depth_features, depth_transition,
@@ -403,7 +403,13 @@ class WarriorForwardCaptureService:
         paper_acknowledgement_adopter: Callable[..., bool] | None = None,
         paper_entry_reviewer: Callable[..., object] | None = None,
         paper_entry_review_refresher: Callable[..., object] | None = None,
+        observer_context_tap: object | None = None,
     ) -> None:
+        if observer_context_tap is not None:
+            from app.asset_modules.grok_observer_runtime_tap import RuntimeContextTap
+            if not isinstance(observer_context_tap,RuntimeContextTap):
+                raise TypeError('Passive RuntimeContextTap required')
+        self._observer_context_tap = observer_context_tap
         self.store = store
         self.writer = writer
         self.config = config
@@ -792,6 +798,7 @@ class WarriorForwardCaptureService:
             provider_bid_timestamp=value.quote_observed_at,
             provider_ask_timestamp=value.quote_observed_at,
             execution_quote_timestamp=decision_at,
+            source_decision_id=candidate.decision_generation_id,
         )
 
     def _assess_executable_opportunity(
@@ -861,6 +868,7 @@ class WarriorForwardCaptureService:
     ) -> tuple[MomentumCandidate, MomentumEntrySignal | None]:
         observation = value.observation
         symbol = observation.symbol.strip().upper()
+        observer_quote = None
         downstream_clear_reason: str | None = None
         self._remember_latest_observation(symbol, value, account)
         with _service_stage("execution_price_path", symbol=symbol):
@@ -889,6 +897,12 @@ class WarriorForwardCaptureService:
         with _service_stage("completed_bar_handling", symbol=symbol):
             completed_snapshot = self._completed_bar_snapshot(value)
             completed = completed_snapshot.completed
+            if self._observer_context_tap is not None:
+                try:
+                    self._observer_context_tap.remember_bars(symbol,completed,
+                        known_at=value.evaluation_timestamp or observation.timestamp)
+                except Exception:
+                    pass
             completed_version = (
                 completed_snapshot.session,
                 completed_snapshot.cutoff_minute,
@@ -897,9 +911,21 @@ class WarriorForwardCaptureService:
             self._deliver_completed_bar_deltas(
                 symbol, completed_snapshot, observation.timestamp,
             )
+        # Discovery uses the local observation boundary. A provider clock ahead
+        # of that boundary must not install a future canonical candidate which
+        # would then defeat the out-of-order guard during fresh confirmation.
+        # Keep the source observation and its component timestamps unchanged;
+        # the original times below still require quote confirmation before entry.
+        discovery_observation = observation
+        if (self._execution_quote_source is not None
+                and value.evaluation_timestamp is not None
+                and observation.timestamp > value.evaluation_timestamp):
+            discovery_observation = replace(
+                observation, timestamp=value.evaluation_timestamp,
+            )
         with _service_stage("runtime_discover", symbol=symbol):
             candidate = self.runtime.discover(
-                observation, completed, session=value.session,
+                discovery_observation, completed, session=value.session,
             )
         candidate = _bind_decision_generation(candidate, value)
         if candidate.discovery_qualified:
@@ -916,6 +942,21 @@ class WarriorForwardCaptureService:
                     symbol, stage="SETUP_TRIGGERED", timestamp=value.evaluation_timestamp or observation.timestamp,
                 )
         legacy_candidate = candidate
+        if (self.config.taxonomy_paper_execution_enabled
+                and self._taxonomy_execution_bridge is not None):
+            # Every selected taxonomy pattern enters BEFORE the same technical,
+            # quote, account, reward, risk, Grok and ownership gates as Warrior.
+            # Retain a valid native setup when it already supplies an entry.
+            try:
+                selected = self._taxonomy_execution_bridge.select_paper_candidate(
+                    value, candidate, self.capture_config.quote_stale_after_seconds)
+                if self.runtime.technical_entry_signal(candidate) is None:
+                    candidate = selected
+            except Exception:
+                performance_diagnostics.record_entry_funnel(symbol,
+                    stage="TAXONOMY_CANDIDATE", outcome="REJECTED",
+                    reason="TAXONOMY_CONTEXT_UNAVAILABLE",
+                    timestamp=value.evaluation_timestamp or observation.timestamp)
         with _service_stage("entry_assessment", symbol=symbol):
             assessed, signal = self.runtime.assess_entry(candidate)
             technical_signal = self.runtime.technical_entry_signal(candidate)
@@ -981,14 +1022,22 @@ class WarriorForwardCaptureService:
             stop=(None if setup is None else setup.stop_price),
             reason=(None if not assessed.reason_codes else assessed.reason_codes[-1].value),
         )
-        market_data_stale = (
-            value.last_price_freshness_seconds is None
-            or value.quote_freshness_seconds is None
-            or value.last_price_freshness_seconds
-            > self.capture_config.quote_stale_after_seconds
-            or value.quote_freshness_seconds
-            > self.capture_config.quote_stale_after_seconds
-        )
+        # In explicit controlled PAPER, reject/refresh with the same quote age
+        # the final Warrior controller uses. Do not send a 2-5s quote to Grok
+        # only to have the final two-second dispatch gate reject it.
+        entry_quote_age_limit = min(self.capture_config.quote_stale_after_seconds,
+            getattr(self._execution_quote_source, 'maximum_entry_age_seconds',
+                    self.capture_config.quote_stale_after_seconds))
+        decision_at = value.evaluation_timestamp or observation.timestamp
+        # Some adapter age fields clamp a future provider time to zero. Check
+        # original timestamps too, so a future event requests real confirmation
+        # instead of reaching native review with an impossible signal time.
+        provider_time_ahead = any(stamp is not None and stamp > decision_at
+            for stamp in (observation.timestamp, value.last_price_observed_at,
+                          value.quote_observed_at, observation.last_price_timestamp,
+                          observation.quote_timestamp))
+        market_data_stale = provider_time_ahead or any(age is None or not ZERO<=age<=entry_quote_age_limit
+            for age in (value.last_price_freshness_seconds,value.quote_freshness_seconds))
         processing_delayed = (
             (
                 value.processing_age_seconds is not None
@@ -1076,6 +1125,7 @@ class WarriorForwardCaptureService:
                     refreshed = self._execution_quote_source(symbol)
                 except Exception:
                     refreshed = None
+                observer_quote = refreshed
                 performance_diagnostics.record_entry_funnel(
                     symbol, stage="EXECUTION_QUOTE_RETURNED",
                     outcome="AVAILABLE" if refreshed is not None else "UNAVAILABLE",
@@ -1091,13 +1141,19 @@ class WarriorForwardCaptureService:
                 ).replace(second=0, microsecond=0)
                 provenance_outcome = "EXECUTION_QUOTE_REJECTED"
                 provenance_rejection_reason: str | None = "QUOTE_REJECTED_MISSING"
+                quote_rejection = execution_quote_rejection(refreshed,symbol,evaluated_at,
+                    maximum_age=entry_quote_age_limit)
+                if refreshed is None:
+                    performance_diagnostics.record_entry_funnel(symbol,stage="EXECUTION_QUOTE_REJECTED",
+                        outcome="QUOTE_REJECTED_MISSING",reason="QUOTE_REJECTED_MISSING",timestamp=evaluated_at)
                 if refreshed is not None:
-                    quote_age = Decimal(str((evaluated_at - refreshed.bid_timestamp).total_seconds()))
-                    last_age = Decimal(str((evaluated_at - refreshed.last_timestamp).total_seconds()))
+                    try:
+                        quote_age = Decimal(str((evaluated_at - refreshed.bid_timestamp).total_seconds()))
+                        last_age = Decimal(str((evaluated_at - refreshed.last_timestamp).total_seconds()))
+                    except (TypeError,ValueError,AttributeError):
+                        quote_age = last_age = None
                     if (
-                        refreshed.symbol == symbol
-                        and Decimal("0") <= quote_age <= self.capture_config.quote_stale_after_seconds
-                        and Decimal("0") <= last_age <= self.capture_config.quote_stale_after_seconds
+                        quote_rejection is None
                         # Do not reuse setup geometry if a new minute could
                         # have completed while the bounded request was open.
                         and evaluated_at.replace(second=0, microsecond=0) == technical_minute
@@ -1107,9 +1163,14 @@ class WarriorForwardCaptureService:
                         performance_diagnostics.record_entry_funnel(
                             symbol, stage="EXECUTION_QUOTE_ACCEPTED",
                             timestamp=evaluated_at,
+                            source_observation_timestamp=observation.timestamp,
+                            confirmation_observed_at=evaluated_at,
                         )
                         refreshed_observation = replace(
-                            observation, price=refreshed.last,
+                            # This is a new confirmed observation, not the old
+                            # event with new prices. Provider component times
+                            # below stay original and pass the zero-future gate.
+                            observation, timestamp=evaluated_at, price=refreshed.last,
                             bid=refreshed.bid, ask=refreshed.ask,
                             quote_timestamp=refreshed.bid_timestamp,
                             last_price_timestamp=refreshed.last_timestamp,
@@ -1139,6 +1200,20 @@ class WarriorForwardCaptureService:
                         refreshed_candidate = _bind_decision_generation(
                             refreshed_candidate, refreshed_value,
                         )
+                        # Fresh confirmation must rerun the same library path
+                        # as the first assessment. Native discover alone drops
+                        # taxonomy-only setups and labels the original identity
+                        # obsolete even when the fresh quote leaves it valid.
+                        if (self.config.taxonomy_paper_execution_enabled
+                                and self._taxonomy_execution_bridge is not None
+                                and self.runtime.technical_entry_signal(refreshed_candidate) is None):
+                            try:
+                                refreshed_candidate = self._taxonomy_execution_bridge.select_paper_candidate(
+                                    refreshed_value,refreshed_candidate,entry_quote_age_limit)
+                            except Exception:
+                                performance_diagnostics.record_entry_funnel(symbol,
+                                    stage="TAXONOMY_CANDIDATE",outcome="REJECTED",
+                                    reason="TAXONOMY_CONTEXT_UNAVAILABLE",timestamp=evaluated_at)
                         refreshed_assessed, refreshed_signal = self.runtime.assess_entry(
                             refreshed_candidate
                         )
@@ -1188,6 +1263,16 @@ class WarriorForwardCaptureService:
                             )
                         else:
                             technical_signal = refreshed_technical
+                            # A complete provider-timestamp-validated quote is
+                            # now the canonical current observation. Do not
+                            # carry the earlier stale-source label into the
+                            # downstream treatment and entry-intelligence
+                            # decision: that would misclassify a successfully
+                            # refreshed native entry as stale. The existing
+                            # quote, generation, execution, and risk checks
+                            # above remain mandatory.
+                            market_data_stale = False
+                            processing_delayed = False
                         if refreshed_signal is not None:
                             if self._account_refresh_source is not None:
                                 account = self._account_refresh_source()
@@ -1200,20 +1285,7 @@ class WarriorForwardCaptureService:
                         quote_age_value = None if refreshed is None else quote_age
                         last_age_value = None if refreshed is None else last_age
                         quote_minute = None if refreshed is None else evaluated_at.replace(second=0, microsecond=0)
-                        rejection_reason = "QUOTE_REJECTED_MISSING"
-                        if refreshed is not None and refreshed.symbol != symbol:
-                            rejection_reason = "QUOTE_REJECTED_SYMBOL_MISMATCH"
-                        elif refreshed is not None and not (Decimal("0") <= quote_age <= self.capture_config.quote_stale_after_seconds):
-                            rejection_reason = "QUOTE_REJECTED_BID_STALE"
-                        elif refreshed is not None and not (Decimal("0") <= last_age <= self.capture_config.quote_stale_after_seconds):
-                            rejection_reason = "QUOTE_REJECTED_LAST_TRADE_STALE"
-                        elif refreshed is not None and evaluated_at.replace(second=0, microsecond=0) != technical_minute:
-                            rejection_reason = "QUOTE_REJECTED_TECHNICAL_MINUTE"
-                        elif refreshed is not None and (
-                            refreshed.bid is None or refreshed.ask is None
-                            or refreshed.bid <= 0 or refreshed.ask < refreshed.bid
-                        ):
-                            rejection_reason = "QUOTE_REJECTED_INVALID"
+                        rejection_reason = quote_rejection or "QUOTE_REJECTED_TECHNICAL_MINUTE"
                         provenance_rejection_reason = rejection_reason
                         performance_diagnostics.record_entry_funnel(
                             symbol, stage="EXECUTION_QUOTE_REJECTED",
@@ -1245,7 +1317,7 @@ class WarriorForwardCaptureService:
                         )
                 except Exception:
                     pass
-        taxonomy_bridge = self._taxonomy_execution_bridge
+        taxonomy_bridge = None if self.config.taxonomy_paper_execution_enabled else self._taxonomy_execution_bridge
         intelligence_identity = self._intelligence_identity(
             value, assessed, completed_version,
         )
@@ -2020,6 +2092,18 @@ class WarriorForwardCaptureService:
                 records.append(execution_record)
 
         setup = assessed.setup
+        if self._observer_context_tap is not None and observer_quote is not None:
+            try:
+                from app.asset_modules.engine_catalog import EngineId
+                self._observer_context_tap.record(engine=EngineId.WARRIOR,
+                    quote=observer_quote,source=self._execution_quote_source,
+                    at=value.evaluation_timestamp or observation.timestamp,
+                    baseline_result=('ENTRY_CANDIDATE' if signal is not None else
+                                     'BLOCKED' if technical_signal is not None else 'NO_ENTRY'),
+                    setup_state=('TRIGGERED' if setup is not None and setup.state is SetupState.TRIGGERED
+                                 else 'FORMING' if setup is not None else 'UNKNOWN'))
+            except Exception:
+                pass
         if (
             setup is not None and setup.state is SetupState.TRIGGERED
             and assessed.score.total >= self.config.entry.minimum_momentum_score
@@ -2631,6 +2715,29 @@ class WarriorForwardCaptureService:
         except Exception:
             return False
 
+    def _initial_breakout_exhausted(
+        self,
+        value: PointInTimeObservation,
+        candidate: MomentumCandidate,
+        signal: MomentumEntrySignal,
+        executable_ask: Decimal,
+    ) -> bool:
+        """One shared anti-chase policy for initial and working PAPER BUYs."""
+        lifecycle = self._setup_lifecycles.get(candidate.symbol.strip().upper(), {})
+        return initial_breakout_move_exhausted(
+            executable_ask=executable_ask,
+            first_observation_price=lifecycle.get("price_at_first_observation"),
+            setup_type=signal.setup_type.value,
+            catalyst_confirmed=signal.catalyst_state.value == "TRUE",
+            relative_volume=candidate.relative_volume,
+            velocity_1m=candidate.price_velocity_percent_1m,
+            velocity_5m=candidate.price_velocity_percent_5m,
+            acceleration=candidate.price_acceleration_percent,
+            setup_score=signal.setup_score,
+            first_observed_at=lifecycle.get("first_observed_at"),
+            evaluated_at=value.evaluation_timestamp or value.observation.timestamp,
+        )
+
     def _execution_entry_signal(
         self,
         value: PointInTimeObservation,
@@ -2743,6 +2850,32 @@ class WarriorForwardCaptureService:
             value, candidate, signal, entry_price=Decimal(ask),
             displacement_limit=maximum,
         )
+        # The current structural trigger can ratchet upward after an initial
+        # breakout. For PAPER entry, retain the first observed price anchor
+        # so a late trigger cannot authorize buying after the bulk of the move.
+        # This is an independent anti-chase check; it never changes the quote
+        # timestamps, risk sizing, or exit protection.
+        if self._initial_breakout_exhausted(
+            value, candidate, signal, Decimal(ask),
+        ):
+            _publish_price_gate(
+                "ENTRY_MOVE_EXHAUSTED", proposed=Decimal(ask),
+                displacement_percent_value=_actual_displacement(ask),
+                displacement_dollars=Decimal(ask) - structural,
+                effective_maximum=maximum,
+            )
+            if diagnostic is not None:
+                diagnostic(
+                    "ENTRY_MOVE_EXHAUSTED", structural=structural,
+                    bid=value.observation.bid, ask=ask,
+                    proposed_execution_price=ask,
+                    maximum_percent_price=maximum_percent_price,
+                    maximum_absolute_price=maximum_absolute_price,
+                    effective_maximum=maximum,
+                    displacement_percent=_actual_displacement(ask),
+                    displacement_absolute=Decimal(ask) - structural,
+                )
+            return None
         # If the live ask is already at/below the canonical trigger, preserve
         # the detector-owned limit.  The bounded displacement policy applies
         # only when execution would require paying above that trigger.
@@ -2955,6 +3088,15 @@ class WarriorForwardCaptureService:
             or any(age is None or age > stale_limit for age in freshness)
         ):
             record_pursuit("QUOTE_STALE")
+            return
+
+        # A working BUY may not pursue an exhausted initial breakout
+        # through a separate repricing path. Genuine independently
+        # confirmed continuation retains the same exception as new entries.
+        if self._initial_breakout_exhausted(
+            value, candidate, signal, Decimal(ask),
+        ):
+            record_pursuit("ENTRY_MOVE_EXHAUSTED")
             return
 
         # This gate also applies to the legacy path without depth/size data.
@@ -4210,7 +4352,7 @@ class WarriorForwardCaptureService:
         symbol = request.identity.symbol
         taxonomy_candidate = None
         taxonomy_signal = None
-        bridge = self._taxonomy_execution_bridge
+        bridge = None if self.config.taxonomy_paper_execution_enabled else self._taxonomy_execution_bridge
         with _service_stage("taxonomy_async", symbol=symbol):
             if bridge is not None:
                 taxonomy_candidate, taxonomy_signal = bridge.evaluate(
@@ -4751,11 +4893,16 @@ class WarriorForwardCaptureService:
     ) -> None:
         observation = value.observation
         stale = self.capture_config.quote_stale_after_seconds
+        # Owned-position protection uses the executable quote, not the
+        # last-trade print. A stale last trade must not disable a fresh,
+        # coherent bid/ask quote for harvest and protective-stop decisions.
+        # Entry qualification continues enforcing its own trade freshness.
         quote_fresh = (
             value.quote_freshness_seconds is not None
-            and value.last_price_freshness_seconds is not None
             and ZERO <= value.quote_freshness_seconds <= stale
-            and ZERO <= value.last_price_freshness_seconds <= stale
+            and observation.bid is not None
+            and observation.ask is not None
+            and ZERO < observation.bid <= observation.ask
         )
         depth = depth_features(value.depth_bids, value.depth_asks)
         flow = value.order_flow
@@ -4922,21 +5069,7 @@ class WarriorForwardCaptureService:
                     state.realized_pnl += realized
                     state.realized_from_partials += realized
                 if role and role.startswith("PROFIT_HARVEST_"):
-                    try:
-                        state.profit_harvest_stage = max(
-                            state.profit_harvest_stage,
-                            int(role.rsplit("_", 1)[-1]),
-                        )
-                    except ValueError:
-                        pass
-                    state.pending_profit_harvest_role = None
-                    state.exit_reason = None
-                    state.exit_price = None
-                    self._record_management_event(
-                        state, "PROFIT_HARVEST_FILLED",
-                        timestamp=observed_at, fill_quantity=filled,
-                        order_id=order_id,
-                    )
+                    self._record_harvest_progress(state, role, order_id, filled, observed_at)
             state.remaining = quantity
             changed = True
         state.managed_quantity = (
@@ -5018,6 +5151,32 @@ class WarriorForwardCaptureService:
             ),))
             changed = True
         return changed
+
+    def _record_harvest_progress(self, state, role, order_id, filled, observed_at):
+        """A partial fill cannot complete a harvest milestone or free its slot."""
+        complete = False
+        book = self._paper_order_book()
+        if book is not None and order_id:
+            try:
+                order = book.get(order_id)
+                complete = (order.request.strategy_lifecycle_id == lifecycle_identity(state.signal)
+                    and order.request.execution_reason == role
+                    and order.is_terminal and order.remaining_quantity == ZERO
+                    and order.filled_quantity > ZERO)
+            except Exception:
+                pass
+        if complete:
+            state.profit_harvest_stage = max(state.profit_harvest_stage,
+                int(role.rsplit('_', 1)[-1]))
+            state.pending_profit_harvest_role = None
+            state.exit_reason = None
+            state.exit_price = None
+        else:
+            state.pending_profit_harvest_role = role
+            state.exit_reason = role
+        self._record_management_event(state,
+            'PROFIT_HARVEST_FILLED' if complete else 'PROFIT_HARVEST_PARTIAL_FILL',
+            timestamp=observed_at, target_stage=role, fill_quantity=filled, order_id=order_id)
 
     def _update_executable_profit_state(self, state: _PaperState) -> bool:
         evidence = state.latest_exit_evidence
@@ -5140,11 +5299,7 @@ class WarriorForwardCaptureService:
                 state, bid, quantity, role,
             )
             active = (
-                result.state in {
-                    PaperExitSubmissionState.SUBMITTED,
-                    PaperExitSubmissionState.WORKING,
-                    PaperExitSubmissionState.COMPLETED,
-                }
+                result.request_succeeded
                 if isinstance(result, PaperExitSubmissionDecision)
                 else bool(result)
             )
@@ -5182,7 +5337,7 @@ class WarriorForwardCaptureService:
                 state, desired_stop, state.remaining, "STOP",
             )
             active = (
-                result.protection_active
+                result.requested_order_active
                 if isinstance(result, PaperExitSubmissionDecision)
                 else bool(result)
             )
@@ -5341,6 +5496,11 @@ class WarriorForwardCaptureService:
                         reason = PaperEntryAuthorizationReason.AI_REVIEW_PENDING
                     elif isinstance(receipt, NativeReviewReceipt) and receipt.state == "NOT_SENT" and receipt.reason == "BUSY":
                         reason = PaperEntryAuthorizationReason.AI_REVIEW_BUSY
+                    elif isinstance(receipt, NativeReviewReceipt) and receipt.state == "NOT_SENT":
+                        reason = PaperEntryAuthorizationReason.AI_REVIEW_NOT_SENT
+                        performance_diagnostics.record_entry_funnel(signal.symbol,
+                            stage="ENTRY_REVIEW_NOT_SENT", outcome="NOT_SENT",
+                            reason=receipt.reason, timestamp=at, lifecycle_id=identity)
                     elif not isinstance(receipt, NativeReviewReceipt) or receipt.pending:
                         raise ValueError("Unbound review outcome")
                 except Exception:
@@ -6018,25 +6178,15 @@ class WarriorForwardCaptureService:
                     ) * Decimal(fill_quantity)
                     state.realized_pnl += realized
                     state.realized_from_partials += realized
-                try:
-                    state.profit_harvest_stage = max(
-                        state.profit_harvest_stage,
-                        int(exit_role.rsplit("_", 1)[-1]),
-                    )
-                except ValueError:
-                    pass
-                state.pending_profit_harvest_role = None
-                self._record_management_event(
-                    state, "PROFIT_HARVEST_FILLED", timestamp=observed_at,
-                    target_stage=exit_role, fill_quantity=fill_quantity,
-                    order_id=exit_order_id,
-                )
+                self._record_harvest_progress(state, exit_role, exit_order_id,
+                    fill_quantity, observed_at)
             elif exit_role == "PROTECTIVE_STOP":
                 # Do not let a stale persisted FIRST_TARGET label relabel a
                 # protective-stop fill.  The target stage remains incomplete.
                 state.exit_reason = None
                 state.exit_price = None
-            if not (exit_role == "FIRST_TARGET" and not first_target_complete):
+            if (not (exit_role == "FIRST_TARGET" and not first_target_complete)
+                    and state.pending_profit_harvest_role != exit_role):
                 state.exit_reason = None
                 state.exit_price = None
             records.append(CaptureRecord.create(
@@ -6252,7 +6402,10 @@ class WarriorForwardCaptureService:
             if reason == "STOP":
                 self._capture_stop_activation(state, result, bar)
             active = (
-                result.protection_active
+                # A previously triggered stop must remain EXIT_WORKING even
+                # when the bridge refuses to replace that same protective leg.
+                (result.protection_active if reason == "STOP"
+                 else result.requested_order_active)
                 if isinstance(result, PaperExitSubmissionDecision)
                 else bool(result)
             )
@@ -6341,7 +6494,7 @@ class WarriorForwardCaptureService:
                         defense_submission_reason,
                     )
                     defense_active = (
-                        defense_result.protection_active
+                        defense_result.requested_order_active
                         if isinstance(
                             defense_result, PaperExitSubmissionDecision
                         )
@@ -6384,7 +6537,7 @@ class WarriorForwardCaptureService:
                     state, trailing_stop, quantity, "STOP",
                 )
                 active = (
-                    result.protection_active
+                    result.requested_order_active
                     if isinstance(result, PaperExitSubmissionDecision)
                     else bool(result)
                 )
@@ -6480,12 +6633,9 @@ class WarriorForwardCaptureService:
                 )
             role = self._exit_role_for_reason(reason)
             if role is not None and (
-                not isinstance(result, PaperExitSubmissionDecision)
-                or result.state in {
-                    PaperExitSubmissionState.SUBMITTED,
-                    PaperExitSubmissionState.WORKING,
-                    PaperExitSubmissionState.COMPLETED,
-                }
+                result.request_succeeded
+                if isinstance(result, PaperExitSubmissionDecision)
+                else bool(result)
             ):
                 state.active_exit_role = role
                 state.active_exit_order_id = getattr(result, "order_id", None)
@@ -6570,7 +6720,7 @@ class WarriorForwardCaptureService:
                 price = evidence.best_bid
             result = self._submit_exit(state, price, quantity, "SESSION_CLOSE")
             submitted = (
-                result.state in {PaperExitSubmissionState.SUBMITTED, PaperExitSubmissionState.WORKING}
+                result.requested_order_active
                 if isinstance(result, PaperExitSubmissionDecision) else bool(result)
             )
             outcome = "SESSION_CLOSE_SUBMITTED" if submitted else "SESSION_CLOSE_UNAVAILABLE"
@@ -6603,7 +6753,7 @@ class WarriorForwardCaptureService:
                 state, price, quantity, "OVERNIGHT_CAPABILITY_LOST",
             )
             submitted = (
-                result.state in {PaperExitSubmissionState.SUBMITTED, PaperExitSubmissionState.WORKING}
+                result.requested_order_active
                 if isinstance(result, PaperExitSubmissionDecision) else bool(result)
             )
             outcomes.append((
@@ -6793,10 +6943,7 @@ class WarriorForwardCaptureService:
                     state.active_exit_role = None
                     state.active_exit_order_id = None
                 submitted = (
-                    target_result.state in {
-                        PaperExitSubmissionState.SUBMITTED,
-                        PaperExitSubmissionState.WORKING,
-                    }
+                    target_result.requested_order_active
                     if isinstance(target_result, PaperExitSubmissionDecision)
                     else bool(target_result)
                 )
@@ -7619,6 +7766,13 @@ def _opportunity_authorization_record(
             "setup": assessment.setup_family,
             "generation_id": assessment.generation_id,
             "lifecycle_id": assessment.lifecycle_id,
+            "source_decision_id": (
+                assessment.source_decision_id
+                if isinstance(assessment.source_decision_id, str)
+                and len(assessment.source_decision_id) == 24
+                and all(ch in "0123456789abcdef" for ch in assessment.source_decision_id)
+                else None
+            ),
             "trigger": assessment.structural_trigger,
             "structural_stop": assessment.structural_stop,
             "execution_ask": assessment.executable_entry,
@@ -7952,7 +8106,9 @@ def _recover_entry_payload(
             return None, f"{field.upper()}_UNRECOVERABLE"
 
     session = str(payload.get("session") or "").strip().upper()
-    if session not in WARRIOR_ENTRY_ALLOWED_SESSIONS:
+    # Recovery restores already-owned exposure, not permission to open a trade.
+    # Tightening today's entry sessions must not discard a historical position.
+    if session not in {"PREMARKET", "REGULAR", "AFTER_HOURS", "OVERNIGHT"}:
         return None, "SESSION_INVALID"
     payload["session"] = session
     try:

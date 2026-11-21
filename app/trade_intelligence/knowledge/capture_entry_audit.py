@@ -58,6 +58,61 @@ def audit_entries(data):
             stamp = instant(payload["evaluation_timestamp"])
             if stamp <= authorization_time:
                 decisions.append((stamp, payload))
+        source_id = authorization.get("source_decision_id")
+        source_decision = None
+        # New PAPER records explicitly connect the candidate DECISION to the
+        # authorization assessment. Older captures lack this ID; absence is
+        # unknown provenance, not a bad entry.
+        if isinstance(source_id, str) and len(source_id) == 24 and all(
+            character in "0123456789abcdef" for character in source_id
+        ):
+            source_candidates = [
+                (stamp, payload) for stamp, payload in decisions
+                if payload.get("decision_id") == source_id
+            ]
+            if len(source_candidates) == 1:
+                source_status = "SOURCE_DECISION_ID_MATCHED"
+                source_timestamp = source_candidates[0][0].isoformat()
+                source_decision = source_candidates[0]
+            elif len(source_candidates) > 1:
+                source_status = "SOURCE_DECISION_ID_AMBIGUOUS"
+                source_timestamp = None
+            else:
+                source_status = "SOURCE_DECISION_ID_UNAVAILABLE"
+                source_timestamp = None
+        else:
+            source_status = "SOURCE_DECISION_ID_NOT_RECORDED"
+            source_timestamp = None
+            source_id = None
+        # Compare the exact captured source decision independently of the
+        # latest nearby decision. A later FORMING/NO_SETUP decision does not
+        # prove that the earlier authorized candidate was invalid.
+        source_setup = ((source_decision[1].get("setup") or {})
+                        if source_decision is not None else {})
+        source_trigger = source_setup.get("trigger")
+        authorized_trigger = authorization.get("trigger")
+        source_matches_authorization = None
+        source_age_seconds = None
+        if source_decision is not None:
+            source_matches_authorization = bool(
+                source_setup.get("state") == "TRIGGERED"
+                and source_setup.get("type") == authorization.get("setup")
+                and source_trigger is not None and authorized_trigger is not None
+                and Decimal(source_trigger) == Decimal(authorized_trigger)
+            )
+            source_age_seconds = str(Decimal(str(
+                (authorization_time - source_decision[0]).total_seconds()
+            )))
+        row.update(
+            source_decision_id=source_id,
+            source_decision_status=source_status,
+            source_decision_timestamp=source_timestamp,
+            source_decision_state=source_setup.get("state") if source_decision is not None else None,
+            source_decision_setup=source_setup.get("type") if source_decision is not None else None,
+            source_decision_matches_authorization=source_matches_authorization,
+            source_decision_age_seconds=source_age_seconds,
+            source_decision_is_gateway_snapshot_proof=False,
+        )
         row.update(status="AUTHORIZATION_MATCHED", authorization_time=authorization_time.isoformat(),
                    authorized_setup=authorization.get("setup"), authorized_trigger=authorization.get("trigger"),
                    authorized_stop=authorization.get("structural_stop"))

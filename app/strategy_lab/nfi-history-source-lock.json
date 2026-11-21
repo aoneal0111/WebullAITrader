@@ -1,0 +1,4012 @@
+{
+  "scope": "PINNED_NFI_DOCUMENTED_HISTORY_V1",
+  "repository": "https://github.com/DigiTuccar/HistoricalDataForTradeBacktest.git",
+  "commit": "553525cf23aa1af1155aa64d071ab1ddd5f940c1",
+  "source_reference": "https://github.com/iterativv/NostalgiaForInfinity/blob/bbddbd94f97f3c14336387d2958183870891b951/tools/download-necessary-exchange-market-data-for-backtests.sh",
+  "pair_count": 160,
+  "file_count": 800,
+  "total_bytes": 2496224192,
+  "files": [
+    {
+      "path": "binance/1INCH_USDT-5m.feather",
+      "git_blob_sha": "7143f23d1eec01a4b620444ffecd2d4694c2dafd",
+      "bytes": 9579458
+    },
+    {
+      "path": "binance/1INCH_USDT-15m.feather",
+      "git_blob_sha": "57d1876717ac1bb23a00cc51ac4a39516b249568",
+      "bytes": 3453042
+    },
+    {
+      "path": "binance/1INCH_USDT-1h.feather",
+      "git_blob_sha": "e95920605bc437c74105019f13293868b9f0cf4c",
+      "bytes": 943890
+    },
+    {
+      "path": "binance/1INCH_USDT-4h.feather",
+      "git_blob_sha": "2044599ab02cd2685ac13d3d86121fedf338f84d",
+      "bytes": 264802
+    },
+    {
+      "path": "binance/1INCH_USDT-1d.feather",
+      "git_blob_sha": "399cff32c8182e900b72b9a488e7ab9fa91fa817",
+      "bytes": 56626
+    },
+    {
+      "path": "binance/ADA_USDT-5m.feather",
+      "git_blob_sha": "52fd1fe74c89610831970a0b66e196b2bbe36c94",
+      "bytes": 17351426
+    },
+    {
+      "path": "binance/ADA_USDT-15m.feather",
+      "git_blob_sha": "e3797a3f1995072f7a9c7225ebd5e4f8953bf1b6",
+      "bytes": 6149642
+    },
+    {
+      "path": "binance/ADA_USDT-1h.feather",
+      "git_blob_sha": "ed7c321337a319d94528517c370676fc5a0eb176",
+      "bytes": 1641162
+    },
+    {
+      "path": "binance/ADA_USDT-4h.feather",
+      "git_blob_sha": "43e0899efaed88735191a7ce41d5bb65964dc344",
+      "bytes": 458410
+    },
+    {
+      "path": "binance/ADA_USDT-1d.feather",
+      "git_blob_sha": "aacb3aaf37422e3055100328c04c915b844f5f77",
+      "bytes": 95778
+    },
+    {
+      "path": "binance/ADX_USDT-5m.feather",
+      "git_blob_sha": "35643c51eb90025b73109cc5e025d3f9cc6a3f11",
+      "bytes": 6824674
+    },
+    {
+      "path": "binance/ADX_USDT-15m.feather",
+      "git_blob_sha": "de114303c0302c8251941d34e3ff2a10e8fdb119",
+      "bytes": 2551898
+    },
+    {
+      "path": "binance/ADX_USDT-1h.feather",
+      "git_blob_sha": "af36f5bb256690b5ab581581cefbbc82fe218e56",
+      "bytes": 705962
+    },
+    {
+      "path": "binance/ADX_USDT-4h.feather",
+      "git_blob_sha": "da7eb81b68e512b6e9ad1a438d431cb9d5a495f9",
+      "bytes": 201530
+    },
+    {
+      "path": "binance/ADX_USDT-1d.feather",
+      "git_blob_sha": "99450fa2a3d6c4ba34a7082e8423f2aace9c3478",
+      "bytes": 44930
+    },
+    {
+      "path": "binance/AGLD_USDT-5m.feather",
+      "git_blob_sha": "81bedc7be004602e2781f737eb498ade449e6835",
+      "bytes": 6875770
+    },
+    {
+      "path": "binance/AGLD_USDT-15m.feather",
+      "git_blob_sha": "65080df664e2d9e314cbd2e377de636d90a5bdf1",
+      "bytes": 2525002
+    },
+    {
+      "path": "binance/AGLD_USDT-1h.feather",
+      "git_blob_sha": "fb201ff0d490242236b8cf8aa35407a24d0f1303",
+      "bytes": 699682
+    },
+    {
+      "path": "binance/AGLD_USDT-4h.feather",
+      "git_blob_sha": "df8918315dfb1749383fe12541900ba732bf9d28",
+      "bytes": 197866
+    },
+    {
+      "path": "binance/AGLD_USDT-1d.feather",
+      "git_blob_sha": "cecaf6c0fd37bf487cab2a5630b6a4690a4ad793",
+      "bytes": 41378
+    },
+    {
+      "path": "binance/ALGO_USDT-5m.feather",
+      "git_blob_sha": "6406c3eeaf11c2950f3cd52dd54574e85df9314b",
+      "bytes": 13119610
+    },
+    {
+      "path": "binance/ALGO_USDT-15m.feather",
+      "git_blob_sha": "52f1a4568aabfaf19cf44674f2c5cae3583fb8de",
+      "bytes": 4721506
+    },
+    {
+      "path": "binance/ALGO_USDT-1h.feather",
+      "git_blob_sha": "369ad5b6a5dbefac2f8b46c42eb6159e9cd6c3fa",
+      "bytes": 1272050
+    },
+    {
+      "path": "binance/ALGO_USDT-4h.feather",
+      "git_blob_sha": "0e00b377bf1b26066c61b47c7f1365feacc04357",
+      "bytes": 349066
+    },
+    {
+      "path": "binance/ALGO_USDT-1d.feather",
+      "git_blob_sha": "3fcc1af509c36fd5e1cb6f94e5b1f5329cbf13c9",
+      "bytes": 72362
+    },
+    {
+      "path": "binance/ALICE_USDT-5m.feather",
+      "git_blob_sha": "b33a131ee6df6a209b2dda6a81c81ddae1eaa9e2",
+      "bytes": 8752618
+    },
+    {
+      "path": "binance/ALICE_USDT-15m.feather",
+      "git_blob_sha": "5b701721ec5545d65e781f4a03c8d4559c602294",
+      "bytes": 3199138
+    },
+    {
+      "path": "binance/ALICE_USDT-1h.feather",
+      "git_blob_sha": "7c7bca4a0d2c32126410aefc465aae523bcc5cf6",
+      "bytes": 880682
+    },
+    {
+      "path": "binance/ALICE_USDT-4h.feather",
+      "git_blob_sha": "bb6f2df6d7e9246d3df90b6b3bd9705a391fd2e3",
+      "bytes": 246362
+    },
+    {
+      "path": "binance/ALICE_USDT-1d.feather",
+      "git_blob_sha": "7a3edcee73e176f6cddf483b48f1502f7511f823",
+      "bytes": 50538
+    },
+    {
+      "path": "binance/ALPACA_USDT-5m.feather",
+      "git_blob_sha": "dcb6cbe31deb1c689de647f2c149f2575a14a05c",
+      "bytes": 7701210
+    },
+    {
+      "path": "binance/ALPACA_USDT-15m.feather",
+      "git_blob_sha": "61f256d6775eac0278c8f3d9e7e0f6676a76778c",
+      "bytes": 2837234
+    },
+    {
+      "path": "binance/ALPACA_USDT-1h.feather",
+      "git_blob_sha": "d18a17043e95e2344962b442029733a7fa425404",
+      "bytes": 775562
+    },
+    {
+      "path": "binance/ALPACA_USDT-4h.feather",
+      "git_blob_sha": "2b3ad3d1289fc13f60fd9aaeb80820357a48614e",
+      "bytes": 217714
+    },
+    {
+      "path": "binance/ALPACA_USDT-1d.feather",
+      "git_blob_sha": "378a4b3ac5678c84514ced280e4887e6aa39bb2b",
+      "bytes": 47786
+    },
+    {
+      "path": "binance/ALPHA_USDT-5m.feather",
+      "git_blob_sha": "e3d5d31161258448b2c20def6b8ad8d27563bd31",
+      "bytes": 9816210
+    },
+    {
+      "path": "binance/ALPHA_USDT-15m.feather",
+      "git_blob_sha": "0d330b089e5e71d2585d17d4707026e853c2a864",
+      "bytes": 3556818
+    },
+    {
+      "path": "binance/ALPHA_USDT-1h.feather",
+      "git_blob_sha": "da9a967ae2eb365ddaaeeca4966197e94c1ceaf8",
+      "bytes": 978162
+    },
+    {
+      "path": "binance/ALPHA_USDT-4h.feather",
+      "git_blob_sha": "cf8fdd193fc4e4f9ad42e12495f7c9ba5df60cea",
+      "bytes": 280570
+    },
+    {
+      "path": "binance/ALPHA_USDT-1d.feather",
+      "git_blob_sha": "ef5517a6c69235b7a1da7600661e6c9ac8369f26",
+      "bytes": 59362
+    },
+    {
+      "path": "binance/AR_USDT-5m.feather",
+      "git_blob_sha": "e4d2095dd8306ffca35d5119ce23baa38e477b04",
+      "bytes": 8726242
+    },
+    {
+      "path": "binance/AR_USDT-15m.feather",
+      "git_blob_sha": "a9f58a35090c54ec3d7d812f54bb564094261352",
+      "bytes": 3115266
+    },
+    {
+      "path": "binance/AR_USDT-1h.feather",
+      "git_blob_sha": "17d3a9fe1d6e45443067c6a99176d301eb4a8a32",
+      "bytes": 856002
+    },
+    {
+      "path": "binance/AR_USDT-4h.feather",
+      "git_blob_sha": "c5ef8a28493fc6971f7b1569dea6a61068673ae2",
+      "bytes": 233906
+    },
+    {
+      "path": "binance/AR_USDT-1d.feather",
+      "git_blob_sha": "8c424cef93eb9aeaf8a814e601b94220220cfd2b",
+      "bytes": 47474
+    },
+    {
+      "path": "binance/ARPA_USDT-5m.feather",
+      "git_blob_sha": "39738e3403987e881f5c42570ad199f7d189398b",
+      "bytes": 13484410
+    },
+    {
+      "path": "binance/ARPA_USDT-15m.feather",
+      "git_blob_sha": "5bea270b655681e61e811f2362e8cd20c77a4447",
+      "bytes": 4811482
+    },
+    {
+      "path": "binance/ARPA_USDT-1h.feather",
+      "git_blob_sha": "a5c1a85c9fc39dff96ab0db7ebb0af2d9d92bf5a",
+      "bytes": 1264522
+    },
+    {
+      "path": "binance/ARPA_USDT-4h.feather",
+      "git_blob_sha": "cf0bc8387f0acf0454f2395a073057038dd1e2dc",
+      "bytes": 353162
+    },
+    {
+      "path": "binance/ARPA_USDT-1d.feather",
+      "git_blob_sha": "48bb3768e2e58c70a6bc2e777f6babced3175f5e",
+      "bytes": 80058
+    },
+    {
+      "path": "binance/ATM_USDT-5m.feather",
+      "git_blob_sha": "b951506fa8e4f771dc994657ca30f35a29cabc1f",
+      "bytes": 8677202
+    },
+    {
+      "path": "binance/ATM_USDT-15m.feather",
+      "git_blob_sha": "aaea6b2900adfb721eb2811b29e77879b8f1b21c",
+      "bytes": 3173570
+    },
+    {
+      "path": "binance/ATM_USDT-1h.feather",
+      "git_blob_sha": "9e92865c2fa8683134703f27e63b21806f17b070",
+      "bytes": 877698
+    },
+    {
+      "path": "binance/ATM_USDT-4h.feather",
+      "git_blob_sha": "b6f70be638c99d1d01ee02fb2003d25c49c46ffd",
+      "bytes": 246418
+    },
+    {
+      "path": "binance/ATM_USDT-1d.feather",
+      "git_blob_sha": "7fcf0c03b5478580f605e035e91089f002097c8d",
+      "bytes": 50570
+    },
+    {
+      "path": "binance/ATOM_USDT-5m.feather",
+      "git_blob_sha": "3177602b4e111780d4148f2b1db5549a0e3424b6",
+      "bytes": 14525546
+    },
+    {
+      "path": "binance/ATOM_USDT-15m.feather",
+      "git_blob_sha": "3f134abc254f8f1eb6950c1bbdbf15ddbad6f8a8",
+      "bytes": 5145522
+    },
+    {
+      "path": "binance/ATOM_USDT-1h.feather",
+      "git_blob_sha": "c75216583273a70406d0c0e60c47324d7bfca7f6",
+      "bytes": 1343474
+    },
+    {
+      "path": "binance/ATOM_USDT-4h.feather",
+      "git_blob_sha": "5bc53f24ec56b6674d3a856166d82a215a44f564",
+      "bytes": 362066
+    },
+    {
+      "path": "binance/ATOM_USDT-1d.feather",
+      "git_blob_sha": "906540357fea04a8973ed37653d64784aa867686",
+      "bytes": 70810
+    },
+    {
+      "path": "binance/AUCTION_USDT-5m.feather",
+      "git_blob_sha": "b8f343686d35287ac21bc8f4bed5f7e1894fa3df",
+      "bytes": 6834802
+    },
+    {
+      "path": "binance/AUCTION_USDT-15m.feather",
+      "git_blob_sha": "39c8540c73e1f267e74af4727772e5e8b7ebd826",
+      "bytes": 2508362
+    },
+    {
+      "path": "binance/AUCTION_USDT-1h.feather",
+      "git_blob_sha": "9c69b3ac91eee9b005110ff3894ab9ae619c9269",
+      "bytes": 689058
+    },
+    {
+      "path": "binance/AUCTION_USDT-4h.feather",
+      "git_blob_sha": "1bcadd93309f3d23e5faf039fffe01c9d5d83de5",
+      "bytes": 192626
+    },
+    {
+      "path": "binance/AUCTION_USDT-1d.feather",
+      "git_blob_sha": "9feaf485331422afba479c924132e0cf75786cce",
+      "bytes": 39842
+    },
+    {
+      "path": "binance/AUDIO_USDT-5m.feather",
+      "git_blob_sha": "01bb0d7b16d7ab630309af8658c0f2035d2c4306",
+      "bytes": 9902242
+    },
+    {
+      "path": "binance/AUDIO_USDT-15m.feather",
+      "git_blob_sha": "17e27f28da05ca11e704311608c1c6bc40819249",
+      "bytes": 3607698
+    },
+    {
+      "path": "binance/AUDIO_USDT-1h.feather",
+      "git_blob_sha": "603d744779e1b4af95577a2fb35c28b2c8708b09",
+      "bytes": 1003058
+    },
+    {
+      "path": "binance/AUDIO_USDT-4h.feather",
+      "git_blob_sha": "9e5a0cfe9b8e9eddd77d702151155fece77927f5",
+      "bytes": 281242
+    },
+    {
+      "path": "binance/AUDIO_USDT-1d.feather",
+      "git_blob_sha": "66d51979fa6bcc2dca42224f18947dca075b0862",
+      "bytes": 59538
+    },
+    {
+      "path": "binance/AVA_USDT-5m.feather",
+      "git_blob_sha": "b8c441f2c361f8312f3e1c960e6517cbc100d92a",
+      "bytes": 9252754
+    },
+    {
+      "path": "binance/AVA_USDT-15m.feather",
+      "git_blob_sha": "7a35ccbdbe700add8583b19e6ff4ed5a5ef15db3",
+      "bytes": 3369698
+    },
+    {
+      "path": "binance/AVA_USDT-1h.feather",
+      "git_blob_sha": "f5a7b91728cb4e9b6613b67a3d543c1ca08897e2",
+      "bytes": 917938
+    },
+    {
+      "path": "binance/AVA_USDT-4h.feather",
+      "git_blob_sha": "216859c22b2986962730ff4d30849402b54afb47",
+      "bytes": 260906
+    },
+    {
+      "path": "binance/AVA_USDT-1d.feather",
+      "git_blob_sha": "eedeeb5e1c4e9a59cc375d76bd00ee1e9e16def5",
+      "bytes": 55122
+    },
+    {
+      "path": "binance/AVAX_USDT-5m.feather",
+      "git_blob_sha": "4564ad9348dd8f6670154a3ea80557a8199ddfe3",
+      "bytes": 10688210
+    },
+    {
+      "path": "binance/AVAX_USDT-15m.feather",
+      "git_blob_sha": "14837fa256fe7b49a5f91f62567bb96910b02137",
+      "bytes": 3827074
+    },
+    {
+      "path": "binance/AVAX_USDT-1h.feather",
+      "git_blob_sha": "15f4e00f5045ea88a5bddca830060b08945fb854",
+      "bytes": 1028146
+    },
+    {
+      "path": "binance/AVAX_USDT-4h.feather",
+      "git_blob_sha": "ee68114ae225bb6c277c54705ee2ba6581628aba",
+      "bytes": 281642
+    },
+    {
+      "path": "binance/AVAX_USDT-1d.feather",
+      "git_blob_sha": "ea324c8416c8e5c67bf88626fde8fb70d6b37260",
+      "bytes": 56562
+    },
+    {
+      "path": "binance/AXS_USDT-5m.feather",
+      "git_blob_sha": "7c12fdac5148c6180c255a294f59839b68811a3e",
+      "bytes": 321978
+    },
+    {
+      "path": "binance/AXS_USDT-15m.feather",
+      "git_blob_sha": "f4628d2b399d50c655e375045a69e1442b3f4df9",
+      "bytes": 3719138
+    },
+    {
+      "path": "binance/AXS_USDT-1h.feather",
+      "git_blob_sha": "787168aafca472839149a21878a52a9b27bd2de3",
+      "bytes": 1019130
+    },
+    {
+      "path": "binance/AXS_USDT-4h.feather",
+      "git_blob_sha": "9a7a6648e3d75ea164857a3c64e925e7da9a388e",
+      "bytes": 283826
+    },
+    {
+      "path": "binance/AXS_USDT-1d.feather",
+      "git_blob_sha": "d2133ef476baeec319a86f63d734c5cbb6417f83",
+      "bytes": 56666
+    },
+    {
+      "path": "binance/BADGER_USDT-5m.feather",
+      "git_blob_sha": "4f9a6510c8984aaaa99a8a24c62dfbc871fece72",
+      "bytes": 8606074
+    },
+    {
+      "path": "binance/BADGER_USDT-15m.feather",
+      "git_blob_sha": "c4d9d77e7451289cab0ffecf42adccf2ac81ec9f",
+      "bytes": 3130418
+    },
+    {
+      "path": "binance/BADGER_USDT-1h.feather",
+      "git_blob_sha": "6be8b8a173897566633e4bc25a626ca7a9e03398",
+      "bytes": 857106
+    },
+    {
+      "path": "binance/BADGER_USDT-4h.feather",
+      "git_blob_sha": "fca7a7f58f6ada36b5c8e1dc069c091a84b1b962",
+      "bytes": 236962
+    },
+    {
+      "path": "binance/BADGER_USDT-1d.feather",
+      "git_blob_sha": "093daa54f4eaa97cd7c153ccf7a13530bbc925e2",
+      "bytes": 48498
+    },
+    {
+      "path": "binance/BAKE_USDT-5m.feather",
+      "git_blob_sha": "7e5d8b5229b9e6e783e91af05cd61de16cbe7833",
+      "bytes": 8706994
+    },
+    {
+      "path": "binance/BAKE_USDT-15m.feather",
+      "git_blob_sha": "caf811868ca3cf54c7021356a6acf7c3f32d35b8",
+      "bytes": 3167338
+    },
+    {
+      "path": "binance/BAKE_USDT-1h.feather",
+      "git_blob_sha": "cc8c14a9862955615c1e95068eb67d4c3ae4a4c1",
+      "bytes": 871242
+    },
+    {
+      "path": "binance/BAKE_USDT-4h.feather",
+      "git_blob_sha": "20163d1f365ae72568f46050d6c98edabbb89daf",
+      "bytes": 241594
+    },
+    {
+      "path": "binance/BAKE_USDT-1d.feather",
+      "git_blob_sha": "f0ea76b879c9deda81f76725fa02ccc289737dea",
+      "bytes": 52426
+    },
+    {
+      "path": "binance/BAND_USDT-5m.feather",
+      "git_blob_sha": "7f0a9c5b0e8442e5c6a747290ec0db4abaae8fcf",
+      "bytes": 12493042
+    },
+    {
+      "path": "binance/BAND_USDT-15m.feather",
+      "git_blob_sha": "5344282dfbb0072470ccb139d8b8792fc5efc4e9",
+      "bytes": 4506674
+    },
+    {
+      "path": "binance/BAND_USDT-1h.feather",
+      "git_blob_sha": "6ec247c07e0b1c4f7ffafd1135fa7b6e84719387",
+      "bytes": 1217586
+    },
+    {
+      "path": "binance/BAND_USDT-4h.feather",
+      "git_blob_sha": "c990950101a54a826e10c6ade32e1b142df8acd9",
+      "bytes": 338322
+    },
+    {
+      "path": "binance/BAND_USDT-1d.feather",
+      "git_blob_sha": "a1171662060efe5e7bd09d32fdc7ef3261699111",
+      "bytes": 68514
+    },
+    {
+      "path": "binance/BAR_USDT-5m.feather",
+      "git_blob_sha": "1653b1f3cafc2237ea60b785caf5f642205e3868",
+      "bytes": 7857034
+    },
+    {
+      "path": "binance/BAR_USDT-15m.feather",
+      "git_blob_sha": "7475c6b5612101c8e240f7caadc764444eab8a4b",
+      "bytes": 2899538
+    },
+    {
+      "path": "binance/BAR_USDT-1h.feather",
+      "git_blob_sha": "76eb3e4610ee98322ba57894c9ecc4c51f004a64",
+      "bytes": 799658
+    },
+    {
+      "path": "binance/BAR_USDT-4h.feather",
+      "git_blob_sha": "64a8d07be01c79de5ae2a0580730f476814043d5",
+      "bytes": 226130
+    },
+    {
+      "path": "binance/BAR_USDT-1d.feather",
+      "git_blob_sha": "aa1c5c99e55e1b269bf34ae24222fff2be96f733",
+      "bytes": 47090
+    },
+    {
+      "path": "binance/BCH_USDT-5m.feather",
+      "git_blob_sha": "eda06f08dbc20e50f5baa9c7b591bc400bb8b960",
+      "bytes": 12250274
+    },
+    {
+      "path": "binance/BCH_USDT-15m.feather",
+      "git_blob_sha": "6e85227ea0ff85516343228d40b49b76dc0f40e0",
+      "bytes": 4331930
+    },
+    {
+      "path": "binance/BCH_USDT-1h.feather",
+      "git_blob_sha": "33dd4561968e82a1d0bd6004fb53fb62a6506eee",
+      "bytes": 1158898
+    },
+    {
+      "path": "binance/BCH_USDT-4h.feather",
+      "git_blob_sha": "d16d585b3c935566f93c902780609512a7eaaf4a",
+      "bytes": 318586
+    },
+    {
+      "path": "binance/BCH_USDT-1d.feather",
+      "git_blob_sha": "9a0225d4abc1cc58207ab0de223a634c5685153d",
+      "bytes": 63178
+    },
+    {
+      "path": "binance/BEL_USDT-5m.feather",
+      "git_blob_sha": "11a26e390d88e26ecc523e32df394724e2d89638",
+      "bytes": 10795450
+    },
+    {
+      "path": "binance/BEL_USDT-15m.feather",
+      "git_blob_sha": "87f7749e49cad5b2cd8d0ebdeb7419f146bb8917",
+      "bytes": 3809474
+    },
+    {
+      "path": "binance/BEL_USDT-1h.feather",
+      "git_blob_sha": "30dfb3f5d1a5ba81e16ee0c8bca164529b68269b",
+      "bytes": 1021186
+    },
+    {
+      "path": "binance/BEL_USDT-4h.feather",
+      "git_blob_sha": "ca6129d2cc8c934acddfffb36de3bf53caa1d92f",
+      "bytes": 280922
+    },
+    {
+      "path": "binance/BEL_USDT-1d.feather",
+      "git_blob_sha": "2426247a8c5edd120fbec1f4a1aee69d4a5e4327",
+      "bytes": 59162
+    },
+    {
+      "path": "binance/BETA_USDT-5m.feather",
+      "git_blob_sha": "cd15846269f65d5e2c25747d1f3c768a52b188ed",
+      "bytes": 8839234
+    },
+    {
+      "path": "binance/BETA_USDT-15m.feather",
+      "git_blob_sha": "c89a1e179ab787104e133c883aef8d2145239ab2",
+      "bytes": 3096538
+    },
+    {
+      "path": "binance/BETA_USDT-1h.feather",
+      "git_blob_sha": "aebfb4975ba8ea1c8cf4971a77843238c49bfdc9",
+      "bytes": 820506
+    },
+    {
+      "path": "binance/BETA_USDT-4h.feather",
+      "git_blob_sha": "4ab9736afac6db78f21aa21536134f64411ccd15",
+      "bytes": 239826
+    },
+    {
+      "path": "binance/BETA_USDT-1d.feather",
+      "git_blob_sha": "85f3949c598f79daf3423bfa8bb001931b81717b",
+      "bytes": 54250
+    },
+    {
+      "path": "binance/BNT_USDT-5m.feather",
+      "git_blob_sha": "7a1d34a99a17794d81bf7069172801b2a3ca5c1a",
+      "bytes": 11604714
+    },
+    {
+      "path": "binance/BNT_USDT-15m.feather",
+      "git_blob_sha": "a2538e2adff380accaba64144b99a4094b2b2979",
+      "bytes": 4217466
+    },
+    {
+      "path": "binance/BNT_USDT-1h.feather",
+      "git_blob_sha": "9e4c15136e47c718552b53f0b9f279750fb663e3",
+      "bytes": 1145802
+    },
+    {
+      "path": "binance/BNT_USDT-4h.feather",
+      "git_blob_sha": "fdb518bba900095ac76791870c1fa23968fdc8f0",
+      "bytes": 317346
+    },
+    {
+      "path": "binance/BNT_USDT-1d.feather",
+      "git_blob_sha": "616246bcea20caea8d334be95baee3fb68aaea36",
+      "bytes": 66146
+    },
+    {
+      "path": "binance/BNX_USDT-5m.feather",
+      "git_blob_sha": "788d89e14ac3ccb946d683eae0e5302abd94c98b",
+      "bytes": 6919898
+    },
+    {
+      "path": "binance/BNX_USDT-15m.feather",
+      "git_blob_sha": "a777ae4b964f5aa1442aa590a3d5f108beb66f60",
+      "bytes": 2509402
+    },
+    {
+      "path": "binance/BNX_USDT-1h.feather",
+      "git_blob_sha": "974a0834fe4544496d3688f8585c848cba8869f7",
+      "bytes": 693426
+    },
+    {
+      "path": "binance/BNX_USDT-4h.feather",
+      "git_blob_sha": "281c2b1726776a744d554ca6e95967b7d3013b75",
+      "bytes": 198570
+    },
+    {
+      "path": "binance/BNX_USDT-1d.feather",
+      "git_blob_sha": "c4d5331045cc33bc6b454b29c4529df6298fac83",
+      "bytes": 43762
+    },
+    {
+      "path": "binance/BTC_USDT-5m.feather",
+      "git_blob_sha": "0fc7eb6468b06ef95eb9a7516c2be1eb8d717e98",
+      "bytes": 23677106
+    },
+    {
+      "path": "binance/BTC_USDT-15m.feather",
+      "git_blob_sha": "91c9d1c9d644eac82018a9c7ce769526385266ba",
+      "bytes": 8139658
+    },
+    {
+      "path": "binance/BTC_USDT-1h.feather",
+      "git_blob_sha": "7b7888f245abe2ea084290e4940b65454c54f97e",
+      "bytes": 2109850
+    },
+    {
+      "path": "binance/BTC_USDT-4h.feather",
+      "git_blob_sha": "739800dae52d83d311ecbcf7156c37f992f98ea1",
+      "bytes": 549802
+    },
+    {
+      "path": "binance/BTC_USDT-1d.feather",
+      "git_blob_sha": "8295a9dd8cdc6324e790c17b74525f80ee7aef1e",
+      "bytes": 101810
+    },
+    {
+      "path": "binance/BURGER_USDT-5m.feather",
+      "git_blob_sha": "98cee269e2425ec2f209332d45048ea26491c6bc",
+      "bytes": 8477746
+    },
+    {
+      "path": "binance/BURGER_USDT-15m.feather",
+      "git_blob_sha": "27b7a1fb603804e8190b4c86e9604b795b1269e1",
+      "bytes": 3064186
+    },
+    {
+      "path": "binance/BURGER_USDT-1h.feather",
+      "git_blob_sha": "bd73c06e3b77ff6fab04f6a244b6c9ac9de4ac4f",
+      "bytes": 824282
+    },
+    {
+      "path": "binance/BURGER_USDT-4h.feather",
+      "git_blob_sha": "78d6aa3dcb431db6670cadbae2df1fe7075dc5b7",
+      "bytes": 230402
+    },
+    {
+      "path": "binance/BURGER_USDT-1d.feather",
+      "git_blob_sha": "27fdaa155e5217ea8fcfd39256136525a885d6d0",
+      "bytes": 49498
+    },
+    {
+      "path": "binance/C98_USDT-5m.feather",
+      "git_blob_sha": "961799eed89beb71a8ca26fcae8ba9b18503e848",
+      "bytes": 8172930
+    },
+    {
+      "path": "binance/C98_USDT-15m.feather",
+      "git_blob_sha": "3865787212f6059d51291296eb9dfa39924b9c91",
+      "bytes": 2986010
+    },
+    {
+      "path": "binance/C98_USDT-1h.feather",
+      "git_blob_sha": "44029ed92f98979c3b8af34e6f5abaa2f65147e8",
+      "bytes": 820810
+    },
+    {
+      "path": "binance/C98_USDT-4h.feather",
+      "git_blob_sha": "355aa7c5123e4d4403f0079d18e3524f0a187f98",
+      "bytes": 229314
+    },
+    {
+      "path": "binance/C98_USDT-1d.feather",
+      "git_blob_sha": "deb025094027f04495224a718b4263cce6f6e060",
+      "bytes": 50130
+    },
+    {
+      "path": "binance/CAKE_USDT-5m.feather",
+      "git_blob_sha": "0747a8337871450bd864478f2e0f5bc5a586ef00",
+      "bytes": 9264658
+    },
+    {
+      "path": "binance/CAKE_USDT-15m.feather",
+      "git_blob_sha": "25ea87596bdebb01d724f77236de7e557528f03f",
+      "bytes": 3368898
+    },
+    {
+      "path": "binance/CAKE_USDT-1h.feather",
+      "git_blob_sha": "3dab11ce026660d431f1cd9b264ef786ae89601a",
+      "bytes": 912754
+    },
+    {
+      "path": "binance/CAKE_USDT-4h.feather",
+      "git_blob_sha": "e6176cef1b24528307d5291c3642e043c5e38117",
+      "bytes": 250266
+    },
+    {
+      "path": "binance/CAKE_USDT-1d.feather",
+      "git_blob_sha": "e7e223b4acb7c24049ed829151ce58bf8db911aa",
+      "bytes": 51058
+    },
+    {
+      "path": "binance/CELR_USDT-5m.feather",
+      "git_blob_sha": "c8163a669e0f2443c348eb748787dce34fa8e1d8",
+      "bytes": 13380338
+    },
+    {
+      "path": "binance/CELR_USDT-15m.feather",
+      "git_blob_sha": "c374ebb4cb8ef88cacc4213040e956e23ffead4a",
+      "bytes": 4916626
+    },
+    {
+      "path": "binance/CELR_USDT-1h.feather",
+      "git_blob_sha": "946ca187953226c7593de6540a55ec0281cfa09f",
+      "bytes": 1338842
+    },
+    {
+      "path": "binance/CELR_USDT-4h.feather",
+      "git_blob_sha": "1fb9c8d6ce1cab2ee7420bccd8ee570c2768dc11",
+      "bytes": 382058
+    },
+    {
+      "path": "binance/CELR_USDT-1d.feather",
+      "git_blob_sha": "bbc38f363aeb47f10c730770d72d83b05b940207",
+      "bytes": 83082
+    },
+    {
+      "path": "binance/CFX_USDT-5m.feather",
+      "git_blob_sha": "e2ea7733dc4ef806ec5e38114f9de9caf2b8d01c",
+      "bytes": 8341338
+    },
+    {
+      "path": "binance/CFX_USDT-15m.feather",
+      "git_blob_sha": "5c1bf00150ad5bee86f3f29fb9c2c7c108d944fc",
+      "bytes": 3069122
+    },
+    {
+      "path": "binance/CFX_USDT-1h.feather",
+      "git_blob_sha": "c9b44ae9c5408d6d1b3195873b266db20c77f683",
+      "bytes": 849218
+    },
+    {
+      "path": "binance/CFX_USDT-4h.feather",
+      "git_blob_sha": "f2f074d45034e0006b30c7d8bbb2b4d4fd8dc366",
+      "bytes": 237874
+    },
+    {
+      "path": "binance/CFX_USDT-1d.feather",
+      "git_blob_sha": "4694c68e629171ce9516d732566a32ac368be6fc",
+      "bytes": 52322
+    },
+    {
+      "path": "binance/CHR_USDT-5m.feather",
+      "git_blob_sha": "a8cee33d3acbb64741f4137a6bbed3d127f97794",
+      "bytes": 11321194
+    },
+    {
+      "path": "binance/CHR_USDT-15m.feather",
+      "git_blob_sha": "5695054183713dfeba9d73e1f52f6fb89bdf4db8",
+      "bytes": 4076154
+    },
+    {
+      "path": "binance/CHR_USDT-1h.feather",
+      "git_blob_sha": "db0176a524839bea9432d647fb335b6f3ce1fbbf",
+      "bytes": 1111178
+    },
+    {
+      "path": "binance/CHR_USDT-4h.feather",
+      "git_blob_sha": "5da6dfc8be9dc1686cee6a243b802c5419fdcdd3",
+      "bytes": 317386
+    },
+    {
+      "path": "binance/CHR_USDT-1d.feather",
+      "git_blob_sha": "c638fbc15bcc9e0d559c4ed40a9c13585233f8b0",
+      "bytes": 67226
+    },
+    {
+      "path": "binance/CHZ_USDT-5m.feather",
+      "git_blob_sha": "e3c1f6ecdeef3a51556975c20bd41a3998b29c3c",
+      "bytes": 13410802
+    },
+    {
+      "path": "binance/CHZ_USDT-15m.feather",
+      "git_blob_sha": "fde0e287c62beb1f72c99a645893a853f86feb04",
+      "bytes": 4920722
+    },
+    {
+      "path": "binance/CHZ_USDT-1h.feather",
+      "git_blob_sha": "7e5171b26246e370d098bdb3c19c1d683ea75407",
+      "bytes": 1361570
+    },
+    {
+      "path": "binance/CHZ_USDT-4h.feather",
+      "git_blob_sha": "1c7ba7346c6fe396859b97313a81f5eb4e84bfe0",
+      "bytes": 393306
+    },
+    {
+      "path": "binance/CHZ_USDT-1d.feather",
+      "git_blob_sha": "183e63250111d88be34669e46cb085914a240738",
+      "bytes": 81770
+    },
+    {
+      "path": "binance/CKB_USDT-5m.feather",
+      "git_blob_sha": "5ec99903b5838c7d7c53450908d04939dc0a9a4e",
+      "bytes": 10336882
+    },
+    {
+      "path": "binance/CKB_USDT-15m.feather",
+      "git_blob_sha": "3126a9b660f7f04ec995e1634fecd02da0fabc46",
+      "bytes": 3785610
+    },
+    {
+      "path": "binance/CKB_USDT-1h.feather",
+      "git_blob_sha": "75136053b2b702174d56eb8a110a6ab4d066fccd",
+      "bytes": 1059634
+    },
+    {
+      "path": "binance/CKB_USDT-4h.feather",
+      "git_blob_sha": "2542df59a23777e1d1544db161e9c78b575cb33d",
+      "bytes": 306314
+    },
+    {
+      "path": "binance/CKB_USDT-1d.feather",
+      "git_blob_sha": "ea21b0da67b491645e0be264cefdeb3a9e685210",
+      "bytes": 65770
+    },
+    {
+      "path": "binance/COTI_USDT-5m.feather",
+      "git_blob_sha": "3d3e5d2ad0ab511adf89422522e3ec054f64bc1e",
+      "bytes": 12254194
+    },
+    {
+      "path": "binance/COTI_USDT-15m.feather",
+      "git_blob_sha": "a229f9a3b2f09936f85400734fbcb025f4b9dd46",
+      "bytes": 4337266
+    },
+    {
+      "path": "binance/COTI_USDT-1h.feather",
+      "git_blob_sha": "01a0a362e8466d5e23293cc27e572c1e44b3d0d5",
+      "bytes": 1184074
+    },
+    {
+      "path": "binance/COTI_USDT-4h.feather",
+      "git_blob_sha": "3ce12d33b3e4aafaead3a948106213ff7f8a5a58",
+      "bytes": 338682
+    },
+    {
+      "path": "binance/COTI_USDT-1d.feather",
+      "git_blob_sha": "d3c30d50476c8c89f17243f181b42540f0f4afe7",
+      "bytes": 73746
+    },
+    {
+      "path": "binance/CRV_USDT-5m.feather",
+      "git_blob_sha": "059a7f8fb768ba5a15cd2d31876fd0803caec95b",
+      "bytes": 10654970
+    },
+    {
+      "path": "binance/CRV_USDT-15m.feather",
+      "git_blob_sha": "2238eff5cc6d4b4f72951904dbcea47a8d8bf171",
+      "bytes": 3819778
+    },
+    {
+      "path": "binance/CRV_USDT-1h.feather",
+      "git_blob_sha": "ba3bfc8fdf3f1ff0e120cd28c81c34de64dab70e",
+      "bytes": 1026394
+    },
+    {
+      "path": "binance/CRV_USDT-4h.feather",
+      "git_blob_sha": "b3fa48a6b1dbb8e250091fd6a278680e55f26d3d",
+      "bytes": 284746
+    },
+    {
+      "path": "binance/CRV_USDT-1d.feather",
+      "git_blob_sha": "9e247bf405082d7389783f23d87c774d83e06911",
+      "bytes": 59626
+    },
+    {
+      "path": "binance/DASH_USDT-5m.feather",
+      "git_blob_sha": "2942d3f7e18c8e7c76823a0da4147d23c91b0ca5",
+      "bytes": 13822802
+    },
+    {
+      "path": "binance/DASH_USDT-15m.feather",
+      "git_blob_sha": "067e4062d4f2550593b26da16e2486c8f1b94929",
+      "bytes": 116170
+    },
+    {
+      "path": "binance/DASH_USDT-1h.feather",
+      "git_blob_sha": "e8b5c30b666b1794699f6a69df5d882605d3d71a",
+      "bytes": 1317634
+    },
+    {
+      "path": "binance/DASH_USDT-4h.feather",
+      "git_blob_sha": "cb70eab0080afa45eacbc2c0a4074e9ad0446779",
+      "bytes": 360178
+    },
+    {
+      "path": "binance/DASH_USDT-1d.feather",
+      "git_blob_sha": "642f4caadd3a99a8a878b39f7270fed41422722e",
+      "bytes": 70730
+    },
+    {
+      "path": "binance/DATA_USDT-5m.feather",
+      "git_blob_sha": "d38bc29441f01590d62efee3519522476bfabd6c",
+      "bytes": 12219218
+    },
+    {
+      "path": "binance/DATA_USDT-15m.feather",
+      "git_blob_sha": "a8e039ed2b2a3053c03a25f8448bed8c09aa81a2",
+      "bytes": 4415274
+    },
+    {
+      "path": "binance/DATA_USDT-1h.feather",
+      "git_blob_sha": "2239cad5aac52eb1de0e3d9f0dc6619a15c3f4d1",
+      "bytes": 1175858
+    },
+    {
+      "path": "binance/DATA_USDT-4h.feather",
+      "git_blob_sha": "dfbb2326b496eda039cb96f5e25a81d913f9770a",
+      "bytes": 329778
+    },
+    {
+      "path": "binance/DATA_USDT-1d.feather",
+      "git_blob_sha": "4ec656a4f067a391483dca9eede7d50304c88baf",
+      "bytes": 74730
+    },
+    {
+      "path": "binance/DEGO_USDT-5m.feather",
+      "git_blob_sha": "8b3a778cb41b3c36660a34be1a18db48872317db",
+      "bytes": 8642562
+    },
+    {
+      "path": "binance/DEGO_USDT-15m.feather",
+      "git_blob_sha": "14ac4a626d7dbb393b96c78fd46bd4b362d5aa39",
+      "bytes": 3156938
+    },
+    {
+      "path": "binance/DEGO_USDT-1h.feather",
+      "git_blob_sha": "e41dfdf134f059319d86e6b6b5bd26e45f33255f",
+      "bytes": 861514
+    },
+    {
+      "path": "binance/DEGO_USDT-4h.feather",
+      "git_blob_sha": "bf7219dce754748139c5a08870ce036c6cc197cb",
+      "bytes": 237426
+    },
+    {
+      "path": "binance/DEGO_USDT-1d.feather",
+      "git_blob_sha": "31ea4782040bdec19dc018092207ed9bd20b424c",
+      "bytes": 48818
+    },
+    {
+      "path": "binance/DEXE_USDT-5m.feather",
+      "git_blob_sha": "91f81dac19322e91a96334bdf4e23797dee63d49",
+      "bytes": 8080154
+    },
+    {
+      "path": "binance/DEXE_USDT-15m.feather",
+      "git_blob_sha": "6c06d4ee0339c9d1b2df59bf7f148b1e74103cc7",
+      "bytes": 2943834
+    },
+    {
+      "path": "binance/DEXE_USDT-1h.feather",
+      "git_blob_sha": "3487a6be5ef30bccb08678a71219b766b397f9ae",
+      "bytes": 803386
+    },
+    {
+      "path": "binance/DEXE_USDT-4h.feather",
+      "git_blob_sha": "403dddb256f4ebbbf3b9061d28afc86aba335c26",
+      "bytes": 221666
+    },
+    {
+      "path": "binance/DEXE_USDT-1d.feather",
+      "git_blob_sha": "c30836a50804d3414faf2e9f59df5f92c605cf5c",
+      "bytes": 45322
+    },
+    {
+      "path": "binance/DF_USDT-5m.feather",
+      "git_blob_sha": "4b6dd1b7896f8ce8c55a970065562f6b04173981",
+      "bytes": 7291970
+    },
+    {
+      "path": "binance/DF_USDT-15m.feather",
+      "git_blob_sha": "dd73a5b4a9835f20a4cfd3f972b22adb16530018",
+      "bytes": 2704626
+    },
+    {
+      "path": "binance/DF_USDT-1h.feather",
+      "git_blob_sha": "9bd04d7e984303c05fd24a18b1bbf5012ffa75b2",
+      "bytes": 754146
+    },
+    {
+      "path": "binance/DF_USDT-4h.feather",
+      "git_blob_sha": "98c2b69385a26fd09668e766a9c8d47509773765",
+      "bytes": 224602
+    },
+    {
+      "path": "binance/DF_USDT-1d.feather",
+      "git_blob_sha": "bd4f6e07c5b7703ed949e6a1a5d9f73cc436f12a",
+      "bytes": 50882
+    },
+    {
+      "path": "binance/DGB_USDT-5m.feather",
+      "git_blob_sha": "b81d01da9890379d45ff61320c21059d3d0edb76",
+      "bytes": 10390186
+    },
+    {
+      "path": "binance/DGB_USDT-15m.feather",
+      "git_blob_sha": "cfe00c1cde6ee4a9bb9e72a1372dd96246d7299d",
+      "bytes": 3753426
+    },
+    {
+      "path": "binance/DGB_USDT-1h.feather",
+      "git_blob_sha": "9c556200cf6040052599c1e6d5f863f8b31bd2f5",
+      "bytes": 1025130
+    },
+    {
+      "path": "binance/DGB_USDT-4h.feather",
+      "git_blob_sha": "fbc858cdcd8c903b9ddedf1f1e0d50260a6a414f",
+      "bytes": 300266
+    },
+    {
+      "path": "binance/DGB_USDT-1d.feather",
+      "git_blob_sha": "d017599a7ffdfe5abf1582c5d18dbf8689c0ab59",
+      "bytes": 66362
+    },
+    {
+      "path": "binance/DODO_USDT-5m.feather",
+      "git_blob_sha": "2e4968259620b01c397ab4edd6440b3a20dee551",
+      "bytes": 8697546
+    },
+    {
+      "path": "binance/DODO_USDT-15m.feather",
+      "git_blob_sha": "c3af792a4627668fdc52ce32fcf4bd0895948065",
+      "bytes": 3185890
+    },
+    {
+      "path": "binance/DODO_USDT-1h.feather",
+      "git_blob_sha": "905212deb6e8a5a09acc94ffb9087ee964b8a7d8",
+      "bytes": 873746
+    },
+    {
+      "path": "binance/DODO_USDT-4h.feather",
+      "git_blob_sha": "3020ce6bdaffe137f9144cc95c1cb0daf7bc132d",
+      "bytes": 246418
+    },
+    {
+      "path": "binance/DODO_USDT-1d.feather",
+      "git_blob_sha": "1aedabab3ad5cbcdf4f2d594ca28813f1c2937f4",
+      "bytes": 53306
+    },
+    {
+      "path": "binance/DOGE_USDT-5m.feather",
+      "git_blob_sha": "f1d429260ccff501ee46bc2589cbced917b98d28",
+      "bytes": 16040322
+    },
+    {
+      "path": "binance/DOGE_USDT-15m.feather",
+      "git_blob_sha": "b9b96da32c477628cca470a3342cf748c6ff3da8",
+      "bytes": 5822578
+    },
+    {
+      "path": "binance/DOGE_USDT-1h.feather",
+      "git_blob_sha": "09abd02272b2269853e63471729584f3267bfea5",
+      "bytes": 1562978
+    },
+    {
+      "path": "binance/DOGE_USDT-4h.feather",
+      "git_blob_sha": "2aa9a59c17a3b47aa7aafe0a519f10c9c47c1582",
+      "bytes": 444026
+    },
+    {
+      "path": "binance/DOGE_USDT-1d.feather",
+      "git_blob_sha": "32707d2a904901a06a6e633500725183fc58983f",
+      "bytes": 91594
+    },
+    {
+      "path": "binance/DOT_USDT-5m.feather",
+      "git_blob_sha": "36a32024b373c911b7f9fe226451d37b288e102b",
+      "bytes": 11250170
+    },
+    {
+      "path": "binance/DOT_USDT-15m.feather",
+      "git_blob_sha": "c6f0e267c9cfe0595a4baf7272e66a7edcb49ff2",
+      "bytes": 4006954
+    },
+    {
+      "path": "binance/DOT_USDT-1h.feather",
+      "git_blob_sha": "c05defb39023e01d797767b11c05b1a6bd911266",
+      "bytes": 1069618
+    },
+    {
+      "path": "binance/DOT_USDT-4h.feather",
+      "git_blob_sha": "03269bf4a5a770badbfe72215f8afc5e617852da",
+      "bytes": 292074
+    },
+    {
+      "path": "binance/DOT_USDT-1d.feather",
+      "git_blob_sha": "c5ef0b21dcfe99eb3d90c7ba4aee844725440bbf",
+      "bytes": 58802
+    },
+    {
+      "path": "binance/DYDX_USDT-5m.feather",
+      "git_blob_sha": "17a5569eb00e5ead5363899a1fb18f875d0c7822",
+      "bytes": 359498
+    },
+    {
+      "path": "binance/DYDX_USDT-15m.feather",
+      "git_blob_sha": "10bd4e9490ee4815f769bda6c8bac6a786193256",
+      "bytes": 3059106
+    },
+    {
+      "path": "binance/DYDX_USDT-1h.feather",
+      "git_blob_sha": "def13e9e5058138afae3706d4a5464b9c05a2d33",
+      "bytes": 822250
+    },
+    {
+      "path": "binance/DYDX_USDT-4h.feather",
+      "git_blob_sha": "17ed6df3c07e5c4af876b837f1b24345007e15e9",
+      "bytes": 228090
+    },
+    {
+      "path": "binance/DYDX_USDT-1d.feather",
+      "git_blob_sha": "e6d8e5c4bc717264bbcd7ac867b17449b1bf1a69",
+      "bytes": 47626
+    },
+    {
+      "path": "binance/EGLD_USDT-5m.feather",
+      "git_blob_sha": "5a953d9164488be04be6bb01cee00228949df397",
+      "bytes": 10975146
+    },
+    {
+      "path": "binance/EGLD_USDT-15m.feather",
+      "git_blob_sha": "0ca94a35301f16c1e6949a98656f527aca4d6fa8",
+      "bytes": 3893834
+    },
+    {
+      "path": "binance/EGLD_USDT-1h.feather",
+      "git_blob_sha": "85fd75da50b40e39b5c8df98a6671d3b9865e66c",
+      "bytes": 1039474
+    },
+    {
+      "path": "binance/EGLD_USDT-4h.feather",
+      "git_blob_sha": "0b315da8711ae7fbca2804ad6c5be8faf790b317",
+      "bytes": 282642
+    },
+    {
+      "path": "binance/EGLD_USDT-1d.feather",
+      "git_blob_sha": "1443cce59934df1aabf5705a7b78e1bcc4a0f2f1",
+      "bytes": 55938
+    },
+    {
+      "path": "binance/ENJ_USDT-5m.feather",
+      "git_blob_sha": "d07478b92c3c43fd429b153851ac54ff50672e41",
+      "bytes": 14109098
+    },
+    {
+      "path": "binance/ENJ_USDT-15m.feather",
+      "git_blob_sha": "f5d94c3cb027f6c49bdbaa05e0546fa07853531c",
+      "bytes": 5108554
+    },
+    {
+      "path": "binance/ENJ_USDT-1h.feather",
+      "git_blob_sha": "4c27a4c88828c2778ab7f9d768fc4184c8f87d0c",
+      "bytes": 1387458
+    },
+    {
+      "path": "binance/ENJ_USDT-4h.feather",
+      "git_blob_sha": "e702c484fd144749ab5427b095ec5e7db9e9281c",
+      "bytes": 390458
+    },
+    {
+      "path": "binance/ENJ_USDT-1d.feather",
+      "git_blob_sha": "fb096f33763ac577ed6f84ed1ceddacb1dc085cc",
+      "bytes": 81602
+    },
+    {
+      "path": "binance/ENS_USDT-5m.feather",
+      "git_blob_sha": "1dca4448210560fbca804fd1eecd6ad9e1f5eea8",
+      "bytes": 7224610
+    },
+    {
+      "path": "binance/ENS_USDT-15m.feather",
+      "git_blob_sha": "1e57c228ecd39b3a61c23b7a3148a00d6286e894",
+      "bytes": 2622290
+    },
+    {
+      "path": "binance/ENS_USDT-1h.feather",
+      "git_blob_sha": "9ac626c5d81523fbe5ea54caf2ef5b6ee7619f4c",
+      "bytes": 711530
+    },
+    {
+      "path": "binance/ENS_USDT-4h.feather",
+      "git_blob_sha": "f66013f622c85bb5e64e3d50f1e0516e9fa38983",
+      "bytes": 195146
+    },
+    {
+      "path": "binance/ENS_USDT-1d.feather",
+      "git_blob_sha": "4366e9da2035691ccaf5b0ece246a76ef9d82e9c",
+      "bytes": 40010
+    },
+    {
+      "path": "binance/EOS_USDT-5m.feather",
+      "git_blob_sha": "738f38825888ec02d888fdaf73261d3e89786d58",
+      "bytes": 16468098
+    },
+    {
+      "path": "binance/EOS_USDT-15m.feather",
+      "git_blob_sha": "efeb144ab5455aeb639a0749f4457286bd6482c6",
+      "bytes": 5823418
+    },
+    {
+      "path": "binance/EOS_USDT-1h.feather",
+      "git_blob_sha": "8b74fd27d2fe948d5bd8eec5f1c7eb99fd01692d",
+      "bytes": 40314
+    },
+    {
+      "path": "binance/EOS_USDT-4h.feather",
+      "git_blob_sha": "3623be41b2b034fdf723b0616f9a807e80cb3814",
+      "bytes": 426042
+    },
+    {
+      "path": "binance/EOS_USDT-1d.feather",
+      "git_blob_sha": "f32bef1ed254228c257a0409db45687d434b6ee0",
+      "bytes": 87210
+    },
+    {
+      "path": "binance/ERN_USDT-5m.feather",
+      "git_blob_sha": "19e58ca4294de49be837bab38d1c610d627f3d34",
+      "bytes": 7832178
+    },
+    {
+      "path": "binance/ERN_USDT-15m.feather",
+      "git_blob_sha": "aa1dc77780f65889dea64cacc47b7325d4c1b26a",
+      "bytes": 2842010
+    },
+    {
+      "path": "binance/ERN_USDT-1h.feather",
+      "git_blob_sha": "2f6abb2047d6abf8fb672acbbb0d461aa9b31f4b",
+      "bytes": 766098
+    },
+    {
+      "path": "binance/ERN_USDT-4h.feather",
+      "git_blob_sha": "ed8fc0fea9d769db9955c412b8d9a96fb9b7337e",
+      "bytes": 210154
+    },
+    {
+      "path": "binance/ERN_USDT-1d.feather",
+      "git_blob_sha": "ffc40b8cac5cf1cf94641c6c0b74a33740d13824",
+      "bytes": 43330
+    },
+    {
+      "path": "binance/ETC_USDT-5m.feather",
+      "git_blob_sha": "e7d486c1b2611945d5ffc36d2249df7906de5ea2",
+      "bytes": 16466922
+    },
+    {
+      "path": "binance/ETC_USDT-15m.feather",
+      "git_blob_sha": "2092736e3d5597709f229896ec31ba4ceefa8532",
+      "bytes": 5843626
+    },
+    {
+      "path": "binance/ETC_USDT-1h.feather",
+      "git_blob_sha": "1332be21dcc3a36a4738f7e717a42d66bcc95525",
+      "bytes": 1549234
+    },
+    {
+      "path": "binance/ETC_USDT-4h.feather",
+      "git_blob_sha": "2f770a27ea1cc74acbc95d7855f139213a0ee5dd",
+      "bytes": 420034
+    },
+    {
+      "path": "binance/ETC_USDT-1d.feather",
+      "git_blob_sha": "342e37ca1999848404ac08bbd03cf0fc17fb3464",
+      "bytes": 84314
+    },
+    {
+      "path": "binance/ETH_USDT-5m.feather",
+      "git_blob_sha": "6e90e813656c5d689e49a39fa80e44cde4544c84",
+      "bytes": 21458034
+    },
+    {
+      "path": "binance/ETH_USDT-15m.feather",
+      "git_blob_sha": "131d4ac08d59a7c0f0db129f945672b2d48c84a9",
+      "bytes": 7419698
+    },
+    {
+      "path": "binance/ETH_USDT-1h.feather",
+      "git_blob_sha": "b603dddbf1ec8faa9ee26a6e6f8720f9b82fb275",
+      "bytes": 1923242
+    },
+    {
+      "path": "binance/ETH_USDT-4h.feather",
+      "git_blob_sha": "774aa75b4c8796fe6f7b0c9baea4aa65cc4bd02f",
+      "bytes": 506586
+    },
+    {
+      "path": "binance/ETH_USDT-1d.feather",
+      "git_blob_sha": "9ca4c44fff6047812078745fb424692bd951669f",
+      "bytes": 95538
+    },
+    {
+      "path": "binance/FARM_USDT-5m.feather",
+      "git_blob_sha": "b87fcdc5ec80012cdbfb51ee9aa4e5618fa95a10",
+      "bytes": 7429650
+    },
+    {
+      "path": "binance/FARM_USDT-15m.feather",
+      "git_blob_sha": "536b018917b063b6a22f4eb3f5367a20995abf0a",
+      "bytes": 2702186
+    },
+    {
+      "path": "binance/FARM_USDT-1h.feather",
+      "git_blob_sha": "6900e0650669b339766bd160a8824f18cb996fe5",
+      "bytes": 733370
+    },
+    {
+      "path": "binance/FARM_USDT-4h.feather",
+      "git_blob_sha": "63aaf297997d357612f6290f138cc69eb248ec1e",
+      "bytes": 205354
+    },
+    {
+      "path": "binance/FARM_USDT-1d.feather",
+      "git_blob_sha": "8601fb7a7740c8b8f1e6b3c7a69e1471d5ea55e3",
+      "bytes": 42698
+    },
+    {
+      "path": "binance/FET_USDT-5m.feather",
+      "git_blob_sha": "bc93b481b6c762bb29210be509c788a98b2ec45b",
+      "bytes": 14305722
+    },
+    {
+      "path": "binance/FET_USDT-15m.feather",
+      "git_blob_sha": "62d7af1094817da01a87ffa45508037a39917430",
+      "bytes": 5152706
+    },
+    {
+      "path": "binance/FET_USDT-1h.feather",
+      "git_blob_sha": "484834e3fb1b95fb92f566459576cab9175df07b",
+      "bytes": 1396114
+    },
+    {
+      "path": "binance/FET_USDT-4h.feather",
+      "git_blob_sha": "064c6ee10f267b7165e14804cc4643c9af878962",
+      "bytes": 393242
+    },
+    {
+      "path": "binance/FET_USDT-1d.feather",
+      "git_blob_sha": "40d597c9df756b29adedc006f0e697eadb68337e",
+      "bytes": 82074
+    },
+    {
+      "path": "binance/FIL_USDT-5m.feather",
+      "git_blob_sha": "909a5a21bb98b7e3094089c27772e5e185ff3ed7",
+      "bytes": 10747690
+    },
+    {
+      "path": "binance/FIL_USDT-15m.feather",
+      "git_blob_sha": "2acff61ef8b5577044d14e87686e28a6fd75dfdd",
+      "bytes": 3841802
+    },
+    {
+      "path": "binance/FIL_USDT-1h.feather",
+      "git_blob_sha": "abcc96a0609b16a400bc434bff35a08f88697911",
+      "bytes": 1028298
+    },
+    {
+      "path": "binance/FIL_USDT-4h.feather",
+      "git_blob_sha": "87c40916c3beb5edfcea45b565923522dd7d8720",
+      "bytes": 282402
+    },
+    {
+      "path": "binance/FIL_USDT-1d.feather",
+      "git_blob_sha": "2c76fcf99450f9a720d0eb5fc1c0e65397cdaa36",
+      "bytes": 56666
+    },
+    {
+      "path": "binance/FIS_USDT-5m.feather",
+      "git_blob_sha": "aa1fa0df81b31cd58ab372b4483c0830d69e3a21",
+      "bytes": 9262298
+    },
+    {
+      "path": "binance/FIS_USDT-15m.feather",
+      "git_blob_sha": "090adb4429f2a418061d40c78ef7ce3962f8157a",
+      "bytes": 3378930
+    },
+    {
+      "path": "binance/FIS_USDT-1h.feather",
+      "git_blob_sha": "b4eef95b2a12555db95f6e150f7e94a0722cf626",
+      "bytes": 904954
+    },
+    {
+      "path": "binance/FIS_USDT-4h.feather",
+      "git_blob_sha": "60d844bb53b1e59e0e7ebc676080b4d4c53007de",
+      "bytes": 249330
+    },
+    {
+      "path": "binance/FIS_USDT-1d.feather",
+      "git_blob_sha": "576684223109821a5cc9831aae07cfdd81288afd",
+      "bytes": 53506
+    },
+    {
+      "path": "binance/FLM_USDT-5m.feather",
+      "git_blob_sha": "47ccbde1795ac294d002e9c1c9622c8397c52bb2",
+      "bytes": 9413778
+    },
+    {
+      "path": "binance/FLM_USDT-15m.feather",
+      "git_blob_sha": "7b6c89ca3d1e94bd426918489aa53bc6c72a5189",
+      "bytes": 3400890
+    },
+    {
+      "path": "binance/FLM_USDT-1h.feather",
+      "git_blob_sha": "257d66c4c81087afa999ea1f2a379c0a2b6efd8f",
+      "bytes": 923194
+    },
+    {
+      "path": "binance/FLM_USDT-4h.feather",
+      "git_blob_sha": "41e7a013ff737f234e1bfa74987983326f6bb22f",
+      "bytes": 263650
+    },
+    {
+      "path": "binance/FLM_USDT-1d.feather",
+      "git_blob_sha": "111c02677da357586c06c7d9f2ae25f3ec961823",
+      "bytes": 56890
+    },
+    {
+      "path": "binance/FLOW_USDT-5m.feather",
+      "git_blob_sha": "3193d64e774655c67a4138ad1fd529959547ad6b",
+      "bytes": 7127914
+    },
+    {
+      "path": "binance/FLOW_USDT-15m.feather",
+      "git_blob_sha": "c2f36c18a6136405a2307d7ba18ddfb37afdc272",
+      "bytes": 2636274
+    },
+    {
+      "path": "binance/FLOW_USDT-1h.feather",
+      "git_blob_sha": "a13dae04d62e1908b60135b40b6c481e9624d74d",
+      "bytes": 736970
+    },
+    {
+      "path": "binance/FLOW_USDT-4h.feather",
+      "git_blob_sha": "b1e7473cc51e970b9709071e9ec900cae243cad7",
+      "bytes": 210490
+    },
+    {
+      "path": "binance/FLOW_USDT-1d.feather",
+      "git_blob_sha": "55c8553169279a145f208c98a9d29b69081be742",
+      "bytes": 44194
+    },
+    {
+      "path": "binance/FLUX_USDT-5m.feather",
+      "git_blob_sha": "6018ec601c5b583197588d6d31b123c9b1aeca58",
+      "bytes": 7447610
+    },
+    {
+      "path": "binance/FLUX_USDT-15m.feather",
+      "git_blob_sha": "664b534d1e1c74cabb3b2ebf57c165ce4af9e833",
+      "bytes": 412458
+    },
+    {
+      "path": "binance/FLUX_USDT-1h.feather",
+      "git_blob_sha": "64c6939da45c353428f133f635391c4819526668",
+      "bytes": 728202
+    },
+    {
+      "path": "binance/FLUX_USDT-4h.feather",
+      "git_blob_sha": "192852c5684bc637256866c73db750ccc98eed42",
+      "bytes": 205522
+    },
+    {
+      "path": "binance/FLUX_USDT-1d.feather",
+      "git_blob_sha": "4bf21320fd8308d3137735859341c1a85e931867",
+      "bytes": 44802
+    },
+    {
+      "path": "binance/FORTH_USDT-5m.feather",
+      "git_blob_sha": "a330e8689b78b393f4e0b03f478273811a1f6a28",
+      "bytes": 8287042
+    },
+    {
+      "path": "binance/FORTH_USDT-15m.feather",
+      "git_blob_sha": "b9c62ebf10633f78d48d78944eda116c9c140c4f",
+      "bytes": 3030346
+    },
+    {
+      "path": "binance/FORTH_USDT-1h.feather",
+      "git_blob_sha": "dabcae28a2bbc26eb264d14c379773088e308526",
+      "bytes": 824794
+    },
+    {
+      "path": "binance/FORTH_USDT-4h.feather",
+      "git_blob_sha": "5e3bd93c94a3f5539fe099bd7c22da66796a6a57",
+      "bytes": 228746
+    },
+    {
+      "path": "binance/FORTH_USDT-1d.feather",
+      "git_blob_sha": "0751da179ef547a6575d959d9a1851f2f2cbf90c",
+      "bytes": 46898
+    },
+    {
+      "path": "binance/FTM_USDT-5m.feather",
+      "git_blob_sha": "98bf5a14686f0a807c18dfeeb2bd3797298d4901",
+      "bytes": 13100258
+    },
+    {
+      "path": "binance/FTM_USDT-15m.feather",
+      "git_blob_sha": "512878941962063d14d2b8c1d3c38b74a9d9488f",
+      "bytes": 4730402
+    },
+    {
+      "path": "binance/FTM_USDT-1h.feather",
+      "git_blob_sha": "81083a18f4b760499ce0819b458d6eab74e9b291",
+      "bytes": 1277954
+    },
+    {
+      "path": "binance/FTM_USDT-4h.feather",
+      "git_blob_sha": "9beba3e1a5e69f8240ca6cf6a4b77762039cf213",
+      "bytes": 360530
+    },
+    {
+      "path": "binance/FTM_USDT-1d.feather",
+      "git_blob_sha": "f657d1c9a9e5b3564d29e6b09389b99edbe17dcd",
+      "bytes": 76410
+    },
+    {
+      "path": "binance/FUN_USDT-5m.feather",
+      "git_blob_sha": "b569b643ef8bd00f05303ded32c42e522c32d726",
+      "bytes": 12534266
+    },
+    {
+      "path": "binance/FUN_USDT-15m.feather",
+      "git_blob_sha": "52cd46b1ce90c18a2d6841fbcdd1a61fec8ec700",
+      "bytes": 4789818
+    },
+    {
+      "path": "binance/FUN_USDT-1h.feather",
+      "git_blob_sha": "7829b7d84a2214e9f01a75a5e347e3f8a15f25b0",
+      "bytes": 1341474
+    },
+    {
+      "path": "binance/FUN_USDT-4h.feather",
+      "git_blob_sha": "6babf9d7a5d85cbc4b4620542f473b0fb3fa38dc",
+      "bytes": 386770
+    },
+    {
+      "path": "binance/FUN_USDT-1d.feather",
+      "git_blob_sha": "f855d6bb723003ccef17ac6e95444c1bde626428",
+      "bytes": 85274
+    },
+    {
+      "path": "binance/FXS_USDT-5m.feather",
+      "git_blob_sha": "f6e5bfd705c67f78c7d7fbf5871c3b3979d69ad8",
+      "bytes": 7881330
+    },
+    {
+      "path": "binance/FXS_USDT-15m.feather",
+      "git_blob_sha": "748bccb17b9f8c39c40daa110e08b3a89d75b86d",
+      "bytes": 2820250
+    },
+    {
+      "path": "binance/FXS_USDT-1h.feather",
+      "git_blob_sha": "0c0a7cf7f23c0229a5facaf1f464b28b4db8a24d",
+      "bytes": 744642
+    },
+    {
+      "path": "binance/FXS_USDT-4h.feather",
+      "git_blob_sha": "33c7110f21e98d14eacc7b208579acac8038907e",
+      "bytes": 205602
+    },
+    {
+      "path": "binance/FXS_USDT-1d.feather",
+      "git_blob_sha": "7af8e0b7c67aa1be407f6b638f316a9035b09fc2",
+      "bytes": 42122
+    },
+    {
+      "path": "binance/GALA_USDT-5m.feather",
+      "git_blob_sha": "b2ee43e4ca2ea57987fe54f08ec9531338dc3a27",
+      "bytes": 9000218
+    },
+    {
+      "path": "binance/GALA_USDT-15m.feather",
+      "git_blob_sha": "206a36f1d6451a9e18b074de65efa115b9f36a60",
+      "bytes": 3233882
+    },
+    {
+      "path": "binance/GALA_USDT-1h.feather",
+      "git_blob_sha": "652cb0ff592c4512a6ff96a9d74f16be015a0fbe",
+      "bytes": 863834
+    },
+    {
+      "path": "binance/GALA_USDT-4h.feather",
+      "git_blob_sha": "bb0d3dc09ab9a4d63a804be56c8792fdf31c63cd",
+      "bytes": 248114
+    },
+    {
+      "path": "binance/GALA_USDT-1d.feather",
+      "git_blob_sha": "32eec428403b855cbfe0fdd86d5362a79e93e7b7",
+      "bytes": 56850
+    },
+    {
+      "path": "binance/GRT_USDT-5m.feather",
+      "git_blob_sha": "c1223d79b8b2a12158f2233e843f6025e20998bc",
+      "bytes": 9768698
+    },
+    {
+      "path": "binance/GRT_USDT-15m.feather",
+      "git_blob_sha": "8ee0f006da4910ae7b25dcd749c95498075dd0f2",
+      "bytes": 115298
+    },
+    {
+      "path": "binance/GRT_USDT-1h.feather",
+      "git_blob_sha": "bf590c01baa2b2181d3d9fc35428221a29c445f7",
+      "bytes": 962490
+    },
+    {
+      "path": "binance/GRT_USDT-4h.feather",
+      "git_blob_sha": "b4228d8e3adff9242585f1208ccd4d5fca7c378b",
+      "bytes": 268434
+    },
+    {
+      "path": "binance/GRT_USDT-1d.feather",
+      "git_blob_sha": "ca48fdc5184b9e71f731a3bc28176c98f3aa316a",
+      "bytes": 57106
+    },
+    {
+      "path": "binance/GTC_USDT-5m.feather",
+      "git_blob_sha": "2a62b9318bccd0d374ba151b84c864987d51a2d5",
+      "bytes": 8025674
+    },
+    {
+      "path": "binance/GTC_USDT-15m.feather",
+      "git_blob_sha": "8f2de4f760238209b836b70fc4e7ca2c9530f320",
+      "bytes": 2898650
+    },
+    {
+      "path": "binance/GTC_USDT-1h.feather",
+      "git_blob_sha": "d402f181ded262b79b6376c7818d5179e520f09e",
+      "bytes": 797898
+    },
+    {
+      "path": "binance/GTC_USDT-4h.feather",
+      "git_blob_sha": "fef496a9087ba071b6f61b93c41bee9eac4f4bd1",
+      "bytes": 224594
+    },
+    {
+      "path": "binance/GTC_USDT-1d.feather",
+      "git_blob_sha": "4015ca591b176f2383430ded0ece266b14c316cf",
+      "bytes": 46234
+    },
+    {
+      "path": "binance/HARD_USDT-5m.feather",
+      "git_blob_sha": "8197a7132658658961ae782e67eaec1e08fa164c",
+      "bytes": 9339570
+    },
+    {
+      "path": "binance/HARD_USDT-15m.feather",
+      "git_blob_sha": "2b8ee1f4153956a1a334271c56d99a527b2516ab",
+      "bytes": 3405330
+    },
+    {
+      "path": "binance/HARD_USDT-1h.feather",
+      "git_blob_sha": "e70ab10de57566ee03c6b8cd79bc18b6326af52c",
+      "bytes": 923658
+    },
+    {
+      "path": "binance/HARD_USDT-4h.feather",
+      "git_blob_sha": "01c7d4345b977d422c52a7316cd576d261dcdbff",
+      "bytes": 258098
+    },
+    {
+      "path": "binance/HARD_USDT-1d.feather",
+      "git_blob_sha": "a6fac80fa33c5f0a8a749509e162c71533912beb",
+      "bytes": 55322
+    },
+    {
+      "path": "binance/HIGH_USDT-5m.feather",
+      "git_blob_sha": "a2f2ca87bd5cc5241399f77143a36207a7f91b14",
+      "bytes": 7149626
+    },
+    {
+      "path": "binance/HIGH_USDT-15m.feather",
+      "git_blob_sha": "dd3465cd1992ac8eaa0901188c297faa971f7370",
+      "bytes": 2599898
+    },
+    {
+      "path": "binance/HIGH_USDT-1h.feather",
+      "git_blob_sha": "6d8eb9b807d28690a3c17dd75ba52ec6a3aa55f6",
+      "bytes": 716562
+    },
+    {
+      "path": "binance/HIGH_USDT-4h.feather",
+      "git_blob_sha": "c30279711a8920c9df4184be3c240f653788240e",
+      "bytes": 199162
+    },
+    {
+      "path": "binance/HIGH_USDT-1d.feather",
+      "git_blob_sha": "75f0a115bb2d60968f72aa4b4e92ca14aa7cbfed",
+      "bytes": 41490
+    },
+    {
+      "path": "binance/HIVE_USDT-5m.feather",
+      "git_blob_sha": "79647aaa6425f840fc6d51bc3f89fa87b726bd83",
+      "bytes": 10938746
+    },
+    {
+      "path": "binance/HIVE_USDT-15m.feather",
+      "git_blob_sha": "169f45f54057fd23dac784fd9ffa7a5b3dc4b0f5",
+      "bytes": 3984234
+    },
+    {
+      "path": "binance/HIVE_USDT-1h.feather",
+      "git_blob_sha": "cca15fed35dc5c1d1e2b9878b5340146c4c292e9",
+      "bytes": 1070538
+    },
+    {
+      "path": "binance/HIVE_USDT-4h.feather",
+      "git_blob_sha": "461e9e30639bd3794989c55ae30761a656de3e4c",
+      "bytes": 294026
+    },
+    {
+      "path": "binance/HIVE_USDT-1d.feather",
+      "git_blob_sha": "493a29eb02b5fcff72d951554c24435ea86c229f",
+      "bytes": 62066
+    },
+    {
+      "path": "binance/HOT_USDT-5m.feather",
+      "git_blob_sha": "100fbca7f88f68fd634e529e99025c41ed1cf784",
+      "bytes": 15478730
+    },
+    {
+      "path": "binance/HOT_USDT-15m.feather",
+      "git_blob_sha": "532f326e2de370ae11a31cc4906afc98dea8e287",
+      "bytes": 5661698
+    },
+    {
+      "path": "binance/HOT_USDT-1h.feather",
+      "git_blob_sha": "f40df5e7b60f96d7c708c56af37cf9a1564c5364",
+      "bytes": 1548754
+    },
+    {
+      "path": "binance/HOT_USDT-4h.feather",
+      "git_blob_sha": "5e7a1f9ae73fcea76f0a0baf2becab33faf936f8",
+      "bytes": 447874
+    },
+    {
+      "path": "binance/HOT_USDT-1d.feather",
+      "git_blob_sha": "697f8fcd8f3c98a4fb5701954d30a2e7e5dfca3c",
+      "bytes": 94882
+    },
+    {
+      "path": "binance/ICP_USDT-5m.feather",
+      "git_blob_sha": "5ad69633cb9b252012849656d4ebae751a95e0d1",
+      "bytes": 9279386
+    },
+    {
+      "path": "binance/ICP_USDT-15m.feather",
+      "git_blob_sha": "cfb788e302e1a8321e6fcf47891ab9392ec6db9b",
+      "bytes": 3307714
+    },
+    {
+      "path": "binance/ICP_USDT-1h.feather",
+      "git_blob_sha": "660e6b3fc9ca319e9d33ec3d9cdd895f1056cb86",
+      "bytes": 883322
+    },
+    {
+      "path": "binance/ICP_USDT-4h.feather",
+      "git_blob_sha": "9fd3c28ca5487af664ae7eaaca28770459be3b35",
+      "bytes": 240786
+    },
+    {
+      "path": "binance/ICP_USDT-1d.feather",
+      "git_blob_sha": "4bcbca7cc14bed7c15c669cfc58e0e6492473a5d",
+      "bytes": 48642
+    },
+    {
+      "path": "binance/IDEX_USDT-5m.feather",
+      "git_blob_sha": "829109e24b7fdeb7cd5b4f951ce2f79b2795d4dd",
+      "bytes": 9272994
+    },
+    {
+      "path": "binance/IDEX_USDT-15m.feather",
+      "git_blob_sha": "27e4f173f3906d11045166ebe77fd77b81c3e5a2",
+      "bytes": 3296042
+    },
+    {
+      "path": "binance/IDEX_USDT-1h.feather",
+      "git_blob_sha": "97d959a7469e720e0279cbde5b1060b4e76edb3e",
+      "bytes": 869770
+    },
+    {
+      "path": "binance/IDEX_USDT-4h.feather",
+      "git_blob_sha": "30e138676a47fb78c0f262a7ebea85268f47310a",
+      "bytes": 250602
+    },
+    {
+      "path": "binance/IDEX_USDT-1d.feather",
+      "git_blob_sha": "67d30f2e11f46ec9bf7c5fc1f770d00c26eb8df6",
+      "bytes": 57362
+    },
+    {
+      "path": "binance/INJ_USDT-5m.feather",
+      "git_blob_sha": "fe81b0ebe5d07bb7611554f5fb7c1985e00acdc6",
+      "bytes": 10701274
+    },
+    {
+      "path": "binance/INJ_USDT-15m.feather",
+      "git_blob_sha": "9df7c3af877dae6a57463917878220abc0d129d0",
+      "bytes": 3811690
+    },
+    {
+      "path": "binance/INJ_USDT-1h.feather",
+      "git_blob_sha": "6cf778fc5827dc7214c805aa1657865d3072b242",
+      "bytes": 1026970
+    },
+    {
+      "path": "binance/INJ_USDT-4h.feather",
+      "git_blob_sha": "72bea931cdebf96e625420e31b6915cd189c372e",
+      "bytes": 281434
+    },
+    {
+      "path": "binance/INJ_USDT-1d.feather",
+      "git_blob_sha": "191ea1b7f1956e535a1c5b65e45bd442c4137ea9",
+      "bytes": 56626
+    },
+    {
+      "path": "binance/IOTA_USDT-5m.feather",
+      "git_blob_sha": "f61f44ebbce208c9c6bba7007d0963ecd9249813",
+      "bytes": 15496514
+    },
+    {
+      "path": "binance/IOTA_USDT-15m.feather",
+      "git_blob_sha": "4eefb468019756a828b4680ca6b131ef0bcf11a9",
+      "bytes": 5565154
+    },
+    {
+      "path": "binance/IOTA_USDT-1h.feather",
+      "git_blob_sha": "b3660d53e09feb0ab035cd2af13a048ec574d92a",
+      "bytes": 1488002
+    },
+    {
+      "path": "binance/IOTA_USDT-4h.feather",
+      "git_blob_sha": "20cd334689042da3b666f686933bff9b834a07a6",
+      "bytes": 403730
+    },
+    {
+      "path": "binance/IOTA_USDT-1d.feather",
+      "git_blob_sha": "b82d74686cbfbdb36a15ce4034bd97fe93b543a6",
+      "bytes": 82218
+    },
+    {
+      "path": "binance/IOTX_USDT-5m.feather",
+      "git_blob_sha": "f613e9ac6b79fcbae4ab769ede2bacb97396c79b",
+      "bytes": 13351818
+    },
+    {
+      "path": "binance/IOTX_USDT-15m.feather",
+      "git_blob_sha": "b1bdb53fe2c0a207e45c1971353bce42ab65f671",
+      "bytes": 123674
+    },
+    {
+      "path": "binance/IOTX_USDT-1h.feather",
+      "git_blob_sha": "9f7973ec146b933a35cdda28b9989a6051d59334",
+      "bytes": 1345746
+    },
+    {
+      "path": "binance/IOTX_USDT-4h.feather",
+      "git_blob_sha": "d71c43859c4969a3e80ed02f7d8106e3f9e6fcf7",
+      "bytes": 393874
+    },
+    {
+      "path": "binance/IOTX_USDT-1d.feather",
+      "git_blob_sha": "9847566999a1b5936daa358824b508097bf36402",
+      "bytes": 84570
+    },
+    {
+      "path": "binance/KMD_USDT-5m.feather",
+      "git_blob_sha": "263e0438954903f68e701ea0604a81dd51966557",
+      "bytes": 10151746
+    },
+    {
+      "path": "binance/KMD_USDT-15m.feather",
+      "git_blob_sha": "f0bcbf63218e0d8e0063637ac2d141fccae11f63",
+      "bytes": 3744890
+    },
+    {
+      "path": "binance/KMD_USDT-1h.feather",
+      "git_blob_sha": "761bd777b82649db51d996a94b9f0d58ba71527c",
+      "bytes": 1008746
+    },
+    {
+      "path": "binance/KMD_USDT-4h.feather",
+      "git_blob_sha": "ae752d843fa662b788b13bf66c8bfe7e86fb4796",
+      "bytes": 278194
+    },
+    {
+      "path": "binance/KMD_USDT-1d.feather",
+      "git_blob_sha": "5b89eb228354862c0e6f472bd3e9d83e56fda61f",
+      "bytes": 59026
+    },
+    {
+      "path": "binance/KSM_USDT-5m.feather",
+      "git_blob_sha": "ace57e87d37a6349210c5be36efa2adb875459b0",
+      "bytes": 10527946
+    },
+    {
+      "path": "binance/KSM_USDT-15m.feather",
+      "git_blob_sha": "3179dcdd7d7425f8f09c244d8a49dfd40aa1b30a",
+      "bytes": 3776002
+    },
+    {
+      "path": "binance/KSM_USDT-1h.feather",
+      "git_blob_sha": "36be046f07bc66c7c3ea682ef6c89615cb130ae8",
+      "bytes": 1017650
+    },
+    {
+      "path": "binance/KSM_USDT-4h.feather",
+      "git_blob_sha": "747bc59697fc9b53fbb576dfa8d553e9d86066a2",
+      "bytes": 278370
+    },
+    {
+      "path": "binance/KSM_USDT-1d.feather",
+      "git_blob_sha": "b559d4ae666e8e9b2f8c29ddf87bfed90b085d19",
+      "bytes": 55714
+    },
+    {
+      "path": "binance/LINA_USDT-5m.feather",
+      "git_blob_sha": "6dd9b4081fe9169a6a72b431e0fd7f032cb10520",
+      "bytes": 10286218
+    },
+    {
+      "path": "binance/LINA_USDT-15m.feather",
+      "git_blob_sha": "8cfe91d1578760821211b25cb7efc675f3ecd9ae",
+      "bytes": 3717442
+    },
+    {
+      "path": "binance/LINA_USDT-1h.feather",
+      "git_blob_sha": "a337db2cb36fa6d3f29051d9f4d436750367b348",
+      "bytes": 1020306
+    },
+    {
+      "path": "binance/LINA_USDT-4h.feather",
+      "git_blob_sha": "e4236f37c088a47fa8bf634a9184b7807f4fb3d9",
+      "bytes": 304642
+    },
+    {
+      "path": "binance/LINA_USDT-1d.feather",
+      "git_blob_sha": "ce62855b32676eaaa73c88075a81be5d818cdb94",
+      "bytes": 65698
+    },
+    {
+      "path": "binance/LINK_USDT-5m.feather",
+      "git_blob_sha": "66733fb2c03fd51e7be3d4ac9b7c7c465c3301bd",
+      "bytes": 15571386
+    },
+    {
+      "path": "binance/LINK_USDT-15m.feather",
+      "git_blob_sha": "31ce716b1dc1f2ff56455ec743cf40aa8a8bee57",
+      "bytes": 5489170
+    },
+    {
+      "path": "binance/LINK_USDT-1h.feather",
+      "git_blob_sha": "4a0b66cc4b84701496a1bac0fc717f13fa397406",
+      "bytes": 1452674
+    },
+    {
+      "path": "binance/LINK_USDT-4h.feather",
+      "git_blob_sha": "2031095a36d223b9168fb14b12f08ac23c58185a",
+      "bytes": 394362
+    },
+    {
+      "path": "binance/LINK_USDT-1d.feather",
+      "git_blob_sha": "6799812d86c1fa2bc9fc8197c13725b5aeeb9dad",
+      "bytes": 79162
+    },
+    {
+      "path": "binance/LIT_USDT-5m.feather",
+      "git_blob_sha": "ecef6fb48b29310b8d277c358fbe91240f1175a7",
+      "bytes": 8178690
+    },
+    {
+      "path": "binance/LIT_USDT-15m.feather",
+      "git_blob_sha": "8c9d9f37ae238a07df59d365dc06ed1bc115c49c",
+      "bytes": 2965130
+    },
+    {
+      "path": "binance/LIT_USDT-1h.feather",
+      "git_blob_sha": "fdb1d10ac66d24cb179006149916823df02e1741",
+      "bytes": 813170
+    },
+    {
+      "path": "binance/LIT_USDT-4h.feather",
+      "git_blob_sha": "ea449d3aefe1e6cd9feebc2653e26f47e5740c98",
+      "bytes": 229682
+    },
+    {
+      "path": "binance/LIT_USDT-1d.feather",
+      "git_blob_sha": "f36500202b66805fc861ce54d1dcb8562b634669",
+      "bytes": 47482
+    },
+    {
+      "path": "binance/LRC_USDT-5m.feather",
+      "git_blob_sha": "ad4f77d7a69c5f22f814a50c84109b6431bc3f77",
+      "bytes": 11365162
+    },
+    {
+      "path": "binance/LRC_USDT-15m.feather",
+      "git_blob_sha": "002badcfabea363d64ea86700191737928fee471",
+      "bytes": 4076322
+    },
+    {
+      "path": "binance/LRC_USDT-1h.feather",
+      "git_blob_sha": "220f4f61ee8d33d0a48d19c838152f86495e1111",
+      "bytes": 1103282
+    },
+    {
+      "path": "binance/LRC_USDT-4h.feather",
+      "git_blob_sha": "366807faa6b2cbddad5d19779c3de67867c7d701",
+      "bytes": 312282
+    },
+    {
+      "path": "binance/LRC_USDT-1d.feather",
+      "git_blob_sha": "ea7ccef893954c50c74df5b0def66229c403b687",
+      "bytes": 66146
+    },
+    {
+      "path": "binance/LTC_USDT-5m.feather",
+      "git_blob_sha": "83d47a7322c4f17b5756e0e60618b1ccb5265f71",
+      "bytes": 17829394
+    },
+    {
+      "path": "binance/LTC_USDT-15m.feather",
+      "git_blob_sha": "ddc2f0c6a8d5ca228998f0986bce77874a638486",
+      "bytes": 6285442
+    },
+    {
+      "path": "binance/LTC_USDT-1h.feather",
+      "git_blob_sha": "78053229d7fb017d5b29eac5d9213cdc07c40ab5",
+      "bytes": 1654762
+    },
+    {
+      "path": "binance/LTC_USDT-4h.feather",
+      "git_blob_sha": "a993b0035d54d0406dc7bb5024bed23fd77982f8",
+      "bytes": 444114
+    },
+    {
+      "path": "binance/LTC_USDT-1d.feather",
+      "git_blob_sha": "2debc210b9eeeb46a5bcd67303842abaab7f3873",
+      "bytes": 85322
+    },
+    {
+      "path": "binance/LTO_USDT-5m.feather",
+      "git_blob_sha": "c514bbf8030f6e6dee8c388297fa5b4c8f9931ea",
+      "bytes": 11055018
+    },
+    {
+      "path": "binance/LTO_USDT-15m.feather",
+      "git_blob_sha": "df814af5673fe40bd37bb2a2e46edb22d8b4c2db",
+      "bytes": 4041378
+    },
+    {
+      "path": "binance/LTO_USDT-1h.feather",
+      "git_blob_sha": "4be8ce1b7967e0a61fc34f8134e5c676b88d0217",
+      "bytes": 1110794
+    },
+    {
+      "path": "binance/LTO_USDT-4h.feather",
+      "git_blob_sha": "00501325c4469d73e8bc50dd9c1e63205a99e0a9",
+      "bytes": 319570
+    },
+    {
+      "path": "binance/LTO_USDT-1d.feather",
+      "git_blob_sha": "cd2c91680303e8dfc821062a3c23ed398ffec2cf",
+      "bytes": 68314
+    },
+    {
+      "path": "binance/MANA_USDT-5m.feather",
+      "git_blob_sha": "32d3c6eddc03cf56cd631014e1653bb261f861f8",
+      "bytes": 11465930
+    },
+    {
+      "path": "binance/MANA_USDT-15m.feather",
+      "git_blob_sha": "c90f7b23970d90109fa775fc12c0bd56095bf282",
+      "bytes": 4093682
+    },
+    {
+      "path": "binance/MANA_USDT-1h.feather",
+      "git_blob_sha": "1ce276d0459f47c6cedf8dbe0714dc22e3a34d50",
+      "bytes": 1095970
+    },
+    {
+      "path": "binance/MANA_USDT-4h.feather",
+      "git_blob_sha": "f05241aa3e765909db1e336d9b4810295b224966",
+      "bytes": 308178
+    },
+    {
+      "path": "binance/MANA_USDT-1d.feather",
+      "git_blob_sha": "6b91412f0ce54d0655358dcea87b5c78f68d4925",
+      "bytes": 64218
+    },
+    {
+      "path": "binance/MASK_USDT-5m.feather",
+      "git_blob_sha": "4f347bce9ba81096b05c85ef320a2df1aaa738e8",
+      "bytes": 8867250
+    },
+    {
+      "path": "binance/MASK_USDT-15m.feather",
+      "git_blob_sha": "c58624bf9df7872c921b9bb196bc660661f9cb6b",
+      "bytes": 3184282
+    },
+    {
+      "path": "binance/MASK_USDT-1h.feather",
+      "git_blob_sha": "4dacf2688c712a7de7d4f4458d5bf141c81d5f23",
+      "bytes": 851106
+    },
+    {
+      "path": "binance/MASK_USDT-4h.feather",
+      "git_blob_sha": "2a6e86372787028f8473e7e8510c008810c43419",
+      "bytes": 230866
+    },
+    {
+      "path": "binance/MASK_USDT-1d.feather",
+      "git_blob_sha": "34d76c31ae61182ff7175b4b0a318e9bc672d1ab",
+      "bytes": 47130
+    },
+    {
+      "path": "binance/MBL_USDT-5m.feather",
+      "git_blob_sha": "238400750a4a4e12bfd287ce2cecf4036d9ce1ea",
+      "bytes": 12561130
+    },
+    {
+      "path": "binance/MBL_USDT-15m.feather",
+      "git_blob_sha": "aaf7e6b9c9f3995b7a1857d0cf14694858db5402",
+      "bytes": 4606074
+    },
+    {
+      "path": "binance/MBL_USDT-1h.feather",
+      "git_blob_sha": "ef94b945cfab762fac4d568a0ae080f9c13b63f2",
+      "bytes": 1245122
+    },
+    {
+      "path": "binance/MBL_USDT-4h.feather",
+      "git_blob_sha": "b8b34180967c8e157071667750d1a76c54b5e7de",
+      "bytes": 354322
+    },
+    {
+      "path": "binance/MBL_USDT-1d.feather",
+      "git_blob_sha": "5e95d86de314387b208c50f5af006619c10968a2",
+      "bytes": 79890
+    },
+    {
+      "path": "binance/MBOX_USDT-5m.feather",
+      "git_blob_sha": "38484e5b47fc361bedb34ed66aa999d748b2e7d7",
+      "bytes": 7659178
+    },
+    {
+      "path": "binance/MBOX_USDT-15m.feather",
+      "git_blob_sha": "97ca5e731ba10860b1c5ff7af8c7e7b8e5fce85a",
+      "bytes": 2788530
+    },
+    {
+      "path": "binance/MBOX_USDT-1h.feather",
+      "git_blob_sha": "1251479c79d03b6f84c2ee7574be66de872f6b0a",
+      "bytes": 771498
+    },
+    {
+      "path": "binance/MBOX_USDT-4h.feather",
+      "git_blob_sha": "efedc99a6306069bd13c261e6724ca4ef405ad0c",
+      "bytes": 221178
+    },
+    {
+      "path": "binance/MBOX_USDT-1d.feather",
+      "git_blob_sha": "a95acca279bf0da6bc3deef3d08fd589887fec6b",
+      "bytes": 48258
+    },
+    {
+      "path": "binance/MDT_USDT-5m.feather",
+      "git_blob_sha": "75350ef3248e1e5d51d6e458d580a1b1f9b22032",
+      "bytes": 11914634
+    },
+    {
+      "path": "binance/MDT_USDT-15m.feather",
+      "git_blob_sha": "75c5a43ce22a5e0ff8c2f2d3bad223468f7df456",
+      "bytes": 4293450
+    },
+    {
+      "path": "binance/MDT_USDT-1h.feather",
+      "git_blob_sha": "395d10c0418a9b7211e3beca78c3e78fc37beb5c",
+      "bytes": 1136090
+    },
+    {
+      "path": "binance/MDT_USDT-4h.feather",
+      "git_blob_sha": "b28cad5c5ebcb54aa6b4af1b878801fcffeba869",
+      "bytes": 316994
+    },
+    {
+      "path": "binance/MDT_USDT-1d.feather",
+      "git_blob_sha": "2aa05747de77b2d470f37dae2154da19febe75be",
+      "bytes": 72330
+    },
+    {
+      "path": "binance/MINA_USDT-5m.feather",
+      "git_blob_sha": "23fb62096cab65ef0097e75396323c98f2e8c6d7",
+      "bytes": 8101386
+    },
+    {
+      "path": "binance/MINA_USDT-15m.feather",
+      "git_blob_sha": "f49013b6cb3bc609737ecce384d5c5d24209b943",
+      "bytes": 2914474
+    },
+    {
+      "path": "binance/MINA_USDT-1h.feather",
+      "git_blob_sha": "112a3375f66df30a6d34c5a3eec4e9a2d709612a",
+      "bytes": 790226
+    },
+    {
+      "path": "binance/MINA_USDT-4h.feather",
+      "git_blob_sha": "a1194ea175e9f90c753f2d7144e37822ba0ccb3f",
+      "bytes": 223738
+    },
+    {
+      "path": "binance/MINA_USDT-1d.feather",
+      "git_blob_sha": "33d6f316451259ce0b284190f03518d5584447fb",
+      "bytes": 48170
+    },
+    {
+      "path": "binance/MKR_USDT-5m.feather",
+      "git_blob_sha": "a44daa8f823fab1d7e055eaff3bcbd306dc46256",
+      "bytes": 10006818
+    },
+    {
+      "path": "binance/MKR_USDT-15m.feather",
+      "git_blob_sha": "f8d378f767d0acc5fe93d1a6cdbb08c45b1b98fa",
+      "bytes": 3535178
+    },
+    {
+      "path": "binance/MKR_USDT-1h.feather",
+      "git_blob_sha": "f52d6959a28e73d8d770cc3b111df0577e3a3bc5",
+      "bytes": 948562
+    },
+    {
+      "path": "binance/MKR_USDT-4h.feather",
+      "git_blob_sha": "315a1622d89e9f303d4a538ce737dd3c568495f9",
+      "bytes": 260658
+    },
+    {
+      "path": "binance/MKR_USDT-1d.feather",
+      "git_blob_sha": "3b79f030aed31a4bf1e868da3dce5200d565f8f4",
+      "bytes": 54098
+    },
+    {
+      "path": "binance/MLN_USDT-5m.feather",
+      "git_blob_sha": "4397b394f13296a8bf4e46a68a3d997ae9fea9bc",
+      "bytes": 7320962
+    },
+    {
+      "path": "binance/MLN_USDT-15m.feather",
+      "git_blob_sha": "caabb1307541c6ef6036bb2334ba191d78e1f2b7",
+      "bytes": 2714378
+    },
+    {
+      "path": "binance/MLN_USDT-1h.feather",
+      "git_blob_sha": "dc929bd09958d4fdabf1a49e50eedb6a91d5f61a",
+      "bytes": 749226
+    },
+    {
+      "path": "binance/MLN_USDT-4h.feather",
+      "git_blob_sha": "53c261faa7f920048147eda7587f41fe871cdac3",
+      "bytes": 209682
+    },
+    {
+      "path": "binance/MLN_USDT-1d.feather",
+      "git_blob_sha": "89a6c3489ad8c153bef2966a1c092bee5777e196",
+      "bytes": 43370
+    },
+    {
+      "path": "binance/MOVR_USDT-5m.feather",
+      "git_blob_sha": "017102d22529aae311876df8484b4431fed9f8ae",
+      "bytes": 7566770
+    },
+    {
+      "path": "binance/MOVR_USDT-15m.feather",
+      "git_blob_sha": "281962b92b078c2037cb46699074ce335306fbec",
+      "bytes": 2714506
+    },
+    {
+      "path": "binance/MOVR_USDT-1h.feather",
+      "git_blob_sha": "0dd1b8f1e96744f128877bba604cf8f44d2bd96b",
+      "bytes": 746154
+    },
+    {
+      "path": "binance/MOVR_USDT-4h.feather",
+      "git_blob_sha": "c730e465406aa54446b8209af6009803b0ac0476",
+      "bytes": 208954
+    },
+    {
+      "path": "binance/MOVR_USDT-1d.feather",
+      "git_blob_sha": "805a903e42ac1798665b694ee0cf62cd5c52542d",
+      "bytes": 43378
+    },
+    {
+      "path": "binance/MTL_USDT-5m.feather",
+      "git_blob_sha": "db3c08bf5e37cd58b6ac87bf7c80a4f2c37d40e1",
+      "bytes": 11725274
+    },
+    {
+      "path": "binance/MTL_USDT-15m.feather",
+      "git_blob_sha": "6245889e1edadf9304f262de2fd34d2e65e8384c",
+      "bytes": 4341290
+    },
+    {
+      "path": "binance/MTL_USDT-1h.feather",
+      "git_blob_sha": "fed08763060a7810a0202933cf54140342a0cccb",
+      "bytes": 1186066
+    },
+    {
+      "path": "binance/MTL_USDT-4h.feather",
+      "git_blob_sha": "07a2e806a77772d6eacee0f4449eaab8667d36a0",
+      "bytes": 330410
+    },
+    {
+      "path": "binance/MTL_USDT-1d.feather",
+      "git_blob_sha": "77527179c321b2114bde82b8d9a241c462dba6b6",
+      "bytes": 68050
+    },
+    {
+      "path": "binance/NEAR_USDT-5m.feather",
+      "git_blob_sha": "43229536d099c786f182f8467184a38242e827c6",
+      "bytes": 10874858
+    },
+    {
+      "path": "binance/NEAR_USDT-15m.feather",
+      "git_blob_sha": "f1437db5fe0386a9fa80e52cc9393a5d2ad3a127",
+      "bytes": 3866778
+    },
+    {
+      "path": "binance/NEAR_USDT-1h.feather",
+      "git_blob_sha": "c7977227abe7fb8901c4f1ebc94cdc261e1cf881",
+      "bytes": 1038498
+    },
+    {
+      "path": "binance/NEAR_USDT-4h.feather",
+      "git_blob_sha": "134c93855b0efc2035b96ac4e9b2148186e7b8fe",
+      "bytes": 283458
+    },
+    {
+      "path": "binance/NEAR_USDT-1d.feather",
+      "git_blob_sha": "3b360c7af1ba17b80201c8abe008440b4f7752ca",
+      "bytes": 57618
+    },
+    {
+      "path": "binance/NEO_USDT-5m.feather",
+      "git_blob_sha": "38e9b57cf43b66fa29aabfb4abe47c68c7d8b636",
+      "bytes": 16868866
+    },
+    {
+      "path": "binance/NEO_USDT-15m.feather",
+      "git_blob_sha": "a756047e8dfe781c17c4f77b4c1b49b4f026b815",
+      "bytes": 5996090
+    },
+    {
+      "path": "binance/NEO_USDT-1h.feather",
+      "git_blob_sha": "55bc6ae9f9470810b929f1bf15cbe147f5f27803",
+      "bytes": 1599498
+    },
+    {
+      "path": "binance/NEO_USDT-4h.feather",
+      "git_blob_sha": "8f1278d660a953bcc8a50e915e39ce63ee0a95b4",
+      "bytes": 432290
+    },
+    {
+      "path": "binance/NEO_USDT-1d.feather",
+      "git_blob_sha": "b3d9993c6a7874c3ef3baf95dc77336e019c86d3",
+      "bytes": 84394
+    },
+    {
+      "path": "binance/NKN_USDT-5m.feather",
+      "git_blob_sha": "8d84f068d997fec7ba56c0324091ceaa5e224a8b",
+      "bytes": 11423706
+    },
+    {
+      "path": "binance/NKN_USDT-15m.feather",
+      "git_blob_sha": "43940d529709943aa08cba156692f2c3868a4cb0",
+      "bytes": 4239882
+    },
+    {
+      "path": "binance/NKN_USDT-1h.feather",
+      "git_blob_sha": "f307b7793bfbc071d64c68070dce92b1928347b0",
+      "bytes": 1167850
+    },
+    {
+      "path": "binance/NKN_USDT-4h.feather",
+      "git_blob_sha": "ee19985dc85a507854828695ef8d5ad38d6d69b7",
+      "bytes": 339066
+    },
+    {
+      "path": "binance/NKN_USDT-1d.feather",
+      "git_blob_sha": "d7a37497e11bed7cc684384cf5f8eb8629eb8f74",
+      "bytes": 73178
+    },
+    {
+      "path": "binance/OG_USDT-5m.feather",
+      "git_blob_sha": "7ec1f762498a15f3c91415365c79acc8e91a6d4f",
+      "bytes": 9874562
+    },
+    {
+      "path": "binance/OG_USDT-15m.feather",
+      "git_blob_sha": "7dac052f94bc6da06221db9a3afc52043d065677",
+      "bytes": 3547194
+    },
+    {
+      "path": "binance/OG_USDT-1h.feather",
+      "git_blob_sha": "b82eba3b017ef8f0aa9eba3a2d55651ff8daf5e3",
+      "bytes": 932594
+    },
+    {
+      "path": "binance/OG_USDT-4h.feather",
+      "git_blob_sha": "f0fced1e696f7d1fb33e32f6aa9750befdbc2826",
+      "bytes": 249498
+    },
+    {
+      "path": "binance/OG_USDT-1d.feather",
+      "git_blob_sha": "26d82bee8237663ecd6d47555ab9bd8398ec4bef",
+      "bytes": 50338
+    },
+    {
+      "path": "binance/OM_USDT-5m.feather",
+      "git_blob_sha": "b6c890fcc935db6be27d8136d9c084558d554600",
+      "bytes": 9026810
+    },
+    {
+      "path": "binance/OM_USDT-15m.feather",
+      "git_blob_sha": "b2c3a33bd2690b4ea4e9d550a583ba6b61c621fe",
+      "bytes": 3307306
+    },
+    {
+      "path": "binance/OM_USDT-1h.feather",
+      "git_blob_sha": "09db78d39ac3403e38141515e3f55598f6b345b0",
+      "bytes": 918402
+    },
+    {
+      "path": "binance/OM_USDT-4h.feather",
+      "git_blob_sha": "e85b918562050e7e6904e71953d825fa1bb1f7e5",
+      "bytes": 265810
+    },
+    {
+      "path": "binance/OM_USDT-1d.feather",
+      "git_blob_sha": "ddcbb51ba15924590a83257e3e42e623191db415",
+      "bytes": 57442
+    },
+    {
+      "path": "binance/ONE_USDT-5m.feather",
+      "git_blob_sha": "fb4c28b010f837a09bd9284a6d069aba549b83d2",
+      "bytes": 13405370
+    },
+    {
+      "path": "binance/ONE_USDT-15m.feather",
+      "git_blob_sha": "df741646691e2d15ed7e404a8ba03efb5f99e60e",
+      "bytes": 4900482
+    },
+    {
+      "path": "binance/ONE_USDT-1h.feather",
+      "git_blob_sha": "c41d1445b47ac12d27eb94a443828226121d1e31",
+      "bytes": 1322522
+    },
+    {
+      "path": "binance/ONE_USDT-4h.feather",
+      "git_blob_sha": "c625260b003212d3cae82fa2ae3ae9636076872e",
+      "bytes": 377450
+    },
+    {
+      "path": "binance/ONE_USDT-1d.feather",
+      "git_blob_sha": "11ebe6436d9cf2ba2a9d5216e5a11dd4d4b082a6",
+      "bytes": 81770
+    },
+    {
+      "path": "binance/ONT_USDT-5m.feather",
+      "git_blob_sha": "0c606d8b386ad9d323f83fe626417976f667d654",
+      "bytes": 15745970
+    },
+    {
+      "path": "binance/ONT_USDT-15m.feather",
+      "git_blob_sha": "82219a2928d23f98b3a4234be1bbb46f610fbb10",
+      "bytes": 5628018
+    },
+    {
+      "path": "binance/ONT_USDT-1h.feather",
+      "git_blob_sha": "a59419a0b8f96a6eb5e7880fc32a3fc3226772d1",
+      "bytes": 1493026
+    },
+    {
+      "path": "binance/ONT_USDT-4h.feather",
+      "git_blob_sha": "7c1062919de6d25e6df38d62658ec21c0fe89dd5",
+      "bytes": 408714
+    },
+    {
+      "path": "binance/ONT_USDT-1d.feather",
+      "git_blob_sha": "e5cd4533eb66781fcc233deb2f06dcd990193419",
+      "bytes": 83386
+    },
+    {
+      "path": "binance/PEOPLE_USDT-5m.feather",
+      "git_blob_sha": "0ed2a6169f3c2bb416871ae7130e4e8e4a35ddef",
+      "bytes": 7952074
+    },
+    {
+      "path": "binance/PEOPLE_USDT-15m.feather",
+      "git_blob_sha": "529abd46f5d174b4ef08ce05bb35af75637340b6",
+      "bytes": 437698
+    },
+    {
+      "path": "binance/PEOPLE_USDT-1h.feather",
+      "git_blob_sha": "a84d34b0e725d5f816e813860e2edc85b720cbee",
+      "bytes": 786882
+    },
+    {
+      "path": "binance/PEOPLE_USDT-4h.feather",
+      "git_blob_sha": "631f86f95b8375e71a0c11f576649efce442bba9",
+      "bytes": 227434
+    },
+    {
+      "path": "binance/PEOPLE_USDT-1d.feather",
+      "git_blob_sha": "3f3163015acc851d64058ff60b9779a8f23a0ff9",
+      "bytes": 52394
+    },
+    {
+      "path": "binance/PERP_USDT-5m.feather",
+      "git_blob_sha": "e05c44bb43635840a1a462b2bc0a4560ec88b9bf",
+      "bytes": 10016914
+    },
+    {
+      "path": "binance/PERP_USDT-15m.feather",
+      "git_blob_sha": "35e38ed261f7a84dda7862b4d6203eb3291c9126",
+      "bytes": 3601090
+    },
+    {
+      "path": "binance/PERP_USDT-1h.feather",
+      "git_blob_sha": "49690eebe28e1a5729e612642e5ad724b1858776",
+      "bytes": 979186
+    },
+    {
+      "path": "binance/PERP_USDT-4h.feather",
+      "git_blob_sha": "bedd380dfa48095d329ff251e08048f4b98e56bb",
+      "bytes": 280258
+    },
+    {
+      "path": "binance/PERP_USDT-1d.feather",
+      "git_blob_sha": "1a6b16a7efa3474beac6f3250f1d6083d6eb2891",
+      "bytes": 59050
+    },
+    {
+      "path": "binance/PHA_USDT-5m.feather",
+      "git_blob_sha": "1d5d7245782553c9b932981ebcd3dbfb4f553cd9",
+      "bytes": 7822538
+    },
+    {
+      "path": "binance/PHA_USDT-15m.feather",
+      "git_blob_sha": "fa90d2fbd1f6e77f3acc3b63e84900ba472d7117",
+      "bytes": 2872194
+    },
+    {
+      "path": "binance/PHA_USDT-1h.feather",
+      "git_blob_sha": "6c12be803d0b9e743ff0f5736fe26791897d04c8",
+      "bytes": 781042
+    },
+    {
+      "path": "binance/PHA_USDT-4h.feather",
+      "git_blob_sha": "457b9348b524e8f1548338b5adfd50f4729c23c3",
+      "bytes": 220642
+    },
+    {
+      "path": "binance/PHA_USDT-1d.feather",
+      "git_blob_sha": "c8aa27f73fe6e8f08ee9039b866815f9575e95ef",
+      "bytes": 48426
+    },
+    {
+      "path": "binance/POND_USDT-5m.feather",
+      "git_blob_sha": "ea72dc60322d31d7baf43d6b8cdd132ce75a6b27",
+      "bytes": 9099642
+    },
+    {
+      "path": "binance/POND_USDT-15m.feather",
+      "git_blob_sha": "00eae9927cc8ee49309f714bc53839d068c7b074",
+      "bytes": 3320770
+    },
+    {
+      "path": "binance/POND_USDT-1h.feather",
+      "git_blob_sha": "3841d878f30432500f441800dae67cb0f02bdb85",
+      "bytes": 918066
+    },
+    {
+      "path": "binance/POND_USDT-4h.feather",
+      "git_blob_sha": "42b851729ac151fa3f9c22a4b9fcb2fb5b31ffb3",
+      "bytes": 265506
+    },
+    {
+      "path": "binance/POND_USDT-1d.feather",
+      "git_blob_sha": "a26b8f9b84211efd2949dd67bbabf8a7fa277281",
+      "bytes": 60002
+    },
+    {
+      "path": "binance/PUNDIX_USDT-5m.feather",
+      "git_blob_sha": "761a0abb09603a9c2c2b0b83dcfc6e94a5fd46a8",
+      "bytes": 8195810
+    },
+    {
+      "path": "binance/PUNDIX_USDT-15m.feather",
+      "git_blob_sha": "dea5d9c51685f916a9c51e0fb3d09883f13901b2",
+      "bytes": 3006690
+    },
+    {
+      "path": "binance/PUNDIX_USDT-1h.feather",
+      "git_blob_sha": "32d0f9588188cdc707bae97774eea97f68ba7af1",
+      "bytes": 817106
+    },
+    {
+      "path": "binance/PUNDIX_USDT-4h.feather",
+      "git_blob_sha": "c8b77902d91df1eaf5a106ece847341f727a0b5c",
+      "bytes": 233594
+    },
+    {
+      "path": "binance/PUNDIX_USDT-1d.feather",
+      "git_blob_sha": "456e39743e01a7d5c54403a1424d7c6c809baf7f",
+      "bytes": 50506
+    },
+    {
+      "path": "binance/PYR_USDT-5m.feather",
+      "git_blob_sha": "dda6bde02cc750188465602b44629718d1c955d2",
+      "bytes": 7372834
+    },
+    {
+      "path": "binance/PYR_USDT-15m.feather",
+      "git_blob_sha": "a52bb00bef05ce8d0362d9e9bb1967df7ac232ba",
+      "bytes": 2652202
+    },
+    {
+      "path": "binance/PYR_USDT-1h.feather",
+      "git_blob_sha": "09d3a8419eb4faf42aef22a55c323c7d811f493a",
+      "bytes": 720322
+    },
+    {
+      "path": "binance/PYR_USDT-4h.feather",
+      "git_blob_sha": "470a5a2a3cc17a93d33e372aec522aab5aef0e37",
+      "bytes": 201426
+    },
+    {
+      "path": "binance/PYR_USDT-1d.feather",
+      "git_blob_sha": "e71224c40343734df121b0032a6035c1a6c8d2d4",
+      "bytes": 41810
+    },
+    {
+      "path": "binance/QI_USDT-5m.feather",
+      "git_blob_sha": "e1a6748e1e983e883289bd57de9b2d986a8ddb25",
+      "bytes": 6843698
+    },
+    {
+      "path": "binance/QI_USDT-15m.feather",
+      "git_blob_sha": "9c3f1ff5952f072cd02bf7ccedae4912634ea8e9",
+      "bytes": 2519810
+    },
+    {
+      "path": "binance/QI_USDT-1h.feather",
+      "git_blob_sha": "6446102555fe0cc4d7f81b94182f94530c096028",
+      "bytes": 713938
+    },
+    {
+      "path": "binance/QI_USDT-4h.feather",
+      "git_blob_sha": "fc3f3938597fa7f49f5fdda9788829ac7d18d684",
+      "bytes": 209754
+    },
+    {
+      "path": "binance/QI_USDT-1d.feather",
+      "git_blob_sha": "f5cddd5bf90e5d965bc449cbb803c42600ccf5f8",
+      "bytes": 49210
+    },
+    {
+      "path": "binance/QNT_USDT-5m.feather",
+      "git_blob_sha": "f76e98332f4ca20f837bc48a79ee8fa35481a93e",
+      "bytes": 7135634
+    },
+    {
+      "path": "binance/QNT_USDT-15m.feather",
+      "git_blob_sha": "8b73bf77b73804a87bb1674e1fbaa54c02a9eece",
+      "bytes": 2575426
+    },
+    {
+      "path": "binance/QNT_USDT-1h.feather",
+      "git_blob_sha": "148f38e1d2dec79f6e2683961d82de337ba812df",
+      "bytes": 690314
+    },
+    {
+      "path": "binance/QNT_USDT-4h.feather",
+      "git_blob_sha": "4124468bc12d2da56eaf948e479358f2dabc31df",
+      "bytes": 192962
+    },
+    {
+      "path": "binance/QNT_USDT-1d.feather",
+      "git_blob_sha": "689f811407a6395a960e1602eacd396edbf6be34",
+      "bytes": 40778
+    },
+    {
+      "path": "binance/QTUM_USDT-5m.feather",
+      "git_blob_sha": "4d2223c2760c77d31b1cd26cfaba3b4b61e68c55",
+      "bytes": 15909442
+    },
+    {
+      "path": "binance/QTUM_USDT-15m.feather",
+      "git_blob_sha": "adfbfc41cab7ed0c752b0bc1bef6e5e7c871b0b9",
+      "bytes": 5721874
+    },
+    {
+      "path": "binance/QTUM_USDT-1h.feather",
+      "git_blob_sha": "2a01aa32ad7ed46d9935f4661217c89f4863525d",
+      "bytes": 1524210
+    },
+    {
+      "path": "binance/QTUM_USDT-4h.feather",
+      "git_blob_sha": "ed490d0b3158731c0b1df1348aa13ea0b717e303",
+      "bytes": 408090
+    },
+    {
+      "path": "binance/QTUM_USDT-1d.feather",
+      "git_blob_sha": "f3f67a20ba718e3b19eed503935d5ebf3710a15c",
+      "bytes": 79370
+    },
+    {
+      "path": "binance/RAD_USDT-5m.feather",
+      "git_blob_sha": "27db428d141fd2ec6f7afbbfe41e66d21cbf95ce",
+      "bytes": 7314354
+    },
+    {
+      "path": "binance/RAD_USDT-15m.feather",
+      "git_blob_sha": "9e5effba61d0055eded4946a6fd83527b5515a2b",
+      "bytes": 2673066
+    },
+    {
+      "path": "binance/RAD_USDT-1h.feather",
+      "git_blob_sha": "9e80add999417c8ecc7cc3911c0c89c67578ca74",
+      "bytes": 731026
+    },
+    {
+      "path": "binance/RAD_USDT-4h.feather",
+      "git_blob_sha": "78deb6466b74651506501a4eb22f25dc94cabe2f",
+      "bytes": 204842
+    },
+    {
+      "path": "binance/RAD_USDT-1d.feather",
+      "git_blob_sha": "88474c2e5b9db007b1d392ac1323d1f24f36acd3",
+      "bytes": 42514
+    },
+    {
+      "path": "binance/RARE_USDT-5m.feather",
+      "git_blob_sha": "d39e87d0ef1693e4115c57563beb765c7f428634",
+      "bytes": 6894706
+    },
+    {
+      "path": "binance/RARE_USDT-15m.feather",
+      "git_blob_sha": "22497c8263a5cf64b004d3b9a4852d2a63bfdd7b",
+      "bytes": 2549274
+    },
+    {
+      "path": "binance/RARE_USDT-1h.feather",
+      "git_blob_sha": "00503ac5860432f6ebcfe18a3aa0c1e4336afd33",
+      "bytes": 713922
+    },
+    {
+      "path": "binance/RARE_USDT-4h.feather",
+      "git_blob_sha": "050b0f51a657d37c29804e8ec6758696ed55a36c",
+      "bytes": 204602
+    },
+    {
+      "path": "binance/RARE_USDT-1d.feather",
+      "git_blob_sha": "c2c10f5f63b2d3ae0ebe16f4907198ce016025b0",
+      "bytes": 45666
+    },
+    {
+      "path": "binance/RAY_USDT-5m.feather",
+      "git_blob_sha": "3da120c6664f22ac3b4086e55c771af1d44c1f1c",
+      "bytes": 8460762
+    },
+    {
+      "path": "binance/RAY_USDT-15m.feather",
+      "git_blob_sha": "7247d5094dc96d0bb963941b4240f0be37f4d494",
+      "bytes": 3045114
+    },
+    {
+      "path": "binance/RAY_USDT-1h.feather",
+      "git_blob_sha": "bd06ed0f8e012b4cdecc3f24cfaced3be5dc09b0",
+      "bytes": 830714
+    },
+    {
+      "path": "binance/RAY_USDT-4h.feather",
+      "git_blob_sha": "180e82a50ea8d0bfa17201c795e1ff15c2ac8067",
+      "bytes": 231338
+    },
+    {
+      "path": "binance/RAY_USDT-1d.feather",
+      "git_blob_sha": "642c7fff8b43f4dea9f7a38fcdeaa25363b1ef11",
+      "bytes": 49482
+    },
+    {
+      "path": "binance/REQ_USDT-5m.feather",
+      "git_blob_sha": "a529665302580fc3df9027f6072545b504418465",
+      "bytes": 6967738
+    },
+    {
+      "path": "binance/REQ_USDT-15m.feather",
+      "git_blob_sha": "9fac6e6c4c34a786fb623257f469af22338ec66a",
+      "bytes": 2587210
+    },
+    {
+      "path": "binance/REQ_USDT-1h.feather",
+      "git_blob_sha": "5bd782b3c7e387f992f1ea3dbaf3529e52da71f7",
+      "bytes": 714714
+    },
+    {
+      "path": "binance/REQ_USDT-4h.feather",
+      "git_blob_sha": "c08dd2a2f996c3ca7a70d164b38d6a80450ac969",
+      "bytes": 206010
+    },
+    {
+      "path": "binance/REQ_USDT-1d.feather",
+      "git_blob_sha": "82723c5f7ba8d161f7529f3be74f6cf10c1ce4df",
+      "bytes": 46042
+    },
+    {
+      "path": "binance/RIF_USDT-5m.feather",
+      "git_blob_sha": "9fc776a1ff054403b79e396e155215a025de497b",
+      "bytes": 8275050
+    },
+    {
+      "path": "binance/RIF_USDT-15m.feather",
+      "git_blob_sha": "5c45bd65c430c459da54ee046598f9921e8474cf",
+      "bytes": 3103738
+    },
+    {
+      "path": "binance/RIF_USDT-1h.feather",
+      "git_blob_sha": "3694c83c374843adc39f36549ad217464e42461f",
+      "bytes": 860746
+    },
+    {
+      "path": "binance/RIF_USDT-4h.feather",
+      "git_blob_sha": "37754673ea82e4778e4c542a51f7111272166623",
+      "bytes": 243066
+    },
+    {
+      "path": "binance/RIF_USDT-1d.feather",
+      "git_blob_sha": "536a6115370044006b9232a4ce7b4046daa18027",
+      "bytes": 53586
+    },
+    {
+      "path": "binance/RLC_USDT-5m.feather",
+      "git_blob_sha": "d67c554f13a8e6dd61f52a321fdacddf36211637",
+      "bytes": 11952690
+    },
+    {
+      "path": "binance/RLC_USDT-15m.feather",
+      "git_blob_sha": "4388cca7415db4db38487979fa7cf291788749e5",
+      "bytes": 4338626
+    },
+    {
+      "path": "binance/RLC_USDT-1h.feather",
+      "git_blob_sha": "a114fbf7220bf5eca20e5e76173ec2939919a19c",
+      "bytes": 1178074
+    },
+    {
+      "path": "binance/RLC_USDT-4h.feather",
+      "git_blob_sha": "a7ba2332e076b00b32a8ddd28e95d12fed7a2a1f",
+      "bytes": 324666
+    },
+    {
+      "path": "binance/RLC_USDT-1d.feather",
+      "git_blob_sha": "921287eab3107ae756d026d2c9ac3df3b523462e",
+      "bytes": 66258
+    },
+    {
+      "path": "binance/ROSE_USDT-5m.feather",
+      "git_blob_sha": "c19fbecd9bb2214c4eac5b8ffbe343a5dfb9e1b2",
+      "bytes": 11763066
+    },
+    {
+      "path": "binance/ROSE_USDT-15m.feather",
+      "git_blob_sha": "2ac480c2a5a9ff9e9f475e6ecf9e120828f8ae87",
+      "bytes": 4124554
+    },
+    {
+      "path": "binance/ROSE_USDT-1h.feather",
+      "git_blob_sha": "64c652bcfc88278c6148133fdced9a91c4e0181c",
+      "bytes": 1078890
+    },
+    {
+      "path": "binance/ROSE_USDT-4h.feather",
+      "git_blob_sha": "623148d8a5affbdc93c0ac8f5b8cfcc3c0b58826",
+      "bytes": 303834
+    },
+    {
+      "path": "binance/ROSE_USDT-1d.feather",
+      "git_blob_sha": "bffafa99d0bc0253e41b0543cde05a1f2ac2b4ba",
+      "bytes": 68434
+    },
+    {
+      "path": "binance/RUNE_USDT-5m.feather",
+      "git_blob_sha": "097c0a2c171b121eb080d44270875a49ac34372d",
+      "bytes": 10901530
+    },
+    {
+      "path": "binance/RUNE_USDT-15m.feather",
+      "git_blob_sha": "22075cbb24c450921de2376cb17e33695bf183dc",
+      "bytes": 3896458
+    },
+    {
+      "path": "binance/RUNE_USDT-1h.feather",
+      "git_blob_sha": "deeb16f8f67248f520de1f3d52ffa125d145f53d",
+      "bytes": 1051130
+    },
+    {
+      "path": "binance/RUNE_USDT-4h.feather",
+      "git_blob_sha": "28fc525288465793fe7d00f6d8f0d091a5c22430",
+      "bytes": 286714
+    },
+    {
+      "path": "binance/RUNE_USDT-1d.feather",
+      "git_blob_sha": "aa77beec546f678423eae81aafbe5dad0db17b93",
+      "bytes": 57850
+    },
+    {
+      "path": "binance/SAND_USDT-5m.feather",
+      "git_blob_sha": "3537c53963fd39ab6d5a9b86f48770554e79bab3",
+      "bytes": 12116962
+    },
+    {
+      "path": "binance/SAND_USDT-15m.feather",
+      "git_blob_sha": "4480df56babcb8f0a5add9e481b3791658a3ed4c",
+      "bytes": 4301426
+    },
+    {
+      "path": "binance/SAND_USDT-1h.feather",
+      "git_blob_sha": "cabdb4f72622567452ceb6d927a2cd10c830d97b",
+      "bytes": 1160042
+    },
+    {
+      "path": "binance/SAND_USDT-4h.feather",
+      "git_blob_sha": "bdcc6a1a1a28e5d03bbca6d1e82c8aba101be7c0",
+      "bytes": 323010
+    },
+    {
+      "path": "binance/SAND_USDT-1d.feather",
+      "git_blob_sha": "f721f03ef20129824f3ac204b75297607f16ce64",
+      "bytes": 65946
+    },
+    {
+      "path": "binance/SANTOS_USDT-5m.feather",
+      "git_blob_sha": "c58fdca2d94ae5a01643609ab4bdb8d8eb873202",
+      "bytes": 7770858
+    },
+    {
+      "path": "binance/SANTOS_USDT-15m.feather",
+      "git_blob_sha": "e5fe6100e64b257131aa0fd4fd3a54cd284839ca",
+      "bytes": 2795162
+    },
+    {
+      "path": "binance/SANTOS_USDT-1h.feather",
+      "git_blob_sha": "ba899f88a934f3c64cbb6795fe889c283968789c",
+      "bytes": 747186
+    },
+    {
+      "path": "binance/SANTOS_USDT-4h.feather",
+      "git_blob_sha": "5a81c8127e568f60e3092eb16ef7e4d5ce6ccab2",
+      "bytes": 202002
+    },
+    {
+      "path": "binance/SANTOS_USDT-1d.feather",
+      "git_blob_sha": "8560876a6a52a0abee2c6338a44518ecbe1e95e7",
+      "bytes": 41530
+    },
+    {
+      "path": "binance/SFP_USDT-5m.feather",
+      "git_blob_sha": "78c07c347485d54edf6c00d1e112349e9062cc87",
+      "bytes": 9870210
+    },
+    {
+      "path": "binance/SFP_USDT-15m.feather",
+      "git_blob_sha": "4db2b3d4101368e75bda2545491733dc6475dbcb",
+      "bytes": 382594
+    },
+    {
+      "path": "binance/SFP_USDT-1h.feather",
+      "git_blob_sha": "340e422bbeb9cccdf32680ffa21f261bc294cf9e",
+      "bytes": 929506
+    },
+    {
+      "path": "binance/SFP_USDT-4h.feather",
+      "git_blob_sha": "4738059d8437619f6af5fdf7c485ce8a2301579e",
+      "bytes": 255938
+    },
+    {
+      "path": "binance/SFP_USDT-1d.feather",
+      "git_blob_sha": "725a435ee79ef81a992c05f431ea534e725c8cc3",
+      "bytes": 54754
+    },
+    {
+      "path": "binance/SHIB_USDT-5m.feather",
+      "git_blob_sha": "ddc19d7a3d4f7aa086ee3bfe700f926199fa4318",
+      "bytes": 9092946
+    },
+    {
+      "path": "binance/SHIB_USDT-15m.feather",
+      "git_blob_sha": "1d9400ee1c1a74f640238a9afdaf95e202ad5a82",
+      "bytes": 3333226
+    },
+    {
+      "path": "binance/SHIB_USDT-1h.feather",
+      "git_blob_sha": "b786e0e3c856da1386dd25b491fb4b13afffbc00",
+      "bytes": 922290
+    },
+    {
+      "path": "binance/SHIB_USDT-4h.feather",
+      "git_blob_sha": "f688f4ed39fb59edded27d5cec86b4303ac82617",
+      "bytes": 263802
+    },
+    {
+      "path": "binance/SHIB_USDT-1d.feather",
+      "git_blob_sha": "2697bd3c1582b85a3ba6075ba53a884a00f3615b",
+      "bytes": 60426
+    },
+    {
+      "path": "binance/SKL_USDT-5m.feather",
+      "git_blob_sha": "4e1f82e1bed86748f122b598ba83a05754281324",
+      "bytes": 10702370
+    },
+    {
+      "path": "binance/SKL_USDT-15m.feather",
+      "git_blob_sha": "58ec2fc659744338dbe1f53f630cc30484360222",
+      "bytes": 3845146
+    },
+    {
+      "path": "binance/SKL_USDT-1h.feather",
+      "git_blob_sha": "a5e65c474bd372e7e831475eaf0bbc22d4925d93",
+      "bytes": 1043074
+    },
+    {
+      "path": "binance/SKL_USDT-4h.feather",
+      "git_blob_sha": "0191e02a95dfeef1a7d9f3be11f9b3e8c6ec76fb",
+      "bytes": 301394
+    },
+    {
+      "path": "binance/SKL_USDT-1d.feather",
+      "git_blob_sha": "9c510e1cd49c11bd4b7b4f3cb5959a285826245c",
+      "bytes": 66506
+    },
+    {
+      "path": "binance/SLP_USDT-5m.feather",
+      "git_blob_sha": "a17103918e5e7b7b1dd502798e0c91bafa289617",
+      "bytes": 8596818
+    },
+    {
+      "path": "binance/SLP_USDT-15m.feather",
+      "git_blob_sha": "69c0f293918e6b7cab00f3fb3e539871306afed7",
+      "bytes": 3185234
+    },
+    {
+      "path": "binance/SLP_USDT-1h.feather",
+      "git_blob_sha": "9e94b19b0387efeb599f68ba0a142abce169ace2",
+      "bytes": 880626
+    },
+    {
+      "path": "binance/SLP_USDT-4h.feather",
+      "git_blob_sha": "6140bb32e38f2109d9b1abe24adf2b496567186c",
+      "bytes": 262666
+    },
+    {
+      "path": "binance/SLP_USDT-1d.feather",
+      "git_blob_sha": "7fa6e1ab42805c5a51148c76c301fc5435e9843b",
+      "bytes": 60290
+    },
+    {
+      "path": "binance/SNX_USDT-5m.feather",
+      "git_blob_sha": "900085e3c660961573de16732ae6af32cbdc60eb",
+      "bytes": 11013250
+    },
+    {
+      "path": "binance/SNX_USDT-15m.feather",
+      "git_blob_sha": "0e8c386050c659c5e113b511598e99ba7f56971b",
+      "bytes": 3919082
+    },
+    {
+      "path": "binance/SNX_USDT-1h.feather",
+      "git_blob_sha": "1c1bb0848d7745c2b844749e2c0fc3b0a8f13020",
+      "bytes": 1051810
+    },
+    {
+      "path": "binance/SNX_USDT-4h.feather",
+      "git_blob_sha": "0d0d5473b79e134f1993779a88216d1019eb934c",
+      "bytes": 284754
+    },
+    {
+      "path": "binance/SNX_USDT-1d.feather",
+      "git_blob_sha": "a1dfd8dec2ad381b27b887973686db68ddaff610",
+      "bytes": 57018
+    },
+    {
+      "path": "binance/SOL_USDT-5m.feather",
+      "git_blob_sha": "3d45b2640741301aa8f25b11128c0c4aaf672db5",
+      "bytes": 11815234
+    },
+    {
+      "path": "binance/SOL_USDT-15m.feather",
+      "git_blob_sha": "832f9f6f49df3cd06299923f9b7511fb5ac736f7",
+      "bytes": 4160010
+    },
+    {
+      "path": "binance/SOL_USDT-1h.feather",
+      "git_blob_sha": "2be3a5bd6f52780104298fbdcd21fe4ea0680ddd",
+      "bytes": 1112738
+    },
+    {
+      "path": "binance/SOL_USDT-4h.feather",
+      "git_blob_sha": "5842ac52827ff544922f84f72df6bcf4da21eb4f",
+      "bytes": 302522
+    },
+    {
+      "path": "binance/SOL_USDT-1d.feather",
+      "git_blob_sha": "4de2e8f673160a3cfe319e486c2495b97ff026fb",
+      "bytes": 59866
+    },
+    {
+      "path": "binance/SPELL_USDT-5m.feather",
+      "git_blob_sha": "a9884380f82c158823be7a287d0784771bfe18d3",
+      "bytes": 8933018
+    },
+    {
+      "path": "binance/SPELL_USDT-15m.feather",
+      "git_blob_sha": "3af3c98fd4c79f87f3835efc17971646a482847b",
+      "bytes": 3251154
+    },
+    {
+      "path": "binance/SPELL_USDT-1h.feather",
+      "git_blob_sha": "ae704890bb267a6c8ddd888f970949eed231d94c",
+      "bytes": 889626
+    },
+    {
+      "path": "binance/SPELL_USDT-4h.feather",
+      "git_blob_sha": "b9bff4606bc8ae7e3923822847170204978f6483",
+      "bytes": 264922
+    },
+    {
+      "path": "binance/SPELL_USDT-1d.feather",
+      "git_blob_sha": "fa9d9733c1cd546529abaa75022686f3c787c0d1",
+      "bytes": 57226
+    },
+    {
+      "path": "binance/STORJ_USDT-5m.feather",
+      "git_blob_sha": "efaa1ebea505ecda5b6c9c6ff2d2a42a820b3160",
+      "bytes": 11238674
+    },
+    {
+      "path": "binance/STORJ_USDT-15m.feather",
+      "git_blob_sha": "246f65fb203400bc21276da8b64a32d14fe234d3",
+      "bytes": 4002538
+    },
+    {
+      "path": "binance/STORJ_USDT-1h.feather",
+      "git_blob_sha": "f946243b5b1c3eb2e42a8478e766b90da050934b",
+      "bytes": 1058346
+    },
+    {
+      "path": "binance/STORJ_USDT-4h.feather",
+      "git_blob_sha": "5de8c431143f1d1965783d33a66f79a711f796f5",
+      "bytes": 286786
+    },
+    {
+      "path": "binance/STORJ_USDT-1d.feather",
+      "git_blob_sha": "adb2f24d6cbbe2b9b55c98d57845ea9ce6e5bd9c",
+      "bytes": 60242
+    },
+    {
+      "path": "binance/STPT_USDT-5m.feather",
+      "git_blob_sha": "966bd3c1525cf21945257ac579e4603323814d23",
+      "bytes": 12152466
+    },
+    {
+      "path": "binance/STPT_USDT-15m.feather",
+      "git_blob_sha": "2b50b4cc45a5d3fa45bc73bee7a171a63fc9cfee",
+      "bytes": 4416810
+    },
+    {
+      "path": "binance/STPT_USDT-1h.feather",
+      "git_blob_sha": "0b813c02559315d613f5d094e638564bac59a956",
+      "bytes": 1167850
+    },
+    {
+      "path": "binance/STPT_USDT-4h.feather",
+      "git_blob_sha": "b962b09be27be05231708e33ae2fadba60099809",
+      "bytes": 327170
+    },
+    {
+      "path": "binance/STPT_USDT-1d.feather",
+      "git_blob_sha": "522896178a01c0392d9b62cf95ccb196c6591deb",
+      "bytes": 74738
+    },
+    {
+      "path": "binance/STRAX_USDT-5m.feather",
+      "git_blob_sha": "29591290e6ba57b6c4a42b03729755e0c976e88b",
+      "bytes": 8993138
+    },
+    {
+      "path": "binance/STRAX_USDT-15m.feather",
+      "git_blob_sha": "ef58e0a110a1b21e87fd2699cfe90f778d2fe2aa",
+      "bytes": 3297130
+    },
+    {
+      "path": "binance/STRAX_USDT-1h.feather",
+      "git_blob_sha": "59b17a4acf789a9e01244729be27aae3ce3f8d17",
+      "bytes": 927002
+    },
+    {
+      "path": "binance/STRAX_USDT-4h.feather",
+      "git_blob_sha": "4ef7676287624bc23f81a018fe51b28267a17200",
+      "bytes": 269698
+    },
+    {
+      "path": "binance/STRAX_USDT-1d.feather",
+      "git_blob_sha": "f584d86fda80d1ccb09a46cfa52e3d32b70c2b08",
+      "bytes": 57138
+    },
+    {
+      "path": "binance/STX_USDT-5m.feather",
+      "git_blob_sha": "4ea91085562ff244035617dcd0d2aa7d30e0fc69",
+      "bytes": 11940978
+    },
+    {
+      "path": "binance/STX_USDT-15m.feather",
+      "git_blob_sha": "2b838240aba5904097808eb63aa4feea18c4ad77",
+      "bytes": 4357810
+    },
+    {
+      "path": "binance/STX_USDT-1h.feather",
+      "git_blob_sha": "ed9fb227567fcecce16a372ba895e9ee6b20cbf4",
+      "bytes": 1201810
+    },
+    {
+      "path": "binance/STX_USDT-4h.feather",
+      "git_blob_sha": "48a40296c181803ef0410fd2c9b15dbe65644483",
+      "bytes": 330722
+    },
+    {
+      "path": "binance/STX_USDT-1d.feather",
+      "git_blob_sha": "5c9f05b4e3cec1bdca998652bcb8b82cdcb60c08",
+      "bytes": 68786
+    },
+    {
+      "path": "binance/SUPER_USDT-5m.feather",
+      "git_blob_sha": "fc27f314cc17c9436cfebdc5c6366817f4076a28",
+      "bytes": 9226834
+    },
+    {
+      "path": "binance/SUPER_USDT-15m.feather",
+      "git_blob_sha": "580896a85de79346f77a321b611bfb51d3ab200f",
+      "bytes": 3320450
+    },
+    {
+      "path": "binance/SUPER_USDT-1h.feather",
+      "git_blob_sha": "35b7df4c9fd2290c570e50e081d34abeb5c9bb94",
+      "bytes": 887010
+    },
+    {
+      "path": "binance/SUPER_USDT-4h.feather",
+      "git_blob_sha": "f6de38665c3f8c59c04b81d87b10cc5747cf8310",
+      "bytes": 247258
+    },
+    {
+      "path": "binance/SUPER_USDT-1d.feather",
+      "git_blob_sha": "d480ca93fe79ccdcf5d3832d756ff1e1e910c64e",
+      "bytes": 52818
+    },
+    {
+      "path": "binance/SUSHI_USDT-5m.feather",
+      "git_blob_sha": "83e57b5b159aef9c9e647bc8d9f7e2bc6052eaff",
+      "bytes": 9978266
+    },
+    {
+      "path": "binance/SUSHI_USDT-15m.feather",
+      "git_blob_sha": "fb4a8058562e507e0c07eacb5689baea20c4ae34",
+      "bytes": 3597242
+    },
+    {
+      "path": "binance/SUSHI_USDT-1h.feather",
+      "git_blob_sha": "52cc80ab6e60d046051f2040a48877848a41f1fa",
+      "bytes": 979106
+    },
+    {
+      "path": "binance/SUSHI_USDT-4h.feather",
+      "git_blob_sha": "48bbbff4091b6c3e60298574e4ee646943fb9fdf",
+      "bytes": 270186
+    },
+    {
+      "path": "binance/SUSHI_USDT-1d.feather",
+      "git_blob_sha": "3c4b1bb02d363898f1e4d9a2e9f39751e3f70559",
+      "bytes": 54706
+    },
+    {
+      "path": "binance/SXP_USDT-5m.feather",
+      "git_blob_sha": "4921c348e13d7b00f8850e8c2340ae4b7cc0542b",
+      "bytes": 10578066
+    },
+    {
+      "path": "binance/SXP_USDT-15m.feather",
+      "git_blob_sha": "6a0f4c4916d935975fe49a2aac8eb24f0bca81d7",
+      "bytes": 3838330
+    },
+    {
+      "path": "binance/SXP_USDT-1h.feather",
+      "git_blob_sha": "ccf05a0ae3ae21ad86022a8cd048c6de3378e58d",
+      "bytes": 1034994
+    },
+    {
+      "path": "binance/SXP_USDT-4h.feather",
+      "git_blob_sha": "21d718982ff3b42813a4d2bfdd686a5a915fe1c5",
+      "bytes": 287362
+    },
+    {
+      "path": "binance/SXP_USDT-1d.feather",
+      "git_blob_sha": "54a44444ba1b185e37a26cbafea656ab56d8b8f9",
+      "bytes": 61082
+    },
+    {
+      "path": "binance/TFUEL_USDT-5m.feather",
+      "git_blob_sha": "ea751959e49e2bb29235aa5fefc99a6b5600391f",
+      "bytes": 13273866
+    },
+    {
+      "path": "binance/TFUEL_USDT-15m.feather",
+      "git_blob_sha": "1d56a4ef684e2440a2da656a09ad3d488ed363f1",
+      "bytes": 4896418
+    },
+    {
+      "path": "binance/TFUEL_USDT-1h.feather",
+      "git_blob_sha": "efa492ba5b458168c605860b66b2b6e430dfc03d",
+      "bytes": 1370274
+    },
+    {
+      "path": "binance/TFUEL_USDT-4h.feather",
+      "git_blob_sha": "8b0fd99eb4562320a49be1879e2711c28c30f7d7",
+      "bytes": 399506
+    },
+    {
+      "path": "binance/TFUEL_USDT-1d.feather",
+      "git_blob_sha": "3e6b301d1952bf28f9f1378ec6ddd00a5b55831e",
+      "bytes": 85594
+    },
+    {
+      "path": "binance/THETA_USDT-5m.feather",
+      "git_blob_sha": "5a86f750c6033018834e0d16b972a07883782359",
+      "bytes": 13686322
+    },
+    {
+      "path": "binance/THETA_USDT-15m.feather",
+      "git_blob_sha": "b1c1507ff903c136a59ed4548d11c3212c194b14",
+      "bytes": 4958586
+    },
+    {
+      "path": "binance/THETA_USDT-1h.feather",
+      "git_blob_sha": "46cda30df15ccd99237d9216a4fd9b50ac594fd4",
+      "bytes": 1351754
+    },
+    {
+      "path": "binance/THETA_USDT-4h.feather",
+      "git_blob_sha": "99c6fe4bc9b7e52c390787c5c38e242186b5a9ab",
+      "bytes": 382698
+    },
+    {
+      "path": "binance/THETA_USDT-1d.feather",
+      "git_blob_sha": "b0189197d33239f76f20a263f063c10c6e89fa64",
+      "bytes": 77738
+    },
+    {
+      "path": "binance/TKO_USDT-5m.feather",
+      "git_blob_sha": "defd2499b12d12c5839bdd7ba4a13f43712597c9",
+      "bytes": 8645962
+    },
+    {
+      "path": "binance/TKO_USDT-15m.feather",
+      "git_blob_sha": "d7fc199ec66297c21a6da19ea68a8f69dffe3458",
+      "bytes": 3160930
+    },
+    {
+      "path": "binance/TKO_USDT-1h.feather",
+      "git_blob_sha": "858e55b9d554086b17fafd7dd6d60a77871d8366",
+      "bytes": 864906
+    },
+    {
+      "path": "binance/TKO_USDT-4h.feather",
+      "git_blob_sha": "5a28d56926c0f07893fb0691e09fb0260d73bc92",
+      "bytes": 241178
+    },
+    {
+      "path": "binance/TKO_USDT-1d.feather",
+      "git_blob_sha": "3ad7566aa95947fa1367e64f4c4b7c231b80ae45",
+      "bytes": 52002
+    },
+    {
+      "path": "binance/TLM_USDT-5m.feather",
+      "git_blob_sha": "0a83a6ae27188ebe3fb5d7a00650de62046af137",
+      "bytes": 267034
+    },
+    {
+      "path": "binance/TLM_USDT-15m.feather",
+      "git_blob_sha": "a3adbbbdc8b7b679b88b634d8e01bd239ee784e0",
+      "bytes": 3171290
+    },
+    {
+      "path": "binance/TLM_USDT-1h.feather",
+      "git_blob_sha": "606b903bf202bb00ba49ca3bfc9bf4e7f6b385ee",
+      "bytes": 872690
+    },
+    {
+      "path": "binance/TLM_USDT-4h.feather",
+      "git_blob_sha": "f3c905bb06ceb302c84afdadfa924af302978018",
+      "bytes": 252834
+    },
+    {
+      "path": "binance/TLM_USDT-1d.feather",
+      "git_blob_sha": "409037470f15cf53d380c3b9f75590d8f51b6fed",
+      "bytes": 58282
+    },
+    {
+      "path": "binance/TRU_USDT-5m.feather",
+      "git_blob_sha": "ffd7e348d80db5791207c06efcf713db8903ab11",
+      "bytes": 9036578
+    },
+    {
+      "path": "binance/TRU_USDT-15m.feather",
+      "git_blob_sha": "7eb22725a576c0c2c268b775722c756a2e10fd06",
+      "bytes": 3285506
+    },
+    {
+      "path": "binance/TRU_USDT-1h.feather",
+      "git_blob_sha": "c6c3af92b4186f04bdea58ff4deb036e08f23750",
+      "bytes": 911514
+    },
+    {
+      "path": "binance/TRU_USDT-4h.feather",
+      "git_blob_sha": "c26df5d47d71f2cc7a63e5b8a4b6a89e40d92185",
+      "bytes": 262514
+    },
+    {
+      "path": "binance/TRU_USDT-1d.feather",
+      "git_blob_sha": "b08f37be1da93ff55f50e584deaea374e8b31281",
+      "bytes": 56810
+    },
+    {
+      "path": "binance/TRX_USDT-5m.feather",
+      "git_blob_sha": "ff6adfcae7122fb5e72264d57967de6e05d24c7a",
+      "bytes": 16162634
+    },
+    {
+      "path": "binance/TRX_USDT-15m.feather",
+      "git_blob_sha": "01049bce30abba97ea7df973f16c15d5178b4583",
+      "bytes": 5829906
+    },
+    {
+      "path": "binance/TRX_USDT-1h.feather",
+      "git_blob_sha": "3090db2073b2770a7fb5e065e165822d07c23bc5",
+      "bytes": 1577850
+    },
+    {
+      "path": "binance/TRX_USDT-4h.feather",
+      "git_blob_sha": "37dc5f0a05963f553b345a9454a7e3a20c7bc6da",
+      "bytes": 446586
+    },
+    {
+      "path": "binance/TRX_USDT-1d.feather",
+      "git_blob_sha": "ac7ef4226db1fa31d1bfeae88e900404558de108",
+      "bytes": 97874
+    },
+    {
+      "path": "binance/TWT_USDT-5m.feather",
+      "git_blob_sha": "ae1ecfff82d1021782db0cce707061d046348920",
+      "bytes": 10269106
+    },
+    {
+      "path": "binance/TWT_USDT-15m.feather",
+      "git_blob_sha": "cd31d629f0fb4e89963cf0b0b4dcfe7bba28d9cb",
+      "bytes": 3623066
+    },
+    {
+      "path": "binance/TWT_USDT-1h.feather",
+      "git_blob_sha": "2386aff51b016f8ded92496b709e9d94c36b0661",
+      "bytes": 942610
+    },
+    {
+      "path": "binance/TWT_USDT-4h.feather",
+      "git_blob_sha": "84256f3c9bc1069a66fca4ff2731e563555747b7",
+      "bytes": 256306
+    },
+    {
+      "path": "binance/TWT_USDT-1d.feather",
+      "git_blob_sha": "29c9234fbfaf16ec558d6af1df3c9467da72b3cb",
+      "bytes": 54426
+    },
+    {
+      "path": "binance/UMA_USDT-5m.feather",
+      "git_blob_sha": "e177889bbe1d2edd02fce54a9cd0a65efc9140da",
+      "bytes": 10311194
+    },
+    {
+      "path": "binance/UMA_USDT-15m.feather",
+      "git_blob_sha": "04d6d70e0c25125b394e41fae0cd3ce2d1092971",
+      "bytes": 3713042
+    },
+    {
+      "path": "binance/UMA_USDT-1h.feather",
+      "git_blob_sha": "5aa53e9b62f90cf0e39581c4ec812a2591816891",
+      "bytes": 997626
+    },
+    {
+      "path": "binance/UMA_USDT-4h.feather",
+      "git_blob_sha": "a34924ebfcf838cdda27ada422d19339b788d5ec",
+      "bytes": 273090
+    },
+    {
+      "path": "binance/UMA_USDT-1d.feather",
+      "git_blob_sha": "6351a316d1c87f482dc8686f3893b7c2d5422cd7",
+      "bytes": 54954
+    },
+    {
+      "path": "binance/UNI_USDT-5m.feather",
+      "git_blob_sha": "9bbd50391df317fc11614bb47e8cadb69822e3e0",
+      "bytes": 11009602
+    },
+    {
+      "path": "binance/UNI_USDT-15m.feather",
+      "git_blob_sha": "394c7e9c4532c337e5062ebbda7d88785c5009c8",
+      "bytes": 3925738
+    },
+    {
+      "path": "binance/UNI_USDT-1h.feather",
+      "git_blob_sha": "eae13088bb9fb53b2e97dcac2e331e22d2998224",
+      "bytes": 1047050
+    },
+    {
+      "path": "binance/UNI_USDT-4h.feather",
+      "git_blob_sha": "c2ecc1113e59cc1117d51e9a0f177276420e299e",
+      "bytes": 285706
+    },
+    {
+      "path": "binance/UNI_USDT-1d.feather",
+      "git_blob_sha": "39ff193c9cba7b490de5af9dc4c7a081d1a51d7d",
+      "bytes": 57498
+    },
+    {
+      "path": "binance/VET_USDT-5m.feather",
+      "git_blob_sha": "b6feb4dd7622a97e73d63d50d28ba9d14a6aa64e",
+      "bytes": 17124498
+    },
+    {
+      "path": "binance/VET_USDT-15m.feather",
+      "git_blob_sha": "1546e8d071019d9036dad83cdefba1b6527d89d5",
+      "bytes": 6177090
+    },
+    {
+      "path": "binance/VET_USDT-1h.feather",
+      "git_blob_sha": "f69c8663c25649cb8e6fa966e5bafd0433863b8a",
+      "bytes": 1659130
+    },
+    {
+      "path": "binance/VET_USDT-4h.feather",
+      "git_blob_sha": "26fd07c560d7d4e7c3f12aa9ba9e9bea1624f6c2",
+      "bytes": 481618
+    },
+    {
+      "path": "binance/VET_USDT-1d.feather",
+      "git_blob_sha": "834dd445b0856140da7e1df306c38f4fb4eb4255",
+      "bytes": 102074
+    },
+    {
+      "path": "binance/VIDT_USDT-5m.feather",
+      "git_blob_sha": "7885293029f9ad70af38dc6122f4aff515dc68ee",
+      "bytes": 8195250
+    },
+    {
+      "path": "binance/VIDT_USDT-15m.feather",
+      "git_blob_sha": "a176557ad50ab39f7e800c8c3441eb96f3c52de9",
+      "bytes": 2966410
+    },
+    {
+      "path": "binance/VIDT_USDT-1h.feather",
+      "git_blob_sha": "73c4a5fef9814d18749fe47d4ce7ea15b8c1b10b",
+      "bytes": 802810
+    },
+    {
+      "path": "binance/VIDT_USDT-4h.feather",
+      "git_blob_sha": "3756cdf9ebc2e2d0dc1d070f962139fbcc806084",
+      "bytes": 232922
+    },
+    {
+      "path": "binance/VIDT_USDT-1d.feather",
+      "git_blob_sha": "fa28dabdca5d36ff9d7281e51890a129da4c9fb8",
+      "bytes": 53338
+    },
+    {
+      "path": "binance/VTHO_USDT-5m.feather",
+      "git_blob_sha": "a18b2a8c93efd77bab60922ec3d5743835d66080",
+      "bytes": 11224970
+    },
+    {
+      "path": "binance/VTHO_USDT-15m.feather",
+      "git_blob_sha": "20e57ed6dc6c38b4cbc3ce0edc82ec43240dc570",
+      "bytes": 4117986
+    },
+    {
+      "path": "binance/VTHO_USDT-1h.feather",
+      "git_blob_sha": "46a38e61f6ba2a9aec44d9f46290a1036900789a",
+      "bytes": 1126146
+    },
+    {
+      "path": "binance/VTHO_USDT-4h.feather",
+      "git_blob_sha": "1c0b3ab00420d4a8d6e3c0cc759bff905c8bb9e2",
+      "bytes": 321834
+    },
+    {
+      "path": "binance/VTHO_USDT-1d.feather",
+      "git_blob_sha": "dc1406adb464230d531a234af3bb52eb3fb7e4cc",
+      "bytes": 72202
+    },
+    {
+      "path": "binance/WAXP_USDT-5m.feather",
+      "git_blob_sha": "0b24d7bf67f4e5e7eafdf62d8ccf9f461c21bdf8",
+      "bytes": 7721586
+    },
+    {
+      "path": "binance/WAXP_USDT-15m.feather",
+      "git_blob_sha": "a31016cf7af6da5f39cb06b10fdd00a1a663118c",
+      "bytes": 2816386
+    },
+    {
+      "path": "binance/WAXP_USDT-1h.feather",
+      "git_blob_sha": "142bdc8f3727d479e2a5517ea1205f3431459520",
+      "bytes": 779666
+    },
+    {
+      "path": "binance/WAXP_USDT-4h.feather",
+      "git_blob_sha": "172c6bf32c342851f955be77780c21312b3af079",
+      "bytes": 233626
+    },
+    {
+      "path": "binance/WAXP_USDT-1d.feather",
+      "git_blob_sha": "7d3f95bde2259f5e9266abbcd0d919f707eabfb2",
+      "bytes": 52650
+    },
+    {
+      "path": "binance/WIN_USDT-5m.feather",
+      "git_blob_sha": "11a04eee211d03d25cd238dff85fe3c970fb0407",
+      "bytes": 13172826
+    },
+    {
+      "path": "binance/WIN_USDT-15m.feather",
+      "git_blob_sha": "548a45da5b1a1ad90e69b47c777af87835910204",
+      "bytes": 4843714
+    },
+    {
+      "path": "binance/WIN_USDT-1h.feather",
+      "git_blob_sha": "64c048312c3274e98bb9755237a787af4f30de3c",
+      "bytes": 1357026
+    },
+    {
+      "path": "binance/WIN_USDT-4h.feather",
+      "git_blob_sha": "881bd38c5bfb16286281434da1afcbe016a9c3f1",
+      "bytes": 386018
+    },
+    {
+      "path": "binance/WIN_USDT-1d.feather",
+      "git_blob_sha": "f32b73092acf1a5603b24ac59ba498aaa6bc9115",
+      "bytes": 82346
+    },
+    {
+      "path": "binance/WING_USDT-5m.feather",
+      "git_blob_sha": "5f379a76fbb26970f57c7a8fb4f44b28ddc097da",
+      "bytes": 9422826
+    },
+    {
+      "path": "binance/WING_USDT-15m.feather",
+      "git_blob_sha": "26c2dd8dbd9039ae64fdc7e429291e61499e3f05",
+      "bytes": 3399866
+    },
+    {
+      "path": "binance/WING_USDT-1h.feather",
+      "git_blob_sha": "6f6428e9b6ab2ca8ac7c42345e37ca9d9edc7ee2",
+      "bytes": 925114
+    },
+    {
+      "path": "binance/WING_USDT-4h.feather",
+      "git_blob_sha": "2fb151610568f2024ddb304625d1550c22fa2685",
+      "bytes": 258130
+    },
+    {
+      "path": "binance/WING_USDT-1d.feather",
+      "git_blob_sha": "8a9a9fd0011bddb2f652ff95dd047e0f9b4169c1",
+      "bytes": 52490
+    },
+    {
+      "path": "binance/XEC_USDT-5m.feather",
+      "git_blob_sha": "9a865ff613d37c6dc398b5f88070c1ae6f95ddb5",
+      "bytes": 9454754
+    },
+    {
+      "path": "binance/XEC_USDT-15m.feather",
+      "git_blob_sha": "190dbdfe542b28f95f0c1b82a625d20fe7c765af",
+      "bytes": 3462170
+    },
+    {
+      "path": "binance/XEC_USDT-1h.feather",
+      "git_blob_sha": "96e9b567ea7499fa783173440c1256da5fdbd651",
+      "bytes": 951906
+    },
+    {
+      "path": "binance/XEC_USDT-4h.feather",
+      "git_blob_sha": "01bcdc3ec47fc6d62397078c5ce201c2c5cd3267",
+      "bytes": 276026
+    },
+    {
+      "path": "binance/XEC_USDT-1d.feather",
+      "git_blob_sha": "2088d644da57a3d16cd5cfaa5f30d7002e8ee538",
+      "bytes": 61314
+    },
+    {
+      "path": "binance/XLM_USDT-5m.feather",
+      "git_blob_sha": "a027bdedd1112e045a8811b22fe481d884c3760e",
+      "bytes": 15833906
+    },
+    {
+      "path": "binance/XLM_USDT-15m.feather",
+      "git_blob_sha": "2d3f6a3d73c20f0b3cd65515816bd3d65b5ed5a6",
+      "bytes": 5618458
+    },
+    {
+      "path": "binance/XLM_USDT-1h.feather",
+      "git_blob_sha": "11b1598d1ac521f025c51146a0a8120ccc38717c",
+      "bytes": 1524706
+    },
+    {
+      "path": "binance/XLM_USDT-4h.feather",
+      "git_blob_sha": "0a6b25292510a7a6424a69594f9fd0b8045c797f",
+      "bytes": 435010
+    },
+    {
+      "path": "binance/XLM_USDT-1d.feather",
+      "git_blob_sha": "f15ca01b3f10a4a05a28ea1cffce1a925b54524b",
+      "bytes": 92586
+    },
+    {
+      "path": "binance/XRP_USDT-5m.feather",
+      "git_blob_sha": "7ab4a85c7d60df80ec2d35829e31e9235aa3ee32",
+      "bytes": 17764362
+    },
+    {
+      "path": "binance/XRP_USDT-15m.feather",
+      "git_blob_sha": "5c2380c16aec2f7b9a2d86482c9bc00b091fd792",
+      "bytes": 6235154
+    },
+    {
+      "path": "binance/XRP_USDT-1h.feather",
+      "git_blob_sha": "f2a186032b9219f87ebc5581780927ad7ed00c7e",
+      "bytes": 1646834
+    },
+    {
+      "path": "binance/XRP_USDT-4h.feather",
+      "git_blob_sha": "4cb1f966d91a7a0211d8953cc04807d505216a93",
+      "bytes": 460410
+    },
+    {
+      "path": "binance/XRP_USDT-1d.feather",
+      "git_blob_sha": "c93a2c366935df72f5a521d9736fd736b4642cf5",
+      "bytes": 95714
+    },
+    {
+      "path": "binance/XTZ_USDT-5m.feather",
+      "git_blob_sha": "cfcbd2bcbc02b03db14e830443a9db15e1111158",
+      "bytes": 12211682
+    },
+    {
+      "path": "binance/XTZ_USDT-15m.feather",
+      "git_blob_sha": "a039da23b6048c51cc90cdf96128f3e76c495f39",
+      "bytes": 4387570
+    },
+    {
+      "path": "binance/XTZ_USDT-1h.feather",
+      "git_blob_sha": "bbbcd4533238031d52bc6ac93d4aed58e72ec075",
+      "bytes": 1189722
+    },
+    {
+      "path": "binance/XTZ_USDT-4h.feather",
+      "git_blob_sha": "83da9b88d8da5456e8a2fe264090cfd2838cbc28",
+      "bytes": 335194
+    },
+    {
+      "path": "binance/XTZ_USDT-1d.feather",
+      "git_blob_sha": "d2b8141f92800598e144e86a0485cb29d7b71890",
+      "bytes": 68666
+    },
+    {
+      "path": "binance/XVG_USDT-5m.feather",
+      "git_blob_sha": "dd3a35a75ab2613b9d9a95c032aafbb223235abb",
+      "bytes": 9023090
+    },
+    {
+      "path": "binance/XVG_USDT-15m.feather",
+      "git_blob_sha": "8ec4c50e74771ee9245cbe4bd80be3e55d57efef",
+      "bytes": 3305010
+    },
+    {
+      "path": "binance/XVG_USDT-1h.feather",
+      "git_blob_sha": "10df1108ccb2fa4fb9db74e7aa6ecfba2b11ece2",
+      "bytes": 53730
+    },
+    {
+      "path": "binance/XVG_USDT-4h.feather",
+      "git_blob_sha": "a61679e21fe624b261bf8b65351ca1a531c3672a",
+      "bytes": 271010
+    },
+    {
+      "path": "binance/XVG_USDT-1d.feather",
+      "git_blob_sha": "966799fc04a353f68fb35eccd7925bbbe513bd8d",
+      "bytes": 60546
+    },
+    {
+      "path": "binance/XVS_USDT-5m.feather",
+      "git_blob_sha": "a30b4144ffec7be6fd9361a532753939b8ce215c",
+      "bytes": 9059306
+    },
+    {
+      "path": "binance/XVS_USDT-15m.feather",
+      "git_blob_sha": "ba9b9f80c3b7a8070002f38c8b2140cb4db1de7c",
+      "bytes": 3295106
+    },
+    {
+      "path": "binance/XVS_USDT-1h.feather",
+      "git_blob_sha": "d600550599bd4f1b36b3bbade69e7dacc78a1da1",
+      "bytes": 907074
+    },
+    {
+      "path": "binance/XVS_USDT-4h.feather",
+      "git_blob_sha": "3c9a4cb897b6cf809e669ba41dcf47b0c24a0dd4",
+      "bytes": 253210
+    },
+    {
+      "path": "binance/XVS_USDT-1d.feather",
+      "git_blob_sha": "af6d3b7cec32d3dcdbb20e4a822c4f81ead2963f",
+      "bytes": 51538
+    },
+    {
+      "path": "binance/YFI_USDT-5m.feather",
+      "git_blob_sha": "fd257a40f3c1f41ecb2bb3e7ed7019a46d9ad0f9",
+      "bytes": 12175986
+    },
+    {
+      "path": "binance/YFI_USDT-15m.feather",
+      "git_blob_sha": "365ad98c8c1563930a797b36c7e5590f63d717ed",
+      "bytes": 4239730
+    },
+    {
+      "path": "binance/YFI_USDT-1h.feather",
+      "git_blob_sha": "0145798661b8eb00ed6b938e429bae8eff964bba",
+      "bytes": 1094578
+    },
+    {
+      "path": "binance/YFI_USDT-4h.feather",
+      "git_blob_sha": "53d14f2b8aa0d514953c4954a53a6ed78d2e396e",
+      "bytes": 299554
+    },
+    {
+      "path": "binance/YFI_USDT-1d.feather",
+      "git_blob_sha": "bb2cd419ee344d32737cecbb036e1a9041c388e3",
+      "bytes": 60122
+    },
+    {
+      "path": "binance/YGG_USDT-5m.feather",
+      "git_blob_sha": "ab692574d5f5c067481ce5ccb97543c2a8792dc7",
+      "bytes": 8483234
+    },
+    {
+      "path": "binance/YGG_USDT-15m.feather",
+      "git_blob_sha": "55a40b9aed8b59b1f5be54b6ec41abe494b4106b",
+      "bytes": 3035202
+    },
+    {
+      "path": "binance/YGG_USDT-1h.feather",
+      "git_blob_sha": "a1851726e9d3c4f080f52a8e9b35deef31cc6728",
+      "bytes": 813610
+    },
+    {
+      "path": "binance/YGG_USDT-4h.feather",
+      "git_blob_sha": "b4d6089a03f50132748b3ec115de73cc9eecf165",
+      "bytes": 224178
+    },
+    {
+      "path": "binance/YGG_USDT-1d.feather",
+      "git_blob_sha": "cab603db84f00631dcbc1c42e8d9edb5494855e2",
+      "bytes": 48882
+    },
+    {
+      "path": "binance/ZEN_USDT-5m.feather",
+      "git_blob_sha": "29705e3d33749ee2f7bc402ff799c296cf23b474",
+      "bytes": 10261538
+    },
+    {
+      "path": "binance/ZEN_USDT-15m.feather",
+      "git_blob_sha": "b7c35dab2ee615adafc90044b7a9aaff69e60df3",
+      "bytes": 3714578
+    },
+    {
+      "path": "binance/ZEN_USDT-1h.feather",
+      "git_blob_sha": "67417e166f227a13eda47837488ceebf63fbd489",
+      "bytes": 1003658
+    },
+    {
+      "path": "binance/ZEN_USDT-4h.feather",
+      "git_blob_sha": "35d66b30aceb16c941ec721b691a251203f04b6a",
+      "bytes": 277962
+    },
+    {
+      "path": "binance/ZEN_USDT-1d.feather",
+      "git_blob_sha": "746692cf6093e72f9b6667d5987b402a265c4f1c",
+      "bytes": 55682
+    },
+    {
+      "path": "binance/ZRX_USDT-5m.feather",
+      "git_blob_sha": "7596a645825bd8f5d9c5dc3d7cc1d2591c585146",
+      "bytes": 13885306
+    },
+    {
+      "path": "binance/ZRX_USDT-15m.feather",
+      "git_blob_sha": "1987ad6a6c50c6f3882c4ba1144d4a9316575098",
+      "bytes": 5028706
+    },
+    {
+      "path": "binance/ZRX_USDT-1h.feather",
+      "git_blob_sha": "85c0467f4fc392eecf2d159e6df2ed71ec965efb",
+      "bytes": 1337762
+    },
+    {
+      "path": "binance/ZRX_USDT-4h.feather",
+      "git_blob_sha": "3bee49d70136bb4eab05585875901649b38ea9d6",
+      "bytes": 362770
+    },
+    {
+      "path": "binance/ZRX_USDT-1d.feather",
+      "git_blob_sha": "5ae2f107745bc2df835ca4603d14437bd44ec818",
+      "bytes": 74970
+    }
+  ],
+  "publication_data_identity_attested": false
+}

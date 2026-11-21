@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 import sqlite3
@@ -107,6 +108,25 @@ class ForwardCaptureStore:
                 f"FROM capture_records{where} ORDER BY sequence", values,
             ).fetchall()
         return self._materialize(rows)
+
+    def records_for_bar_recovery(self) -> Iterator[CaptureRecord]:
+        """Stream only bars and identity boundaries; never decode diagnostic history.
+
+        Session boundaries retain legacy inherited fingerprints. Explicitly close
+        the generator if recovery is interrupted so its read connection is freed.
+        """
+        connection = self._connect()
+        try:
+            cursor = connection.execute(
+                "SELECT schema_version,record_id,record_type,symbol,timestamp,payload_json "
+                "FROM capture_records WHERE record_type IN (?,?) ORDER BY sequence",
+                (CaptureRecordType.MINUTE_BAR.value,
+                 CaptureRecordType.OBSERVATION_SESSION.value),
+            )
+            while rows := cursor.fetchmany(256):
+                yield from self._materialize(rows)
+        finally:
+            connection.close()
 
     def latest_records_for_symbol(
         self, *, symbol: str, record_type: CaptureRecordType, limit: int,
