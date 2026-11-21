@@ -38,6 +38,9 @@ def inspect(root: Path) -> dict:
     modules: dict[str, str] = {}
     dependencies: dict[str, set[str]] = {}
     parse_errors: list[str] = []
+    direct_entrypoints: set[str] = set()
+    external_strategy_classes: set[str] = set()
+    literal_references: dict[str, set[str]] = {}
 
     for path in files:
         rel = path.relative_to(root).as_posix()
@@ -57,6 +60,22 @@ def inspect(root: Path) -> dict:
             parse_errors.append(rel + ": " + type(exc).__name__)
             continue
         referenced: set[str] = set()
+        literals: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                literals.add(node.value)
+            elif isinstance(node, ast.If):
+                expr = node.test
+                if (isinstance(expr, ast.Compare) and isinstance(expr.left, ast.Name)
+                    and expr.left.id == "__name__" and len(expr.ops) == 1
+                    and isinstance(expr.ops[0], ast.Eq) and len(expr.comparators) == 1
+                    and isinstance(expr.comparators[0], ast.Constant)
+                    and expr.comparators[0].value == "__main__"):
+                    direct_entrypoints.add(rel)
+            elif isinstance(node, ast.ClassDef):
+                if any(isinstance(base, ast.Name) and base.id == "IStrategy" for base in node.bases):
+                    external_strategy_classes.add(rel)
+        literal_references[rel] = literals
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 referenced.update(alias.name for alias in node.names)
@@ -84,6 +103,13 @@ def inspect(root: Path) -> dict:
                 for item in imported
             )
         )
+        literal_consumers = sorted(
+            source for source, literals in literal_references.items()
+            if source != rel and any(
+                name in value or rel in value or Path(rel).name in value
+                for value in literals
+            )
+        )
         candidates.append({
             "path": rel,
             "static_import_consumers": len(consumers),
@@ -91,14 +117,20 @@ def inspect(root: Path) -> dict:
             "test_consumers": sum(p.startswith("tests/") for p in consumers),
             "tool_consumers": sum(p.startswith("tools/") for p in consumers),
             "sample_consumers": consumers[:12],
+            "direct_cli_entrypoint": rel in direct_entrypoints,
+            "freqtrade_istrategy_subclass": rel in external_strategy_classes,
+            "literal_consumer_count": len(literal_consumers),
+            "sample_literal_consumers": literal_consumers[:12],
             "review_only": True,
         })
     return {
-        "schema": "STRATEGY_STATIC_FOOTPRINT_V1",
+        "schema": "STRATEGY_STATIC_FOOTPRINT_V2",
         "scanned_python_files": len(files),
         "strategy_files": len(candidates),
         "parse_errors": parse_errors,
         "no_static_import_consumers": sum(not x["static_import_consumers"] for x in candidates),
+        "no_static_import_but_direct_entrypoint": sum(not x["static_import_consumers"] and x["direct_cli_entrypoint"] for x in candidates),
+        "no_static_import_but_freqtrade_strategy": sum(not x["static_import_consumers"] and x["freqtrade_istrategy_subclass"] for x in candidates),
         "candidates": candidates,
         "deletions_authorized": False,
         "notice": "No import reference is NOT deletion proof: inspect dynamic imports, test fixtures, CLI, docs, and runtime composition before any removal.",
