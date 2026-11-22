@@ -1582,3 +1582,48 @@ def test_initial_and_reconfirmation_diagnostics_keep_original_metric_names(
     )
     callback(reason)
     assert emitted == [f"quick_scalper_{stage}_{suffix}"]
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected_event"),
+    (
+        (ScalpDecision.EXECUTABLE, "SCALP_EXECUTABLE"),
+        (ScalpDecision.WAIT, "SCALP_EXECUTION_WAIT"),
+        (ScalpDecision.REJECTED_HARD_SAFETY, "SCALP_REJECTED"),
+    ),
+)
+def test_shared_preview_event_preserves_decision_reason_and_generation(
+    decision, expected_event,
+):
+    events = []
+    runtime, _bridge, _quotes = adapter(events=events)
+    runtime._emit_preview_decision(
+        SimpleNamespace(symbol="FAST", generation_id="g-preview"),
+        SimpleNamespace(decision=decision, reason="TEST_REASON"),
+    )
+    assert events == [(
+        expected_event,
+        {"generation": "g-preview", "reason": "TEST_REASON"},
+    )]
+
+
+def test_stream_preview_event_precedes_any_authorization():
+    events = []
+    runtime, bridge, quotes = adapter(events=events)
+    runtime.observe_stream_event(
+        stream_observation("4.75", -10),
+        decision_at=NOW, session="REGULAR", execution_permitted=False,
+    )
+    assessed = runtime.observe_stream_event(
+        stream_observation("4.99", 0), decision_at=NOW,
+        session="REGULAR", execution_permitted=True,
+    )
+    assert assessed is not None
+    names = [name for name, _ in events]
+    assert names.index("SCALP_ARMED") < names.index(
+        "SCALP_EXECUTABLE" if assessed.decision is ScalpDecision.EXECUTABLE
+        else "SCALP_EXECUTION_WAIT" if assessed.decision is ScalpDecision.WAIT
+        else "SCALP_REJECTED"
+    )
+    assert quotes.calls == 0
+    assert bridge.entries == []
