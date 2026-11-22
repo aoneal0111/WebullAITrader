@@ -1667,3 +1667,39 @@ def test_generation_supersession_is_symbol_isolated():
     runtime._record_generation(SimpleNamespace(symbol="OTHER", generation_id="g2"))
     assert events == []
     assert runtime._current_generation == {"FAST": "g1", "OTHER": "g2"}
+
+
+def test_registration_preserves_bar_snapshot_retention_and_event_order(monkeypatch):
+    monkeypatch.setattr(
+        "app.strategies.warrior_momentum.quick_scalper_runtime._MAX_STREAM_SYMBOLS", 1,
+    )
+    events = []
+    runtime, _bridge, _quotes = adapter(events=events)
+    for index in range(3):
+        runtime._register_opportunity(
+            SimpleNamespace(symbol=f"S{index}", generation_id=f"g{index}"),
+            bounded_stream=False,
+        )
+    assert list(runtime._snapshots) == [
+        ("S0", "g0"), ("S1", "g1"), ("S2", "g2"),
+    ]
+    assert [name for name, _ in events] == ["SCALP_OPPORTUNITY"] * 3
+    assert [payload["generation"] for _, payload in events] == [
+        "g0", "g1", "g2",
+    ]
+
+
+def test_registration_preserves_bounded_stream_snapshot_lru(monkeypatch):
+    monkeypatch.setattr(
+        "app.strategies.warrior_momentum.quick_scalper_runtime._MAX_STREAM_SYMBOLS", 1,
+    )
+    events = []
+    runtime, _bridge, _quotes = adapter(events=events)
+    for symbol in ("S0", "S1", "S0", "S2"):
+        runtime._register_opportunity(
+            SimpleNamespace(symbol=symbol, generation_id="g1"),
+            bounded_stream=True,
+        )
+    assert list(runtime._snapshots) == [("S0", "g1"), ("S2", "g1")]
+    assert len(events) == 4
+    assert all(name == "SCALP_OPPORTUNITY" for name, _ in events)
