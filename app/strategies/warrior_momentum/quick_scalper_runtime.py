@@ -248,13 +248,7 @@ class QuickScalperPaperRuntimeAdapter:
             snapshot = self._snapshot(point, candidate)
             if snapshot is None:
                 return None
-            prior = self._current_generation.get(snapshot.symbol)
-            if prior is not None and prior != snapshot.generation_id:
-                self._emit(
-                    "SCALP_INVALIDATED", snapshot.symbol,
-                    generation=prior, reason="SETUP_SUPERSEDED",
-                )
-            self._current_generation[snapshot.symbol] = snapshot.generation_id
+            self._record_generation(snapshot)
             self._snapshots[(snapshot.symbol, snapshot.generation_id)] = snapshot
             self._emit("SCALP_OPPORTUNITY", snapshot.symbol,
                        generation=snapshot.generation_id)
@@ -303,13 +297,7 @@ class QuickScalperPaperRuntimeAdapter:
             )
             if not execution_permitted or snapshot is None:
                 return None
-            prior = self._current_generation.get(snapshot.symbol)
-            if prior is not None and prior != snapshot.generation_id:
-                self._emit(
-                    'SCALP_INVALIDATED', snapshot.symbol,
-                    generation=prior, reason='SETUP_SUPERSEDED',
-                )
-            self._current_generation[snapshot.symbol] = snapshot.generation_id
+            self._record_generation(snapshot)
             key = (snapshot.symbol, snapshot.generation_id)
             self._snapshots[key] = snapshot
             self._snapshots.move_to_end(key)
@@ -336,6 +324,20 @@ class QuickScalperPaperRuntimeAdapter:
                     performance_diagnostics.increment("quick_scalper_rejections")
             self._emit_preview_decision(snapshot, preview)
             return self.scalper.observe(snapshot)
+
+    def _record_generation(self, snapshot: QuickScalpSnapshot) -> None:
+        """Invalidate a superseded setup before recording the new generation.
+
+        Kept separate from snapshot retention: stream snapshots have a bounded
+        ordered cache, while bar observations retain their existing behavior.
+        """
+        prior = self._current_generation.get(snapshot.symbol)
+        if prior is not None and prior != snapshot.generation_id:
+            self._emit(
+                "SCALP_INVALIDATED", snapshot.symbol,
+                generation=prior, reason="SETUP_SUPERSEDED",
+            )
+        self._current_generation[snapshot.symbol] = snapshot.generation_id
 
     def _emit_preview_decision(
         self, snapshot: QuickScalpSnapshot, preview: QuickScalpAssessment,
