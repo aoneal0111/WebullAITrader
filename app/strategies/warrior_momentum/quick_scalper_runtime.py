@@ -1340,37 +1340,33 @@ class QuickScalperPaperRuntimeAdapter:
             return None
         return parsed if parsed.is_finite() and parsed > ZERO else None
 
+    _REASON_METRIC_SUFFIX = {
+        "INSUFFICIENT_NET_EXECUTABLE_EDGE": "insufficient_edge",
+        "CENT_TARGET_ECONOMICS_WAIT": "insufficient_edge",
+        "CENT_SUPPORT_FORMING": "insufficient_edge",
+        "PROVIDER_DATA_STALE": "provider_data_stale",
+        "INVALID_EXECUTION_QUOTE": "invalid_execution_quote",
+        "SESSION_NOT_ALLOWED": "session_not_allowed",
+        "PRICE_NOT_ELIGIBLE": "price_not_eligible",
+        "RISK_NOT_AUTHORIZED": "risk_not_authorized",
+    }
+
+    @staticmethod
+    def _increment_reason(stage: str, reason: str | None) -> None:
+        # Both assessment phases share reason categories, but their counters
+        # remain distinct so existing performance evidence stays comparable.
+        suffix = QuickScalperPaperRuntimeAdapter._REASON_METRIC_SUFFIX.get(
+            reason, "other",
+        )
+        performance_diagnostics.increment(f"quick_scalper_{stage}_{suffix}")
+
     @staticmethod
     def _increment_initial_reason(reason: str | None) -> None:
-        mapping = {
-            "INSUFFICIENT_NET_EXECUTABLE_EDGE": "quick_scalper_initial_insufficient_edge",
-            "CENT_TARGET_ECONOMICS_WAIT": "quick_scalper_initial_insufficient_edge",
-            "CENT_SUPPORT_FORMING": "quick_scalper_initial_insufficient_edge",
-            "PROVIDER_DATA_STALE": "quick_scalper_initial_provider_data_stale",
-            "INVALID_EXECUTION_QUOTE": "quick_scalper_initial_invalid_execution_quote",
-            "SESSION_NOT_ALLOWED": "quick_scalper_initial_session_not_allowed",
-            "PRICE_NOT_ELIGIBLE": "quick_scalper_initial_price_not_eligible",
-            "RISK_NOT_AUTHORIZED": "quick_scalper_initial_risk_not_authorized",
-        }
-        performance_diagnostics.increment(
-            mapping.get(reason, "quick_scalper_initial_other")
-        )
+        QuickScalperPaperRuntimeAdapter._increment_reason("initial", reason)
 
     @staticmethod
     def _increment_reconfirm_reason(reason: str | None) -> None:
-        mapping = {
-            "INSUFFICIENT_NET_EXECUTABLE_EDGE": "quick_scalper_reconfirm_insufficient_edge",
-            "CENT_TARGET_ECONOMICS_WAIT": "quick_scalper_reconfirm_insufficient_edge",
-            "CENT_SUPPORT_FORMING": "quick_scalper_reconfirm_insufficient_edge",
-            "PROVIDER_DATA_STALE": "quick_scalper_reconfirm_provider_data_stale",
-            "INVALID_EXECUTION_QUOTE": "quick_scalper_reconfirm_invalid_execution_quote",
-            "SESSION_NOT_ALLOWED": "quick_scalper_reconfirm_session_not_allowed",
-            "PRICE_NOT_ELIGIBLE": "quick_scalper_reconfirm_price_not_eligible",
-            "RISK_NOT_AUTHORIZED": "quick_scalper_reconfirm_risk_not_authorized",
-        }
-        performance_diagnostics.increment(
-            mapping.get(reason, "quick_scalper_reconfirm_other")
-        )
+        QuickScalperPaperRuntimeAdapter._increment_reason("reconfirm", reason)
 
     @staticmethod
     def _risk_diagnostic(reason: str, _details: dict[str, object]) -> None:

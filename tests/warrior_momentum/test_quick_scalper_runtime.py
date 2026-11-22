@@ -1552,3 +1552,33 @@ def test_stale_preview_disabled_live_and_nonpaper_modes_request_no_quote():
 
         assert quotes.calls == 0
         assert bridge.entries == []
+
+
+@pytest.mark.parametrize("stage", ("initial", "reconfirm"))
+@pytest.mark.parametrize(
+    ("reason", "suffix"),
+    (
+        ("INSUFFICIENT_NET_EXECUTABLE_EDGE", "insufficient_edge"),
+        ("CENT_TARGET_ECONOMICS_WAIT", "insufficient_edge"),
+        ("CENT_SUPPORT_FORMING", "insufficient_edge"),
+        ("PROVIDER_DATA_STALE", "provider_data_stale"),
+        ("INVALID_EXECUTION_QUOTE", "invalid_execution_quote"),
+        ("SESSION_NOT_ALLOWED", "session_not_allowed"),
+        ("PRICE_NOT_ELIGIBLE", "price_not_eligible"),
+        ("RISK_NOT_AUTHORIZED", "risk_not_authorized"),
+        ("SOMETHING_ELSE", "other"),
+        (None, "other"),
+    ),
+)
+def test_initial_and_reconfirmation_diagnostics_keep_original_metric_names(
+    monkeypatch, stage, reason, suffix,
+):
+    emitted = []
+    monkeypatch.setattr(performance_diagnostics, "increment", emitted.append)
+    callback = (
+        QuickScalperPaperRuntimeAdapter._increment_initial_reason
+        if stage == "initial"
+        else QuickScalperPaperRuntimeAdapter._increment_reconfirm_reason
+    )
+    callback(reason)
+    assert emitted == [f"quick_scalper_{stage}_{suffix}"]
