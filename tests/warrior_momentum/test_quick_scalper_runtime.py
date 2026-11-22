@@ -1637,3 +1637,33 @@ def test_stream_preview_event_precedes_any_authorization():
             else "SCALP_EXECUTION_WAIT" if assessed.decision is ScalpDecision.WAIT
             else "SCALP_REJECTED"
         ) < names.index("SCALP_ORDER_INTENT")
+
+
+def test_generation_supersession_emits_exactly_one_event_for_changed_generation():
+    events = []
+    runtime, _bridge, _quotes = adapter(events=events)
+    first = SimpleNamespace(symbol="FAST", generation_id="g-first")
+    second = SimpleNamespace(symbol="FAST", generation_id="g-second")
+    runtime._record_generation(first)
+    runtime._record_generation(first)
+    assert events == []
+    runtime._record_generation(second)
+    assert events == [(
+        "SCALP_INVALIDATED",
+        {
+            "symbol": "FAST", "strategy_owner": "QUICK_SCALPER",
+            "generation": "g-first", "reason": "SETUP_SUPERSEDED",
+        },
+    )]
+    assert runtime._current_generation["FAST"] == "g-second"
+    runtime._record_generation(second)
+    assert len(events) == 1
+
+
+def test_generation_supersession_is_symbol_isolated():
+    events = []
+    runtime, _bridge, _quotes = adapter(events=events)
+    runtime._record_generation(SimpleNamespace(symbol="FAST", generation_id="g1"))
+    runtime._record_generation(SimpleNamespace(symbol="OTHER", generation_id="g2"))
+    assert events == []
+    assert runtime._current_generation == {"FAST": "g1", "OTHER": "g2"}
