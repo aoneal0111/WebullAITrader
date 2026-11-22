@@ -263,18 +263,7 @@ class QuickScalperPaperRuntimeAdapter:
                 "SCALP_ARMED", snapshot.symbol,
                 generation=snapshot.generation_id,
             )
-            event = (
-                "SCALP_EXECUTABLE"
-                if preview.decision is ScalpDecision.EXECUTABLE
-                else "SCALP_EXECUTION_WAIT"
-                if preview.decision is ScalpDecision.WAIT
-                else "SCALP_REJECTED"
-            )
-            self._emit(
-                event,
-                snapshot.symbol, generation=snapshot.generation_id,
-                reason=preview.reason,
-            )
+            self._emit_preview_decision(snapshot, preview)
             # Authorization/submission follows the observable opportunity
             # state. The coordinator reuses the same pure policy assessment
             # and performs at most one authoritative quote request.
@@ -345,18 +334,28 @@ class QuickScalperPaperRuntimeAdapter:
                 self._increment_initial_reason(preview.reason)
                 if preview.decision is ScalpDecision.REJECTED_HARD_SAFETY:
                     performance_diagnostics.increment("quick_scalper_rejections")
-            event = (
-                'SCALP_EXECUTABLE'
-                if preview.decision is ScalpDecision.EXECUTABLE
-                else 'SCALP_EXECUTION_WAIT'
-                if preview.decision is ScalpDecision.WAIT
-                else 'SCALP_REJECTED'
-            )
-            self._emit(
-                event, snapshot.symbol, generation=snapshot.generation_id,
-                reason=preview.reason,
-            )
+            self._emit_preview_decision(snapshot, preview)
             return self.scalper.observe(snapshot)
+
+    def _emit_preview_decision(
+        self, snapshot: QuickScalpSnapshot, preview: QuickScalpAssessment,
+    ) -> None:
+        """Use the same event taxonomy for bar and stream observations.
+
+        This only emits diagnostics. The separate policy assessment and
+        canonical authorization/order sequence remain unchanged.
+        """
+        event = (
+            "SCALP_EXECUTABLE"
+            if preview.decision is ScalpDecision.EXECUTABLE
+            else "SCALP_EXECUTION_WAIT"
+            if preview.decision is ScalpDecision.WAIT
+            else "SCALP_REJECTED"
+        )
+        self._emit(
+            event, snapshot.symbol, generation=snapshot.generation_id,
+            reason=preview.reason,
+        )
 
     def current_opportunity(self, symbol: str):
         """Return the immutable generation-bound projection for GUI use."""
