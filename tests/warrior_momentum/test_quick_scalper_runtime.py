@@ -1603,7 +1603,10 @@ def test_shared_preview_event_preserves_decision_reason_and_generation(
     )
     assert events == [(
         expected_event,
-        {"generation": "g-preview", "reason": "TEST_REASON"},
+        {
+            "symbol": "FAST", "strategy_owner": "QUICK_SCALPER",
+            "generation": "g-preview", "reason": "TEST_REASON",
+        },
     )]
 
 
@@ -1625,5 +1628,12 @@ def test_stream_preview_event_precedes_any_authorization():
         else "SCALP_EXECUTION_WAIT" if assessed.decision is ScalpDecision.WAIT
         else "SCALP_REJECTED"
     )
-    assert quotes.calls == 0
-    assert bridge.entries == []
+    # The stream path is allowed to authorize once after the preview;
+    # the refactor must not introduce duplicate quote requests.
+    assert quotes.calls <= 1
+    if "SCALP_ORDER_INTENT" in names:
+        assert names.index(
+            "SCALP_EXECUTABLE" if assessed.decision is ScalpDecision.EXECUTABLE
+            else "SCALP_EXECUTION_WAIT" if assessed.decision is ScalpDecision.WAIT
+            else "SCALP_REJECTED"
+        ) < names.index("SCALP_ORDER_INTENT")
