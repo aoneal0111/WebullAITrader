@@ -248,10 +248,7 @@ class QuickScalperPaperRuntimeAdapter:
             snapshot = self._snapshot(point, candidate)
             if snapshot is None:
                 return None
-            self._record_generation(snapshot)
-            self._snapshots[(snapshot.symbol, snapshot.generation_id)] = snapshot
-            self._emit("SCALP_OPPORTUNITY", snapshot.symbol,
-                       generation=snapshot.generation_id)
+            self._register_opportunity(snapshot, bounded_stream=False)
             preview = self.scalper.policy.assess(snapshot)
             self._emit(
                 "SCALP_ARMED", snapshot.symbol,
@@ -297,16 +294,7 @@ class QuickScalperPaperRuntimeAdapter:
             )
             if not execution_permitted or snapshot is None:
                 return None
-            self._record_generation(snapshot)
-            key = (snapshot.symbol, snapshot.generation_id)
-            self._snapshots[key] = snapshot
-            self._snapshots.move_to_end(key)
-            while len(self._snapshots) > _MAX_STREAM_SYMBOLS * 2:
-                self._snapshots.popitem(last=False)
-            self._emit(
-                'SCALP_OPPORTUNITY', snapshot.symbol,
-                generation=snapshot.generation_id,
-            )
+            self._register_opportunity(snapshot, bounded_stream=True)
             performance_diagnostics.increment("quick_scalper_opportunities")
             preview = self.scalper.policy.assess(snapshot)
             if self._observer_context_tap is not None:
@@ -324,6 +312,27 @@ class QuickScalperPaperRuntimeAdapter:
                     performance_diagnostics.increment("quick_scalper_rejections")
             self._emit_preview_decision(snapshot, preview)
             return self.scalper.observe(snapshot)
+
+    def _register_opportunity(
+        self, snapshot: QuickScalpSnapshot, *, bounded_stream: bool,
+    ) -> None:
+        """Register a generation and emit its opportunity before assessment.
+
+        Bar-based observations keep their historical snapshot retention.
+        Streaming observations preserve the bounded LRU behavior. Do not
+        change this ordering relative to authorization or the event sink.
+        """
+        self._record_generation(snapshot)
+        key = (snapshot.symbol, snapshot.generation_id)
+        self._snapshots[key] = snapshot
+        if bounded_stream:
+            self._snapshots.move_to_end(key)
+            while len(self._snapshots) > _MAX_STREAM_SYMBOLS * 2:
+                self._snapshots.popitem(last=False)
+        self._emit(
+            "SCALP_OPPORTUNITY", snapshot.symbol,
+            generation=snapshot.generation_id,
+        )
 
     def _record_generation(self, snapshot: QuickScalpSnapshot) -> None:
         """Invalidate a superseded setup before recording the new generation.
