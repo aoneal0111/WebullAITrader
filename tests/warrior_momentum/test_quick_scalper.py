@@ -464,3 +464,39 @@ def test_submitted_unfilled_entry_is_recorded_before_fill_protection() -> None:
     )
     scaler.observe(snapshot())
     assert scaler.guard.allow("FAST", "g1", NOW)[1] == "DUPLICATE_GENERATION"
+
+
+def test_coordinator_prepared_preview_must_match_exact_snapshot_object():
+    submits = []
+    scalper = QuickScalper(
+        engine=WarriorOpportunityEngine(), ownership=SymbolOwnershipRegistry(),
+        config=QuickScalperConfig(enabled=True),
+        authorize_and_submit=lambda value: submits.append(value),
+    )
+    value = snapshot()
+    preview = scalper.policy.assess(value)
+    other = replace(value)
+    with pytest.raises(ValueError, match="SCALPER_PREVIEW_SNAPSHOT_MISMATCH"):
+        scalper.observe(other, prepared=(value, preview))
+    assert submits == []
+    assert scalper.engine.get(value.symbol) is None
+
+
+def test_coordinator_still_assesses_direct_calls_without_prepared_preview(monkeypatch):
+    scalper = QuickScalper(
+        engine=WarriorOpportunityEngine(), ownership=SymbolOwnershipRegistry(),
+        config=QuickScalperConfig(enabled=False),
+        authorize_and_submit=lambda _value: pytest.fail("No submission expected"),
+    )
+    calls = []
+    original = scalper.policy.assess
+
+    def counted(value):
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(scalper.policy, "assess", counted)
+    value = snapshot()
+    assessed = scalper.observe(value)
+    assert assessed is not None
+    assert calls == [value]
