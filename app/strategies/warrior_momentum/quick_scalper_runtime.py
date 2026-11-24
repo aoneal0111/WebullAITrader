@@ -1311,6 +1311,8 @@ class QuickScalperPaperRuntimeAdapter:
             order.request.stop_price
             for order in self.order_book.open_orders_for_symbol(state.symbol)
             if order.request.strategy_lifecycle_id == state.lifecycle_id
+            and order.request.side is OrderSide.SELL
+            and order.request.order_type is OrderType.STOP
             and order.request.stop_price is not None
         ]
         return max(values, default=state.initial_stop)
