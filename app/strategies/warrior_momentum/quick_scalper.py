@@ -487,8 +487,16 @@ class QuickScalper:
         self._review_refresher = review_refresher
         self._pending_reviews = {}
 
-    def observe(self, snapshot: QuickScalpSnapshot) -> QuickScalpAssessment:
-        assessed = self.policy.assess(snapshot)
+    def observe(
+        self, snapshot: QuickScalpSnapshot, *,
+        prepared: tuple[QuickScalpSnapshot, QuickScalpAssessment] | None = None,
+    ) -> QuickScalpAssessment:
+        # A caller may reuse its just-computed preview for the exact snapshot
+        # object. Reject cross-snapshot reuse rather than authorizing a stale
+        # assessment; direct coordinator calls still assess normally.
+        if prepared is not None and prepared[0] is not snapshot:
+            raise ValueError("SCALPER_PREVIEW_SNAPSHOT_MISMATCH")
+        assessed = prepared[1] if prepared is not None else self.policy.assess(snapshot)
         self.engine.arm(assessed.opportunity)
         item = self.engine.apply_assessment(assessed.opportunity)
         if item.state is WarriorOpportunityState.REVIEW_PENDING or any(

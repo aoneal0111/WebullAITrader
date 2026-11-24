@@ -1703,3 +1703,62 @@ def test_registration_preserves_bounded_stream_snapshot_lru(monkeypatch):
     assert list(runtime._snapshots) == [("S0", "g1"), ("S2", "g1")]
     assert len(events) == 4
     assert all(name == "SCALP_OPPORTUNITY" for name, _ in events)
+
+
+def test_bar_runtime_assesses_identical_snapshot_once_before_authorization(monkeypatch):
+    events = []
+    runtime, bridge, quotes = adapter(events=events)
+    value = snapshot()
+    runtime._snapshot = lambda _point, _candidate: value
+    calls = []
+    original = runtime.scalper.policy.assess
+
+    def counted(candidate):
+        calls.append(candidate)
+        return original(candidate)
+
+    monkeypatch.setattr(runtime.scalper.policy, "assess", counted)
+    assessed = runtime.observe(
+        SimpleNamespace(
+            observation=SimpleNamespace(bid=None, quote_timestamp=None),
+            evaluation_timestamp=NOW, quote_observed_at=None,
+        ),
+        SimpleNamespace(symbol="FAST"),
+    )
+    # The preview is assessed once, then the authoritative execution quote
+    # is independently re-assessed. Do not remove that safety confirmation.
+    assert len(calls) == 2
+    assert calls[0] is value
+    assert calls[1] is not value
+    assert calls[1].symbol == value.symbol
+    assert assessed is not None
+    assert any(event == "SCALP_ARMED" for event, _ in events)
+    assert quotes.calls == 1
+
+
+def test_stream_runtime_reuses_preview_without_double_policy_assessment(monkeypatch):
+    runtime, bridge, quotes = adapter()
+    calls = []
+    original = runtime.scalper.policy.assess
+
+    def counted(candidate):
+        calls.append(candidate)
+        return original(candidate)
+
+    monkeypatch.setattr(runtime.scalper.policy, "assess", counted)
+    runtime.observe_stream_event(
+        stream_observation("4.75", -10),
+        decision_at=NOW, session="REGULAR", execution_permitted=False,
+    )
+    assert calls == []
+    assessed = runtime.observe_stream_event(
+        stream_observation("4.99", 0),
+        decision_at=NOW, session="REGULAR",
+    )
+    assert assessed is not None
+    # One initial preview plus one separate canonical quote confirmation.
+    assert len(calls) == 2
+    assert calls[0].symbol == "FAST"
+    assert calls[1].symbol == "FAST"
+    assert calls[0] is not calls[1]
+    assert quotes.calls == 1
