@@ -1725,10 +1725,15 @@ def test_bar_runtime_assesses_identical_snapshot_once_before_authorization(monke
         ),
         SimpleNamespace(symbol="FAST"),
     )
-    assert calls == [value]
+    # The preview is assessed once, then the authoritative execution quote
+    # is independently re-assessed. Do not remove that safety confirmation.
+    assert len(calls) == 2
+    assert calls[0] is value
+    assert calls[1] is not value
+    assert calls[1].symbol == value.symbol
     assert assessed is not None
     assert any(event == "SCALP_ARMED" for event, _ in events)
-    assert quotes.calls <= 1
+    assert quotes.calls == 1
 
 
 def test_stream_runtime_reuses_preview_without_double_policy_assessment(monkeypatch):
@@ -1751,6 +1756,10 @@ def test_stream_runtime_reuses_preview_without_double_policy_assessment(monkeypa
         decision_at=NOW, session="REGULAR",
     )
     assert assessed is not None
-    assert len(calls) == 1
+    # One initial preview plus one separate canonical quote confirmation.
+    assert len(calls) == 2
     assert calls[0].symbol == "FAST"
-    assert quotes.calls <= 1
+    assert calls[1].symbol == "FAST"
+    assert calls[0] is not calls[1]
+    assert calls[0].decision_at != calls[1].decision_at or calls[0] is not calls[1]
+    assert quotes.calls == 1
