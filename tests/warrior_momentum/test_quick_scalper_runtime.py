@@ -1761,5 +1761,4 @@ def test_stream_runtime_reuses_preview_without_double_policy_assessment(monkeypa
     assert calls[0].symbol == "FAST"
     assert calls[1].symbol == "FAST"
     assert calls[0] is not calls[1]
-    assert calls[0].decision_at != calls[1].decision_at or calls[0] is not calls[1]
     assert quotes.calls == 1
