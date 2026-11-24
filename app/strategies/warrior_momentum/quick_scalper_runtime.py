@@ -258,7 +258,7 @@ class QuickScalperPaperRuntimeAdapter:
             # Authorization/submission follows the observable opportunity
             # state. The coordinator reuses the same pure policy assessment
             # and performs at most one authoritative quote request.
-            result = self.scalper.observe(snapshot)
+            result = self.scalper.observe(snapshot, prepared=(snapshot, preview))
             return result
 
     def observe_stream_event(
@@ -311,7 +311,7 @@ class QuickScalperPaperRuntimeAdapter:
                 if preview.decision is ScalpDecision.REJECTED_HARD_SAFETY:
                     performance_diagnostics.increment("quick_scalper_rejections")
             self._emit_preview_decision(snapshot, preview)
-            return self.scalper.observe(snapshot)
+            return self.scalper.observe(snapshot, prepared=(snapshot, preview))
 
     def _register_opportunity(
         self, snapshot: QuickScalpSnapshot, *, bounded_stream: bool,
