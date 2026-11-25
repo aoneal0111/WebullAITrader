@@ -13,7 +13,7 @@ from app.strategies.warrior_momentum.models import MinuteBar, SetupState, SetupT
 from app.strategies.warrior_momentum.setups import (
     detect_best_setup, detect_micro_pullback,
 )
-from app.strategies.warrior_momentum.config import SetupConfig
+from app.strategies.warrior_momentum.configuration import SetupConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +35,7 @@ def review_micro_selection(
     Trigger premium measures the selected trigger minus micro trigger; it
     is not slippage or a traded price. No future bars enter any decision.
     """
-    if len(bars) > 10000:
+    if len(bars) > 600:
         raise ValueError("BAR_LIMIT_EXCEEDED")
     if any(
         left.symbol != right.symbol or left.timestamp >= right.timestamp
