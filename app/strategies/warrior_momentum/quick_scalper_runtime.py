@@ -644,8 +644,11 @@ class QuickScalperPaperRuntimeAdapter:
                 except Exception:
                     pass
             return
+        # A reconciliation (including a later partial fill) must not ask the
+        # canonical gateway to lower an already working profit-defense stop.
+        # Use only the protective SELL STOP for this lifecycle.
         protection = self.bridge.ensure_exit(
-            state.symbol, quantity, state.initial_stop, "STOP",
+            state.symbol, quantity, self._current_stop(state), "STOP",
             state.lifecycle_id, strategy_owner=OWNER,
         )
         if not protection.requested_order_active:
@@ -1318,7 +1321,7 @@ class QuickScalperPaperRuntimeAdapter:
             if order.request.strategy_lifecycle_id == state.lifecycle_id
             and order.request.side is OrderSide.SELL
             and order.request.order_type is OrderType.STOP
-            and order.request.stop_price is not None
+            and getattr(order.request, "stop_price", None) is not None
         ]
         return max(values, default=state.initial_stop)
 
