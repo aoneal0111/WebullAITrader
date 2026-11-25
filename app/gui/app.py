@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import sys
+from time import monotonic
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -35,7 +37,22 @@ def configured_paper_persistence_path() -> Path:
     )
 
 
+def _startup_phase(started: float, phase: str) -> None:
+    """Bounded, payload-free wall duration since entering main.
+
+    Diagnostic failures must never alter Atlas startup or PAPER ownership.
+    """
+    try:
+        logging.getLogger("atlas.startup").info(
+            "ATLAS_STARTUP_PHASE phase=%s elapsed_ms=%d",
+            phase, max(0, round((monotonic() - started) * 1000)),
+        )
+    except Exception:
+        pass
+
+
 def main() -> int:
+    started = monotonic()
     load_dotenv(override=False)
     configuration = load_configuration()
     ownership = None
@@ -49,19 +66,23 @@ def main() -> int:
     # Desktop runtime lifecycle events use the standard logging pipeline. This
     # is a no-op when an embedding process has already installed handlers.
     configure_logging()
+    _startup_phase(started, "configuration_and_ownership_complete")
     try:
         application = QApplication(sys.argv)
         application.setApplicationName("Webull AI Trader")
         application.setOrganizationName("Webull AI Trader")
+        _startup_phase(started, "qt_application_created")
 
         composition = create_desktop_composition(
             paper_persistence_path=configured_paper_persistence_path()
         )
+        _startup_phase(started, "desktop_composition_created")
         application.aboutToQuit.connect(
             lambda: _record_application_quit(composition.runtime_service)
         )
 
         asset_modules = create_asset_modules(composition)
+        _startup_phase(started, "asset_modules_created")
         window = MainWindow(
             composition.bus,
             composition.state_store,
@@ -73,7 +94,9 @@ def main() -> int:
             warrior_forward_sidecar=composition.warrior_forward_sidecar,
             asset_modules=asset_modules,
         )
+        _startup_phase(started, "main_window_constructed")
         window.show()
+        _startup_phase(started, "window_show_requested")
 
         try:
             if composition.learning_collector is not None:
