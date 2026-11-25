@@ -1,6 +1,8 @@
 from __future__ import annotations
 from app.asset_modules.paper_profiles import GROK_CONTROL_PROFILES
 
+import logging
+from time import monotonic
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -86,6 +88,17 @@ from .desktop_symbol_intelligence import (
 )
 
 
+def _composition_startup_phase(started: float, phase: str) -> None:
+    """Record payload-free startup checkpoints, never changing control flow."""
+    try:
+        logging.getLogger("atlas.startup").info(
+            "ATLAS_COMPOSITION_PHASE phase=%s elapsed_ms=%d",
+            phase, max(0, round((monotonic() - started) * 1000)),
+        )
+    except Exception:
+        pass
+
+
 def _configured_management_context_source(
     storage_path, configuration_fingerprint: str,
 ):
@@ -161,6 +174,7 @@ def create_desktop_composition(
 ) -> DesktopComposition:
     """Construct the desktop application dependency graph."""
 
+    _startup_started = monotonic()
     performance_diagnostics.start_run()
     bus = OperationsBus()
     state_store = ApplicationStateStore(bus)
@@ -324,6 +338,7 @@ def create_desktop_composition(
                 ),
                 strategy_lifecycle_id=lifecycle_id,
             )
+        _composition_startup_phase(_startup_started, "paper_gateway_create_started")
         paper_trading_commands = create_paper_trading_command_composition(
             order_book=paper_order_book,
             event_sink=paper_runtime_event_sink,
@@ -332,6 +347,7 @@ def create_desktop_composition(
             position_quantity_source=trading_state_sources.position_quantity,
             clock=paper_clock,
         )
+        _composition_startup_phase(_startup_started, "paper_gateway_created")
         if paper_trading_commands.durable_store is not None:
             # Keep durable cross-campaign history in SQLite.  The hot projection
             # restores only the active campaign so GUI refreshes never rebuild
@@ -339,6 +355,7 @@ def create_desktop_composition(
             runtime_projections.order_projection.reconcile_authoritative_orders(
                 paper_trading_commands.durable_store.orders()
             )
+        _composition_startup_phase(_startup_started, "paper_order_projection_restored")
         paper_campaign_holder["id"] = paper_trading_commands.paper_campaign_id
         paper_campaign_holder["capital"] = (
             paper_trading_commands.durable_store.active_campaign_capital()
@@ -395,6 +412,7 @@ def create_desktop_composition(
         # any management/protection callbacks can observe a live quote.  The
         # bridge is deliberately held in reconciliation until this seed is
         # complete.
+        _composition_startup_phase(_startup_started, "position_reconciliation_started")
         restored_paper_orders = paper_trading_commands.order_book.history()
         runtime_projections.position_projection.reconcile_from_paper_orders(
             restored_paper_orders,
@@ -407,6 +425,7 @@ def create_desktop_composition(
         quarantine_ok = qualified_equity_service.quarantine_working_buys(
             paper_trading_commands.order_book, paper_trading_commands.order_command_factory)
         autonomous_paper_bridge.reconcile_protection()
+        _composition_startup_phase(_startup_started, "protection_reconciliation_completed")
         if not quarantine_ok:
             paper_trading_commands.close()
             raise RuntimeError("Unqualified working BUY cancellation is unconfirmed; desktop startup stopped")
@@ -546,6 +565,7 @@ def create_desktop_composition(
         warrior_forward_sidecar.restore_execution_lifecycles(
             paper_trading_commands.order_book.history()
         )
+        _composition_startup_phase(_startup_started, "warrior_lifecycle_restore_completed")
 
     adaptive_entry_research_observer = create_adaptive_entry_research_observer(
         operational_configuration=operational_configuration,
