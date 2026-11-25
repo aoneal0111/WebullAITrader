@@ -156,6 +156,14 @@ def assess_top_of_book_pursuit(
         return blocked("LIQUIDITY_BLOCKED")
     if best_bid is None or best_ask is None or spread_percent is None:
         return blocked("TOP_OF_BOOK_UNAVAILABLE")
+    # A quote must be internally executable, even when an upstream feed
+    # marks it fresh/quality-ok. Never pursue a crossed, locked, non-positive,
+    # or non-finite top-of-book snapshot.
+    if (not best_bid.is_finite() or not best_ask.is_finite()
+            or not spread_percent.is_finite()
+            or best_bid <= 0 or best_ask <= best_bid
+            or spread_percent < 0):
+        return blocked("INVALID_TOP_OF_BOOK")
     if spread_percent > maximum_spread_percent:
         return blocked("EXECUTION_QUALITY_WAIT")
     if structural_stop <= 0 or working_limit <= structural_stop:
