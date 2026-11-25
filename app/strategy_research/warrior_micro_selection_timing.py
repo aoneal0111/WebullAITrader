@@ -37,6 +37,11 @@ def review_micro_selection(
     """
     if len(bars) > 600:
         raise ValueError("BAR_LIMIT_EXCEEDED")
+    # A detector result alone is not an eligible setup when the configured
+    # Warrior selection universe explicitly excludes Micro Pullback.
+    if (config.allowed_setup_types is not None
+            and SetupType.MICRO_PULLBACK.value not in config.allowed_setup_types):
+        return ()
     if any(
         left.symbol != right.symbol or left.timestamp >= right.timestamp
         for left, right in zip(bars, bars[1:])
