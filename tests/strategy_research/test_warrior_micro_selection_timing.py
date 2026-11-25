@@ -5,6 +5,7 @@ from decimal import Decimal as D
 
 import pytest
 
+from app.strategies.warrior_momentum.configuration import SetupConfig
 from app.strategy_research.warrior_micro_selection_timing import (
     review_micro_selection,
 )
@@ -59,3 +60,10 @@ def test_mixed_symbols_or_reordered_timestamps_are_rejected():
         review_micro_selection(bars[:-1] + (replace(bars[-1], symbol="OTHER"),))
     with pytest.raises(ValueError, match="SINGLE_SYMBOL_STRICT_TIME_REQUIRED"):
         review_micro_selection(bars[:-1] + (replace(bars[-1], timestamp=bars[-2].timestamp),))
+
+
+def test_disabled_micro_setup_is_not_reported_as_eligible_entry():
+    assert review_micro_selection(
+        tuple(micro_bars()),
+        SetupConfig(allowed_setup_types=frozenset({"HIGH_OF_DAY_BREAKOUT"})),
+    ) == ()
