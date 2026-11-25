@@ -562,10 +562,15 @@ class QuickScalperPaperRuntimeAdapter:
                         cent_profit_defense_floor=defense_floor,
                     )
                     self._positions[current_symbol] = state
-                elif cent_move is not None:
+                else:
+                    # Additional partial fills can change the actual weighted
+                    # entry for either scalp profile. Profit R and giveback
+                    # defense must use the reconciled fill ledger, not the
+                    # first partial fill's entry price.
                     state.entry_price = entry_price
-                    state.target_price = target
-                    state.cent_target_move = cent_move
+                    if cent_move is not None:
+                        state.target_price = target
+                        state.cent_target_move = cent_move
                 if any(not item.is_terminal for item in buys):
                     self.engine.mark_partially_filled(
                         current_symbol, generation, at=self._clock(),
