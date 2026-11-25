@@ -82,3 +82,38 @@ def test_invalid_stop_cost_horizon_fail_closed():
 def test_invalid_risk_is_excluded():
     bars = (bar(0, "10", "10", "9.5"), bar(1, "9", "9.4", "8.8"))
     assert outcome(bars, 0, structural_stop=D("9"))["status"] == "INVALID_NEXT_OPEN_RISK"
+
+
+def test_end_to_end_normalized_partition_requires_provenance_and_future_bar(tmp_path):
+    import json
+    from dataclasses import asdict
+    from app.strategy_research.warrior_micro_selection_history import run
+    from app.strategy_research.warrior_micro_outcome_screen import study
+    from tests.warrior_momentum.test_strategy import micro_bars
+
+    normalized = tmp_path / "normalized"
+    reports = tmp_path / "reports"
+    normalized.mkdir()
+    reports.mkdir()
+    source = normalized / "XYZ_2026-08-10.jsonl"
+    with source.open("x", encoding="utf-8") as stream:
+        for bar in micro_bars():
+            data = asdict(bar)
+            data["timestamp"] = bar.timestamp.isoformat()
+            for key in ("open", "high", "low", "close", "volume"):
+                data[key] = str(data[key])
+            stream.write(json.dumps(data) + "\\n")
+    prior = source.read_bytes()
+    run(source, symbol="XYZ", day="2026-08-10",
+        output=reports / "XYZ_2026-08-10-timing.json")
+    result = study(reports, normalized)
+    assert result["source_report_count"] == 1
+    assert result["observed_trigger_runs"] == 1
+    assert result["outcomes"] == {"NO_CONSECUTIVE_NEXT_OPEN": 1}
+    assert result["resolved_barrier_observations"] == 0
+    assert result["orders"] == result["network_requests"] == 0
+    assert source.read_bytes() == prior
+
+    source.write_bytes(prior + b"\\n")
+    with pytest.raises(ValueError, match="SOURCE_SHA256_MISMATCH"):
+        study(reports, normalized)
