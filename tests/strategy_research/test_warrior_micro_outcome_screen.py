@@ -102,7 +102,7 @@ def test_end_to_end_normalized_partition_requires_provenance_and_future_bar(tmp_
             data["timestamp"] = bar.timestamp.isoformat()
             for key in ("open", "high", "low", "close", "volume"):
                 data[key] = str(data[key])
-            stream.write(json.dumps(data) + "\\n")
+            stream.write(json.dumps(data) + "\n")
     prior = source.read_bytes()
     run(source, symbol="XYZ", day="2026-08-10",
         output=reports / "XYZ_2026-08-10-timing.json")
@@ -114,6 +114,6 @@ def test_end_to_end_normalized_partition_requires_provenance_and_future_bar(tmp_
     assert result["orders"] == result["network_requests"] == 0
     assert source.read_bytes() == prior
 
-    source.write_bytes(prior + b"\\n")
+    source.write_bytes(prior + b"\n")
     with pytest.raises(ValueError, match="SOURCE_SHA256_MISMATCH"):
         study(reports, normalized)
