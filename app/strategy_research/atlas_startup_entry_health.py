@@ -121,7 +121,8 @@ def startup_review(snapshot, *, checked_at=None):
         "gui_status": gui_status,
         "gui_observed_seconds": None if gui_duration is None else round(gui_duration, 3),
         "observed_seconds": None if duration is None else round(duration, 3),
-        "start_basis": (data.get("_process_start_basis") or\n                        ("startup_process_started" if ticks["process_started"] else "runtime_started")),
+        "start_basis": (data.get("_process_start_basis") or
+                        ("startup_process_started" if ticks["process_started"] else "runtime_started")),
         "ready_basis": "feed_healthy", "gui_ready_at": data.get("gui_ready_at"),
         "runtime_started_at": data.get("runtime_started_at"),
         "feed_healthy_at": data.get("feed_healthy_at"),
