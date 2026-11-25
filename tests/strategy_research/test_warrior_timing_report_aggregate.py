@@ -54,6 +54,9 @@ def test_rejects_duplicate_or_unordered_report(tmp_path):
 def test_rejects_empty_or_bad_state_totals(tmp_path):
     with pytest.raises(ValueError, match="REPORT_COUNT_BOUND"):
         aggregate(tmp_path)
-    emit(tmp_path, "AAOG", [], bars=5)
+    path = emit(tmp_path, "AAOG", [], bars=5)
+    data = json.loads(path.read_text())
+    data["micro_states"]["UNKNOWN"] = 2
+    path.write_text(json.dumps(data))
     with pytest.raises(ValueError, match="STATE_TOTAL_MISMATCH"):
         aggregate(tmp_path)
