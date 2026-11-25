@@ -28,6 +28,9 @@ def test_normalized_session_read_only_and_source_provenance(tmp_path):
     result = run(source, symbol="XYZ", day="2026-08-10", output=report_path)
     assert source.read_bytes() == before
     assert result["bars"] == 6
+    assert sum(result["micro_states"].values()) == 6
+    assert result["gap_boundaries"] == 0
+    assert result["longest_contiguous_run"] == 6
     assert len(result["observations"]) == 1
     assert result["observations"][0]["at"] == "2026-08-10T13:36:00+00:00"
     assert result["orders"] == result["network_requests"] == 0
@@ -37,7 +40,7 @@ def test_normalized_session_read_only_and_source_provenance(tmp_path):
         run(source, symbol="XYZ", day="2026-08-10", output=report_path)
 
 
-def test_reject_wrong_day_and_refuse_silent_truncation(tmp_path):
+def test_reject_wrong_day_and_process_entire_long_session(tmp_path):
     source = write_partition(tmp_path, micro_bars())
     with pytest.raises(ValueError, match="EXPLICIT_NORMALIZED_PARTITION_REQUIRED"):
         run(source, symbol="XYZ", day="2026-08-11", output=tmp_path / "bad.json")
@@ -50,6 +53,7 @@ def test_reject_wrong_day_and_refuse_silent_truncation(tmp_path):
     many = tmp_path / "many"
     many.mkdir()
     huge = write_partition(many, bars)
-    with pytest.raises(ValueError, match="STUDY_BAR_LIMIT_EXCEEDED"):
-        run(huge, symbol="XYZ", day="2026-08-10", output=many / "bad.json")
-    assert not (many / "bad.json").exists()
+    result = run(huge, symbol="XYZ", day="2026-08-10", output=many / "full.json")
+    assert result["bars"] == 601
+    assert sum(result["micro_states"].values()) == 601
+    assert (many / "full.json").exists()
