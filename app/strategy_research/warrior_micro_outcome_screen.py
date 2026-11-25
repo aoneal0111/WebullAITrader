@@ -74,7 +74,12 @@ def outcome(bars: tuple[MinuteBar, ...], trigger_index: int, *,
 
 def study(reports: Path, normalized: Path, *, horizon_bars=30,
           cost_per_side_per_share=Decimal("0")) -> dict:
-    if not 1 <= horizon_bars <= MAX_HORIZON:\n        raise ValueError("INVALID_HORIZON")\n    if (not isinstance(cost_per_side_per_share, Decimal) or\n            not cost_per_side_per_share.is_finite() or cost_per_side_per_share < 0):\n        raise ValueError("INVALID_COST")\n    paths = sorted(Path(reports).glob("*-timing.json"))
+    if not 1 <= horizon_bars <= MAX_HORIZON:
+        raise ValueError("INVALID_HORIZON")
+    if (not isinstance(cost_per_side_per_share, Decimal) or
+            not cost_per_side_per_share.is_finite() or cost_per_side_per_share < 0):
+        raise ValueError("INVALID_COST")
+    paths = sorted(Path(reports).glob("*-timing.json"))
     if not 1 <= len(paths) <= MAX_REPORTS:
         raise ValueError("REPORT_COUNT_BOUND")
     cache = BarCache(Path(normalized))
