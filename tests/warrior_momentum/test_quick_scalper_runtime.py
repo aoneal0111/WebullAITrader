@@ -1228,12 +1228,15 @@ def test_partial_fill_reconciliation_protects_actual_quantity_and_releases():
         StrategyOwner.QUICK_SCALPER, "life",
     )
 
-    book.update(paper_order(
+    book.update(replace(paper_order(
         order_id="entry", side=OrderSide.BUY, quantity="100", filled="40",
         status=OrderStatus.PARTIALLY_FILLED, reason="ENTRY",
-    ))
+    ), average_fill_price=D("5.10")))
     runtime.reconcile("FAST")
     assert [item[1] for item in bridge.exits[-2:]] == [40, 40]
+    # An increased partial-fill average must alter current R/exit decisions,
+    # even for the ordinary non-cent-profile Quick Scalper.
+    assert runtime._positions["FAST"].entry_price == D("5.10")
 
 
 def test_restart_reconstruction_ignores_warrior_and_restores_scalper_owner():
