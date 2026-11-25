@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 from datetime import datetime
-from hashlib import sha256
 import json
 from pathlib import Path
 import re
@@ -22,7 +21,10 @@ def run(source: Path, *, symbol: str, day: str, output: Path) -> dict:
     if not re.fullmatch(r"[A-Z0-9][A-Z0-9.\-]{0,19}", symbol):
         raise ValueError("INVALID_SYMBOL")
     datetime.strptime(day, "%Y-%m-%d")
-    source = Path(source).resolve(strict=True)
+    source = Path(source)
+    if source.is_symlink():
+        raise ValueError("EXPLICIT_NORMALIZED_PARTITION_REQUIRED")
+    source = source.resolve(strict=True)
     output = Path(output)
     if output.exists():
         raise ValueError("OUTPUT_ALREADY_EXISTS")
