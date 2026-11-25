@@ -1,5 +1,6 @@
 """Offline Warrior setup-selection timing: observations are not orders."""
 from dataclasses import replace
+from datetime import timedelta
 from decimal import Decimal as D
 
 import pytest
@@ -16,7 +17,7 @@ def test_early_micro_trigger_is_visible_below_prior_hod():
     rows = review_micro_selection(tuple(bars))
     assert len(rows) == 1
     row = rows[0]
-    assert row.at == bars[-1].timestamp
+    assert row.at == bars[-1].timestamp + timedelta(minutes=1)
     assert row.selected_type == "MICRO_PULLBACK"
     assert row.trigger_premium == D("0")
     assert row.micro_trigger < row.micro_close < max(
