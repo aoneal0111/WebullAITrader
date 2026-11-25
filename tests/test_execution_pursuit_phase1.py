@@ -99,3 +99,36 @@ def test_normal_valid_book_retains_bounded_one_level_pursuit():
     result = assess(best_bid=D("7.22"), best_ask=D("7.23"))
     assert result.decision is ExecutionPursuitDecision.PURSUE_ONE_LEVEL
     assert result.proposed_limit == D("7.23")
+
+
+def test_nonfinite_risk_geometry_and_spread_limit_cannot_pursue():
+    for changes, reason in (
+        ({"structural_stop": D("NaN")}, "STRUCTURAL_STOP_INVALID"),
+        ({"working_limit": D("NaN")}, "STRUCTURAL_STOP_INVALID"),
+        ({"structural_stop": D("Infinity")}, "STRUCTURAL_STOP_INVALID"),
+        ({"expected_reward": D("NaN")}, "REWARD_RISK_UNACCEPTABLE"),
+        ({"maximum_spread_percent": D("NaN")}, "INVALID_SPREAD_LIMIT"),
+        ({"maximum_spread_percent": D("-1")}, "INVALID_SPREAD_LIMIT"),
+    ):
+        result = assess(**changes)
+        assert result.decision is not ExecutionPursuitDecision.PURSUE_ONE_LEVEL
+        assert result.reason == reason
+
+
+def test_bad_book_sizes_cannot_claim_advancing_pressure():
+    for changes in (
+        {"bid_size": D("NaN")},
+        {"ask_size": D("Infinity")},
+        {"bid_size": D("-1")},
+        {"ask_size": D("-10")},
+    ):
+        result = assess(**changes)
+        assert result.decision is ExecutionPursuitDecision.BLOCKED
+        assert result.reason == "INVALID_TOP_OF_BOOK_SIZE"
+        assert result.proposed_limit is None
+
+
+def test_valid_pursuit_inputs_still_request_one_level():
+    result = assess()
+    assert result.decision is ExecutionPursuitDecision.PURSUE_ONE_LEVEL
+    assert result.proposed_limit == D("7.23")

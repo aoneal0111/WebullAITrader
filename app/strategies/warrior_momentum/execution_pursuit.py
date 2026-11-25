@@ -164,16 +164,23 @@ def assess_top_of_book_pursuit(
             or best_bid <= 0 or best_ask <= best_bid
             or spread_percent < 0):
         return blocked("INVALID_TOP_OF_BOOK")
+    if (not maximum_spread_percent.is_finite()
+            or maximum_spread_percent < 0):
+        return blocked("INVALID_SPREAD_LIMIT")
     if spread_percent > maximum_spread_percent:
         return blocked("EXECUTION_QUALITY_WAIT")
-    if structural_stop <= 0 or working_limit <= structural_stop:
+    if (not structural_stop.is_finite() or not working_limit.is_finite()
+            or structural_stop <= 0 or working_limit <= structural_stop):
         return ExecutionPursuitAssessment(
             ExecutionPursuitDecision.ABANDON, evaluated_at,
             "STRUCTURAL_STOP_INVALID", working_limit=working_limit,
             best_bid=best_bid, best_ask=best_ask, spread_percent=spread_percent,
             bid_size=bid_size, ask_size=ask_size,
         )
-    if expected_reward is not None and expected_reward <= best_ask - structural_stop:
+    if expected_reward is not None and (
+        not expected_reward.is_finite()
+        or expected_reward <= best_ask - structural_stop
+    ):
         return ExecutionPursuitAssessment(
             ExecutionPursuitDecision.ABANDON, evaluated_at,
             "REWARD_RISK_UNACCEPTABLE", working_limit=working_limit,
@@ -189,6 +196,9 @@ def assess_top_of_book_pursuit(
         )
     if bid_size is None or ask_size is None:
         return blocked("ORDER_FLOW_SIZE_UNAVAILABLE")
+    if (not bid_size.is_finite() or not ask_size.is_finite()
+            or bid_size < 0 or ask_size < 0):
+        return blocked("INVALID_TOP_OF_BOOK_SIZE")
     advancing = bid_size >= ask_size and best_bid >= working_limit
     if depth is not None:
         advancing = bool(
