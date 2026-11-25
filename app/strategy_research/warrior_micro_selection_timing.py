@@ -35,7 +35,7 @@ def review_micro_selection(
     Trigger premium measures the selected trigger minus micro trigger; it
     is not slippage or a traded price. No future bars enter any decision.
     """
-    if len(bars) > 600:
+    if len(bars) > 1440:
         raise ValueError("BAR_LIMIT_EXCEEDED")
     # A detector result alone is not an eligible setup when the configured
     # Warrior selection universe explicitly excludes Micro Pullback.
