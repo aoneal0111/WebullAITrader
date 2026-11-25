@@ -1316,7 +1316,7 @@ class QuickScalperPaperRuntimeAdapter:
             if order.request.strategy_lifecycle_id == state.lifecycle_id
             and order.request.side is OrderSide.SELL
             and order.request.order_type is OrderType.STOP
-            and order.request.stop_price is not None
+            and getattr(order.request, "stop_price", None) is not None
         ]
         return max(values, default=state.initial_stop)
 
