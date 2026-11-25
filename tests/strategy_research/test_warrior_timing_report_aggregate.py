@@ -11,7 +11,7 @@ def emit(root, symbol, observations, *, bars=4):
         "scope": "WARRIOR_MICRO_SELECTION_OFFLINE_V1",
         "symbol": symbol, "day": "2026-07-17", "bars": bars,
         "gap_boundaries": 1,
-        "micro_states": {"UNKNOWN": 1, "NOT_FORMED": 1, "FORMING": 0, "TRIGGERED": 2},
+        "micro_states": {"UNKNOWN": 1, "NOT_FORMED": bars - 1 - len(observations), "FORMING": 0, "TRIGGERED": len(observations)},
         "observations": observations,
     }
     path = root / f"{symbol}_2026-07-17-timing.json"
