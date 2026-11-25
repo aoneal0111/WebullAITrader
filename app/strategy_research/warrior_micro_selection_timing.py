@@ -6,7 +6,7 @@ or recommendations. Does not access data providers, brokers, or PAPER ledgers.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from app.strategies.warrior_momentum.models import MinuteBar, SetupState, SetupType
@@ -18,7 +18,7 @@ from app.strategies.warrior_momentum.configuration import SetupConfig
 
 @dataclass(frozen=True, slots=True)
 class MicroSelectionObservation:
-    at: datetime
+    at: datetime  # Earliest candle-close availability; bar timestamps are opens.
     micro_trigger: Decimal
     selected_trigger: Decimal | None
     selected_type: str | None
@@ -51,7 +51,7 @@ def review_micro_selection(
         selected = detect_best_setup(prefix, config)
         trigger = None if selected is None else selected.trigger
         results.append(MicroSelectionObservation(
-            at=prefix[-1].timestamp,
+            at=prefix[-1].timestamp + timedelta(minutes=1),
             micro_trigger=micro.trigger,
             selected_trigger=trigger,
             selected_type=None if selected is None else selected.setup_type.value,
