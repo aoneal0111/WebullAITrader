@@ -123,10 +123,10 @@ def study(reports: Path, normalized: Path, *, horizon_bars=30,
                 continue
             index = index_by_close[at]
             setup = detect_micro_pullback(bars[:index + 1])
-            if (setup.state is not SetupState.TRIGGERED or setup.stop is None
-                    or str(setup.trigger) != str(row.get("micro_trigger"))):
+            if (setup.state is not SetupState.TRIGGERED or setup.stop_price is None
+                    or setup.trigger != Decimal(str(row.get("micro_trigger")))):
                 raise ValueError("TRIGGER_SOURCE_MISMATCH")
-            decision = outcome(bars, index, structural_stop=setup.stop,
+            decision = outcome(bars, index, structural_stop=setup.stop_price,
                                horizon_bars=horizon_bars,
                                cost_per_side_per_share=cost_per_side_per_share)
             results.append({"symbol": symbol, "day": day,
