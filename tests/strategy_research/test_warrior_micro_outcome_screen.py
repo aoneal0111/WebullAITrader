@@ -114,6 +114,6 @@ def test_end_to_end_normalized_partition_requires_provenance_and_future_bar(tmp_
     assert result["orders"] == result["network_requests"] == 0
     assert source.read_bytes() == prior
 
-    source.write_bytes(prior + b"\n")
+    source.write_bytes(prior.replace(b'"symbol": "XYZ"', b'"symbol":"XYZ"', 1))
     with pytest.raises(ValueError, match="SOURCE_SHA256_MISMATCH"):
         study(reports, normalized)
