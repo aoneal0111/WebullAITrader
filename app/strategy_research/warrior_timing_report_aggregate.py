@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from datetime import datetime, timedelta
+from decimal import Decimal
 import json
 from pathlib import Path
 
@@ -39,7 +40,7 @@ def aggregate(directory: Path) -> dict:
         if type(bars) is not int or not 0 <= bars <= 1440:
             raise ValueError("BAR_COUNT_INVALID")
         states = report.get("micro_states", {})
-        if states and sum(states.values()) != bars:
+        if states and (sum(states.values()) != bars or states.get('TRIGGERED', 0) != len(rows)):
             raise ValueError("STATE_TOTAL_MISMATCH")
         counts["sessions"] += 1
         counts["bars"] += bars
@@ -51,11 +52,9 @@ def aggregate(directory: Path) -> dict:
         prior = None
         for row in rows:
             at = datetime.fromisoformat(row["at"])
-            if at.utcoffset() is None or at.date().isoformat() != day:
-                # Local exchange-day time may differ from UTC date, so this
-                # comparator only validates chronology and awareness.
-                if at.utcoffset() is None:
-                    raise ValueError("AWARE_TIME_REQUIRED")
+            # UTC completion date may differ from exchange date.
+            if at.utcoffset() is None:
+                raise ValueError("AWARE_TIME_REQUIRED")
             if prior is not None and at <= prior:
                 raise ValueError("TRIGGER_ORDER_INVALID")
             # Adjacent completed minute evaluations are one continuous run;
@@ -70,7 +69,6 @@ def aggregate(directory: Path) -> dict:
             if premium is None:
                 price_comparison["unavailable"] += 1
             else:
-                from decimal import Decimal
                 difference = Decimal(str(premium))
                 if not difference.is_finite():
                     raise ValueError("NONFINITE_PREMIUM")
