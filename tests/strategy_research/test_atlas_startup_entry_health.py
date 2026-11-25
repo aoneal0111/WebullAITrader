@@ -91,3 +91,45 @@ def test_slow_gui_is_failure_even_when_feed_missing():
     result = startup_review(data)
     assert result["gui_status"] == "EXCEEDED"
     assert result["status"] == "INCOMPLETE"
+
+
+def test_durable_snapshot_top_level_run_start_recovers_baseline_not_readiness():
+    from app.strategy_research.atlas_startup_entry_health import startup_review
+
+    # This is the actual shape written by PerformanceDiagnostics.
+    data = {
+        "process_started_at": START.isoformat(),
+        "startup": {
+            "process_started_at": None,
+            "runtime_started_at": (START + timedelta(seconds=10)).isoformat(),
+            "gui_ready_at": None,
+            "feed_healthy_at": None,
+        },
+    }
+    result = startup_review(data)
+    assert result["start_basis"] == "durable_run_start"
+    assert result["status"] == "INCOMPLETE"
+    assert result["gui_status"] == "INCOMPLETE"
+    assert result["observed_seconds"] is None
+    assert result["gui_observed_seconds"] is None
+
+
+def test_durable_run_start_does_not_override_captured_process_stage():
+    from app.strategy_research.atlas_startup_entry_health import startup_review
+
+    data = snapshot(240)
+    data["process_started_at"] = (START - timedelta(seconds=60)).isoformat()
+    result = startup_review(data)
+    assert result["start_basis"] == "startup_process_started"
+    assert result["observed_seconds"] == 240
+
+
+def test_observed_gui_stage_can_be_measured_from_durable_run_start():
+    from app.strategy_research.atlas_startup_entry_health import startup_review
+
+    data = {"process_started_at": START.isoformat(),
+            "startup": {"gui_ready_at": (START + timedelta(seconds=310)).isoformat()}}
+    result = startup_review(data)
+    assert result["gui_status"] == "EXCEEDED"
+    assert result["gui_observed_seconds"] == 310
+    assert result["status"] == "INCOMPLETE"
