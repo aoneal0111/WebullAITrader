@@ -71,6 +71,16 @@ def startup_review(snapshot, *, checked_at=None):
     now = aware(checked_at) if checked_at is not None else None
     if now is not None and now < start:
         raise ValueError("OBSERVATION_PRECEDES_START")
+    gui = ticks["gui_ready"]
+    if gui is not None:
+        gui_duration = (gui - start).total_seconds()
+        gui_status = "PASSED" if gui_duration <= SLA_SECONDS else "EXCEEDED"
+    elif now is not None:
+        gui_duration = (now - start).total_seconds()
+        gui_status = "EXCEEDED" if gui_duration > SLA_SECONDS else "INCOMPLETE"
+    else:
+        gui_duration = None
+        gui_status = "INCOMPLETE"
     ready = ticks["feed_healthy"]
     if ready is not None:
         duration = (ready - start).total_seconds()
@@ -97,6 +107,8 @@ def startup_review(snapshot, *, checked_at=None):
     boundaries.sort(key=lambda row: row["seconds"], reverse=True)
     return {
         "status": state, "sla_seconds": SLA_SECONDS,
+        "gui_status": gui_status,
+        "gui_observed_seconds": None if gui_duration is None else round(gui_duration, 3),
         "observed_seconds": None if duration is None else round(duration, 3),
         "start_basis": "process_started" if ticks["process_started"] else "runtime_started",
         "ready_basis": "feed_healthy", "gui_ready_at": data.get("gui_ready_at"),
@@ -104,8 +116,8 @@ def startup_review(snapshot, *, checked_at=None):
         "feed_healthy_at": data.get("feed_healthy_at"),
         "longest_observed_stage_intervals": boundaries[:8],
         "stages_missing": [s for s in STAGES if ticks[s] is None],
-        "caveat": ("Five-minute trading-readiness objective requires process start and feed_healthy; "
-                   "GUI ready alone does not prove scanner/feed readiness"),
+        "caveat": ("GUI startup and feed readiness are separate five-minute assessments; "
+                   "feed_healthy is stronger and may depend on market session conditions"),
     }
 
 
