@@ -1801,3 +1801,32 @@ def test_current_stop_falls_back_to_initial_stop_without_owned_protection(monkey
         )),
     ])
     assert runtime._current_stop(state) == state.initial_stop
+
+
+def test_reconcile_preserves_existing_tightened_scalp_stop_price():
+    book = PaperOrderBook()
+    book.submit(paper_order(
+        order_id="entry", side=OrderSide.BUY, quantity="10",
+        filled="10", status=OrderStatus.FILLED, reason="ENTRY",
+    ))
+    book.submit(PaperOrder(
+        "tightened-stop",
+        OrderRequest(
+            "FAST", AssetClass.STOCK, OrderSide.SELL, OrderType.STOP,
+            D("10"), stop_price=D("4.96"),
+            strategy_lifecycle_id="life", execution_reason="STOP",
+            metadata={"strategy_owner": "QUICK_SCALPER"},
+        ),
+        OrderStatus.ACCEPTED, NOW, NOW,
+    ))
+    bridge = Bridge()
+    runtime = QuickScalperPaperRuntimeAdapter(
+        config=QuickScalperConfig(enabled=True), bridge=bridge,
+        order_book=book, account_context_source=account,
+        position_quantity_source=lambda _symbol: D("10"),
+        execution_quote_source=Quotes(quote()), clock=lambda: NOW,
+    )
+    protective = [item for item in bridge.exits if item[3] == "STOP"]
+    assert protective
+    assert protective[-1][2] == D("4.96")
+    assert runtime._current_stop(runtime._positions["FAST"]) == D("4.96")
