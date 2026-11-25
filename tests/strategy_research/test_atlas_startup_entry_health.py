@@ -29,6 +29,8 @@ def test_startup_sla_requires_feed_healthy(seconds, status):
     assert row["status"] == status
     assert row["observed_seconds"] == seconds
     assert row["ready_basis"] == "feed_healthy"
+    assert row["gui_status"] == "PASSED"
+    assert row["gui_observed_seconds"] == 12
 
 
 def test_missing_feed_is_never_success_even_with_gui_ready():
@@ -81,3 +83,11 @@ def test_negative_or_non_integer_funnel_rejected():
     for value in (-1, 2.2, True):
         with pytest.raises(ValueError, match="INVALID_ENTRY_FUNNEL_COUNTER"):
             entry_review({"entry_conversion": {"funnel_counts": {"ORDER_SUBMITTED": value}}})
+
+
+def test_slow_gui_is_failure_even_when_feed_missing():
+    data = snapshot()
+    data["startup"]["gui_ready_at"] = (START + timedelta(seconds=310)).isoformat()
+    result = startup_review(data)
+    assert result["gui_status"] == "EXCEEDED"
+    assert result["status"] == "INCOMPLETE"
