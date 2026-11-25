@@ -42,15 +42,26 @@ def aware(value):
 
 
 def _startups(snapshot):
+    """Recover the durable run baseline without inventing a GUI-ready stage.
+
+    PerformanceDiagnostics stores its authoritative *run* timestamp at the
+    artifact top level. Older snapshots did not also emit the optional
+    startup.process_started_at stage, which made valid reports UNMEASURABLE.
+    This is a run start, not proof of OS process launch.
+    """
+    data = {}
     if isinstance(snapshot.get("startup"), dict):
-        return snapshot["startup"]
-    if isinstance(snapshot.get("startup_metrics"), dict):
-        return snapshot["startup_metrics"]
-    metrics = snapshot.get("metrics")
-    if isinstance(metrics, dict):
-        return {k.removeprefix("startup_"): v for k, v in metrics.items()
+        data = dict(snapshot["startup"])
+    elif isinstance(snapshot.get("startup_metrics"), dict):
+        data = dict(snapshot["startup_metrics"])
+    elif isinstance(snapshot.get("metrics"), dict):
+        metrics = snapshot["metrics"]
+        data = {k.removeprefix("startup_"): v for k, v in metrics.items()
                 if k.startswith("startup_")}
-    return {}
+    if not data.get("process_started_at") and snapshot.get("process_started_at"):
+        data["process_started_at"] = snapshot["process_started_at"]
+        data["_process_start_basis"] = "durable_run_start"
+    return data
 
 
 def startup_review(snapshot, *, checked_at=None):
@@ -110,7 +121,7 @@ def startup_review(snapshot, *, checked_at=None):
         "gui_status": gui_status,
         "gui_observed_seconds": None if gui_duration is None else round(gui_duration, 3),
         "observed_seconds": None if duration is None else round(duration, 3),
-        "start_basis": "process_started" if ticks["process_started"] else "runtime_started",
+        "start_basis": (data.get("_process_start_basis") or\n                        ("startup_process_started" if ticks["process_started"] else "runtime_started")),
         "ready_basis": "feed_healthy", "gui_ready_at": data.get("gui_ready_at"),
         "runtime_started_at": data.get("runtime_started_at"),
         "feed_healthy_at": data.get("feed_healthy_at"),
