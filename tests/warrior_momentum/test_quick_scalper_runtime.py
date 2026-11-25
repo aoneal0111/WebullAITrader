@@ -1762,3 +1762,42 @@ def test_stream_runtime_reuses_preview_without_double_policy_assessment(monkeypa
     assert calls[1].symbol == "FAST"
     assert calls[0] is not calls[1]
     assert quotes.calls == 1
+
+
+def test_current_stop_ignores_nonprotective_and_foreign_lifecycle_orders(monkeypatch):
+    book = PaperOrderBook()
+    book.submit(paper_order(
+        order_id="entry", side=OrderSide.BUY, quantity="10", filled="10",
+        status=OrderStatus.FILLED, reason="ENTRY",
+    ))
+    runtime, _bridge, _quotes = adapter(book=book)
+    state = runtime._positions["FAST"]
+    def order(side, order_type, lifecycle, price):
+        return SimpleNamespace(request=SimpleNamespace(
+            side=side, order_type=order_type,
+            strategy_lifecycle_id=lifecycle, stop_price=D(price),
+        ))
+    monkeypatch.setattr(book, "open_orders_for_symbol", lambda _symbol: [
+        order(OrderSide.SELL, OrderType.STOP, "life", "4.96"),
+        order(OrderSide.BUY, OrderType.STOP, "life", "5.80"),
+        order(OrderSide.SELL, OrderType.STOP_LIMIT, "life", "5.90"),
+        order(OrderSide.SELL, OrderType.STOP, "unrelated-life", "6.00"),
+    ])
+    assert runtime._current_stop(state) == D("4.96")
+
+
+def test_current_stop_falls_back_to_initial_stop_without_owned_protection(monkeypatch):
+    book = PaperOrderBook()
+    book.submit(paper_order(
+        order_id="entry", side=OrderSide.BUY, quantity="10", filled="10",
+        status=OrderStatus.FILLED, reason="ENTRY",
+    ))
+    runtime, _bridge, _quotes = adapter(book=book)
+    state = runtime._positions["FAST"]
+    monkeypatch.setattr(book, "open_orders_for_symbol", lambda _symbol: [
+        SimpleNamespace(request=SimpleNamespace(
+            side=OrderSide.BUY, order_type=OrderType.STOP,
+            strategy_lifecycle_id="life", stop_price=D("9.99"),
+        )),
+    ])
+    assert runtime._current_stop(state) == state.initial_stop
