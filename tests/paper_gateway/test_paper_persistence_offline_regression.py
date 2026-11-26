@@ -53,7 +53,10 @@ def test_isolated_paper_ledger_reopens_with_working_stop_and_does_not_duplicate(
         position_quantity_source=lambda _: Decimal("100"),
     )
     after = tuple((o.order_id, o.status.value) for o in second.order_book.history())
-    assert after == before
+    # Rehydration may enumerate rows in a different order; identity and state must agree.
+    assert len(after) == len(before)
+    assert dict(after) == dict(before)
+    assert len({order_id for order_id, _ in after}) == len(after)
     assert len(second.order_book.open_orders()) == 1
     restored = AutonomousPaperExecutionBridge(
         second.trading_service, second.order_command_factory, order_book=second.order_book,
