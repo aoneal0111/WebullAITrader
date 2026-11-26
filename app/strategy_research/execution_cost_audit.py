@@ -54,7 +54,7 @@ def audit_costs(path, *, max_quote_age_ms=2000, max_fill_delay_ms=5000):
             ORDER BY order_id LIMIT 5001""",(active[0],),5000,32_000_000)
     records=[];reasons=Counter();seen=set()
     fill_count=0;matched_quantity=D(0);reference_notional=D(0)
-    signed_difference=D(0);matched_fees=D(0);all_fees=D(0)
+    signed_difference=D(0);signed_ask_difference=D(0);matched_fees=D(0);all_fees=D(0)
     for order_index,(raw,) in enumerate(rows):
         order=json.loads(raw)
         request=order['request'];meta=request.get('metadata') or {}
@@ -105,6 +105,7 @@ def audit_costs(path, *, max_quote_age_ms=2000, max_fill_delay_ms=5000):
                         delta=(price-mid)*qty
                         reference_notional+=mid*qty;signed_difference+=delta
                         matched_quantity+=qty;matched_fees+=fee
+                        signed_ask_difference+=(price-ask)*qty
                         measure=dict(decision_at=decision.isoformat(),order_created_at=created.isoformat(),
                             bid=bid,ask_anchor=ask,midpoint=mid,
                             decision_to_fill_ms=D(str((filled-decision).total_seconds()))*1000,
@@ -131,6 +132,13 @@ def audit_costs(path, *, max_quote_age_ms=2000, max_fill_delay_ms=5000):
         matched_reference_notional=reference_notional,
         matched_signed_midpoint_difference_bps=signed_difference/reference_notional*10000 if reference_notional else None,
         matched_commission_bps=matched_fees/reference_notional*10000 if reference_notional else None,
+        matched_ask_anchor_difference_per_share=(signed_ask_difference/matched_quantity
+            if matched_quantity else None),
+        matched_recorded_commission_per_share=(matched_fees/matched_quantity
+            if matched_quantity else None),
+        matched_combined_ask_anchor_and_commission_per_share=(
+            (signed_ask_difference+matched_fees)/matched_quantity
+            if matched_quantity else None),
         max_quote_age_ms=max_quote_age_ms,max_fill_delay_ms=max_fill_delay_ms,records=records,
         required_next_evidence=['Observed bid/ask with quote availability time for each BUY and SELL fill.',
             'Broker-confirmed fills, side, quantity, commission and order submission/acknowledgment times.',
@@ -139,6 +147,7 @@ def audit_costs(path, *, max_quote_age_ms=2000, max_fill_delay_ms=5000):
             'Only QUICK_SCALPER BUY decision references are supported; SELL quotes are not inferred.',
             'scalp_entry_trigger is the original observed ask anchor, not a replacement limit or fill-time quote.',
             'Decision-to-fill price differences include market movement; negative values are retained.',
+            'Combined ask-anchor and recorded commission is not a verified realized per-side execution cost.',
             'No fees, quotes or timestamps are invented for missing evidence; exclusions remain visible.',
             'Reported fee totals use recorded commission only; missing exchange or regulatory charges remain unverified.',
             'This report cannot set the research review costs_verified flag or change strategy parameters.'])
